@@ -74,7 +74,21 @@ leaf capabilities only:
 
 The runtime capability is staged only into the physical runtime egress adapter;
 it is not copied to a virtual workload Secret. Provider credentials never enter
-the preview.
+the preview. The broker validates a bounded chat-completions shape, clamps the
+maximum output, and reserves a conservative encoded-input plus output-token
+allowance only after the exact capability and immutable tuple are authorized.
+The reservation port is backed by one atomic Postgres upsert keyed by preview
+name, environment request ID, platform SHA, source SHA, and catalog digest, so
+replicas share both per-minute and lifetime request/token caps. Upstream
+failures do not refund a reservation.
+
+After SEA proves physical cleanup, the deletion-intent consumer closes the
+exact five-field budget identity before it writes the hub acknowledgement. A
+closed row is retained as a 192-hour tombstone, longer than the maximum
+168-hour preview TTL, to deny a request that passed authority immediately before
+teardown and reaches Postgres late. The same consumer prunes expired tombstones
+in bounded batches; retrying close or prune is idempotent. The hub controller
+never receives this database port.
 
 ## Storage
 
@@ -109,14 +123,40 @@ global TTL, awake capacity, and total capacity.
 | `VCLUSTER_PREVIEW_TOTAL_MAX`                   | `0`     | Maximum total previews; `0` is unlimited.           |
 | `VCLUSTER_PREVIEW_ACTIVE_MINUTES`              | `30`    | Recently active protection window.                  |
 | `VCLUSTER_PREVIEW_LIFECYCLE_RECONCILE_SECONDS` | `60`    | Reaper interval.                                    |
+| `PREVIEW_TTL_ARCHIVE_GRACE_MINUTES`            | `60`    | Retry grace for active/incomplete mutable archives. |
+| `PREVIEW_TTL_FAIRNESS_WINDOW_SECONDS`          | `60`    | Clock window for fair bounded reaper rotation.      |
 
 SEA's legacy reaper never submits a down Job for any profiled, trusted cold
-PreviewEnvironment. It may sleep mutable `app-live/live` environments and
-reports `archiveRequired`; immutable reconciled and manifest candidates report
-`applicationReaperRequired`. The persistent BFF lifecycle reaper owns expiry:
+PreviewEnvironment. User-owned `app-live/live` environments remain mutable and
+report `archiveRequired`; pull-request automation is reproducible from Git and
+reports `applicationReaperRequired` without an archive. Immutable reconciled and
+manifest candidates also report `applicationReaperRequired`. The persistent BFF
+lifecycle reaper owns expiry:
 it archives mutable environments, directly admits immutable environments, then
 sends an exact guarded teardown to the physical broker. `retained` means keep
 the environment until explicit teardown or its bounded expiry, not forever.
+
+TTL selection is bounded and restart-stable. Expired environments are ordered
+by expiry/name, then the batch start rotates once per fairness window using the
+oldest expiry as the clock origin. A failing oldest environment therefore cannot
+monopolize the fixed-size batch or starve later expirations, and no mutable
+in-memory cursor is lost on BFF restart.
+
+A successful execution inventory with `total=0` is a complete archive: the host
+Files adapter writes a normal `wfb.preview-archive/v1` run summary with zero
+executions before teardown. Active executions, incomplete bundle capture,
+unreachable archive reads, and wake failures remain non-destructive during the
+archive grace. The grace ends at `expiresAt + PREVIEW_TTL_ARCHIVE_GRACE_MINUTES`;
+retry attempts and process restarts cannot extend it.
+
+After that boundary, the reaper attempts a second durable summary marked
+`teardownDisposition.mode=forced-quarantine`, then starts teardown even if wake,
+archive, or quarantine-summary storage still fails. The reap item and physical
+broker ownership receipt carry `archiveQuarantine` with the forced time, grace
+boundary, bounded reason, and summary ID when one exists. This is loss
+accounting, not a claim that the archive is complete. Forced teardown never
+bypasses the exact request/source ownership guard or the host-only archive token
+boundary, and it is never allowed before the grace boundary.
 
 After a successful host archive, an explicit mutable-live teardown must present
 both the exact request/source ownership tuple and
@@ -126,11 +166,24 @@ and host SEA. It is not a runner environment variable, capability leaf, virtual
 Secret, or vCluster workload credential. Missing archive/provenance proof
 preserves the environment.
 
-The physical broker is the only hub desired-state writer. It deletes the exact
-UID/request/source-owned PreviewEnvironment and waits for both controller
-finalizers before asking SEA to run `down`. The hub controller only marks an
-expired CR `Expired`; it never initiates deletion. This ordering prevents an
-orphan Argo Application or agent registration when TTL cleanup races with SEA.
+The physical broker is the only application-facing hub desired-state writer.
+DELETE places the exact UID/request/source-owned PreviewEnvironment into
+termination. Its hub finalizer then publishes a tuple-bound deletion intent in
+status. A continuously reconciled dev broker consumes that intent, runs SEA
+`down`, proves the exact Job UID/runner generation plus dev-side absence checks,
+and records the acknowledgement through the status subresource. Only after that
+acknowledgement does the hub controller remove the Application, namespace, agent
+registration, and finalizers. A caller or broker process may crash after DELETE
+without orphaning physical resources, and direct administrative CR deletion uses
+the same protocol. The hub controller only marks an expired CR `Expired`; it never
+initiates deletion.
+
+The successful SEA down Job has no Kubernetes TTL while it is the durable receipt,
+so a broker restart cannot lose proof. The same always-running broker loop also
+lists identity-cleaned receipts and releases an exact Job UID/runner generation
+only after its narrow hub transport proves the PreviewEnvironment CR is absent.
+This post-finalization sweep bounds receipt accumulation without weakening crash
+recovery.
 
 ## Completion Proof
 

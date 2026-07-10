@@ -406,6 +406,7 @@ import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/applicati
 import {
   LegacyVclusterPreviewGateway,
   LegacyDevPreviewSidecarGateway,
+  LegacyPreviewEnvironmentCleanupReceiptAdapter,
 } from "$lib/server/application/adapters/dev-previews";
 import { LegacyDevPreviewSourceCaptureAdapter } from "$lib/server/application/adapters/dev-preview-source-capture";
 import {
@@ -422,6 +423,7 @@ import {
   previewEnvironmentHubKubeFetch,
 } from "$lib/server/application/adapters/preview-environment-desired-state";
 import { ApplicationPreviewEnvironmentLifecycleBrokerService } from "$lib/server/application/preview-environment-lifecycle-broker";
+import { ApplicationPreviewEnvironmentDeletionReconcilerService } from "$lib/server/application/preview-environment-deletion-reconciler";
 import { ManifestCandidatePathPolicyAdapter } from "$lib/server/application/adapters/preview-candidate-paths";
 import { ApplicationPreviewEnvironmentService } from "$lib/server/application/preview-environments";
 import { ApplicationPreviewEnvironmentLaunchBrokerService } from "$lib/server/application/preview-environment-launch-broker";
@@ -435,6 +437,7 @@ import { ApplicationPreviewArtifactIngressService } from "$lib/server/applicatio
 import { ApplicationPreviewAcceptanceBrokerService } from "$lib/server/application/preview-acceptance-broker";
 import { ApplicationPreviewGateReconcilerService } from "$lib/server/application/preview-gate-reconciler";
 import { ApplicationPreviewActivationGateService } from "$lib/server/application/preview-activation-gate";
+import { ApplicationPreviewActivationDispatchService } from "$lib/server/application/preview-activation-dispatch";
 import { ApplicationPreviewAcceptedImageReuseService } from "$lib/server/application/preview-accepted-image-reuse";
 import { ApplicationPreviewControlSourceAuthorityService } from "$lib/server/application/preview-control-source-authority";
 import { ApplicationPreviewDevSyncCredentialMintService } from "$lib/server/application/preview-dev-sync-credentials";
@@ -447,6 +450,10 @@ import {
   HmacPreviewRuntimeCapabilityAdapter,
   HttpPreviewRuntimeUpstreamAdapter,
 } from "$lib/server/application/adapters/preview-runtime";
+import {
+  PostgresPreviewRuntimeBudgetCleanupAdapter,
+  PostgresPreviewRuntimeBudgetReservationAdapter,
+} from "$lib/server/application/adapters/preview-runtime-budget";
 import { HmacPreviewDevSyncLeafIssuerAdapter } from "$lib/server/application/adapters/preview-dev-sync-credentials";
 import { GithubAppInstallationTokenAdapter } from "$lib/server/application/adapters/preview-github-app";
 import {
@@ -466,6 +473,7 @@ import {
 } from "$lib/server/application/adapters/preview-control-artifacts";
 import { TektonPreviewDevelopmentBuildAdapter } from "$lib/server/application/adapters/preview-development-build";
 import { TektonPreviewActivationBuildAdapter } from "$lib/server/application/adapters/preview-activation-build";
+import { HttpPreviewActivationBrokerAdapter } from "$lib/server/application/adapters/preview-activation-dispatch";
 import {
   HmacPreviewAcceptedImageReceiptAttestationAdapter,
   PostgresPreviewAcceptedImageReceiptStore,
@@ -486,8 +494,10 @@ import {
 import type {
   PreviewAcceptanceBrokerPort,
   PreviewEnvironmentDesiredStatePort,
+  PreviewEnvironmentDeletionOutboxPort,
   PreviewEnvironmentUserLaunchPort,
   PreviewInfrastructureCandidateBrokerPort,
+  PreviewActivationDispatchPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowExecutionReadModelService } from "$lib/server/application/workflow-execution-read-model";
@@ -511,6 +521,17 @@ import {
 } from "$lib/server/workflows/run-diff";
 
 export { getEventBusAdapter } from "$lib/server/application/event-bus";
+
+function boundedPreviewRuntimeInteger(
+  raw: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(raw ?? "");
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
 
 export function getApplicationAdapters(
   config: ApplicationAdapterConfig = getApplicationAdapterConfig(),
@@ -775,7 +796,8 @@ export function getApplicationAdapters(
     | undefined;
   let vclusterPreviews: ApplicationVclusterPreviewService | undefined;
   let previewEnvironmentDesiredState:
-    | PreviewEnvironmentDesiredStatePort
+    | (PreviewEnvironmentDesiredStatePort &
+        PreviewEnvironmentDeletionOutboxPort)
     | undefined;
   let localVclusterPreviewGateway: VclusterPreviewGatewayPort | undefined;
   let physicalVclusterPreviewGateway: VclusterPreviewGatewayPort | undefined;
@@ -786,6 +808,9 @@ export function getApplicationAdapters(
     | undefined;
   let previewEnvironmentLifecycleBroker:
     | ApplicationPreviewEnvironmentLifecycleBrokerService
+    | undefined;
+  let previewEnvironmentDeletionReconciler:
+    | ApplicationPreviewEnvironmentDeletionReconcilerService
     | undefined;
   let previewEnvironmentAcceptance:
     | ApplicationPreviewEnvironmentAcceptanceService
@@ -806,6 +831,7 @@ export function getApplicationAdapters(
   let previewActivationGate:
     | ApplicationPreviewActivationGateService
     | undefined;
+  let previewActivationDispatch: PreviewActivationDispatchPort | undefined;
   let previewAcceptedImageReceipts:
     | PostgresPreviewAcceptedImageReceiptStore
     | undefined;
@@ -841,6 +867,12 @@ export function getApplicationAdapters(
     | ApplicationPreviewDevSyncCredentialMintService
     | undefined;
   let previewRuntimeBroker: ApplicationPreviewRuntimeBrokerService | undefined;
+  let previewRuntimeBudgetReservation:
+    | PostgresPreviewRuntimeBudgetReservationAdapter
+    | undefined;
+  let previewRuntimeBudgetCleanup:
+    | PostgresPreviewRuntimeBudgetCleanupAdapter
+    | undefined;
   let previewSourcePromotion:
     | ApplicationPreviewSourcePromotionService
     | undefined;
@@ -1678,6 +1710,8 @@ export function getApplicationAdapters(
         archive: getPreviewArchive(),
         batchSize: 3,
         wakeTimeoutMs: 120_000,
+        archiveRetryGraceMs: config.previewTtlArchiveGraceMinutes * 60_000,
+        fairnessWindowMs: config.previewTtlFairnessWindowSeconds * 1_000,
       }));
   };
   const getVclusterPreviews = () =>
@@ -1732,6 +1766,32 @@ export function getApplicationAdapters(
       new ApplicationPreviewEnvironmentLifecycleBrokerService(
         getPhysicalVclusterPreviewGateway(),
       ));
+  const getPreviewEnvironmentDeletionReconciler = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error("preview deletion reconciler is broker-only");
+    }
+    return (previewEnvironmentDeletionReconciler ??=
+      new ApplicationPreviewEnvironmentDeletionReconcilerService({
+        outbox: getPreviewEnvironmentDesiredState(),
+        gateway: getLocalVclusterPreviewGateway(),
+        receipts: new LegacyPreviewEnvironmentCleanupReceiptAdapter(),
+        runtimeBudgets: getPreviewRuntimeBudgetCleanup(),
+        runtimeBudgetRetentionHours: boundedPreviewRuntimeInteger(
+          env.PREVIEW_RUNTIME_BUDGET_TOMBSTONE_HOURS ??
+            process.env.PREVIEW_RUNTIME_BUDGET_TOMBSTONE_HOURS,
+          192,
+          169,
+          720,
+        ),
+        runtimeBudgetPruneLimit: boundedPreviewRuntimeInteger(
+          env.PREVIEW_RUNTIME_BUDGET_PRUNE_LIMIT ??
+            process.env.PREVIEW_RUNTIME_BUDGET_PRUNE_LIMIT,
+          100,
+          1,
+          1_000,
+        ),
+      }));
+  };
   const getPreviewEnvironmentAcceptance = () => {
     if (previewEnvironmentAcceptance) return previewEnvironmentAcceptance;
     const gateway = getVclusterPreviewGateway();
@@ -1834,33 +1894,133 @@ export function getApplicationAdapters(
     (previewReadBroker ??= new ApplicationPreviewReadBrokerService({
       previews: getVclusterPreviewGateway(),
       authority: getPreviewControlSourceAuthority(),
-      catalog: new DevPreviewServiceCatalogAdapter(),
       capabilities: new HmacPreviewControlCapabilityMintAdapter(),
       transport: new HttpPreviewCapabilityReadTransportAdapter(),
     }));
-  const getPreviewRuntimeBroker = () =>
-    (previewRuntimeBroker ??= new ApplicationPreviewRuntimeBrokerService({
-      authority: getPreviewControlSourceAuthority(),
-      capabilities: new HmacPreviewRuntimeCapabilityAdapter(),
-      catalog: new DevPreviewServiceCatalogAdapter(),
-      upstream: new HttpPreviewRuntimeUpstreamAdapter(),
-      allowedModels: (
-        env.PREVIEW_RUNTIME_ALLOWED_MODELS ??
-        process.env.PREVIEW_RUNTIME_ALLOWED_MODELS ??
-        ""
-      )
-        .split(",")
-        .map((model) => model.trim())
-        .filter(Boolean),
-      maxConcurrency:
-        Number(
+  const getPreviewRuntimeBudgetReservation = () =>
+    (previewRuntimeBudgetReservation ??=
+      new PostgresPreviewRuntimeBudgetReservationAdapter(getDatabase()));
+  const getPreviewRuntimeBudgetCleanup = () =>
+    (previewRuntimeBudgetCleanup ??=
+      new PostgresPreviewRuntimeBudgetCleanupAdapter(getDatabase()));
+  const getPreviewRuntimeBroker = () => {
+    const minuteTokenBudget = boundedPreviewRuntimeInteger(
+      env.PREVIEW_RUNTIME_BUDGET_RESERVED_TOKENS_PER_MINUTE ??
+        process.env.PREVIEW_RUNTIME_BUDGET_RESERVED_TOKENS_PER_MINUTE,
+      600_000,
+      128,
+      2_000_000,
+    );
+    const totalTokenBudget = boundedPreviewRuntimeInteger(
+      env.PREVIEW_RUNTIME_BUDGET_TOTAL_RESERVED_TOKENS ??
+        process.env.PREVIEW_RUNTIME_BUDGET_TOTAL_RESERVED_TOKENS,
+      8_000_000,
+      128,
+      100_000_000,
+    );
+    const maxCompletionTokens = Math.min(
+      boundedPreviewRuntimeInteger(
+        env.PREVIEW_RUNTIME_MAX_COMPLETION_TOKENS ??
+          process.env.PREVIEW_RUNTIME_MAX_COMPLETION_TOKENS,
+        4_096,
+        128,
+        32_768,
+      ),
+      minuteTokenBudget,
+      totalTokenBudget,
+    );
+    return (previewRuntimeBroker ??= new ApplicationPreviewRuntimeBrokerService(
+      {
+        authority: getPreviewControlSourceAuthority(),
+        capabilities: new HmacPreviewRuntimeCapabilityAdapter(),
+        upstream: new HttpPreviewRuntimeUpstreamAdapter(),
+        budget: getPreviewRuntimeBudgetReservation(),
+        budgetLimits: {
+          requestsPerMinute: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_BUDGET_REQUESTS_PER_MINUTE ??
+              process.env.PREVIEW_RUNTIME_BUDGET_REQUESTS_PER_MINUTE,
+            60,
+            1,
+            600,
+          ),
+          reservedTokensPerMinute: minuteTokenBudget,
+          totalRequests: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_BUDGET_TOTAL_REQUESTS ??
+              process.env.PREVIEW_RUNTIME_BUDGET_TOTAL_REQUESTS,
+            2_000,
+            1,
+            100_000,
+          ),
+          totalReservedTokens: totalTokenBudget,
+        },
+        requestLimits: {
+          maxPayloadBytes: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_MAX_PAYLOAD_BYTES ??
+              process.env.PREVIEW_RUNTIME_MAX_PAYLOAD_BYTES,
+            524_288,
+            16_384,
+            2_097_152,
+          ),
+          maxMessages: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_MAX_MESSAGES ??
+              process.env.PREVIEW_RUNTIME_MAX_MESSAGES,
+            128,
+            1,
+            256,
+          ),
+          maxContentBytes: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_MAX_CONTENT_BYTES ??
+              process.env.PREVIEW_RUNTIME_MAX_CONTENT_BYTES,
+            65_536,
+            1_024,
+            262_144,
+          ),
+          maxTools: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_MAX_TOOLS ??
+              process.env.PREVIEW_RUNTIME_MAX_TOOLS,
+            64,
+            1,
+            128,
+          ),
+          maxToolBytes: boundedPreviewRuntimeInteger(
+            env.PREVIEW_RUNTIME_MAX_TOOL_BYTES ??
+              process.env.PREVIEW_RUNTIME_MAX_TOOL_BYTES,
+            65_536,
+            1_024,
+            262_144,
+          ),
+          maxCompletionTokens,
+          defaultCompletionTokens: Math.min(
+            boundedPreviewRuntimeInteger(
+              env.PREVIEW_RUNTIME_DEFAULT_COMPLETION_TOKENS ??
+                process.env.PREVIEW_RUNTIME_DEFAULT_COMPLETION_TOKENS,
+              2_048,
+              1,
+              32_768,
+            ),
+            maxCompletionTokens,
+          ),
+        },
+        allowedModels: (
+          env.PREVIEW_RUNTIME_ALLOWED_MODELS ??
+          process.env.PREVIEW_RUNTIME_ALLOWED_MODELS ??
+          ""
+        )
+          .split(",")
+          .map((model) => model.trim())
+          .filter(Boolean),
+        maxConcurrency: boundedPreviewRuntimeInteger(
           env.PREVIEW_RUNTIME_MAX_CONCURRENCY ??
-            process.env.PREVIEW_RUNTIME_MAX_CONCURRENCY ??
-            "",
-        ) || 8,
-      audit: (record) =>
-        console.info(`[preview-runtime] ${JSON.stringify(record)}`),
-    }));
+            process.env.PREVIEW_RUNTIME_MAX_CONCURRENCY,
+          8,
+          1,
+          64,
+        ),
+        audit: (record) =>
+          console.info(`[preview-runtime] ${JSON.stringify(record)}`),
+      },
+    ));
+  };
   const previewGithubRepositories = () =>
     [
       ...new Set([
@@ -1957,6 +2117,12 @@ export function getApplicationAdapters(
         sourceRepository: config.previewSourceRepository,
       }));
   };
+  const getPreviewActivationDispatch = () =>
+    (previewActivationDispatch ??= new ApplicationPreviewActivationDispatchService({
+      broker: new HttpPreviewActivationBrokerAdapter(),
+      catalog: new DevPreviewServiceCatalogAdapter(),
+      sourceRepository: config.previewSourceRepository,
+    }));
   const getPreviewDevelopmentBuildBroker = () =>
     (previewDevelopmentBuildBroker ??=
       new ApplicationPreviewDevelopmentBuildBrokerService({
@@ -2548,6 +2714,9 @@ export function getApplicationAdapters(
     get previewEnvironmentLifecycleBroker() {
       return getPreviewEnvironmentLifecycleBroker();
     },
+    get previewEnvironmentDeletionReconciler() {
+      return getPreviewEnvironmentDeletionReconciler();
+    },
     get previewEnvironmentAcceptance() {
       return getPreviewEnvironmentAcceptance();
     },
@@ -2583,6 +2752,9 @@ export function getApplicationAdapters(
     },
     get previewActivationGate() {
       return getPreviewActivationGate();
+    },
+    get previewActivationDispatch() {
+      return getPreviewActivationDispatch();
     },
     get previewAcceptedImageReuse() {
       return getPreviewAcceptedImageReuse();

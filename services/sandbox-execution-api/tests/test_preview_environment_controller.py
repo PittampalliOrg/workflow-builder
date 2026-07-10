@@ -24,6 +24,8 @@ from src.preview_environment_controller import (
     ARGO_APPLICATIONS_PLURAL,
     CONTROL_NAMESPACE,
     CONTRACT_GENERATION_ANNOTATION,
+    DELETION_ACK_STATUS_FIELD,
+    DELETION_INTENT_STATUS_FIELD,
     ENVIRONMENT_UID_LABEL,
     FINALIZER,
     IMAGES_HASH_LABEL,
@@ -31,6 +33,7 @@ from src.preview_environment_controller import (
     MANAGED_BY_LABEL,
     MANAGED_BY_VALUE,
     MODE_LABEL,
+    PHYSICAL_CLEANUP_CHECKS,
     CatalogValidationError,
     OwnershipConflict,
     PreviewEnvironmentController,
@@ -42,6 +45,7 @@ from src.preview_environment_controller import (
     application_is_ready,
     assert_owned,
     build_application_manifest,
+    build_deletion_intent,
     build_namespace_manifest,
     build_status,
     load_preview_service_catalog,
@@ -188,7 +192,55 @@ def test_validation_requires_user_owner_for_mutable_live_app_preview() -> None:
     )
 
     assert any(
-        "live app-live previews require spec.owner.kind=user" in issue
+        "live app-live previews require spec.owner.kind=user or " in issue
+        for issue in messages
+    )
+
+
+def test_validation_allows_pull_request_automation_owner_for_live_app() -> None:
+    value = validate_preview_environment(
+        preview_resource(
+            spec={
+                "lifecycle": "ephemeral",
+                "owner": {"kind": "automation", "id": "pr-preview:42"},
+                "origin": {
+                    "kind": "pull-request",
+                    "reference": "PittampalliOrg/workflow-builder#42",
+                },
+            }
+        )
+    )
+
+    assert value.owner_kind == "automation"
+    assert value.origin_kind == "pull-request"
+
+
+@pytest.mark.parametrize(
+    ("owner", "origin"),
+    [
+        (
+            {"kind": "automation", "id": "scheduled-preview"},
+            {"kind": "automation"},
+        ),
+        (
+            {"kind": "workflow", "id": "workflow-1"},
+            {"kind": "pull-request", "reference": "repo#42"},
+        ),
+        (
+            {"kind": "session", "id": "session-1"},
+            {"kind": "interactive-session", "reference": "session-1"},
+        ),
+    ],
+)
+def test_validation_rejects_non_pr_automation_and_non_user_live_owners(
+    owner: dict[str, str], origin: dict[str, str]
+) -> None:
+    messages = validation_messages(
+        preview_resource(spec={"owner": owner, "origin": origin})
+    )
+
+    assert any(
+        "live app-live previews require spec.owner.kind=user or " in issue
         for issue in messages
     )
 
@@ -304,10 +356,10 @@ def test_reconciled_app_live_rejects_non_preview_native_catalog_service() -> Non
         preview_resource(
             spec={
                 "mode": "reconciled",
-                "services": ["mcp-gateway"],
+                "services": ["swebench-coordinator"],
                 "images": {
-                    "mcp-gateway": (
-                        "ghcr.io/pittampalliorg/mcp-gateway@sha256:" + "d" * 64
+                    "swebench-coordinator": (
+                        "ghcr.io/pittampalliorg/swebench-coordinator@sha256:" + "d" * 64
                     )
                 },
             }
@@ -315,7 +367,7 @@ def test_reconciled_app_live_rejects_non_preview_native_catalog_service() -> Non
     )
 
     assert any(
-        "mcp-gateway has no immutable acceptance replay contract" in issue
+        "swebench-coordinator has no immutable acceptance replay contract" in issue
         for issue in messages
     )
 
@@ -405,6 +457,25 @@ def test_validation_rejects_invalid_boundary_fields(
         for issue in validation_messages(
             preview_resource(spec=spec_patch, metadata=metadata_patch)
         )
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pool-1",
+        "pool-replacement",
+        "mtxdev1",
+        "mtxtmpl1",
+        "preview6",
+        "ganpilot",
+        "ganvalidate",
+        "test3",
+    ],
+)
+def test_validation_rejects_legacy_retirement_subject_names(name: str) -> None:
+    assert "spec.id is reserved for legacy preview retirement" in validation_messages(
+        preview_resource(spec={"id": name}, metadata={"name": name})
     )
 
 
@@ -990,6 +1061,27 @@ class FakeRegistrationAdapter:
         return self.cleanup_result
 
 
+def acknowledge_physical_cleanup(resource: dict[str, Any]) -> None:
+    intent = build_deletion_intent(resource)
+    resource.setdefault("status", {})[DELETION_INTENT_STATUS_FIELD] = intent
+    resource["status"][DELETION_ACK_STATUS_FIELD] = {
+        "intentId": intent["id"],
+        "environmentUid": intent["environmentUid"],
+        "requestId": intent["requestId"],
+        "platformRevision": intent["platformRevision"],
+        "sourceRevision": intent["sourceRevision"],
+        "catalogDigest": intent["catalogDigest"],
+        "observedAt": "2026-07-09T12:01:00Z",
+        "resourceName": intent["name"],
+        "runner": {
+            "jobName": f"vcpreview-down-{intent['name']}",
+            "jobUid": "87654321-4321-4321-4321-cba987654321",
+            "generation": f"op:{'c' * 32}",
+        },
+        "checks": {name: True for name in PHYSICAL_CLEANUP_CHECKS},
+    }
+
+
 def test_reconcile_adds_finalizer_then_creates_resources_and_reports_ready() -> None:
     controller, core, custom = controller_pair(preview_resource())
 
@@ -1186,6 +1278,22 @@ def test_agent_registration_cleanup_runs_after_application_and_namespace() -> No
     core.namespace = build_namespace_manifest(environment)
     custom.application = build_application_manifest(environment)
 
+    # Direct/admin DELETE first creates a durable outbox intent. Hub resources
+    # remain present until a dev-side SEA proof is acknowledged.
+    controller.reconcile(custom.resource)
+    assert custom.application is not None
+    assert core.namespace is not None
+    assert custom.resource["status"][DELETION_INTENT_STATUS_FIELD] == (
+        build_deletion_intent(custom.resource)
+    )
+    controller.reconcile(custom.resource)
+    assert custom.application is not None
+    assert core.namespace is not None
+    assert custom.resource["status"]["conditions"][1]["reason"] == (
+        "WaitingForPhysicalCleanup"
+    )
+
+    acknowledge_physical_cleanup(custom.resource)
     controller.reconcile(custom.resource)
     assert custom.application is None
     assert core.namespace is not None
@@ -1196,13 +1304,9 @@ def test_agent_registration_cleanup_runs_after_application_and_namespace() -> No
     assert registration.cleanup_calls == []
 
     controller.reconcile(custom.resource)
-    assert FINALIZER not in custom.resource["metadata"]["finalizers"]
+    assert FINALIZER in custom.resource["metadata"]["finalizers"]
     assert REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
-    assert registration.cleanup_calls == []
-
-    controller.reconcile(custom.resource)
     assert registration.cleanup_calls == [("feature-x", environment.uid)]
-    assert REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
     assert custom.resource["status"]["conditions"][1]["reason"] == (
         "DeletingAgentRegistration"
     )
@@ -1210,6 +1314,10 @@ def test_agent_registration_cleanup_runs_after_application_and_namespace() -> No
     registration.cleanup_result = True
     controller.reconcile(custom.resource)
     assert REGISTRATION_FINALIZER not in custom.resource["metadata"]["finalizers"]
+    assert FINALIZER in custom.resource["metadata"]["finalizers"]
+
+    controller.reconcile(custom.resource)
+    assert FINALIZER not in custom.resource["metadata"]["finalizers"]
 
 
 def test_agent_registration_query_error_keeps_finalizer() -> None:
@@ -1233,6 +1341,65 @@ def test_agent_registration_query_error_keeps_finalizer() -> None:
     assert REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
 
 
+def test_future_cleanup_ack_cannot_release_or_delete_hub_resources() -> None:
+    resource = preview_resource(
+        metadata={
+            "finalizers": [FINALIZER],
+            "deletionTimestamp": "2026-07-09T12:00:00Z",
+        }
+    )
+    controller, core, custom = controller_pair(resource, now=NOW)
+    environment = validate_preview_environment(custom.resource)
+    core.namespace = build_namespace_manifest(environment)
+    custom.application = build_application_manifest(environment)
+    acknowledge_physical_cleanup(custom.resource)
+    custom.resource["status"][DELETION_ACK_STATUS_FIELD]["observedAt"] = (
+        "2026-07-10T12:00:00Z"
+    )
+
+    controller.reconcile(custom.resource)
+
+    assert custom.application is not None
+    assert core.namespace is not None
+    assert FINALIZER in custom.resource["metadata"]["finalizers"]
+    assert custom.resource["status"]["conditions"][1]["reason"] == (
+        "WaitingForPhysicalCleanup"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("platformRevision", "d" * 40),
+        ("catalogDigest", f"sha256:{'e' * 64}"),
+    ],
+)
+def test_cleanup_ack_with_different_budget_identity_keeps_finalizer(
+    field: str, replacement: str
+) -> None:
+    resource = preview_resource(
+        metadata={
+            "finalizers": [FINALIZER],
+            "deletionTimestamp": "2026-07-09T12:00:00Z",
+        }
+    )
+    controller, core, custom = controller_pair(resource, now=NOW)
+    environment = validate_preview_environment(custom.resource)
+    core.namespace = build_namespace_manifest(environment)
+    custom.application = build_application_manifest(environment)
+    acknowledge_physical_cleanup(custom.resource)
+    custom.resource["status"][DELETION_ACK_STATUS_FIELD][field] = replacement
+
+    controller.reconcile(custom.resource)
+
+    assert custom.application is not None
+    assert core.namespace is not None
+    assert FINALIZER in custom.resource["metadata"]["finalizers"]
+    assert custom.resource["status"]["conditions"][1]["reason"] == (
+        "WaitingForPhysicalCleanup"
+    )
+
+
 def test_deletion_refuses_unowned_application_and_keeps_finalizer() -> None:
     resource = preview_resource(
         metadata={
@@ -1241,6 +1408,7 @@ def test_deletion_refuses_unowned_application_and_keeps_finalizer() -> None:
         }
     )
     controller, _core, custom = controller_pair(resource)
+    acknowledge_physical_cleanup(custom.resource)
     custom.application = {
         "metadata": {
             "name": "preview-feature-x-workflow-builder",
@@ -1265,6 +1433,7 @@ def test_deletion_strips_argo_finalizer_when_preview_agent_is_unavailable() -> N
     )
     controller, core, custom = controller_pair(resource)
     environment = validate_preview_environment(custom.resource)
+    acknowledge_physical_cleanup(custom.resource)
     custom.application = build_application_manifest(environment)
     core.namespace = build_namespace_manifest(environment)
     custom.application_delete_requires_no_finalizers = True

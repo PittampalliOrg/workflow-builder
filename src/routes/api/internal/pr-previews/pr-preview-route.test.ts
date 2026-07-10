@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const HEAD = "a".repeat(40);
 const mocks = vi.hoisted(() => ({
-  validateInternalToken: vi.fn(() => true),
+  validatePreviewGovernanceDispatchToken: vi.fn(() => true),
   up: vi.fn(async () => ({
     prNumber: 42,
     alias: "pr-42",
@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
-  validateInternalToken: mocks.validateInternalToken,
+  validatePreviewGovernanceDispatchToken:
+    mocks.validatePreviewGovernanceDispatchToken,
 }));
 
 vi.mock("$lib/server/application", () => ({
@@ -39,6 +40,15 @@ function event(body: Record<string, unknown>) {
 
 describe("PR preview command route", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("rejects requests without the purpose-specific governance credential", async () => {
+    mocks.validatePreviewGovernanceDispatchToken.mockReturnValueOnce(false);
+    const response = (await POST(
+      event({ action: "up", prNumber: 42, headSha: HEAD }) as never,
+    )) as Response;
+    expect(response.status).toBe(401);
+    expect(mocks.up).not.toHaveBeenCalled();
+  });
 
   it("forwards only the PR number and observed exact head SHA", async () => {
     const response = (await POST(

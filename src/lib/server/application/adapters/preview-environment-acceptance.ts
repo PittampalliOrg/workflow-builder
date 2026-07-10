@@ -1,6 +1,5 @@
 import type {
   ImmutableGitSha,
-  PreviewEnvironmentAllocation,
   PreviewEnvironmentCleanupProof,
   PreviewEnvironmentImageBuildPort,
   PreviewEnvironmentInventoryPort,
@@ -315,17 +314,10 @@ export class VclusterPreviewReadinessAdapter implements PreviewEnvironmentReadin
 
 function previewContractMismatch(
   preview: Awaited<ReturnType<VclusterPreviewGatewayPort["get"]>>,
-  expected: {
-    platformRevision: string;
-    sourceRevision: string;
-    profile: string;
-    mode: string;
-    services: readonly string[];
-    owner: { id: string };
-    allocation: PreviewEnvironmentAllocation;
-    requestId: string;
-    images: Readonly<Record<string, string>>;
-  },
+  expected: Omit<
+    Parameters<PreviewEnvironmentReadinessPort["waitReady"]>[0],
+    "name" | "timeoutMs"
+  >,
 ): string[] {
   const mismatches: string[] = [];
   if (preview.platformRevision !== expected.platformRevision)
@@ -333,19 +325,30 @@ function previewContractMismatch(
   if (preview.sourceRevision !== expected.sourceRevision)
     mismatches.push("sourceRevision");
   if (preview.profile !== expected.profile) mismatches.push("profile");
+  if (preview.lane !== expected.lane) mismatches.push("lane");
   if (preview.mode !== expected.mode) mismatches.push("mode");
   const actualServices = JSON.stringify([...(preview.services ?? [])].sort());
   const expectedServices = JSON.stringify([...expected.services].sort());
   if (actualServices !== expectedServices) mismatches.push("services");
-  if (preview.owner?.id !== expected.owner.id) mismatches.push("owner");
+  if (
+    preview.owner?.kind !== expected.owner.kind ||
+    preview.owner?.id !== expected.owner.id
+  )
+    mismatches.push("owner");
+  if (preview.lifecycle !== expected.lifecycle) mismatches.push("lifecycle");
+  if (
+    preview.origin?.kind !== expected.origin.kind ||
+    (preview.origin?.reference ?? null) !== (expected.origin.reference ?? null)
+  )
+    mismatches.push("origin");
   if (
     JSON.stringify(preview.allocation) !== JSON.stringify(expected.allocation)
   )
     mismatches.push("allocation");
-  if (preview.provenance?.requestId !== expected.requestId)
-    mismatches.push("requestId");
+  if (!sameProvenance(preview.provenance, expected.provenance))
+    mismatches.push("provenance");
   if (preview.trustedCode !== true) mismatches.push("trustedCode");
-  if (preview.catalogDigest !== DEV_PREVIEW_CATALOG_DIGEST)
+  if (preview.catalogDigest !== expected.catalogDigest)
     mismatches.push("catalogDigest");
   const actualImages = JSON.stringify(
     Object.entries(preview.images ?? {}).sort(([left], [right]) =>
@@ -359,6 +362,27 @@ function previewContractMismatch(
   );
   if (actualImages !== expectedImages) mismatches.push("images");
   return mismatches;
+}
+
+function sameProvenance(
+  actual: Readonly<Record<string, unknown>> | null,
+  expected: Readonly<{
+    requestId: string;
+    requestedAt: string;
+    platformRepository: string;
+    sourceRepository: string;
+    parentEnvironmentId?: string | null;
+  }>,
+): boolean {
+  if (!actual) return false;
+  return (
+    actual.requestId === expected.requestId &&
+    actual.requestedAt === expected.requestedAt &&
+    actual.platformRepository === expected.platformRepository &&
+    actual.sourceRepository === expected.sourceRepository &&
+    (actual.parentEnvironmentId ?? null) ===
+      (expected.parentEnvironmentId ?? null)
+  );
 }
 
 export class VclusterPreviewInventoryAdapter implements PreviewEnvironmentInventoryPort {

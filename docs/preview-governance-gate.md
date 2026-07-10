@@ -1,7 +1,14 @@
 # Preview governance gate
 
-`preview/gate` is the only preview status that branch protection should require.
-It is emitted for every pull request head, including changes for which preview
+> **Post-POC hardening:** this is the target governance design, not a completion
+> gate for the first development POC. The POC is admin-only, uses fixed
+> PittampalliOrg repositories and exact SHAs, and proves one immutable replay
+> without installing strict branch protection or the complete App-bound status
+> system. Activate the design below before accepting untrusted contributors or
+> treating preview evidence as a general merge policy.
+
+In the post-POC target, `preview/gate` is the only preview status that branch
+protection should require. It is emitted for every pull request head, including changes for which preview
 evidence is not applicable. Subordinate contexts are evidence inputs, not
 separate merge requirements.
 
@@ -60,6 +67,18 @@ The activation command is available only on the physical broker at
 `POST /api/internal/preview-control/activation-images`. Its body contains only
 `requestId`, `catalogDigest`, and the exact PR tuple. Artifacts, changed paths,
 build profile, image name, and status context are server-derived.
+
+Production invocation is an always-on hub Tekton trigger for `opened`,
+`synchronize`, and `reopened` workflow-builder PR events; it is independent of
+the optional preview-environment label. The Task verifies the open base/head
+tuple, waits for the App-authored `preview/gate` status on that exact head, and
+calls the normal BFF with only the PR tuple under the purpose-specific
+`PREVIEW_GOVERNANCE_DISPATCH_TOKEN`. The broad internal, preview-action, and
+broker credentials are rejected on this route. The normal application service
+derives the request ID and deployed catalog digest, then its broker adapter adds
+`PREVIEW_CONTROL_BROKER_TOKEN`. The physical broker
+re-inspects changed paths and either returns `required:false`, reuses an existing
+attested receipt, or runs the catalog-derived activation build.
 
 ## Branch protection bootstrap
 

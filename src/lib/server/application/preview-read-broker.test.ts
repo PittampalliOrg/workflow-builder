@@ -36,7 +36,7 @@ function record(
     lane: "application",
     mode: "live",
     owner: { kind: "user", id: "admin-1" },
-    services: ["workflow-builder", "workflow-orchestrator"],
+    services: ["workflow-builder"],
     provenance: { requestId: "request-1" },
     trustedCode: true,
     allocation: { kind: "cold" },
@@ -49,14 +49,14 @@ function record(
 function harness(overrides: Partial<VclusterPreviewRecord> = {}) {
   const previews = { get: vi.fn(async () => record(overrides)) };
   const authority = {
-    authorizeRuntime: vi.fn(async () => ({
+    authorizeRuntimeTuple: vi.fn(async () => ({
       previewName: "feature-one",
       requestId: "request-1",
       owner: "admin-1",
       platformRevision: "a".repeat(40) as never,
       sourceRevision: "b".repeat(40) as never,
       catalogDigest: digest,
-      services: ["workflow-builder", "workflow-orchestrator"],
+      services: ["workflow-builder"],
     })),
   };
   const capabilities = { mintControl: vi.fn(() => "d".repeat(64)) };
@@ -69,14 +69,6 @@ function harness(overrides: Partial<VclusterPreviewRecord> = {}) {
   const service = new ApplicationPreviewReadBrokerService({
     previews,
     authority,
-    catalog: {
-      currentDigest: () => digest,
-      listPreviewNativeServices: () => [
-        "workflow-builder",
-        "workflow-orchestrator",
-      ],
-      assertPreviewNativeServices: (services) => services,
-    },
     capabilities,
     transport: transport as never,
   });
@@ -91,14 +83,7 @@ describe("central preview read broker", () => {
       identity,
       command: { kind: "list-executions", limit: 25, status: null },
     });
-    expect(h.authority.authorizeRuntime).toHaveBeenCalledWith({
-      previewName: "feature-one",
-      environmentRequestId: "request-1",
-      environmentPlatformRevision: "a".repeat(40),
-      environmentSourceRevision: "b".repeat(40),
-      catalogDigest: digest,
-      requiredServices: ["workflow-builder", "workflow-orchestrator"],
-    });
+    expect(h.authority.authorizeRuntimeTuple).toHaveBeenCalledWith(identity);
     expect(h.capabilities.mintControl).toHaveBeenCalledWith(
       expect.objectContaining({ previewName: "feature-one" }),
     );
@@ -145,7 +130,7 @@ describe("central preview read broker", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "invalid-request" });
-    expect(h.authority.authorizeRuntime).not.toHaveBeenCalled();
+    expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
   });
 
   it("rejects a stale generation before minting or transport", async () => {
@@ -157,7 +142,7 @@ describe("central preview read broker", () => {
         command: { kind: "list-executions", limit: 25, status: null },
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
-    expect(h.authority.authorizeRuntime).not.toHaveBeenCalled();
+    expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
     expect(h.capabilities.mintControl).not.toHaveBeenCalled();
     expect(h.transport.execute).not.toHaveBeenCalled();
   });

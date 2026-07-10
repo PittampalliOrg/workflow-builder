@@ -15,6 +15,36 @@ import type {
 } from "$lib/server/application/ports";
 
 const SOURCE_SHA = "b".repeat(40);
+const EXPECTED_PROVENANCE = Object.freeze({
+  requestId: "request-1",
+  requestedAt: "2026-07-09T20:00:00Z",
+  platformRepository: "PittampalliOrg/stacks",
+  sourceRepository: "PittampalliOrg/workflow-builder",
+});
+const EXPECTED_IMAGE = `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`;
+
+function readinessInput() {
+  return {
+    name: "acceptance-one",
+    platformRevision: "a".repeat(40) as never,
+    sourceRevision: SOURCE_SHA as never,
+    profile: "app-live" as const,
+    lane: "application" as const,
+    mode: "reconciled" as const,
+    services: ["workflow-builder"],
+    owner: { kind: "session" as const, id: "session-1" },
+    origin: {
+      kind: "interactive-session" as const,
+      reference: "session-1",
+    },
+    lifecycle: "ephemeral" as const,
+    allocation: { kind: "cold" as const },
+    provenance: EXPECTED_PROVENANCE,
+    images: { "workflow-builder": EXPECTED_IMAGE },
+    catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+    timeoutMs: 100,
+  };
+}
 
 function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
   return {
@@ -60,15 +90,12 @@ function record(
     services: ["workflow-builder"],
     candidatePaths: [],
     provenance: {
-      requestId: "request-1",
-      requestedAt: "2026-07-09T20:00:00Z",
-      platformRepository: "PittampalliOrg/stacks",
-      sourceRepository: "PittampalliOrg/workflow-builder",
+      ...EXPECTED_PROVENANCE,
     },
     trustedCode: true,
     allocation: { kind: "cold" as const },
     images: {
-      "workflow-builder": `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`,
+      "workflow-builder": EXPECTED_IMAGE,
     },
     catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
     ...overrides,
@@ -342,24 +369,7 @@ describe("preview acceptance infrastructure adapters", () => {
       vi.fn(async () => undefined),
       1,
     );
-    await expect(
-      adapter.waitReady({
-        name: "acceptance-one",
-        platformRevision: "a".repeat(40) as never,
-        sourceRevision: SOURCE_SHA as never,
-        profile: "app-live",
-        lane: "application",
-        mode: "reconciled",
-        services: ["workflow-builder"],
-        owner: { kind: "session", id: "session-1" },
-        allocation: { kind: "cold" },
-        requestId: "request-1",
-        images: {
-          "workflow-builder": `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`,
-        },
-        timeoutMs: 100,
-      }),
-    ).resolves.toEqual({
+    await expect(adapter.waitReady(readinessInput())).resolves.toEqual({
       ready: true,
       phase: "ready",
       url: "https://acceptance.example.test",
@@ -374,28 +384,97 @@ describe("preview acceptance infrastructure adapters", () => {
       ),
     });
     const adapter = new VclusterPreviewReadinessAdapter(api);
-    await expect(
-      adapter.waitReady({
-        name: "acceptance-one",
-        platformRevision: "a".repeat(40) as never,
-        sourceRevision: SOURCE_SHA as never,
-        profile: "app-live",
-        lane: "application",
-        mode: "reconciled",
-        services: ["workflow-builder"],
-        owner: { kind: "session", id: "session-1" },
-        allocation: { kind: "cold" },
-        requestId: "request-1",
-        images: {
-          "workflow-builder": `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`,
-        },
-        timeoutMs: 100,
-      }),
-    ).resolves.toMatchObject({
+    await expect(adapter.waitReady(readinessInput())).resolves.toMatchObject({
       ready: false,
       phase: "contract-mismatch:sourceRevision",
     });
   });
+
+  it.each([
+    [
+      "platform revision",
+      { platformRevision: "d".repeat(40) },
+      "platformRevision",
+    ],
+    ["lane", { lane: "management" }, "lane"],
+    ["owner kind", { owner: { kind: "automation", id: "session-1" } }, "owner"],
+    ["owner id", { owner: { kind: "session", id: "session-2" } }, "owner"],
+    [
+      "origin kind",
+      { origin: { kind: "workflow", reference: "session-1" } },
+      "origin",
+    ],
+    [
+      "origin reference",
+      { origin: { kind: "interactive-session", reference: "session-2" } },
+      "origin",
+    ],
+    ["lifecycle", { lifecycle: "retained" }, "lifecycle"],
+    [
+      "request id",
+      { provenance: { ...EXPECTED_PROVENANCE, requestId: "request-2" } },
+      "provenance",
+    ],
+    [
+      "requested at",
+      {
+        provenance: {
+          ...EXPECTED_PROVENANCE,
+          requestedAt: "2026-07-09T20:00:01Z",
+        },
+      },
+      "provenance",
+    ],
+    [
+      "platform repository",
+      {
+        provenance: {
+          ...EXPECTED_PROVENANCE,
+          platformRepository: "attacker/stacks",
+        },
+      },
+      "provenance",
+    ],
+    [
+      "source repository",
+      {
+        provenance: {
+          ...EXPECTED_PROVENANCE,
+          sourceRepository: "attacker/workflow-builder",
+        },
+      },
+      "provenance",
+    ],
+    ["services", { services: ["workflow-orchestrator"] }, "services"],
+    ["allocation", { allocation: { kind: "warm" } }, "allocation"],
+    [
+      "images",
+      {
+        images: {
+          "workflow-builder": `ghcr.io/pittampalliorg/workflow-builder@sha256:${"e".repeat(64)}`,
+        },
+      },
+      "images",
+    ],
+    [
+      "catalog digest",
+      { catalogDigest: `sha256:${"f".repeat(64)}` },
+      "catalogDigest",
+    ],
+  ] as const)(
+    "fails readiness when a Healthy preview changes exact %s authority",
+    async (_description, override, mismatch) => {
+      const api = gateway({
+        get: vi.fn(async () => record(true, "ready", override)),
+      });
+      const adapter = new VclusterPreviewReadinessAdapter(api);
+
+      await expect(adapter.waitReady(readinessInput())).resolves.toMatchObject({
+        ready: false,
+        phase: `contract-mismatch:${mismatch}`,
+      });
+    },
+  );
 
   it("checks freshness through the privileged inventory adapter", async () => {
     const api = gateway({

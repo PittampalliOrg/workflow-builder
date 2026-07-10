@@ -203,6 +203,10 @@ def test_preview_native_tls_terminator_has_admissible_cpu_limit() -> None:
 
     pod = manifest["spec"]["podTemplate"]["spec"]
     tls = next(c for c in pod["containers"] if c["name"] == "tls-terminator")
+    assert tls["image"] == (
+        "docker.io/nginxinc/nginx-unprivileged@sha256:"
+        "65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0"
+    )
     assert tls["resources"]["requests"]["cpu"] == "10m"
     assert tls["resources"]["limits"]["cpu"] == "200m"
 
@@ -277,6 +281,7 @@ def test_adopt_deferred_scale_down_scopes_selector_by_service(monkeypatch) -> No
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
     captured: dict[str, str] = {}
     patched: dict[str, object] = {}
+    deployment = {"replicas": 2, "annotations": {}}
     ready_pod = SimpleNamespace(
         status=SimpleNamespace(
             container_statuses=[SimpleNamespace(name="dev", ready=True)]
@@ -291,13 +296,15 @@ def test_adopt_deferred_scale_down_scopes_selector_by_service(monkeypatch) -> No
 
     def read_dep(*, name, namespace):
         return SimpleNamespace(
-            spec=SimpleNamespace(replicas=2),
-            metadata=SimpleNamespace(annotations={}),
+            spec=SimpleNamespace(replicas=deployment["replicas"]),
+            metadata=SimpleNamespace(annotations=deployment["annotations"]),
         )
 
     def patch_dep(*, name, namespace, body):
         patched["name"] = name
         patched["replicas"] = body["spec"]["replicas"]
+        deployment["replicas"] = body["spec"]["replicas"]
+        deployment["annotations"] = body["metadata"]["annotations"]
 
     fake_apps = SimpleNamespace(
         read_namespaced_deployment=read_dep,
@@ -323,10 +330,12 @@ def test_adopt_deferred_scale_down_scopes_selector_by_service(monkeypatch) -> No
 
 def _ready_pod(name: str, *, daprd: str | None = None) -> SimpleNamespace:
     """A dev pod that is Ready. daprd: None=absent, "init"/"regular"/"label"=present."""
-    init_cs = [SimpleNamespace(name="daprd")] if daprd == "init" else None
+    init_cs = (
+        [SimpleNamespace(name="daprd", ready=True)] if daprd == "init" else None
+    )
     regular = [SimpleNamespace(name="dev", ready=True)]
     if daprd == "regular":
-        regular.append(SimpleNamespace(name="daprd"))
+        regular.append(SimpleNamespace(name="daprd", ready=True))
     labels = {"dapr.io/sidecar-injected": "true"} if daprd == "label" else {}
     return SimpleNamespace(
         metadata=SimpleNamespace(name=name, labels=labels),
@@ -357,14 +366,20 @@ def test_wait_for_dapr_injector_available_false_on_timeout(monkeypatch) -> None:
 def test_dev_pod_has_daprd_checks_init_regular_and_label() -> None:
     assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="init"))
     assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="regular"))
-    assert app_module._dev_pod_has_daprd(_ready_pod("p", daprd="label"))
+    assert not app_module._dev_pod_has_daprd(_ready_pod("p", daprd="label"))
     assert not app_module._dev_pod_has_daprd(_ready_pod("p", daprd=None))
 
 
 def _scale_down_fakes(monkeypatch, pods_sequence):
     """Wire _adopt_deferred_scale_down against a scripted pod-list sequence."""
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    state = {"i": 0, "deleted": [], "patched": {}}
+    state = {
+        "i": 0,
+        "deleted": [],
+        "patched": {},
+        "replicas": 1,
+        "annotations": {},
+    }
 
     def list_pods(*, namespace, label_selector):
         idx = min(state["i"], len(pods_sequence) - 1)
@@ -376,11 +391,14 @@ def _scale_down_fakes(monkeypatch, pods_sequence):
 
     def read_dep(*, name, namespace):
         return SimpleNamespace(
-            spec=SimpleNamespace(replicas=1), metadata=SimpleNamespace(annotations={})
+            spec=SimpleNamespace(replicas=state["replicas"]),
+            metadata=SimpleNamespace(annotations=state["annotations"]),
         )
 
     def patch_dep(*, name, namespace, body):
         state["patched"] = {"name": name, "replicas": body["spec"]["replicas"]}
+        state["replicas"] = body["spec"]["replicas"]
+        state["annotations"] = body["metadata"]["annotations"]
 
     fake_core = SimpleNamespace(
         list_namespaced_pod=list_pods, delete_namespaced_pod=del_pod
@@ -430,6 +448,96 @@ def test_adopt_scale_down_leaves_prod_up_when_daprd_never_injects(monkeypatch) -
     )
     assert state["deleted"] == ["wfb-dev-x"]  # recreated exactly once
     assert state["patched"] == {}  # prod NOT scaled to 0 (failsafe)
+
+
+def test_adopt_restore_leaves_never_scaled_deployment_unchanged() -> None:
+    patches: list[dict] = []
+    apps = SimpleNamespace(
+        read_namespaced_deployment=lambda **_kwargs: SimpleNamespace(
+            spec=SimpleNamespace(replicas=3),
+            metadata=SimpleNamespace(annotations={}),
+        ),
+        patch_namespaced_deployment=lambda **kwargs: patches.append(kwargs),
+    )
+
+    app_module._adopt_restore_deployment(
+        apps, namespace="workflow-builder", name="workflow-orchestrator"
+    )
+
+    assert patches == []
+
+
+def test_non_ready_adoption_compensates_without_starting_late_cutover(
+    monkeypatch,
+) -> None:
+    fake_custom = _FakeCustom()
+    cleanup: list[dict] = []
+    threads: list[dict] = []
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.setenv("DEV_PREVIEW_PLATFORM_SCOPE", "vcluster")
+    monkeypatch.setattr(
+        app_module,
+        "_load_execution_classes",
+        lambda: {"dev-preview": _dev_class()},
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), SimpleNamespace())
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
+    monkeypatch.setattr(app_module, "_adopt_read_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_acquire_dev_preview_adoption_lease",
+        lambda *_a, **_k: "adopt:exec-1:digest:workflow-orchestrator",
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_wait_for_dev_preview_ready",
+        lambda *_a, **_k: ("queued", None),
+    )
+    context = {
+        "execution": "exec-1",
+        "service": "workflow-orchestrator",
+        "deployment": "workflow-orchestrator",
+        "holder": "adopt:exec-1:digest:workflow-orchestrator",
+    }
+    monkeypatch.setattr(
+        app_module, "_dev_preview_teardown_context", lambda *_a, **_k: context
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_teardown_dev_preview_resources",
+        lambda **kwargs: cleanup.append(kwargs),
+    )
+    monkeypatch.setattr(
+        app_module.threading,
+        "Thread",
+        lambda **kwargs: threads.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        app_module.provision_dev_preview(
+            SimpleNamespace(headers={"authorization": "Bearer token"}),
+            DevPreviewRequest(
+                executionId="exec-1",
+                service="workflow-orchestrator",
+                previewNative=True,
+                adoptDeployment="workflow-orchestrator",
+                waitReadySeconds=1,
+            ),
+        )
+
+    assert raised.value.status_code == 503
+    assert "removed without cutover" in str(raised.value.detail)
+    assert len(cleanup) == 1
+    assert cleanup[0]["context"] == context
+    assert threads == []
 
 
 def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
@@ -1172,6 +1280,13 @@ def _sweep_fakes(deployments, sandbox_items):
 
     def patch_dep(name, namespace, body):
         patched.append((name, body))
+        deployment = next(d for d in deployments if d.metadata.name == name)
+        deployment.spec.replicas = body["spec"]["replicas"]
+        for key, value in body["metadata"]["annotations"].items():
+            if value is None:
+                deployment.metadata.annotations.pop(key, None)
+            else:
+                deployment.metadata.annotations[key] = value
 
     apps = SimpleNamespace(
         list_namespaced_deployment=lambda namespace: SimpleNamespace(items=deployments),
@@ -1550,7 +1665,7 @@ def test_teardown_restores_production_before_releasing_adoption_lease(
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (object(), core))
     monkeypatch.setattr(
         app_module,
-        "_delete_agent_host_cr_and_wait",
+        "_delete_dev_preview_cr_and_wait",
         lambda *_args, **_kwargs: events.append("sandbox"),
     )
     monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)
@@ -1565,7 +1680,7 @@ def test_teardown_restores_production_before_releasing_adoption_lease(
     monkeypatch.setattr(
         app_module,
         "_delete_dev_preview_adoption_lease",
-        lambda *_args, **_kwargs: events.append("release"),
+        lambda *_args, **_kwargs: events.append("release") or True,
     )
     monkeypatch.setattr(
         app_module,
@@ -1579,7 +1694,7 @@ def test_teardown_restores_production_before_releasing_adoption_lease(
         context=context,
     )
 
-    assert events == ["secret", "sandbox", "restore", "release", "sweep"]
+    assert events == ["restore", "release", "sandbox", "secret", "sweep"]
 
 
 def test_provision_forces_image_pins_mount_when_class_declares_it() -> None:

@@ -126,6 +126,18 @@
 		delete next[n];
 		busy = next;
 	}
+	function shortRevision(value: string | null): string | null {
+		return value ? value.slice(0, 12) : null;
+	}
+	function provenanceValue(p: VclusterPreviewSummary, key: string): string | null {
+		const value = p.provenance?.[key];
+		return typeof value === 'string' && value ? value : null;
+	}
+	function repositoryProvenance(p: VclusterPreviewSummary): string | null {
+		const platform = provenanceValue(p, 'platformRepository');
+		const source = provenanceValue(p, 'sourceRepository');
+		return platform && source ? `${platform} / ${source}` : (platform ?? source);
+	}
 
 	async function launch() {
 		const n = name.trim();
@@ -494,6 +506,35 @@
 							<span class={expiry.urgent ? 'text-amber-600 dark:text-amber-400' : ''}>{expiry.label}</span>
 						{/if}
 						<span>{p.targetCluster}</span>
+					</div>
+
+					<div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 pl-0.5 text-[11px] text-muted-foreground">
+						{#if p.profile}<span>{p.profile}</span>{/if}
+						{#if p.lane || p.mode}<span>{[p.lane, p.mode].filter(Boolean).join(' / ')}</span>{/if}
+						{#if shortRevision(p.platformRevision)}
+							<span title={p.platformRevision ?? undefined}>platform <code class="font-mono">{shortRevision(p.platformRevision)}</code></span>
+						{/if}
+						{#if shortRevision(p.sourceRevision)}
+							<span title={p.sourceRevision ?? undefined}>source <code class="font-mono">{shortRevision(p.sourceRevision)}</code></span>
+						{/if}
+						{#if p.owner}
+							<span class="max-w-[18rem] truncate" title={`${p.owner.kind}:${p.owner.id}`}>owner {p.owner.kind}:{p.owner.id}</span>
+						{/if}
+					</div>
+
+					<div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 pl-0.5 text-[11px] text-muted-foreground">
+						{#if p.services?.length}
+							<span class="max-w-full truncate" title={p.services.join(', ')}>services {p.services.join(', ')}</span>
+						{/if}
+						{#if p.catalogDigest}
+							<span title={p.catalogDigest}>catalog <code class="font-mono">{p.catalogDigest.replace(/^sha256:/, '').slice(0, 12)}</code></span>
+						{/if}
+						{#if repositoryProvenance(p)}
+							<span class="max-w-full truncate" title={repositoryProvenance(p) ?? undefined}>{repositoryProvenance(p)}</span>
+						{/if}
+						{#if provenanceValue(p, 'requestId')}
+							<span title={provenanceValue(p, 'requestId') ?? undefined}>request <code class="font-mono">{provenanceValue(p, 'requestId')?.slice(0, 12)}</code></span>
+						{/if}
 					</div>
 
 					{#if readProxyEnabled && p.ready && expandedRuns[p.name]}

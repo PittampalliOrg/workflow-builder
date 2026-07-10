@@ -350,8 +350,9 @@ export async function provisionDevPreview(
  * Provision N services into ONE execution (multi-service adopt). Each service is a
  * separate dev-preview Sandbox keyed on (executionId, service) server-side. Peers
  * fan out first; an adopted workflow-builder goes last so its delayed cutover cannot
- * kill the BFF while it is still awaiting a slower peer. A partial failure returns
- * per-service statuses and does not tear down successful services.
+ * kill the BFF while it is still awaiting a slower peer. Any partial failure is a
+ * transaction failure: every observed or inventory-discovered Sandbox is synchronously
+ * torn down, then the execution inventory is re-read before control returns.
  */
 export async function provisionDevPreviews(
   params: ProvisionDevPreviewsParams,
@@ -361,6 +362,9 @@ export async function provisionDevPreviews(
 ): Promise<DevPreviewsResult> {
   const { services: requested, ...shared } = params;
   const services = requested.length ? requested : ["workflow-builder"];
+  if (new Set(services).size !== services.length) {
+    throw new Error("Dev-preview service ids must be unique");
+  }
   const settled: PromiseSettledResult<DevPreviewInfo>[] = new Array(
     services.length,
   );
@@ -393,25 +397,252 @@ export async function provisionDevPreviews(
       .filter(({ service }) => service === "workflow-builder")
       .map(({ index }) => index);
     await provisionIndexes(peerIndexes);
+    const peerFailed = peerIndexes.some((index) => {
+      const result = settled[index];
+      return (
+        !result ||
+        result.status === "rejected" ||
+        !fulfilledPreviewResult(services[index] as string, result.value).ok
+      );
+    });
+    if (peerFailed) {
+      for (const index of bffIndexes) {
+        settled[index] = {
+          status: "rejected",
+          reason: new Error(
+            "workflow-builder cutover skipped because a peer service failed readiness",
+          ),
+        };
+      }
+      const failed = settledPreviewResults(services, settled);
+      return {
+        executionId: params.executionId,
+        services: await compensateProvisionedPreviewBatch(
+          params.executionId,
+          failed,
+          persistence,
+        ),
+        ok: false,
+      };
+    }
     await provisionIndexes(bffIndexes);
   } else {
     await provisionIndexes(services.map((_service, index) => index));
   }
-  const results: DevPreviewServiceResult[] = settled.map((r, i) => {
-    const service = services[i] as string;
-    if (r.status === "fulfilled") return { service, ok: true, info: r.value };
-    const error =
-      r.reason instanceof Error ? r.reason.message : String(r.reason);
-    console.error(
-      `[dev-preview] provision failed for service ${service} (exec=${params.executionId}): ${error}`,
-    );
-    return { service, ok: false, error };
-  });
+  const results = settledPreviewResults(services, settled);
+  if (results.some((result) => !result.ok)) {
+    return {
+      executionId: params.executionId,
+      services: await compensateProvisionedPreviewBatch(
+        params.executionId,
+        results,
+        persistence,
+      ),
+      ok: false,
+    };
+  }
   return {
     executionId: params.executionId,
     services: results,
-    ok: results.every((r) => r.ok),
+    ok: true,
   };
+}
+
+async function compensateProvisionedPreviewBatch(
+  executionId: string,
+  results: readonly DevPreviewServiceResult[],
+  persistence?: DevPreviewPersistence,
+): Promise<DevPreviewServiceResult[]> {
+  const baseUrl = sandboxExecutionApiUrl();
+  const token = internalToken();
+  const requestedServices = new Set(results.map((result) => result.service));
+  const candidates = new Map<string, string>();
+  for (const result of results) {
+    if (result.info?.sandboxName) {
+      candidates.set(result.service, result.info.sandboxName);
+    }
+  }
+  const cleanup = new Map<string, string | null>();
+  const globalErrors: string[] = [];
+
+  if (!baseUrl) {
+    globalErrors.push("SANDBOX_EXECUTION_API_URL not configured");
+  } else {
+    try {
+      const discovered = await discoverProvisionedPreviewBatch({
+        baseUrl,
+        executionId,
+        requestedServices,
+        token,
+      });
+      for (const [service, name] of discovered) candidates.set(service, name);
+    } catch (cause) {
+      globalErrors.push(`initial inventory failed: ${message(cause)}`);
+    }
+  }
+
+  await Promise.all(
+    [...candidates].map(async ([service, name]) => {
+      try {
+        if (!baseUrl)
+          throw new Error("SANDBOX_EXECUTION_API_URL not configured");
+        const response = await fetch(
+          `${baseUrl}/internal/dev-preview/${encodeURIComponent(name)}`,
+          {
+            method: "DELETE",
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          },
+        );
+        const body = (await response.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+        if (
+          !response.ok ||
+          body.sandboxName !== name ||
+          body.accepted !== true ||
+          body.deleted !== true ||
+          body.deferred !== false
+        ) {
+          throw new Error(
+            typeof body.detail === "string"
+              ? body.detail
+              : `teardown was not proven (HTTP ${response.status})`,
+          );
+        }
+        cleanup.set(service, null);
+        await persistence
+          ?.markWorkflowWorkspaceSessionCleaned({ workspaceRef: name })
+          .catch(() => false);
+      } catch (cause) {
+        cleanup.set(service, message(cause));
+      }
+    }),
+  );
+
+  if (baseUrl && candidates.size > 0) {
+    try {
+      const response = await fetch(
+        `${baseUrl}/internal/dev-preview/restore-orphans`,
+        {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
+      const body = (await response.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      if (
+        !response.ok ||
+        !body ||
+        body.skipped !== undefined ||
+        !Array.isArray(body.restored) ||
+        !Array.isArray(body.releasedLeases)
+      ) {
+        throw new Error(
+          typeof body?.skipped === "string"
+            ? `restore-orphans was skipped: ${body.skipped}`
+            : `restore-orphans failed (HTTP ${response.status})`,
+        );
+      }
+    } catch (cause) {
+      const error = message(cause);
+      for (const service of candidates.keys()) {
+        if (cleanup.get(service) === null) {
+          cleanup.set(service, error);
+        }
+      }
+    }
+  }
+
+  if (baseUrl) {
+    try {
+      const remaining = await discoverProvisionedPreviewBatch({
+        baseUrl,
+        executionId,
+        requestedServices,
+        token,
+      });
+      if (remaining.size > 0) {
+        throw new Error(
+          `Sandboxes still present: ${[...remaining.values()].sort().join(", ")}`,
+        );
+      }
+    } catch (cause) {
+      globalErrors.push(`final inventory failed: ${message(cause)}`);
+    }
+  }
+
+  return results.map((result) => {
+    const error = cleanup.get(result.service);
+    const proofError = [...globalErrors, ...(error ? [error] : [])].join("; ");
+    if (!result.info?.sandboxName && !candidates.has(result.service)) {
+      return proofError
+        ? {
+            ...result,
+            ok: false,
+            error: `${result.error ?? "multi-service provision failed"}; compensating teardown was not proven: ${proofError}`,
+          }
+        : result;
+    }
+    return {
+      ...result,
+      ok: false,
+      error: !proofError
+        ? "multi-service provision failed; compensating teardown completed"
+        : `multi-service provision failed; compensating teardown failed: ${proofError}`,
+    };
+  });
+}
+
+async function discoverProvisionedPreviewBatch(input: {
+  baseUrl: string;
+  executionId: string;
+  requestedServices: ReadonlySet<string>;
+  token: string;
+}): Promise<ReadonlyMap<string, string>> {
+  const response = await fetch(
+    `${input.baseUrl}/internal/dev-previews?executionId=${encodeURIComponent(input.executionId)}`,
+    {
+      headers: input.token ? { Authorization: `Bearer ${input.token}` } : {},
+    },
+  );
+  const body = (await response.json().catch(() => null)) as Record<
+    string,
+    unknown
+  > | null;
+  if (
+    !response.ok ||
+    !body ||
+    body.executionId !== input.executionId ||
+    body.complete !== true ||
+    !Array.isArray(body.services)
+  ) {
+    throw new Error(
+      `dev-preview inventory was not proven (HTTP ${response.status})`,
+    );
+  }
+  const discovered = new Map<string, string>();
+  for (const value of body.services) {
+    const record = asRecord(value);
+    const service = typeof record?.service === "string" ? record.service : "";
+    const name =
+      typeof record?.sandboxName === "string" ? record.sandboxName : "";
+    if (
+      !input.requestedServices.has(service) ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name) ||
+      discovered.has(service)
+    ) {
+      throw new Error("dev-preview inventory returned an invalid batch member");
+    }
+    discovered.set(service, name);
+  }
+  return discovered;
+}
+
+function message(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /**
@@ -510,7 +741,7 @@ function settledPreviewResults(
   return settled.map((result, index) => {
     const service = services[index] as string;
     if (result.status === "fulfilled") {
-      return { service, ok: true, info: result.value };
+      return fulfilledPreviewResult(service, result.value);
     }
     return {
       service,
@@ -521,6 +752,21 @@ function settledPreviewResults(
           : String(result.reason),
     };
   });
+}
+
+function fulfilledPreviewResult(
+  service: string,
+  info: DevPreviewInfo,
+): DevPreviewServiceResult {
+  if (info.ready && info.podIP && info.syncUrl) {
+    return { service, ok: true, info };
+  }
+  return {
+    service,
+    ok: false,
+    info,
+    error: `${service} did not become ready (status=${info.status || "unknown"})`,
+  };
 }
 
 /**

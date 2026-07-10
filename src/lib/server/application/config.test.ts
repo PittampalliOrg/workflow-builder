@@ -29,6 +29,8 @@ describe("application adapter config", () => {
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
 			previewArchiveOnTeardownEnabled: false,
+			previewTtlArchiveGraceMinutes: 60,
+			previewTtlFairnessWindowSeconds: 60,
 		});
 	});
 
@@ -83,6 +85,27 @@ describe("application adapter config", () => {
 		).toBe(false);
 	});
 
+	it("bounds TTL archive grace and fairness configuration", () => {
+		expect(
+			getApplicationAdapterConfig({
+				PREVIEW_TTL_ARCHIVE_GRACE_MINUTES: "120",
+				PREVIEW_TTL_FAIRNESS_WINDOW_SECONDS: "15",
+			}),
+		).toMatchObject({
+			previewTtlArchiveGraceMinutes: 120,
+			previewTtlFairnessWindowSeconds: 15,
+		});
+		expect(
+			getApplicationAdapterConfig({
+				PREVIEW_TTL_ARCHIVE_GRACE_MINUTES: "99999",
+				PREVIEW_TTL_FAIRNESS_WINDOW_SECONDS: "0",
+			}),
+		).toMatchObject({
+			previewTtlArchiveGraceMinutes: 1_440,
+			previewTtlFairnessWindowSeconds: 1,
+		});
+	});
+
 	it("accepts kro as an optional preview provisioner adapter", () => {
 		expect(
 			getApplicationAdapterConfig({
@@ -126,6 +149,8 @@ describe("application adapter config", () => {
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
 			previewArchiveOnTeardownEnabled: false,
+			previewTtlArchiveGraceMinutes: 60,
+			previewTtlFairnessWindowSeconds: 60,
 		});
 	});
 

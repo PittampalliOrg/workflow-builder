@@ -63,6 +63,19 @@ OWNER_HASH_LABEL = "preview.stacks.io/owner-id-hash"
 IMAGES_HASH_LABEL = "preview.stacks.io/images-hash"
 CONTRACT_GENERATION_ANNOTATION = "preview.stacks.io/contract-generation"
 RECONCILE_REQUESTED_AT_ANNOTATION = "preview.stacks.io/reconcile-requested-at"
+DELETION_INTENT_STATUS_FIELD = "deletionIntent"
+DELETION_ACK_STATUS_FIELD = "deletionAcknowledgement"
+PHYSICAL_CLEANUP_CHECKS = frozenset(
+    {
+        "runnerSucceeded",
+        "databaseAbsent",
+        "natsStreamAbsent",
+        "tailnetEgressAbsent",
+        "hostNamespaceAbsent",
+        "storageScopeAbsent",
+        "runnerIdentityAbsent",
+    }
+)
 
 ARGO_GROUP = "argoproj.io"
 ARGO_VERSION = "v1alpha1"
@@ -115,6 +128,14 @@ _RFC3339_UTC_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
 _PROVENANCE_KEY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_KUBERNETES_UID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_RUNNER_GENERATION_PATTERN = re.compile(r"^op:[0-9a-f]{32}$")
+
+_RESERVED_PREVIEW_NAMES = frozenset(
+    {"mtxdev1", "mtxtmpl1", "preview6", "ganpilot", "ganvalidate", "test3"}
+)
 
 _PROFILE_VALUES = frozenset({"app-live", "manifest-candidate"})
 _MODE_VALUES = frozenset({"live", "reconciled"})
@@ -461,9 +482,7 @@ def parse_preview_service_catalog(document: Any) -> PreviewServiceCatalog:
         path_policy.get("ignoredPathPrefixes") if path_policy is not None else None
     )
     unsupported_prefixes = (
-        path_policy.get("unsupportedPathPrefixes")
-        if path_policy is not None
-        else None
+        path_policy.get("unsupportedPathPrefixes") if path_policy is not None else None
     )
     if (
         path_policy is None
@@ -798,6 +817,8 @@ def validate_preview_environment(
         issues.append("metadata.name must be a lowercase DNS label of at most 40 chars")
     if not isinstance(preview_id, str) or not _ID_PATTERN.fullmatch(preview_id):
         issues.append("spec.id must be a lowercase DNS label of at most 40 chars")
+    elif preview_id.startswith("pool-") or preview_id in _RESERVED_PREVIEW_NAMES:
+        issues.append("spec.id is reserved for legacy preview retirement")
     if isinstance(name, str) and isinstance(preview_id, str) and name != preview_id:
         issues.append("metadata.name must exactly equal spec.id")
     namespace = metadata.get("namespace")
@@ -878,12 +899,6 @@ def validate_preview_environment(
         else:
             owner_id = id_value
 
-    if profile == "app-live" and mode == "live" and owner_kind not in {None, "user"}:
-        issues.append(
-            "live app-live previews require spec.owner.kind=user; "
-            "workflow or session identity belongs in spec.origin"
-        )
-
     origin = _mapping(spec.get("origin"))
     origin_kind: str | None = None
     origin_reference: str | None = None
@@ -919,6 +934,20 @@ def validate_preview_environment(
             and not origin_reference
         ):
             issues.append(f"spec.origin.reference is required for {kind_value}")
+
+    if (
+        profile == "app-live"
+        and mode == "live"
+        and owner_kind is not None
+        and not (
+            owner_kind == "user"
+            or (owner_kind == "automation" and origin_kind == "pull-request")
+        )
+    ):
+        issues.append(
+            "live app-live previews require spec.owner.kind=user or "
+            "pull-request automation ownership"
+        )
 
     requested_catalog_digest = spec.get("catalogDigest")
     if not isinstance(requested_catalog_digest, str) or not _SHA256_PATTERN.fullmatch(
@@ -1624,7 +1653,105 @@ def build_status(
         for field in contract_fields:
             if field in existing_status:
                 result[field] = existing_status[field]
+    # These are independently written by the hub controller and the dev broker.
+    # Preserve either half of the durable handshake across ordinary status patches.
+    for field in (DELETION_INTENT_STATUS_FIELD, DELETION_ACK_STATUS_FIELD):
+        if field in existing_status:
+            result[field] = existing_status[field]
     return result
+
+
+def build_deletion_intent(resource: Mapping[str, Any]) -> dict[str, str]:
+    """Derive one immutable, retry-safe physical deletion command."""
+
+    metadata = _mapping(resource.get("metadata")) or {}
+    spec = _mapping(resource.get("spec")) or {}
+    provenance = _mapping(spec.get("provenance")) or {}
+    name = metadata.get("name")
+    environment_uid = metadata.get("uid")
+    deletion_timestamp = metadata.get("deletionTimestamp")
+    request_id = provenance.get("requestId")
+    platform_revision = spec.get("platformRevision")
+    source_revision = spec.get("sourceRevision")
+    catalog_digest = spec.get("catalogDigest")
+    finalizers = metadata.get("finalizers") or []
+    if (
+        not isinstance(name, str)
+        or not _ID_PATTERN.fullmatch(name)
+        or not isinstance(environment_uid, str)
+        or not _KUBERNETES_UID_PATTERN.fullmatch(environment_uid)
+        or not isinstance(deletion_timestamp, str)
+        or not deletion_timestamp
+        or not isinstance(request_id, str)
+        or not _REQUEST_ID_PATTERN.fullmatch(request_id)
+        or not isinstance(platform_revision, str)
+        or not _SHA_PATTERN.fullmatch(platform_revision)
+        or not isinstance(source_revision, str)
+        or not _SHA_PATTERN.fullmatch(source_revision)
+        or not isinstance(catalog_digest, str)
+        or not _SHA256_PATTERN.fullmatch(catalog_digest)
+        or FINALIZER not in finalizers
+    ):
+        raise OwnershipConflict("cannot derive an exact physical deletion intent")
+    payload = {
+        "name": name,
+        "environmentUid": environment_uid,
+        "requestId": request_id,
+        "platformRevision": platform_revision,
+        "sourceRevision": source_revision,
+        "catalogDigest": catalog_digest,
+        "deletionTimestamp": deletion_timestamp,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return {
+        "id": f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}",
+        **payload,
+    }
+
+
+def deletion_acknowledgement_is_exact(
+    resource: Mapping[str, Any], intent: Mapping[str, str], *, now: datetime
+) -> bool:
+    status = _mapping(resource.get("status")) or {}
+    acknowledgement = _mapping(status.get(DELETION_ACK_STATUS_FIELD))
+    if acknowledgement is None:
+        return False
+    runner = _mapping(acknowledgement.get("runner")) or {}
+    checks = _mapping(acknowledgement.get("checks")) or {}
+    observed_at_issues: list[str] = []
+    observed_at = _parse_utc_timestamp(
+        acknowledgement.get("observedAt"),
+        "status.deletionAcknowledgement.observedAt",
+        observed_at_issues,
+    )
+    deletion_at = _parse_utc_timestamp(
+        intent.get("deletionTimestamp"),
+        "status.deletionIntent.deletionTimestamp",
+        observed_at_issues,
+    )
+    return (
+        acknowledgement.get("intentId") == intent["id"]
+        and acknowledgement.get("environmentUid") == intent["environmentUid"]
+        and acknowledgement.get("requestId") == intent["requestId"]
+        and acknowledgement.get("platformRevision") == intent["platformRevision"]
+        and acknowledgement.get("sourceRevision") == intent["sourceRevision"]
+        and acknowledgement.get("catalogDigest") == intent["catalogDigest"]
+        and observed_at is not None
+        and deletion_at is not None
+        and observed_at >= deletion_at
+        and observed_at <= now.astimezone(UTC) + timedelta(minutes=5)
+        and isinstance(acknowledgement.get("resourceName"), str)
+        and acknowledgement.get("resourceName") == intent["name"]
+        and isinstance(runner.get("jobName"), str)
+        and runner.get("jobName") == f"vcpreview-down-{intent['name']}"
+        and isinstance(runner.get("jobUid"), str)
+        and _KUBERNETES_UID_PATTERN.fullmatch(str(runner.get("jobUid"))) is not None
+        and isinstance(runner.get("generation"), str)
+        and _RUNNER_GENERATION_PATTERN.fullmatch(str(runner.get("generation")))
+        is not None
+        and set(checks) == PHYSICAL_CLEANUP_CHECKS
+        and all(checks.get(name) is True for name in PHYSICAL_CLEANUP_CHECKS)
+    )
 
 
 def _api_status(exc: BaseException) -> int | None:
@@ -1793,6 +1920,7 @@ class PreviewEnvironmentController:
         environment: ValidatedPreviewEnvironment | None = None,
         application: Mapping[str, Any] | None = None,
         agent_registration: Mapping[str, Any] | None = None,
+        extra_status: Mapping[str, Any] | None = None,
     ) -> None:
         metadata = _mapping(resource.get("metadata")) or {}
         desired = build_status(
@@ -1807,6 +1935,8 @@ class PreviewEnvironmentController:
             application=application,
             agent_registration=agent_registration,
         )
+        if extra_status is not None:
+            desired.update(dict(extra_status))
         if resource.get("status") == desired:
             return
         self.custom_api.patch_namespaced_custom_object_status(
@@ -1998,6 +2128,34 @@ class PreviewEnvironmentController:
                     message="Waiting for preview agent registration resources to disappear",
                 )
             return
+
+        intent = build_deletion_intent(resource)
+        current_status = _mapping(resource.get("status")) or {}
+        observed_intent = _mapping(current_status.get(DELETION_INTENT_STATUS_FIELD))
+        if observed_intent != intent:
+            # Status is the durable outbox. No hub or dev resource is removed until
+            # the exact command is visible to the dev-side consumer.
+            self._patch_status(
+                resource,
+                phase="Terminating",
+                valid=True,
+                ready=False,
+                reason="PhysicalCleanupRequested",
+                message="Waiting for the dev cleanup broker to consume the deletion intent",
+                extra_status={DELETION_INTENT_STATUS_FIELD: intent},
+            )
+            return
+        if not deletion_acknowledgement_is_exact(resource, intent, now=self.now()):
+            self._patch_status(
+                resource,
+                phase="Terminating",
+                valid=True,
+                ready=False,
+                reason="WaitingForPhysicalCleanup",
+                message="Waiting for exact SEA down-runner absence proof",
+            )
+            return
+
         namespace = f"preview-{preview_id}"
         application_name = f"preview-{preview_id}-workflow-builder"
 
@@ -2054,6 +2212,28 @@ class PreviewEnvironmentController:
                 reason="DeletingNamespace",
                 message="Waiting for the preview hub namespace to be deleted",
             )
+            return
+
+        if REGISTRATION_FINALIZER in finalizers:
+            if self.registration_adapter is None:
+                raise OwnershipConflict(
+                    "agent registration finalizer has no configured adapter"
+                )
+            complete = self.registration_adapter.cleanup(
+                preview_id=preview_id,
+                environment_uid=uid,
+            )
+            if not complete:
+                self._patch_status(
+                    resource,
+                    phase="Terminating",
+                    valid=True,
+                    ready=False,
+                    reason="DeletingAgentRegistration",
+                    message="Waiting for preview agent registration resources to disappear",
+                )
+                return
+            self._remove_registration_finalizer(resource)
             return
 
         self._remove_finalizer(resource)

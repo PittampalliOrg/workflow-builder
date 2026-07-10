@@ -86,6 +86,14 @@ export const POST: RequestHandler = async ({ request }) => {
     );
   } catch (cause) {
     if (cause instanceof PreviewActivationGateInputError) {
+      if (cause.message === "pull request does not require activation-image evidence") {
+        return json({
+          ok: true,
+          required: false,
+          pullRequest: command.pullRequest,
+          catalogDigest: command.catalogDigest,
+        });
+      }
       return json({ ok: false, error: cause.message }, { status: 409 });
     }
     throw cause;

@@ -766,6 +766,44 @@ def test_residual_down_requires_existing_control_identity() -> None:
     assert core.namespace_creates == []
 
 
+def test_controller_compensation_bootstraps_only_control_identity_for_absent_down() -> None:
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    contract = PreviewRunnerIdentityContract("never-created")
+
+    reservation = PreviewRunnerIdentityAdapter(core, rbac).ensure_for_job(
+        preview_name="never-created",
+        action="down",
+        lifecycle=None,
+        runner_generation=RUNNER_GENERATION,
+        allow_absent_down_bootstrap=True,
+    )
+
+    assert reservation.target_namespace_present is False
+    assert contract.target_namespace not in core.namespaces
+    assert core.namespace_creates == []
+    assert (CONTROL_NAMESPACE, contract.identity_name) in core.service_accounts
+    assert contract.identity_name in rbac.cluster_role_bindings
+    assert (CONTROL_NAMESPACE, contract.identity_name) in rbac.role_bindings
+    assert (contract.target_namespace, contract.identity_name) not in rbac.role_bindings
+
+
+def test_absent_identity_bootstrap_is_rejected_for_non_down_actions() -> None:
+    core = FakeCore()
+    rbac = FakeRbac(core)
+
+    with pytest.raises(PreviewRunnerIdentityError, match="only for down"):
+        PreviewRunnerIdentityAdapter(core, rbac).ensure_for_job(
+            preview_name="never-created",
+            action="up",
+            lifecycle="ephemeral",
+            runner_generation=RUNNER_GENERATION,
+            allow_absent_down_bootstrap=True,
+        )
+
+    _assert_identity_absent(core, rbac, "never-created")
+
+
 def test_repeat_delete_after_namespace_and_identity_absence_is_complete(
     monkeypatch,
 ) -> None:

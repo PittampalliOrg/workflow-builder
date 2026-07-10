@@ -49,6 +49,7 @@ vi.mock("$lib/server/application", () => ({
 }));
 
 import { POST } from "./+server";
+import { PreviewDevelopmentBuildInputError } from "$lib/server/application/preview-development-build";
 
 function event(body: Record<string, unknown>) {
   return {
@@ -139,6 +140,28 @@ describe("dev-preview development build route", () => {
       ok: false,
       stage: "complete",
       services: [{ build: { ok: false, error: "build failed" } }],
+    });
+  });
+
+  it("returns a bounded client error when application admission rejects self-adoption", async () => {
+    mocks.buildAndReprovision.mockRejectedValueOnce(
+      new PreviewDevelopmentBuildInputError(
+        "adopt=true cannot replace the workflow-builder BFF",
+      ),
+    );
+
+    const response = (await POST(
+      event({
+        services: ["workflow-builder"],
+        origin: "https://wfb-preview1.tail286401.ts.net",
+        adopt: true,
+      }) as never,
+    )) as Response;
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "adopt=true cannot replace the workflow-builder BFF",
     });
   });
 

@@ -175,9 +175,12 @@ export class ApplicationPreviewEnvironmentAcceptanceService {
         mode: command.mode,
         services: command.services,
         owner: command.owner,
+        origin: command.origin,
+        lifecycle: command.lifecycle,
         allocation: command.allocation,
-        requestId: command.provenance.requestId,
+        provenance: command.provenance,
         images: command.imageOverrides,
+        catalogDigest: command.catalogDigest,
         timeoutMs,
       });
       environment = {

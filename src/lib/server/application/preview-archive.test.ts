@@ -268,7 +268,7 @@ describe('ApplicationPreviewArchiveService', () => {
 		expect(result.bundleErrors).toBe(1);
 	});
 
-	it('refuses teardown proof for an empty, therefore unverified preview', async () => {
+	it('writes a durable complete summary for a verified zero-run inventory', async () => {
 		const proxy = fakeProxy({
 			listExecutions: vi.fn(async () => ({
 				ok: true as const,
@@ -287,11 +287,68 @@ describe('ApplicationPreviewArchiveService', () => {
 			userId: 'u'
 		});
 		expect(result).toMatchObject({
-			archived: false,
-			reason: 'empty-unverified',
-			executionCount: 0
+			archived: true,
+			executionCount: 0,
+			bundleCount: 0,
+			bundleErrors: 0,
+			summaryFileId: 'host-file-1'
 		});
-		expect(files.createFile).not.toHaveBeenCalled();
+		expect(files.createFile).toHaveBeenCalledOnce();
+		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
+		expect(summary).toMatchObject({
+			schema: 'wfb.preview-archive/v1',
+			executionsTotal: 0,
+			executions: [],
+			archiveComplete: true,
+			incompleteReasons: []
+		});
+		expect(summary.notes).toContain('complete execution inventory contained zero runs');
+	});
+
+	it('writes a durable forced-quarantine summary without claiming archive completeness', async () => {
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy(),
+			listPreviews,
+			files
+		});
+		const result = await service.quarantinePreview({
+			preview: {
+				name: 'myfeature',
+				pool: null,
+				url: 'https://wfb-myfeature.ts',
+				expiresAt: '2026-07-04T09:00:00.000Z'
+			},
+			userId: 'user-1',
+			projectId: null,
+			reason: 'active-generation-unverified',
+			forcedAt: '2026-07-04T11:00:00.000Z',
+			graceExpiredAt: '2026-07-04T10:00:00.000Z',
+			attemptedArchive: {
+				archived: false,
+				preview: 'myfeature',
+				reason: 'incomplete:active-generation-unverified',
+				summaryFileId: 'partial-summary',
+				executionCount: 1
+			}
+		});
+		expect(result).toMatchObject({
+			archived: false,
+			quarantined: true,
+			reason: 'forced-quarantine:active-generation-unverified',
+			summaryFileId: 'host-file-1'
+		});
+		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
+		expect(summary).toMatchObject({
+			archiveComplete: false,
+			incompleteReasons: ['active-generation-unverified'],
+			teardownDisposition: {
+				mode: 'forced-quarantine',
+				forcedAt: '2026-07-04T11:00:00.000Z',
+				graceExpiredAt: '2026-07-04T10:00:00.000Z',
+				priorSummaryFileId: 'partial-summary'
+			}
+		});
 	});
 
 	it('does not confirm an archive while an active session may have a newer live generation', async () => {

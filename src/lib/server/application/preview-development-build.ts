@@ -106,6 +106,11 @@ export class ApplicationPreviewDevelopmentBuildService {
         "adopt must explicitly choose true or false",
       );
     }
+    if (input.adopt && services.includes("workflow-builder")) {
+      throw new PreviewDevelopmentBuildInputError(
+        "adopt=true cannot replace the workflow-builder BFF that is coordinating the build; use adopt=false and verify the image in a fresh acceptance preview",
+      );
+    }
 
     const captured = await this.deps.capture.captureAcceptanceCandidate({
       executionId: input.executionId,

@@ -149,6 +149,17 @@ describe("ApplicationPreviewControlSourceAuthorityService", () => {
       requestId: "launch-1",
       owner: "admin-1",
     });
+    await expect(
+      h.service.authorizeRuntimeTuple({
+        previewName: input.previewName,
+        environmentRequestId: input.environmentRequestId,
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: input.catalogDigest,
+      }),
+    ).resolves.toMatchObject({
+      services: ["function-router", "workflow-builder"],
+    });
   });
 
   it("does not authorize a reconciled non-app-live runtime", async () => {
@@ -156,5 +167,34 @@ describe("ApplicationPreviewControlSourceAuthorityService", () => {
     await expect(h.service.authorizeRuntime(input)).rejects.toMatchObject({
       code: "contract-mismatch",
     });
+  });
+
+  it("authorizes a one-service runtime tuple without requiring the full catalog", async () => {
+    const h = harness({ services: ["workflow-builder"] });
+    await expect(
+      h.service.authorizeRuntimeTuple({
+        previewName: input.previewName,
+        environmentRequestId: input.environmentRequestId,
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: input.catalogDigest,
+      }),
+    ).resolves.toMatchObject({ services: ["workflow-builder"] });
+  });
+
+  it("authorizes an acceptance-only service in a reconciled runtime tuple", async () => {
+    const h = harness({
+      mode: "reconciled",
+      services: ["sandbox-execution-api"],
+    });
+    await expect(
+      h.service.authorizeRuntimeTuple({
+        previewName: input.previewName,
+        environmentRequestId: input.environmentRequestId,
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: input.catalogDigest,
+      }),
+    ).resolves.toMatchObject({ services: ["sandbox-execution-api"] });
   });
 });

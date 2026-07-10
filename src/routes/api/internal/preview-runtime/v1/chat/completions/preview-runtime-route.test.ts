@@ -17,6 +17,7 @@ vi.mock("$lib/server/application", () => ({
 }));
 
 import { POST } from "./+server";
+import { PreviewRuntimeBrokerError } from "$lib/server/application/preview-runtime-broker";
 
 const identityHeaders = {
   "x-preview-runtime-capability": "d".repeat(64),
@@ -83,10 +84,42 @@ describe("preview runtime route", () => {
   it("rejects a declared oversized body before reading it", async () => {
     const response = (await POST({
       request: request(undefined, {
-        "content-length": String(2 * 1024 * 1024 + 1),
+        "content-length": String(524_288 + 1),
       }),
     } as never)) as Response;
     expect(response.status).toBe(413);
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("maps exhausted and unavailable distributed budgets without leaking causes", async () => {
+    complete.mockRejectedValueOnce(
+      new PreviewRuntimeBrokerError(
+        "budget-exhausted",
+        "preview runtime budget is exhausted",
+        "minute-token-limit",
+      ),
+    );
+    const exhausted = (await POST({ request: request() } as never)) as Response;
+    expect(exhausted.status).toBe(429);
+    await expect(exhausted.json()).resolves.toEqual({
+      error: "preview runtime budget is exhausted",
+      code: "budget-exhausted",
+      reason: "minute-token-limit",
+    });
+
+    complete.mockRejectedValueOnce(
+      new PreviewRuntimeBrokerError(
+        "budget-unavailable",
+        "preview runtime budget authority is unavailable",
+      ),
+    );
+    const unavailable = (await POST({
+      request: request(),
+    } as never)) as Response;
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toEqual({
+      error: "preview runtime budget authority is unavailable",
+      code: "budget-unavailable",
+    });
   });
 });

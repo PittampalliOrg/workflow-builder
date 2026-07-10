@@ -70,6 +70,10 @@ export type ApplicationAdapterConfig = {
 	previewReadProxyEnabled: boolean;
 	/** E3: archive run summaries + un-promoted bundles before vcluster teardown. Off by default. */
 	previewArchiveOnTeardownEnabled: boolean;
+	/** Retry incomplete mutable-preview archives for this long after expiry. */
+	previewTtlArchiveGraceMinutes: number;
+	/** Durable-clock round-robin window for fair bounded TTL selection. */
+	previewTtlFairnessWindowSeconds: number;
 };
 
 export function readFlag(
@@ -94,6 +98,18 @@ export function readAdapter<T extends string>(
 	throw new Error(
 		`Unsupported ${key}='${raw}'. Supported values: ${supported.join(", ")}`,
 	);
+}
+
+function readBoundedInt(
+	source: Record<string, string | undefined>,
+	key: string,
+	fallback: number,
+	minimum: number,
+	maximum: number,
+): number {
+	const parsed = Number.parseInt(source[key]?.trim() ?? "", 10);
+	if (!Number.isFinite(parsed)) return fallback;
+	return Math.max(minimum, Math.min(maximum, parsed));
 }
 
 function readProfile(source: Record<string, string | undefined>): AppProfile {
@@ -216,6 +232,20 @@ export function getApplicationAdapterConfig(
 		previewArchiveOnTeardownEnabled: readFlag(
 			source,
 			"PREVIEW_ARCHIVE_ON_TEARDOWN",
+		),
+		previewTtlArchiveGraceMinutes: readBoundedInt(
+			source,
+			"PREVIEW_TTL_ARCHIVE_GRACE_MINUTES",
+			60,
+			1,
+			1_440,
+		),
+		previewTtlFairnessWindowSeconds: readBoundedInt(
+			source,
+			"PREVIEW_TTL_FAIRNESS_WINDOW_SECONDS",
+			60,
+			1,
+			3_600,
 		),
 	};
 }

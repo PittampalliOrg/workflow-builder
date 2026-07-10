@@ -95,20 +95,51 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
     });
   }
 
+  /** Re-authorize an environment-level capability against its actual service subset. */
+  async authorizeRuntimeTuple(input: {
+    previewName: string;
+    environmentRequestId: string;
+    environmentPlatformRevision: string;
+    environmentSourceRevision: string;
+    catalogDigest: `sha256:${string}`;
+  }) {
+    if (
+      !FULL_SHA.test(input.environmentPlatformRevision) ||
+      !FULL_SHA.test(input.environmentSourceRevision) ||
+      input.catalogDigest !== this.deps.catalog.currentDigest()
+    ) {
+      throw new PreviewControlSourceAuthorityError(
+        "contract-mismatch",
+        "preview runtime authority requires the current exact source tuple",
+      );
+    }
+    return this.authorizeEnvironment({
+      previewName: input.previewName,
+      expectedRequestId: input.environmentRequestId,
+      expectedPlatformRevision: input.environmentPlatformRevision,
+      expectedSourceRevision: input.environmentSourceRevision,
+      allowedModes: ["live", "reconciled"],
+    });
+  }
+
   private async authorizeEnvironment(input: {
     previewName: string;
-    requiredServices: readonly string[];
+    requiredServices?: readonly string[];
     expectedPlatformRevision?: string;
     expectedSourceRevision?: string;
     expectedRequestId?: string;
     allowedModes?: readonly ("live" | "reconciled")[];
     acceptanceReplay?: boolean;
   }) {
-    const requiredServices = input.acceptanceReplay
-      ? this.deps.catalog.assertAcceptanceReplayServices(input.requiredServices)
-      : this.deps.catalog.assertPreviewNativeServices(input.requiredServices);
+    const requiredServices = input.requiredServices
+      ? input.acceptanceReplay
+        ? this.deps.catalog.assertAcceptanceReplayServices(
+            input.requiredServices,
+          )
+        : this.deps.catalog.assertPreviewNativeServices(input.requiredServices)
+      : null;
     const environmentBoundServices = input.acceptanceReplay
-      ? requiredServices.filter((service) => {
+      ? (requiredServices ?? []).filter((service) => {
           try {
             this.deps.catalog.assertPreviewNativeServices([service]);
             return true;
@@ -131,7 +162,20 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
         "preview environment is not Ready on physical dev",
       );
     }
-    const environmentServices = [...environment.services].sort();
+    let environmentServices: readonly string[];
+    try {
+      environmentServices =
+        environment.mode === "reconciled"
+          ? this.deps.catalog.assertAcceptanceReplayServices(
+              environment.services,
+            )
+          : this.deps.catalog.assertPreviewNativeServices(environment.services);
+    } catch {
+      throw new PreviewControlSourceAuthorityError(
+        "contract-mismatch",
+        "physical preview contract mismatch: services",
+      );
+    }
     const allowedModes = input.allowedModes ?? ["live"];
     const mismatches = [
       environment.profile === "app-live" ? null : "profile",
@@ -166,6 +210,7 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
       environment.provenance?.requestId === input.expectedRequestId
         ? null
         : "requestId",
+      environmentBoundServices === null ||
       environmentBoundServices.every((service) =>
         environmentServices.includes(service),
       )
@@ -193,7 +238,7 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
       platformRevision: environment.platformRevision as never,
       sourceRevision: environment.sourceRevision as never,
       catalogDigest: currentCatalogDigest,
-      services: Object.freeze(requiredServices),
+      services: Object.freeze(requiredServices ?? environmentServices),
     });
   }
 }

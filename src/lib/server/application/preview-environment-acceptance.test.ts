@@ -197,6 +197,26 @@ describe("ApplicationPreviewEnvironmentAcceptanceService", () => {
         },
       }),
     );
+    expect(deps.readiness.waitReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platformRevision: PLATFORM_SHA,
+        sourceRevision: SOURCE_SHA,
+        profile: "app-live",
+        lane: "application",
+        mode: "reconciled",
+        services: ["workflow-builder", "function-router"],
+        owner: { kind: "session", id: "session-1" },
+        origin: { kind: "interactive-session", reference: "session-1" },
+        lifecycle: "ephemeral",
+        provenance: input().provenance,
+        catalogDigest: CATALOG_DIGEST,
+        allocation: { kind: "cold" },
+        images: {
+          "workflow-builder": expect.stringContaining("@sha256:"),
+          "function-router": expect.stringContaining("@sha256:"),
+        },
+      }),
+    );
   });
 
   it("rejects an existing name before images are built or launch is attempted", async () => {

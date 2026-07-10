@@ -37,15 +37,45 @@ export type PreviewActivationGateRequest = Readonly<{
 
 export type PreviewActivationGateResult = Readonly<{
   ok: true;
+  required: true;
   pullRequest: PreviewActivationGateRequest["pullRequest"];
   catalogDigest: `sha256:${string}`;
   evidenceReceiptDigest: `sha256:${string}`;
   images: readonly PreviewActivationImage[];
 }>;
 
+export type PreviewActivationSkippedResult = Readonly<{
+  ok: true;
+  required: false;
+  pullRequest: PreviewActivationGateRequest["pullRequest"];
+  catalogDigest: `sha256:${string}`;
+}>;
+
+export type PreviewActivationDispatchResult =
+  | PreviewActivationGateResult
+  | PreviewActivationSkippedResult;
+
 /** Physical application boundary for finalizing activation-image evidence. */
 export interface PreviewActivationGatePort {
   buildAndFinalize(
     input: PreviewActivationGateRequest,
   ): Promise<PreviewActivationGateResult>;
+}
+
+/** Normal-BFF outbound port to the physical activation broker. */
+export interface PreviewActivationBrokerPort {
+  dispatch(
+    input: PreviewActivationGateRequest,
+  ): Promise<PreviewActivationDispatchResult>;
+}
+
+export type PreviewActivationDispatchRequest = Readonly<{
+  pullRequest: PreviewActivationGateRequest["pullRequest"];
+}>;
+
+/** Authenticated webhook-facing application boundary. */
+export interface PreviewActivationDispatchPort {
+  dispatch(
+    input: PreviewActivationDispatchRequest,
+  ): Promise<PreviewActivationDispatchResult>;
 }

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedFromCommit": "abcb51b29645602918e1080e9029dc55a3e01b62",
+  "generatedFromCommit": "200ea38fde6c7e511d3cc8a76abd0daafe816923",
   "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
   "counts": {
-    "error": 10,
+    "error": 13,
     "warn": 197,
     "info": 0
   },
@@ -62,6 +62,43 @@
       "rule": "db-only-in-adapters",
       "type": "dependency",
       "from": "src/lib/server/teams/team-repo.ts",
+      "to": "src/lib/server/db/index.ts",
+      "unresolvedTo": "$lib/server/db",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "error",
+      "rule": "db-only-in-adapters",
+      "type": "dependency",
+      "from": "src/lib/server/teams/team-run.ts",
+      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/index.cjs",
+      "unresolvedTo": "drizzle-orm",
+      "dependencyTypes": [
+        "import",
+        "npm"
+      ]
+    },
+    {
+      "severity": "error",
+      "rule": "db-only-in-adapters",
+      "type": "dependency",
+      "from": "src/lib/server/teams/team-run.ts",
+      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/index.js",
+      "unresolvedTo": "drizzle-orm/postgres-js",
+      "dependencyTypes": [
+        "import",
+        "npm",
+        "type-only"
+      ]
+    },
+    {
+      "severity": "error",
+      "rule": "db-only-in-adapters",
+      "type": "dependency",
+      "from": "src/lib/server/teams/team-run.ts",
       "to": "src/lib/server/db/index.ts",
       "unresolvedTo": "$lib/server/db",
       "dependencyTypes": [
@@ -1406,30 +1443,6 @@
       "severity": "warn",
       "rule": "routes-through-application",
       "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/broadcast/+server.ts",
-      "to": "src/lib/server/teams/team-messaging.ts",
-      "unresolvedTo": "$lib/server/teams/team-messaging",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/broadcast/+server.ts",
-      "to": "src/lib/server/teams/team-repo.ts",
-      "unresolvedTo": "$lib/server/teams/team-repo",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
       "from": "src/routes/api/internal/team/[teamId]/claim/+server.ts",
       "to": "src/lib/server/db/index.ts",
       "unresolvedTo": "$lib/server/db",
@@ -1526,6 +1539,42 @@
       "severity": "warn",
       "rule": "routes-through-application",
       "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
+      "to": "src/lib/server/teams/team-run.ts",
+      "unresolvedTo": "$lib/server/teams/team-run",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/broadcast-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-messaging.ts",
+      "unresolvedTo": "$lib/server/teams/team-messaging",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/broadcast-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
       "from": "src/routes/api/internal/team/tick/+server.ts",
       "to": "src/lib/server/teams/team-driver.ts",
       "unresolvedTo": "$lib/server/teams/team-driver",
@@ -1553,30 +1602,6 @@
       "from": "src/routes/api/internal/workflows/executions/[executionId]/cli-workspace-command/+server.ts",
       "to": "src/lib/server/workflows/github-token.ts",
       "unresolvedTo": "$lib/server/workflows/github-token",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/internal/workflows/executions/[executionId]/dev-preview/promote/+server.ts",
-      "to": "src/lib/server/workflows/dev-preview.ts",
-      "unresolvedTo": "$lib/server/workflows/dev-preview",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/internal/workflows/executions/[executionId]/dev-preview/snapshot/+server.ts",
-      "to": "src/lib/server/workflows/dev-preview.ts",
-      "unresolvedTo": "$lib/server/workflows/dev-preview",
       "dependencyTypes": [
         "import",
         "undetermined"
@@ -2367,6 +2392,18 @@
       "rule": "routes-through-application",
       "type": "dependency",
       "from": "src/routes/api/v1/sessions/[id]/team/+server.ts",
+      "to": "src/lib/server/teams/team-view.ts",
+      "unresolvedTo": "$lib/server/teams/team-view",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/teams/[teamId]/+server.ts",
       "to": "src/lib/server/teams/team-view.ts",
       "unresolvedTo": "$lib/server/teams/team-view",
       "dependencyTypes": [

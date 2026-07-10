@@ -79,7 +79,7 @@ function write(p, contents) {
 	fs.writeFileSync(p, contents);
 }
 
-test('sync.sh syncs source + stages extraSync, and fires deps only on a manifest change', async (t) => {
+test('sync.sh syncs source, stages extraSync, and proves dependency state before reuse', async (t) => {
 	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
 	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-pod-'));
 	// deps command drops a marker in the pod workdir (cwd = DEST) so we can assert it ran.
@@ -113,7 +113,8 @@ test('sync.sh syncs source + stages extraSync, and fires deps only on a manifest
 	);
 	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
 
-	// Run 1: source synced, extraSync staged, deps NOT run (first-sync baseline).
+	// Run 1: source synced, extraSync staged, and deps run because the image's
+	// dependency baseline is not independently proven to match this checkout.
 	let r = runSync(work);
 	assert.equal(r.status, 0, r.stderr + r.stdout);
 	assert.equal(fs.readFileSync(path.join(dest, 'src/index.ts'), 'utf8'), 'v1');
@@ -129,10 +130,11 @@ test('sync.sh syncs source + stages extraSync, and fires deps only on a manifest
 		!fs.existsSync(path.join(dest, 'Dockerfile')),
 		'capture-only Dockerfile is not applied to its repository path'
 	);
-	assert.ok(!fs.existsSync(path.join(dest, '.deps-ran')), 'no deps install on first sync');
+	assert.ok(fs.existsSync(path.join(dest, '.deps-ran')), 'deps install on first sync');
 	assert.match(r.stdout, /SYNCED services\/svc → HTTP 200/);
 
 	// Run 2: edit source + BUMP the manifest → deps fires.
+	fs.rmSync(path.join(dest, '.deps-ran'));
 	write(path.join(work, 'repo/services/svc/src/index.ts'), 'v2');
 	write(path.join(work, 'repo/services/svc/package.json'), '{"deps":2}');
 	r = runSync(work);
@@ -190,7 +192,8 @@ test('sync.sh fans out over .syncenv.d and tolerates a service with no deps comm
 	);
 	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
 
-	// First run: baseline. Second run: manifest bump → deps attempted, gets 404, still exit 0.
+	// First run attempts deps, gets the explicit no-command 404, and records the
+	// baseline. A later manifest bump repeats the bounded no-command check.
 	assert.equal(runSync(work).status, 0);
 	write(path.join(work, 'repo/services/one/requirements.txt'), 'flask==2');
 	const r = runSync(work);
@@ -302,8 +305,6 @@ test('sync.sh retries a dependency change until the in-pod action succeeds', asy
 	);
 	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
 
-	assert.equal(runSync(work).status, 0, 'first sync records the baseline');
-	write(path.join(work, 'repo/services/svc/package.json'), '{"deps":2}');
 	const firstFailure = runSync(work);
 	const secondFailure = runSync(work);
 	for (const result of [firstFailure, secondFailure]) {

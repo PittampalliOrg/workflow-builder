@@ -53,9 +53,10 @@ manifest_hash() {
 	cat $present 2>/dev/null | sha256sum | cut -d' ' -f1
 }
 
-# Trigger an in-pod dep reinstall iff the manifest hash changed since last run.
-# First run records the baseline WITHOUT installing (the dev image's baked deps
-# match the cloned manifest for a main-clone); a subsequent manifest edit installs.
+# Trigger an in-pod dependency action on the first sync and whenever the manifest
+# hash changes afterward. The checkout may be an exact feature SHA while the baked
+# dev image is older, so recording an unproved first-run baseline would deploy code
+# against the wrong dependency graph.
 maybe_deps() {
 	_subdir="$1"
 	_syncurl="$2"
@@ -64,12 +65,7 @@ maybe_deps() {
 	state="$WORK/.syncdeps.$(printf '%s' "$_subdir" | tr '/.' '__')"
 	oldhash=""
 	[ -f "$state" ] && oldhash=$(cat "$state" 2>/dev/null)
-	if [ -z "$oldhash" ]; then
-		printf '%s' "$newhash" >"$state"
-		echo "deps: baseline recorded for $_subdir (no install on first sync)"
-		return 0
-	fi
-	if [ "$newhash" = "$oldhash" ]; then
+	if [ -n "$oldhash" ] && [ "$newhash" = "$oldhash" ]; then
 		return 0
 	fi
 	runurl=$(printf '%s' "$_syncurl" | sed 's#/__sync$#/__run#')

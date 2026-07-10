@@ -73,4 +73,10 @@ describe("microservice dev session source checkout", () => {
   it("tells the interactive agent to apply hot-synced schema changes explicitly", () => {
     expect(handoffInstructions).toContain("allowlisted migrate action");
   });
+
+  it("hands off only after every service has a ready sync endpoint", () => {
+    expect(commandText).toContain(".ok == true and .info.ready == true");
+    expect(commandText).toContain(".info.syncUrl");
+    expect(commandText).toContain("full preview service set is not ready");
+  });
 });

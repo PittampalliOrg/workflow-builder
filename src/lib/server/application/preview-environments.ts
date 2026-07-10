@@ -121,6 +121,14 @@ const MANIFEST_CAPABILITIES = new Set<PreviewEnvironmentCapability>([
 ]);
 
 const PREVIEW_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+const RESERVED_PREVIEW_ENVIRONMENT_NAMES = new Set([
+  "ganpilot",
+  "ganvalidate",
+  "mtxdev1",
+  "mtxtmpl1",
+  "preview6",
+  "test3",
+]);
 const SERVICE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const OWNER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
 const FULL_GIT_SHA_PATTERN = /^[0-9a-fA-F]{40}$/;
@@ -638,6 +646,16 @@ export function validatePreviewEnvironmentLaunchSpec(
       "invalid-value",
       "name must be a lowercase DNS label with at most 40 characters",
     );
+  } else if (
+    name &&
+    (name.startsWith("pool-") || RESERVED_PREVIEW_ENVIRONMENT_NAMES.has(name))
+  ) {
+    issue(
+      issues,
+      "name",
+      "invalid-value",
+      "name is reserved for legacy preview retirement",
+    );
   }
   const profile = enumValue<PreviewEnvironmentProfile>(
     raw.profile,
@@ -754,13 +772,14 @@ export function validatePreviewEnvironmentLaunchSpec(
     profile === "app-live" &&
     mode === "live" &&
     owner &&
-    owner.kind !== "user"
+    owner.kind !== "user" &&
+    !(owner.kind === "automation" && origin?.kind === "pull-request")
   ) {
     issue(
       issues,
       "owner.kind",
       "invalid-value",
-      "live app-live previews require a user owner; workflow or session identity belongs in origin",
+      "live app-live previews require a user owner or pull-request automation owner",
     );
   }
   if (policy && mode && mode !== policy.mode && !appAcceptance) {

@@ -1021,6 +1021,52 @@ export type PreviewAcceptedImageReceiptRow = InferSelectModel<
   typeof previewAcceptedImageReceipts
 >;
 
+/** Replica-shared spend reservations for one exact immutable preview tuple. */
+export const previewRuntimeBudgets = pgTable(
+  "preview_runtime_budgets",
+  {
+    previewName: text("preview_name").notNull(),
+    environmentRequestId: text("environment_request_id").notNull(),
+    platformRevision: text("platform_revision").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    minuteStartedAt: timestamp("minute_started_at", {
+      withTimezone: true,
+    }).notNull(),
+    minuteRequests: integer("minute_requests").notNull(),
+    minuteReservedTokens: integer("minute_reserved_tokens").notNull(),
+    totalRequests: integer("total_requests").notNull(),
+    totalReservedTokens: integer("total_reserved_tokens").notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    deleteAfter: timestamp("delete_after", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    identity: primaryKey({
+      name: "pk_preview_runtime_budgets_identity",
+      columns: [
+        table.previewName,
+        table.environmentRequestId,
+        table.platformRevision,
+        table.sourceRevision,
+        table.catalogDigest,
+      ],
+    }),
+    updatedIdx: index("idx_preview_runtime_budgets_updated_at").on(
+      table.updatedAt,
+    ),
+  }),
+);
+
+export type PreviewRuntimeBudgetRow = InferSelectModel<
+  typeof previewRuntimeBudgets
+>;
+
 export type WorkflowWorkspaceSessionStatus = "active" | "cleaned" | "error";
 
 /**

@@ -52,6 +52,31 @@ describe("preview-control broker edge", () => {
       "POST",
       "/api/internal/preview-control/environment",
     ]);
+    for (const route of [
+      "/api/internal/preview-control/dev-sync-credentials",
+      "/api/internal/preview-control/accepted-images/reuse",
+      "/api/internal/preview-control/activation-images",
+    ]) {
+      expect(PREVIEW_CONTROL_BROKER_ROUTES).toContainEqual(["POST", route]);
+    }
+    expect(PREVIEW_CONTROL_BROKER_ROUTES).toContainEqual([
+      "POST",
+      "/api/internal/preview-control/deletion-intents/reconcile",
+    ]);
+    expect(
+      previewControlBrokerModeResponse(
+        "/api/internal/preview-control/environment/feature-one/teardown",
+        "POST",
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      previewControlBrokerModeResponse(
+        "/api/internal/preview-control/environment/feature-one/cleanup",
+        "GET",
+        true,
+      ),
+    ).toBeNull();
     expect(PREVIEW_CONTROL_BROKER_ROUTES).not.toContainEqual([
       "POST",
       "/api/internal/preview-control/pr-adoption",

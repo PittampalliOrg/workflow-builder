@@ -791,6 +791,30 @@ def test_down_job_database_is_server_derived_from_exact_preview_name() -> None:
     assert env["PREVIEW_DB_MODE"] == "shared"
 
 
+def test_down_job_receipt_is_bound_to_controller_intent_and_cr_uid() -> None:
+    intent_id = f"sha256:{'d' * 64}"
+    environment_uid = "12345678-1234-1234-1234-123456789abc"
+    manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(
+            name="feature-one",
+            action="down",
+            teardownExpectedRequestId="request-1",
+            teardownExpectedSourceRevision="b" * 40,
+            teardownEnvironmentUid=environment_uid,
+            teardownIntentId=intent_id,
+        ),
+        namespace="preview-control-system",
+        operation_holder=f"op:{'a' * 32}",
+    )
+
+    annotations = manifest["metadata"]["annotations"]
+    pod_annotations = manifest["spec"]["template"]["metadata"]["annotations"]
+    assert annotations["preview.stacks.io/teardown-environment-uid"] == environment_uid
+    assert annotations["preview.stacks.io/teardown-intent-id"] == intent_id
+    assert pod_annotations == annotations
+    assert "ttlSecondsAfterFinished" not in manifest["spec"]
+
+
 def test_down_request_rejects_caller_controlled_database(monkeypatch) -> None:
     monkeypatch.setenv("SANDBOX_EXECUTION_DRY_RUN", "true")
 
@@ -951,6 +975,68 @@ def test_mutable_live_down_accepts_archive_proof_and_exact_tuple(monkeypatch) ->
     assert "host-archive-proof" not in json.dumps(batch.created[0])
 
 
+def test_absent_preview_without_receipt_still_rejects_ordinary_owned_down(
+    monkeypatch,
+) -> None:
+    batch = _FakeBatch()
+    core = _FakeCore([])
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module, "_preview_down_receipt_succeeded", lambda *_args, **_kwargs: False
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.provision_vcluster_preview(
+            _no_auth_request(),
+            VclusterPreviewRequest(
+                name="never-created",
+                action="down",
+                teardownExpectedRequestId="request-1",
+                teardownExpectedSourceRevision="b" * 40,
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert "successful down receipt" in str(caught.value.detail)
+    assert batch.created == []
+
+
+def test_controller_intent_bootstraps_absent_down_job_for_failed_cold_launch(
+    monkeypatch,
+) -> None:
+    batch = _FakeBatch()
+    core = _FakeCore([])
+    submitted: dict[str, object] = {}
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module, "_preview_down_receipt_succeeded", lambda *_args, **_kwargs: False
+    )
+
+    def submit(batch_arg, _core, *, namespace, manifest, **kwargs):
+        submitted.update(kwargs)
+        return app_module._create_preview_job(
+            batch_arg, namespace=namespace, manifest=manifest
+        )
+
+    monkeypatch.setattr(app_module, "_submit_preview_job", submit)
+
+    result = app_module.provision_vcluster_preview(
+        _no_auth_request(),
+        VclusterPreviewRequest(
+            name="never-created",
+            action="down",
+            teardownExpectedRequestId="request-1",
+            teardownExpectedSourceRevision="b" * 40,
+            teardownEnvironmentUid="12345678-1234-1234-1234-123456789abc",
+            teardownIntentId=f"sha256:{'d' * 64}",
+        ),
+    )
+
+    assert result["status"] == "terminating"
+    assert _created_actions(batch) == [("never-created", "down")]
+    assert submitted["allow_absent_down_bootstrap"] is True
+
+
 @pytest.mark.parametrize(
     ("profile", "mode"),
     [("app-live", "reconciled"), ("manifest-candidate", "reconciled")],
@@ -1085,6 +1171,58 @@ def test_profiled_preview_manifest_carries_immutable_contract() -> None:
     assert env["EXPIRES_AT"] == "2026-07-10T12:00:00Z"
 
 
+def test_profiled_live_preview_allows_only_user_or_pull_request_automation_owner() -> None:
+    request = VclusterPreviewRequest(
+        name="pr-42",
+        profile="app-live",
+        lane="application",
+        platformRevision="a" * 40,
+        sourceRevision="b" * 40,
+        delivery="reconciler",
+        enrollMode="agent",
+        mode="live",
+        allocation={"kind": "cold"},
+        lifecycle="ephemeral",
+        owner={"kind": "automation", "id": "pr-preview:42"},
+        origin={
+            "kind": "pull-request",
+            "reference": "PittampalliOrg/workflow-builder#42",
+        },
+        services=["workflow-builder"],
+        provenance={
+            "requestId": "req-pr-42",
+            "requestedAt": "2026-07-09T12:00:00Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+        },
+        trustedCode=True,
+        capabilityBundle=CAPABILITY_BUNDLE,
+        catalogDigest=CATALOG_DIGEST,
+        createOnly=True,
+        ttlHours=24,
+    )
+
+    app_module._validate_profiled_preview_request(request)
+
+    for changes in (
+        {"origin": {"kind": "automation"}},
+        {
+            "owner": {"kind": "workflow", "id": "workflow-1"},
+            "origin": {"kind": "pull-request", "reference": "repo#42"},
+        },
+        {
+            "owner": {"kind": "session", "id": "session-1"},
+            "origin": {"kind": "interactive-session", "reference": "session-1"},
+        },
+    ):
+        with pytest.raises(app_module.HTTPException) as caught:
+            app_module._validate_profiled_preview_request(
+                VclusterPreviewRequest(**{**request.model_dump(), **changes})
+            )
+        assert caught.value.status_code == 400
+        assert "pull-request automation owner" in str(caught.value.detail)
+
+
 def test_profiled_preview_omitted_delivery_defaults_to_reconciler_agent(
     monkeypatch,
 ) -> None:
@@ -1204,9 +1342,11 @@ def test_reconciled_app_live_requires_cold_immutable_images() -> None:
 
     non_native = request.model_copy(
         update={
-            "services": ["mcp-gateway"],
+            "services": ["swebench-coordinator"],
             "imageOverrides": {
-                "mcp-gateway": ("ghcr.io/pittampalliorg/mcp-gateway@sha256:" + "d" * 64)
+                "swebench-coordinator": (
+                    "ghcr.io/pittampalliorg/swebench-coordinator@sha256:" + "d" * 64
+                )
             },
         }
     )
@@ -1300,6 +1440,33 @@ def test_unprofiled_preview_request_is_rejected() -> None:
         app_module._validate_profiled_preview_request(request)
     assert caught.value.status_code == 400
     assert "profiled PreviewEnvironment contract" in str(caught.value.detail)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pool-1383",
+        "pool-replacement",
+        "mtxdev1",
+        "mtxtmpl1",
+        "preview6",
+        "ganpilot",
+        "ganvalidate",
+        "test3",
+    ],
+)
+def test_profiled_preview_rejects_legacy_retirement_subject_name(name: str) -> None:
+    request = VclusterPreviewRequest(
+        name=name,
+        action="up",
+        profile="app-live",
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._validate_profiled_preview_request(request)
+
+    assert caught.value.status_code == 400
+    assert "reserved for legacy preview retirement" in str(caught.value.detail)
 
 
 def test_sleep_and_resume_job_deadlines() -> None:
@@ -1614,6 +1781,65 @@ def test_reap_capacity_sleeps_mutable_live_preview_instead_of_deleting(
     assert stats["archiveRequired"] == 1
     assert stats["sleptNow"] == 1
     assert _created_actions(batch) == [("live-capacity", "sleep")]
+
+
+def test_reap_ttl_defers_pull_request_automation_without_archive() -> None:
+    expired = _ns(
+        "pr-42",
+        profile="app-live",
+        mode="live",
+        lifecycle="ephemeral",
+        owner_contract={"kind": "automation", "id": "pr-preview:42"},
+        origin_contract={
+            "kind": "pull-request",
+            "reference": "PittampalliOrg/workflow-builder#42",
+        },
+        platform_revision="a" * 40,
+        source_revision="b" * 40,
+        catalog_digest="sha256:" + "d" * 64,
+        allocation={"kind": "cold"},
+        trusted_code=True,
+        expires_at=NOW - timedelta(hours=1),
+        provenance={"requestId": "request-pr-42"},
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 0
+    assert stats["applicationReaperRequired"] == 1
+    assert stats["sleptNow"] == 0
+    assert _created_actions(batch) == []
+
+
+def test_reap_ttl_keeps_user_interactive_live_archive_required() -> None:
+    expired = _ns(
+        "interactive-live",
+        profile="app-live",
+        mode="live",
+        lifecycle="ephemeral",
+        owner_contract={"kind": "user", "id": "user-42"},
+        origin_contract={"kind": "interactive-session", "reference": "session-42"},
+        platform_revision="a" * 40,
+        source_revision="b" * 40,
+        catalog_digest="sha256:" + "d" * 64,
+        allocation={"kind": "cold"},
+        trusted_code=True,
+        expires_at=NOW - timedelta(hours=1),
+        provenance={"requestId": "request-session-42"},
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 1
+    assert stats["applicationReaperRequired"] == 1
+    assert stats["sleptNow"] == 1
+    assert _created_actions(batch) == [("interactive-live", "sleep")]
 
 
 def test_reap_ttl_defers_immutable_reconciled_acceptance_to_application(
@@ -2246,19 +2472,148 @@ def test_cleanup_endpoint_requires_runner_success_and_host_absence(monkeypatch) 
         "phase": "complete",
         "checks": {
             "runnerSucceeded": True,
-            "previewEnvironmentAbsent": True,
-            "applicationAbsent": True,
-            "agentRegistrationAbsent": True,
-            "agentNamespacesAbsent": True,
+            "previewEnvironmentAbsent": False,
+            "applicationAbsent": False,
+            "agentRegistrationAbsent": False,
+            "agentNamespacesAbsent": False,
             "hostNamespaceAbsent": True,
             "databaseAbsent": True,
             "natsStreamAbsent": True,
-            "headlampRegistrationAbsent": True,
+            "headlampRegistrationAbsent": False,
             "tailnetEgressAbsent": True,
             "storageScopeAbsent": True,
             "runnerIdentityAbsent": True,
         },
         "message": None,
+    }
+
+
+def test_cleanup_endpoint_emits_exact_controller_deletion_receipt(monkeypatch) -> None:
+    core = _FakeCore([])
+    generation = f"op:{'c' * 32}"
+    annotations = {
+        app_module.RUNNER_GENERATION_ANNOTATION: generation,
+        "preview.stacks.io/teardown-intent-id": f"sha256:{'d' * 64}",
+        "preview.stacks.io/teardown-environment-uid": (
+            "12345678-1234-1234-1234-123456789abc"
+        ),
+        "preview.stacks.io/teardown-request-id": "request-1",
+        "preview.stacks.io/teardown-source-revision": "b" * 40,
+    }
+    job = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="vcpreview-down-acceptance",
+            uid="87654321-4321-4321-4321-cba987654321",
+            annotations=annotations,
+        ),
+        spec=SimpleNamespace(
+            template=SimpleNamespace(
+                metadata=SimpleNamespace(annotations=dict(annotations))
+            )
+        ),
+        status=SimpleNamespace(succeeded=1, failed=0, conditions=[]),
+    )
+    batch = SimpleNamespace(read_namespaced_job_status=lambda **_kwargs: job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_cleanup(_no_auth_request(), "acceptance")
+
+    assert result["complete"] is True
+    assert result["teardownProof"] == {
+        "intentId": f"sha256:{'d' * 64}",
+        "environmentUid": "12345678-1234-1234-1234-123456789abc",
+        "requestId": "request-1",
+        "sourceRevision": "b" * 40,
+        "jobName": "vcpreview-down-acceptance",
+        "jobUid": "87654321-4321-4321-4321-cba987654321",
+        "runnerGeneration": generation,
+    }
+
+
+def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) -> None:
+    generation = f"op:{'c' * 32}"
+    job_uid = "87654321-4321-4321-4321-cba987654321"
+    annotations = {
+        app_module.RUNNER_GENERATION_ANNOTATION: generation,
+        app_module._PREVIEW_IDENTITY_CLEANED_ANNOTATION: "true",
+    }
+    labels = {
+        "app": "vcluster-preview",
+        "vcluster-preview-name": "acceptance",
+        "vcluster-preview-action": "down",
+        "preview.stacks.io/managed": "true",
+        "preview.stacks.io/preview-name": "acceptance",
+    }
+    job = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="vcpreview-down-acceptance",
+            uid=job_uid,
+            labels=labels,
+            annotations=annotations,
+        ),
+        spec=SimpleNamespace(
+            template=SimpleNamespace(
+                metadata=SimpleNamespace(
+                    annotations=dict(annotations), labels=dict(labels)
+                ),
+                spec=SimpleNamespace(
+                    service_account_name=app_module.preview_runner_identity_name(
+                        "acceptance"
+                    )
+                ),
+            )
+        ),
+        status=SimpleNamespace(succeeded=1, failed=0, conditions=[]),
+    )
+
+    class ReceiptBatch:
+        def __init__(self) -> None:
+            self.job = job
+            self.deleted = False
+
+        def list_namespaced_job(self, **_kwargs):
+            return SimpleNamespace(items=[] if self.deleted else [self.job])
+
+        def read_namespaced_job_status(self, **_kwargs):
+            if self.deleted:
+                raise _ApiExc(404)
+            return self.job
+
+        def delete_namespaced_job(self, **_kwargs):
+            self.deleted = True
+
+        def read_namespaced_job(self, **_kwargs):
+            if self.deleted:
+                raise _ApiExc(404)
+            return self.job
+
+    batch = ReceiptBatch()
+    core = _FakeCore([])
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    inventory = app_module.list_vcluster_preview_cleanup_receipts(_no_auth_request())
+    assert inventory == {
+        "receipts": [
+            {
+                "name": "acceptance",
+                "jobName": "vcpreview-down-acceptance",
+                "jobUid": job_uid,
+                "runnerGeneration": generation,
+            }
+        ]
+    }
+
+    released = app_module.release_vcluster_preview_cleanup_receipt(
+        _no_auth_request(),
+        "acceptance",
+        app_module.VclusterPreviewCleanupReceiptReleaseRequest(
+            jobUid=job_uid, runnerGeneration=generation
+        ),
+    )
+    assert released["absent"] is True
+    assert batch.deleted is True
+    assert app_module.list_vcluster_preview_cleanup_receipts(_no_auth_request()) == {
+        "receipts": []
     }
 
 

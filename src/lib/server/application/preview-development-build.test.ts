@@ -248,7 +248,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
       executionId: "exec-1",
       services: ["function-router", "workflow-builder"],
       origin: "https://wfb-feature1.tail286401.ts.net",
-      adopt: true,
+      adopt: false,
     });
     expect(result).toMatchObject({
       ok: false,
@@ -302,7 +302,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
 
     const result = await app.buildAndReprovision({
       executionId: "exec-1",
-      services: ["function-router", "workflow-builder"],
+      services: ["function-router"],
       origin: "https://wfb-feature1.tail286401.ts.net",
       adopt: true,
     });
@@ -364,7 +364,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
           executionId: "exec-1",
           services: ["function-router", "workflow-builder"],
           origin: "https://wfb-feature1.tail286401.ts.net",
-          adopt: true,
+          adopt: false,
         }),
       ).resolves.toMatchObject({
         ok: false,
@@ -403,7 +403,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
         executionId: "exec-1",
         services: ["workflow-builder"],
         origin: "https://wfb-feature1.tail286401.ts.net",
-        adopt: true,
+        adopt: false,
       }),
     ).resolves.toMatchObject({
       ok: false,
@@ -446,7 +446,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
         executionId: "exec-1",
         services: ["workflow-builder"],
         origin: "https://wfb-feature1.tail286401.ts.net",
-        adopt: true,
+        adopt: false,
       }),
     ).resolves.toMatchObject({
       ok: false,
@@ -484,7 +484,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
         executionId: "exec-1",
         services: ["function-router", "workflow-builder"],
         origin: "https://wfb-feature1.tail286401.ts.net",
-        adopt: true,
+        adopt: false,
       }),
     ).resolves.toMatchObject({
       ok: false,
@@ -527,6 +527,24 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
     expect(deps.capture.captureAcceptanceCandidate).not.toHaveBeenCalled();
   });
 
+  it("rejects adoption of the coordinating workflow-builder BFF before capture", async () => {
+    const { deps, service: app } = service();
+
+    await expect(
+      app.buildAndReprovision({
+        executionId: "exec-1",
+        services: ["workflow-builder", "function-router"],
+        origin: "https://wfb-feature1.tail286401.ts.net",
+        adopt: true,
+      }),
+    ).rejects.toThrow(
+      "adopt=true cannot replace the workflow-builder BFF that is coordinating the build",
+    );
+    expect(deps.capture.captureAcceptanceCandidate).not.toHaveBeenCalled();
+    expect(deps.broker.build).not.toHaveBeenCalled();
+    expect(deps.provisioner.replaceMany).not.toHaveBeenCalled();
+  });
+
   it("does not reprovision when the physical broker rejects the artifact", async () => {
     const deps = dependencies();
     vi.mocked(deps.broker.build).mockRejectedValueOnce(
@@ -540,7 +558,7 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
         executionId: "exec-1",
         services: ["function-router", "workflow-builder"],
         origin: "https://wfb-feature1.tail286401.ts.net",
-        adopt: true,
+        adopt: false,
       }),
     ).resolves.toMatchObject({ ok: false, stage: "broker" });
     expect(deps.provisioner.replaceMany).not.toHaveBeenCalled();

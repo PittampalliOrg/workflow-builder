@@ -1,6 +1,6 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
+import { validatePreviewGovernanceDispatchToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
 import { PrPreviewAdmissionError } from "$lib/server/application/pr-previews";
@@ -9,8 +9,8 @@ import { PrPreviewAdmissionError } from "$lib/server/application/pr-previews";
  * POST /api/internal/pr-previews — label-gated per-PR preview dispatch (D1).
  *
  * Called by the hub Tekton `pr-preview-dispatch` Task on pull_request webhooks
- * (label `preview` gates the loop). Internal-token auth + `PR_PREVIEWS_ENABLED`
- * flag (default off → 404, mirroring preview-run-feed).
+ * (label `preview` gates the loop). Purpose-specific governance-dispatch auth +
+ * `PR_PREVIEWS_ENABLED` flag (default off → 404, mirroring preview-run-feed).
  *
  * Body: { action: "up"|"down", prNumber, headSha?, verify? }
  *  - up: idempotent — an existing `pr-<n>` preview is re-seeded, not re-provisioned;
@@ -21,7 +21,7 @@ export const POST: RequestHandler = async ({ request }) => {
   if (!getApplicationAdapterConfig().prPreviewsEnabled) {
     return json({ error: "PR previews are not enabled" }, { status: 404 });
   }
-  if (!validateInternalToken(request)) {
+  if (!validatePreviewGovernanceDispatchToken(request)) {
     return json({ error: "Unauthorized" }, { status: 401 });
   }
   const body = (await request.json().catch(() => ({}))) as Record<

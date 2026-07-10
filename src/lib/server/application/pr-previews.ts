@@ -483,9 +483,20 @@ export class ApplicationPrPreviewService {
 			mode: "live",
 			services: authority.services,
 			owner,
+			origin: {
+				kind: "pull-request",
+				reference: `${authority.repository}#${record.prNumber}`,
+			},
+			lifecycle: "ephemeral",
 			allocation,
-			requestId: authority.requestId,
+			provenance: {
+				requestId: authority.requestId,
+				requestedAt: authority.requestedAt,
+				platformRepository: authority.platformRepository,
+				sourceRepository: authority.repository,
+			},
 			images: {},
+			catalogDigest: authority.catalogDigest,
 			timeoutMs: this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
 		});
 		if (!ready.ready || !ready.url) {

@@ -12,6 +12,23 @@ The goal is a fast live loop without turning disposable pod state into a second
 source of truth. GitHub remains authoritative; strict capture and promotion are
 explicit boundary transitions.
 
+## Development POC Scope
+
+This first iteration proves the developer experience; it is not a hostile
+multi-tenant execution service. Launch remains restricted to authenticated
+platform administrators, repositories are fixed to PittampalliOrg, and the
+environment persists exact source and platform SHAs. Purpose tokens, namespace
+isolation, quota, TTL, and allowlisted `/__run` commands remain required because
+they are inexpensive protections for normal development mistakes.
+
+POC acceptance requires one representative five-service session: observe one UI
+HMR edit and one backend reload, run focused allowlisted checks, capture one
+coherent multi-service generation, replay changed production images in a fresh
+environment, and teardown cleanly. It does not require every command for every
+service, adversarial fork testing, exhaustive failure injection, a split broker
+process, strict GitHub branch protection, or long-duration soak testing. Those
+are post-POC hardening and should not delay a usable inner loop.
+
 ## Preconditions
 
 - Launch an `app-live` PreviewEnvironment on the dev spoke from Workflow
@@ -203,15 +220,18 @@ development Dockerfile or another image-baked dependency, invoke the bounded
 call: dev/preview-build
 with:
   services:
-    - workflow-builder
     - function-router
   origin: https://wfb-<preview>.<tailnet-suffix>
   adopt: true
 ```
 
-`adopt` is required and explicit. Use `true` for an interactive session whose
-preview URL should move to the rebuilt dev pods; use `false` when replacing the
-control-plane BFF would interrupt the workflow driving the operation.
+`adopt` is required and explicit. Use `true` only when the selected set excludes
+`workflow-builder`, so the interactive preview URL can move to rebuilt peer
+services without terminating the BFF coordinating the operation. A request that
+combines `adopt: true` with `workflow-builder` fails before capture or build.
+For an image-baked `workflow-builder` change, use `adopt: false`, inspect the
+direct sandbox result, then promote and run a fresh immutable acceptance replay.
+Source-only UI and backend changes should stay on the live-sync/HMR path above.
 
 The request cannot choose a repository, branch, source revision, image,
 Dockerfile, build context, kubeconfig, or host mode. The application service:
@@ -250,8 +270,9 @@ Hub PreviewEnvironment desired state uses a separate
 `PREVIEW_ENVIRONMENT_HUB_KUBECONFIG{,_PATH,_CONTENT,_YAML,_CONTEXT}` profile on
 the physical preview-control broker. Its RBAC is limited to PreviewEnvironment
 CRUD in `preview-system`. The persistent BFF never receives that credential;
-guarded teardown crosses the broker API, which waits for CR finalizers before
-calling SEA.
+guarded teardown crosses the broker API. The CR finalizer persists a deletion
+intent; the dev broker proves SEA cleanup and acknowledges it before the hub
+controller removes hub resources or releases that finalizer.
 
 PipelineRun names are deterministic only for idempotency. On an API create
 conflict the Tekton adapter reads the existing object and requires exact
@@ -415,8 +436,9 @@ Failure to publish the pending status stops the build; failure to publish the
 final result makes the broker response fail closed at the `reporting` stage.
 The mutable preview BFF never receives the GitHub write credential.
 
-Configure repository branch protection to require only the aggregate
-`preview/gate`, bound to GitHub App `2970091`. The base-owned reconciler consumes
+For post-POC governance, configure repository branch protection to require only
+the aggregate `preview/gate`, bound to GitHub App `2970091`. This protection is
+not required for the first admin-only development proof. The base-owned reconciler consumes
 `preview/immutable-acceptance` and any activation-image evidence as subordinate
 contexts; requiring them directly would strand N/A and multi-service PRs. The
 older `pr-preview` context proves live preview readiness only and is not a

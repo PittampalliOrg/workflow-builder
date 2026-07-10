@@ -20,6 +20,7 @@ export * from "./ports/preview-accepted-images";
 export * from "./ports/preview-activation-build";
 export * from "./ports/preview-acceptance-trust";
 export * from "./ports/preview-environments";
+export * from "./ports/preview-lifecycle";
 export * from "./ports/preview-development-build";
 export * from "./ports/preview-control";
 export * from "./ports/preview-artifact-transfer";

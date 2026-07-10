@@ -235,6 +235,49 @@ export type PreviewEnvironmentDesiredStateDeleteGuard =
       protectedRequestId: string;
     }>;
 
+export const PREVIEW_ENVIRONMENT_PHYSICAL_CLEANUP_CHECKS = [
+  "runnerSucceeded",
+  "databaseAbsent",
+  "natsStreamAbsent",
+  "tailnetEgressAbsent",
+  "hostNamespaceAbsent",
+  "storageScopeAbsent",
+  "runnerIdentityAbsent",
+] as const;
+
+export type PreviewEnvironmentPhysicalCleanupCheck =
+  (typeof PREVIEW_ENVIRONMENT_PHYSICAL_CLEANUP_CHECKS)[number];
+
+/** Durable command authored by the hub controller and consumed only on dev. */
+export type PreviewEnvironmentDeletionIntent = Readonly<{
+  id: `sha256:${string}`;
+  name: string;
+  environmentUid: string;
+  requestId: string;
+  platformRevision: ImmutableGitSha;
+  sourceRevision: ImmutableGitSha;
+  catalogDigest: `sha256:${string}`;
+  deletionTimestamp: string;
+}>;
+
+/** Exact SEA receipt persisted back to the hub CR before finalizer release. */
+export type PreviewEnvironmentDeletionAcknowledgement = Readonly<{
+  intentId: `sha256:${string}`;
+  environmentUid: string;
+  requestId: string;
+  platformRevision: ImmutableGitSha;
+  sourceRevision: ImmutableGitSha;
+  catalogDigest: `sha256:${string}`;
+  observedAt: string;
+  resourceName: string;
+  runner: Readonly<{
+    jobName: string;
+    jobUid: string;
+    generation: `op:${string}`;
+  }>;
+  checks: Readonly<Record<PreviewEnvironmentPhysicalCleanupCheck, true>>;
+}>;
+
 /** Operational failures exposed by the desired-state port to application callers. */
 export class PreviewEnvironmentDesiredStateError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -281,6 +324,29 @@ export interface PreviewEnvironmentDesiredStatePort {
     }>,
   ): Promise<void>;
   absent(name: string): Promise<boolean>;
+}
+
+/** Dev-side consumer port for the hub CR deletion-intent outbox. */
+export interface PreviewEnvironmentDeletionOutboxPort {
+  listPending(): Promise<readonly PreviewEnvironmentDeletionIntent[]>;
+  acknowledge(
+    intent: PreviewEnvironmentDeletionIntent,
+    acknowledgement: PreviewEnvironmentDeletionAcknowledgement,
+  ): Promise<void>;
+  absent(name: string): Promise<boolean>;
+}
+
+export type PreviewEnvironmentCleanupReceipt = Readonly<{
+  name: string;
+  jobName: string;
+  jobUid: string;
+  runnerGeneration: `op:${string}`;
+}>;
+
+/** SEA-owned durable receipt inventory; release is allowed only after hub CR absence. */
+export interface PreviewEnvironmentCleanupReceiptPort {
+  list(): Promise<readonly PreviewEnvironmentCleanupReceipt[]>;
+  release(receipt: PreviewEnvironmentCleanupReceipt): Promise<void>;
 }
 
 export type PreviewProductionImage = Readonly<{
@@ -350,9 +416,12 @@ export interface PreviewEnvironmentReadinessPort {
       mode: PreviewEnvironmentMode;
       services: readonly string[];
       owner: PreviewEnvironmentOwner;
+      origin: PreviewEnvironmentOrigin;
+      lifecycle: PreviewEnvironmentLifecycle;
       allocation: PreviewEnvironmentAllocation;
-      requestId: string;
+      provenance: PreviewEnvironmentProvenance;
       images: PreviewEnvironmentImageOverrides;
+      catalogDigest: `sha256:${string}`;
       timeoutMs: number;
     }>,
   ): Promise<Readonly<{ ready: boolean; phase: string; url: string | null }>>;

@@ -1186,8 +1186,9 @@ def _delete_dev_preview_adoption_lease(
     namespace: str,
     deployment: str,
     holder: str,
+    timeout_s: float = 30.0,
 ) -> bool:
-    """Delete only the exact holder's Lease with a resourceVersion precondition."""
+    """Delete only the exact holder's Lease and observe its absence."""
     name = _adopt_lease_name(deployment)
     try:
         lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
@@ -1230,7 +1231,39 @@ def _delete_dev_preview_adoption_lease(
             return True
         logger.warning("adopt: failed deleting Lease %s: %s", name, exc)
         return False
-    return True
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        try:
+            observed = coordination.read_namespaced_lease(
+                name=name, namespace=namespace
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            logger.warning(
+                "adopt: failed proving Lease %s absence: %s", name, exc
+            )
+            return False
+        (
+            observed_name,
+            observed_holder,
+            observed_deployment,
+            _observed_execution,
+            _observed_resource_version,
+        ) = _adopt_lease_identity(observed)
+        if (
+            observed_name != name
+            or observed_holder != holder
+            or observed_deployment != _safe_resource_name(deployment)
+        ):
+            logger.warning(
+                "adopt: Lease %s changed identity before deletion was observed", name
+            )
+            return False
+        if time.monotonic() >= deadline:
+            logger.warning("adopt: Lease %s deletion was not observed", name)
+            return False
+        time.sleep(0.1)
 
 
 def _adopt_read_identity(
@@ -1281,15 +1314,16 @@ def _adopt_read_identity(
     }
 
 
-def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> None:
+def _adopt_scale_deployment_down(
+    apps: Any, *, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
     """Scale the adopted Deployment to 0 (freeing the Service endpoints), stashing
     its prior replica count in an annotation so teardown can restore it. Idempotent."""
     try:
         dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
-            logger.info("adopt: deployment %s not found; skip scale-down", name)
-            return
+            raise RuntimeError(f"adopted deployment {name} was not found") from exc
         raise
     dep_annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
     current = dep.spec.replicas if dep.spec and dep.spec.replicas is not None else 1
@@ -1307,26 +1341,47 @@ def _adopt_scale_deployment_down(apps: Any, *, namespace: str, name: str) -> Non
             "spec": {"replicas": 0},
         },
     )
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        observed = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        observed_annotations = (
+            observed.metadata.annotations or {}
+        ) if observed.metadata else {}
+        observed_replicas = (
+            observed.spec.replicas
+            if observed.spec and observed.spec.replicas is not None
+            else 1
+        )
+        if (
+            observed_replicas == 0
+            and observed_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
+            == original
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"deployment {name} scale-down was not observed")
+        time.sleep(0.1)
     logger.info("adopt: scaled deployment %s to 0 (original=%s)", name, original)
 
 
 def _dev_pod_has_daprd(pod: Any) -> bool:
-    """True if the pod carries an injected daprd sidecar.
+    """True only if the injected daprd container is present and Ready.
 
     daprd can be a NATIVE sidecar (an init container with restartPolicy: Always) OR a
-    classic sidecar (a regular container); the injector also stamps the
-    `dapr.io/sidecar-injected=true` label. Check all three — auditing only
-    `.spec.containers` misses the native-sidecar case."""
+    classic sidecar (a regular container). The injector label alone is not readiness
+    evidence; auditing only `.spec.containers` misses the native-sidecar case."""
     status = getattr(pod, "status", None)
     for statuses in (
         getattr(status, "init_container_statuses", None),
         getattr(status, "container_statuses", None),
     ):
-        if any(getattr(cs, "name", "") == "daprd" for cs in (statuses or [])):
+        if any(
+            getattr(cs, "name", "") == "daprd"
+            and getattr(cs, "ready", False) is True
+            for cs in (statuses or [])
+        ):
             return True
-    meta = getattr(pod, "metadata", None)
-    labels = (getattr(meta, "labels", None) or {}) if meta else {}
-    return labels.get("dapr.io/sidecar-injected") == "true"
+    return False
 
 
 def _wait_for_dapr_injector_available(apps: Any, *, timeout_seconds: int = 60) -> bool:
@@ -1367,6 +1422,8 @@ def _adopt_deferred_scale_down(
     deployment: str,
     execution_id: str,
     wait_seconds: int,
+    sandbox_name: str | None = None,
+    holder: str | None = None,
     service: str | None = None,
     needs_dapr: bool = False,
 ) -> None:
@@ -1382,6 +1439,10 @@ def _adopt_deferred_scale_down(
     try:
         apps = _load_k8s_apps_client()
         _, core = _load_k8s_clients()
+        custom = _load_k8s_custom_objects_client() if sandbox_name and holder else None
+        coordination = (
+            _load_k8s_coordination_client() if sandbox_name and holder else None
+        )
     except Exception as exc:
         logger.warning("adopt: deferred scale-down could not load clients: %s", exc)
         return
@@ -1455,6 +1516,25 @@ def _adopt_deferred_scale_down(
                 # scale the BFF to 0 — otherwise the scale could still kill the pod
                 # mid-response.
                 time.sleep(15)
+                if (
+                    sandbox_name
+                    and holder
+                    and custom is not None
+                    and coordination is not None
+                    and not _dev_preview_adoption_is_current(
+                    custom,
+                    coordination,
+                    namespace=namespace,
+                    sandbox_name=sandbox_name,
+                    deployment=deployment,
+                    holder=holder,
+                    )
+                ):
+                    logger.info(
+                        "adopt: cutover for %s was cancelled before scale-down",
+                        sandbox_name,
+                    )
+                    return
                 _adopt_scale_deployment_down(apps, namespace=namespace, name=deployment)
                 logger.info(
                     "adopt: dev pod ready (daprd ok) → scaled %s to 0 (exec %s)",
@@ -1473,7 +1553,9 @@ def _adopt_deferred_scale_down(
     )
 
 
-def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
+def _adopt_restore_deployment(
+    apps: Any, *, namespace: str, name: str, timeout_s: float = 30.0
+) -> None:
     """Restore a Deployment scaled down by preview-native adopt to its original
     replica count (from the stashed annotation; default 1). Best-effort."""
     try:
@@ -1484,8 +1566,15 @@ def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
             return
         raise
     annotations = (dep.metadata.annotations or {}) if dep.metadata else {}
+    original = annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
+    if original is None:
+        logger.info(
+            "adopt: deployment %s was never scaled down; leaving replicas unchanged",
+            name,
+        )
+        return
     try:
-        replicas = int(annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION, "1"))
+        replicas = int(original)
     except (TypeError, ValueError):
         replicas = 1
     apps.patch_namespaced_deployment(
@@ -1498,7 +1587,62 @@ def _adopt_restore_deployment(apps: Any, *, namespace: str, name: str) -> None:
             "spec": {"replicas": max(replicas, 1)},
         },
     )
-    logger.info("adopt: restored deployment %s to %s replicas", name, max(replicas, 1))
+    target = max(replicas, 1)
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        observed = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        observed_annotations = (
+            observed.metadata.annotations or {}
+        ) if observed.metadata else {}
+        observed_replicas = (
+            observed.spec.replicas
+            if observed.spec and observed.spec.replicas is not None
+            else 1
+        )
+        if (
+            observed_replicas == target
+            and DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION not in observed_annotations
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"deployment {name} restoration was not observed")
+        time.sleep(0.1)
+    logger.info("adopt: restored deployment %s to %s replicas", name, target)
+
+
+def _dev_preview_adoption_is_current(
+    custom: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    deployment: str,
+    holder: str,
+) -> bool:
+    """Re-read both ownership objects immediately before a deferred cutover."""
+    try:
+        if (
+            _dev_preview_cr_adoption_holder(custom, namespace, sandbox_name)
+            != holder
+        ):
+            return False
+        lease = coordination.read_namespaced_lease(
+            name=_adopt_lease_name(deployment), namespace=namespace
+        )
+    except Exception:
+        return False
+    (
+        lease_name,
+        lease_holder,
+        lease_deployment,
+        _lease_execution,
+        _resource_version,
+    ) = _adopt_lease_identity(lease)
+    return (
+        lease_name == _adopt_lease_name(deployment)
+        and lease_holder == holder
+        and lease_deployment == _safe_resource_name(deployment)
+    )
 
 
 def _adopt_cleanup_stale_leases(
@@ -4142,7 +4286,7 @@ def build_dev_preview_sandbox_manifest(
     if request.adoptTlsTerminator:
         tls_image = os.environ.get(
             "DEV_PREVIEW_TLS_TERMINATOR_IMAGE",
-            "docker.io/nginxinc/nginx-unprivileged:1.27-alpine",
+            "docker.io/nginxinc/nginx-unprivileged@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0",
         )
         tls_secret = os.environ.get("DEV_PREVIEW_TLS_SECRET", "tailnet-wildcard-tls")
         tls_conf_cm = os.environ.get(
@@ -4387,10 +4531,11 @@ def _delete_dev_preview_cr_and_wait(
                 return
         time.sleep(1.0)
     logger.warning(
-        "dev-preview CR %s still present after %ss; proceeding to recreate",
+        "dev-preview CR %s still present after %ss",
         name,
         timeout_s,
     )
+    raise RuntimeError(f"dev-preview CR {name} deletion was not observed")
 
 
 def _wait_for_dev_preview_ready(
@@ -4460,6 +4605,33 @@ def _wait_for_dev_preview_ready(
             detail=f"dev-preview {execution_id} not ready: {last_failure}",
         )
     return "queued", _pod_ip()
+
+
+def _ready_dev_preview_pod(
+    core: Any,
+    *,
+    namespace: str,
+    execution_id: str,
+    service: str | None,
+    pod_ip: str | None,
+) -> Any | None:
+    selector = (
+        f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
+        f"dev-preview-service={_dev_preview_service_label(service)}"
+    )
+    pods = core.list_namespaced_pod(namespace=namespace, label_selector=selector).items
+    return next(
+        (
+            pod
+            for pod in pods
+            if _pod_is_ready(pod)
+            and (
+                pod_ip is None
+                or getattr(getattr(pod, "status", None), "pod_ip", None) == pod_ip
+            )
+        ),
+        None,
+    )
 
 
 @app.post("/api/v1/agent-workflow-hosts", status_code=status.HTTP_202_ACCEPTED)
@@ -4861,36 +5033,102 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                             holder=adoption_holder,
                         )
                 raise
-        # Preview-native: DEFER the prod Deployment scale-to-0 to a background thread
-        # that waits for the dev pod to be Ready (+grace) then scales. Doing it now
-        # would kill the BFF pod serving this very request (the BFF adopts its own
-        # Service) → 502. Started right after CR creation so it races the readiness
-        # wait below but only scales once the dev pod can take over (no downtime).
-        if body.previewNative and body.adoptDeployment:
-            import threading
+        try:
+            readiness_status, pod_ip = _wait_for_dev_preview_ready(
+                core,
+                namespace=namespace,
+                execution_id=body.executionId,
+                wait_seconds=body.waitReadySeconds,
+                service=body.service,
+                failure_probe=lambda: _sandbox_failure_reason(
+                    custom, namespace=namespace, sandbox_name=sandbox_name
+                ),
+            )
+            if body.previewNative and body.adoptDeployment:
+                if readiness_status != "ready" or not pod_ip:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"adopted dev-preview {body.executionId}/{body.service or 'workflow-builder'} "
+                            "did not become ready; the Sandbox was removed without cutover"
+                        ),
+                    )
+                ready_pod = _ready_dev_preview_pod(
+                    core,
+                    namespace=namespace,
+                    execution_id=body.executionId,
+                    service=body.service,
+                    pod_ip=pod_ip,
+                )
+                if ready_pod is None or (
+                    body.needsDapr and not _dev_pod_has_daprd(ready_pod)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"adopted dev-preview {body.executionId}/{body.service or 'workflow-builder'} "
+                            "did not satisfy the complete readiness contract; the Sandbox was removed without cutover"
+                        ),
+                    )
+                # Only the workflow-builder cutover can terminate the BFF serving
+                # this request. Peer Deployments are scaled synchronously so the
+                # batch coordinator never receives success for a merely scheduled
+                # cutover that can race compensating teardown.
+                if adoption_deployment != "workflow-builder":
+                    _adopt_scale_deployment_down(
+                        apps,
+                        namespace=namespace,
+                        name=adoption_deployment,
+                    )
+        except Exception as readiness_error:
+            if body.previewNative and body.adoptDeployment:
+                try:
+                    context = _dev_preview_teardown_context(
+                        custom, namespace=namespace, sandbox_name=sandbox_name
+                    )
+                    _teardown_dev_preview_resources(
+                        namespace=namespace,
+                        sandbox_name=sandbox_name,
+                        context=context,
+                    )
+                except Exception as cleanup_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            "adopted dev-preview readiness failed and compensating "
+                            "teardown could not be proven"
+                        ),
+                    ) from cleanup_error
+            if isinstance(readiness_error, HTTPException):
+                raise readiness_error
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="dev-preview readiness check failed before cutover",
+            ) from readiness_error
 
+        # Start cutover only after the synchronous request has proved the exact dev
+        # pod Ready (and daprd-present when required). A queued/timed-out request can
+        # therefore never cut production over minutes after its caller saw failure.
+        if (
+            body.previewNative
+            and adoption_deployment == "workflow-builder"
+            and adoption_holder is not None
+        ):
             threading.Thread(
                 target=_adopt_deferred_scale_down,
                 kwargs={
                     "namespace": namespace,
-                    "deployment": _safe_resource_name(body.adoptDeployment),
+                    "deployment": adoption_deployment,
                     "execution_id": body.executionId,
+                    "sandbox_name": sandbox_name,
+                    "holder": adoption_holder,
                     "wait_seconds": body.waitReadySeconds,
                     "service": body.service,
                     "needs_dapr": body.needsDapr,
                 },
                 daemon=True,
+                name=f"dev-preview-cutover-{sandbox_name}",
             ).start()
-        readiness_status, pod_ip = _wait_for_dev_preview_ready(
-            core,
-            namespace=namespace,
-            execution_id=body.executionId,
-            wait_seconds=body.waitReadySeconds,
-            service=body.service,
-            failure_probe=lambda: _sandbox_failure_reason(
-                custom, namespace=namespace, sandbox_name=sandbox_name
-            ),
-        )
     port = body.port or class_config.servicePort or 3000
     use_sidecar = (body.syncMode or "plugin").lower() == "sidecar"
     sync_port = body.syncPort or (8001 if use_sidecar else port)
@@ -4958,6 +5196,28 @@ def _teardown_dev_preview_resources(
     service = context.get("service")
     deployment = context.get("deployment")
     holder = context.get("holder")
+
+    # Preserve the Sandbox CR (and therefore its exact ownership tuple) until
+    # restoration and Lease release both succeed. Deleting it first turns a
+    # transient restore error into an ambiguous orphan with no retry context.
+    if deployment:
+        _adopt_restore_deployment(
+            _load_k8s_apps_client(), namespace=namespace, name=deployment
+        )
+        if holder:
+            coordination = _load_k8s_coordination_client()
+            if not _delete_dev_preview_adoption_lease(
+                coordination,
+                namespace=namespace,
+                deployment=deployment,
+                holder=holder,
+            ):
+                raise RuntimeError(
+                    f"adoption Lease release was not proven for {deployment}"
+                )
+
+    _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
+
     if execution:
         try:
             _, core = _load_k8s_clients()
@@ -4970,30 +5230,13 @@ def _teardown_dev_preview_resources(
             )
         except Exception as exc:
             logger.info("dev-preview secret cleanup skipped: %s", exc)
-    _delete_agent_host_cr_and_wait(custom, namespace, sandbox_name)
 
-    restored = False
-    if deployment:
-        try:
-            _adopt_restore_deployment(
-                _load_k8s_apps_client(), namespace=namespace, name=deployment
-            )
-            restored = True
-        except Exception as exc:
-            logger.warning("adopt: failed restoring deployment %s: %s", deployment, exc)
     coordination: Any | None = None
     try:
         coordination = _load_k8s_coordination_client()
     except Exception as exc:
         logger.warning(
-            "adopt: coordination client unavailable during teardown: %s", exc
-        )
-    if restored and deployment and holder and coordination is not None:
-        _delete_dev_preview_adoption_lease(
-            coordination,
-            namespace=namespace,
-            deployment=deployment,
-            holder=holder,
+            "adopt: coordination client unavailable during orphan sweep: %s", exc
         )
     try:
         _adopt_restore_orphans(
@@ -5149,8 +5392,10 @@ def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
                 label_selector=selector,
             ).get("items", [])
         except Exception as exc:
-            logger.warning("dev-previews: sandbox list failed: %s", exc)
-            crs = []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="dev-preview Sandbox inventory could not be established",
+            ) from exc
         for cr in crs:
             meta = cr.get("metadata", {}) or {}
             labels = meta.get("labels", {}) or {}
@@ -5171,7 +5416,7 @@ def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
                     ),
                 }
             )
-    return {"executionId": executionId, "services": services}
+    return {"executionId": executionId, "complete": True, "services": services}
 
 
 class PurgeWorkspaceDataRequest(BaseModel):
@@ -5968,6 +6213,11 @@ class VclusterPreviewRequest(BaseModel):
     teardownExpectedRequestId: str | None = None
     teardownExpectedSourceRevision: str | None = None
     teardownProtectedRequestId: str | None = None
+    teardownEnvironmentUid: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    )
+    teardownIntentId: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     # PREVIEW_DB_MODE=cnpg → per-preview isolated CloudNativePG Postgres inside the
     # vcluster (no shared host-Postgres connection ceiling). Defaults from env so it
     # can be flipped cluster-wide without an API change. cnpg | shared
@@ -6040,6 +6290,22 @@ class VclusterPreviewTeardownRequest(BaseModel):
     expectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
     expectedSourceRevision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     protectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
+    environmentUid: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    )
+    deletionIntentId: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class VclusterPreviewCleanupReceiptReleaseRequest(BaseModel):
+    """Exact completed Job identity accepted by the post-finalization pruner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jobUid: str = Field(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    runnerGeneration: str = Field(pattern=r"^op:[0-9a-f]{32}$")
 
 
 def _vcluster_preview_job_name(name: str, action: str) -> str:
@@ -6126,6 +6392,15 @@ def _vcluster_preview_job_manifest(
                     "preview.stacks.io/teardown-protected-request-id": (
                         req.teardownProtectedRequestId
                     )
+                }
+            )
+        if req.teardownEnvironmentUid and req.teardownIntentId:
+            runner_annotations.update(
+                {
+                    "preview.stacks.io/teardown-environment-uid": (
+                        req.teardownEnvironmentUid
+                    ),
+                    "preview.stacks.io/teardown-intent-id": req.teardownIntentId,
                 }
             )
     image = os.environ.get("VCLUSTER_PREVIEW_RUNNER_IMAGE", "alpine/k8s:1.31.0")
@@ -6666,6 +6941,7 @@ def _submit_preview_job(
     manifest: dict[str, Any],
     lifecycle: str | None = None,
     create_only: bool = False,
+    allow_absent_down_bootstrap: bool = False,
 ) -> bool:
     """Establish the exact per-preview identity before handing work to Kubernetes."""
     metadata = manifest.get("metadata") or {}
@@ -6678,6 +6954,10 @@ def _submit_preview_job(
         )
     if action not in {"up", "down", "claim", "sleep", "resume"}:
         raise PreviewRunnerIdentityError("preview Job action is not allowed")
+    if allow_absent_down_bootstrap and action != "down":
+        raise PreviewRunnerIdentityError(
+            "absent identity bootstrap is allowed only for down"
+        )
     required_labels = {
         "app": "vcluster-preview",
         "vcluster-preview-name": preview_name,
@@ -6761,6 +7041,7 @@ def _submit_preview_job(
         action=action,
         lifecycle=lifecycle,
         runner_generation=job_generation,
+        allow_absent_down_bootstrap=allow_absent_down_bootstrap,
     )
     if reservation.identity_name != actual_service_account:
         identity.rollback_before_job(reservation)
@@ -6805,6 +7086,8 @@ def _preview_down_receipt_succeeded(
     expected_request_id: str | None,
     expected_source_revision: str | None,
     protected_request_id: str | None,
+    environment_uid: str | None,
+    deletion_intent_id: str | None,
 ) -> bool:
     try:
         job = batch.read_namespaced_job_status(
@@ -6829,10 +7112,19 @@ def _preview_down_receipt_succeeded(
         expected_annotations = {
             "preview.stacks.io/teardown-protected-request-id": protected_request_id
         }
+    if environment_uid and deletion_intent_id:
+        expected_annotations.update(
+            {
+                "preview.stacks.io/teardown-environment-uid": environment_uid,
+                "preview.stacks.io/teardown-intent-id": deletion_intent_id,
+            }
+        )
     guard_keys = {
         "preview.stacks.io/teardown-request-id",
         "preview.stacks.io/teardown-source-revision",
         "preview.stacks.io/teardown-protected-request-id",
+        "preview.stacks.io/teardown-environment-uid",
+        "preview.stacks.io/teardown-intent-id",
     }
     if {key: annotations.get(key) for key in guard_keys if key in annotations} != (
         expected_annotations
@@ -7499,6 +7791,18 @@ def _validate_profiled_preview_request(body: VclusterPreviewRequest) -> None:
             status_code=400,
             detail="new preview creation requires the profiled PreviewEnvironment contract",
         )
+    if body.name.startswith("pool-") or body.name in {
+        "mtxdev1",
+        "mtxtmpl1",
+        "preview6",
+        "ganpilot",
+        "ganvalidate",
+        "test3",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="preview name is reserved for legacy preview retirement",
+        )
     if body.profile not in {
         "app-live",
         "manifest-candidate",
@@ -7750,6 +8054,21 @@ def _validate_profiled_preview_request(body: VclusterPreviewRequest) -> None:
             status_code=400,
             detail=f"origin.reference is required for {origin.kind}",
         )
+    if (
+        body.profile == "app-live"
+        and body.mode == "live"
+        and not (
+            owner.kind == "user"
+            or (owner.kind == "automation" and origin.kind == "pull-request")
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "live app-live previews require a user owner or "
+                "pull-request automation owner"
+            ),
+        )
     if body.provenance is None:
         raise HTTPException(status_code=400, detail="provenance is required")
     if len(json.dumps(body.provenance, separators=(",", ":"))) > 4096:
@@ -7818,9 +8137,27 @@ def provision_vcluster_preview(
         body.teardownExpectedRequestId
         or body.teardownExpectedSourceRevision
         or body.teardownProtectedRequestId
+        or body.teardownEnvironmentUid
+        or body.teardownIntentId
     ):
         raise HTTPException(
             status_code=400, detail="teardown ownership guards require action=down"
+        )
+    if body.action == "down" and bool(body.teardownEnvironmentUid) != bool(
+        body.teardownIntentId
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="teardown environment UID and deletion intent id must be supplied together",
+        )
+    if (
+        body.action == "down"
+        and body.teardownIntentId
+        and not (body.teardownExpectedRequestId and body.teardownExpectedSourceRevision)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="controller deletion intent requires exact owned teardown guards",
         )
     _validate_profiled_preview_request(body)
     namespace = _vcluster_preview_control_namespace()
@@ -7835,6 +8172,7 @@ def provision_vcluster_preview(
     }:
         batch, core = _load_k8s_clients()
         safe_name = _safe_resource_name(body.name, max_length=40)
+        allow_absent_down_bootstrap = False
         if body.action == "down" and not _namespace_exists(core, safe_name):
             try:
                 identity_absent = PreviewRunnerIdentityAdapter(
@@ -7846,13 +8184,18 @@ def provision_vcluster_preview(
                     detail=f"could not prove preview runner identity absence: {exc}",
                 ) from exc
             if identity_absent:
-                if not _preview_down_receipt_succeeded(
+                receipt_succeeded = _preview_down_receipt_succeeded(
                     batch,
                     namespace=namespace,
                     preview_name=safe_name,
                     expected_request_id=body.teardownExpectedRequestId,
                     expected_source_revision=body.teardownExpectedSourceRevision,
                     protected_request_id=body.teardownProtectedRequestId,
+                    environment_uid=body.teardownEnvironmentUid,
+                    deletion_intent_id=body.teardownIntentId,
+                )
+                if not receipt_succeeded and not (
+                    body.teardownEnvironmentUid and body.teardownIntentId
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -7861,18 +8204,23 @@ def provision_vcluster_preview(
                             "successful down receipt"
                         ),
                     )
-                result = {
-                    "name": safe_name,
-                    "action": "down",
-                    "job": _vcluster_preview_job_name(safe_name, "down"),
-                    "status": "absent",
-                    "phase": "complete",
-                    "complete": True,
-                    "tailnetHost": tailnet_host,
-                    "url": None,
-                }
-                set_current_span_io("output", result)
-                return result
+                if receipt_succeeded:
+                    result = {
+                        "name": safe_name,
+                        "action": "down",
+                        "job": _vcluster_preview_job_name(safe_name, "down"),
+                        "status": "absent",
+                        "phase": "complete",
+                        "complete": True,
+                        "tailnetHost": tailnet_host,
+                        "url": None,
+                    }
+                    set_current_span_io("output", result)
+                    return result
+                # A failed cold launch can leave only the hub CR. Its exact
+                # controller intent is allowed to create a control-only runner
+                # identity so the normal down Job can emit durable absence proof.
+                allow_absent_down_bootstrap = True
         coordination = _load_k8s_coordination_client()
         operation_holder = _acquire_preview_operation_lease(
             coordination, namespace=namespace, real_name=body.name
@@ -7979,6 +8327,7 @@ def provision_vcluster_preview(
                     namespace=namespace,
                     manifest=manifest,
                     lifecycle=member.lifecycle if member is not None else None,
+                    allow_absent_down_bootstrap=allow_absent_down_bootstrap,
                 )
             handed_to_runner = True
         finally:
@@ -8794,13 +9143,13 @@ def get_vcluster_preview_cleanup(request: Request, name: str) -> dict[str, Any]:
     }:
         checks = {
             "runnerSucceeded": True,
-            "previewEnvironmentAbsent": True,
-            "applicationAbsent": True,
-            "agentRegistrationAbsent": True,
-            "agentNamespacesAbsent": True,
+            "previewEnvironmentAbsent": False,
+            "applicationAbsent": False,
+            "agentRegistrationAbsent": False,
+            "agentNamespacesAbsent": False,
             "databaseAbsent": True,
             "natsStreamAbsent": True,
-            "headlampRegistrationAbsent": True,
+            "headlampRegistrationAbsent": False,
             "tailnetEgressAbsent": True,
             "hostNamespaceAbsent": True,
             "storageScopeAbsent": True,
@@ -8819,6 +9168,7 @@ def get_vcluster_preview_cleanup(request: Request, name: str) -> dict[str, Any]:
     real_name = _resolve_preview_realname_strict(core, safe_name)
     succeeded = failed = False
     message: str | None = None
+    job: Any | None = None
     try:
         job = batch.read_namespaced_job_status(
             name=_vcluster_preview_job_name(real_name, "down"),
@@ -8839,18 +9189,18 @@ def get_vcluster_preview_cleanup(request: Request, name: str) -> dict[str, Any]:
             ).is_absent(preview_name=real_name)
         except PreviewRunnerIdentityError as exc:
             message = f"runner identity absence proof pending: {exc}"
-    # The physical broker deletes and finalizes the hub PreviewEnvironment before it
-    # starts this down-runner. SEA proves the dev-side cleanup; the brokered cleanup
-    # adapter independently rechecks hub CR absence before exposing a complete proof.
+    # SEA proves only dev-side physical cleanup. The hub PreviewEnvironment remains
+    # finalizer-blocked until the broker records the tuple-bound teardownProof; hub
+    # Application/registration absence is a later controller phase.
     checks = {
         "runnerSucceeded": succeeded,
-        "previewEnvironmentAbsent": succeeded,
-        "applicationAbsent": succeeded,
-        "agentRegistrationAbsent": succeeded,
-        "agentNamespacesAbsent": succeeded,
+        "previewEnvironmentAbsent": False,
+        "applicationAbsent": False,
+        "agentRegistrationAbsent": False,
+        "agentNamespacesAbsent": False,
         "databaseAbsent": succeeded,
         "natsStreamAbsent": succeeded,
-        "headlampRegistrationAbsent": succeeded,
+        "headlampRegistrationAbsent": False,
         "tailnetEgressAbsent": succeeded,
         "hostNamespaceAbsent": host_absent,
         "storageScopeAbsent": succeeded,
@@ -8858,16 +9208,166 @@ def get_vcluster_preview_cleanup(request: Request, name: str) -> dict[str, Any]:
     }
     complete = succeeded and host_absent and runner_identity_absent
     phase = "complete" if complete else "failed" if failed else "pending"
+    teardown_proof: dict[str, str] | None = None
+    if complete and job is not None:
+        job_metadata = _kube_field(job, "metadata")
+        job_annotations = _kube_field(job_metadata, "annotations") or {}
+        intent_id = job_annotations.get("preview.stacks.io/teardown-intent-id")
+        environment_uid = job_annotations.get(
+            "preview.stacks.io/teardown-environment-uid"
+        )
+        request_id = job_annotations.get("preview.stacks.io/teardown-request-id")
+        source_revision = job_annotations.get(
+            "preview.stacks.io/teardown-source-revision"
+        )
+        runner_generation = _runner_job_generation(job)
+        job_uid = _kube_field(job_metadata, "uid")
+        job_name = _kube_field(job_metadata, "name")
+        if (
+            isinstance(intent_id, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", intent_id)
+            and isinstance(environment_uid, str)
+            and re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                environment_uid,
+            )
+            and isinstance(request_id, str)
+            and request_id
+            and isinstance(source_revision, str)
+            and re.fullmatch(r"[0-9a-f]{40}", source_revision)
+            and isinstance(job_name, str)
+            and job_name == _vcluster_preview_job_name(real_name, "down")
+            and isinstance(job_uid, str)
+            and re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                job_uid,
+            )
+            and runner_generation is not None
+        ):
+            teardown_proof = {
+                "intentId": intent_id,
+                "environmentUid": environment_uid,
+                "requestId": request_id,
+                "sourceRevision": source_revision,
+                "jobName": job_name,
+                "jobUid": job_uid,
+                "runnerGeneration": runner_generation,
+            }
     result = {
         "name": name,
         "resourceName": real_name,
         "complete": complete,
         "phase": phase,
         "checks": checks,
+        **({"teardownProof": teardown_proof} if teardown_proof is not None else {}),
         "message": message,
     }
     set_current_span_io("output", result)
     return result
+
+
+def _cleanup_receipt_from_job(job: Any, core: Any) -> dict[str, str] | None:
+    preview_name = _down_job_identity(job)
+    succeeded, failed, _ = _preview_job_state(job)
+    metadata = _kube_field(job, "metadata")
+    annotations = _kube_field(metadata, "annotations") or {}
+    job_name = _kube_field(metadata, "name")
+    job_uid = _kube_field(metadata, "uid")
+    generation = _runner_job_generation(job)
+    if (
+        preview_name is None
+        or not succeeded
+        or failed
+        or annotations.get(_PREVIEW_IDENTITY_CLEANED_ANNOTATION) != "true"
+        or _namespace_exists(core, preview_name)
+        or job_name != _vcluster_preview_job_name(preview_name, "down")
+        or not isinstance(job_uid, str)
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            job_uid,
+        )
+        is None
+        or generation is None
+    ):
+        return None
+    return {
+        "name": preview_name,
+        "jobName": job_name,
+        "jobUid": job_uid,
+        "runnerGeneration": generation,
+    }
+
+
+@app.get("/internal/vcluster-preview-cleanup-receipts")
+def list_vcluster_preview_cleanup_receipts(request: Request) -> dict[str, Any]:
+    """List durable down Jobs eligible for hub-absence-gated pruning."""
+
+    _require_internal(request)
+    batch, core = _load_k8s_clients()
+    jobs = batch.list_namespaced_job(
+        namespace=_vcluster_preview_control_namespace(),
+        label_selector="vcluster-preview-action=down,preview.stacks.io/managed=true",
+    )
+    receipts = [
+        receipt
+        for job in jobs.items
+        if (receipt := _cleanup_receipt_from_job(job, core)) is not None
+    ]
+    return {"receipts": sorted(receipts, key=lambda item: item["name"])}
+
+
+@app.delete("/internal/vcluster-preview-cleanup-receipts/{name}")
+def release_vcluster_preview_cleanup_receipt(
+    request: Request,
+    name: str,
+    body: VclusterPreviewCleanupReceiptReleaseRequest,
+) -> dict[str, Any]:
+    """Delete one exact receipt after the broker separately proved hub CR absence."""
+
+    _require_internal(request)
+    safe_name = _safe_resource_name(name, max_length=40)
+    batch, core = _load_k8s_clients()
+    job_name = _vcluster_preview_job_name(safe_name, "down")
+    try:
+        job = batch.read_namespaced_job_status(
+            name=job_name,
+            namespace=_vcluster_preview_control_namespace(),
+            _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return {"name": safe_name, "jobName": job_name, "absent": True}
+        raise
+    receipt = _cleanup_receipt_from_job(job, core)
+    if (
+        receipt is None
+        or receipt["jobUid"] != body.jobUid
+        or receipt["runnerGeneration"] != body.runnerGeneration
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="cleanup receipt identity or absence proof no longer matches",
+        )
+    batch.delete_namespaced_job(
+        name=job_name,
+        namespace=_vcluster_preview_control_namespace(),
+        propagation_policy="Foreground",
+    )
+    for _ in range(30):
+        try:
+            batch.read_namespaced_job(
+                name=job_name,
+                namespace=_vcluster_preview_control_namespace(),
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return {"name": safe_name, "jobName": job_name, "absent": True}
+            raise
+        time.sleep(0.1)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="cleanup receipt deletion did not converge",
+    )
 
 
 def _read_preview_member(core, name: str) -> PreviewMember:
@@ -9141,6 +9641,8 @@ def teardown_vcluster_preview(
         teardownExpectedRequestId=(body.expectedRequestId if body else None),
         teardownExpectedSourceRevision=(body.expectedSourceRevision if body else None),
         teardownProtectedRequestId=(body.protectedRequestId if body else None),
+        teardownEnvironmentUid=(body.environmentUid if body else None),
+        teardownIntentId=(body.deletionIntentId if body else None),
     )
     return provision_vcluster_preview(request, teardown)
 
@@ -9468,9 +9970,18 @@ def _preview_member_is_immutable_reconciled(member: PreviewMember) -> bool:
 
 
 def _preview_member_requires_archive_teardown(member: PreviewMember) -> bool:
-    """Only provenance-complete immutable acceptance may bypass host archiving."""
-    return member.profile == "app-live" and not _preview_member_is_immutable_reconciled(
-        member
+    """User/malformed live state requires archive; exact PR automation is reproducible."""
+    pull_request_automation = bool(
+        member.mode == "live"
+        and member.owner_contract is not None
+        and member.owner_contract.get("kind") == "automation"
+        and member.origin_contract is not None
+        and member.origin_contract.get("kind") == "pull-request"
+    )
+    return bool(
+        member.profile == "app-live"
+        and not pull_request_automation
+        and not _preview_member_is_immutable_reconciled(member)
     )
 
 

@@ -14,6 +14,7 @@ import type {
   PreviewEnvironmentOwner,
 } from "$lib/server/application/ports/preview-environments";
 import type { PreviewCapabilityBundle } from "$lib/server/preview-control-capability";
+import type { PreviewArchiveQuarantineGuard } from "$lib/server/application/ports/dev-previews";
 
 // Re-exported so existing importers (routes/tests) keep the same entrypoint; the
 // canonical (shared, client-safe) definition lives in $lib/types/dev-previews.
@@ -619,6 +620,15 @@ export interface VclusterPreviewCleanupObservation {
     storageScopeAbsent: boolean;
     runnerIdentityAbsent: boolean;
   };
+  teardownProof?: {
+    intentId: `sha256:${string}`;
+    environmentUid: string;
+    requestId: string;
+    sourceRevision: string;
+    jobName: string;
+    jobUid: string;
+    runnerGeneration: `op:${string}`;
+  };
   message: string | null;
 }
 
@@ -631,6 +641,7 @@ export async function getVclusterPreviewCleanup(
     `/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}/cleanup`,
   );
   const checks = objectValue(data.checks);
+  const rawProof = objectValue(data.teardownProof);
   const phase = data.phase;
   if (
     !checks ||
@@ -656,6 +667,41 @@ export async function getVclusterPreviewCleanup(
   if (required.some((key) => typeof checks[key] !== "boolean")) {
     throw new Error("SEA returned incomplete preview cleanup checks");
   }
+  const teardownProof = rawProof
+    ? {
+        intentId: rawProof.intentId,
+        environmentUid: rawProof.environmentUid,
+        requestId: rawProof.requestId,
+        sourceRevision: rawProof.sourceRevision,
+        jobName: rawProof.jobName,
+        jobUid: rawProof.jobUid,
+        runnerGeneration: rawProof.runnerGeneration,
+      }
+    : null;
+  if (
+    teardownProof &&
+    !(
+      typeof teardownProof.intentId === "string" &&
+      /^sha256:[0-9a-f]{64}$/.test(teardownProof.intentId) &&
+      typeof teardownProof.environmentUid === "string" &&
+      /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+        teardownProof.environmentUid,
+      ) &&
+      typeof teardownProof.requestId === "string" &&
+      teardownProof.requestId.length > 0 &&
+      typeof teardownProof.sourceRevision === "string" &&
+      /^[0-9a-f]{40}$/.test(teardownProof.sourceRevision) &&
+      typeof teardownProof.jobName === "string" &&
+      typeof teardownProof.jobUid === "string" &&
+      /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+        teardownProof.jobUid,
+      ) &&
+      typeof teardownProof.runnerGeneration === "string" &&
+      /^op:[0-9a-f]{32}$/.test(teardownProof.runnerGeneration)
+    )
+  ) {
+    throw new Error("SEA returned an invalid preview teardown proof");
+  }
   return {
     name: typeof data.name === "string" ? data.name : name,
     resourceName:
@@ -665,8 +711,63 @@ export async function getVclusterPreviewCleanup(
     checks: Object.fromEntries(
       required.map((key) => [key, checks[key] as boolean]),
     ) as VclusterPreviewCleanupObservation["checks"],
+    ...(teardownProof
+      ? {
+          teardownProof:
+            teardownProof as VclusterPreviewCleanupObservation["teardownProof"],
+        }
+      : {}),
     message: typeof data.message === "string" ? data.message : null,
   };
+}
+
+export async function listVclusterPreviewCleanupReceipts(): Promise<
+  Array<{
+    name: string;
+    jobName: string;
+    jobUid: string;
+    runnerGeneration: `op:${string}`;
+  }>
+> {
+  const data = await call("GET", "/internal/vcluster-preview-cleanup-receipts");
+  if (!Array.isArray(data.receipts)) {
+    throw new Error("SEA returned an invalid cleanup receipt inventory");
+  }
+  return data.receipts.map((value) => {
+    const receipt = objectValue(value);
+    if (
+      !receipt ||
+      typeof receipt.name !== "string" ||
+      typeof receipt.jobName !== "string" ||
+      typeof receipt.jobUid !== "string" ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(receipt.jobUid) ||
+      typeof receipt.runnerGeneration !== "string" ||
+      !/^op:[0-9a-f]{32}$/.test(receipt.runnerGeneration)
+    ) {
+      throw new Error("SEA returned an invalid cleanup receipt identity");
+    }
+    return receipt as {
+      name: string;
+      jobName: string;
+      jobUid: string;
+      runnerGeneration: `op:${string}`;
+    };
+  });
+}
+
+export async function releaseVclusterPreviewCleanupReceipt(input: {
+  name: string;
+  jobUid: string;
+  runnerGeneration: `op:${string}`;
+}): Promise<void> {
+  const data = await call(
+    "DELETE",
+    `/internal/vcluster-preview-cleanup-receipts/${encodeURIComponent(safePreviewName(input.name))}`,
+    { jobUid: input.jobUid, runnerGeneration: input.runnerGeneration },
+  );
+  if (data.absent !== true || data.name !== input.name) {
+    throw new Error("SEA did not prove cleanup receipt absence");
+  }
 }
 
 /** List active Tier-2 previews. Free/recycling pool members are hidden; a claimed member shows
@@ -718,6 +819,11 @@ export async function teardownVclusterPreview(
         requestId: string;
         sourceRevision: string;
         archiveConfirmed?: true;
+        archiveQuarantine?: PreviewArchiveQuarantineGuard;
+        deletionIntent?: Readonly<{
+          id: `sha256:${string}`;
+          environmentUid: string;
+        }>;
       }>
     | Readonly<{ mode: "superseded"; protectedRequestId: string }>,
 ): Promise<VclusterPreview> {
@@ -729,6 +835,12 @@ export async function teardownVclusterPreview(
         ? {
             expectedRequestId: guard.requestId,
             expectedSourceRevision: guard.sourceRevision,
+            ...(guard.deletionIntent
+              ? {
+                  environmentUid: guard.deletionIntent.environmentUid,
+                  deletionIntentId: guard.deletionIntent.id,
+                }
+              : {}),
           }
         : { protectedRequestId: guard.protectedRequestId }
       : undefined,

@@ -231,7 +231,29 @@ describe("validatePreviewEnvironmentLaunchSpec", () => {
     expect(Object.isFrozen(command.allocation)).toBe(true);
   });
 
-  it("requires a host user owner for mutable live app previews", () => {
+  it.each([
+    "pool-1383",
+    "pool-replacement",
+    "mtxdev1",
+    "mtxtmpl1",
+    "preview6",
+    "ganpilot",
+    "ganvalidate",
+    "test3",
+  ])(
+    "rejects legacy retirement subject name %s before adapter dispatch",
+    (name) => {
+      expect(validationError(appLiveSpec({ name })).issues).toContainEqual(
+        expect.objectContaining({
+          path: "name",
+          code: "invalid-value",
+          message: "name is reserved for legacy preview retirement",
+        }),
+      );
+    },
+  );
+
+  it("requires a user or pull-request automation owner for live app previews", () => {
     const error = validationError(
       appLiveSpec({
         owner: { kind: "workflow", id: "workflow-1" },
@@ -245,6 +267,57 @@ describe("validatePreviewEnvironmentLaunchSpec", () => {
       }),
     );
   });
+
+  it("allows pull-request automation to own an ephemeral live app preview", () => {
+    const command = validatePreviewEnvironmentLaunchSpec(
+      appLiveSpec({
+        lifecycle: "ephemeral",
+        owner: { kind: "automation", id: "pr-preview:42" },
+        origin: {
+          kind: "pull-request",
+          reference: "PittampalliOrg/workflow-builder#42",
+        },
+      }),
+    );
+
+    expect(command.owner).toEqual({
+      kind: "automation",
+      id: "pr-preview:42",
+    });
+    expect(command.origin).toEqual({
+      kind: "pull-request",
+      reference: "PittampalliOrg/workflow-builder#42",
+    });
+  });
+
+  it.each([
+    [{ kind: "automation", id: "scheduled-preview" }, { kind: "automation" }],
+    [
+      { kind: "workflow", id: "workflow-1" },
+      { kind: "pull-request", reference: "PittampalliOrg/workflow-builder#42" },
+    ],
+    [
+      { kind: "session", id: "session-1" },
+      { kind: "interactive-session", reference: "session-1" },
+    ],
+  ] as const)(
+    "rejects non-PR automation and non-user live ownership",
+    (owner, origin) => {
+      expect(
+        validationError(
+          appLiveSpec({
+            owner,
+            origin,
+          }),
+        ).issues,
+      ).toContainEqual(
+        expect.objectContaining({
+          path: "owner.kind",
+          code: "invalid-value",
+        }),
+      );
+    },
+  );
 
   it("allows non-user owners for immutable reconciled app acceptance previews", () => {
     const image = `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`;

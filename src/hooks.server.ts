@@ -35,14 +35,29 @@ export function previewControlBrokerModeEnabled(): boolean {
 /** Exact physical-control-plane surface. Preview-local reverse calls stay excluded. */
 export const PREVIEW_CONTROL_BROKER_ROUTES = Object.freeze([
   ["POST", "/api/internal/preview-control/artifacts"],
+  ["POST", "/api/internal/preview-control/accepted-images/reuse"],
+  ["POST", "/api/internal/preview-control/activation-images"],
+  ["POST", "/api/internal/preview-control/dev-sync-credentials"],
   ["POST", "/api/internal/preview-control/development-build"],
   ["POST", "/api/internal/preview-control/environment"],
+  ["POST", "/api/internal/preview-control/deletion-intents/reconcile"],
   ["POST", "/api/internal/preview-control/infrastructure-candidate"],
   ["POST", "/api/internal/preview-control/pr-preview"],
   ["POST", "/api/internal/preview-control/acceptance"],
   ["POST", "/api/internal/preview-control/read"],
   ["POST", "/api/internal/preview-control/promotion"],
   ["POST", "/api/internal/preview-runtime/v1/chat/completions"],
+] as const);
+
+const PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES = Object.freeze([
+  [
+    "POST",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/teardown$/,
+  ],
+  [
+    "GET",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/cleanup$/,
+  ],
 ] as const);
 
 const previewControlBrokerRouteKeys = new Set(
@@ -74,7 +89,11 @@ export function previewControlBrokerModeResponse(
     );
   }
   if (
-    previewControlBrokerRouteKeys.has(`${method.toUpperCase()} ${pathname}`)
+    previewControlBrokerRouteKeys.has(`${method.toUpperCase()} ${pathname}`) ||
+    PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES.some(
+      ([routeMethod, pattern]) =>
+        routeMethod === method.toUpperCase() && pattern.test(pathname),
+    )
   ) {
     return null;
   }

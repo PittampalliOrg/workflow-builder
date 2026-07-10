@@ -305,9 +305,24 @@ describe("ApplicationPrPreviewService", () => {
       platformRevision: PLATFORM,
       sourceRevision: HEAD,
       profile: "app-live",
+      lane: "application",
       mode: "live",
+      services: ["workflow-builder", "workflow-orchestrator"],
+      owner: { kind: "automation", id: "pr-preview:42" },
+      origin: {
+        kind: "pull-request",
+        reference: `${REPOSITORY}#42`,
+      },
+      lifecycle: "ephemeral",
       allocation: { kind: "cold" },
-      requestId: "request-42",
+      provenance: {
+        requestId: "request-42",
+        requestedAt: NOW.toISOString(),
+        platformRepository: PLATFORM_REPOSITORY,
+        sourceRepository: REPOSITORY,
+      },
+      images: {},
+      catalogDigest: CATALOG,
     });
     expect(calls.seed).toEqual([
       {

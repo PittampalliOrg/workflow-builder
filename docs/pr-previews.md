@@ -1,5 +1,12 @@
 # Pull-request PreviewEnvironments
 
+> **Optional POC adapter:** the first development POC may launch and validate
+> environments through the authenticated product workflow without completing
+> every PR-webhook, force-push, status, and branch-governance scenario below.
+> Keep this adapter fail closed if enabled. Its exhaustive automation matrix is
+> post-POC hardening; the core POC gates are the interactive app-live loop,
+> immutable replay, manifest candidate, and teardown.
+
 A pull request carrying the `preview` label can request an isolated live
 development environment on the physical `dev` cluster. PR automation is a
 specialized inbound adapter to the same `PreviewEnvironment` domain used by
@@ -76,7 +83,7 @@ There is no 422 retry which strips lifecycle, owner, origin, or provenance.
 
 ```text
 GitHub pull_request webhook
-  -> hub Tekton label gate and internal-token dispatch
+  -> hub Tekton label gate and purpose-specific governance dispatch
   -> persistent BFF compatibility route (credential-free command proxy)
   -> immutable preview-control broker
   -> ApplicationPrPreviewService authority admission
@@ -115,23 +122,26 @@ only that generation. An incomplete cleanup remains visible as an error record.
 
 ## Configuration
 
-| Variable                             | Purpose                                                                                            |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `PR_PREVIEWS_ENABLED`                | Enables the internal PR command/status routes.                                                     |
-| `PR_PREVIEW_REPO`                    | Canonical source repo; defaults to `PittampalliOrg/workflow-builder`.                              |
-| `PREVIEW_PLATFORM_REPOSITORY`        | Canonical stacks repository.                                                                       |
-| `PREVIEW_PLATFORM_REF`               | Server-side platform ref resolved to an immutable SHA.                                             |
-| `PREVIEW_CONTROL_GITHUB_APP_ID` | Preview-control GitHub App identifier. |
-| `PREVIEW_CONTROL_GITHUB_APP_INSTALLATION_ID` | Installation used for bounded repository token exchanges. |
-| `PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY_FILE` | Broker-only read-only mount containing the App private key. |
-| `PREVIEW_CONTROL_BROKER_URL`         | Persistent BFF address for the immutable broker.                                                   |
-| `PREVIEW_CONTROL_BROKER_TOKEN`       | Dedicated BFF-to-broker command credential.                                                        |
-| `PR_PREVIEW_VERIFY_ENABLED`          | Enables the optional critic after the environment is ready.                                        |
-| `PR_PREVIEW_VERIFY_WORKFLOW`         | Workflow name for the configured critic.                                                           |
+| Variable                                      | Purpose                                                                                      |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `PR_PREVIEWS_ENABLED`                         | Enables the internal PR command/status routes.                                               |
+| `PR_PREVIEW_REPO`                             | Canonical source repo; defaults to `PittampalliOrg/workflow-builder`.                        |
+| `PREVIEW_PLATFORM_REPOSITORY`                 | Canonical stacks repository.                                                                 |
+| `PREVIEW_PLATFORM_REF`                        | Server-side platform ref resolved to an immutable SHA.                                       |
+| `PREVIEW_CONTROL_GITHUB_APP_ID`               | Preview-control GitHub App identifier.                                                       |
+| `PREVIEW_CONTROL_GITHUB_APP_INSTALLATION_ID`  | Installation used for bounded repository token exchanges.                                    |
+| `PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY_FILE` | Broker-only read-only mount containing the App private key.                                  |
+| `PREVIEW_CONTROL_BROKER_URL`                  | Persistent BFF address for the immutable broker.                                             |
+| `PREVIEW_CONTROL_BROKER_TOKEN`                | Dedicated BFF-to-broker command credential.                                                  |
+| `PREVIEW_GOVERNANCE_DISPATCH_TOKEN`           | Dedicated hub webhook credential accepted only by PR-preview and activation dispatch routes. |
+| `PR_PREVIEW_VERIFY_ENABLED`                   | Enables the optional critic after the environment is ready.                                  |
+| `PR_PREVIEW_VERIFY_WORKFLOW`                  | Workflow name for the configured critic.                                                     |
 
-The hub dispatcher must send only `action`, `prNumber`, `headSha`, and optional
-`verify`. `headRef` and `changedFiles` are rejected because accepting them would
-restore webhook-supplied authority.
+The hub dispatcher uses `X-Preview-Governance-Dispatch`; broad internal and
+broker tokens are rejected. Its Task has fixed repository, BFF TLS host, egress
+Service, and poll budgets. It must send only `action`, `prNumber`, `headSha`,
+and optional `verify`. `headRef` and `changedFiles` are rejected because
+accepting them would restore webhook-supplied authority.
 
 ## Validation
 

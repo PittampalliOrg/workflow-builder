@@ -47,6 +47,7 @@ function harness() {
       services: [...request.requiredServices],
     })),
     authorizeRuntime: vi.fn(),
+    authorizeRuntimeTuple: vi.fn(),
     authorizeCurrent: vi.fn(),
   };
   const git: PreviewControlGitSourceVerificationPort = {

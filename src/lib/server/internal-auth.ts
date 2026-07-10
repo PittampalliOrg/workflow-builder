@@ -91,6 +91,24 @@ export function requirePreviewAcceptedImageReuse(request: Request): void {
   }
 }
 
+/** Dedicated hub webhook credential; broad internal and broker tokens are rejected. */
+export function validatePreviewGovernanceDispatchToken(
+  request: Request,
+): boolean {
+  const expected = env.PREVIEW_GOVERNANCE_DISPATCH_TOKEN?.trim();
+  const token = request.headers.get("x-preview-governance-dispatch")?.trim();
+  if (!expected || !token) return false;
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const tokenDigest = createHash("sha256").update(token).digest();
+  return timingSafeEqual(expectedDigest, tokenDigest);
+}
+
+export function requirePreviewGovernanceDispatch(request: Request): void {
+  if (!validatePreviewGovernanceDispatchToken(request)) {
+    throw error(401, "invalid or missing PREVIEW_GOVERNANCE_DISPATCH_TOKEN");
+  }
+}
+
 /** Per-preview capability for every mutable-preview/physical-control call. */
 export function requirePreviewControlCapability(
   request: Request,

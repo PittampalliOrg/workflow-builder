@@ -75,4 +75,23 @@ describe("physical activation-image route", () => {
     expect(response.status).toBe(400);
     expect(mocks.buildAndFinalize).not.toHaveBeenCalled();
   });
+
+  it("returns a server-derived skip when the exact PR needs no activation image", async () => {
+    const { PreviewActivationGateInputError } = await import(
+      "$lib/server/application/preview-activation-gate"
+    );
+    mocks.buildAndFinalize.mockRejectedValueOnce(
+      new PreviewActivationGateInputError(
+        "pull request does not require activation-image evidence",
+      ),
+    );
+    const response = (await POST(event(body) as never)) as Response;
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      required: false,
+      pullRequest: body.pullRequest,
+      catalogDigest: body.catalogDigest,
+    });
+  });
 });

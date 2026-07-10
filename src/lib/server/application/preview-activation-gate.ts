@@ -125,6 +125,7 @@ export class ApplicationPreviewActivationGateService implements PreviewActivatio
       await this.deps.gate.reconcile(pullRequest);
       return Object.freeze({
         ok: true,
+        required: true,
         pullRequest: Object.freeze({
           repository: pullRequest.repository,
           number: pullRequest.number,
@@ -200,6 +201,7 @@ export class ApplicationPreviewActivationGateService implements PreviewActivatio
       await this.deps.gate.reconcile(pullRequest);
       return Object.freeze({
         ok: true,
+        required: true,
         pullRequest: Object.freeze({
           repository: pullRequest.repository,
           number: pullRequest.number,

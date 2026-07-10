@@ -5,6 +5,7 @@ const privateEnv = vi.hoisted(() => ({
   PREVIEW_ACTION_INTERNAL_TOKEN: "preview-token",
   PREVIEW_CONTROL_BROKER_TOKEN: "broker-token",
   PREVIEW_ACCEPTED_IMAGE_REUSE_TOKEN: "reuse-token",
+  PREVIEW_GOVERNANCE_DISPATCH_TOKEN: "governance-dispatch-token",
   PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN: "",
   PREVIEW_CONTROL_CAPABILITY_TOKEN: "d".repeat(64),
   PREVIEW_ENVIRONMENT_NAME: "feature-one",
@@ -19,11 +20,13 @@ vi.mock("$env/dynamic/private", () => ({ env: privateEnv }));
 import {
   requireInternalOrPreviewControlRead,
   requirePreviewActionInternal,
+  requirePreviewGovernanceDispatch,
   requirePreviewAcceptedImageReuse,
   requirePreviewControlBroker,
   validateInternalToken,
   validateInternalOrPreviewControlRead,
   validatePreviewActionInternalToken,
+  validatePreviewGovernanceDispatchToken,
   validatePreviewAcceptedImageReuseToken,
   validatePreviewControlBrokerToken,
 } from "$lib/server/internal-auth";
@@ -42,6 +45,7 @@ describe("preview action internal authentication", () => {
     privateEnv.PREVIEW_ACTION_INTERNAL_TOKEN = "preview-token";
     privateEnv.PREVIEW_CONTROL_BROKER_TOKEN = "broker-token";
     privateEnv.PREVIEW_ACCEPTED_IMAGE_REUSE_TOKEN = "reuse-token";
+    privateEnv.PREVIEW_GOVERNANCE_DISPATCH_TOKEN = "governance-dispatch-token";
     privateEnv.PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN = "";
     privateEnv.PREVIEW_CONTROL_CAPABILITY_TOKEN = "d".repeat(64);
   });
@@ -63,6 +67,26 @@ describe("preview action internal authentication", () => {
       const candidate = request(headers);
       expect(validatePreviewAcceptedImageReuseToken(candidate)).toBe(false);
       expect(() => requirePreviewAcceptedImageReuse(candidate)).toThrow();
+    }
+  });
+
+  it("isolates activation dispatch from broad internal and broker credentials", () => {
+    const accepted = request({
+      "x-preview-governance-dispatch": "governance-dispatch-token",
+    });
+    expect(validatePreviewGovernanceDispatchToken(accepted)).toBe(true);
+    expect(() => requirePreviewGovernanceDispatch(accepted)).not.toThrow();
+
+    const invalidHeaders: Array<Record<string, string>> = [
+      { "x-internal-token": "shared-token" },
+      { "x-preview-control-broker-token": "governance-dispatch-token" },
+      { authorization: "Bearer governance-dispatch-token" },
+      { "x-preview-governance-dispatch": "wrong-token" },
+    ];
+    for (const headers of invalidHeaders) {
+      const candidate = request(headers);
+      expect(validatePreviewGovernanceDispatchToken(candidate)).toBe(false);
+      expect(() => requirePreviewGovernanceDispatch(candidate)).toThrow();
     }
   });
 

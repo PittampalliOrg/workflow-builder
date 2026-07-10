@@ -12,7 +12,14 @@ import {
   readBoundedJsonObject,
 } from "../../../../_shared/bounded-json-body";
 
-const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const configuredMaxRequestBytes = Number(
+  env.PREVIEW_RUNTIME_MAX_PAYLOAD_BYTES ?? "",
+);
+const MAX_REQUEST_BYTES =
+  Number.isSafeInteger(configuredMaxRequestBytes) &&
+  configuredMaxRequestBytes > 0
+    ? Math.max(16_384, Math.min(2_097_152, configuredMaxRequestBytes))
+    : 524_288;
 
 export const POST: RequestHandler = async ({ request }) => {
   if (env.PREVIEW_CONTROL_BROKER_MODE?.trim().toLowerCase() !== "true") {
@@ -74,8 +81,19 @@ export const POST: RequestHandler = async ({ request }) => {
         "invalid-request": 400,
         "model-forbidden": 403,
         capacity: 429,
+        "budget-exhausted": 429,
+        "budget-unavailable": 503,
       }[cause.code];
-      return json({ error: cause.message, code: cause.code }, { status });
+      return json(
+        {
+          error: cause.message,
+          code: cause.code,
+          ...(cause.code === "budget-exhausted" && cause.budgetReason
+            ? { reason: cause.budgetReason }
+            : {}),
+        },
+        { status },
+      );
     }
     if (cause instanceof PreviewControlSourceAuthorityError) {
       const status =

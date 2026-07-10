@@ -136,6 +136,25 @@ and BEFORE the SEA teardown (the preview DB dies with the vcluster):
 unreachable, thrown) resolves to `archive: { archived: false, reason }` in the
 DELETE response and the teardown proceeds. The runner.sh down-Job is untouched.
 
+### TTL archive and quarantine
+
+The automatic TTL path is stricter than the interactive DELETE path during its
+bounded retry window. A complete empty execution inventory writes a durable
+zero-run summary and authorizes normal teardown. Active or incomplete archives,
+wake failures, and archive transport failures are retried until
+`expiresAt + PREVIEW_TTL_ARCHIVE_GRACE_MINUTES` (default 60 minutes); no forced
+teardown is allowed earlier.
+
+After grace, the lifecycle service writes a second summary with
+`teardownDisposition.mode: "forced-quarantine"` when host Files storage is
+available and starts forced teardown even when that marker or the preview read
+path remains unavailable. The application result and broker guard retain the
+forced reason and timestamps. Exact owner/request/source matching and
+`PREVIEW_ARCHIVE_TEARDOWN_TOKEN` are still mandatory; quarantine is a bounded
+retention policy, not an authorization bypass. Fixed-size TTL batches use a
+restart-stable clock rotation so repeated failures cannot starve later expired
+previews.
+
 Query archives later: `GET /api/v1/files?scopeId=preview-archive:<name>`
 (session) or `GET /api/internal/files/[id]/content` (internal token).
 

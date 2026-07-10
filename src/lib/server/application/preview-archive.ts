@@ -2,11 +2,17 @@ import type {
 	CreateWorkflowFileInput,
 	ListWorkflowFilesByScopePrefixFilter,
 	PreviewArtifactSummary,
+	PreviewArchiveInput,
+	PreviewArchivePort,
+	PreviewArchiveQuarantineInput,
+	PreviewArchiveResult,
 	PreviewExecutionSummary,
 	PreviewReadProxyPort,
 	PreviewRunTarget,
 	WorkflowFileRecord
 } from '$lib/server/application/ports';
+
+export type { PreviewArchiveResult } from '$lib/server/application/ports';
 
 /**
  * E3: archive-on-teardown. A Tier-2 preview's DB — run history, transcripts,
@@ -62,17 +68,6 @@ export type PreviewArchivedBundle = {
 	fileId: string;
 	sizeBytes: number;
 	contentType: string | null;
-};
-
-export type PreviewArchiveResult = {
-	archived: boolean;
-	preview: string;
-	reason?: string;
-	summaryFileId?: string;
-	executionCount?: number;
-	bundleCount?: number;
-	bundleErrors?: number;
-	notes?: string[];
 };
 
 const DEFAULT_EXECUTION_LIMIT = 200;
@@ -176,7 +171,7 @@ function compactExecution(execution: PreviewExecutionSummary) {
 	};
 }
 
-export class ApplicationPreviewArchiveService {
+export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 	constructor(private readonly deps: PreviewArchiveDeps) {}
 
 	/**
@@ -185,11 +180,7 @@ export class ApplicationPreviewArchiveService {
 	 * they resolve to `{ archived: false, reason }`. Unexpected throws are the
 	 * caller's job to catch (the teardown route wraps this call).
 	 */
-	async archivePreview(input: {
-		name: string;
-		userId: string;
-		projectId?: string | null;
-	}): Promise<PreviewArchiveResult> {
+	async archivePreview(input: PreviewArchiveInput): Promise<PreviewArchiveResult> {
 		const name = input.name.trim();
 		const deadline = Date.now() + (this.deps.deadlineMs ?? DEFAULT_DEADLINE_MS);
 		const previews = await this.deps.listPreviews();
@@ -328,16 +319,7 @@ export class ApplicationPreviewArchiveService {
 		}
 
 		if (list.data.total === 0 && executions.length === 0) {
-			// The archive boundary cannot prove that an empty listing represents no
-			// live source state. Fail closed instead of authorizing destructive teardown.
-			return {
-				archived: false,
-				preview: name,
-				reason: 'empty-unverified',
-				executionCount: 0,
-				bundleCount: 0,
-				bundleErrors
-			};
+			notes.push('complete execution inventory contained zero runs');
 		}
 
 		const archivedAt = (this.deps.now?.() ?? new Date()).toISOString();
@@ -381,6 +363,69 @@ export class ApplicationPreviewArchiveService {
 			bundleCount: copied.length,
 			bundleErrors,
 			...(notes.length ? { notes } : {})
+		};
+	}
+
+	/**
+	 * Persist an explicit loss-accounting marker once the bounded archive retry
+	 * grace has elapsed. This does not claim the archive is complete; it makes the
+	 * forced teardown disposition durable in the host data plane.
+	 */
+	async quarantinePreview(input: PreviewArchiveQuarantineInput): Promise<PreviewArchiveResult> {
+		const name = input.preview.name.trim();
+		if (!name) throw new Error('preview quarantine requires a name');
+		const attempted = input.attemptedArchive;
+		const summary = {
+			schema: PREVIEW_ARCHIVE_SCHEMA,
+			preview: {
+				name,
+				pool: input.preview.pool,
+				url: input.preview.url
+			},
+			archivedAt: input.forcedAt,
+			executionsTotal: null,
+			observedExecutionCount: attempted?.executionCount ?? null,
+			executions: [],
+			bundles: [],
+			unpromotedBundlesTotal: null,
+			bundleErrors: attempted?.bundleErrors ?? 0,
+			artifactListingDegraded: true,
+			archiveComplete: false,
+			incompleteReasons: [input.reason],
+			notes: [
+				`forced quarantine teardown after archive retry grace: ${input.reason}`,
+				...(attempted?.summaryFileId
+					? [`prior incomplete summary: ${attempted.summaryFileId}`]
+					: [])
+			],
+			teardownDisposition: {
+				mode: 'forced-quarantine',
+				forcedAt: input.forcedAt,
+				graceExpiredAt: input.graceExpiredAt,
+				previewExpiredAt: input.preview.expiresAt,
+				reason: input.reason,
+				priorSummaryFileId: attempted?.summaryFileId ?? null
+			}
+		};
+		const stored = await this.deps.files.createFile({
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+			name: `preview-${name}/run-summary-quarantine-${input.forcedAt.replace(/[:.]/g, '-')}.json`,
+			purpose: 'output',
+			scopeId: previewArchiveScopeId(name),
+			contentType: 'application/json',
+			bytes: Buffer.from(JSON.stringify(summary, null, '\t'))
+		});
+		return {
+			archived: false,
+			quarantined: true,
+			preview: name,
+			reason: `forced-quarantine:${input.reason}`,
+			summaryFileId: stored.file.id,
+			executionCount: attempted?.executionCount,
+			bundleCount: attempted?.bundleCount,
+			bundleErrors: attempted?.bundleErrors,
+			notes: summary.notes
 		};
 	}
 

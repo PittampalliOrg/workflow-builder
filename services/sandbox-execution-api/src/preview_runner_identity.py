@@ -228,9 +228,14 @@ class PreviewRunnerIdentityAdapter:
         action: str,
         lifecycle: str | None,
         runner_generation: str,
+        allow_absent_down_bootstrap: bool = False,
     ) -> PreviewRunnerIdentityReservation:
         if not _RUNNER_GENERATION_RE.fullmatch(runner_generation):
             raise PreviewRunnerIdentityError("runner generation is invalid")
+        if allow_absent_down_bootstrap and action != "down":
+            raise PreviewRunnerIdentityError(
+                "absent identity bootstrap is allowed only for down"
+            )
         contract = PreviewRunnerIdentityContract(preview_name, lifecycle)
         namespace = self._read_optional(
             lambda: self._core.read_namespace(name=contract.target_namespace),
@@ -283,7 +288,12 @@ class PreviewRunnerIdentityAdapter:
                 self._ensure_control_role_binding(contract, created)
                 self._ensure_target_role_binding(contract, created)
             else:
-                self._require_residual_down_identity(contract)
+                if allow_absent_down_bootstrap:
+                    self._ensure_service_account(contract, created)
+                    self._ensure_cluster_role_binding(contract, created)
+                    self._ensure_control_role_binding(contract, created)
+                else:
+                    self._require_residual_down_identity(contract)
                 target = self._read_optional(
                     lambda: self._rbac.read_namespaced_role_binding(
                         name=contract.identity_name,

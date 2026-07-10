@@ -63,9 +63,66 @@ describe('physical PreviewEnvironment teardown route', () => {
 		});
 	});
 
+	it('preserves the bounded forced-quarantine disposition behind archive proof', async () => {
+		const archiveQuarantine = {
+			forcedAt: '2026-07-09T23:00:00.000Z',
+			graceExpiredAt: '2026-07-09T22:00:00.000Z',
+			reason: 'incomplete:active-generation-unverified',
+			summaryFileId: 'quarantine-summary-1'
+		};
+		const response = (await POST(
+			event({ guard: { ...guard, archiveQuarantine } }) as never
+		)) as Response;
+		expect(response.status).toBe(200);
+		expect(mocks.teardown).toHaveBeenCalledWith({
+			name: 'feature-one',
+			guard: { ...guard, archiveQuarantine }
+		});
+	});
+
 	it.each([
 		[{}, 'invalid teardown command'],
 		[{ guard: { ...guard, sourceRevision: 'main' } }, 'invalid teardown guard'],
+		[
+			{
+				guard: {
+					...guard,
+					archiveConfirmed: undefined,
+					archiveQuarantine: {
+						forcedAt: '2026-07-09T23:00:00.000Z',
+						graceExpiredAt: '2026-07-09T22:00:00.000Z',
+						reason: 'forced'
+					}
+				}
+			},
+			'invalid teardown guard'
+		],
+		[
+			{
+				guard: {
+					...guard,
+					archiveQuarantine: {
+						forcedAt: 'not-a-date',
+						graceExpiredAt: '2026-07-09T22:00:00.000Z',
+						reason: 'forced'
+					}
+				}
+			},
+			'invalid teardown guard'
+		],
+		[
+			{
+				guard: {
+					...guard,
+					archiveQuarantine: {
+						forcedAt: '2026-07-09T21:59:59.999Z',
+						graceExpiredAt: '2026-07-09T22:00:00.000Z',
+						reason: 'forced-too-early'
+					}
+				}
+			},
+			'invalid teardown guard'
+		],
 		[{ guard, token: 'attacker' }, 'invalid teardown command']
 	])('rejects malformed destructive commands', async (body, message) => {
 		const response = (await POST(event(body) as never)) as Response;

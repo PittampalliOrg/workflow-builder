@@ -124,6 +124,7 @@ function harness() {
 			services: input.requiredServices,
 		})),
 		authorizeRuntime: vi.fn(),
+		authorizeRuntimeTuple: vi.fn(),
 		authorizeCurrent: vi.fn(),
 	};
 	const store: PreviewControlArtifactStorePort = {

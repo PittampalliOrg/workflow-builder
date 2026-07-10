@@ -77,6 +77,7 @@ function harness() {
       services: input.requiredServices,
     })),
     authorizeRuntime: vi.fn(),
+    authorizeRuntimeTuple: vi.fn(),
     authorizeCurrent: vi.fn(async (input) => ({
       previewName: input.previewName,
       requestId: "launch-1",

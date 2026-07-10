@@ -47,6 +47,8 @@ describe("getEventBusAdapter", () => {
 				promoteAutoPreviewLabel: false,
 				previewReadProxyEnabled: false,
 				previewArchiveOnTeardownEnabled: false,
+				previewTtlArchiveGraceMinutes: 60,
+				previewTtlFairnessWindowSeconds: 60,
 			}),
 		).toThrow("Unsupported event bus adapter: bogus");
 	});

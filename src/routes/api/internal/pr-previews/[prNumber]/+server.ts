@@ -1,6 +1,6 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
+import { validatePreviewGovernanceDispatchToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
 
@@ -14,7 +14,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	if (!getApplicationAdapterConfig().prPreviewsEnabled) {
 		return json({ error: "PR previews are not enabled" }, { status: 404 });
 	}
-	if (!validateInternalToken(request)) {
+	if (!validatePreviewGovernanceDispatchToken(request)) {
 		return json({ error: "Unauthorized" }, { status: 401 });
 	}
 	const prNumber = Number(params.prNumber);

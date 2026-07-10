@@ -680,6 +680,13 @@
       "when": 1783972800000,
       "tag": "0102_preview_accepted_image_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1784059200000,
+      "tag": "0103_preview_runtime_budgets",
+      "breakpoints": true
     }
   ]
 }

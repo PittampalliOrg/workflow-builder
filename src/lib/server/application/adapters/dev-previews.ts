@@ -1,5 +1,6 @@
 import type {
   VclusterPreviewGatewayPort,
+  PreviewEnvironmentCleanupReceiptPort,
   VclusterPreviewLaunchInput,
   VclusterPreviewSleepOutcome,
   VclusterPreviewTouchResult,
@@ -20,9 +21,11 @@ import {
   getVclusterPreviewRuntime,
   getVclusterPreview,
   listVclusterPreviewsWithCounts,
+  listVclusterPreviewCleanupReceipts,
   provisionVclusterPreview,
   sleepVclusterPreview,
   teardownVclusterPreview,
+  releaseVclusterPreviewCleanupReceipt,
   touchVclusterPreview,
   VclusterPreviewHttpError,
   type VclusterPreview,
@@ -137,6 +140,18 @@ export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort 
       }
       throw err;
     }
+  }
+}
+
+export class LegacyPreviewEnvironmentCleanupReceiptAdapter implements PreviewEnvironmentCleanupReceiptPort {
+  list() {
+    return listVclusterPreviewCleanupReceipts();
+  }
+
+  release(
+    receipt: Parameters<PreviewEnvironmentCleanupReceiptPort["release"]>[0],
+  ) {
+    return releaseVclusterPreviewCleanupReceipt(receipt);
   }
 }
 
