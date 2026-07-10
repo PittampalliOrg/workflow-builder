@@ -226,3 +226,52 @@ def test_execute_team_op_success_carries_team_identity(monkeypatch):
     assert out["success"] is True
     assert out["teamId"] == "team-e1"
     assert out["result"] == {"ok": True, "task": {"id": "t1"}}
+
+
+# ── Stage-1 UI data: rail labels + spawn sessionId backfill ───────────────
+
+
+def test_team_call_label_all_ops():
+    from workflows.dynamic_script_workflow import _team_call_label
+
+    assert _team_call_label("spawn", {"name": "researcher"}) == "spawn researcher"
+    assert _team_call_label("spawn", {"agent": "glm"}) == "spawn glm"
+    assert _team_call_label("task", {"title": "A very long title that keeps going"}) == 'task "A very long title that k"'
+    assert _team_call_label("task", {}) == "task"
+    assert _team_call_label("send", {"to": "critic"}) == "send → critic"
+    assert _team_call_label("broadcast", {}) == "broadcast"
+    assert _team_call_label("join", {"until": "all-idle"}) == "join (all-idle)"
+    assert _team_call_label("join", {}) == "join (tasks-complete)"
+    assert _team_call_label("shutdown", {}) == "shutdown all"
+    assert _team_call_label("shutdown", {"name": "critic"}) == "shutdown critic"
+    assert _team_call_label("status", {}) == "status"
+
+
+def test_journal_spawn_backfills_session_id(monkeypatch):
+    out, rows = _journal(
+        monkeypatch,
+        {"kind": "team", "teamOp": "spawn"},
+        {"success": True, "result": {"ok": True, "name": "r", "sessionId": "tm-team-x-r"}},
+    )
+    assert out["status"] == "done"
+    assert rows[0]["sessionId"] == "tm-team-x-r"
+
+
+def test_journal_send_leaves_session_id_none(monkeypatch):
+    out, rows = _journal(
+        monkeypatch,
+        {"kind": "team", "teamOp": "send"},
+        {"success": True, "result": {"ok": True, "to": "critic"}},
+    )
+    assert out["status"] == "done"
+    assert rows[0]["sessionId"] is None
+
+
+def test_journal_spawn_without_session_id_is_safe(monkeypatch):
+    out, rows = _journal(
+        monkeypatch,
+        {"kind": "team", "teamOp": "spawn"},
+        {"success": True, "result": {"ok": True}},
+    )
+    assert out["status"] == "done"
+    assert rows[0]["sessionId"] is None

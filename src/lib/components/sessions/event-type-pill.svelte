@@ -14,6 +14,7 @@
 		| 'validation'
 		| 'alert'
 		| 'provision'
+		| 'lifecycle'
 		| 'other';
 
 	/**
@@ -60,6 +61,8 @@
 		)
 			return 'alert';
 		if (type.startsWith('session.provisioning_')) return 'provision';
+		// Host hibernation lifecycle (team suspend/wake — sandbox scaled 0↔1).
+		if (type === 'session.host_suspended' || type === 'session.host_woken') return 'lifecycle';
 		if (type.startsWith('session.status_')) return 'status';
 		if (type.startsWith('span.')) return 'span';
 		return 'other';
@@ -94,6 +97,7 @@
 		validation: 'bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-400/20',
 		alert: 'bg-red-500/25 text-red-200 border-red-400/20',
 		provision: 'bg-orange-500/20 text-orange-200 border-orange-400/20',
+		lifecycle: 'bg-indigo-500/20 text-indigo-300 border-indigo-400/30',
 		other: 'bg-muted text-muted-foreground border-border'
 	};
 
@@ -112,6 +116,7 @@
 		validation: 'Validation',
 		alert: 'Alert',
 		provision: 'Provision',
+		lifecycle: 'Lifecycle',
 		other: 'Event'
 	};
 

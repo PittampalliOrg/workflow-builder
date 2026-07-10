@@ -59,6 +59,15 @@ export function listTeamTasks(
 	return s.listTeamTasks(teamId);
 }
 
+/** Recent team message traffic (TeamPulse pulses + activity feed). */
+export function listRecentTeamMessages(
+	teamId: string,
+	limit?: number,
+	s: TeamStore = store(),
+): ReturnType<TeamStore["listRecentTeamMessages"]> {
+	return s.listRecentTeamMessages({ teamId, limit });
+}
+
 export function getMemberByName(
 	teamId: string,
 	name: string,

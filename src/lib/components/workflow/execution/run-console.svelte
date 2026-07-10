@@ -58,10 +58,21 @@
 		/** Dynamic-script runs: the executionIr — renders the phase graph in the
 		 *  left rail so the graph is visible alongside the live session view. */
 		scriptIr?: Record<string, unknown> | null;
+		/** Team-led runs: probe id for the metrics bar's Team chip. */
+		teamId?: string | null;
 	}
 
-	let { executionId, slug, workflowId, nodes = [], edges = [], details, focusNode = null, scriptIr = null }: Props =
-		$props();
+	let {
+		executionId,
+		slug,
+		workflowId,
+		nodes = [],
+		edges = [],
+		details,
+		focusNode = null,
+		scriptIr = null,
+		teamId = null
+	}: Props = $props();
 
 	type SessionRow = {
 		id: string;
@@ -578,7 +589,7 @@
 
 <div class="flex h-full flex-col overflow-hidden">
 	<!-- Top strip: aggregate run metrics -->
-	<RunMetricsBar {executionId} {sessions} {runActive} {live} {outcome} />
+	<RunMetricsBar {executionId} {sessions} {runActive} {live} {outcome} {teamId} />
 
 	<!-- Flow-progress band is now rendered once at the run-page level (persistent
 	     header on every tab) so switching tabs doesn't shift layout. -->

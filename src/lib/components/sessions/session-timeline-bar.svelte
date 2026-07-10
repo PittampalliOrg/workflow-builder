@@ -120,6 +120,7 @@
 		validation: 'bg-fuchsia-500',
 		alert: 'bg-red-500',
 		provision: 'bg-orange-500',
+		lifecycle: 'bg-indigo-500',
 		other: 'bg-muted-foreground/30'
 	};
 
@@ -138,6 +139,7 @@
 		validation: 'bg-fuchsia-400',
 		alert: 'bg-red-400',
 		provision: 'bg-orange-400',
+		lifecycle: 'bg-indigo-400',
 		other: 'bg-muted-foreground/60'
 	};
 </script>

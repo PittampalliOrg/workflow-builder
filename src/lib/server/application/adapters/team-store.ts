@@ -312,6 +312,52 @@ export class PostgresTeamStore implements TeamStore {
 		return r;
 	}
 
+	/**
+	 * Recent team message traffic, newest first. Recipient-side rows: every
+	 * team-origin user.message lands on the RECIPIENT's session_events with the
+	 * sender in data.fromAgent, so joining team_members on the recipient session
+	 * resolves both ends (the lead is a member row named 'lead', so member→lead
+	 * sends resolve too). Feeds the TeamPulse message pulses + activity feed.
+	 */
+	async listRecentTeamMessages(input: {
+		teamId: string;
+		limit?: number;
+	}): Promise<
+		Array<{
+			ts: string;
+			from_name: string | null;
+			to_session_id: string;
+			to_name: string | null;
+			kind: string;
+			preview: string | null;
+		}>
+	> {
+		const limit = Math.min(Math.max(input.limit ?? 30, 1), 100);
+		const r = (await this.db.execute(sql`
+			SELECT e.created_at                                  AS ts,
+			       e.data->>'fromAgent'                          AS from_name,
+			       e.session_id                                  AS to_session_id,
+			       m.name                                        AS to_name,
+			       e.data->>'origin'                             AS kind,
+			       left(e.data->'content'->0->>'text', 140)      AS preview
+			FROM session_events e
+			JOIN team_members m ON m.session_id = e.session_id
+			WHERE m.team_id = ${input.teamId}
+			  AND e.type = 'user.message'
+			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+			ORDER BY e.created_at DESC
+			LIMIT ${limit}
+		`)) as Array<{
+			ts: string;
+			from_name: string | null;
+			to_session_id: string;
+			to_name: string | null;
+			kind: string;
+			preview: string | null;
+		}>;
+		return r;
+	}
+
 	// ── script-authored teams ("the script is the lead") ─────────────────────
 
 	async getExecutionContext(

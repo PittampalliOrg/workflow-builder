@@ -20,7 +20,8 @@
 		CircleAlert,
 		CircleDot,
 		Database,
-		MoreHorizontal
+		MoreHorizontal,
+		Users
 	} from '@lucide/svelte';
 
 	export type RunMetricsSession = {
@@ -71,16 +72,38 @@
 		runActive?: boolean;
 		live?: RunMetricsLive;
 		outcome?: RunMetricsOutcome;
+		/** When set, probe the team view and show a Team chip (member statuses). */
+		teamId?: string | null;
 	}
 
-	let { executionId, sessions, runActive = false, live = null, outcome = null }: Props = $props();
+	let {
+		executionId,
+		sessions,
+		runActive = false,
+		live = null,
+		outcome = null,
+		teamId = null
+	}: Props = $props();
 
 	let metrics = $state<MetricsResponse | null>(null);
 
+	// Team roster for the Team chip ({team:null} for team-less runs hides it).
+	type TeamProbe = {
+		team: { id: string; name: string } | null;
+		members: Array<{ name: string; role: string; status: string }>;
+	};
+	let team = $state<TeamProbe | null>(null);
+
 	async function loadMetrics() {
 		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/metrics`);
+			const [res, teamRes] = await Promise.all([
+				fetch(`/api/workflows/executions/${executionId}/metrics`),
+				teamId
+					? fetch(`/api/v1/teams/${encodeURIComponent(teamId)}`)
+					: Promise.resolve(null)
+			]);
 			if (res.ok) metrics = (await res.json()) as MetricsResponse;
+			if (teamRes?.ok) team = (await teamRes.json()) as TeamProbe;
 		} catch {
 			// best-effort; tiles fall back to placeholders
 		}
@@ -168,6 +191,17 @@
 
 	const totalTokens = $derived(metrics?.totals.totalTokens ?? 0);
 	const cacheHit = $derived(metrics?.cacheHitPct ?? null);
+
+	const teamCounts = $derived.by(() => {
+		if (!team?.team) return null;
+		const workers = team.members.filter((m) => m.role !== 'lead');
+		return {
+			total: workers.length,
+			working: workers.filter((m) => m.status === 'working').length,
+			suspended: workers.filter((m) => m.status === 'suspended').length,
+			tooltip: team.members.map((m) => `${m.name} (${m.role}) — ${m.status}`).join('\n')
+		};
+	});
 </script>
 
 <!--
@@ -202,6 +236,24 @@
 			{#if counts.error > 0}<span class="text-red-600 dark:text-red-400">✕ {counts.error}</span>{/if}
 		</span>
 	</div>
+{/snippet}
+
+{#snippet teamChip()}
+	{#if teamCounts}
+		<div
+			class="flex shrink-0 flex-col rounded-md border border-violet-400/30 bg-background px-2.5 py-1 leading-tight"
+			title={teamCounts.tooltip}
+		>
+			<span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-violet-300">
+				<Users class="size-3" /> Team
+			</span>
+			<span class="hud-nums text-sm font-semibold">{teamCounts.total}</span>
+			<span class="hud-nums flex items-center gap-1.5 text-[10px] text-muted-foreground">
+				{#if teamCounts.working > 0}<span style="color:var(--cockpit-phosphor)">▶ {teamCounts.working}</span>{/if}
+				{#if teamCounts.suspended > 0}<span class="text-indigo-400">🌙 {teamCounts.suspended}</span>{/if}
+			</span>
+		</div>
+	{/if}
 {/snippet}
 
 {#snippet secondaryChips()}
@@ -277,6 +329,7 @@
 		`Wall-clock ${fmtDuration(wallMs)} · Agent active ${fmtDuration(activeMs)}`
 	)}
 	{@render sessionsChip()}
+	{@render teamChip()}
 
 	<!-- Secondary live chips: inline on wide, overflow menu below xl -->
 	<div class="hidden shrink-0 items-center gap-1.5 xl:flex">

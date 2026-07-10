@@ -345,6 +345,14 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             if isinstance(raw, dict) and raw.get("success"):
                 row = _base_row("done")
                 row["result"] = raw.get("result")
+                # Spawn results carry the teammate's session id — backfill it so
+                # the run rail's spawn row is clickable straight into the
+                # teammate transcript (rail rows select by sessionId).
+                if spec.get("teamOp") == "spawn":
+                    res = raw.get("result")
+                    sid = res.get("sessionId") if isinstance(res, dict) else None
+                    if isinstance(sid, str) and sid.strip():
+                        row["sessionId"] = sid.strip()
                 _persist(row)
                 return {"status": "done"}
             message = None
