@@ -20,4 +20,11 @@ describe("eventKindFor", () => {
 	it("groups llm_start with model events", () => {
 		expect(eventKindFor("llm_start")).toBe("model");
 	});
+
+	it("maps host hibernation events to the lifecycle bucket", () => {
+		expect(eventKindFor("session.host_suspended")).toBe("lifecycle");
+		expect(eventKindFor("session.host_woken")).toBe("lifecycle");
+		// status_* events keep their own bucket — lifecycle is host-level only.
+		expect(eventKindFor("session.status_idle")).toBe("status");
+	});
 });

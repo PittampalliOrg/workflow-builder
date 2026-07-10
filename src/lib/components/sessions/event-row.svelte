@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
-	import { Clock, FileText } from '@lucide/svelte';
+	import { Clock, FileText, Moon, Zap, Megaphone } from '@lucide/svelte';
+	import { memberColor } from '$lib/components/teams/member-color';
 
 	interface Props {
 		event: SessionEventEnvelope;
@@ -27,6 +28,21 @@
 	}: Props = $props();
 
 	const kind = $derived(eventKindFor(event.type));
+
+	// Team-origin messages carry sender identity (origin/fromAgent set by
+	// team-messaging) — surfaced as a member-colored sender chip on the row.
+	const teamSender = $derived.by(() => {
+		if (event.type !== 'user.message') return null;
+		const d = event.data as Record<string, unknown>;
+		const origin = typeof d.origin === 'string' ? d.origin : '';
+		if (origin !== 'teammate-message' && origin !== 'team-broadcast' && origin !== 'team-idle') {
+			return null;
+		}
+		return {
+			name: typeof d.fromAgent === 'string' ? d.fromAgent : 'team',
+			broadcast: origin === 'team-broadcast'
+		};
+	});
 
 	const preview = $derived.by(() => {
 		const d = event.data as Record<string, unknown>;
@@ -98,6 +114,17 @@
 		}
 		if (kind === 'adk') {
 			return event.type.replace('adk.', 'ADK ');
+		}
+		if (kind === 'lifecycle') {
+			// Hibernation storytelling — the sandbox scaled 0↔1, not an error.
+			if (event.type === 'session.host_suspended') {
+				const idle = Number(d.idleSeconds ?? 0);
+				return idle > 0
+					? `Hibernated — sandbox scaled to zero after ${idle}s idle`
+					: 'Hibernated — sandbox scaled to zero';
+			}
+			const n = Number(d.raisedEvents ?? 0);
+			return `Woken — ${n} message${n === 1 ? '' : 's'} delivered`;
 		}
 		if (kind === 'alert') {
 			if (event.type === 'agent.circuit_breaker_tripped') {
@@ -192,6 +219,20 @@
 	onclick={onClick}
 >
 	<EventTypePill {kind} size="xs" />
+	{#if kind === 'lifecycle'}
+		{#if event.type === 'session.host_suspended'}
+			<Moon class="size-3 shrink-0 text-indigo-300" />
+		{:else}
+			<Zap class="size-3 shrink-0 text-amber-400" />
+		{/if}
+	{/if}
+	{#if teamSender}
+		{@const c = memberColor(teamSender.name)}
+		<span class="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0 text-[9px] font-medium {c.ring} {c.bg} {c.text}">
+			<span class="size-1.5 rounded-full {c.dot}"></span>{teamSender.name}
+			{#if teamSender.broadcast}<Megaphone class="size-2.5 text-amber-400" />{/if}
+		</span>
+	{/if}
 	<span class="flex-1 truncate text-foreground/90" title={preview}>
 		{preview}{#if batchCount > 1}<span class="ml-1 text-muted-foreground/80">×{batchCount}</span>{/if}
 	</span>

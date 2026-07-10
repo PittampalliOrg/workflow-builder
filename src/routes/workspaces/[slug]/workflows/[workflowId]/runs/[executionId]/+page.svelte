@@ -204,6 +204,17 @@
 	// ledger + selected teammate transcript) instead of the SW graph.
 	let isTeamRun = $state(false);
 	let teamExecutionIr = $state<Record<string, unknown> | null>(null);
+	// Team probe id for the metrics bar's Team chip: team runs carry the id in
+	// their IR; script-led teams use the deterministic team-<executionId> (the
+	// probe returns {team:null} for team-less scripts, hiding the chip).
+	const runTeamId = $derived.by(() => {
+		if (isTeamRun) {
+			const t = teamExecutionIr?.teamId;
+			return typeof t === 'string' ? t : null;
+		}
+		if (isDynamicScript) return `team-${executionId}`;
+		return null;
+	});
 
 	// Logs
 	interface StepLog {
@@ -2505,7 +2516,7 @@
 
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-hidden p-0">
-			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges} focusNode={deepLinkNode} scriptIr={isDynamicScript ? scriptExecutionIr : null}>
+			<RunConsole {executionId} {slug} {workflowId} nodes={workflowNodes} edges={workflowEdges} focusNode={deepLinkNode} scriptIr={isDynamicScript ? scriptExecutionIr : null} teamId={runTeamId}>
 				{#snippet details()}
 				{#if primaryAppPreviewUrl}
 					<Card>

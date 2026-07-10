@@ -41,7 +41,10 @@
 		CheckCircle2,
 		CircleDashed,
 		XCircle,
-		SkipForward as SkipIcon
+		SkipForward as SkipIcon,
+		Users,
+		UserPlus,
+		Timer
 	} from '@lucide/svelte';
 
 	interface Props {
@@ -132,10 +135,17 @@
 		agent: { ring: 'border-teal-400/40', bg: 'bg-teal-500/10', fg: 'text-teal-300', Icon: Bot, name: 'agent' },
 		parallel: { ring: 'border-amber-400/40', bg: 'bg-amber-500/10', fg: 'text-amber-300', Icon: GitFork, name: 'parallel' },
 		pipeline: { ring: 'border-sky-400/40', bg: 'bg-sky-500/10', fg: 'text-sky-300', Icon: ArrowRight, name: 'pipeline' },
-		workflow: { ring: 'border-indigo-400/40', bg: 'bg-indigo-500/10', fg: 'text-indigo-300', Icon: Layers, name: 'workflow' }
+		workflow: { ring: 'border-indigo-400/40', bg: 'bg-indigo-500/10', fg: 'text-indigo-300', Icon: Layers, name: 'workflow' },
+		team: { ring: 'border-violet-400/40', bg: 'bg-violet-500/10', fg: 'text-violet-300', Icon: Users, name: 'team' }
 	};
-	function kindStyle(kind: string) {
-		return KIND_STYLE[kind] ?? KIND_STYLE.agent;
+	function kindStyle(kind: string, label?: string | null) {
+		const base = KIND_STYLE[kind] ?? KIND_STYLE.agent;
+		if (kind === 'team' && label) {
+			// Op-specific glyphs where they add meaning; the violet identity stays.
+			if (label.startsWith('spawn')) return { ...base, Icon: UserPlus };
+			if (label.startsWith('join')) return { ...base, Icon: Timer };
+		}
+		return base;
 	}
 
 	async function killSession(call: ScriptCall) {
@@ -194,9 +204,9 @@
 			{:else}
 				<div class="divide-y divide-border/50">
 					{#each lane.calls as call (call.callId)}
-						{@const ks = kindStyle(call.kind)}
+						{@const ks = kindStyle(call.kind, call.label)}
 						{@const isSel = focusedSessionId != null && call.sessionId === focusedSessionId}
-						{@const clickable = !!call.sessionId && !!onSelect}
+						{@const clickable = !!onSelect && (!!call.sessionId || call.kind === 'team')}
 						<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 						<div
 							class="group flex items-center gap-2 px-2.5 py-1.5 {clickable ? 'cursor-pointer hover:bg-accent/40' : ''} {isSel ? 'bg-primary/10' : ''}"

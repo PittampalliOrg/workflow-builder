@@ -2,23 +2,27 @@
   Run-detail surface for a dynamic-script (engineType `dynamic-script`) execution.
 
   A SPLIT "follow-along" view: the phase-swimlane graph on the left (phases as
-  lanes, each agent()/parallel()/pipeline()/workflow() call a selectable card
-  with a live status chip, retries/error, session link + Kill/Skip), and the
-  selected call's LIVE session transcript on the right. "Follow latest" tracks
-  the currently-running agent so you watch the active agent while the graph
-  shows where the run is. Polls /script-calls (~3s) while the run is active.
+  lanes, each agent()/parallel()/pipeline()/workflow()/team.*() call a
+  selectable card with a live status chip, retries/error, session link +
+  Kill/Skip), and the selected call's LIVE session transcript on the right.
+  "Follow latest" tracks the currently-running agent — and, when the run leads
+  a team, the most recently ACTIVE teammate — so you watch the action while
+  the graph shows where the run is. Polls /script-calls (~3s) while active.
 
-  Note: the journal does not track per-call tokens (real usage lives in
-  session_events, surfaced by the transcript's SessionPulse), so the left
-  summary shows a call-progress ring, not a token ring.
+  Team-led runs (the `team.*` dialect) additionally get the shared TeamPulse
+  surface: a compact ledger in the left rail, and the full pulse (topology +
+  message pulses + activity) as the right pane when a sessionless team row
+  (task/send/broadcast/join) is selected. teamId is deterministic
+  (`team-<executionId>`); the probe returns {team:null} for team-less runs.
 -->
 <script lang="ts">
-	import { Loader2, Bot, Radio, MessageSquare } from '@lucide/svelte';
+	import { Loader2, Bot, Radio, MessageSquare, Users } from '@lucide/svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import ScriptPhaseRail, {
 		scriptCallLabel,
 		type ScriptCall
 	} from './script-phase-rail.svelte';
+	import TeamPulse, { type TeamPulseView } from '$lib/components/teams/team-pulse.svelte';
 
 	interface Props {
 		executionId: string;
@@ -62,10 +66,17 @@
 	let loaded = $state(false);
 	let error = $state<string | null>(null);
 
+	// Team probe: deterministic id; {team:null} for team-less runs (hides all
+	// team UI). Fetched in the same 3s cycle as the call journal.
+	const teamId = $derived(`team-${executionId}`);
+	let teamView = $state<TeamPulseView | null>(null);
+	const hasTeam = $derived(!!teamView?.team);
+
 	// Selection + follow-along. The user's explicit click lands in
-	// manualCallId; the EFFECTIVE selection is derived — when followLatest is
-	// on it tracks the running (else most recent) agent automatically.
+	// manualCallId/teamSelected; the EFFECTIVE selection is derived — when
+	// followLatest is on it tracks the action automatically.
 	let manualCallId = $state<string | null>(null);
+	let teamSelected = $state(false);
 	let followLatest = $state(true);
 
 	const agentCalls = $derived(calls.filter((c) => c.kind === 'agent'));
@@ -87,31 +98,113 @@
 			: 0
 	);
 
-	const selectedCallId = $derived.by(() => {
-		if (!followLatest) return manualCallId;
+	/** Most recently ACTIVE teammate session (activity ∪ messages), prefer working. */
+	const latestTeammateSessionId = $derived.by(() => {
+		if (!teamView?.team) return null;
+		const bySession = new Map<string, string>(); // sessionId -> latest ts
+		const nameToSession = new Map(teamView.members.map((m) => [m.name, m.sessionId]));
+		for (const a of teamView.activity ?? []) {
+			const sid = a.memberName ? nameToSession.get(a.memberName) : null;
+			if (sid && (bySession.get(sid) ?? '') < a.ts) bySession.set(sid, a.ts);
+		}
+		for (const m of teamView.recentMessages ?? []) {
+			if ((bySession.get(m.toSessionId) ?? '') < m.ts) bySession.set(m.toSessionId, m.ts);
+		}
+		const ranked = [...bySession.entries()].sort((a, b) => (a[1] < b[1] ? 1 : -1));
+		const working = new Set(
+			teamView.members.filter((m) => m.status === 'working').map((m) => m.sessionId)
+		);
+		const preferred = ranked.find(([sid]) => working.has(sid)) ?? ranked[0];
+		return preferred?.[0] ?? null;
+	});
+
+	// Effective right-pane selection.
+	const selection = $derived.by<{ kind: 'team' } | { kind: 'call'; call: ScriptCall } | null>(() => {
+		if (!followLatest) {
+			if (teamSelected) return { kind: 'team' };
+			const call = calls.find((c) => c.callId === manualCallId);
+			return call ? { kind: 'call', call } : null;
+		}
+		// follow-the-action: running agent → active teammate → latest resolved agent
 		const withSession = agentCalls.filter((c) => c.sessionId);
 		const running = withSession.find((c) => c.status === 'running');
-		const latest = running ?? [...withSession].sort((a, b) => b.seq - a.seq)[0] ?? null;
-		return latest?.callId ?? manualCallId;
+		if (running) return { kind: 'call', call: running };
+		if (latestTeammateSessionId) {
+			// synthesize a call-like selection targeting the teammate session
+			return { kind: 'call', call: teammateAsCall(latestTeammateSessionId) };
+		}
+		const latest = [...withSession].sort((a, b) => b.seq - a.seq)[0];
+		return latest ? { kind: 'call', call: latest } : hasTeam ? { kind: 'team' } : null;
 	});
-	const selectedCall = $derived(calls.find((c) => c.callId === selectedCallId) ?? null);
+
+	function teammateAsCall(sessionId: string): ScriptCall {
+		const member = teamView?.members.find((m) => m.sessionId === sessionId);
+		return {
+			callId: `teammate:${sessionId}`,
+			seq: Number.MAX_SAFE_INTEGER,
+			kind: 'team',
+			label: member ? `teammate ${member.name}` : 'teammate',
+			phase: null,
+			status: 'running',
+			sessionId,
+			tokensUsed: 0,
+			errorCode: null,
+			retries: 0
+		};
+	}
+
+	const selectedCall = $derived(selection?.kind === 'call' ? selection.call : null);
 	const selectedSessionId = $derived(selectedCall?.sessionId ?? null);
+	const showTeamPane = $derived(selection?.kind === 'team' && hasTeam);
 
 	function selectCall(call: ScriptCall) {
-		if (!call.sessionId) return;
 		followLatest = false;
-		manualCallId = call.callId;
+		if (call.sessionId) {
+			teamSelected = false;
+			manualCallId = call.callId;
+		} else if (call.kind === 'team') {
+			// sessionless team rows (task/send/broadcast/join) open the pulse
+			teamSelected = true;
+			manualCallId = null;
+		}
 	}
+
+	function selectMember(m: { name: string; sessionId: string }) {
+		followLatest = false;
+		teamSelected = false;
+		// synthesize a manual selection via a teammate pseudo-call
+		manualCallId = null;
+		pinnedTeammateSession = m.sessionId;
+	}
+	let pinnedTeammateSession = $state<string | null>(null);
+	const effectiveSessionId = $derived(
+		!followLatest && pinnedTeammateSession && !teamSelected && !manualCallId
+			? pinnedTeammateSession
+			: selectedSessionId
+	);
+	const effectiveHeaderLabel = $derived.by(() => {
+		if (showTeamPane) return 'Team pulse';
+		if (!followLatest && pinnedTeammateSession && !manualCallId) {
+			const member = teamView?.members.find((m) => m.sessionId === pinnedTeammateSession);
+			return member ? `teammate ${member.name}` : 'teammate';
+		}
+		return selectedCall ? scriptCallLabel(selectedCall) : null;
+	});
 
 	async function fetchCalls() {
 		try {
-			const res = await fetch(
-				`/api/workflows/executions/${encodeURIComponent(executionId)}/script-calls`
-			);
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const data = (await res.json()) as { scriptCalls?: ScriptCall[] };
-			calls = Array.isArray(data.scriptCalls) ? data.scriptCalls : [];
-			error = null;
+			const [callsRes, teamRes] = await Promise.all([
+				fetch(`/api/workflows/executions/${encodeURIComponent(executionId)}/script-calls`),
+				fetch(`/api/v1/teams/${encodeURIComponent(teamId)}`)
+			]);
+			if (callsRes.ok) {
+				const data = (await callsRes.json()) as { scriptCalls?: ScriptCall[] };
+				calls = Array.isArray(data.scriptCalls) ? data.scriptCalls : [];
+				error = null;
+			} else {
+				throw new Error(`HTTP ${callsRes.status}`);
+			}
+			if (teamRes.ok) teamView = (await teamRes.json()) as TeamPulseView;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load script calls';
 		} finally {
@@ -132,7 +225,7 @@
 </script>
 
 <div class="flex h-full min-h-0">
-	<!-- LEFT: phase graph -->
+	<!-- LEFT: phase graph (+ compact team pulse when the run leads a team) -->
 	<div class="flex w-[400px] shrink-0 flex-col overflow-y-auto border-r border-border">
 		<!-- Summary header -->
 		<div class="flex items-start justify-between gap-3 border-b border-border p-3">
@@ -150,6 +243,9 @@
 				{/if}
 				<div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 pt-0.5 text-[11px] text-muted-foreground">
 					<span><span class="font-medium text-foreground">{tallies.agents}</span> agents</span>
+					{#if hasTeam}
+						<span class="text-violet-300">{teamView!.members.filter((m) => m.role !== 'lead').length} teammates</span>
+					{/if}
 					<span class="text-emerald-400">{tallies.done} done</span>
 					{#if tallies.running > 0}<span class="text-primary">{tallies.running} running</span>{/if}
 					{#if tallies.error > 0}<span class="text-destructive">{tallies.error} failed</span>{/if}
@@ -183,6 +279,24 @@
 			</div>
 		</div>
 
+		{#if hasTeam}
+			<div class="space-y-2 border-b border-border p-3 {showTeamPane ? 'bg-primary/5' : ''}">
+				<TeamPulse view={teamView} compact hubKind="script" selectedSessionId={effectiveSessionId} onSelectMember={selectMember} />
+				<button
+					type="button"
+					class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-violet-300 transition hover:bg-violet-500/10"
+					onclick={() => {
+						followLatest = false;
+						teamSelected = true;
+						manualCallId = null;
+						pinnedTeammateSession = null;
+					}}
+				>
+					<Users class="size-3" /> Open team pulse →
+				</button>
+			</div>
+		{/if}
+
 		{#if !loaded}
 			<div class="flex items-center justify-center py-12">
 				<Loader2 class="size-6 animate-spin text-muted-foreground" />
@@ -200,7 +314,7 @@
 					declaredPhases={meta.phases}
 					{currentPhase}
 					{isRunning}
-					focusedSessionId={selectedSessionId}
+					focusedSessionId={effectiveSessionId}
 					onSelect={selectCall}
 					showActions
 				/>
@@ -208,14 +322,18 @@
 		{/if}
 	</div>
 
-	<!-- RIGHT: live transcript of the selected/followed call's session -->
+	<!-- RIGHT: live transcript of the followed session — or the full team pulse -->
 	<div class="flex min-w-0 flex-1 flex-col">
 		<div class="flex items-center justify-between border-b border-border px-3 py-1.5">
 			<div class="flex min-w-0 items-center gap-2 text-xs">
-				<MessageSquare class="size-3.5 shrink-0 text-muted-foreground" />
-				{#if selectedCall}
-					<span class="truncate font-medium">{scriptCallLabel(selectedCall)}</span>
-					{#if selectedCall.phase}
+				{#if showTeamPane}
+					<Users class="size-3.5 shrink-0 text-violet-300" />
+				{:else}
+					<MessageSquare class="size-3.5 shrink-0 text-muted-foreground" />
+				{/if}
+				{#if effectiveHeaderLabel}
+					<span class="truncate font-medium">{effectiveHeaderLabel}</span>
+					{#if selectedCall?.phase && !showTeamPane}
 						<span class="shrink-0 text-muted-foreground">· {selectedCall.phase}</span>
 					{/if}
 				{:else}
@@ -227,10 +345,14 @@
 					{followLatest ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent'}"
 				onclick={() => {
 					// Turning follow OFF freezes the current selection in place.
-					if (followLatest) manualCallId = selectedCallId;
+					if (followLatest) manualCallId = selectedCall?.callId ?? null;
 					followLatest = !followLatest;
+					if (followLatest) {
+						teamSelected = false;
+						pinnedTeammateSession = null;
+					}
 				}}
-				title="Auto-follow the running agent"
+				title="Auto-follow the action (running agents, active teammates)"
 			>
 				<Radio class="size-3 {followLatest ? 'animate-pulse' : ''}" />
 				Follow latest
@@ -238,9 +360,13 @@
 		</div>
 
 		<div class="min-h-0 flex-1 overflow-hidden">
-			{#if selectedSessionId}
-				{#key selectedSessionId}
-					<SessionTranscript sessionId={selectedSessionId} compact showTimeline={false} />
+			{#if showTeamPane}
+				<div class="h-full overflow-y-auto p-4">
+					<TeamPulse view={teamView} hubKind="script" selectedSessionId={effectiveSessionId} onSelectMember={selectMember} />
+				</div>
+			{:else if effectiveSessionId}
+				{#key effectiveSessionId}
+					<SessionTranscript sessionId={effectiveSessionId} compact showTimeline={false} />
 				{/key}
 			{:else}
 				<div class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">

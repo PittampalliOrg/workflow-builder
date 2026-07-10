@@ -143,6 +143,20 @@ export interface TeamStore {
 		olderThanSeconds: number;
 	}): Promise<Array<{ session_id: string; stranded: number }>>;
 
+	/** The team's recent message traffic (team-origin user.messages across all
+	 * member inboxes, incl. the lead), newest first — feeds the TeamPulse
+	 * topology's message pulses + unified activity timeline. */
+	listRecentTeamMessages(input: { teamId: string; limit?: number }): Promise<
+		Array<{
+			ts: string;
+			from_name: string | null;
+			to_session_id: string;
+			to_name: string | null;
+			kind: string;
+			preview: string | null;
+		}>
+	>;
+
 	// ── script-authored teams ("the script is the lead") ─────────────────────
 
 	/** Owner context of an execution — the script team's user/project scope. */

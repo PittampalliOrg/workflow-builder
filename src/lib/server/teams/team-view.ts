@@ -13,8 +13,10 @@ import {
 	getMemberBySession,
 	getTeam,
 	listMembers,
+	listRecentTeamMessages,
 	listTeamTasks,
 } from "$lib/server/teams/team-repo";
+import type { TeamStore } from "$lib/server/application/ports";
 
 export type TeamActivityEvent = {
 	/** ISO-ish timestamp string from Postgres (claim = updated_at, done = completed_at). */
@@ -23,6 +25,17 @@ export type TeamActivityEvent = {
 	taskId: string;
 	taskTitle: string;
 	memberName: string | null;
+};
+
+export type TeamMessageEvent = {
+	ts: string;
+	/** Sender name (data.fromAgent) — 'lead'/'team' or a member name. */
+	from: string | null;
+	/** Recipient member name (resolved from the recipient session). */
+	to: string | null;
+	toSessionId: string;
+	kind: string; // teammate-message | team-broadcast | team-idle
+	preview: string | null;
 };
 
 export type TeamView = {
@@ -45,15 +58,21 @@ export type TeamView = {
 	}>;
 	/** Coordination timeline, most-recent first: who claimed/completed what, when. */
 	activity: TeamActivityEvent[];
+	/** Recent message traffic, newest first (TeamPulse pulses + feed). */
+	recentMessages: TeamMessageEvent[];
 } | null;
 
 /** Assemble the team view for a team id (null if the team doesn't exist). */
-export async function getTeamView(teamId: string): Promise<TeamView> {
-	const team = await getTeam(teamId);
+export async function getTeamView(
+	teamId: string,
+	s?: TeamStore,
+): Promise<TeamView> {
+	const team = await getTeam(teamId, s);
 	if (!team) return null;
-	const [members, tasks] = await Promise.all([
-		listMembers(teamId),
-		listTeamTasks(teamId),
+	const [members, tasks, messages] = await Promise.all([
+		listMembers(teamId, s),
+		listTeamTasks(teamId, s),
+		listRecentTeamMessages(teamId, 30, s),
 	]);
 
 	const nameBySession = new Map(members.map((m) => [m.session_id, m.name]));
@@ -115,12 +134,23 @@ export async function getTeamView(teamId: string): Promise<TeamView> {
 			dependsOn: t.depends_on ?? [],
 		})),
 		activity,
+		recentMessages: messages.map((m) => ({
+			ts: m.ts,
+			from: m.from_name,
+			to: m.to_name,
+			toSessionId: m.to_session_id,
+			kind: m.kind,
+			preview: m.preview,
+		})),
 	};
 }
 
 /** Resolve the team a session belongs to (as lead or member), then its view. */
-export async function getTeamViewForSession(sessionId: string): Promise<TeamView> {
-	const member = await getMemberBySession(sessionId);
+export async function getTeamViewForSession(
+	sessionId: string,
+	s?: TeamStore,
+): Promise<TeamView> {
+	const member = await getMemberBySession(sessionId, s);
 	if (!member) return null;
-	return getTeamView(member.team_id);
+	return getTeamView(member.team_id, s);
 }

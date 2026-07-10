@@ -394,6 +394,10 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                 spec["args"] = task.get("args")
             opts = spec["opts"]
             spec["label"] = opts.get("label")
+            if (spec.get("kind") or "agent") == "team" and not spec.get("label"):
+                # Human rail label for team ops ("spawn researcher", 'task "..."').
+                # Pure function of replayed inputs — replay-safe.
+                spec["label"] = _team_call_label(spec.get("teamOp"), spec.get("args"))
             spec["phase"] = opts.get("phase")
             spec["schema"] = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
             spec["promptSha256"] = hashlib.sha256(
@@ -485,7 +489,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         {
                             "executionId": exec_id,
                             "nodeId": cid,
-                            "nodeName": f"team:{spec.get('teamOp') or 'op'}",
+                            "nodeName": spec.get("label") or f"team:{spec.get('teamOp') or 'op'}",
                             "_otel": otel,
                         }
                     ),
@@ -920,6 +924,28 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if budget_total is not None and drained_done > 0:
             yield ctx.create_timer(timedelta(seconds=USAGE_SETTLE_SECONDS))
         # loop
+
+
+def _team_call_label(op: Any, args: Any) -> str:
+    """Human label for a team op, shown in the run rail + Agents lane. Pure
+    (deterministic) so it is safe at workflow-replay time."""
+    op = str(op or "op")
+    a = args if isinstance(args, dict) else {}
+    if op == "spawn":
+        who = str(a.get("name") or a.get("agent") or "").strip()
+        return f"spawn {who}".strip()
+    if op == "task":
+        title = str(a.get("title") or "").strip()
+        return f'task "{title[:24]}"' if title else "task"
+    if op == "send":
+        return f"send \u2192 {a.get('to') or '?'}"
+    if op == "broadcast":
+        return "broadcast"
+    if op == "join":
+        return f"join ({a.get('until') or 'tasks-complete'})"
+    if op == "shutdown":
+        return f"shutdown {a.get('name') or 'all'}"
+    return op
 
 
 def _spec_for_journal(spec: dict[str, Any]) -> dict[str, Any]:
