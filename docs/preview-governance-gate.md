@@ -7,6 +7,11 @@
 > system. Activate the design below before accepting untrusted contributors or
 > treating preview evidence as a general merge policy.
 
+Until `PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY` is installed, the trusted
+workflow records a successful POC no-op and emits no `preview/gate` status.
+Once the key is present, that same base-owned workflow automatically performs
+the strict tuple classification and status publication described below.
+
 In the post-POC target, `preview/gate` is the only preview status that branch
 protection should require. It is emitted for every pull request head, including changes for which preview
 evidence is not applicable. Subordinate contexts are evidence inputs, not

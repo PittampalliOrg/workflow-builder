@@ -25,6 +25,7 @@ describe("application adapter config", () => {
 			previewPlatformRef: "main",
 			previewSourceRepository: "PittampalliOrg/workflow-builder",
 			previewSourceRef: "main",
+			previewGovernanceStatusMode: "strict",
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
@@ -145,6 +146,7 @@ describe("application adapter config", () => {
 			previewPlatformRef: "main",
 			previewSourceRepository: "PittampalliOrg/workflow-builder",
 			previewSourceRef: "main",
+			previewGovernanceStatusMode: "strict",
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
@@ -165,6 +167,19 @@ describe("application adapter config", () => {
 		expect(config.previewPlatformRef).toBe("refs/pull/7/merge");
 		expect(config.previewSourceRepository).toBe("Example/app");
 		expect(config.previewSourceRef).toBe("feature/x");
+	});
+
+	it("requires an explicit POC mode to omit acceptance status reporting", () => {
+		expect(
+			getApplicationAdapterConfig({
+				PREVIEW_GOVERNANCE_STATUS_MODE: "poc",
+			}).previewGovernanceStatusMode,
+		).toBe("poc");
+		expect(() =>
+			getApplicationAdapterConfig({
+				PREVIEW_GOVERNANCE_STATUS_MODE: "disabled",
+			}),
+		).toThrow("Unsupported PREVIEW_GOVERNANCE_STATUS_MODE='disabled'");
 	});
 
 	it("lets an explicit adapter env override the lite-profile default", () => {

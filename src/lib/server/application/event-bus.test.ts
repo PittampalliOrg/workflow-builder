@@ -43,6 +43,7 @@ describe("getEventBusAdapter", () => {
 				previewPlatformRef: "main",
 				previewSourceRepository: "PittampalliOrg/workflow-builder",
 				previewSourceRef: "main",
+				previewGovernanceStatusMode: "strict",
 				prPreviewVerifyEnabled: false,
 				promoteAutoPreviewLabel: false,
 				previewReadProxyEnabled: false,

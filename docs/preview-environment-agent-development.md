@@ -426,19 +426,30 @@ The application service then:
    `preview-agent-smoke` through product HTTP APIs;
 7. tears the acceptance environment down after every launched replay.
 
-Failures return a typed stage: `freshness`, `build`, `capacity`, `readiness`,
-`runtime`, `verification`, `cleanup`, or `reporting`. A failed cleanup remains
+Core replay failures return a typed stage: `freshness`, `build`, `capacity`,
+`readiness`, `runtime`, `verification`, or `cleanup`. Strict status reporting
+adds the separate `reporting` stage described below. A failed cleanup remains
 subject to the bounded TTL and lifecycle reaper; it is never treated as retained
 acceptance evidence. Acceptance does not update stacks release pins,
 environment branches, or GitOps Promoter state.
 
-After GitHub and the physical PreviewEnvironment authority verify the exact open
-PR tuple, the physical broker publishes the `preview/immutable-acceptance`
-commit-status context on that PR's full head SHA. It publishes `pending` before
-submitting any build and a final `success`, `failure`, or `error` after replay.
-Failure to publish the pending status stops the build; failure to publish the
-final result makes the broker response fail closed at the `reporting` stage.
-The mutable preview BFF never receives the GitHub write credential.
+In the default `PREVIEW_GOVERNANCE_STATUS_MODE=strict`, after GitHub and the
+physical PreviewEnvironment authority verify the exact open PR tuple, the
+physical broker publishes the `preview/immutable-acceptance` commit-status
+context on that PR's full head SHA. It publishes `pending` before submitting
+any build and a final `success`, `failure`, or `error` after replay. Failure to
+publish the pending status stops the build; failure to publish the final result
+makes the broker response fail closed at the `reporting` stage. The mutable
+preview BFF never receives the GitHub write credential.
+
+For the admin-only development POC, set
+`PREVIEW_GOVERNANCE_STATUS_MODE=poc` on the physical control broker. That mode
+omits only immutable-acceptance status publication and aggregate
+`preview/gate` reconciliation, so a GitHub status outage cannot convert an
+otherwise successful replay into a `reporting` failure. The physical replay,
+source authority, receipt attestation, GitHub PR reads, and source-promotion
+credentials remain unchanged. `strict` is the default and is the required
+mode for post-POC governance.
 
 For post-POC governance, configure repository branch protection to require only
 the aggregate `preview/gate`, bound to GitHub App `2970091`. This protection is
