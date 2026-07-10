@@ -5837,6 +5837,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		ifAbsentMetadataKey?: string;
 	}) {
 		return this.deps.artifactStore.updateWorkflowArtifactMetadata(input);
 	}

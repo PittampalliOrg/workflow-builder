@@ -416,7 +416,12 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		benchmarkRunId: params.benchmarkRunId,
 		priorityClass: params.priorityClass,
 	});
-	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
+	const token =
+		env.SANDBOX_EXECUTION_API_TOKEN ??
+		env.HOST_EXECUTION_API_TOKEN ??
+		process.env.SANDBOX_EXECUTION_API_TOKEN ??
+		process.env.HOST_EXECUTION_API_TOKEN ??
+		"";
 	const traceHeaders: Record<string, string> = {};
 	if (params.traceContext?.traceparent) {
 		traceHeaders["traceparent"] = params.traceContext.traceparent;

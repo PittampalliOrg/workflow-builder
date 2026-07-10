@@ -4,7 +4,6 @@ import { getApplicationAdapters } from "$lib/server/application";
 
 function sharedPreviewInput(body: Record<string, unknown>) {
 	return {
-		syncToken: typeof body.syncToken === "string" ? body.syncToken : null,
 		timeoutSeconds: typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : null,
 		waitReadySeconds:
 			typeof body.waitReadySeconds === "number" ? body.waitReadySeconds : undefined,
@@ -56,6 +55,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	});
 	if (!environment) return error(404, "Execution not found");
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+	if (Object.prototype.hasOwnProperty.call(body, "syncToken")) {
+		return json({ error: "syncToken is server-owned" }, { status: 400 });
+	}
 	const shared = sharedPreviewInput(body);
 	const services = Array.isArray(body.services)
 		? body.services.filter((service): service is string => typeof service === "string" && !!service)

@@ -2,6 +2,8 @@
 eviction + the D1 origin/prNumber/ttlHours contract. Fake k8s clients mirror the
 test_vcluster_pool.py pattern (which mirrors test_app.py)."""
 
+import json
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -15,6 +17,15 @@ from src.app import (
 )
 
 NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=UTC)
+CATALOG_DIGEST = app_module._preview_service_catalog().catalog_digest
+CAPABILITY_BUNDLE = {
+    "controlToken": "1" * 64,
+    "syncToken": "2" * 64,
+    "actionToken": "3" * 64,
+    "sandboxToken": "4" * 64,
+    "runtimeToken": "5" * 64,
+    "storageToken": "6" * 64,
+}
 
 
 class _ApiExc(Exception):
@@ -30,6 +41,9 @@ def _ns(
     alias: str | None = None,
     state: str | None = None,
     origin: str | None = None,
+    lifecycle: str | None = None,
+    owner_contract: dict[str, str] | None = None,
+    origin_contract: dict[str, str] | None = None,
     pr: str | None = None,
     protected: bool = False,
     last_active: datetime | None = None,
@@ -39,6 +53,17 @@ def _ns(
     rv: str = "1",
     created: datetime | None = None,
     app_label: str = "vcluster-preview",
+    profile: str | None = None,
+    mode: str | None = None,
+    platform_revision: str | None = None,
+    source_revision: str | None = None,
+    services: list[str] | None = None,
+    images: dict[str, str] | None = None,
+    catalog_digest: str | None = None,
+    allocation: dict[str, str] | None = None,
+    trusted_code: bool | None = None,
+    reconciliation_succeeded: bool = False,
+    provenance: dict | None = None,
 ):
     labels = {"app": app_label, "vcluster-preview-name": real_name}
     if pool is not None:
@@ -60,6 +85,46 @@ def _ns(
         annotations["vcluster-preview-last-active"] = last_active.isoformat()
     if expires_at is not None:
         annotations["vcluster-preview-expires-at"] = expires_at.isoformat()
+    if lifecycle is not None:
+        annotations["preview.stacks.io/lifecycle"] = lifecycle
+    if owner_contract is not None:
+        annotations["preview.stacks.io/owner"] = json.dumps(owner_contract)
+    if origin_contract is not None:
+        annotations["preview.stacks.io/origin"] = json.dumps(origin_contract)
+    if profile is not None:
+        annotations["preview.stacks.io/profile"] = profile
+    if mode is not None:
+        annotations["preview.stacks.io/mode"] = mode
+    if platform_revision is not None:
+        annotations["preview.stacks.io/target-revision"] = platform_revision
+    if source_revision is not None:
+        annotations["preview.stacks.io/source-revision"] = source_revision
+    if services is not None:
+        annotations["preview.stacks.io/services"] = json.dumps(services)
+    if images is not None:
+        annotations["preview.stacks.io/images"] = json.dumps(images)
+    if catalog_digest is not None:
+        annotations["preview.stacks.io/catalog-digest"] = catalog_digest
+    if allocation is not None:
+        annotations["preview.stacks.io/allocation"] = json.dumps(allocation)
+    if trusted_code is not None:
+        annotations["preview.stacks.io/trusted-code"] = (
+            "true" if trusted_code else "false"
+        )
+    if reconciliation_succeeded:
+        annotations["preview.stacks.io/reconciliation-succeeded-at"] = (
+            "2026-07-09T12:00:00Z"
+        )
+        if platform_revision is not None:
+            annotations["preview.stacks.io/reconciliation-platform-revision"] = (
+                platform_revision
+            )
+        if source_revision is not None:
+            annotations["preview.stacks.io/reconciliation-source-revision"] = (
+                source_revision
+            )
+    if provenance is not None:
+        annotations["preview.stacks.io/provenance"] = json.dumps(provenance)
     meta = SimpleNamespace(
         name=f"vcluster-{real_name}",
         labels=labels,
@@ -76,12 +141,26 @@ def _member(
     pool_state: str | None = None,
     slept: bool = False,
     origin: str | None = None,
+    lifecycle: str | None = None,
+    owner_contract: dict[str, str] | None = None,
+    origin_contract: dict[str, str] | None = None,
     pr_number: int | None = None,
     protected: bool = False,
     terminating: bool = False,
     created_at: datetime | None = None,
     last_active: datetime | None = None,
     expires_at: datetime | None = None,
+    platform_revision: str | None = None,
+    source_revision: str | None = None,
+    profile: str | None = None,
+    mode: str | None = None,
+    owner: str | None = None,
+    services: tuple[str, ...] | None = None,
+    provenance: dict | None = None,
+    trusted_code: bool | None = None,
+    allocation: dict[str, str] | None = None,
+    images: dict[str, str] | None = None,
+    catalog_digest: str | None = None,
 ) -> PreviewMember:
     return PreviewMember(
         real_name=name,
@@ -89,12 +168,26 @@ def _member(
         pool_state=pool_state,
         slept=slept,
         origin=origin,
+        lifecycle=lifecycle,
+        owner_contract=owner_contract,
+        origin_contract=origin_contract,
         pr_number=pr_number,
         protected=protected,
         terminating=terminating,
         created_at=created_at or NOW - timedelta(hours=1),
         last_active=last_active,
         expires_at=expires_at,
+        platform_revision=platform_revision,
+        source_revision=source_revision,
+        profile=profile,
+        mode=mode,
+        owner=owner,
+        services=services,
+        provenance=provenance,
+        trusted_code=trusted_code,
+        allocation=allocation,
+        images=images,
+        catalog_digest=catalog_digest,
     )
 
 
@@ -176,8 +269,48 @@ class _FakeBatch:
         return SimpleNamespace(items=self.jobs)
 
 
+class _FakeCoordination:
+    def __init__(self) -> None:
+        self.leases: dict[str, SimpleNamespace] = {}
+
+    @staticmethod
+    def _lease(body, resource_version: str):
+        spec = body["spec"]
+        return SimpleNamespace(
+            metadata=SimpleNamespace(resource_version=resource_version),
+            spec=SimpleNamespace(
+                holder_identity=spec["holderIdentity"],
+                lease_duration_seconds=spec["leaseDurationSeconds"],
+                acquire_time=spec["acquireTime"],
+                renew_time=spec["renewTime"],
+                lease_transitions=spec.get("leaseTransitions", 0),
+            ),
+        )
+
+    def read_namespaced_lease(self, name, namespace):
+        if name not in self.leases:
+            raise _ApiExc(404)
+        return self.leases[name]
+
+    def create_namespaced_lease(self, namespace, body):
+        name = body["metadata"]["name"]
+        if name in self.leases:
+            raise _ApiExc(409)
+        self.leases[name] = self._lease(body, "1")
+        return self.leases[name]
+
+    def replace_namespaced_lease(self, name, namespace, body):
+        current = self.read_namespaced_lease(name, namespace)
+        if body["metadata"].get("resourceVersion") != current.metadata.resource_version:
+            raise _ApiExc(409)
+        self.leases[name] = self._lease(
+            body, str(int(current.metadata.resource_version) + 1)
+        )
+        return self.leases[name]
+
+
 def _env(entries) -> dict[str, str]:
-    return {e["name"]: e["value"] for e in entries}
+    return {e["name"]: e["value"] for e in entries if "value" in e}
 
 
 def _job_env(manifest) -> dict[str, str]:
@@ -195,7 +328,7 @@ def _created_actions(batch) -> list[tuple[str, str]]:
 
 
 def _no_auth_request():
-    return SimpleNamespace(headers={})
+    return SimpleNamespace(headers={"authorization": "Bearer test-token"})
 
 
 @pytest.fixture(autouse=True)
@@ -210,8 +343,32 @@ def _clean_env(monkeypatch):
         "SANDBOX_EXECUTION_DRY_RUN",
         "SANDBOX_EXECUTION_API_TOKEN",
         "INTERNAL_API_TOKEN",
+        "PREVIEW_ARCHIVE_TEARDOWN_TOKEN",
     ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
+    coordination = _FakeCoordination()
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_submit_preview_job",
+        lambda batch, _core, *, namespace, manifest, create_only=False, **_kwargs: (
+            app_module._create_preview_job(
+                batch,
+                namespace=namespace,
+                manifest=manifest,
+                create_only=create_only,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app_module.PreviewRunnerIdentityAdapter,
+        "is_absent",
+        lambda _self, **_kwargs: True,
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: SimpleNamespace())
     app_module._invalidate_previews_cache()
     yield
     app_module._invalidate_previews_cache()
@@ -242,7 +399,9 @@ def test_effective_expiry_prefers_the_sooner_marker() -> None:
     )
     # No markers at all -> never expires.
     assert (
-        app_module._member_effective_expiry(_member("b", created_at=created), ttl_hours=0)
+        app_module._member_effective_expiry(
+            _member("b", created_at=created), ttl_hours=0
+        )
         is None
     )
 
@@ -272,6 +431,10 @@ def test_member_recently_active_window() -> None:
 
 
 def test_preview_member_from_ns_parses_the_full_contract() -> None:
+    platform = "a" * 40
+    source = "b" * 40
+    image = "ghcr.io/pittampalliorg/workflow-builder@sha256:" + "c" * 64
+    catalog = "sha256:" + "d" * 64
     ns = _ns(
         "pool-aa",
         pool="claimed",
@@ -283,6 +446,21 @@ def test_preview_member_from_ns_parses_the_full_contract() -> None:
         last_active=NOW - timedelta(minutes=10),
         expires_at=NOW + timedelta(hours=2),
         created=NOW - timedelta(hours=3),
+    )
+    ns.metadata.annotations.update(
+        {
+            "preview.stacks.io/target-revision": platform,
+            "preview.stacks.io/source-revision": source,
+            "preview.stacks.io/profile": "app-live",
+            "preview.stacks.io/mode": "reconciled",
+            "preview.stacks.io/owner": "session:42",
+            "preview.stacks.io/services": '["workflow-builder"]',
+            "preview.stacks.io/provenance": '{"requestId":"request-1"}',
+            "preview.stacks.io/trusted-code": "true",
+            "preview.stacks.io/allocation": '{"kind":"cold"}',
+            "preview.stacks.io/images": json.dumps({"workflow-builder": image}),
+            "preview.stacks.io/catalog-digest": catalog,
+        }
     )
     m = app_module._preview_member_from_ns(ns)
     assert m.real_name == "pool-aa"
@@ -296,10 +474,36 @@ def test_preview_member_from_ns_parses_the_full_contract() -> None:
     assert m.created_at == NOW - timedelta(hours=3)
     assert m.last_active == NOW - timedelta(minutes=10)
     assert m.expires_at == NOW + timedelta(hours=2)
+    assert m.platform_revision == platform
+    assert m.source_revision == source
+    assert m.profile == "app-live"
+    assert m.mode == "reconciled"
+    assert m.owner == "session:42"
+    assert m.services == ("workflow-builder",)
+    assert m.provenance == {"requestId": "request-1"}
+    assert m.trusted_code is True
+    assert m.allocation == {"kind": "cold"}
+    assert m.images == {"workflow-builder": image}
+    assert m.catalog_digest == catalog
 
 
 def test_preview_member_from_ns_tolerates_garbage_pr_and_missing_fields() -> None:
     ns = _ns("plain", pr="not-a-number")
+    ns.metadata.annotations.update(
+        {
+            "preview.stacks.io/target-revision": "main",
+            "preview.stacks.io/source-revision": "B" * 40,
+            "preview.stacks.io/profile": "unknown",
+            "preview.stacks.io/mode": "imperative",
+            "preview.stacks.io/owner": " bad",
+            "preview.stacks.io/services": '["UPPER"]',
+            "preview.stacks.io/provenance": "[]",
+            "preview.stacks.io/trusted-code": "yes",
+            "preview.stacks.io/allocation": '{"kind":"warm"}',
+            "preview.stacks.io/images": '{"workflow-builder":"latest"}',
+            "preview.stacks.io/catalog-digest": "sha256:bad",
+        }
+    )
     m = app_module._preview_member_from_ns(ns)
     assert m.pr_number is None
     assert m.origin is None
@@ -307,6 +511,17 @@ def test_preview_member_from_ns_tolerates_garbage_pr_and_missing_fields() -> Non
     assert m.protected is False
     assert m.last_active is None
     assert m.expires_at is None
+    assert m.platform_revision is None
+    assert m.source_revision is None
+    assert m.profile is None
+    assert m.mode is None
+    assert m.owner is None
+    assert m.services is None
+    assert m.provenance is None
+    assert m.trusted_code is None
+    assert m.allocation is None
+    assert m.images is None
+    assert m.catalog_digest is None
 
 
 def test_preview_lifecycle_fields_emits_the_ui_contract() -> None:
@@ -319,10 +534,23 @@ def test_preview_lifecycle_fields_emits_the_ui_contract() -> None:
             protected=True,
             last_active=NOW - timedelta(minutes=5),
             expires_at=NOW + timedelta(hours=1),
+            platform_revision="a" * 40,
+            source_revision="b" * 40,
+            profile="app-live",
+            mode="live",
+            owner="user:42",
+            services=("workflow-builder",),
+            provenance={"requestId": "request-1"},
+            trusted_code=True,
+            allocation={"kind": "warm", "baselinePlatformRevision": "a" * 40},
+            images={},
+            catalog_digest="sha256:" + "c" * 64,
         )
     )
     assert protected["state"] == "hot"
-    assert protected["origin"] == "user"
+    assert protected["lifecycle"] == "retained"
+    assert protected["origin"] == {"kind": "user"}
+    assert protected["legacyOrigin"] == "user"
     assert protected["protected"] is True
     assert protected["lastActive"] == (NOW - timedelta(minutes=5)).isoformat(
         timespec="seconds"
@@ -330,11 +558,25 @@ def test_preview_lifecycle_fields_emits_the_ui_contract() -> None:
     assert protected["expiresAt"] == (NOW + timedelta(hours=1)).isoformat(
         timespec="seconds"
     )
+    assert protected["platformRevision"] == "a" * 40
+    assert protected["sourceRevision"] == "b" * 40
+    assert protected["profile"] == "app-live"
+    assert protected["mode"] == "live"
+    assert protected["owner"] == {"kind": "user", "id": "user:42"}
+    assert protected["services"] == ["workflow-builder"]
+    assert protected["provenance"] == {"requestId": "request-1"}
+    assert protected["trustedCode"] is True
+    assert protected["allocation"]["kind"] == "warm"
+    assert protected["images"] == {}
+    assert protected["catalogDigest"] == "sha256:" + "c" * 64
 
     plain = app_module._preview_lifecycle_fields(
         _member("pr-9", origin="pr", pr_number=9, slept=True)
     )
     assert plain["state"] == "slept"
+    assert plain["lifecycle"] == "ephemeral"
+    assert plain["origin"] == {"kind": "pull-request", "reference": "9"}
+    assert plain["legacyOrigin"] == "pr"
     assert plain["prNumber"] == 9
     assert plain["protected"] is False
 
@@ -350,7 +592,9 @@ def _selector_kwargs(**overrides):
 
 def test_evictions_need_zero_or_negative_returns_empty() -> None:
     members = [_member("a", pool_state="free")]
-    assert app_module._select_preview_evictions(members, **_selector_kwargs(need=0)) == []
+    assert (
+        app_module._select_preview_evictions(members, **_selector_kwargs(need=0)) == []
+    )
     assert (
         app_module._select_preview_evictions(members, **_selector_kwargs(need=-1)) == []
     )
@@ -467,6 +711,35 @@ def test_evictions_expired_pr_lands_in_the_expired_bucket_not_twice() -> None:
     assert [m.real_name for m in picked] == ["pr-expired", "pr-live"]
 
 
+def test_evictions_use_lifecycle_not_owner_kind() -> None:
+    members = [
+        _member(
+            "retained-pr",
+            lifecycle="retained",
+            origin="pr",
+            origin_contract={"kind": "pull-request", "reference": "17"},
+        ),
+        _member(
+            "ephemeral-user",
+            lifecycle="ephemeral",
+            origin="user",
+            owner_contract={"kind": "user", "id": "user:42"},
+        ),
+        _member(
+            "ephemeral-workflow",
+            lifecycle="ephemeral",
+            origin_contract={"kind": "workflow", "reference": "run:19"},
+        ),
+    ]
+
+    picked = app_module._select_preview_evictions(members, **_selector_kwargs())
+
+    assert [member.real_name for member in picked] == [
+        "ephemeral-user",
+        "ephemeral-workflow",
+    ]
+
+
 # ---- job manifest D1/A4 passthrough ------------------------------------------
 
 
@@ -480,10 +753,230 @@ def test_up_job_manifest_stamps_d1_env() -> None:
     env = _job_env(m)
     assert env["ORIGIN"] == "pr"
     assert env["PR_NUMBER"] == "341"
+    assert env["PREVIEW_TTL_HOURS"] == "24"
+    assert env["EXPIRES_AT"].endswith("Z")
+    assert "+00:00" not in env["EXPIRES_AT"]
     expires = app_module._parse_rfc3339(env["EXPIRES_AT"])
     assert expires is not None
     delta = expires - datetime.now(UTC)
     assert timedelta(hours=23) < delta < timedelta(hours=25)
+
+
+def test_job_manifest_carries_exact_operation_lease_holder() -> None:
+    holder = f"op:{'a' * 32}"
+    manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(name="prv", action="down"),
+        namespace="workflow-builder",
+        operation_holder=holder,
+    )
+
+    assert _job_env(manifest)["PREVIEW_OPERATION_HOLDER"] == holder
+    with pytest.raises(ValueError, match="operation holder"):
+        app_module._vcluster_preview_job_manifest(
+            VclusterPreviewRequest(name="prv", action="down"),
+            namespace="workflow-builder",
+            operation_holder="shared-token",
+        )
+
+
+def test_down_job_database_is_server_derived_from_exact_preview_name() -> None:
+    manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(name="pool-1383", action="down"),
+        namespace="preview-control-system",
+        operation_holder=f"op:{'a' * 32}",
+    )
+
+    env = _job_env(manifest)
+    assert env["PREVIEW_DB"] == "preview_pool1383"
+    assert env["PREVIEW_DB_MODE"] == "shared"
+
+
+def test_down_request_rejects_caller_controlled_database(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_DRY_RUN", "true")
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.provision_vcluster_preview(
+            _no_auth_request(),
+            VclusterPreviewRequest(
+                name="pool-1383",
+                action="down",
+                previewDb="workflow_builder",
+                previewDbMode="shared",
+            ),
+        )
+
+    assert caught.value.status_code == 400
+    assert "server-derived" in str(caught.value.detail)
+
+
+def test_operation_lease_blocks_overlap_and_releases_by_exact_holder() -> None:
+    coordination = _FakeCoordination()
+    first = app_module._acquire_preview_operation_lease(
+        coordination, namespace="workflow-builder", real_name="feature-one"
+    )
+    assert first.startswith("op:")
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._acquire_preview_operation_lease(
+            coordination, namespace="workflow-builder", real_name="feature-one"
+        )
+    assert caught.value.status_code == 409
+
+    app_module._release_preview_operation_lease(
+        coordination,
+        namespace="workflow-builder",
+        real_name="feature-one",
+        holder=f"op:{'f' * 32}",
+    )
+    lease = coordination.leases["vcpreview-op-feature-one"]
+    assert lease.spec.holder_identity == first
+
+    app_module._release_preview_operation_lease(
+        coordination,
+        namespace="workflow-builder",
+        real_name="feature-one",
+        holder=first,
+    )
+    assert lease.spec.holder_identity == first
+    assert coordination.leases["vcpreview-op-feature-one"].spec.holder_identity == ""
+    assert app_module._acquire_preview_operation_lease(
+        coordination, namespace="workflow-builder", real_name="feature-one"
+    ).startswith("op:")
+
+
+def test_stale_down_cannot_delete_a_reopened_generation(monkeypatch) -> None:
+    old_request = "pr-42-old"
+    new_request = "pr-42-new"
+    old_source = "b" * 40
+    new_source = "c" * 40
+    ns = _ns("pr-42")
+    ns.metadata.annotations.update(
+        {
+            "preview.stacks.io/source-revision": new_source,
+            "preview.stacks.io/provenance": json.dumps({"requestId": new_request}),
+        }
+    )
+    batch = _FakeBatch()
+    core = _FakeCore([ns])
+    coordination = _FakeCoordination()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.provision_vcluster_preview(
+            _no_auth_request(),
+            VclusterPreviewRequest(
+                name="pr-42",
+                action="down",
+                teardownExpectedRequestId=old_request,
+                teardownExpectedSourceRevision=old_source,
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert "ownership no longer matches" in str(caught.value.detail)
+    assert batch.created == []
+    assert coordination.leases["vcpreview-op-pr-42"].spec.holder_identity == ""
+
+
+@pytest.mark.parametrize("supplied", [None, "wrong-proof"])
+def test_mutable_live_down_requires_archive_proof_before_job(
+    monkeypatch, supplied: str | None
+) -> None:
+    request_id = "request-live-1"
+    source = "b" * 40
+    member = _ns(
+        "live-one",
+        profile="app-live",
+        mode="live",
+        source_revision=source,
+        provenance={"requestId": request_id},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setenv("PREVIEW_ARCHIVE_TEARDOWN_TOKEN", "host-archive-proof")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    headers = {"authorization": "Bearer test-token"}
+    if supplied is not None:
+        headers["x-preview-archive-teardown-token"] = supplied
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.provision_vcluster_preview(
+            SimpleNamespace(headers=headers),
+            VclusterPreviewRequest(
+                name="live-one",
+                action="down",
+                teardownExpectedRequestId=request_id,
+                teardownExpectedSourceRevision=source,
+            ),
+        )
+
+    assert caught.value.status_code == 403
+    assert _created_actions(batch) == []
+
+
+def test_mutable_live_down_accepts_archive_proof_and_exact_tuple(monkeypatch) -> None:
+    request_id = "request-live-1"
+    source = "b" * 40
+    member = _ns(
+        "live-one",
+        profile="app-live",
+        mode="live",
+        source_revision=source,
+        provenance={"requestId": request_id},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setenv("PREVIEW_ARCHIVE_TEARDOWN_TOKEN", "host-archive-proof")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    app_module.provision_vcluster_preview(
+        SimpleNamespace(
+            headers={
+                "authorization": "Bearer test-token",
+                "x-preview-archive-teardown-token": "host-archive-proof",
+            }
+        ),
+        VclusterPreviewRequest(
+            name="live-one",
+            action="down",
+            teardownExpectedRequestId=request_id,
+            teardownExpectedSourceRevision=source,
+        ),
+    )
+
+    assert _created_actions(batch) == [("live-one", "down")]
+    assert "host-archive-proof" not in json.dumps(batch.created[0])
+
+
+@pytest.mark.parametrize(
+    ("profile", "mode"),
+    [("app-live", "reconciled"), ("manifest-candidate", "reconciled")],
+)
+def test_profiled_teardown_route_requires_exact_guard_before_job(
+    monkeypatch, profile: str, mode: str
+) -> None:
+    member = _ns(
+        "guarded-one",
+        profile=profile,
+        mode=mode,
+        source_revision="b" * 40,
+        allocation={"kind": "cold"},
+        trusted_code=True,
+        provenance={"requestId": "request-1"},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.teardown_vcluster_preview(_no_auth_request(), "guarded-one", None)
+
+    assert caught.value.status_code == 400
+    assert "requires one exact" in str(caught.value.detail)
+    assert batch.created == []
 
 
 def test_up_job_manifest_omits_d1_env_by_default_and_rejects_bad_origin() -> None:
@@ -491,13 +984,322 @@ def test_up_job_manifest_omits_d1_env_by_default_and_rejects_bad_origin() -> Non
         VclusterPreviewRequest(name="prv", action="up"), namespace="workflow-builder"
     )
     env = _job_env(m)
-    assert "ORIGIN" not in env and "PR_NUMBER" not in env and "EXPIRES_AT" not in env
+    assert (
+        "ORIGIN" not in env
+        and "PR_NUMBER" not in env
+        and "EXPIRES_AT" not in env
+        and "PREVIEW_TTL_HOURS" not in env
+    )
     m2 = app_module._vcluster_preview_job_manifest(
         VclusterPreviewRequest(name="prv", action="up", origin="bogus", ttlHours=0),
         namespace="workflow-builder",
     )
     env2 = _job_env(m2)
-    assert "ORIGIN" not in env2 and "EXPIRES_AT" not in env2
+    assert (
+        "ORIGIN" not in env2
+        and "EXPIRES_AT" not in env2
+        and "PREVIEW_TTL_HOURS" not in env2
+    )
+
+
+def test_preview_control_namespace_is_independent_from_workload_namespace(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AGENT_WORKFLOW_HOST_NAMESPACE", "workflow-builder")
+    monkeypatch.setenv("VCLUSTER_PREVIEW_CONTROL_NAMESPACE", "preview-control-system")
+
+    assert app_module._agent_workflow_host_namespace() == "workflow-builder"
+    assert app_module._vcluster_preview_control_namespace() == "preview-control-system"
+    manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(name="control-ns", action="down"),
+        namespace=app_module._vcluster_preview_control_namespace(),
+    )
+    assert manifest["metadata"]["namespace"] == "preview-control-system"
+    assert manifest["spec"]["template"]["spec"]["serviceAccountName"] == (
+        "vcpreview-control-ns"
+    )
+
+
+def test_profiled_preview_manifest_carries_immutable_contract() -> None:
+    platform = "a" * 40
+    source = "b" * 40
+    request = VclusterPreviewRequest(
+        name="feature-one",
+        profile="app-live",
+        lane="application",
+        platformRevision=platform,
+        sourceRevision=source,
+        delivery="reconciler",
+        enrollMode="agent",
+        mode="live",
+        allocation={"kind": "cold"},
+        lifecycle="retained",
+        owner={"kind": "user", "id": "user:123"},
+        origin={"kind": "interactive-session", "reference": "session:123"},
+        services=["workflow-builder", "workflow-orchestrator"],
+        provenance={
+            "requestId": "req-1",
+            "requestedAt": "2026-07-09T12:00:00Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+            "source": "interactive-session",
+        },
+        trustedCode=True,
+        capabilityBundle=CAPABILITY_BUNDLE,
+        catalogDigest=CATALOG_DIGEST,
+        createOnly=True,
+        ttlHours=24,
+    )
+
+    app_module._validate_profiled_preview_request(request)
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(request, namespace="workflow-builder")
+    )
+
+    assert env["TARGET_REVISION"] == platform
+    assert env["SOURCE_REVISION"] == source
+    assert env["PREVIEW_DELIVERY"] == "reconciler"
+    assert env["PREVIEW_PROFILE"] == "app-live"
+    assert env["PREVIEW_LANE"] == "application"
+    assert env["PREVIEW_MODE"] == "live"
+    assert env["PREVIEW_ALLOCATION"] == '{"kind":"cold"}'
+    assert env["PREVIEW_LIFECYCLE"] == "retained"
+    assert env["PREVIEW_OWNER_KIND"] == "user"
+    assert env["PREVIEW_OWNER"] == "user:123"
+    assert env["PREVIEW_ORIGIN_KIND"] == "interactive-session"
+    assert env["PREVIEW_ORIGIN_REFERENCE"] == "session:123"
+    assert env["PREVIEW_CATALOG_DIGEST"] == CATALOG_DIGEST
+    assert "PREVIEW_DEV_MODE" not in env
+    assert "CREATE_ONLY" not in env
+    assert "BFF_IMAGE" not in env
+    assert "PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN" not in env
+    assert env["PREVIEW_CONTROL_CAPABILITY_TOKEN"] == "1" * 64
+    assert env["PREVIEW_DEV_SYNC_MINT_TOKEN"] == "2" * 64
+    assert env["PREVIEW_ACTION_INTERNAL_TOKEN"] == "3" * 64
+    assert env["SANDBOX_EXECUTION_API_TOKEN"] == "4" * 64
+    assert env["PREVIEW_RUNTIME_CAPABILITY_TOKEN"] == "5" * 64
+    assert env["PREVIEW_STORAGE_CAPABILITY_TOKEN"] == "6" * 64
+    assert env["PREVIEW_SERVICES"] == ('["workflow-builder","workflow-orchestrator"]')
+    assert json.loads(env["PREVIEW_PROVENANCE"]) == request.provenance
+    assert env["TRUSTED_CODE"] == "true"
+    assert env["EXPIRES_AT"] == "2026-07-10T12:00:00Z"
+
+
+def test_profiled_preview_omitted_delivery_defaults_to_reconciler_agent(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("VCLUSTER_PREVIEW_DELIVERY", raising=False)
+    monkeypatch.delenv("VCLUSTER_PREVIEW_ENROLL_MODE", raising=False)
+    request = VclusterPreviewRequest(
+        name="default-delivery",
+        profile="app-live",
+        lane="application",
+        platformRevision="a" * 40,
+        sourceRevision="b" * 40,
+        mode="live",
+        allocation={"kind": "cold"},
+        lifecycle="ephemeral",
+        owner={"kind": "user", "id": "user:123"},
+        origin={"kind": "interactive-session", "reference": "session:123"},
+        services=["workflow-builder"],
+        provenance={
+            "requestId": "req-default-delivery",
+            "requestedAt": "2026-07-09T12:00:00Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+        },
+        trustedCode=True,
+        capabilityBundle=CAPABILITY_BUNDLE,
+        catalogDigest=CATALOG_DIGEST,
+        createOnly=True,
+        ttlHours=24,
+    )
+
+    app_module._validate_profiled_preview_request(request)
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(
+            request, namespace="preview-control-system"
+        )
+    )
+
+    assert env["PREVIEW_DELIVERY"] == "reconciler"
+    assert env["ENROLL_MODE"] == "agent"
+
+
+def test_profiled_expiry_uses_requested_at_despite_controller_clock_skew() -> None:
+    request = VclusterPreviewRequest(
+        name="clock-skew",
+        profile="app-live",
+        lane="application",
+        platformRevision="a" * 40,
+        sourceRevision="b" * 40,
+        delivery="reconciler",
+        enrollMode="agent",
+        mode="live",
+        allocation={"kind": "cold"},
+        lifecycle="ephemeral",
+        owner={"kind": "user", "id": "user:123"},
+        origin={"kind": "interactive-session", "reference": "session:123"},
+        services=["workflow-builder"],
+        provenance={
+            "requestId": "req-clock-skew",
+            "requestedAt": "2025-01-02T03:04:05.123456Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+        },
+        trustedCode=True,
+        capabilityBundle=CAPABILITY_BUNDLE,
+        catalogDigest=CATALOG_DIGEST,
+        createOnly=True,
+        ttlHours=24,
+    )
+
+    app_module._validate_profiled_preview_request(request)
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(
+            request, namespace="preview-control-system"
+        )
+    )
+
+    assert env["EXPIRES_AT"] == "2025-01-03T03:04:05.123456Z"
+
+
+def test_reconciled_app_live_requires_cold_immutable_images() -> None:
+    image = "ghcr.io/pittampalliorg/workflow-builder@sha256:" + "c" * 64
+    request = VclusterPreviewRequest(
+        name="acceptance-one",
+        profile="app-live",
+        lane="application",
+        mode="reconciled",
+        allocation={"kind": "cold"},
+        platformRevision="a" * 40,
+        sourceRevision="b" * 40,
+        delivery="reconciler",
+        enrollMode="agent",
+        lifecycle="ephemeral",
+        owner={"kind": "session", "id": "session:123"},
+        origin={"kind": "workflow", "reference": "execution:123"},
+        services=["workflow-builder"],
+        imageOverrides={"workflow-builder": image},
+        provenance={
+            "requestId": "req-acceptance",
+            "requestedAt": "2026-07-09T12:00:00Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+        },
+        trustedCode=True,
+        capabilityBundle=CAPABILITY_BUNDLE,
+        catalogDigest=CATALOG_DIGEST,
+        createOnly=True,
+        ttlHours=24,
+    )
+
+    app_module._validate_profiled_preview_request(request)
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(request, namespace="workflow-builder")
+    )
+    assert env["PREVIEW_MODE"] == "reconciled"
+    assert env["PREVIEW_ALLOCATION"] == '{"kind":"cold"}'
+    assert env["PREVIEW_IMAGES"] == ('{"workflow-builder":"' + image + '"}')
+
+    non_native = request.model_copy(
+        update={
+            "services": ["mcp-gateway"],
+            "imageOverrides": {
+                "mcp-gateway": ("ghcr.io/pittampalliorg/mcp-gateway@sha256:" + "d" * 64)
+            },
+        }
+    )
+    with pytest.raises(app_module.HTTPException, match="not preview-native"):
+        app_module._validate_profiled_preview_request(non_native)
+
+    for changes, expected in [
+        (
+            {
+                "allocation": {
+                    "kind": "warm",
+                    "baselinePlatformRevision": "a" * 40,
+                }
+            },
+            "allocation is cold-only",
+        ),
+        ({"imageOverrides": {}}, "requires imageOverrides"),
+        (
+            {"imageOverrides": {"workflow-builder": "workflow-builder:latest"}},
+            "immutable",
+        ),
+    ]:
+        invalid = request.model_copy(update=changes)
+        with pytest.raises(app_module.HTTPException) as caught:
+            app_module._validate_profiled_preview_request(invalid)
+        assert expected in str(caught.value.detail)
+
+
+@pytest.mark.parametrize(
+    ("changes", "status_code", "detail"),
+    [
+        ({"trustedCode": False}, 403, "trustedCode=true"),
+        ({"platformRevision": "main"}, 400, "platformRevision"),
+        ({"profile": "host-candidate"}, 400, "physical-dev"),
+        ({"delivery": "imperative"}, 400, "delivery=reconciler"),
+        (
+            {"delivery": "reconciler", "enrollMode": "imperative"},
+            400,
+            "enrollMode=agent",
+        ),
+        ({"profile": "manifest-candidate", "pool": True}, 400, "warm-pool"),
+        ({"services": ["Workflow Builder"]}, 400, "invalid service"),
+        ({"services": ["workflow-builder", "workflow-builder"]}, 400, "duplicates"),
+        ({"previewDb": "host-shared"}, 400, "cannot select a shared"),
+        ({"previewDbMode": "shared"}, 400, "previewDbMode=cnpg"),
+        ({"previewDbBootstrap": "template"}, 400, "previewDbBootstrap=migrate"),
+    ],
+)
+def test_profiled_preview_rejects_unsafe_contracts(
+    changes: dict[str, object], status_code: int, detail: str
+) -> None:
+    values: dict[str, object] = {
+        "name": "feature-one",
+        "profile": "app-live",
+        "lane": "application",
+        "platformRevision": "a" * 40,
+        "sourceRevision": "b" * 40,
+        "delivery": "reconciler",
+        "enrollMode": "agent",
+        "mode": "live",
+        "allocation": {"kind": "cold"},
+        "lifecycle": "retained",
+        "owner": {"kind": "user", "id": "user:123"},
+        "origin": {"kind": "user"},
+        "services": ["workflow-builder"],
+        "provenance": {
+            "requestId": "req-1",
+            "requestedAt": "2026-07-09T12:00:00Z",
+            "platformRepository": "PittampalliOrg/stacks",
+            "sourceRepository": "PittampalliOrg/workflow-builder",
+        },
+        "trustedCode": True,
+        "capabilityBundle": CAPABILITY_BUNDLE,
+        "catalogDigest": CATALOG_DIGEST,
+        "createOnly": True,
+        "ttlHours": 24,
+    }
+    values.update(changes)
+    request = VclusterPreviewRequest(**values)
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._validate_profiled_preview_request(request)
+
+    assert caught.value.status_code == status_code
+    assert detail in str(caught.value.detail)
+
+
+def test_unprofiled_preview_request_is_rejected() -> None:
+    request = VclusterPreviewRequest(name="legacy", targetRevision="main")
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._validate_profiled_preview_request(request)
+    assert caught.value.status_code == 400
+    assert "profiled PreviewEnvironment contract" in str(caught.value.detail)
 
 
 def test_sleep_and_resume_job_deadlines() -> None:
@@ -505,7 +1307,8 @@ def test_sleep_and_resume_job_deadlines() -> None:
         VclusterPreviewRequest(name="prv", action="sleep"), namespace="workflow-builder"
     )
     resume = app_module._vcluster_preview_job_manifest(
-        VclusterPreviewRequest(name="prv", action="resume"), namespace="workflow-builder"
+        VclusterPreviewRequest(name="prv", action="resume"),
+        namespace="workflow-builder",
     )
     up = app_module._vcluster_preview_job_manifest(
         VclusterPreviewRequest(name="prv", action="up"), namespace="workflow-builder"
@@ -515,6 +1318,46 @@ def test_sleep_and_resume_job_deadlines() -> None:
     assert up["spec"]["activeDeadlineSeconds"] == 1800
     assert _job_env(sleep)["ACTION"] == "sleep"
     assert _job_env(resume)["ACTION"] == "resume"
+    assert _job_env(up)["ENROLL_MODE"] == "agent"
+    assert _job_env(up)["TARGET_REVISION"] == "main"
+    assert "TARGET_REVISION" not in _job_env(sleep)
+    assert "TARGET_REVISION" not in _job_env(resume)
+    assert "PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN" not in _job_env(sleep)
+    assert "PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN" not in _job_env(resume)
+
+
+@pytest.mark.parametrize("action", ["down", "sleep", "resume"])
+def test_profiled_lifecycle_jobs_never_carry_target_revision(action: str) -> None:
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(
+            VclusterPreviewRequest(
+                name="prv",
+                action=action,
+                profile="app-live",
+                platformRevision="a" * 40,
+            ),
+            namespace="workflow-builder",
+        )
+    )
+
+    assert env["ENROLL_MODE"] == "agent"
+    assert "TARGET_REVISION" not in env
+
+
+def test_profiled_up_job_rejects_non_sha_target_revision() -> None:
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._vcluster_preview_job_manifest(
+            VclusterPreviewRequest(
+                name="prv",
+                action="up",
+                profile="app-live",
+                platformRevision="main",
+            ),
+            namespace="workflow-builder",
+        )
+
+    assert caught.value.status_code == 400
+    assert "TARGET_REVISION" in str(caught.value.detail)
 
 
 # ---- claim: D1 stamping + slept re-claim --------------------------------------
@@ -562,21 +1405,27 @@ def test_claim_skips_slept_free_members() -> None:
     assert app_module._claim_free_member(core, alias="demo", claim_user="me") is None
 
 
-def test_claim_endpoint_resumes_a_slept_idempotent_reclaim(monkeypatch) -> None:
+def test_unprofiled_claim_is_rejected_before_mutation(monkeypatch) -> None:
     slept = _ns("pool-aa", pool="claimed", alias="demo", state="slept")
     core = _FakeCore([slept])
     batch = _FakeBatch()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
-    resp = app_module.claim_vcluster_preview(
-        _no_auth_request(), VclusterPreviewClaimRequest(name="demo")
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: _FakeCoordination()
     )
-    assert resp["status"] == "resuming"
-    assert resp["action"] == "resume"
-    assert resp["pool"] == "pool-aa"
-    assert _created_actions(batch) == [("pool-aa", "resume")]
-    # The label flipped back to hot + last-active stamped (the resume IS activity).
-    assert slept.metadata.labels["vcluster-preview-state"] == "hot"
-    assert "vcluster-preview-last-active" in slept.metadata.annotations
+    monkeypatch.setattr(
+        app_module,
+        "_preview_capacity_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.claim_vcluster_preview(
+            _no_auth_request(), VclusterPreviewClaimRequest(name="demo")
+        )
+    assert caught.value.status_code == 409
+    assert "warm pools are retired" in str(caught.value.detail)
+    assert _created_actions(batch) == []
+    assert slept.metadata.labels["vcluster-preview-state"] == "slept"
 
 
 # ---- touch / sleep endpoints ---------------------------------------------------
@@ -587,6 +1436,10 @@ def test_touch_stamps_last_active_on_a_hot_preview(monkeypatch) -> None:
     core = _FakeCore([ns])
     batch = _FakeBatch()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    coordination = _FakeCoordination()
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
     resp = app_module.touch_vcluster_preview(_no_auth_request(), "demo")
     assert resp["state"] == "hot"
     assert resp["resuming"] is False
@@ -609,6 +1462,15 @@ def test_touch_resumes_a_slept_preview(monkeypatch) -> None:
     core = _FakeCore([ns])
     batch = _FakeBatch()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    coordination = _FakeCoordination()
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_preview_capacity_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
     resp = app_module.touch_vcluster_preview(_no_auth_request(), "demo")
     assert resp["state"] == "resuming"
     assert resp["resuming"] is True
@@ -646,9 +1508,7 @@ def test_sleep_endpoint_sleeps_a_claimed_member(monkeypatch) -> None:
 def test_sleep_endpoint_refuses_free_and_protected(monkeypatch) -> None:
     from fastapi import HTTPException
 
-    core = _FakeCore(
-        [_ns("pool-bb", pool="free"), _ns("keep", protected=True)]
-    )
+    core = _FakeCore([_ns("pool-bb", pool="free"), _ns("keep", protected=True)])
     batch = _FakeBatch()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     with pytest.raises(HTTPException) as exc:
@@ -716,6 +1576,120 @@ def test_reap_ttl_tears_down_explicitly_expired_previews(monkeypatch) -> None:
     assert batch.created[0]["spec"]["activeDeadlineSeconds"] == 900
 
 
+def test_reap_ttl_sleeps_mutable_live_preview_instead_of_deleting(monkeypatch) -> None:
+    expired = _ns(
+        "live-expired",
+        profile="app-live",
+        mode="live",
+        expires_at=NOW - timedelta(hours=1),
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 1
+    assert stats["sleptNow"] == 1
+    assert _created_actions(batch) == [("live-expired", "sleep")]
+    assert expired.metadata.labels["vcluster-preview-state"] == "slept"
+
+
+def test_reap_capacity_sleeps_mutable_live_preview_instead_of_deleting(
+    monkeypatch,
+) -> None:
+    live = _ns(
+        "live-capacity",
+        profile="app-live",
+        mode="live",
+        origin="pr",
+        created=NOW - timedelta(hours=6),
+    )
+    core = _FakeCore([live])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core, need_room=1)
+
+    assert stats["evicted"] == 0
+    assert stats["archiveRequired"] == 1
+    assert stats["sleptNow"] == 1
+    assert _created_actions(batch) == [("live-capacity", "sleep")]
+
+
+def test_reap_ttl_defers_immutable_reconciled_acceptance_to_application(
+    monkeypatch,
+) -> None:
+    platform = "a" * 40
+    source = "b" * 40
+    image = "ghcr.io/pittampalliorg/workflow-builder@sha256:" + "c" * 64
+    expired = _ns(
+        "acceptance-expired",
+        profile="app-live",
+        mode="reconciled",
+        platform_revision=platform,
+        source_revision=source,
+        services=["workflow-builder"],
+        images={"workflow-builder": image},
+        catalog_digest="sha256:" + "d" * 64,
+        allocation={"kind": "cold"},
+        trusted_code=True,
+        reconciliation_succeeded=True,
+        expires_at=NOW - timedelta(hours=1),
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 0
+    assert stats["applicationReaperRequired"] == 1
+    assert _created_actions(batch) == []
+
+
+def test_reap_ttl_defers_manifest_candidate_to_application(monkeypatch) -> None:
+    expired = _ns(
+        "manifest-expired",
+        profile="manifest-candidate",
+        mode="reconciled",
+        platform_revision="a" * 40,
+        source_revision="b" * 40,
+        services=[],
+        images={},
+        catalog_digest="sha256:" + "d" * 64,
+        allocation={"kind": "cold"},
+        trusted_code=True,
+        expires_at=NOW - timedelta(hours=1),
+        provenance={"requestId": "request-1"},
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 0
+    assert stats["applicationReaperRequired"] == 1
+    assert _created_actions(batch) == []
+
+
+def test_reap_ttl_preserves_incomplete_reconciled_app_live(monkeypatch) -> None:
+    expired = _ns(
+        "acceptance-incomplete",
+        profile="app-live",
+        mode="reconciled",
+        expires_at=NOW - timedelta(hours=1),
+    )
+    core = _FakeCore([expired])
+    batch = _FakeBatch()
+
+    stats = app_module._lifecycle_reap_once(batch, core)
+
+    assert stats["reapedExpired"] == 0
+    assert stats["archiveRequired"] == 1
+    assert _created_actions(batch) == [("acceptance-incomplete", "sleep")]
+
+
 def test_reap_ttl_flips_pool_members_to_recycling_first(monkeypatch) -> None:
     expired = _ns(
         "pool-aa", pool="claimed", alias="demo", expires_at=NOW - timedelta(hours=1)
@@ -741,9 +1715,7 @@ def test_reap_global_ttl_reaps_by_creation_age_only_when_enabled(monkeypatch) ->
 
 
 def test_reap_never_touches_protected_even_when_expired(monkeypatch) -> None:
-    core = _FakeCore(
-        [_ns("keep", protected=True, expires_at=NOW - timedelta(hours=5))]
-    )
+    core = _FakeCore([_ns("keep", protected=True, expires_at=NOW - timedelta(hours=5))])
     batch = _FakeBatch()
     stats = app_module._lifecycle_reap_once(batch, core)
     assert stats["reapedExpired"] == 0
@@ -851,6 +1823,8 @@ def test_reap_endpoint_dry_run_returns_zeros(monkeypatch) -> None:
         "reapedExpired": 0,
         "evicted": 0,
         "sleptNow": 0,
+        "archiveRequired": 0,
+        "applicationReaperRequired": 0,
     }
 
 
@@ -905,13 +1879,18 @@ def test_compute_previews_counts_slept_separately_and_surfaces_d1(monkeypatch) -
     by_name = {p["name"]: p for p in result["previews"]}
     assert set(by_name) == {"hot-1", "pr-1"}  # free member hidden as before
     assert by_name["hot-1"]["state"] == "hot"
-    assert by_name["hot-1"]["origin"] == "user"
+    assert by_name["hot-1"]["origin"] == {"kind": "user"}
+    assert by_name["hot-1"]["legacyOrigin"] == "user"
     assert by_name["hot-1"]["phase"] == "ready"
     assert by_name["pr-1"]["state"] == "slept"
     assert by_name["pr-1"]["phase"] == "slept"  # slept members are NOT probed
     assert by_name["pr-1"]["ready"] is False
     assert by_name["pr-1"]["prNumber"] == 341
-    assert by_name["pr-1"]["origin"] == "pr"
+    assert by_name["pr-1"]["origin"] == {
+        "kind": "pull-request",
+        "reference": "341",
+    }
+    assert by_name["pr-1"]["legacyOrigin"] == "pr"
     assert by_name["pr-1"]["expiresAt"] is not None
     assert by_name["pr-1"]["lastActive"] is not None
 
@@ -919,7 +1898,7 @@ def test_compute_previews_counts_slept_separately_and_surfaces_d1(monkeypatch) -
 def test_pool_reconcile_awake_excludes_slept(monkeypatch) -> None:
     monkeypatch.setenv("VCLUSTER_PREVIEW_POOL_SIZE", "1")
     monkeypatch.setenv("VCLUSTER_PREVIEW_MAX", "2")
-    # 2 non-terminating members but one is slept -> awake=1 -> room for 1 bake.
+    # PreviewEnvironment pool reconciliation remains disabled even with legacy env.
     core = _FakeCore(
         [
             _ns("slept-user", state="slept"),
@@ -929,8 +1908,8 @@ def test_pool_reconcile_awake_excludes_slept(monkeypatch) -> None:
     batch = _FakeBatch()
     apps = SimpleNamespace()
     stats = app_module._pool_reconcile_once(batch, core, apps)
-    assert stats["awake"] == 1
-    assert stats["created"] == 1
+    assert stats["awake"] == 0
+    assert stats["created"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -947,11 +1926,15 @@ class _K8s404(Exception):
         self.status = 404
 
 
-def _phase_fakes(*, ns_exists, job_404=True, pods=()):
+def _phase_fakes(
+    *, ns_exists, job_404=True, pods=(), annotations=None, job_status=None
+):
     def read_namespace(*, name, _request_timeout=None):
         if not ns_exists:
             raise _K8s404()
-        return SimpleNamespace(metadata=SimpleNamespace(name=name))
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name, annotations=annotations or {})
+        )
 
     def list_namespaced_pod(*, namespace, _request_timeout=None):
         # K8s semantics: empty 200 even for a namespace that does not exist.
@@ -960,7 +1943,9 @@ def _phase_fakes(*, ns_exists, job_404=True, pods=()):
     def read_namespaced_job_status(*, name, namespace, _request_timeout=None):
         if job_404:
             raise _K8s404()
-        return SimpleNamespace(status=SimpleNamespace(active=1, succeeded=0, failed=0))
+        return SimpleNamespace(
+            status=job_status or SimpleNamespace(active=1, succeeded=0, failed=0)
+        )
 
     batch = SimpleNamespace(read_namespaced_job_status=read_namespaced_job_status)
     core = SimpleNamespace(
@@ -993,7 +1978,13 @@ def test_phase_provisioning_when_job_active_without_ns():
 
 def test_phase_ready_when_bff_pod_ready():
     pod = SimpleNamespace(
-        metadata=SimpleNamespace(name="workflow-builder-abc"),
+        metadata=SimpleNamespace(
+            name="workflow-builder-abc",
+            labels={
+                "app": "workflow-builder",
+                "vcluster.loft.sh/namespace": "workflow-builder",
+            },
+        ),
         status=SimpleNamespace(
             conditions=[SimpleNamespace(type="Ready", status="True")]
         ),
@@ -1001,3 +1992,316 @@ def test_phase_ready_when_bff_pod_ready():
     batch, core = _phase_fakes(ns_exists=True, pods=[pod])
     phase, *_ = app_module._vcluster_preview_phase(batch, core, "pool-1")
     assert phase == "ready"
+
+
+def _reconciliation_annotations(*, marker: bool = True) -> dict[str, str]:
+    annotations = {
+        "preview.stacks.io/profile": "app-live",
+        "preview.stacks.io/target-revision": "a" * 40,
+        "preview.stacks.io/source-revision": "b" * 40,
+        "preview.stacks.io/reconciliation-platform-revision": "a" * 40,
+        "preview.stacks.io/reconciliation-source-revision": "b" * 40,
+    }
+    if marker:
+        annotations["preview.stacks.io/reconciliation-succeeded-at"] = (
+            "2026-07-04T12:00:00Z"
+        )
+    return annotations
+
+
+def _ready_bff_pod():
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="workflow-builder-abc",
+            labels={
+                "app": "workflow-builder",
+                "vcluster.loft.sh/namespace": "workflow-builder",
+            },
+        ),
+        status=SimpleNamespace(
+            conditions=[SimpleNamespace(type="Ready", status="True")]
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {"app": "workflow-builder"},
+        {
+            "app": "workflow-builder",
+            "vcluster.loft.sh/namespace": "other",
+        },
+        {
+            "app": "other",
+            "vcluster.loft.sh/namespace": "workflow-builder",
+        },
+    ],
+)
+def test_phase_does_not_adopt_unrelated_ready_pods(labels) -> None:
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="workflow-builder-abc", labels=labels),
+        status=SimpleNamespace(
+            conditions=[SimpleNamespace(type="Ready", status="True")]
+        ),
+    )
+    batch, core = _phase_fakes(ns_exists=True, pods=[pod])
+
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "pool-1")
+
+    assert phase == "provisioning"
+
+
+def test_phase_profiled_preview_stays_provisioning_while_up_job_active():
+    batch, core = _phase_fakes(
+        ns_exists=True,
+        job_404=False,
+        pods=[_ready_bff_pod()],
+        annotations=_reconciliation_annotations(),
+    )
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "acceptance")
+    assert phase == "provisioning"
+
+
+def test_phase_profiled_preview_fails_when_up_job_fails():
+    batch, core = _phase_fakes(
+        ns_exists=True,
+        job_404=False,
+        pods=[_ready_bff_pod()],
+        annotations=_reconciliation_annotations(),
+        job_status=SimpleNamespace(
+            active=0,
+            succeeded=0,
+            failed=0,
+            conditions=[SimpleNamespace(type="Failed", status="True")],
+        ),
+    )
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "acceptance")
+    assert phase == "failed"
+
+
+def test_phase_profiled_preview_requires_marker_after_job_success():
+    batch, core = _phase_fakes(
+        ns_exists=True,
+        job_404=False,
+        pods=[_ready_bff_pod()],
+        annotations=_reconciliation_annotations(marker=False),
+        job_status=SimpleNamespace(active=0, succeeded=1, failed=0),
+    )
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "acceptance")
+    assert phase == "provisioning"
+
+
+def test_phase_profiled_preview_ready_after_job_success_and_marker():
+    batch, core = _phase_fakes(
+        ns_exists=True,
+        job_404=False,
+        pods=[_ready_bff_pod()],
+        annotations=_reconciliation_annotations(),
+        job_status=SimpleNamespace(active=0, succeeded=1, failed=0),
+    )
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "acceptance")
+    assert phase == "ready"
+
+
+def test_phase_profiled_preview_uses_durable_marker_after_job_ttl_gc():
+    batch, core = _phase_fakes(
+        ns_exists=True,
+        job_404=True,
+        pods=[_ready_bff_pod()],
+        annotations=_reconciliation_annotations(),
+    )
+    phase, *_ = app_module._vcluster_preview_phase(batch, core, "acceptance")
+    assert phase == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Acceptance observation endpoints: immutable pod images + teardown proof.
+# ---------------------------------------------------------------------------
+
+
+def _runtime_pod(service: str, image: str, *, ready: bool = True):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"{service}-abc",
+            labels={"app.kubernetes.io/name": service},
+            deletion_timestamp=None,
+        ),
+        spec=SimpleNamespace(containers=[SimpleNamespace(name=service, image=image)]),
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[SimpleNamespace(type="Ready", status="True")],
+            container_statuses=[
+                SimpleNamespace(name=service, image_id=image, ready=ready)
+            ],
+        ),
+    )
+
+
+def test_runtime_endpoint_reads_exact_selected_service_containers(monkeypatch) -> None:
+    digest = f"sha256:{'c' * 64}"
+    image = f"ghcr.io/pittampalliorg/workflow-builder@{digest}"
+    namespace = _ns("acceptance")
+    namespace.metadata.annotations["preview.stacks.io/services"] = json.dumps(
+        ["workflow-builder", "function-router"]
+    )
+    namespace.metadata.annotations["preview.stacks.io/reconciliation-succeeded-at"] = (
+        "2026-07-04T12:00:00Z"
+    )
+    namespace.metadata.annotations.update(
+        {
+            "preview.stacks.io/target-revision": "a" * 40,
+            "preview.stacks.io/source-revision": "b" * 40,
+            "preview.stacks.io/reconciliation-platform-revision": "a" * 40,
+            "preview.stacks.io/reconciliation-source-revision": "b" * 40,
+        }
+    )
+    core = _FakeCore([namespace])
+    core.list_namespaced_pod = lambda **_kwargs: SimpleNamespace(
+        items=[
+            _runtime_pod("workflow-builder", image),
+            _runtime_pod(
+                "function-router",
+                f"ghcr.io/pittampalliorg/function-router@sha256:{'d' * 64}",
+            ),
+        ]
+    )
+    up_job = SimpleNamespace(
+        status=SimpleNamespace(succeeded=1, failed=0, conditions=[])
+    )
+    batch = SimpleNamespace(read_namespaced_job_status=lambda **_kwargs: up_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_runtime(_no_auth_request(), "acceptance")
+
+    assert result["resourceName"] == "acceptance"
+    assert result["reconciliationSucceeded"] is True
+    assert [item["service"] for item in result["services"]] == [
+        "function-router",
+        "workflow-builder",
+    ]
+    workflow = next(
+        item for item in result["services"] if item["service"] == "workflow-builder"
+    )
+    assert workflow["containers"] == [
+        {
+            "pod": "workflow-builder-abc",
+            "image": image,
+            "imageId": image,
+            "ready": True,
+        }
+    ]
+
+    def missing_up_job(**_kwargs):
+        raise _ApiExc(404)
+
+    ttl_gc_batch = SimpleNamespace(read_namespaced_job_status=missing_up_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (ttl_gc_batch, core))
+    after_ttl_gc = app_module.get_vcluster_preview_runtime(
+        _no_auth_request(), "acceptance"
+    )
+    assert after_ttl_gc["reconciliationSucceeded"] is True
+
+
+def test_runtime_endpoint_rejects_bff_ready_before_reconciliation_finishes(
+    monkeypatch,
+) -> None:
+    namespace = _ns("acceptance")
+    namespace.metadata.annotations["preview.stacks.io/services"] = json.dumps(
+        ["workflow-builder"]
+    )
+    core = _FakeCore([namespace])
+    core.list_namespaced_pod = lambda **_kwargs: SimpleNamespace(
+        items=[
+            _runtime_pod(
+                "workflow-builder",
+                f"ghcr.io/pittampalliorg/workflow-builder@sha256:{'c' * 64}",
+            )
+        ]
+    )
+    active_job = SimpleNamespace(
+        status=SimpleNamespace(succeeded=0, failed=0, conditions=[])
+    )
+    batch = SimpleNamespace(read_namespaced_job_status=lambda **_kwargs: active_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_runtime(_no_auth_request(), "acceptance")
+
+    assert result["services"][0]["containers"][0]["ready"] is True
+    assert result["reconciliationSucceeded"] is False
+
+
+def test_cleanup_endpoint_requires_runner_success_and_host_absence(monkeypatch) -> None:
+    core = _FakeCore([])
+    job = SimpleNamespace(status=SimpleNamespace(succeeded=1, failed=0, conditions=[]))
+    batch = SimpleNamespace(read_namespaced_job_status=lambda **_kwargs: job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_cleanup(_no_auth_request(), "acceptance")
+
+    assert result == {
+        "name": "acceptance",
+        "resourceName": "acceptance",
+        "complete": True,
+        "phase": "complete",
+        "checks": {
+            "runnerSucceeded": True,
+            "previewEnvironmentAbsent": True,
+            "applicationAbsent": True,
+            "agentRegistrationAbsent": True,
+            "agentNamespacesAbsent": True,
+            "hostNamespaceAbsent": True,
+            "databaseAbsent": True,
+            "natsStreamAbsent": True,
+            "headlampRegistrationAbsent": True,
+            "tailnetEgressAbsent": True,
+            "storageScopeAbsent": True,
+            "runnerIdentityAbsent": True,
+        },
+        "message": None,
+    }
+
+
+def test_cleanup_endpoint_reports_failed_runner_without_claiming_absence(
+    monkeypatch,
+) -> None:
+    core = _FakeCore([_ns("acceptance")])
+    job = SimpleNamespace(
+        status=SimpleNamespace(
+            succeeded=0,
+            failed=1,
+            conditions=[
+                SimpleNamespace(
+                    type="Failed", status="True", reason="BackoffLimitExceeded"
+                )
+            ],
+        )
+    )
+    batch = SimpleNamespace(read_namespaced_job_status=lambda **_kwargs: job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_cleanup(_no_auth_request(), "acceptance")
+
+    assert result["complete"] is False
+    assert result["phase"] == "failed"
+    assert result["message"] == "BackoffLimitExceeded"
+    assert not any(result["checks"].values())
+
+
+def test_cleanup_endpoint_does_not_infer_success_from_missing_resources(
+    monkeypatch,
+) -> None:
+    core = _FakeCore([])
+
+    def missing_job(**_kwargs):
+        raise _ApiExc(404)
+
+    batch = SimpleNamespace(read_namespaced_job_status=missing_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_cleanup(_no_auth_request(), "acceptance")
+
+    assert result["complete"] is False
+    assert result["phase"] == "pending"
+    assert result["checks"]["runnerSucceeded"] is False
+    assert result["checks"]["hostNamespaceAbsent"] is True

@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { NativeSelect, NativeSelectOption } from '$lib/components/ui/native-select';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		AlertDialog,
@@ -53,18 +54,26 @@
 	let {
 		previews = [],
 		counts = null,
+		previewNativeServices = [],
 		readProxyEnabled = false,
 		slug,
 		onchanged
 	}: {
 		previews?: VclusterPreviewSummary[];
 		counts?: VclusterPreviewCounts | null;
+		previewNativeServices?: readonly string[];
 		readProxyEnabled?: boolean;
 		slug: string;
 		onchanged?: () => void;
 	} = $props();
 
 	let name = $state('');
+	let profile = $state<'app-live' | 'manifest-candidate'>('app-live');
+	let platformRevision = $state('');
+	let sourceRevision = $state('');
+	let pullRequestNumber = $state('');
+	let ttlHours = $state(24);
+	let selectedServices = $state<Record<string, boolean>>({});
 	let launching = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let capacityAlert = $state<string | null>(null);
@@ -74,7 +83,27 @@
 	let expandedRuns = $state<Record<string, boolean>>({});
 	let toTeardown = $state<VclusterPreviewSummary | null>(null);
 
-	const poolFree = $derived(counts?.free ?? 0);
+	const selectedPreviewServices = $derived(
+		previewNativeServices.filter((service) => selectedServices[service] !== false)
+	);
+
+	$effect(() => {
+		const next = { ...selectedServices };
+		let changed = false;
+		for (const service of previewNativeServices) {
+			if (!(service in next)) {
+				next[service] = true;
+				changed = true;
+			}
+		}
+		for (const service of Object.keys(next)) {
+			if (!previewNativeServices.includes(service)) {
+				delete next[service];
+				changed = true;
+			}
+		}
+		if (changed) selectedServices = next;
+	});
 
 	$effect(() => {
 		// Clear the sticky wake marker once the preview is no longer slept.
@@ -101,16 +130,54 @@
 	async function launch() {
 		const n = name.trim();
 		if (!n) return;
+		if (!Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168) {
+			errorMessage = 'TTL must be an integer from 1 to 168 hours';
+			return;
+		}
+		if (profile === 'app-live' && selectedPreviewServices.length === 0) {
+			errorMessage = 'Select at least one preview-native service';
+			return;
+		}
+		const infrastructurePr = Number(pullRequestNumber);
+		if (
+			profile === 'manifest-candidate' &&
+			(!Number.isInteger(infrastructurePr) || infrastructurePr < 1)
+		) {
+			errorMessage = 'Enter a valid stacks pull request number';
+			return;
+		}
 		launching = true;
 		errorMessage = null;
 		capacityAlert = null;
 		try {
-			const result = await launchPreview({ name: n });
+			const platform = platformRevision.trim();
+			const source = sourceRevision.trim();
+			const result = await launchPreview({
+				name: n,
+				profile,
+					services: profile === 'app-live' ? selectedPreviewServices : [],
+					ttlHours,
+				allocation: { kind: 'cold' },
+				...(profile === 'manifest-candidate'
+					? { pullRequest: { number: infrastructurePr } }
+					: {}),
+				...(platform
+					? /^[0-9a-f]{40}$/i.test(platform)
+						? { platformRevision: platform.toLowerCase() }
+						: { platformRef: platform }
+					: {}),
+				...(source
+					? /^[0-9a-f]{40}$/i.test(source)
+						? { sourceRevision: source.toLowerCase() }
+						: { sourceRef: source }
+					: {})
+			});
 			if (!result.ok) {
 				capacityAlert = result.message;
 				return;
 			}
 			name = '';
+			pullRequestNumber = '';
 			onchanged?.();
 		} catch (e) {
 			errorMessage = e instanceof Error ? e.message : 'Launch failed';
@@ -182,44 +249,109 @@
 	}
 </script>
 
-<section class="rounded-xl border bg-card p-4 space-y-3">
+<section class="space-y-3 border-y py-4">
 	<div class="flex items-start gap-3">
 		<div class="size-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
 			<Boxes class="size-5 text-primary" />
 		</div>
 		<div class="min-w-0">
-			<h2 class="text-base font-semibold">Full environments (vcluster)</h2>
-			<p class="text-sm text-muted-foreground">
-				A dev-primary vcluster running the whole stack (BFF + orchestrator + function-router) on
-				its own database. Ryzen remains a canary/fallback path. Log in with
-				<code class="text-xs">preview@local</code> / <code class="text-xs">preview-access</code>.
-			</p>
+			<h2 class="text-base font-semibold">Full environments (vCluster)</h2>
 		</div>
 	</div>
 
 	<PoolCapacityMeter {counts} />
 
-	<div class="flex items-center gap-2">
-		<input
-			class="flex h-9 w-48 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-			placeholder="preview name (e.g. feat-x)"
-			bind:value={name}
-			onkeydown={(e) => e.key === 'Enter' && launch()}
-			disabled={launching}
-		/>
-		<Button size="sm" onclick={launch} disabled={launching || !name.trim()}>
-			{#if launching}<Loader2 class="size-4 animate-spin" />{:else if poolFree > 0}<Zap
-					class="size-4"
-				/>{:else}<Plus class="size-4" />{/if}
-			Launch
-		</Button>
-		{#if poolFree > 0}
-			<span
-				class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-				title="A warm vcluster is pre-baked — your launch is claimed instantly instead of a multi-minute cold provision"
+	<div class="grid gap-3 rounded-md border bg-muted/20 p-3 lg:grid-cols-[minmax(10rem,1fr)_12rem_7rem_auto]">
+		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+			Name
+			<input
+				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+				placeholder="feat-x"
+				bind:value={name}
+				onkeydown={(e) => e.key === 'Enter' && launch()}
+				disabled={launching}
+			/>
+		</label>
+		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+			Profile
+			<NativeSelect bind:value={profile} class="w-full" disabled={launching}>
+				<NativeSelectOption value="app-live">App live</NativeSelectOption>
+				<NativeSelectOption value="manifest-candidate">Infrastructure PR</NativeSelectOption>
+			</NativeSelect>
+		</label>
+		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+			TTL (hours)
+			<input
+				type="number"
+				min="1"
+				max="168"
+				step="1"
+				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm tabular-nums text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+				bind:value={ttlHours}
+				disabled={launching}
+			/>
+		</label>
+		<div class="flex items-end gap-2">
+			<Button
+				size="sm"
+				onclick={launch}
+				disabled={launching || !name.trim() || !Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168 || (profile === 'app-live' && selectedPreviewServices.length === 0)}
 			>
-				<Zap class="size-3" /> {poolFree} warm
-			</span>
+				{#if launching}<Loader2 class="size-4 animate-spin" />{:else}<Plus class="size-4" />{/if}
+				Launch
+			</Button>
+		</div>
+		{#if profile === 'manifest-candidate'}
+			<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-4">
+				Stacks PR
+				<input
+					class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					inputmode="numeric"
+					placeholder="123"
+					bind:value={pullRequestNumber}
+					disabled={launching}
+				/>
+			</label>
+		{:else}
+		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
+			Stacks revision
+			<input
+				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+				placeholder="main or full commit SHA"
+				bind:value={platformRevision}
+				disabled={launching}
+			/>
+		</label>
+		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
+			Source revision
+			<input
+				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+				placeholder="main or full commit SHA"
+				bind:value={sourceRevision}
+				disabled={launching}
+			/>
+		</label>
+		{/if}
+		{#if profile === 'app-live'}
+			<fieldset class="flex min-w-0 flex-wrap gap-x-4 gap-y-2 lg:col-span-4">
+				<legend class="mb-1 text-xs font-medium text-muted-foreground">Live services</legend>
+				{#each previewNativeServices as service (service)}
+					<label class="inline-flex items-center gap-2 text-xs text-foreground">
+						<input
+							type="checkbox"
+							class="size-4 rounded border-input accent-primary"
+							checked={selectedServices[service] !== false}
+							onchange={(event) =>
+								(selectedServices = {
+									...selectedServices,
+									[service]: event.currentTarget.checked
+								})}
+							disabled={launching}
+						/>
+						{service}
+					</label>
+				{/each}
+			</fieldset>
 		{/if}
 	</div>
 
@@ -281,7 +413,7 @@
 								</TooltipProvider>
 							{/if}
 
-							{#if p.origin === 'pr' && p.prNumber != null}
+							{#if (p.origin?.kind === 'pull-request' || p.legacyOrigin === 'pr') && p.prNumber != null}
 								<a
 									href={p.prUrl ?? '#'}
 									target="_blank"
@@ -290,18 +422,12 @@
 								>
 									<GitPullRequest class="size-3" /> PR #{p.prNumber}
 								</a>
-							{:else if p.origin}
-								<span class="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{p.origin}</span>
+							{:else if p.origin?.kind || p.legacyOrigin}
+								<span class="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+									>{p.origin?.kind ?? p.legacyOrigin}</span
+								>
 							{/if}
 
-							{#if p.pool}
-								<span
-									class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-									title="Claimed instantly from the warm pool ({p.pool})"
-								>
-									<Zap class="size-3" /> pooled
-								</span>
-							{/if}
 						</div>
 
 						<div class="flex items-center gap-1 shrink-0">
@@ -386,7 +512,16 @@
 		<AlertDialogHeader>
 			<AlertDialogTitle>Tear down preview "{toTeardown?.name}"?</AlertDialogTitle>
 			<AlertDialogDescription class="whitespace-pre-line">
-				{toTeardown ? teardownConfirmMessage(toTeardown) : ''}
+				{toTeardown
+					? teardownConfirmMessage({
+							name: toTeardown.name,
+							pool: toTeardown.pool,
+							origin:
+								toTeardown.origin?.kind === 'pull-request'
+									? 'pr'
+									: (toTeardown.origin?.kind ?? toTeardown.legacyOrigin)
+						})
+					: ''}
 			</AlertDialogDescription>
 		</AlertDialogHeader>
 		<AlertDialogFooter>

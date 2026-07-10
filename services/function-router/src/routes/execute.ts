@@ -80,6 +80,8 @@ const WORKFLOW_BUILDER_URL =
   process.env.WORKFLOW_BUILDER_URL ||
   "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const PREVIEW_ACTION_INTERNAL_TOKEN =
+  process.env.PREVIEW_ACTION_INTERNAL_TOKEN?.trim() || "";
 const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
 const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
 const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
@@ -576,13 +578,12 @@ async function executeGoalPlan(
     return {
       success: false,
       data: {},
-      error: "goal/plan: missing required `intent` (or `prompt`) or `fromText`.",
+      error:
+        "goal/plan: missing required `intent` (or `prompt`) or `fromText`.",
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
-  const payload: Record<string, unknown> = fromText
-    ? { fromText }
-    : { intent };
+  const payload: Record<string, unknown> = fromText ? { fromText } : { intent };
   if (isPlainObject(input.context)) payload.context = input.context;
   if (typeof input.model === "string" && input.model.trim()) {
     payload.model = input.model.trim();
@@ -698,24 +699,61 @@ async function executeSessionSpawn(
  * dev/preview (ensure) + dev/preview-teardown — per-run ephemeral dev-server
  * Sandbox. The BFF owns the privileged sandbox-execution-api call (the agent
  * needs no kube creds), so the router just proxies to its internal endpoint
- * keyed on the workflow executionId. `dev/preview` returns the dev pod's
- * in-cluster `url` (consumed downstream as `${ .provision_preview.data.url }`).
+ * keyed only on the trusted `db_execution_id` activity context. `dev/preview`
+ * returns the dev pod's in-cluster `url` (consumed downstream as
+ * `${ .provision_preview.data.url }`).
  */
+export function bindDevPreviewExecutionId(
+  input: Record<string, unknown>,
+  dbExecutionId: string | null | undefined,
+): { ok: true; executionId: string } | { ok: false; error: string } {
+  const executionId =
+    typeof dbExecutionId === "string" ? dbExecutionId.trim() : "";
+  if (!executionId) {
+    return {
+      ok: false,
+      error: "dev/preview: missing trusted `db_execution_id` context.",
+    };
+  }
+  if (input.executionId !== undefined) {
+    const requested =
+      typeof input.executionId === "string" ? input.executionId.trim() : "";
+    if (requested !== executionId) {
+      return {
+        ok: false,
+        error:
+          "dev/preview: input.executionId does not match trusted db_execution_id.",
+      };
+    }
+  }
+  return { ok: true, executionId };
+}
+
 async function executeDevPreview(
   input: Record<string, unknown>,
-  mode: "ensure" | "teardown" | "snapshot" | "promote",
+  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build",
+  dbExecutionId: string | null | undefined,
 ): Promise<ExecuteResponse> {
   const started = Date.now();
-  const executionId =
-    typeof input.executionId === "string" ? input.executionId.trim() : "";
-  if (!executionId) {
+  const binding = bindDevPreviewExecutionId(input, dbExecutionId);
+  if (!binding.ok) {
     return {
       success: false,
       data: {},
-      error: "dev/preview: missing required `executionId`.",
+      error: binding.error,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
+  if (!PREVIEW_ACTION_INTERNAL_TOKEN) {
+    return {
+      success: false,
+      data: {},
+      error:
+        "dev/preview: PREVIEW_ACTION_INTERNAL_TOKEN is not configured; refusing privileged proxy",
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+  const executionId = binding.executionId;
   const url = `${WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/${encodeURIComponent(
     executionId,
   )}/dev-preview`;
@@ -729,7 +767,9 @@ async function executeDevPreview(
         : "";
       res = await fetch(`${url}${qs}`, {
         method: "DELETE",
-        headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+        headers: {
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+        },
       });
     } else if (mode === "snapshot") {
       // Per-iteration durable code capture: pull the dev pod's /__export and store
@@ -738,11 +778,12 @@ async function executeDevPreview(
       if (typeof input.nodeId === "string") snap.nodeId = input.nodeId;
       if (input.iteration !== undefined && input.iteration !== null)
         snap.iteration = input.iteration;
+      if (Array.isArray(input.services)) snap.services = input.services;
       res = await fetch(`${url}/snapshot`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Internal-Token": INTERNAL_API_TOKEN,
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
         body: JSON.stringify(snap),
       });
@@ -759,6 +800,7 @@ async function executeDevPreview(
         "repoUrl",
         "baseBranch",
         "branchPrefix",
+        "services",
       ]) {
         if (input[key] !== undefined && input[key] !== null)
           promo[key] = input[key];
@@ -767,9 +809,27 @@ async function executeDevPreview(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Internal-Token": INTERNAL_API_TOKEN,
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
         body: JSON.stringify(promo),
+      });
+    } else if (mode === "acceptance") {
+      res = await fetch(`${url}/acceptance`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+        },
+        body: JSON.stringify(buildPreviewAcceptancePayload(input)),
+      });
+    } else if (mode === "build") {
+      res = await fetch(`${url}/build`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+        },
+        body: JSON.stringify(buildDevPreviewBuildPayload(input)),
       });
     } else {
       const payload: Record<string, unknown> = {};
@@ -788,6 +848,8 @@ async function executeDevPreview(
         "mode",
         // Preview-native: adopt=false → dev pod on its IP, no Service takeover (P2 GAN).
         "adopt",
+        // The preview's canonical HTTPS origin is required by adopted BFF auth/CSRF.
+        "origin",
       ]) {
         if (input[key] !== undefined && input[key] !== null)
           payload[key] = input[key];
@@ -796,7 +858,7 @@ async function executeDevPreview(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Internal-Token": INTERNAL_API_TOKEN,
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
         body: JSON.stringify(payload),
       });
@@ -828,6 +890,41 @@ async function executeDevPreview(
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
+}
+
+/** Caller authority is deliberately narrower than the BFF build command. */
+export function buildDevPreviewBuildPayload(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (Array.isArray(input.services)) payload.services = input.services;
+  if (typeof input.origin === "string") payload.origin = input.origin;
+  if (typeof input.adopt === "boolean") payload.adopt = input.adopt;
+  return payload;
+}
+
+/** Acceptance callers may identify a PR; physical authority derives every other field. */
+export function buildPreviewAcceptancePayload(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isPlainObject(input.pullRequest)) return {};
+  const pullRequest = input.pullRequest;
+  return {
+    pullRequest: {
+      ...(typeof pullRequest.repository === "string"
+        ? { repository: pullRequest.repository }
+        : {}),
+      ...(typeof pullRequest.number === "number"
+        ? { number: pullRequest.number }
+        : {}),
+      ...(typeof pullRequest.baseSha === "string"
+        ? { baseSha: pullRequest.baseSha }
+        : {}),
+      ...(typeof pullRequest.headSha === "string"
+        ? { headSha: pullRequest.headSha }
+        : {}),
+    },
+  };
 }
 
 function firstStringField(
@@ -1183,7 +1280,10 @@ function buildStructuredStopCondition(
 
   if (mode === "stepCountIs") {
     const maxSteps = parseNumberInput(input.loopStopMaxSteps) ?? 20;
-    return { type: "stepCountIs", maxSteps: Math.max(1, Math.floor(maxSteps)) };
+    return {
+      type: "stepCountIs",
+      maxSteps: Math.max(1, Math.floor(maxSteps)),
+    };
   }
 
   if (mode === "hasToolCall") {
@@ -1451,9 +1551,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       "workflow.id": body.workflow_id,
       "workflow.node.id": body.node_id,
       "workflow.node.name": body.node_name,
-      "workflow.node.sequence": workflowActivityContext.nodeSequence ?? undefined,
+      "workflow.node.sequence":
+        workflowActivityContext.nodeSequence ?? undefined,
       "workflow.node.action_type":
-        workflowActivityContext.actionType ?? body.function_slug ?? body.function_id,
+        workflowActivityContext.actionType ??
+        body.function_slug ??
+        body.function_id,
       "workflow.activity.correlation_id":
         workflowActivityContext.activityCorrelationId ?? undefined,
       "workflow.execution.id": body.db_execution_id ?? body.execution_id,
@@ -1485,7 +1588,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         nodeName: workflowActivityContext.nodeName ?? body.node_name,
         nodeSequence: workflowActivityContext.nodeSequence,
         actionType:
-          workflowActivityContext.actionType ?? body.function_slug ?? body.function_id,
+          workflowActivityContext.actionType ??
+          body.function_slug ??
+          body.function_id,
       });
     }
     const functionSlug = body.function_slug || body.function_id;
@@ -1522,7 +1627,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       functionSlug === "dev/preview" ||
       functionSlug === "dev/preview-teardown" ||
       functionSlug === "dev/preview-snapshot" ||
-      functionSlug === "dev/preview-promote"
+      functionSlug === "dev/preview-promote" ||
+      functionSlug === "dev/preview-acceptance" ||
+      functionSlug === "dev/preview-build"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
@@ -1532,7 +1639,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             ? "snapshot"
             : functionSlug === "dev/preview-promote"
               ? "promote"
-              : "ensure",
+              : functionSlug === "dev/preview-acceptance"
+                ? "acceptance"
+                : functionSlug === "dev/preview-build"
+                  ? "build"
+                  : "ensure",
+        body.db_execution_id,
       );
       return reply.status(devResponse.success ? 200 : 502).send(devResponse);
     }
@@ -2434,9 +2546,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             let httpResponse: Response;
             let responseText = "";
             if (isWorkspaceCreatePullRequest) {
-              const { createGiteaPullRequest } = await import(
-                "../core/gitea-repository.js"
-              );
+              const { createGiteaPullRequest } =
+                await import("../core/gitea-repository.js");
               const repositoryOwner =
                 typeof args.repositoryOwner === "string"
                   ? args.repositoryOwner.trim()
@@ -2476,10 +2587,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 body: bodyText,
               });
               httpResponse = new Response(
-                JSON.stringify({ text: "Success", ...prResult }),
+                JSON.stringify({
+                  text: "Success",
+                  ...prResult,
+                }),
                 {
                   status: 200,
-                  headers: { "Content-Type": "application/json" },
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
                 },
               );
               responseText = await httpResponse.text();
@@ -3062,7 +3178,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               node_outputs: body.node_outputs,
               ...(isApRoute
                 ? {
-                    metadata: { pieceName: pluginId, actionName: stepName },
+                    metadata: {
+                      pieceName: pluginId,
+                      actionName: stepName,
+                    },
                     db_execution_id: body.db_execution_id ?? undefined,
                     idempotency_key: body.idempotency_key ?? undefined,
                     execution_type: body.execution_type,
@@ -3101,7 +3220,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     // Reference-forwarding: the piece-runtime resolves the
                     // connection at point of use (BFF decrypt endpoint).
                     ...(isApRoute && connectionExternalId
-                      ? { "X-Connection-External-Id": connectionExternalId }
+                      ? {
+                          "X-Connection-External-Id": connectionExternalId,
+                        }
                       : {}),
                   },
                   body: requestBody,

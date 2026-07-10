@@ -28,6 +28,18 @@ ENV_FILE="${DEV_SYNC_ENV:-$WORK/.syncenv}"
 # Dependency manifests whose change (per service) triggers /__run?cmd=deps.
 DEP_MANIFESTS="package.json pnpm-lock.yaml .npmrc requirements.txt pyproject.toml uv.lock"
 
+# One logical generation spans the ENTIRE fanout. Callers may pin it for a
+# larger transaction; otherwise generate it once before reading any service
+# config so every /__sync in this invocation carries the same value.
+SYNC_GENERATION_VALUE=${DEV_SYNC_GENERATION:-${SYNC_GENERATION:-}}
+if [ -z "$SYNC_GENERATION_VALUE" ]; then
+	if [ -r /proc/sys/kernel/random/uuid ]; then
+		IFS= read -r SYNC_GENERATION_VALUE </proc/sys/kernel/random/uuid
+	else
+		SYNC_GENERATION_VALUE="sync-$(date -u +%Y%m%dT%H%M%S 2>/dev/null)-$$"
+	fi
+fi
+
 rc=0
 
 # sha256 of the concatenated existing manifests in the CWD (empty if none).
@@ -66,21 +78,39 @@ maybe_deps() {
 		${SYNC_TOKEN:+-H "x-sync-token: $SYNC_TOKEN"} "$runurl?cmd=deps" 2>/dev/null)
 	if [ "$code" = "404" ]; then
 		echo "deps: no deps command configured for this service (skip)"
-	else
-		sed 's/^/deps> /' /tmp/dev-sync-deps.out 2>/dev/null
-		echo "deps: /__run?cmd=deps → HTTP $code"
+		printf '%s' "$newhash" >"$state"
+		return 0
 	fi
-	# Record the new baseline regardless (avoid re-installing the same change).
+	sed 's/^/deps> /' /tmp/dev-sync-deps.out 2>/dev/null
+	echo "deps: /__run?cmd=deps → HTTP $code"
+	if [ "$code" != "200" ] || ! jq -e '.ok == true and ((.exitCode // 0) == 0)' \
+		/tmp/dev-sync-deps.out >/dev/null 2>&1; then
+		echo "deps: install failed for $_subdir; leaving the prior manifest baseline for retry" >&2
+		rc=1
+		return 1
+	fi
+	# Advance the baseline only after the in-pod dependency action really passed.
 	printf '%s' "$newhash" >"$state"
 }
 
 # Sync one service. Reads SUBDIR/PATHS/SYNCURL/EXTRASYNC/SYNC_TOKEN from the env.
 sync_one() {
+	_config_service=${1:-}
 	: "${SUBDIR:=.}"
 	: "${PATHS:=src}"
 	: "${SYNCURL:=}"
 	: "${EXTRASYNC:=}"
 	: "${SYNC_TOKEN:=}"
+	: "${SERVICE:=}"
+	_sync_service=$SERVICE
+	[ -n "$_sync_service" ] || _sync_service=$_config_service
+	if [ -z "$_sync_service" ]; then
+		if [ "$SUBDIR" = "." ]; then
+			_sync_service=workflow-builder
+		else
+			_sync_service=${SUBDIR##*/}
+		fi
+	fi
 	if [ -z "$SYNCURL" ]; then
 		echo "skip: no SYNCURL for $SUBDIR"
 		rc=1
@@ -97,18 +127,46 @@ sync_one() {
 		return
 	}
 
-	# Stage extraSync sources (from rel to SUBDIR → to rel to tar root). Copy the
-	# CONTENTS of `from` into `to` so `to/<...>` mirrors `from/<...>`.
+	# The service catalog is the receiver authority. Declare its complete root set
+	# on every upload; a declared root absent from the archive is an intentional
+	# deletion, so stale files cannot survive under a new generation.
+	declared_roots=$(
+		for p in $PATHS; do printf '%s\n' "$p"; done
+		for pair in $EXTRASYNC; do
+			eto=${pair#*:}
+			[ -n "$eto" ] && printf '%s\n' "$eto"
+		done
+	) || {
+		rc=1
+		return
+	}
+	declared_roots_json=$(printf '%s\n' "$declared_roots" | jq -Rsc '
+		split("\n") | map(select(length > 0)) | unique
+	') || {
+		echo "invalid sync roots for $SUBDIR" >&2
+		rc=1
+		return
+	}
+
+	# Stage extraSync/capture-only sources (from rel to SUBDIR -> to rel to tar
+	# root). Removing the target even when the source vanished propagates deletion.
 	staged=""
 	for pair in $EXTRASYNC; do
 		efrom=${pair%%:*}
 		eto=${pair#*:}
-		if [ -e "$svcdir/$efrom" ] && [ -n "$eto" ]; then
+		if [ -n "$eto" ]; then
 			rm -rf "${svcdir:?}/$eto"
-			mkdir -p "$svcdir/$eto"
-			cp -a "$svcdir/$efrom/." "$svcdir/$eto/" 2>/dev/null
 			staged="$staged $eto"
-			echo "staged extraSync $efrom → $eto"
+		fi
+		if [ -e "$svcdir/$efrom" ] && [ -n "$eto" ]; then
+			if [ -d "$svcdir/$efrom" ]; then
+				mkdir -p "$svcdir/$eto"
+				cp -a "$svcdir/$efrom/." "$svcdir/$eto/" 2>/dev/null
+			else
+				mkdir -p "$(dirname "$svcdir/$eto")"
+				cp -a "$svcdir/$efrom" "$svcdir/$eto" 2>/dev/null
+			fi
+			echo "staged extraSync $efrom -> $eto"
 		fi
 	done
 
@@ -118,24 +176,29 @@ sync_one() {
 	for p in $PATHS $staged; do
 		[ -e "$p" ] && syncpaths="$syncpaths $p"
 	done
-	if [ -z "$syncpaths" ]; then
-		echo "skip: nothing to sync under $svcdir ($PATHS)"
-		return
-	fi
-
-	# shellcheck disable=SC2086
-	tar -czf /tmp/dev-sync.tgz $syncpaths || {
+	archive="/tmp/dev-sync-$$.tgz"
+	if [ -n "$syncpaths" ]; then
+		# shellcheck disable=SC2086
+		tar -czf "$archive" $syncpaths
+	else
+		tar -czf "$archive" -T /dev/null
+	fi || {
 		echo "tar failed for $SUBDIR"
 		rc=1
 		return
 	}
 	code=$(curl -s -o /tmp/dev-sync.out -w '%{http_code}' -X POST \
-		--data-binary @/tmp/dev-sync.tgz -H 'content-type: application/gzip' \
+		--data-binary @"$archive" -H 'content-type: application/gzip' \
+		-H "x-sync-generation: $SYNC_GENERATION_VALUE" \
+		-H "x-sync-service: $_sync_service" \
+		-H "x-sync-roots: $declared_roots_json" \
 		${SYNC_TOKEN:+-H "x-sync-token: $SYNC_TOKEN"} "$SYNCURL" 2>/dev/null)
-	echo "SYNCED $SUBDIR → HTTP $code"
+	rm -f "$archive"
+	echo "SYNCED $SUBDIR → HTTP $code (service=$_sync_service generation=$SYNC_GENERATION_VALUE)"
 	if [ "$code" != "200" ]; then
 		sed 's/^/sync> /' /tmp/dev-sync.out 2>/dev/null
 		rc=1
+		return
 	fi
 
 	maybe_deps "$SUBDIR" "$SYNCURL"
@@ -146,16 +209,16 @@ if [ -d "$ENV_DIR" ] && [ -n "$(ls -A "$ENV_DIR" 2>/dev/null)" ]; then
 	for cfg in "$ENV_DIR"/*; do
 		[ -f "$cfg" ] || continue
 		# Reset per-service so a value from a prior file never leaks forward.
-		SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN=""
+		SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
 		# shellcheck disable=SC1090
 		. "$cfg"
-		sync_one
+		sync_one "$(basename "$cfg")"
 	done
 elif [ -f "$ENV_FILE" ]; then
-	SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN=""
+	SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
 	# shellcheck disable=SC1090
 	. "$ENV_FILE"
-	sync_one
+	sync_one ""
 else
 	echo "no sync config: neither $ENV_DIR/* nor $ENV_FILE exists"
 	rc=1

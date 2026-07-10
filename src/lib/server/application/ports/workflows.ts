@@ -515,6 +515,18 @@ export type PersistWorkflowSourceBundleInput = {
 		repoSubdir?: string | null;
 		syncPaths?: string[] | null;
 		iteration?: number | null;
+		manifestVersion?: number | null;
+		captureId?: string | null;
+		capturedAt?: string | null;
+		serviceCount?: number | null;
+		services?: string[] | null;
+		captureProtocol?: string | null;
+		acceptanceEligible?: boolean | null;
+		generation?: string | null;
+		overlayDigests?: Record<string, string> | null;
+		catalogDigest?: string | null;
+		sourceRevision?: string | null;
+		platformRevision?: string | null;
 	};
 };
 
@@ -686,15 +698,13 @@ export interface CliPreviewGatewayPort {
 export type DevPreviewServiceReadModel = {
 	service: string;
 	primaryCluster: string;
-	fallbackCluster: string;
-	deliveryRole: string;
 	previewTier: string;
 	needsDapr: boolean;
 	port: number;
 	syncMode: string;
 	repoUrl: string;
 	repoSubdir: string;
-	tailnetHost: string;
+	tailnetHost: string | null;
 };
 
 export type DevEnvironmentSummaryReadModel = {
@@ -1509,6 +1519,7 @@ export interface WorkflowDataService {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null>;
 	createWorkflowFile(input: CreateWorkflowFileInput): Promise<{
 		file: WorkflowFileRecord;

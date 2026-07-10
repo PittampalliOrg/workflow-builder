@@ -1,123 +1,188 @@
 import type {
-	VclusterPreviewGatewayPort,
-	VclusterPreviewLifecycleInput,
-	VclusterPreviewSleepOutcome,
-	VclusterPreviewTouchResult,
-	DevPreviewSidecarPort,
-	DevPreviewSidecarResult,
-	DevPreviewSidecarRunOutput,
-	DevPreviewSidecarStatus,
-	DevPreviewSidecarSyncOutput,
+  VclusterPreviewGatewayPort,
+  VclusterPreviewLaunchInput,
+  VclusterPreviewSleepOutcome,
+  VclusterPreviewTouchResult,
+  DevPreviewSidecarPort,
+  DevPreviewSidecarResult,
+  DevPreviewSidecarRunOutput,
+  DevPreviewSidecarStatus,
+  DevPreviewSidecarSyncOutput,
 } from "$lib/server/application/ports";
+import type { PreviewDevSyncCredentialBrokerPort } from "$lib/server/application/ports";
+import { HttpPreviewDevSyncCredentialBrokerAdapter } from "$lib/server/application/adapters/preview-dev-sync-credentials";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import { env } from "$env/dynamic/private";
+import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
+import { derivePreviewCapabilityBundle } from "$lib/server/preview-control-capability";
 import {
-	claimVclusterPreview,
-	getVclusterPreview,
-	listVclusterPreviewsWithCounts,
-	provisionVclusterPreview,
-	sleepVclusterPreview,
-	teardownVclusterPreview,
-	touchVclusterPreview,
-	VclusterPreviewHttpError,
-	type VclusterPreview,
+  getVclusterPreviewCleanup,
+  getVclusterPreviewRuntime,
+  getVclusterPreview,
+  listVclusterPreviewsWithCounts,
+  provisionVclusterPreview,
+  sleepVclusterPreview,
+  teardownVclusterPreview,
+  touchVclusterPreview,
+  VclusterPreviewHttpError,
+  type VclusterPreview,
 } from "$lib/server/workflows/vcluster-preview";
 import {
-	allowedSidecarCommands,
-	fetchSidecarStatus,
-	runSidecarCommand,
-	syncDevPreviewSource,
+  allowedSidecarCommands,
+  fetchSidecarStatus,
+  runSidecarCommand,
+  syncDevPreviewSource,
 } from "$lib/server/workflows/dev-preview-sidecar";
 
 /** Legacy `VclusterPreview` → the serializable gateway record (drops the
  * job/isolation-tier plumbing the UI never reads). */
 function toRecord(p: VclusterPreview): VclusterPreviewRecord {
-	return {
-		name: p.name,
-		phase: p.phase,
-		ready: p.ready,
-		url: p.url,
-		targetCluster: p.targetCluster,
-		pool: p.pool,
-		state: p.state,
-		origin: p.origin,
-		prNumber: p.prNumber,
-		expiresAt: p.expiresAt,
-		lastActive: p.lastActive,
-		protected: p.protected,
-		bootSeconds: p.bootSeconds,
-	};
+  return {
+    name: p.name,
+    phase: p.phase,
+    ready: p.ready,
+    url: p.url,
+    targetCluster: p.targetCluster,
+    pool: p.pool,
+    state: p.state,
+    lifecycle: p.lifecycle,
+    origin: p.origin,
+    legacyOrigin: p.legacyOrigin,
+    prNumber: p.prNumber,
+    expiresAt: p.expiresAt,
+    lastActive: p.lastActive,
+    protected: p.protected,
+    bootSeconds: p.bootSeconds,
+    platformRevision: p.platformRevision,
+    sourceRevision: p.sourceRevision,
+    profile: p.profile,
+    lane: p.lane,
+    mode: p.mode,
+    owner: p.owner,
+    services: p.services,
+    provenance: p.provenance,
+    trustedCode: p.trustedCode,
+    allocation: p.allocation,
+    images: p.images,
+    catalogDigest: p.catalogDigest,
+  };
+}
+
+function capabilityBundle(name: string, input: VclusterPreviewLaunchInput) {
+  const requestId = input.provenance?.requestId?.trim() ?? "";
+  const identity = validatePreviewControlIdentity({
+    previewName: name,
+    environmentRequestId: requestId,
+    environmentPlatformRevision: input.platformRevision ?? "",
+    environmentSourceRevision: input.sourceRevision ?? "",
+    catalogDigest: (input.catalogDigest ?? "") as `sha256:${string}`,
+  });
+  const root = (
+    env.PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN ??
+    process.env.PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN ??
+    ""
+  ).trim();
+  return derivePreviewCapabilityBundle(root, identity);
 }
 
 /** Wraps the privileged SEA vcluster-preview client. */
 export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort {
-	async listWithCounts() {
-		const { previews, counts } = await listVclusterPreviewsWithCounts();
-		return { previews: previews.map(toRecord), counts };
-	}
+  async listWithCounts() {
+    const { previews, counts } = await listVclusterPreviewsWithCounts();
+    return { previews: previews.map(toRecord), counts };
+  }
 
-	async get(name: string): Promise<VclusterPreviewRecord> {
-		return toRecord(await getVclusterPreview(name));
-	}
+  async get(name: string): Promise<VclusterPreviewRecord> {
+    return toRecord(await getVclusterPreview(name));
+  }
 
-	async claim(
-		input: { name: string; user?: string } & VclusterPreviewLifecycleInput,
-	): Promise<VclusterPreviewRecord | null> {
-		const claimed = await claimVclusterPreview(input);
-		return claimed ? toRecord(claimed) : null;
-	}
+  async provision(
+    input: { name: string } & VclusterPreviewLaunchInput,
+  ): Promise<VclusterPreviewRecord> {
+    return toRecord(
+      await provisionVclusterPreview({
+        ...input,
+        capabilityBundle: capabilityBundle(input.name, input),
+      }),
+    );
+  }
 
-	async provision(
-		input: { name: string } & VclusterPreviewLifecycleInput,
-	): Promise<VclusterPreviewRecord> {
-		return toRecord(await provisionVclusterPreview(input));
-	}
+  async teardown(
+    name: string,
+    guard: Parameters<VclusterPreviewGatewayPort["teardown"]>[1],
+  ): Promise<VclusterPreviewRecord> {
+    if (!guard) throw new Error("preview teardown requires an ownership guard");
+    return toRecord(await teardownVclusterPreview(name, guard));
+  }
 
-	async teardown(name: string): Promise<VclusterPreviewRecord> {
-		return toRecord(await teardownVclusterPreview(name));
-	}
+  async runtime(name: string) {
+    return getVclusterPreviewRuntime(name);
+  }
 
-	async touch(name: string): Promise<VclusterPreviewTouchResult> {
-		return touchVclusterPreview(name);
-	}
+  async cleanup(name: string) {
+    return getVclusterPreviewCleanup(name);
+  }
 
-	async sleep(name: string): Promise<VclusterPreviewSleepOutcome> {
-		try {
-			const r = await sleepVclusterPreview(name);
-			return { ok: true, name: r.name, alreadySlept: r.alreadySlept };
-		} catch (err) {
-			if (err instanceof VclusterPreviewHttpError) {
-				return { ok: false, status: err.status, detail: err.message };
-			}
-			throw err;
-		}
-	}
+  async touch(name: string): Promise<VclusterPreviewTouchResult> {
+    return touchVclusterPreview(name);
+  }
+
+  async sleep(name: string): Promise<VclusterPreviewSleepOutcome> {
+    try {
+      const r = await sleepVclusterPreview(name);
+      return { ok: true, name: r.name, alreadySlept: r.alreadySlept };
+    } catch (err) {
+      if (err instanceof VclusterPreviewHttpError) {
+        return { ok: false, status: err.status, detail: err.message };
+      }
+      throw err;
+    }
+  }
 }
 
 /** Wraps the dev-sync-sidecar pod control channel. */
 export class LegacyDevPreviewSidecarGateway implements DevPreviewSidecarPort {
-	status(input: {
-		syncUrl: string | null | undefined;
-	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarStatus>> {
-		return fetchSidecarStatus(input);
-	}
+  constructor(
+    private readonly credentialBroker: PreviewDevSyncCredentialBrokerPort = new HttpPreviewDevSyncCredentialBrokerAdapter(),
+  ) {}
 
-	run(input: {
-		syncUrl: string | null | undefined;
-		service: string;
-		cmd: string;
-	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>> {
-		return runSidecarCommand(input);
-	}
+  status(input: {
+    syncUrl: string | null | undefined;
+    executionId: string;
+    service: string;
+  }): Promise<DevPreviewSidecarResult<DevPreviewSidecarStatus>> {
+    return fetchSidecarStatus({
+      ...input,
+      credentialOptions: { broker: this.credentialBroker },
+    });
+  }
 
-	sync(input: {
-		syncUrl: string | null | undefined;
-		archive: ArrayBuffer | Uint8Array;
-		contentType?: string | null;
-	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>> {
-		return syncDevPreviewSource(input);
-	}
+  run(input: {
+    syncUrl: string | null | undefined;
+    executionId: string;
+    service: string;
+    cmd: string;
+  }): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>> {
+    return runSidecarCommand({
+      ...input,
+      credentialOptions: { broker: this.credentialBroker },
+    });
+  }
 
-	allowedCommands(service: string): string[] {
-		return allowedSidecarCommands(service);
-	}
+  sync(input: {
+    syncUrl: string | null | undefined;
+    executionId: string;
+    service: string;
+    archive: ArrayBuffer | Uint8Array;
+    contentType?: string | null;
+  }): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>> {
+    return syncDevPreviewSource({
+      ...input,
+      credentialOptions: { broker: this.credentialBroker },
+    });
+  }
+
+  allowedCommands(service: string): string[] {
+    return allowedSidecarCommands(service);
+  }
 }

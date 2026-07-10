@@ -129,6 +129,7 @@
 	<VclusterPreviewPanel
 		previews={vcluster?.previews ?? []}
 		counts={vcluster?.counts ?? null}
+		previewNativeServices={data.previewNativeServices}
 		readProxyEnabled={data.previewReadProxyEnabled}
 		{slug}
 		onchanged={() => void vclusterQuery.refresh()}
@@ -188,6 +189,8 @@
 <DevLaunchDialog
 	bind:open={launchOpen}
 	services={data.services}
+	previewNativeServices={data.previewNativeServices}
+	previewEnvironment={data.previewEnvironment}
 	devWorkflowId={data.devWorkflowId}
 	devWorkflowName={data.devWorkflowName}
 	onlaunched={onLaunched}

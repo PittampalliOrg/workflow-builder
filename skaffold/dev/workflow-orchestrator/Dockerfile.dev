@@ -17,9 +17,10 @@ RUN apt-get update \
 # is not in the prod requirements.txt.
 COPY services/workflow-orchestrator/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip \
-    && pip install -r /tmp/requirements.txt \
-    && pip install pytest
+    python -m venv /app/.venv \
+    && /app/.venv/bin/pip install --upgrade pip \
+    && /app/.venv/bin/pip install -r /tmp/requirements.txt \
+    && /app/.venv/bin/pip install pytest
 
 # Source layer — sync rules deliver per-file updates on top of these baked copies.
 COPY services/workflow-orchestrator/ ./
@@ -38,6 +39,10 @@ ENV WORKFLOW_DATA_CONTRACT_FIXTURE_DIR=/app/.contract-fixtures/fixtures
 # DEV_SYNC_COMMANDS_JSON (plain `skaffold dev` unaffected).
 COPY services/dev-sync-sidecar/exec_bridge.py /devtools/exec_bridge.py
 
+RUN groupadd --gid 1001 dev-runtime \
+    && useradd --uid 1001 --gid dev-runtime --create-home dev-runtime \
+    && chown -R 1001:1001 /app /devtools
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
@@ -45,7 +50,11 @@ ENV PYTHONUNBUFFERED=1 \
     MIN_DAPR_RUNTIME_VERSION=1.17.0 \
     ENFORCE_MIN_DAPR_VERSION=false
 
+ENV PATH=/app/.venv/bin:$PATH
+
 EXPOSE 8080
+
+USER 1001:1001
 
 # `uvicorn --reload --reload-dir /app` watches the filesystem and restarts on
 # .py changes. Skaffold sync drops new files in /app; uvicorn picks them up.

@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 
 /**
  * GET /api/dev-environments/previews/[name]/executions?limit=&status=
@@ -13,16 +14,27 @@ import { getApplicationAdapterConfig } from "$lib/server/application/config";
  * `result.ok === false` with HTTP 200, never a 500.
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
-	if (!locals.session?.userId) return error(401, "Authentication required");
-	if (!getApplicationAdapterConfig().previewReadProxyEnabled) {
-		return error(404, "Not found");
-	}
-	const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
-	const readModel = await getApplicationAdapters().previewReadProxy.listPreviewExecutions({
-		name: params.name,
-		limit: Number.isNaN(limitRaw) ? undefined : limitRaw,
-		status: url.searchParams.get("status"),
-	});
-	if (!readModel) return error(404, "Unknown preview");
-	return json(readModel);
+  if (!locals.session?.userId) return error(401, "Authentication required");
+  if (!getApplicationAdapterConfig().previewReadProxyEnabled) {
+    return error(404, "Not found");
+  }
+  try {
+    await getApplicationAdapters().previewAccess.authorize({
+      name: params.name,
+      actorUserId: locals.session.userId,
+    });
+  } catch (cause) {
+    if (cause instanceof PreviewAccessDeniedError)
+      return error(403, cause.message);
+    throw cause;
+  }
+  const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+  const readModel =
+    await getApplicationAdapters().previewReadProxy.listPreviewExecutions({
+      name: params.name,
+      limit: Number.isNaN(limitRaw) ? undefined : limitRaw,
+      status: url.searchParams.get("status"),
+    });
+  if (!readModel) return error(404, "Unknown preview");
+  return json(readModel);
 };

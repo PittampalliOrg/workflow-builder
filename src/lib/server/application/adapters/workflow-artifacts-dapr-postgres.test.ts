@@ -11,6 +11,7 @@ import {
 class FakeBindingClient {
 	calls: DaprPostgresBindingCall[] = [];
 	queryRows = new Map<string, unknown[][]>();
+	execRowsAffected = 1;
 
 	async query(
 		input: Omit<DaprPostgresBindingCall, "operation">,
@@ -27,7 +28,11 @@ class FakeBindingClient {
 		input: Omit<DaprPostgresBindingCall, "operation">,
 	): Promise<DaprPostgresBindingResult> {
 		this.calls.push({ ...input, operation: "exec" });
-		return { metadata: { "rows-affected": "1" }, rows: [], rowsAffected: 1 };
+		return {
+			metadata: { "rows-affected": String(this.execRowsAffected) },
+			rows: [],
+			rowsAffected: this.execRowsAffected,
+		};
 	}
 }
 
@@ -104,7 +109,8 @@ describe("DaprPostgresArtifactStore", () => {
 			],
 		]);
 
-		const records = await artifactStore(client).listWorkflowArtifactsByExecutionId("exec-1");
+		const records =
+			await artifactStore(client).listWorkflowArtifactsByExecutionId("exec-1");
 
 		expect(records).toHaveLength(1);
 		expect(records[0]).toMatchObject({
@@ -114,7 +120,9 @@ describe("DaprPostgresArtifactStore", () => {
 			metadata: { commit: "abc123" },
 			sizeBytes: 42,
 		});
-		expect(records[0]?.createdAt.toISOString()).toBe("2026-07-09T12:00:00.000Z");
+		expect(records[0]?.createdAt.toISOString()).toBe(
+			"2026-07-09T12:00:00.000Z",
+		);
 		expect(client.calls[0]).toMatchObject({
 			operation: "query",
 			summary: "workflow_artifacts.select_by_execution",
@@ -137,6 +145,63 @@ describe("DaprPostgresArtifactStore", () => {
 		expect(client.calls[0]?.sql).toContain("wa.id");
 		expect(client.calls[0]?.sql).toContain("INNER JOIN workflow_executions we");
 		expect(client.calls[0]?.sql).not.toContain("wa.\n");
+	});
+
+	it("atomically updates metadata only while the reserved key is absent", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("workflow_artifacts.select_by_execution_and_id", [
+			[
+				"artifact-1",
+				"exec-1",
+				"dev-preview",
+				"aux",
+				"source-bundle",
+				"Source bundle",
+				null,
+				"{}",
+				"file-1",
+				"application/gzip",
+				"42",
+				'{"previewAcceptanceAttestationV1":"signed"}',
+				"2026-07-09T12:00:00.000Z",
+			],
+		]);
+
+		await artifactStore(client).updateWorkflowArtifactMetadata({
+			executionId: "exec-1",
+			artifactId: "artifact-1",
+			metadata: { previewAcceptanceAttestationV1: "signed" },
+			ifAbsentMetadataKey: "previewAcceptanceAttestationV1",
+		});
+
+		expect(client.calls[0]).toMatchObject({
+			summary: "workflow_artifacts.update_metadata_if_absent",
+			params: [
+				"exec-1",
+				"artifact-1",
+				'{"previewAcceptanceAttestationV1":"signed"}',
+				"previewAcceptanceAttestationV1",
+			],
+		});
+		expect(client.calls[0]?.sql).toContain(
+			"NOT (COALESCE(metadata, '{}'::jsonb) ? $4)",
+		);
+		expect(client.calls).toHaveLength(2);
+	});
+
+	it("does not reload or report success when the conditional update loses", async () => {
+		const client = new FakeBindingClient();
+		client.execRowsAffected = 0;
+
+		await expect(
+			artifactStore(client).updateWorkflowArtifactMetadata({
+				executionId: "exec-1",
+				artifactId: "artifact-1",
+				metadata: { previewAcceptanceAttestationV1: "replacement" },
+				ifAbsentMetadataKey: "previewAcceptanceAttestationV1",
+			}),
+		).resolves.toBeNull();
+		expect(client.calls).toHaveLength(1);
 	});
 });
 
@@ -221,7 +286,8 @@ describe("DaprPostgresWorkflowPlanArtifactStore", () => {
 			],
 		]);
 
-		const records = await planArtifactStore(client).listPlanArtifactsByExecutionId("exec-1");
+		const records =
+			await planArtifactStore(client).listPlanArtifactsByExecutionId("exec-1");
 		await planArtifactStore(client).updatePlanArtifactStatus({
 			artifactRef: "plan-1",
 			status: "executed",

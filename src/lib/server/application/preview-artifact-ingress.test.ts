@@ -1,0 +1,190 @@
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
+import { pack } from "tar-stream";
+import { describe, expect, it, vi } from "vitest";
+import { DevPreviewServiceCatalogAdapter } from "$lib/server/application/adapters/dev-preview-service-catalog";
+import {
+	ApplicationPreviewArtifactIngressService,
+	PreviewArtifactIngressError,
+} from "$lib/server/application/preview-artifact-ingress";
+import type {
+	PreviewArtifactTransferEnvelope,
+	PreviewControlArtifactStorePort,
+	PreviewControlSourceAuthorityPort,
+} from "$lib/server/application/ports";
+
+const PLATFORM_SHA = "a".repeat(40);
+const SOURCE_SHA = "b".repeat(40);
+const catalog = new DevPreviewServiceCatalogAdapter();
+const CATALOG_DIGEST = catalog.currentDigest();
+
+function sha256(bytes: Buffer): `sha256:${string}` {
+	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function tarGzip(entries: Record<string, string>): Promise<Buffer> {
+	const archive = pack();
+	const chunks: Buffer[] = [];
+	const completed = new Promise<Buffer>((resolve, reject) => {
+		archive.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+		archive.on("end", () => resolve(gzipSync(Buffer.concat(chunks))));
+		archive.on("error", reject);
+	});
+	for (const [name, content] of Object.entries(entries)) {
+		archive.entry({ name, type: "file" }, content);
+	}
+	archive.finalize();
+	return completed;
+}
+
+async function strictEnvelope(
+	entries: Record<string, string>,
+): Promise<{ envelope: PreviewArtifactTransferEnvelope; bytes: Buffer }> {
+	const contract = catalog.captureContract("workflow-builder");
+	if (!contract) throw new Error("workflow-builder capture contract missing");
+	const overlay = await tarGzip(entries);
+	const overlayDigest = sha256(overlay);
+	const captureId = "capture-1";
+	const generation = "generation-1";
+	const manifest = {
+		version: 2,
+		tier: "tar-overlay-set",
+		captureProtocol: "atomic-generation-v2",
+		acceptanceEligible: true,
+		captureId,
+		capturedAt: "2026-07-09T20:00:00.000Z",
+		generation,
+		catalogDigest: CATALOG_DIGEST,
+		sourceRevision: SOURCE_SHA,
+		platformRevision: PLATFORM_SHA,
+		repoUrl: contract.repository,
+		base: contract.base,
+		services: [
+			{
+				service: contract.service,
+				repoSubdir: contract.repoSubdir,
+				syncPaths: contract.syncPaths,
+				captureMappings: contract.captureMappings,
+				contentSha256: overlayDigest,
+				tarGzipBase64: overlay.toString("base64"),
+			},
+		],
+	};
+	const bytes = gzipSync(Buffer.from(JSON.stringify(manifest), "utf8"));
+	const artifact = {
+		id: "artifact-1",
+		executionId: "execution-1",
+		kind: "source-bundle",
+		fileId: "preview-file-1",
+		inlinePayload: {
+			base: contract.base,
+			repoUrl: contract.repository,
+			manifestVersion: 2,
+			captureId,
+			capturedAt: manifest.capturedAt,
+			serviceCount: 1,
+			services: [contract.service],
+			captureProtocol: manifest.captureProtocol,
+			acceptanceEligible: true,
+			generation,
+			overlayDigests: { [contract.service]: overlayDigest },
+			catalogDigest: CATALOG_DIGEST,
+			sourceRevision: SOURCE_SHA,
+			platformRevision: PLATFORM_SHA,
+		},
+		metadata: null,
+	} as const;
+	return {
+		bytes,
+		envelope: {
+			identity: {
+				previewName: "preview-one",
+				environmentRequestId: "launch-1",
+				environmentPlatformRevision: PLATFORM_SHA,
+				environmentSourceRevision: SOURCE_SHA,
+				catalogDigest: CATALOG_DIGEST,
+			},
+			executionId: artifact.executionId,
+			artifactId: artifact.id,
+			fileDigest: sha256(bytes),
+			artifact,
+		},
+	};
+}
+
+function harness() {
+	const authority: PreviewControlSourceAuthorityPort = {
+		authorize: vi.fn(async (input) => ({
+			previewName: input.previewName,
+			requestId: input.environmentRequestId,
+			owner: "admin-1",
+			platformRevision: PLATFORM_SHA as never,
+			sourceRevision: SOURCE_SHA as never,
+			catalogDigest: CATALOG_DIGEST,
+			services: input.requiredServices,
+		})),
+		authorizeRuntime: vi.fn(),
+		authorizeCurrent: vi.fn(),
+	};
+	const store: PreviewControlArtifactStorePort = {
+		put: vi.fn(async (input) => ({
+			id: "central-artifact-1",
+			fileId: "central-file-1",
+			fileDigest: input.envelope.fileDigest,
+			artifact: input.envelope.artifact,
+			importIdentity: {
+				previewName: input.envelope.identity.previewName,
+				requestId: input.envelope.identity.environmentRequestId,
+				executionId: input.envelope.executionId,
+				sourceArtifactId: input.envelope.artifactId,
+				platformRevision: input.envelope.identity.environmentPlatformRevision,
+				sourceRevision: input.envelope.identity.environmentSourceRevision,
+				catalogDigest: input.envelope.identity.catalogDigest,
+				services: input.services,
+				captureId: input.captureId,
+				generation: input.generation,
+				fileDigest: input.envelope.fileDigest,
+			},
+		})),
+		get: vi.fn(),
+		fileDigest: vi.fn(),
+	};
+	return {
+		authority,
+		store,
+		service: new ApplicationPreviewArtifactIngressService({
+			authority,
+			catalog,
+			store,
+		}),
+	};
+}
+
+describe("ApplicationPreviewArtifactIngressService", () => {
+	it("cross-binds strict bytes and catalog paths before physical persistence", async () => {
+		const h = harness();
+		const input = await strictEnvelope({ "src/index.ts": "export const ok = true;" });
+
+		await expect(h.service.ingest(input.envelope, input.bytes)).resolves.toMatchObject({
+			id: "central-artifact-1",
+			importIdentity: { services: ["workflow-builder"] },
+		});
+		expect(h.store.put).toHaveBeenCalledOnce();
+	});
+
+	it("rejects an otherwise valid bundle containing a non-catalog GitHub workflow", async () => {
+		const h = harness();
+		const input = await strictEnvelope({
+			"src/index.ts": "export const ok = true;",
+			".github/workflows/pwn.yml": "name: pwn",
+		});
+
+		await expect(h.service.ingest(input.envelope, input.bytes)).rejects.toMatchObject({
+			name: PreviewArtifactIngressError.name,
+			statusCode: 409,
+			message: expect.stringContaining("outside catalog capture roots"),
+		});
+		expect(h.authority.authorize).not.toHaveBeenCalled();
+		expect(h.store.put).not.toHaveBeenCalled();
+	});
+});

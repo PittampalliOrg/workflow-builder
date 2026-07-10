@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { browseUrlFor, detailsOf, devPreviewServiceCatalog } from "./dev-environments";
 
@@ -34,10 +34,16 @@ describe("dev environment helpers", () => {
 			ready: true,
 		});
 
-		expect(browseUrlFor("workflow-builder", null)).toMatch(/^http:\/\//);
+		expect(browseUrlFor("workflow-builder", null)).toBeNull();
+		vi.stubEnv("DEV_PREVIEW_TAILNET_SUFFIX", "example.ts.net");
+		vi.stubEnv("DEV_PREVIEW_CLUSTER_NAME", "dev");
+		expect(browseUrlFor("workflow-builder", null)).toBe(
+			"https://wfb-preview-dev.example.ts.net",
+		);
 		expect(browseUrlFor("workflow-builder", "https://stored.example.test")).toBe(
 			"https://stored.example.test",
 		);
+		vi.unstubAllEnvs();
 		expect(devPreviewServiceCatalog()).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ service: "workflow-builder" }),

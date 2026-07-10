@@ -1,0 +1,25 @@
+# Preview governance and physical evidence authority.
+/.github/CODEOWNERS @vpittamp
+/.github/actions/ @vpittamp
+/.github/workflows/ @vpittamp
+/scripts/governance/ @vpittamp
+/scripts/sync-dev-preview-service-catalog.ts @vpittamp
+/services/shared/dev-preview-service-catalog.json @vpittamp
+/drizzle/0102_preview_accepted_image_receipts.sql @vpittamp
+/src/lib/server/application/adapters/preview-accepted-images.ts @vpittamp
+/src/lib/server/application/adapters/preview-control.ts @vpittamp
+/src/lib/server/application/adapters/preview-github-app.ts @vpittamp
+/src/lib/server/application/index.ts @vpittamp
+/src/lib/server/application/ports/preview-accepted-images.ts @vpittamp
+/src/lib/server/application/ports/preview-control.ts @vpittamp
+/src/lib/server/application/preview-acceptance-broker.ts @vpittamp
+/src/lib/server/application/preview-accepted-image-reuse.ts @vpittamp
+/src/lib/server/application/preview-accepted-images.ts @vpittamp
+/src/lib/server/application/preview-activation-gate.ts @vpittamp
+/src/lib/server/application/preview-gate-reconciler.ts @vpittamp
+/src/lib/server/application/preview-gate-requirements.ts @vpittamp
+/src/lib/server/db/schema.ts @vpittamp
+/src/lib/server/internal-auth.ts @vpittamp
+/src/lib/server/preview-control-capability.ts @vpittamp
+/src/lib/server/workflows/dev-preview-registry.ts @vpittamp
+/src/routes/api/internal/preview-control/ @vpittamp

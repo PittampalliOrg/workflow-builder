@@ -9,9 +9,16 @@ These cover the two latent bugs that block N dev pods per execution:
     a `pubsub-dev` component that does not exist in the vcluster preview.
 """
 
+import hashlib
 import json
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
 import src.app as app_module
 from src.app import (
@@ -58,6 +65,13 @@ def test_dev_preview_names_are_service_scoped() -> None:
     assert app_module._dev_preview_secret_name(
         exec_id, "workflow-builder"
     ) != app_module._dev_preview_secret_name(exec_id, "workflow-orchestrator")
+
+
+def test_dev_preview_rejects_malformed_sync_leaves() -> None:
+    with pytest.raises(ValidationError):
+        DevPreviewRequest(executionId="exec-1", syncToken="short")
+    with pytest.raises(ValidationError):
+        DevPreviewRequest(executionId="exec-1", syncAgentToken="A" * 64)
 
 
 def test_dev_preview_names_backcompat_without_service() -> None:
@@ -191,6 +205,36 @@ def test_preview_native_tls_terminator_has_admissible_cpu_limit() -> None:
     tls = next(c for c in pod["containers"] if c["name"] == "tls-terminator")
     assert tls["resources"]["requests"]["cpu"] == "10m"
     assert tls["resources"]["limits"]["cpu"] == "200m"
+
+
+def test_preview_native_manifest_satisfies_restricted_pod_security() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-builder",
+            previewNative=True,
+            syncMode="sidecar",
+            adoptTlsTerminator=True,
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+    )
+
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 1001,
+        "runAsGroup": 1001,
+        "fsGroup": 1001,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    for container in [*pod.get("initContainers", []), *pod["containers"]]:
+        security = container["securityContext"]
+        assert security["allowPrivilegeEscalation"] is False
+        assert security["runAsNonRoot"] is True
+        assert security["runAsUser"] == 1001
+        assert security["runAsGroup"] == 1001
+        assert security["capabilities"] == {"drop": ["ALL"]}
 
 
 def test_host_shadow_keeps_internal_grpc_port_override() -> None:
@@ -356,7 +400,10 @@ def test_adopt_scale_down_recreates_then_scales_when_daprd_appears(monkeypatch) 
     # 2nd poll: the recreated pod has daprd → scale prod to 0.
     state = _scale_down_fakes(
         monkeypatch,
-        [[_ready_pod("wfb-dev-x", daprd=None)], [_ready_pod("wfb-dev-x", daprd="init")]],
+        [
+            [_ready_pod("wfb-dev-x", daprd=None)],
+            [_ready_pod("wfb-dev-x", daprd="init")],
+        ],
     )
     app_module._adopt_deferred_scale_down(
         namespace="wb",
@@ -390,6 +437,7 @@ def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
 ) -> None:
     fake_custom = _FakeCustom()
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.setenv("DEV_PREVIEW_PLATFORM_SCOPE", "vcluster")
     monkeypatch.setattr(
         app_module,
         "_load_execution_classes",
@@ -431,6 +479,36 @@ def test_provision_forces_shadow_off_and_scopes_cr_when_preview_native(
     assert "DAPR_CONFIG_STORE" not in env
     assert body["metadata"]["labels"]["dev-preview-service"] == "workflow-orchestrator"
     assert "workflow-orchestrator" in body["metadata"]["name"]
+
+
+@pytest.mark.parametrize("platform_scope", [None, "physical"])
+def test_provision_denies_preview_native_outside_vcluster(
+    monkeypatch, platform_scope
+) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    if platform_scope is None:
+        monkeypatch.delenv("DEV_PREVIEW_PLATFORM_SCOPE", raising=False)
+    else:
+        monkeypatch.setenv("DEV_PREVIEW_PLATFORM_SCOPE", platform_scope)
+
+    def load_classes():
+        raise AssertionError("cluster clients must not be loaded")
+
+    monkeypatch.setattr(app_module, "_load_execution_classes", load_classes)
+
+    with pytest.raises(HTTPException) as caught:
+        app_module.provision_dev_preview(
+            SimpleNamespace(headers={"authorization": "Bearer token"}),
+            DevPreviewRequest(
+                executionId="exec-1",
+                service="workflow-builder",
+                previewNative=True,
+                adoptDeployment="workflow-builder",
+            ),
+        )
+
+    assert caught.value.status_code == 403
+    assert "only inside a vCluster" in caught.value.detail
 
 
 def test_list_dev_previews_groups_by_service(monkeypatch) -> None:
@@ -526,7 +604,13 @@ def _vc_ns(host_name, preview_name=None, phase=None):
 
 def _vc_ready_pod():
     return SimpleNamespace(
-        metadata=SimpleNamespace(name="workflow-builder-xyz"),
+        metadata=SimpleNamespace(
+            name="workflow-builder-xyz",
+            labels={
+                "app": "workflow-builder",
+                "vcluster.loft.sh/namespace": "workflow-builder",
+            },
+        ),
         status=SimpleNamespace(
             conditions=[SimpleNamespace(type="Ready", status="True")]
         ),
@@ -548,9 +632,7 @@ def test_list_vcluster_previews_parallel_and_burst_cached(monkeypatch) -> None:
         )
 
     def read_job_status(*, name, namespace, **_k):
-        return SimpleNamespace(
-            status=SimpleNamespace(active=1, succeeded=0, failed=0)
-        )
+        return SimpleNamespace(status=SimpleNamespace(active=1, succeeded=0, failed=0))
 
     def list_pod(*, namespace, **_k):
         items = [_vc_ready_pod()] if namespace == "vcluster-gan-a" else []
@@ -674,8 +756,10 @@ def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
             executionId="exec-1",
             service="workflow-orchestrator",
             syncMode="sidecar",
-            syncToken="tok-123",
+            syncToken="a" * 64,
+            syncAgentToken="b" * 64,
             devSyncCommands=commands,
+            devSyncAllowedRoots=["core", "app.py"],
         ),
         namespace="workflow-builder",
         class_config=_dev_class(),
@@ -683,7 +767,7 @@ def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
     app_env = _container_env(manifest)
     assert app_env["DEV_SYNC_EXEC_PORT"] == "8002"
     assert app_env["DEV_SYNC_DEST"] == "/app"
-    assert app_env["DEV_SYNC_TOKEN"] == "tok-123"
+    assert app_env["DEV_SYNC_TOKEN"] == "a" * 64
     assert json.loads(app_env["DEV_SYNC_COMMANDS_JSON"]) == commands
     # #41: the sidecar's route-add restart signal file, polled by the Vite
     # plugin (only meaningful for node/vite services; python ones ignore it).
@@ -694,6 +778,12 @@ def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
     sidecar_env = _sidecar_env(manifest)
     assert sidecar_env is not None
     assert sidecar_env["DEV_SYNC_EXEC_PORT"] == "8002"
+    assert (
+        sidecar_env["DEV_SYNC_AGENT_TOKEN_SHA256"]
+        == hashlib.sha256(("b" * 64).encode("utf-8")).hexdigest()
+    )
+    assert sidecar_env["DEV_SYNC_SERVICE"] == "workflow-orchestrator"
+    assert json.loads(sidecar_env["DEV_SYNC_ALLOWED_ROOTS_JSON"]) == ["app.py", "core"]
 
 
 def test_plugin_mode_has_no_exec_bridge_env() -> None:
@@ -705,14 +795,22 @@ def test_plugin_mode_has_no_exec_bridge_env() -> None:
             executionId="exec-1",
             service="workflow-builder",
             syncMode="plugin",
-            syncToken="tok-123",
+            syncToken="a" * 64,
+            syncAgentToken="b" * 64,
+            devSyncAllowedRoots=["src", "static"],
         ),
         namespace="workflow-builder",
         class_config=_dev_class(),
     )
     app_env = _container_env(manifest)
     assert app_env["WFB_DEV_SYNC_ENABLED"] == "true"
-    assert app_env["WFB_DEV_SYNC_TOKEN"] == "tok-123"
+    assert app_env["WFB_DEV_SYNC_TOKEN"] == "a" * 64
+    assert (
+        app_env["WFB_DEV_SYNC_AGENT_TOKEN_SHA256"]
+        == hashlib.sha256(("b" * 64).encode("utf-8")).hexdigest()
+    )
+    assert app_env["WFB_DEV_SYNC_SERVICE"] == "workflow-builder"
+    assert json.loads(app_env["WFB_DEV_SYNC_ALLOWED_ROOTS_JSON"]) == ["src", "static"]
     for key in (
         "DEV_SYNC_EXEC_PORT",
         "DEV_SYNC_TOKEN",
@@ -720,6 +818,148 @@ def test_plugin_mode_has_no_exec_bridge_env() -> None:
         "WFB_DEV_SYNC_RESTART_SIGNAL",
     ):
         assert key not in app_env
+
+
+def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves() -> (
+    None
+):
+    inherited = [
+        {"name": "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE", "value": "image@sha256:x"},
+        {"name": "CODEX_CLI_APP_ID", "value": "cli-agent-py"},
+        {"name": "DAPR_CONFIG_STORE", "value": "configstore"},
+        {"name": "PREVIEW_CONTROL_BROKER_URL", "value": "http://broker:3000"},
+        {
+            "name": "PREVIEW_CONTROL_CAPABILITY_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "preview-control-credentials",
+                    "key": "control-token",
+                }
+            },
+        },
+        {
+            "name": "PREVIEW_ACTION_INTERNAL_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "preview-control-credentials",
+                    "key": "action-token",
+                }
+            },
+        },
+        {
+            "name": "SANDBOX_EXECUTION_API_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "preview-control-credentials",
+                    "key": "sandbox-token",
+                }
+            },
+        },
+        {
+            "name": "PREVIEW_DEV_SYNC_MINT_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "preview-control-credentials",
+                    "key": "sync-token",
+                }
+            },
+        },
+        {
+            "name": "PREVIEW_ENVIRONMENT_NAME",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "preview-environment-identity",
+                    "key": "environment-name",
+                }
+            },
+        },
+        {"name": "WFB_DEV_SYNC_TOKEN", "value": "fleet-root"},
+        {"name": "DEV_SYNC_AGENT_TOKEN", "value": "raw-agent-leaf"},
+        {"name": "PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN", "value": "control-root"},
+        {
+            "name": "PREVIEW_RUNTIME_CAPABILITY_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "preview-control-credentials",
+                    "key": "runtime-token",
+                }
+            },
+        },
+        {
+            "name": "GITHUB_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "workflow-builder-secrets",
+                    "key": "GITHUB_TOKEN",
+                }
+            },
+        },
+        {
+            "name": "PREVIEW_CONTROL_CAPABILITY_TOKEN",
+            "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+        },
+    ]
+
+    filtered = app_module._filter_adopted_container_env(inherited)
+    assert filtered is not None
+    by_name = {entry["name"]: entry for entry in filtered}
+    assert set(by_name) == {
+        "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE",
+        "CODEX_CLI_APP_ID",
+        "DAPR_CONFIG_STORE",
+        "PREVIEW_ACTION_INTERNAL_TOKEN",
+        "PREVIEW_CONTROL_BROKER_URL",
+        "PREVIEW_CONTROL_CAPABILITY_TOKEN",
+        "PREVIEW_DEV_SYNC_MINT_TOKEN",
+        "PREVIEW_ENVIRONMENT_NAME",
+        "SANDBOX_EXECUTION_API_TOKEN",
+    }
+    assert (
+        by_name["PREVIEW_DEV_SYNC_MINT_TOKEN"]["valueFrom"]["secretKeyRef"]["key"]
+        == "sync-token"
+    )
+
+
+def test_adopted_dev_manifest_overrides_inherited_sync_root_with_receiver_leaf() -> (
+    None
+):
+    request = DevPreviewRequest(
+        executionId="exec-1",
+        service="workflow-builder",
+        previewNative=True,
+        syncToken="a" * 64,
+        syncAgentToken="b" * 64,
+        adoptInheritedEnv=[
+            {"name": "WFB_DEV_SYNC_TOKEN", "value": "fleet-root"},
+            {
+                "name": "PREVIEW_DEV_SYNC_MINT_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "preview-control-credentials",
+                        "key": "sync-token",
+                    }
+                },
+            },
+        ],
+    )
+    manifest = build_dev_preview_sandbox_manifest(
+        request, namespace="workflow-builder", class_config=_dev_class()
+    )
+    entries = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    by_name = {entry["name"]: entry for entry in entries}
+    assert by_name["WFB_DEV_SYNC_TOKEN"] == {
+        "name": "WFB_DEV_SYNC_TOKEN",
+        "value": "a" * 64,
+    }
+    assert (
+        by_name["WFB_DEV_SYNC_AGENT_TOKEN_SHA256"]["value"]
+        == hashlib.sha256(("b" * 64).encode("utf-8")).hexdigest()
+    )
+    assert "WFB_DEV_SYNC_AGENT_TOKEN" not in by_name
+    assert (
+        by_name["PREVIEW_DEV_SYNC_MINT_TOKEN"]["valueFrom"]["secretKeyRef"]["key"]
+        == "sync-token"
+    )
 
 
 def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
@@ -742,6 +982,169 @@ def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # B5: restore-all orphan sweep (_adopt_restore_orphans)
 # ---------------------------------------------------------------------------
+
+
+class _LeaseApiError(Exception):
+    def __init__(self, status: int) -> None:
+        super().__init__(f"lease api status {status}")
+        self.status = status
+
+
+class _FakeAdoptionCoordination:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self.lease: dict | None = None
+        self.deletes: list[dict] = []
+
+    def create_namespaced_lease(self, *, namespace, body):
+        with self._lock:
+            if self.lease is not None:
+                raise _LeaseApiError(409)
+            self.lease = json.loads(json.dumps(body))
+            self.lease["metadata"]["resourceVersion"] = "1"
+            return self.lease
+
+    def read_namespaced_lease(self, *, name, namespace):
+        with self._lock:
+            if self.lease is None:
+                raise _LeaseApiError(404)
+            return json.loads(json.dumps(self.lease))
+
+    def list_namespaced_lease(self, *, namespace, label_selector):
+        with self._lock:
+            return {
+                "items": []
+                if self.lease is None
+                else [json.loads(json.dumps(self.lease))]
+            }
+
+    def delete_namespaced_lease(self, *, name, namespace, body):
+        with self._lock:
+            if self.lease is None:
+                raise _LeaseApiError(404)
+            assert body["preconditions"]["resourceVersion"] == "1"
+            self.deletes.append(body)
+            self.lease = None
+
+
+def test_adoption_lease_is_create_only_idempotent_and_exactly_labeled() -> None:
+    coordination = _FakeAdoptionCoordination()
+    first = app_module._acquire_dev_preview_adoption_lease(
+        coordination,
+        namespace="workflow-builder",
+        deployment="workflow-builder",
+        execution_id="execution-1",
+        service="workflow-builder",
+    )
+    second = app_module._acquire_dev_preview_adoption_lease(
+        coordination,
+        namespace="workflow-builder",
+        deployment="workflow-builder",
+        execution_id="execution-1",
+        service="workflow-builder",
+    )
+
+    assert first == second
+    assert coordination.lease["metadata"]["name"] == "wfb-dev-adopt-workflow-builder"
+    assert coordination.lease["metadata"]["labels"] == {
+        "app": "wfb-dev-preview-adoption",
+        "wfb-dev-preview/adopt-deployment": "workflow-builder",
+        "dev-preview-service": "workflow-builder",
+    }
+    assert (
+        coordination.lease["metadata"]["annotations"]["wfb-dev-preview/adopt-holder"]
+        == first
+    )
+
+
+def test_simultaneous_adopters_have_exactly_one_lease_winner() -> None:
+    coordination = _FakeAdoptionCoordination()
+
+    def acquire(execution_id: str):
+        try:
+            return (
+                "ok",
+                app_module._acquire_dev_preview_adoption_lease(
+                    coordination,
+                    namespace="workflow-builder",
+                    deployment="workflow-builder",
+                    execution_id=execution_id,
+                    service="workflow-builder",
+                ),
+            )
+        except HTTPException as exc:
+            return ("error", exc.status_code)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(acquire, ["execution-1", "execution-2"]))
+
+    assert sum(status == "ok" for status, _ in outcomes) == 1
+    assert sum(value == 409 for status, value in outcomes if status == "error") == 1
+
+
+def test_stale_unclaimed_adoption_lease_is_recovered_after_grace() -> None:
+    deployment = _dep("workflow-builder", annotated=False, replicas=1)
+    apps, custom, _patched = _sweep_fakes([deployment], sandbox_items=[])
+    coordination = _FakeAdoptionCoordination()
+    app_module._acquire_dev_preview_adoption_lease(
+        coordination,
+        namespace="workflow-builder",
+        deployment="workflow-builder",
+        execution_id="execution-stale",
+        service="workflow-builder",
+    )
+    coordination.lease["spec"]["renewTime"] = "2020-01-01T00:00:00Z"
+
+    result = app_module._adopt_restore_orphans(
+        apps,
+        custom,
+        namespace="workflow-builder",
+        coordination=coordination,
+    )
+
+    assert result["releasedLeases"] == ["wfb-dev-adopt-workflow-builder"]
+    assert coordination.lease is None
+
+
+def test_recent_or_claimed_adoption_lease_is_never_recovered() -> None:
+    deployment = _dep("workflow-builder", annotated=False, replicas=1)
+    coordination = _FakeAdoptionCoordination()
+    holder = app_module._acquire_dev_preview_adoption_lease(
+        coordination,
+        namespace="workflow-builder",
+        deployment="workflow-builder",
+        execution_id="execution-live",
+        service="workflow-builder",
+    )
+    apps, recent_custom, _patched = _sweep_fakes([deployment], sandbox_items=[])
+    recent = app_module._adopt_restore_orphans(
+        apps,
+        recent_custom,
+        namespace="workflow-builder",
+        coordination=coordination,
+    )
+    assert recent["releasedLeases"] == []
+
+    coordination.lease["spec"]["renewTime"] = "2020-01-01T00:00:00Z"
+    claimed_sandbox = {
+        "metadata": {
+            "annotations": {
+                "wfb-dev-preview/adopt-deployment": "workflow-builder",
+                "wfb-dev-preview/adopt-holder": holder,
+            }
+        }
+    }
+    apps, claimed_custom, _patched = _sweep_fakes(
+        [deployment], sandbox_items=[claimed_sandbox]
+    )
+    claimed = app_module._adopt_restore_orphans(
+        apps,
+        claimed_custom,
+        namespace="workflow-builder",
+        coordination=coordination,
+    )
+    assert claimed["releasedLeases"] == []
+    assert coordination.lease is not None
 
 
 def _dep(name: str, *, annotated: bool, replicas: int):
@@ -885,6 +1288,53 @@ def test_restore_orphans_continues_past_a_failing_restore() -> None:
     assert [name for name, _ in patched] == ["workflow-orchestrator"]
 
 
+def test_periodic_cleanup_restores_adopt_orphans_when_identity_cleanup_fails(
+    monkeypatch,
+) -> None:
+    batch = object()
+    core = object()
+    apps = object()
+    custom = object()
+    restored = {"restored": ["workflow-builder"]}
+    calls: list[tuple[object, object, str]] = []
+
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", object)
+    monkeypatch.setattr(app_module, "_load_k8s_coordination_client", object)
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)
+    monkeypatch.setattr(app_module, "_load_k8s_custom_objects_client", lambda: custom)
+    monkeypatch.setattr(
+        app_module,
+        "_preview_identity_cleanup_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("identity failed")
+        ),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_preview_identity_orphan_cleanup_once",
+        lambda *_args, **_kwargs: {"failed": 0},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_agent_workflow_host_namespace",
+        lambda: "preview-workflow-builder",
+    )
+
+    def restore_orphans(received_apps, received_custom, *, namespace, coordination):
+        assert coordination is not None
+        calls.append((received_apps, received_custom, namespace))
+        return restored
+
+    monkeypatch.setattr(app_module, "_adopt_restore_orphans", restore_orphans)
+
+    result = app_module._preview_periodic_cleanup_once()
+
+    assert result["failures"] == ["identity"]
+    assert result["adoptOrphans"] == restored
+    assert calls == [(apps, custom, "preview-workflow-builder")]
+
+
 # ---------------------------------------------------------------------------
 # 409 recreate-on-mismatch (preview image freshness Phase 0): a create-409 adopts
 # the existing dev-preview CR only when its `dev` container image matches the
@@ -905,12 +1355,15 @@ class _FakeCustom409:
 
     def __init__(self, existing_image: str) -> None:
         self.existing_image = existing_image
+        self.annotations: dict[str, str] = {}
         self.exists = True
         self.create_calls = 0
         self.recreates: list[dict] = []
         self.deletes: list[str] = []
 
-    def create_namespaced_custom_object(self, *, group, version, namespace, plural, body):
+    def create_namespaced_custom_object(
+        self, *, group, version, namespace, plural, body
+    ):
         self.create_calls += 1
         if self.create_calls == 1 and self.exists:
             raise _Api4xx(409)
@@ -921,11 +1374,14 @@ class _FakeCustom409:
         if not self.exists:
             raise _Api4xx(404)
         return {
+            "metadata": {"annotations": self.annotations},
             "spec": {
                 "podTemplate": {
-                    "spec": {"containers": [{"name": "dev", "image": self.existing_image}]}
+                    "spec": {
+                        "containers": [{"name": "dev", "image": self.existing_image}]
+                    }
                 }
-            }
+            },
         }
 
     def delete_namespaced_custom_object(
@@ -941,7 +1397,9 @@ def _provision_409_harness(monkeypatch, *, class_image: str, existing_image: str
     monkeypatch.setattr(
         app_module,
         "_load_execution_classes",
-        lambda: {"dev-preview": ExecutionClassConfig(localQueue="", serviceImage=class_image)},
+        lambda: {
+            "dev-preview": ExecutionClassConfig(localQueue="", serviceImage=class_image)
+        },
     )
     monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: SimpleNamespace())
     monkeypatch.setattr(
@@ -951,7 +1409,9 @@ def _provision_409_harness(monkeypatch, *, class_image: str, existing_image: str
         app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
     )
     monkeypatch.setattr(
-        app_module, "_wait_for_dev_preview_ready", lambda *_a, **_k: ("ready", "10.0.0.9")
+        app_module,
+        "_wait_for_dev_preview_ready",
+        lambda *_a, **_k: ("ready", "10.0.0.9"),
     )
     return fake_custom
 
@@ -984,8 +1444,148 @@ def test_provision_409_recreates_when_image_drifts(monkeypatch) -> None:
     assert app_module._dev_preview_manifest_image(fake_custom.recreates[0]) == "img:v2"
 
 
+def test_adopted_workflow_builder_image_drift_fails_closed(monkeypatch) -> None:
+    fake_custom = _provision_409_harness(
+        monkeypatch, class_image="img:v2", existing_image="img:v1"
+    )
+    coordination = _FakeAdoptionCoordination()
+    holder = app_module._adopt_lease_holder("exec-1", "workflow-builder")
+    fake_custom.annotations[app_module.DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION] = holder
+    monkeypatch.setenv("DEV_PREVIEW_PLATFORM_SCOPE", "vcluster")
+    monkeypatch.setattr(app_module, "_adopt_read_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        app_module.provision_dev_preview(
+            SimpleNamespace(headers={"authorization": "Bearer token"}),
+            DevPreviewRequest(
+                executionId="exec-1",
+                service="workflow-builder",
+                previewNative=True,
+                adoptDeployment="workflow-builder",
+            ),
+        )
+
+    assert raised.value.status_code == 409
+    assert "fresh acceptance preview" in str(raised.value.detail)
+    assert fake_custom.deletes == []
+    assert fake_custom.recreates == []
+    assert coordination.lease is not None
+
+
+def test_self_adopt_teardown_returns_before_deferred_cleanup(monkeypatch) -> None:
+    context = {
+        "execution": "exec-1",
+        "service": "workflow-builder",
+        "deployment": "workflow-builder",
+        "holder": "adopt:exec-1:digest:workflow-builder",
+    }
+    captured: dict[str, object] = {}
+    events: list[object] = []
+
+    class _DeferredThread:
+        def __init__(self, *, target, kwargs, daemon, name):
+            captured.update(target=target, kwargs=kwargs, daemon=daemon, name=name)
+
+        def start(self):
+            events.append("started")
+
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.setattr(
+        app_module, "_agent_workflow_host_namespace", lambda: "workflow-builder"
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_custom_objects_client", lambda: object())
+    monkeypatch.setattr(
+        app_module, "_dev_preview_teardown_context", lambda *_a, **_k: context
+    )
+    monkeypatch.setattr(app_module.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(
+        app_module.time, "sleep", lambda seconds: events.append(seconds)
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_teardown_dev_preview_resources",
+        lambda **kwargs: events.append(("cleanup", kwargs)),
+    )
+
+    response = app_module.teardown_dev_preview(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        "wfb-dev-preview-exec-1-workflow-builder",
+    )
+
+    assert response == {
+        "sandboxName": "wfb-dev-preview-exec-1-workflow-builder",
+        "accepted": True,
+        "deleted": False,
+        "deferred": True,
+    }
+    assert events == ["started"]
+    assert captured["daemon"] is True
+
+    captured["target"](**captured["kwargs"])
+    assert events[1] == 15
+    assert events[2][0] == "cleanup"
+    assert events[2][1]["context"] is context
+
+
+def test_teardown_restores_production_before_releasing_adoption_lease(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    custom = object()
+    apps = object()
+    coordination = object()
+    core = SimpleNamespace(
+        delete_collection_namespaced_secret=lambda **_kwargs: events.append("secret")
+    )
+    context = {
+        "execution": "exec-1",
+        "service": "workflow-orchestrator",
+        "deployment": "workflow-orchestrator",
+        "holder": "adopt:exec-1:digest:workflow-orchestrator",
+    }
+    monkeypatch.setattr(app_module, "_load_k8s_custom_objects_client", lambda: custom)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (object(), core))
+    monkeypatch.setattr(
+        app_module,
+        "_delete_agent_host_cr_and_wait",
+        lambda *_args, **_kwargs: events.append("sandbox"),
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)
+    monkeypatch.setattr(
+        app_module,
+        "_adopt_restore_deployment",
+        lambda *_args, **_kwargs: events.append("restore"),
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_delete_dev_preview_adoption_lease",
+        lambda *_args, **_kwargs: events.append("release"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_adopt_restore_orphans",
+        lambda *_args, **_kwargs: events.append("sweep"),
+    )
+
+    app_module._teardown_dev_preview_resources(
+        namespace="workflow-builder",
+        sandbox_name="wfb-dev-preview-exec-1-workflow-orchestrator",
+        context=context,
+    )
+
+    assert events == ["secret", "sandbox", "restore", "release", "sweep"]
+
+
 def test_provision_forces_image_pins_mount_when_class_declares_it() -> None:
-    cfg = ExecutionClassConfig(localQueue="", imagePinsConfigMap="workflow-builder-image-pins")
+    cfg = ExecutionClassConfig(
+        localQueue="", imagePinsConfigMap="workflow-builder-image-pins"
+    )
     manifest = build_dev_preview_sandbox_manifest(
         DevPreviewRequest(executionId="exec-1", service="workflow-builder"),
         namespace="workflow-builder",
@@ -994,7 +1594,10 @@ def test_provision_forces_image_pins_mount_when_class_declares_it() -> None:
     pod = manifest["spec"]["podTemplate"]["spec"]
     dev = next(c for c in pod["containers"] if c["name"] == "dev")
     env = {e["name"]: e.get("value") for e in dev["env"]}
-    assert env["SANDBOX_EXECUTION_CLASSES_FILE"] == "/etc/workflow-builder/image-pins/classes.json"
+    assert (
+        env["SANDBOX_EXECUTION_CLASSES_FILE"]
+        == "/etc/workflow-builder/image-pins/classes.json"
+    )
     assert (
         env["WORKFLOW_BUILDER_IMAGE_PINS_FILE"]
         == "/etc/workflow-builder/image-pins/runtime-images.json"

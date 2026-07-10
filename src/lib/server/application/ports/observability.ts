@@ -61,6 +61,14 @@ export type TraceLinkTarget = {
 export type PreviewRunTarget = {
 	name: string;
 	url: string | null;
+	/** Exact generation binding required by central read/archive brokers. */
+	identity?: Readonly<{
+		previewName: string;
+		environmentRequestId: string;
+		environmentPlatformRevision: string;
+		environmentSourceRevision: string;
+		catalogDigest: `sha256:${string}`;
+	}> | null;
 	/**
 	 * A3 warm pool: the backing pool-member id (`pool-<n>`) when this preview was
 	 * CLAIMED from the pool, else null. The claimed member's orchestrator keeps the

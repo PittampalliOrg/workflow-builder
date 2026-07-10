@@ -29,13 +29,18 @@ function bodyMarkdownExpr(): string {
 	);
 }
 
-export function buildPromoteNode(cfg: GanFixtureConfig): Record<string, unknown> {
+export function buildPromoteNode(
+	cfg: GanFixtureConfig,
+): Record<string, unknown> {
 	return {
 		promote: {
 			call: "dev/preview-promote",
-			if: jqExpr(`(.trigger.outputMode // "${cfg.defaults.outputMode}") == "pr"`),
+			if: jqExpr(
+				`(.trigger.outputMode // "${cfg.defaults.outputMode}") == "pr"`,
+			),
 			with: {
 				executionId: jqExpr(".runtime.executionId"),
+				services: [cfg.defaults.service],
 				iteration: "best",
 				bestIteration: jqExpr(`(${RV}) | (.best_iteration // 0)`),
 				draft: jqExpr(`((${RV}) | (.accepted // false)) | not`),
@@ -43,7 +48,6 @@ export function buildPromoteNode(cfg: GanFixtureConfig): Record<string, unknown>
 					`(if ((${RV}) | (.accepted // false)) then "" else "[draft] " end) + "GAN UI feature (automated)"`,
 				),
 				bodyMarkdown: bodyMarkdownExpr(),
-				branchPrefix: cfg.promote.branchPrefix,
 			},
 			artifacts: [
 				{

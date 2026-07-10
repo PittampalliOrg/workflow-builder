@@ -21,6 +21,10 @@ describe("application adapter config", () => {
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
 			vclusterPreviewMax: 6,
+			previewPlatformRepository: "PittampalliOrg/stacks",
+			previewPlatformRef: "main",
+			previewSourceRepository: "PittampalliOrg/workflow-builder",
+			previewSourceRef: "main",
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
@@ -31,10 +35,12 @@ describe("application adapter config", () => {
 	it("enables the D1/D2 pr-preview flags only when truthy", () => {
 		expect(getApplicationAdapterConfig({}).prPreviewsEnabled).toBe(false);
 		expect(
-			getApplicationAdapterConfig({ PR_PREVIEWS_ENABLED: "true" }).prPreviewsEnabled,
+			getApplicationAdapterConfig({ PR_PREVIEWS_ENABLED: "true" })
+				.prPreviewsEnabled,
 		).toBe(true);
 		expect(
-			getApplicationAdapterConfig({ PR_PREVIEW_VERIFY_ENABLED: "1" }).prPreviewVerifyEnabled,
+			getApplicationAdapterConfig({ PR_PREVIEW_VERIFY_ENABLED: "1" })
+				.prPreviewVerifyEnabled,
 		).toBe(true);
 		expect(
 			getApplicationAdapterConfig({ PROMOTE_AUTO_PREVIEW_LABEL: "on" })
@@ -43,7 +49,9 @@ describe("application adapter config", () => {
 	});
 
 	it("enables the preview read proxy and archive-on-teardown only when flagged", () => {
-		expect(getApplicationAdapterConfig({}).previewReadProxyEnabled).toBe(false);
+		expect(getApplicationAdapterConfig({}).previewReadProxyEnabled).toBe(
+			false,
+		);
 		expect(
 			getApplicationAdapterConfig({}).previewArchiveOnTeardownEnabled,
 		).toBe(false);
@@ -62,12 +70,16 @@ describe("application adapter config", () => {
 	});
 
 	it("enables the preview run feed only when the flag is truthy", () => {
-		expect(getApplicationAdapterConfig({}).previewRunFeedEnabled).toBe(false);
+		expect(getApplicationAdapterConfig({}).previewRunFeedEnabled).toBe(
+			false,
+		);
 		expect(
-			getApplicationAdapterConfig({ PREVIEW_RUN_FEED_ENABLED: "true" }).previewRunFeedEnabled,
+			getApplicationAdapterConfig({ PREVIEW_RUN_FEED_ENABLED: "true" })
+				.previewRunFeedEnabled,
 		).toBe(true);
 		expect(
-			getApplicationAdapterConfig({ PREVIEW_RUN_FEED_ENABLED: "off" }).previewRunFeedEnabled,
+			getApplicationAdapterConfig({ PREVIEW_RUN_FEED_ENABLED: "off" })
+				.previewRunFeedEnabled,
 		).toBe(false);
 	});
 
@@ -106,11 +118,28 @@ describe("application adapter config", () => {
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
 			vclusterPreviewMax: 6,
+			previewPlatformRepository: "PittampalliOrg/stacks",
+			previewPlatformRef: "main",
+			previewSourceRepository: "PittampalliOrg/workflow-builder",
+			previewSourceRef: "main",
 			prPreviewVerifyEnabled: false,
 			promoteAutoPreviewLabel: false,
 			previewReadProxyEnabled: false,
 			previewArchiveOnTeardownEnabled: false,
 		});
+	});
+
+	it("configures repository refs that are resolved before preview launch", () => {
+		const config = getApplicationAdapterConfig({
+			PREVIEW_PLATFORM_REPOSITORY: "Example/platform",
+			PREVIEW_PLATFORM_REF: "refs/pull/7/merge",
+			PREVIEW_SOURCE_REPOSITORY: "Example/app",
+			PREVIEW_SOURCE_REF: "feature/x",
+		});
+		expect(config.previewPlatformRepository).toBe("Example/platform");
+		expect(config.previewPlatformRef).toBe("refs/pull/7/merge");
+		expect(config.previewSourceRepository).toBe("Example/app");
+		expect(config.previewSourceRef).toBe("feature/x");
 	});
 
 	it("lets an explicit adapter env override the lite-profile default", () => {
@@ -125,14 +154,17 @@ describe("application adapter config", () => {
 
 	it("still throws on unknown values in the lite profile", () => {
 		expect(() =>
-			getApplicationAdapterConfig({ APP_PROFILE: "lite", EVENT_BUS_ADAPTER: "bogus" }),
+			getApplicationAdapterConfig({
+				APP_PROFILE: "lite",
+				EVENT_BUS_ADAPTER: "bogus",
+			}),
 		).toThrow("Unsupported EVENT_BUS_ADAPTER='bogus'");
 	});
 
 	it("rejects an unknown APP_PROFILE", () => {
-		expect(() => getApplicationAdapterConfig({ APP_PROFILE: "prod" })).toThrow(
-			"Unsupported APP_PROFILE='prod'",
-		);
+		expect(() =>
+			getApplicationAdapterConfig({ APP_PROFILE: "prod" }),
+		).toThrow("Unsupported APP_PROFILE='prod'");
 	});
 
 	it("accepts the new in-process / lite-stub members under the full profile too", () => {
@@ -155,7 +187,9 @@ describe("application adapter config", () => {
 
 	it("rejects unsupported script-call store adapters", () => {
 		expect(() =>
-			getApplicationAdapterConfig({ SCRIPT_CALLS_STORE_ADAPTER: "raw-sql" }),
+			getApplicationAdapterConfig({
+				SCRIPT_CALLS_STORE_ADAPTER: "raw-sql",
+			}),
 		).toThrow("Unsupported SCRIPT_CALLS_STORE_ADAPTER='raw-sql'");
 	});
 
@@ -178,12 +212,22 @@ describe("application adapter config", () => {
 			SESSION_EVENTS_STORE_ADAPTER: "dapr-postgres-binding",
 			WORKFLOW_DEFINITIONS_STORE_ADAPTER: "dapr-postgres-binding",
 		});
-		expect(config.workflowExecutionsStoreAdapter).toBe("dapr-postgres-binding");
-		expect(config.workflowExecutionLogsStoreAdapter).toBe("dapr-postgres-binding");
-		expect(config.workflowArtifactsStoreAdapter).toBe("dapr-postgres-binding");
-		expect(config.workflowBrowserArtifactsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowExecutionsStoreAdapter).toBe(
+			"dapr-postgres-binding",
+		);
+		expect(config.workflowExecutionLogsStoreAdapter).toBe(
+			"dapr-postgres-binding",
+		);
+		expect(config.workflowArtifactsStoreAdapter).toBe(
+			"dapr-postgres-binding",
+		);
+		expect(config.workflowBrowserArtifactsStoreAdapter).toBe(
+			"dapr-postgres-binding",
+		);
 		expect(config.sessionEventsStoreAdapter).toBe("dapr-postgres-binding");
-		expect(config.workflowDefinitionsStoreAdapter).toBe("dapr-postgres-binding");
+		expect(config.workflowDefinitionsStoreAdapter).toBe(
+			"dapr-postgres-binding",
+		);
 	});
 
 	it("rejects unsupported staged product-data store adapters", () => {

@@ -98,7 +98,6 @@ function hostExecutionPlaneToken(): string | null {
 	return (
 		normalizedConfigValue("SANDBOX_EXECUTION_API_TOKEN") ||
 		normalizedConfigValue("HOST_EXECUTION_API_TOKEN") ||
-		normalizedConfigValue("INTERNAL_API_TOKEN") ||
 		null
 	);
 }

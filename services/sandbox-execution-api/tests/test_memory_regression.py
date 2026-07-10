@@ -75,13 +75,13 @@ def test_shared_client_pool_fits_the_probe_fanout(_reset_client_cache) -> None:
 
 
 def _no_auth_request():
-    return SimpleNamespace(headers={})
+    return SimpleNamespace(headers={"authorization": "Bearer test-token"})
 
 
 def test_list_endpoint_single_flights_concurrent_cache_misses(monkeypatch) -> None:
     """8 concurrent cache-miss list calls must run ONE compute; the rest wait for the
     winner's cache write and return the same body (bounds the burst amplification)."""
-    monkeypatch.delenv("SANDBOX_EXECUTION_API_TOKEN", raising=False)
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
     monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
     calls: list[int] = []
     all_arrived = threading.Barrier(8, timeout=10)
@@ -112,14 +112,21 @@ def test_list_endpoint_single_flights_concurrent_cache_misses(monkeypatch) -> No
 # not a fixtures library).
 
 
-def _ns(real_name: str, *, pool: str | None = None, alias: str | None = None,
-        pins: str | None = None, bake_hash: str | None = None):
+def _ns(
+    real_name: str,
+    *,
+    pool: str | None = None,
+    alias: str | None = None,
+    pins: str | None = None,
+    bake_hash: str | None = None,
+    extra_annotations: dict[str, str] | None = None,
+):
     labels = {"app": "vcluster-preview", "vcluster-preview-name": real_name}
     if pool is not None:
         labels["vcluster-preview-pool"] = pool
     if alias is not None:
         labels["vcluster-preview-alias"] = alias
-    annotations = {}
+    annotations = dict(extra_annotations or {})
     if pins:
         annotations["vcluster-preview-image-pins"] = pins
     if bake_hash:
@@ -146,12 +153,17 @@ class _FakeCore:
         return self._ns[name]
 
     def read_namespaced_config_map(self, name, namespace):
-        return SimpleNamespace(metadata=SimpleNamespace(name=name), data=self._runner_data)
+        return SimpleNamespace(
+            metadata=SimpleNamespace(name=name), data=self._runner_data
+        )
 
 
 class _FakeBatch:
+    def __init__(self, jobs=None) -> None:
+        self.jobs = list(jobs or [])
+
     def list_namespaced_job(self, namespace, label_selector=None):
-        return SimpleNamespace(items=[])
+        return SimpleNamespace(items=self.jobs)
 
 
 class _FakeApps:
@@ -185,13 +197,36 @@ def test_hot_paths_hold_no_memory_across_churn_cycles(monkeypatch) -> None:
         _ns("pool-aa11", pool="free", bake_hash=fresh_hash),
         _ns("pool-bb22", pool="free", bake_hash=fresh_hash),
         _ns("pool-cc33", pool="baking"),
-        _ns("pool-dd44", pool="recycling"),
+        _ns(
+            "pool-dd44",
+            pool="recycling",
+            extra_annotations={
+                "vcluster-preview-recycling-at": datetime.now(UTC).isoformat(),
+                "vcluster-preview-recycle-reason": "bake-drift",
+                "vcluster-preview-recycle-attempt": "1",
+                "vcluster-preview-recycle-error": "",
+            },
+        ),
         _ns("pool-ee55", pool="claimed", alias="claimed-a", bake_hash=fresh_hash),
         _ns("pool-ff66", pool="claimed", alias="claimed-b", bake_hash=fresh_hash),
         *[_ns(f"user-{i}") for i in range(6)],
     ]
     core = _FakeCore(namespaces, runner_data=runner_data)
-    batch = _FakeBatch()
+    batch = _FakeBatch(
+        jobs=[
+            SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name="vcpreview-down-pool-dd44",
+                    labels={
+                        "app": "vcluster-preview",
+                        "vcluster-preview-name": "pool-dd44",
+                        "vcluster-preview-action": "down",
+                    },
+                ),
+                status=SimpleNamespace(active=1, failed=0, succeeded=0, conditions=[]),
+            )
+        ]
+    )
     apps = _FakeApps()
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)

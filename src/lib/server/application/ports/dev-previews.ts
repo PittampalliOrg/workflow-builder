@@ -3,10 +3,16 @@
 // legacy clients (`$lib/server/workflows/{vcluster-preview,dev-preview-sidecar}`)
 // so the four dev routes stop importing legacy domain modules directly.
 
+import type { VclusterPreviewCounts, VclusterPreviewRecord } from '$lib/types/dev-previews';
 import type {
-	VclusterPreviewCounts,
-	VclusterPreviewRecord,
-} from "$lib/types/dev-previews";
+	PreviewEnvironmentLifecycle,
+	PreviewEnvironmentLane,
+	PreviewEnvironmentOrigin,
+	PreviewEnvironmentOwner,
+	PreviewEnvironmentProfile,
+	PreviewEnvironmentProvenance
+} from './preview-environments';
+import type { PreviewCapabilityBundle } from './preview-control';
 
 /** A4 activity/wake outcome: whether a resume Job was started for a slept preview. */
 export type VclusterPreviewTouchResult = {
@@ -25,13 +31,79 @@ export type VclusterPreviewSleepOutcome =
 
 /** Lifecycle labels accepted by claim/provision (all optional). */
 export type VclusterPreviewLifecycleInput = {
-	origin?: "user" | "pr";
+	lifecycle?: PreviewEnvironmentLifecycle;
+	origin?: PreviewEnvironmentOrigin;
 	prNumber?: number;
 	ttlHours?: number;
 };
 
+/** Immutable profiled-launch fields forwarded to the privileged SEA adapter. */
+export type VclusterPreviewProfileInput = {
+	platformRevision?: string;
+	sourceRevision?: string;
+	catalogDigest?: `sha256:${string}`;
+	candidatePaths?: readonly string[];
+	delivery?: 'imperative' | 'reconciler';
+	enrollMode?: 'imperative' | 'agent';
+	profile?: PreviewEnvironmentProfile;
+	lane?: PreviewEnvironmentLane;
+	mode?: 'live' | 'reconciled';
+	allocation?: Readonly<{ kind: 'cold' }>;
+	imageOverrides?: Readonly<Record<string, string>>;
+	owner?: PreviewEnvironmentOwner;
+	services?: readonly string[];
+	provenance?: PreviewEnvironmentProvenance;
+	trustedCode?: boolean;
+	/** Reject adoption/replacement; used by clean reconciled acceptance launches. */
+	createOnly?: boolean;
+	/** Broker-derived tuple capabilities. The HMAC root never crosses this port. */
+	capabilityBundle?: PreviewCapabilityBundle;
+};
+
+export type VclusterPreviewLaunchInput = VclusterPreviewLifecycleInput &
+	VclusterPreviewProfileInput;
+
+export type VclusterPreviewRuntimeContainer = {
+	pod: string;
+	image: string;
+	imageId: string | null;
+	ready: boolean;
+};
+
+export type VclusterPreviewRuntimeSnapshot = {
+	name: string;
+	resourceName: string;
+	reconciliationSucceeded: boolean;
+	services: Array<{
+		service: string;
+		containers: VclusterPreviewRuntimeContainer[];
+	}>;
+};
+
+export type VclusterPreviewCleanupSnapshot = {
+	name: string;
+	resourceName: string;
+	complete: boolean;
+	phase: 'pending' | 'complete' | 'failed';
+	checks: {
+		runnerSucceeded: boolean;
+		previewEnvironmentAbsent: boolean;
+		applicationAbsent: boolean;
+		agentRegistrationAbsent: boolean;
+		agentNamespacesAbsent: boolean;
+		databaseAbsent: boolean;
+		natsStreamAbsent: boolean;
+		headlampRegistrationAbsent: boolean;
+		tailnetEgressAbsent: boolean;
+		hostNamespaceAbsent: boolean;
+		storageScopeAbsent: boolean;
+		runnerIdentityAbsent: boolean;
+	};
+	message: string | null;
+};
+
 /**
- * Privileged Tier-2 (vcluster full-isolation) preview gateway. Mirrors the
+ * Bounded Tier-2 (vcluster full-isolation) preview gateway. Mirrors the
  * legacy client verbs, but returns the serializable `VclusterPreviewRecord`
  * (not the legacy shape) and turns the sleep 409 into data. The capacity-
  * admission policy lives ABOVE this port, in `ApplicationVclusterPreviewService`.
@@ -44,17 +116,25 @@ export interface VclusterPreviewGatewayPort {
 	}>;
 	/** Current status of one preview (accepts a claimed alias). */
 	get(name: string): Promise<VclusterPreviewRecord>;
-	/** A3 warm-pool claim (instant, no capacity gate); null when the pool is
-	 * empty/off → the service cold-provisions instead. */
-	claim(
-		input: { name: string; user?: string } & VclusterPreviewLifecycleInput,
-	): Promise<VclusterPreviewRecord | null>;
 	/** Cold-provision (ACTION=up). Capacity gating is the service's job. */
-	provision(
-		input: { name: string } & VclusterPreviewLifecycleInput,
-	): Promise<VclusterPreviewRecord>;
+	provision(input: { name: string } & VclusterPreviewLaunchInput): Promise<VclusterPreviewRecord>;
 	/** Tear down (drops the per-preview DB + `vcluster delete`). */
-	teardown(name: string): Promise<VclusterPreviewRecord>;
+	teardown(
+		name: string,
+		guard:
+			| Readonly<{
+					mode: 'owned';
+					requestId: string;
+					sourceRevision: string;
+					/** Set only after the application archive service returns durable success. */
+					archiveConfirmed?: true;
+			  }>
+			| Readonly<{ mode: 'superseded'; protectedRequestId: string }>
+	): Promise<VclusterPreviewRecord>;
+	/** Actual Ready pod image observations from the host Kubernetes API. */
+	runtime(name: string): Promise<VclusterPreviewRuntimeSnapshot>;
+	/** Down-runner convergence proof. Runner success asserts every hub cleanup check. */
+	cleanup(name: string): Promise<VclusterPreviewCleanupSnapshot>;
 	/** A4 activity ping + wake: stamps last-active, resumes a slept preview. */
 	touch(name: string): Promise<VclusterPreviewTouchResult>;
 	/** A4 explicit sleep; refusal (409) returned as data. */
@@ -80,7 +160,7 @@ export type DevPreviewSidecarRunOutput = {
 	truncated: boolean;
 	output: string;
 	/** #40: where the command ran ("app" bridge vs "sidecar" node fallback). */
-	executedIn: "app" | "sidecar" | null;
+	executedIn: 'app' | 'sidecar' | null;
 };
 
 export type DevPreviewSidecarSyncOutput = {
@@ -95,23 +175,28 @@ export type DevPreviewSidecarResult<T> =
 	| { ok: true; data: T }
 	| {
 			ok: false;
-			reason: "no-sidecar" | "unreachable" | "bad-response" | "forbidden";
+			reason: 'no-sidecar' | 'unreachable' | 'bad-response' | 'forbidden';
 			message?: string;
 	  };
 
 /** Per-service dev pod control channel (B5). Wraps the pod-IP `/__status` /
- * `/__run` calls the BFF makes with the shared sync token. */
+ * `/__run` calls the BFF makes with an exact receiver leaf. */
 export interface DevPreviewSidecarPort {
 	status(input: {
 		syncUrl: string | null | undefined;
+		executionId: string;
+		service: string;
 	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarStatus>>;
 	run(input: {
 		syncUrl: string | null | undefined;
+		executionId: string;
 		service: string;
 		cmd: string;
 	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>>;
 	sync(input: {
 		syncUrl: string | null | undefined;
+		executionId: string;
+		service: string;
 		archive: ArrayBuffer | Uint8Array;
 		contentType?: string | null;
 	}): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>>;

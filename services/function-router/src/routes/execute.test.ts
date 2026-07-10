@@ -1,9 +1,101 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  bindDevPreviewExecutionId,
+  buildDevPreviewBuildPayload,
+  buildPreviewAcceptancePayload,
   buildWorkspaceCommandPayload,
   dispatchErrorPayload,
   resolveWorkspaceUtilityTimeoutMs,
 } from "./execute.js";
+
+describe("dev preview execution binding", () => {
+  it("derives preview authority from db_execution_id", () => {
+    expect(bindDevPreviewExecutionId({}, "db-exec-1")).toEqual({
+      ok: true,
+      executionId: "db-exec-1",
+    });
+    expect(
+      bindDevPreviewExecutionId({ executionId: "db-exec-1" }, "db-exec-1"),
+    ).toEqual({ ok: true, executionId: "db-exec-1" });
+  });
+
+  it("rejects arbitrary or missing execution identity", () => {
+    expect(
+      bindDevPreviewExecutionId(
+        { executionId: "other-admin-run" },
+        "db-exec-1",
+      ),
+    ).toEqual({
+      ok: false,
+      error:
+        "dev/preview: input.executionId does not match trusted db_execution_id.",
+    });
+    expect(bindDevPreviewExecutionId({ executionId: "exec-1" }, null)).toEqual({
+      ok: false,
+      error: "dev/preview: missing trusted `db_execution_id` context.",
+    });
+  });
+
+  it("uses only the dedicated preview-action credential for privileged proxies", () => {
+    const source = readFileSync(
+      new URL("./execute.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("async function executeDevPreview(");
+    const end = source.indexOf("\nfunction ", start + 1);
+    const previewProxy = source.slice(start, end > start ? end : undefined);
+    expect(previewProxy).toContain("PREVIEW_ACTION_INTERNAL_TOKEN");
+    expect(previewProxy).toContain('"X-Preview-Action-Token"');
+    expect(previewProxy).not.toContain('"X-Internal-Token"');
+    expect(source).toContain("body.db_execution_id,");
+  });
+
+  it("forwards only safe development-build choices", () => {
+    expect(
+      buildDevPreviewBuildPayload({
+        services: ["workflow-builder", "function-router"],
+        origin: "https://wfb-preview1.tail286401.ts.net",
+        adopt: false,
+        executionId: "another-execution",
+        repo: "attacker/repo",
+        base: "evil",
+        sourceRevision: "a".repeat(40),
+        image: "attacker/image:latest",
+        dockerfile: "../../Dockerfile",
+        mode: "host-throwaway",
+      }),
+    ).toEqual({
+      services: ["workflow-builder", "function-router"],
+      origin: "https://wfb-preview1.tail286401.ts.net",
+      adopt: false,
+    });
+  });
+
+  it("forwards only the PR tuple for immutable acceptance", () => {
+    expect(
+      buildPreviewAcceptancePayload({
+        pullRequest: {
+          repository: "PittampalliOrg/workflow-builder",
+          number: 42,
+          baseSha: "a".repeat(40),
+          headSha: "b".repeat(40),
+          services: ["attacker-service"],
+        },
+        platformRevision: "c".repeat(40),
+        services: ["attacker-service"],
+        retainOnSuccess: true,
+      }),
+    ).toEqual({
+      pullRequest: {
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+      },
+    });
+  });
+});
 
 describe("workspace command routing", () => {
   it("forwards cwd to the workspace runtime", () => {
@@ -75,7 +167,10 @@ describe("workspace utility timeout routing", () => {
 describe("dispatch content tracing", () => {
   it("summarizes thrown downstream dispatch errors as output payloads", () => {
     expect(
-      dispatchErrorPayload(new Error("fetch failed"), "/api/workspaces/profile"),
+      dispatchErrorPayload(
+        new Error("fetch failed"),
+        "/api/workspaces/profile",
+      ),
     ).toEqual({
       success: false,
       error: "fetch failed",

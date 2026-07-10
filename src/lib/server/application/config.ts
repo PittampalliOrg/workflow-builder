@@ -3,20 +3,38 @@ import { env } from "$env/dynamic/private";
 export const APP_PROFILES = ["full", "lite"] as const;
 export const PERSISTENCE_ADAPTERS = ["postgres"] as const;
 export const EVENT_BUS_ADAPTERS = ["dapr-pubsub", "in-process"] as const;
-export const ARTIFACT_STORE_ADAPTERS = ["postgres-metadata-object-data"] as const;
-export const WORKFLOW_SCHEDULER_ADAPTERS = ["dapr-workflow", "lite-stub"] as const;
-export const PREVIEW_PROVISIONER_ADAPTERS = ["sandbox-execution-api", "kro"] as const;
-export const SCRIPT_CALLS_STORE_ADAPTERS = ["postgres", "dapr-postgres-binding"] as const;
-export const PRODUCT_DATA_STORE_ADAPTERS = ["postgres", "dapr-postgres-binding"] as const;
+export const ARTIFACT_STORE_ADAPTERS = [
+	"postgres-metadata-object-data",
+] as const;
+export const WORKFLOW_SCHEDULER_ADAPTERS = [
+	"dapr-workflow",
+	"lite-stub",
+] as const;
+export const PREVIEW_PROVISIONER_ADAPTERS = [
+	"sandbox-execution-api",
+	"kro",
+] as const;
+export const SCRIPT_CALLS_STORE_ADAPTERS = [
+	"postgres",
+	"dapr-postgres-binding",
+] as const;
+export const PRODUCT_DATA_STORE_ADAPTERS = [
+	"postgres",
+	"dapr-postgres-binding",
+] as const;
 
 export type AppProfile = (typeof APP_PROFILES)[number];
 export type PersistenceAdapter = (typeof PERSISTENCE_ADAPTERS)[number];
 export type EventBusAdapter = (typeof EVENT_BUS_ADAPTERS)[number];
 export type ArtifactStoreAdapter = (typeof ARTIFACT_STORE_ADAPTERS)[number];
-export type WorkflowSchedulerAdapter = (typeof WORKFLOW_SCHEDULER_ADAPTERS)[number];
-export type PreviewProvisionerAdapter = (typeof PREVIEW_PROVISIONER_ADAPTERS)[number];
-export type ScriptCallsStoreAdapter = (typeof SCRIPT_CALLS_STORE_ADAPTERS)[number];
-export type ProductDataStoreAdapter = (typeof PRODUCT_DATA_STORE_ADAPTERS)[number];
+export type WorkflowSchedulerAdapter =
+	(typeof WORKFLOW_SCHEDULER_ADAPTERS)[number];
+export type PreviewProvisionerAdapter =
+	(typeof PREVIEW_PROVISIONER_ADAPTERS)[number];
+export type ScriptCallsStoreAdapter =
+	(typeof SCRIPT_CALLS_STORE_ADAPTERS)[number];
+export type ProductDataStoreAdapter =
+	(typeof PRODUCT_DATA_STORE_ADAPTERS)[number];
 
 export type ApplicationAdapterConfig = {
 	appProfile: AppProfile;
@@ -40,6 +58,10 @@ export type ApplicationAdapterConfig = {
 	prPreviewRepo: string;
 	/** Awake-preview capacity for UI meters (mirrors SEA VCLUSTER_PREVIEW_MAX). */
 	vclusterPreviewMax: number;
+	previewPlatformRepository: string;
+	previewPlatformRef: string;
+	previewSourceRepository: string;
+	previewSourceRef: string;
 	/** D2: dispatch the Playwright-critic verify pass on a ready PR preview. Off by default. */
 	prPreviewVerifyEnabled: boolean;
 	/** D2: Promote adds the `preview` label to the PRs it opens. Off by default. */
@@ -77,7 +99,8 @@ export function readAdapter<T extends string>(
 function readProfile(source: Record<string, string | undefined>): AppProfile {
 	const raw = source.APP_PROFILE?.trim().toLowerCase();
 	if (!raw) return "full";
-	if ((APP_PROFILES as readonly string[]).includes(raw)) return raw as AppProfile;
+	if ((APP_PROFILES as readonly string[]).includes(raw))
+		return raw as AppProfile;
 	throw new Error(
 		`Unsupported APP_PROFILE='${raw}'. Supported values: ${APP_PROFILES.join(", ")}`,
 	);
@@ -96,6 +119,8 @@ export function getApplicationAdapterConfig(
 		appProfile === "lite" ? "in-process" : "dapr-pubsub";
 	const workflowSchedulerFallback: WorkflowSchedulerAdapter =
 		appProfile === "lite" ? "lite-stub" : "dapr-workflow";
+	const prPreviewRepo =
+		source.PR_PREVIEW_REPO?.trim() || "PittampalliOrg/workflow-builder";
 	return {
 		appProfile,
 		persistenceAdapter: readAdapter(
@@ -172,8 +197,19 @@ export function getApplicationAdapterConfig(
 		),
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),
-		prPreviewRepo: source.PR_PREVIEW_REPO?.trim() || "PittampalliOrg/workflow-builder",
-		vclusterPreviewMax: Number.parseInt(source.VCLUSTER_PREVIEW_MAX ?? "", 10) || 6,
+		prPreviewRepo,
+		vclusterPreviewMax:
+			Number.parseInt(source.VCLUSTER_PREVIEW_MAX ?? "", 10) || 6,
+		previewPlatformRepository:
+			source.PREVIEW_PLATFORM_REPOSITORY?.trim() ||
+			"PittampalliOrg/stacks",
+		previewPlatformRef:
+			source.PREVIEW_PLATFORM_REF?.trim() ||
+			source.VCLUSTER_PREVIEW_TARGET_REVISION?.trim() ||
+			"main",
+		previewSourceRepository:
+			source.PREVIEW_SOURCE_REPOSITORY?.trim() || prPreviewRepo,
+		previewSourceRef: source.PREVIEW_SOURCE_REF?.trim() || "main",
 		prPreviewVerifyEnabled: readFlag(source, "PR_PREVIEW_VERIFY_ENABLED"),
 		promoteAutoPreviewLabel: readFlag(source, "PROMOTE_AUTO_PREVIEW_LABEL"),
 		previewReadProxyEnabled: readFlag(source, "PREVIEW_READ_PROXY_ENABLED"),

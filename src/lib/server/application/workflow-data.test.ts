@@ -1191,15 +1191,13 @@ function fakeDevEnvironments(): DevEnvironmentReadRepository {
 			{
 				service: "workflow-builder",
 				primaryCluster: "dev",
-				fallbackCluster: "ryzen",
-				deliveryRole: "dev-primary-ryzen-canary",
 				previewTier: "tier-1-hot-loop",
 				needsDapr: true,
 				port: 3000,
 				syncMode: "plugin",
 				repoUrl: "PittampalliOrg/workflow-builder",
 				repoSubdir: ".",
-				tailnetHost: "wfb-preview-ryzen.tail286401.ts.net",
+				tailnetHost: "wfb-preview-dev.example.ts.net",
 			},
 		]),
 		listDevEnvironments: vi.fn(async () => [

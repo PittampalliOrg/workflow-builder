@@ -11,8 +11,11 @@ describe("workspace dev page loader", () => {
 		);
 
 		expect(source).toContain("getApplicationAdapters");
+		expect(source).toContain("requirePlatformAdmin");
 		expect(source).toContain("workflowData.getDevPreviewHubReadModel");
-		expect(source).not.toContain("workflowData.findProjectWorkflowIdByIdOrNamePrefix");
+		expect(source).not.toContain(
+			"workflowData.findProjectWorkflowIdByIdOrNamePrefix",
+		);
 		expect(source).not.toContain("$lib/server/workflows/dev-environments");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");

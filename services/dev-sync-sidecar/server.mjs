@@ -1,8 +1,15 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import {
+	applyAtomicDevSync,
+	DevSyncTransactionError,
+	parseAllowedSyncRoots,
+	parseDeclaredSyncRoots
+} from './atomic-sync.mjs';
 
 /**
  * dev-sync-sidecar — a language-agnostic live-sync + dev-loop receiver.
@@ -46,7 +53,8 @@ import path from 'node:path';
  * Env:
  *   DEV_SYNC_PORT          (default 8001)   — listen port
  *   DEV_SYNC_DEST          (default /app)   — untar destination + /__export + /__run cwd
- *   DEV_SYNC_TOKEN         (optional)       — if set, require matching `x-sync-token`
+ *   DEV_SYNC_TOKEN         (required)       — receiver leaf accepted by `x-sync-token`
+ *   DEV_SYNC_AGENT_TOKEN_SHA256 (required) — hash of the agent-action leaf
  *   DEV_SYNC_COMMANDS_JSON (optional)       — {"<name>":"<shell command>"} allowlist
  *   DEV_SYNC_RUN_TIMEOUT_MS (default 900000) — hard kill for a /__run child
  *   DEV_SYNC_EXEC_PORT     (default 8002)   — app-container exec bridge port
@@ -59,15 +67,28 @@ import path from 'node:path';
 const PORT = Number(process.env.DEV_SYNC_PORT || 8001);
 const DEST = process.env.DEV_SYNC_DEST || '/app';
 const TOKEN = process.env.DEV_SYNC_TOKEN || '';
+const AGENT_TOKEN_SHA256 = process.env.DEV_SYNC_AGENT_TOKEN_SHA256 || '';
 const MAX = 256 * 1024 * 1024; // 256 MiB ceiling on a /__sync upload
 const RUN_TIMEOUT_MS = Number(process.env.DEV_SYNC_RUN_TIMEOUT_MS || 900000); // 15 min
 const RUN_OUTPUT_CAP = 64 * 1024; // cap the captured /__run output at 64 KiB
 const EXEC_PORT = Number(process.env.DEV_SYNC_EXEC_PORT || 8002);
 const EXEC_HOST = process.env.DEV_SYNC_EXEC_HOST || '127.0.0.1';
+const CONFIGURED_SERVICE = (process.env.DEV_SYNC_SERVICE || '').trim();
+let ALLOWED_ROOTS = [];
+let ALLOWED_ROOTS_ERROR = null;
+try {
+	ALLOWED_ROOTS = parseAllowedSyncRoots(process.env.DEV_SYNC_ALLOWED_ROOTS_JSON || '');
+} catch (error) {
+	ALLOWED_ROOTS_ERROR = error.message;
+	console.error(`[dev-sync-sidecar] invalid allowed-root contract: ${error.message}`);
+}
 // Shared with src/lib/server/dev-sync/added-routes.ts (the Vite plugin's poll
 // target) — keep the two literals in lockstep.
 const RESTART_SIGNAL_FILE = '.dev-sync-restart-request.json';
 const ROUTES_PREFIX = 'src/routes/';
+const SYNC_STATE_FILE = '.dev-sync-state.json';
+const GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
  * The /__run allowlist. Parsed ONCE at boot — SEA stamps it into the pod's env
@@ -98,10 +119,97 @@ function loadCommands() {
 
 const COMMANDS = loadCommands();
 
-// /__status diagnostics.
-let lastSyncAt = null; // ISO string of the last successful /__sync
-let lastSyncBytes = 0; // byte size of that upload
+function readHeader(req, name) {
+	const value = req.headers[name];
+	return (Array.isArray(value) ? value[0] : value || '').trim();
+}
+
+function tokenEquals(left, right) {
+	if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) return false;
+	return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
+}
+
+function acceptedSyncToken(presented) {
+	return (
+		tokenEquals(presented, TOKEN) ||
+		tokenEquals(createHash('sha256').update(presented).digest('hex'), AGENT_TOKEN_SHA256)
+	);
+}
+
+function loadSyncState() {
+	try {
+		const value = JSON.parse(fs.readFileSync(path.join(DEST, SYNC_STATE_FILE), 'utf8'));
+		return {
+			generation:
+				typeof value.generation === 'string' && GENERATION_PATTERN.test(value.generation)
+					? value.generation
+					: null,
+			service:
+				typeof value.service === 'string' && SERVICE_PATTERN.test(value.service)
+					? value.service
+					: null,
+			lastSyncAt: typeof value.lastSyncAt === 'string' ? value.lastSyncAt : null,
+			lastSyncBytes:
+				typeof value.lastSyncBytes === 'number' && value.lastSyncBytes >= 0
+					? value.lastSyncBytes
+					: 0,
+			contentSha256:
+				typeof value.contentSha256 === 'string' && /^sha256:[0-9a-f]{64}$/.test(value.contentSha256)
+					? value.contentSha256
+					: null
+		};
+	} catch {
+		return {
+			generation: null,
+			service: null,
+			lastSyncAt: null,
+			lastSyncBytes: 0,
+			contentSha256: null
+		};
+	}
+}
+
+function persistSyncState(state) {
+	fs.mkdirSync(DEST, { recursive: true });
+	const target = path.join(DEST, SYNC_STATE_FILE);
+	const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify(state));
+		if (
+			process.env.NODE_ENV === 'test' &&
+			(process.env.DEV_SYNC_TEST_FAIL_STATE_WRITE === 'true' ||
+				process.env.DEV_SYNC_TEST_FAIL_STATE_WRITE_GENERATION === state.generation)
+		) {
+			throw new Error('injected state write failure');
+		}
+		fs.renameSync(tmp, target);
+	} catch (error) {
+		fs.rmSync(tmp, { force: true });
+		throw error;
+	}
+}
+
+// /__status diagnostics. State survives sidecar process restarts so a capture
+// can still prove which fanout generation produced the live workdir.
+const initialSyncState = loadSyncState();
+let currentGeneration = initialSyncState.generation;
+let currentSyncService = initialSyncState.service || CONFIGURED_SERVICE || null;
+let lastSyncAt = initialSyncState.lastSyncAt; // ISO string of the last successful /__sync
+let lastSyncBytes = initialSyncState.lastSyncBytes; // byte size of that upload
+let currentContentSha256 = initialSyncState.contentSha256;
+let lastExportSha256 = null;
 let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs, executedIn }
+let sourceOperation = null;
+
+function beginSourceOperation(operation) {
+	if (sourceOperation) return false;
+	sourceOperation = operation;
+	return true;
+}
+
+function endSourceOperation(operation) {
+	if (sourceOperation === operation) sourceOperation = null;
+}
 
 function reply(res, code, body) {
 	try {
@@ -114,25 +222,7 @@ function reply(res, code, body) {
 }
 
 function unauthorized(req) {
-	return TOKEN && req.headers['x-sync-token'] !== TOKEN;
-}
-
-/** List the members of a tar.gz file (`tar -tzf`); null on any failure. */
-function listTarEntries(file, cb) {
-	const tar = spawn('tar', ['-tzf', file], { stdio: ['ignore', 'pipe', 'ignore'] });
-	let out = '';
-	let overflow = false;
-	tar.stdout.on('data', (d) => {
-		out += String(d);
-		if (out.length > 8 * 1024 * 1024) {
-			overflow = true;
-			tar.kill();
-		}
-	});
-	tar.on('error', () => cb(null));
-	tar.on('close', (code) =>
-		cb(code === 0 && !overflow ? out.split('\n').map((l) => l.trim()).filter(Boolean) : null)
-	);
+	return !acceptedSyncToken(readHeader(req, 'x-sync-token'));
 }
 
 /**
@@ -154,19 +244,72 @@ function detectAddedRouteFiles(entries) {
 	return added;
 }
 
-/** Sanitize `?paths=` into safe relative paths (no absolute, no `..` escape). */
+/** Require `?paths=` to declare the complete catalog-owned replacement set. */
 function parsePaths(rawUrl) {
 	const url = new URL(rawUrl || '/', 'http://localhost');
-	return (url.searchParams.get('paths') ?? 'src')
-		.split(',')
-		.map((p) => p.trim())
-		.filter((p) => p && !p.startsWith('/') && !p.split('/').includes('..'));
+	const raw = url.searchParams.get('paths');
+	if (raw === null) return [...ALLOWED_ROOTS];
+	return parseDeclaredSyncRoots(
+		JSON.stringify(raw.split(',').map((entry) => entry.trim())),
+		ALLOWED_ROOTS
+	);
 }
 
 // ----- POST /__sync : untar an uploaded tar.gz into the shared workdir -----
 function handleSync(req, res) {
 	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
+	if (ALLOWED_ROOTS_ERROR) {
+		req.resume();
+		return reply(res, 503, {
+			ok: false,
+			error: `receiver allowed-root contract invalid: ${ALLOWED_ROOTS_ERROR}`
+		});
+	}
+	const generation = readHeader(req, 'x-sync-generation');
+	if (!GENERATION_PATTERN.test(generation)) {
+		req.resume();
+		return reply(res, 400, {
+			ok: false,
+			error: 'valid x-sync-generation required'
+		});
+	}
+	const syncService = readHeader(req, 'x-sync-service') || CONFIGURED_SERVICE;
+	if (!SERVICE_PATTERN.test(syncService)) {
+		req.resume();
+		return reply(res, 400, {
+			ok: false,
+			error: 'valid x-sync-service required'
+		});
+	}
+	if (CONFIGURED_SERVICE && syncService !== CONFIGURED_SERVICE) {
+		req.resume();
+		return reply(res, 409, {
+			ok: false,
+			error: `x-sync-service ${syncService} does not match ${CONFIGURED_SERVICE}`
+		});
+	}
+	let declaredRoots;
+	try {
+		declaredRoots = parseDeclaredSyncRoots(readHeader(req, 'x-sync-roots'), ALLOWED_ROOTS);
+	} catch (error) {
+		req.resume();
+		return reply(res, 400, { ok: false, error: error.message });
+	}
+	if (!beginSourceOperation('sync')) {
+		req.resume();
+		return reply(res, 409, {
+			ok: false,
+			error: `source ${sourceOperation} in progress`
+		});
+	}
+	let bodyComplete = false;
+	let released = false;
+	const release = () => {
+		if (released) return;
+		released = true;
+		endSourceOperation('sync');
+	};
 
 	// Buffer the whole body first (do NOT pipe straight into tar.stdin — a tar
 	// that dies on a partial gzip raises an unhandled EPIPE; swallow request
@@ -177,9 +320,11 @@ function handleSync(req, res) {
 	let aborted = false;
 	req.on('error', () => {
 		aborted = true;
+		if (!bodyComplete) release();
 	});
 	req.on('aborted', () => {
 		aborted = true;
+		if (!bodyComplete) release();
 	});
 	req.on('data', (c) => {
 		total += c.length;
@@ -191,15 +336,23 @@ function handleSync(req, res) {
 		chunks.push(c);
 	});
 	req.on('end', () => {
-		if (aborted) return reply(res, 400, { ok: false, error: 'aborted or too large' });
-		const tmp = path.join(os.tmpdir(), `dev-sync-${process.pid}-${total}.tgz`);
+		bodyComplete = true;
+		if (aborted) {
+			release();
+			return reply(res, 400, { ok: false, error: 'aborted or too large' });
+		}
+		const tmp = path.join(os.tmpdir(), `dev-sync-${process.pid}-${randomUUID()}.tgz`);
 		let buf;
 		try {
 			buf = Buffer.concat(chunks);
 			fs.writeFileSync(tmp, buf);
 			fs.mkdirSync(DEST, { recursive: true });
 		} catch (e) {
-			return reply(res, 500, { ok: false, error: `buffer/write: ${e.message}` });
+			release();
+			return reply(res, 500, {
+				ok: false,
+				error: `buffer/write: ${e.message}`
+			});
 		}
 		const cleanup = () => {
 			try {
@@ -208,63 +361,100 @@ function handleSync(req, res) {
 				/* ignore */
 			}
 		};
-		// #41: list the archive BEFORE extracting to learn which src/routes/
-		// files are new (afterwards everything exists). A listing failure only
-		// disables the restart signal — the sync itself proceeds regardless.
-		listTarEntries(tmp, (entries) => {
-			const addedRoutes = entries ? detectAddedRouteFiles(entries) : [];
-			// busybox tar (alpine): `-o` = don't restore user:group; busybox strips a
-			// leading '/' itself. The producer archives relative paths.
-			const tar = spawn('tar', ['-xzf', tmp, '-C', DEST, '-o'], {
-				stdio: ['ignore', 'ignore', 'pipe']
+		const contentSha256 = `sha256:${createHash('sha256').update(buf).digest('hex')}`;
+		if (currentGeneration === generation) {
+			cleanup();
+			release();
+			if (currentContentSha256 === contentSha256) {
+				return reply(res, 200, {
+					ok: true,
+					idempotent: true,
+					bytes: buf.length,
+					generation,
+					service: syncService,
+					contentSha256
+				});
+			}
+			return reply(res, 409, {
+				ok: false,
+				error: 'sync generation already committed with different content'
 			});
-			let errout = '';
-			tar.stderr.on('data', (d) => (errout += String(d)));
-			tar.on('error', (e) => {
+		}
+
+		const syncedAt = new Date().toISOString();
+		const nextState = {
+			generation,
+			service: syncService,
+			lastSyncAt: syncedAt,
+			lastSyncBytes: buf.length,
+			contentSha256
+		};
+		let addedRoutes = [];
+		void applyAtomicDevSync({
+			root: DEST,
+			archivePath: tmp,
+			declaredRoots,
+			nextState,
+			stateFile: SYNC_STATE_FILE,
+			persistState: persistSyncState,
+			beforeCommit: (entries) => {
+				addedRoutes = detectAddedRouteFiles(entries);
+			}
+		})
+			.then(() => {
 				cleanup();
-				reply(res, 500, { ok: false, error: `tar spawn: ${e.message}` });
-			});
-			tar.on('close', (code) => {
-				cleanup();
-				if (code === 0) {
-					lastSyncAt = new Date().toISOString();
-					lastSyncBytes = buf.length;
-					let restartSignaled = false;
-					if (addedRoutes.length) {
-						// The dev server must fully restart to register brand-new route
-						// files; we can't restart it from this container (killing the app
-						// pod's PID 1 wedges vcluster-synced pods), so drop the signal
-						// file the Vite plugin polls (consume-then-restart, loop-safe).
-						try {
-							fs.writeFileSync(
-								path.join(DEST, RESTART_SIGNAL_FILE),
-								JSON.stringify({
-									requestedAt: new Date().toISOString(),
-									addedRoutes: addedRoutes.slice(0, 50)
-								})
-							);
-							restartSignaled = true;
-							console.log(
-								`[dev-sync-sidecar] sync added ${addedRoutes.length} route file(s) — wrote ${RESTART_SIGNAL_FILE} (dev-server restart requested)`
-							);
-						} catch (e) {
-							console.warn(`[dev-sync-sidecar] restart signal write failed: ${e.message}`);
-						}
+				currentGeneration = generation;
+				currentSyncService = syncService;
+				lastSyncAt = syncedAt;
+				lastSyncBytes = buf.length;
+				currentContentSha256 = contentSha256;
+				let restartSignaled = false;
+				if (addedRoutes.length) {
+					try {
+						fs.writeFileSync(
+							path.join(DEST, RESTART_SIGNAL_FILE),
+							JSON.stringify({
+								requestedAt: new Date().toISOString(),
+								addedRoutes: addedRoutes.slice(0, 50)
+							})
+						);
+						restartSignaled = true;
+					} catch (error) {
+						console.warn(`[dev-sync-sidecar] restart signal write failed: ${error.message}`);
 					}
-					console.log(`[dev-sync-sidecar] applied sync (${buf.length}B) → ${DEST}`);
-					reply(res, 200, {
-						ok: true,
-						bytes: buf.length,
-						dest: DEST,
-						...(addedRoutes.length
-							? { routesAdded: addedRoutes.slice(0, 50), restartSignaled }
-							: {})
-					});
-				} else {
-					reply(res, 500, { ok: false, error: errout.slice(0, 500) || `tar exit ${code}` });
 				}
+				console.log(
+					`[dev-sync-sidecar] atomically applied ${declaredRoots.join(',')} (${buf.length}B) -> ${DEST}`
+				);
+				release();
+				reply(res, 200, {
+					ok: true,
+					bytes: buf.length,
+					dest: DEST,
+					generation,
+					service: syncService,
+					contentSha256,
+					...(addedRoutes.length ? { routesAdded: addedRoutes.slice(0, 50), restartSignaled } : {})
+				});
+			})
+			.catch((error) => {
+				cleanup();
+				const restored = loadSyncState();
+				currentGeneration = restored.generation;
+				currentSyncService = restored.service || CONFIGURED_SERVICE || null;
+				lastSyncAt = restored.lastSyncAt;
+				lastSyncBytes = restored.lastSyncBytes;
+				currentContentSha256 = restored.contentSha256;
+				release();
+				reply(
+					res,
+					error instanceof DevSyncTransactionError && error.phase === 'commit' ? 500 : 400,
+					{
+						ok: false,
+						error: error instanceof Error ? error.message : String(error)
+					}
+				);
 			});
-		});
 	});
 }
 
@@ -278,33 +468,88 @@ function handleSync(req, res) {
 function handleExport(req, res) {
 	if (req.method !== 'GET') return reply(res, 405, { ok: false, error: 'GET only' });
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
-	const requested = parsePaths(req.url);
-	if (requested.length === 0) return reply(res, 400, { ok: false, error: 'no valid paths' });
+	if (ALLOWED_ROOTS_ERROR) {
+		return reply(res, 503, {
+			ok: false,
+			error: `receiver allowed-root contract invalid: ${ALLOWED_ROOTS_ERROR}`
+		});
+	}
+	let requested;
+	try {
+		requested = parsePaths(req.url);
+	} catch (error) {
+		return reply(res, 400, { ok: false, error: error.message });
+	}
 	const paths = requested.filter((p) => fs.existsSync(path.join(DEST, p)));
 	if (paths.length === 0) return reply(res, 400, { ok: false, error: 'no existing paths' });
-	res.statusCode = 200;
-	res.setHeader('content-type', 'application/gzip');
-	// `-czf -` to stdout; relative paths under DEST (busybox + GNU compatible).
-	const tar = spawn('tar', ['-czf', '-', '-C', DEST, ...paths], {
-		stdio: ['ignore', 'pipe', 'pipe']
+	if (!beginSourceOperation('export')) {
+		return reply(res, 409, {
+			ok: false,
+			error: `source ${sourceOperation} in progress`
+		});
+	}
+	let released = false;
+	const release = () => {
+		if (released) return;
+		released = true;
+		endSourceOperation('export');
+	};
+	const tmp = path.join(os.tmpdir(), `dev-export-${process.pid}-${randomUUID()}.tgz`);
+	// Materialize first: response metadata must digest the exact gzip bytes sent.
+	const tar = spawn('tar', ['-czf', tmp, '-C', DEST, ...paths], {
+		stdio: ['ignore', 'ignore', 'pipe']
 	});
+	let spawnFailed = false;
 	let errout = '';
 	tar.stderr.on('data', (d) => (errout += String(d)));
-	tar.stdout.pipe(res);
 	tar.on('error', () => {
+		spawnFailed = true;
+		release();
 		try {
-			res.destroy();
+			fs.rmSync(tmp, { force: true });
 		} catch {
-			/* socket gone */
+			/* ignore */
 		}
+		reply(res, 500, { ok: false, error: 'export tar spawn failed' });
 	});
 	tar.on('close', (code) => {
-		if (code === 0) {
-			console.log(`[dev-sync-sidecar] exported ${paths.join(',')} (tar.gz)`);
-		} else {
+		if (spawnFailed) return;
+		release();
+		if (code !== 0) {
+			try {
+				fs.rmSync(tmp, { force: true });
+			} catch {
+				/* ignore */
+			}
 			console.warn(`[dev-sync-sidecar] export tar exit ${code}: ${errout.slice(0, 200)}`);
+			return reply(res, 500, {
+				ok: false,
+				error: errout.slice(0, 500) || `tar exit ${code}`
+			});
 		}
-		// stdout pipe already ended `res`; nothing else to do.
+		try {
+			const bytes = fs.readFileSync(tmp);
+			const contentSha256 = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+			lastExportSha256 = contentSha256;
+			res.statusCode = 200;
+			res.setHeader('content-type', 'application/gzip');
+			res.setHeader('x-content-sha256', contentSha256);
+			res.setHeader('x-sync-roots', JSON.stringify(ALLOWED_ROOTS));
+			if (currentGeneration) res.setHeader('x-sync-generation', currentGeneration);
+			if (currentSyncService) res.setHeader('x-sync-service', currentSyncService);
+			res.end(bytes);
+			console.log(
+				`[dev-sync-sidecar] exported ${paths.join(',')} (${bytes.length}B ${contentSha256})`
+			);
+		} catch (e) {
+			reply(res, 500, { ok: false, error: `export read: ${e.message}` });
+		} finally {
+			try {
+				fs.rmSync(tmp, { force: true });
+			} catch {
+				/* ignore */
+			}
+		}
 	});
 	req.on('aborted', () => {
 		try {
@@ -325,6 +570,12 @@ function handleStatus(req, res) {
 		dest: DEST,
 		lastSyncAt,
 		lastSyncBytes,
+		contentSha256: currentContentSha256,
+		allowedRoots: ALLOWED_ROOTS,
+		allowedRootsError: ALLOWED_ROOTS_ERROR,
+		generation: currentGeneration,
+		syncService: currentSyncService,
+		lastExportSha256,
 		lastRun,
 		commands: Object.keys(COMMANDS).sort()
 	});
@@ -359,6 +610,18 @@ function handleRun(req, res) {
 			allowed: Object.keys(COMMANDS).sort()
 		});
 	}
+	if (!beginSourceOperation('run')) {
+		return reply(res, 409, {
+			ok: false,
+			error: `source ${sourceOperation} in progress`
+		});
+	}
+	let released = false;
+	const release = () => {
+		if (released) return;
+		released = true;
+		endSourceOperation('run');
+	};
 
 	tryBridgeRun(name, (bridge) => {
 		if (bridge.ran) {
@@ -373,11 +636,13 @@ function handleRun(req, res) {
 				executedIn: 'app'
 			};
 			console.log(`[dev-sync-sidecar] run "${name}" via app exec bridge exit=${exitCode}`);
+			release();
 			return reply(res, 200, { ...body, cmd: name, executedIn: 'app' });
 		}
 		if (bridge.fatal) {
 			// The bridge MAY have run the command (response broke after it was
 			// accepted) — do not double-execute; report the broken bridge.
+			release();
 			return reply(res, 200, {
 				ok: false,
 				cmd: name,
@@ -386,7 +651,7 @@ function handleRun(req, res) {
 				executedIn: 'app'
 			});
 		}
-		runLocal(name, command, res, bridge.reason);
+		runLocal(name, command, res, bridge.reason, release);
 	});
 }
 
@@ -424,18 +689,28 @@ function tryBridgeRun(name, cb) {
 				settle(
 					pres.statusCode === 200
 						? { ran: false, fatal: true, reason: 'response stream error' }
-						: { ran: false, reason: `bridge HTTP ${pres.statusCode} (broken body)` }
+						: {
+								ran: false,
+								reason: `bridge HTTP ${pres.statusCode} (broken body)`
+							}
 				);
 			});
 			pres.on('end', () => {
 				if (pres.statusCode !== 200) {
 					// 401/404/405/500 → the bridge REFUSED before running anything.
-					return settle({ ran: false, reason: `bridge HTTP ${pres.statusCode}` });
+					return settle({
+						ran: false,
+						reason: `bridge HTTP ${pres.statusCode}`
+					});
 				}
 				try {
 					settle({ ran: true, body: JSON.parse(body), startedAt });
 				} catch {
-					settle({ ran: false, fatal: true, reason: 'malformed bridge response' });
+					settle({
+						ran: false,
+						fatal: true,
+						reason: 'malformed bridge response'
+					});
 				}
 			});
 		}
@@ -451,7 +726,10 @@ function tryBridgeRun(name, cb) {
 	preq.on('error', (e) => {
 		clearTimeout(connectTimer);
 		// ECONNREFUSED/EHOSTUNREACH before a response → the command never ran.
-		settle({ ran: false, reason: `bridge unreachable (${e.code || e.message})` });
+		settle({
+			ran: false,
+			reason: `bridge unreachable (${e.code || e.message})`
+		});
 	});
 	preq.end();
 }
@@ -459,14 +737,22 @@ function tryBridgeRun(name, cb) {
 // Local execution in THIS (node-only) container — the pre-bridge behavior,
 // kept for images that predate the exec bridge. `bridgeNote` says why the
 // bridge was skipped so callers can tell a fallback from the intended path.
-function runLocal(name, command, res, bridgeNote) {
+function runLocal(name, command, res, bridgeNote, release) {
 	const startedAt = new Date().toISOString();
 	const t0 = Date.now();
 	let child;
 	try {
-		child = spawn('sh', ['-c', command], { cwd: DEST, stdio: ['ignore', 'pipe', 'pipe'] });
+		child = spawn('sh', ['-c', command], {
+			cwd: DEST,
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
 	} catch (e) {
-		return reply(res, 500, { ok: false, cmd: name, error: `spawn: ${e.message}` });
+		release();
+		return reply(res, 500, {
+			ok: false,
+			cmd: name,
+			error: `spawn: ${e.message}`
+		});
 	}
 	let output = '';
 	let truncated = false;
@@ -507,6 +793,7 @@ function runLocal(name, command, res, bridgeNote) {
 			`[dev-sync-sidecar] run "${name}" exit=${exitCode} (${durationMs}ms) executedIn=sidecar` +
 				(bridgeNote ? ` (${bridgeNote})` : '')
 		);
+		release();
 		reply(res, 200, {
 			ok: exitCode === 0,
 			cmd: name,
@@ -528,7 +815,11 @@ function runLocal(name, command, res, bridgeNote) {
 const server = http.createServer((req, res) => {
 	const url = (req.url || '').split('?')[0];
 	if (req.method === 'GET' && (url === '/healthz' || url === '/')) {
-		return reply(res, 200, { ok: true, service: 'dev-sync-sidecar', dest: DEST });
+		return reply(res, 200, {
+			ok: true,
+			service: 'dev-sync-sidecar',
+			dest: DEST
+		});
 	}
 	switch (url) {
 		case '/__sync':

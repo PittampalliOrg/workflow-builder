@@ -71,6 +71,10 @@ def test_benchmark_fast_worker_job_is_kueue_managed() -> None:
     assert "runtimeClassName" not in pod_spec
     assert container["image"] == "ghcr.io/pittampalliorg/sandbox-execution-api:latest"
     assert container["command"] == ["python", "-m", "src.worker"]
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
     assert container["resources"]["requests"]["ephemeral-storage"] == "1Gi"
     assert container["env"][0] == {
         "name": "EXECUTION_REQUEST_PATH",
@@ -234,9 +238,17 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
     assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
     assert pod_spec["initContainers"][0]["imagePullPolicy"] == "IfNotPresent"
+    assert pod_spec["initContainers"][0]["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
     container = pod_spec["containers"][0]
     assert container["image"] == "ghcr.io/example/dapr-agent-py-sandbox:git-1"
     assert container["imagePullPolicy"] == "IfNotPresent"
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
@@ -710,10 +722,9 @@ def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
     monkeypatch.setattr(
         app_module,
         "_wait_for_agent_host_ready",
-        lambda _core, *, namespace, agent_app_id, **_kwargs: readiness_checks.append(
-            (namespace, agent_app_id)
-        )
-        or "ready",
+        lambda _core, *, namespace, agent_app_id, **_kwargs: (
+            readiness_checks.append((namespace, agent_app_id)) or "ready"
+        ),
     )
 
     response = app_module.submit_agent_workflow_host(
@@ -1127,7 +1138,8 @@ def test_execution_classes_file_wins_over_env(tmp_path, monkeypatch) -> None:
     path.write_text(json.dumps({"benchmark-fast": {"cpu": "111m"}}))
     monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
     monkeypatch.setenv(
-        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "222m"}})
+        "SANDBOX_EXECUTION_CLASSES_JSON",
+        json.dumps({"benchmark-fast": {"cpu": "222m"}}),
     )
     classes = app_module._load_execution_classes()
     assert classes["benchmark-fast"].cpu == "111m"  # file wins over env
@@ -1139,16 +1151,20 @@ def test_execution_classes_bad_file_falls_back_to_env(tmp_path, monkeypatch) -> 
     path.write_text("{ this is not json")
     monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
     monkeypatch.setenv(
-        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "333m"}})
+        "SANDBOX_EXECUTION_CLASSES_JSON",
+        json.dumps({"benchmark-fast": {"cpu": "333m"}}),
     )
     classes = app_module._load_execution_classes()
     assert classes["benchmark-fast"].cpu == "333m"  # invalid file → env fallback
 
 
-def test_execution_classes_missing_file_falls_back_to_env(tmp_path, monkeypatch) -> None:
+def test_execution_classes_missing_file_falls_back_to_env(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(tmp_path / "absent.json"))
     monkeypatch.setenv(
-        "SANDBOX_EXECUTION_CLASSES_JSON", json.dumps({"benchmark-fast": {"cpu": "444m"}})
+        "SANDBOX_EXECUTION_CLASSES_JSON",
+        json.dumps({"benchmark-fast": {"cpu": "444m"}}),
     )
     assert app_module._load_execution_classes()["benchmark-fast"].cpu == "444m"
 
@@ -1162,7 +1178,9 @@ def test_execution_classes_no_sources_returns_defaults(monkeypatch) -> None:
 
 def test_execution_classes_file_merges_over_defaults(tmp_path, monkeypatch) -> None:
     path = tmp_path / "classes.json"
-    path.write_text(json.dumps({"dev-preview": {"localQueue": "", "serviceImage": "img:v9"}}))
+    path.write_text(
+        json.dumps({"dev-preview": {"localQueue": "", "serviceImage": "img:v9"}})
+    )
     monkeypatch.setenv("SANDBOX_EXECUTION_CLASSES_FILE", str(path))
     monkeypatch.delenv("SANDBOX_EXECUTION_CLASSES_JSON", raising=False)
     classes = app_module._load_execution_classes()

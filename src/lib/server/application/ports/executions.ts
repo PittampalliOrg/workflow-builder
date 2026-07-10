@@ -521,6 +521,8 @@ export interface ArtifactStore {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		/** Atomic compare-and-set: update only while this top-level key is absent. */
+		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null>;
 }
 

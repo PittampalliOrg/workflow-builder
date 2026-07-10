@@ -16,6 +16,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import { genericWorkflowArtifactReservation } from "$lib/server/application/workflow-artifact-ingress";
 import { requireInternal } from "$lib/server/internal-auth";
 
 type IncomingArtifact = {
@@ -48,7 +49,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 
 	if (!body.id || typeof body.id !== "string") {
-		return error(400, "id is required (deterministic — supplied by orchestrator)");
+		return error(
+			400,
+			"id is required (deterministic — supplied by orchestrator)",
+		);
 	}
 	if (!body.kind || typeof body.kind !== "string") {
 		return error(400, "kind is required");
@@ -61,6 +65,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 	if (body.inlinePayload === undefined && !body.fileId) {
 		return error(400, "either inlinePayload or fileId must be set");
+	}
+	const reserved = genericWorkflowArtifactReservation({
+		kind: body.kind,
+		inlinePayload: body.inlinePayload,
+		metadata: body.metadata,
+	});
+	if (reserved) {
+		return error(
+			400,
+			`generic artifact ingress cannot write reserved preview acceptance data (${reserved})`,
+		);
 	}
 
 	try {
@@ -81,9 +96,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			metadata: body.metadata ?? null,
 		});
 	} catch (err) {
-		const message = err instanceof Error ? err.message : "artifact write failed";
+		const message =
+			err instanceof Error ? err.message : "artifact write failed";
 		if (message === "Database not configured") return error(503, message);
-		if (message.includes(`execution ${executionId} not found`)) return error(404, message);
+		if (message.includes(`execution ${executionId} not found`))
+			return error(404, message);
 		throw err;
 	}
 

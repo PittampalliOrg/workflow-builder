@@ -1,20 +1,10 @@
 import type {
-	DevPreviewInfo,
-	DevPreviewsResult,
-	ProvisionDevPreviewParams,
-	ProvisionDevPreviewsParams,
-	TeardownDevPreviewParams,
-	TeardownDevPreviewResult,
-} from "$lib/server/workflows/dev-preview";
-import type {
 	BenchmarkInstanceRow,
 	RepoFacet,
 	RunnableAgent,
 	SuiteFacet,
 } from "$lib/types/benchmark-instance";
-import type {
-	EvaluationDatasetRowRecord,
-} from "./evaluations";
+import type { EvaluationDatasetRowRecord } from "./evaluations";
 
 export type StartBenchmarkInstanceWorkflowInput = {
 	runId: string;
@@ -452,7 +442,9 @@ export interface BenchmarkEvaluationResultRepository {
 		evaluatedAt: Date;
 	}): Promise<void>;
 	countActiveEvaluationRows(runId: string): Promise<number>;
-	getRunForResponse(runId: string): Promise<BenchmarkEvaluationRunRecord | null>;
+	getRunForResponse(
+		runId: string,
+	): Promise<BenchmarkEvaluationRunRecord | null>;
 }
 
 export interface BenchmarkRunLifecyclePort {
@@ -628,10 +620,3 @@ export type SessionControlSettingsEnvironment = {
 	version: number;
 	config: Record<string, unknown>;
 };
-
-export interface PreviewEnvironmentProvisioner {
-	provision(input: ProvisionDevPreviewParams): Promise<DevPreviewInfo>;
-	/** Fan-out provision of N services into one execution (multi-service adopt). */
-	provisionMany(input: ProvisionDevPreviewsParams): Promise<DevPreviewsResult>;
-	teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult>;
-}

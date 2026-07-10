@@ -32,7 +32,6 @@ export interface GanTimeouts {
 
 export interface GanPromoteConfig {
 	repoUrl: string;
-	branchPrefix: string;
 	/** output modes exposed on the trigger enum. */
 	modes: string[];
 }
@@ -99,7 +98,6 @@ export const PREVIEW_GAN_UI_FEATURE_CONFIG: GanFixtureConfig = {
 	},
 	promote: {
 		repoUrl: "PittampalliOrg/workflow-builder",
-		branchPrefix: "gan-ui-feature",
 		modes: ["pr", "preview-only"],
 	},
 };

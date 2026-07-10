@@ -659,6 +659,27 @@
       "when": 1783710000000,
       "tag": "0099_agent_teams_lazy_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1783800000000,
+      "tag": "0100_pr_preview_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1783886400000,
+      "tag": "0101_preview_control_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1783972800000,
+      "tag": "0102_preview_accepted_image_receipts",
+      "breakpoints": true
     }
   ]
 }

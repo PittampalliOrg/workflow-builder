@@ -12,6 +12,10 @@ describe("internal workflow execution dev-preview route", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("workflowData.resolveCanonicalExecutionId");
+		expect(source).toContain("workflowData.getExecutionById");
+		expect(source).toContain("workflowData.isPlatformAdmin");
+		expect(source).toContain("requirePreviewActionInternal(request)");
+		expect(source).not.toContain("requireInternal(request)");
 		expect(source).toContain("previewEnvironmentProvisioner.provision");
 		expect(source).toContain("previewEnvironmentProvisioner.teardown");
 		expect(source).not.toContain("$lib/server/workflows/dev-preview");

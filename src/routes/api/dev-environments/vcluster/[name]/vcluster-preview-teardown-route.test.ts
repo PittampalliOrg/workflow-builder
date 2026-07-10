@@ -16,10 +16,10 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 		expect(teardownAt).toBeGreaterThan(archiveAt);
 	});
 
-	it("is flag-gated and archive failures cannot block teardown", () => {
+	it("treats mutable-live archive as a teardown precondition", () => {
 		expect(source).toContain("previewArchiveOnTeardownEnabled");
-		// The archive call is wrapped: a throw degrades to archived:false.
-		expect(source).toContain("archived: false");
+		expect(source).toContain("archiveRequired");
+		expect(source).toContain("teardown refused");
 		expect(source.indexOf("catch")).toBeLessThan(
 			source.indexOf("vclusterPreviews.teardown"),
 		);
@@ -27,6 +27,7 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 
 	it("stays session-gated and adapter-free", () => {
 		expect(source).toContain("locals.session?.userId");
+		expect(source).toContain("previewAccess.authorize");
 		expect(source).not.toContain("$lib/server/application/adapters");
 		expect(source).not.toContain("$lib/server/db");
 	});

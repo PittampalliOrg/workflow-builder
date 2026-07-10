@@ -1,6 +1,6 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { requireInternal } from "$lib/server/internal-auth";
+import { requirePreviewActionInternal } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 
 /**
@@ -8,9 +8,9 @@ import { getApplicationAdapters } from "$lib/server/application";
  *
  * Provision (or adopt) a per-run ephemeral `vite dev` Sandbox for this workflow
  * execution and return its in-cluster address. Called by the orchestrator
- * `dev/preview` (ensure) activity. Internal-token auth.
+ * `dev/preview` (ensure) activity. Dedicated preview-action-token auth.
  *
- * Body (all optional): { syncToken?, timeoutSeconds?, waitReadySeconds?, image?, executionClass? }
+ * The sync credential is always server-owned; callers cannot project one.
  * Returns: { sandboxName, podIP, port, url, ready, status }
  *
  * DELETE /api/internal/workflows/executions/[executionId]/dev-preview
@@ -18,24 +18,36 @@ import { getApplicationAdapters } from "$lib/server/application";
  */
 
 export const POST: RequestHandler = async ({ params, request }) => {
-	requireInternal(request);
+	requirePreviewActionInternal(request);
 	const rawId = params.executionId;
 	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
 	const app = getApplicationAdapters();
 	const workflowData = app.workflowData;
 	// The orchestrator passes its dapr instance id; map to workflow_executions.id
 	// so the persisted dev-preview row's FK holds + the Dev hub can find it.
-	const executionId =
-		await workflowData.resolveCanonicalExecutionId({
-			executionId: rawId,
-		});
+	const executionId = await workflowData.resolveCanonicalExecutionId({
+		executionId: rawId,
+	});
+	const execution = await workflowData.getExecutionById(executionId);
+	if (!execution)
+		return json({ error: "execution not found" }, { status: 404 });
+	if (!(await workflowData.isPlatformAdmin(execution.userId))) {
+		return json(
+			{
+				error: "platform admin approval is required for live code previews",
+			},
+			{ status: 403 },
+		);
+	}
 	const body = (await request.json().catch(() => ({}))) as Record<
 		string,
 		unknown
 	>;
+	if (Object.prototype.hasOwnProperty.call(body, "syncToken")) {
+		return json({ error: "syncToken is server-owned" }, { status: 400 });
+	}
 	// Shared knobs common to single- and multi-service provision.
 	const shared = {
-		syncToken: typeof body.syncToken === "string" ? body.syncToken : null,
 		timeoutSeconds:
 			typeof body.timeoutSeconds === "number" ? body.timeoutSeconds : null,
 		waitReadySeconds:
@@ -83,15 +95,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 };
 
 export const DELETE: RequestHandler = async ({ params, request, url }) => {
-	requireInternal(request);
+	requirePreviewActionInternal(request);
 	const rawId = params.executionId;
 	if (!rawId) return json({ error: "executionId required" }, { status: 400 });
 	const app = getApplicationAdapters();
 	const workflowData = app.workflowData;
-	const executionId =
-		await workflowData.resolveCanonicalExecutionId({
-			executionId: rawId,
-		});
+	const executionId = await workflowData.resolveCanonicalExecutionId({
+		executionId: rawId,
+	});
 	const sandboxName = url.searchParams.get("sandboxName");
 	const result = await app.previewEnvironmentProvisioner.teardown({
 		executionId,
