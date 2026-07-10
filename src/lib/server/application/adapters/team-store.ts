@@ -283,6 +283,33 @@ export class PostgresTeamStore implements TeamStore {
 		return r;
 	}
 
+	/**
+	 * Member sessions holding unraised team-origin messages older than the
+	 * threshold — the delivery sweeper's re-publish set. The one lost delivery we
+	 * observed on dev was acked by the pubsub hop with zero redelivery, so the
+	 * tick re-publishes a trigger for any stranded mailbox; the atomic claim in
+	 * team-delivery makes duplicate triggers harmless.
+	 */
+	async listSessionsWithStrandedTeamMessages(input: {
+		olderThanSeconds: number;
+	}): Promise<Array<{ session_id: string; stranded: number }>> {
+		const r = (await this.db.execute(sql`
+			SELECT e.session_id, count(*)::int AS stranded
+			FROM session_events e
+			JOIN team_members m ON m.session_id = e.session_id
+			JOIN sessions s ON s.id = e.session_id
+			WHERE e.type = 'user.message'
+			  AND e.processed_at IS NULL
+			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+			  AND e.created_at < now() - make_interval(secs => ${input.olderThanSeconds})
+			  AND m.role <> 'lead'
+			  AND s.dapr_instance_id IS NOT NULL
+			  AND s.status NOT IN ('terminated', 'completed', 'failed', 'canceled', 'cancelled', 'error', 'crashed')
+			GROUP BY e.session_id
+		`)) as Array<{ session_id: string; stranded: number }>;
+		return r;
+	}
+
 	// ── team-run container execution rollup ─────────────────────────────────
 
 	async getTeamExecutionId(teamId: string): Promise<string | null> {
