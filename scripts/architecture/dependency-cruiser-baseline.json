@@ -1,172 +1,13 @@
 {
   "schemaVersion": 1,
-  "generatedFromCommit": "200ea38fde6c7e511d3cc8a76abd0daafe816923",
+  "generatedFromCommit": "f8e49c71f0cd027f74e75c55305e51a567bd5d72",
   "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
   "counts": {
-    "error": 13,
-    "warn": 197,
+    "error": 0,
+    "warn": 196,
     "info": 0
   },
   "violations": [
-    {
-      "severity": "error",
-      "rule": "adapters-importers-ratchet",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-messaging.ts",
-      "to": "src/lib/server/application/adapters/session-events.ts",
-      "unresolvedTo": "$lib/server/application/adapters/session-events",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-driver.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-repo.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/index.cjs",
-      "unresolvedTo": "drizzle-orm",
-      "dependencyTypes": [
-        "import",
-        "npm"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-repo.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/index.js",
-      "unresolvedTo": "drizzle-orm/postgres-js",
-      "dependencyTypes": [
-        "import",
-        "npm",
-        "type-only"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-repo.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-run.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/index.cjs",
-      "unresolvedTo": "drizzle-orm",
-      "dependencyTypes": [
-        "import",
-        "npm"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-run.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/index.js",
-      "unresolvedTo": "drizzle-orm/postgres-js",
-      "dependencyTypes": [
-        "import",
-        "npm",
-        "type-only"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-run.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-tasks.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/index.cjs",
-      "unresolvedTo": "drizzle-orm",
-      "dependencyTypes": [
-        "import",
-        "npm"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/lib/server/teams/team-tasks.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/index.js",
-      "unresolvedTo": "drizzle-orm/postgres-js",
-      "dependencyTypes": [
-        "import",
-        "npm",
-        "type-only"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/claim/+server.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
-      "to": "node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/index.cjs",
-      "unresolvedTo": "drizzle-orm",
-      "dependencyTypes": [
-        "import",
-        "npm"
-      ]
-    },
-    {
-      "severity": "error",
-      "rule": "db-only-in-adapters",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
     {
       "severity": "warn",
       "rule": "application-core-pure",
@@ -1444,18 +1285,6 @@
       "rule": "routes-through-application",
       "type": "dependency",
       "from": "src/routes/api/internal/team/[teamId]/claim/+server.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/claim/+server.ts",
       "to": "src/lib/server/teams/team-tasks.ts",
       "unresolvedTo": "$lib/server/teams/team-tasks",
       "dependencyTypes": [
@@ -1516,18 +1345,6 @@
       "rule": "routes-through-application",
       "type": "dependency",
       "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
-      "to": "src/lib/server/db/index.ts",
-      "unresolvedTo": "$lib/server/db",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/internal/team/[teamId]/spawn/+server.ts",
       "to": "src/lib/server/teams/team-repo.ts",
       "unresolvedTo": "$lib/server/teams/team-repo",
       "dependencyTypes": [
@@ -1566,6 +1383,18 @@
       "from": "src/routes/api/internal/team/broadcast-deliver/+server.ts",
       "to": "src/lib/server/teams/team-repo.ts",
       "unresolvedTo": "$lib/server/teams/team-repo",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/internal/team/message-deliver/+server.ts",
+      "to": "src/lib/server/teams/team-delivery.ts",
+      "unresolvedTo": "$lib/server/teams/team-delivery",
       "dependencyTypes": [
         "import",
         "undetermined"
