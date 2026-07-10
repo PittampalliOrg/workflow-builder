@@ -87,6 +87,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		prompt: body.prompt,
 		parentSessionId: body.leadSessionId,
 		title: `teammate:${body.name}`,
+		// Teammates do real file/command work — give each its own OpenShell
+		// workspace sandbox (otherwise the runtime's filesystem/bash tools fail
+		// with "OpenShell sandboxName is required").
+		provisionSandbox: true,
 	});
 	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
 

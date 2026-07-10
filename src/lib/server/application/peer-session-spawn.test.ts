@@ -3,6 +3,8 @@ import { ApplicationPeerSessionSpawnService } from "$lib/server/application/peer
 import type {
 	PeerAgentDispatchContext,
 	PeerSessionRecord,
+	SandboxProvisioner,
+	SessionRepository,
 	SessionWorkflowSpawner,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
@@ -15,6 +17,11 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		"ensurePeerSession" | "resolvePeerAgentDispatchContext"
 	>;
 	let workflowSpawner: SessionWorkflowSpawner;
+	let sandboxProvisioner: SandboxProvisioner;
+	let sessions: Pick<
+		SessionRepository,
+		"attachWorkspaceSandbox" | "recordSandboxProvisioningError"
+	>;
 	let service: ApplicationPeerSessionSpawnService;
 
 	beforeEach(() => {
@@ -59,9 +66,22 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				natsSubject: "session.events.ca-session-1",
 			})),
 		};
+		sandboxProvisioner = {
+			provision: vi.fn(async () => ({
+				sandboxName: "ws-peer-1",
+				workspaceRef: "ref-1",
+				rootPath: "/sandbox",
+			})),
+		};
+		sessions = {
+			attachWorkspaceSandbox: vi.fn(async () => {}),
+			recordSandboxProvisioningError: vi.fn(async () => {}),
+		};
 		service = new ApplicationPeerSessionSpawnService({
 			workflowData,
 			workflowSpawner,
+			sandboxProvisioner,
+			sessions,
 		});
 	});
 
@@ -91,7 +111,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		expect(workflowData.ensurePeerSession).not.toHaveBeenCalled();
 	});
 
-	it("ensures and spawns a fresh peer session", async () => {
+	it("ensures and spawns a fresh peer session (no sandbox by default)", async () => {
 		const result = await service.spawnPeerSession(body({ title: "Peer review" }));
 
 		expect(result).toEqual({
@@ -102,6 +122,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				agentVersion: 3,
 				daprInstanceId: "ca-session-1",
 				natsSubject: "session.events.ca-session-1",
+				sandboxName: null,
 				reused: false,
 			},
 		});
@@ -116,6 +137,70 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
 			"ca-session-1",
 		);
+		expect(sandboxProvisioner.provision).not.toHaveBeenCalled();
+	});
+
+	it("provisions + attaches a workspace sandbox BEFORE spawn when opted in", async () => {
+		const callOrder: string[] = [];
+		vi.mocked(sandboxProvisioner.provision).mockImplementationOnce(async () => {
+			callOrder.push("provision");
+			return { sandboxName: "ws-peer-1", workspaceRef: "ref-1", rootPath: "/sandbox" };
+		});
+		vi.mocked(sessions.attachWorkspaceSandbox).mockImplementationOnce(async () => {
+			callOrder.push("attach");
+		});
+		vi.mocked(workflowSpawner.spawnSessionWorkflow).mockImplementationOnce(
+			async () => {
+				callOrder.push("spawn");
+				return {
+					instanceId: "ca-session-1",
+					natsSubject: "session.events.ca-session-1",
+				};
+			},
+		);
+
+		const result = await service.spawnPeerSession(
+			body({ title: "teammate:impl", provisionSandbox: true }),
+		);
+
+		expect(sandboxProvisioner.provision).toHaveBeenCalledWith({
+			executionId: "ca-session-1",
+			name: "teammate:impl",
+			sandboxTemplate: "base",
+			keepAfterRun: true,
+		});
+		expect(sessions.attachWorkspaceSandbox).toHaveBeenCalledWith({
+			sessionId: "ca-session-1",
+			workspaceSandboxName: "ws-peer-1",
+		});
+		// Attach must land before the workflow spawn reads the session row.
+		expect(callOrder).toEqual(["provision", "attach", "spawn"]);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { sandboxName: "ws-peer-1" },
+		});
+	});
+
+	it("degrades (records error, still spawns) when sandbox provisioning fails", async () => {
+		vi.mocked(sandboxProvisioner.provision).mockRejectedValueOnce(
+			new Error("Kueue admission timeout"),
+		);
+
+		const result = await service.spawnPeerSession(
+			body({ provisionSandbox: true }),
+		);
+
+		expect(sessions.recordSandboxProvisioningError).toHaveBeenCalledWith({
+			sessionId: "ca-session-1",
+			errorMessage: "Kueue admission timeout",
+		});
+		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+			"ca-session-1",
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { sandboxName: null, reused: false },
+		});
 	});
 
 	it("returns reused sessions without spawning unless skipSpawn is requested", async () => {
