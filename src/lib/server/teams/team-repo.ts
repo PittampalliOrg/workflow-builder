@@ -121,10 +121,12 @@ export async function listTeamTasks(
 		status: string;
 		assignee_session_id: string | null;
 		depends_on: string[];
+		updated_at: string;
+		completed_at: string | null;
 	}>
 > {
 	const r = await db.execute(sql`
-		SELECT id, title, status, assignee_session_id, depends_on
+		SELECT id, title, status, assignee_session_id, depends_on, updated_at, completed_at
 		FROM team_tasks WHERE team_id = ${teamId} ORDER BY created_at ASC
 	`);
 	return rows(r);
