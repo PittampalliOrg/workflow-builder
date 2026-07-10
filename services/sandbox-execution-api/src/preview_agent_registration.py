@@ -329,12 +329,8 @@ class PreviewAgentRegistrationAdapter:
         self._delete_mapping_external_secret(preview_id, environment_uid)
         if self._get_mapping_external_secret(preview_id) is not None:
             return False
-        self._delete_secret(
-            namespace=ARGO_NAMESPACE,
-            name=mapping_secret_name(preview_id),
-            preview_id=preview_id,
-            environment_uid=environment_uid,
-        )
+        if not self._delete_mapping_secret(preview_id):
+            return False
         self._delete_certificate(preview_id, environment_uid)
         self._delete_secret(
             namespace=CERTIFICATE_NAMESPACE,
@@ -811,6 +807,24 @@ class PreviewAgentRegistrationAdapter:
             if _status(exc) != 404:
                 raise
 
+    def _delete_mapping_secret(self, preview_id: str) -> bool:
+        """Delete by derived name; a later 404 is the absence proof.
+
+        The controller deliberately has no read access to Secrets in the Argo
+        namespace. Admission validates the old object's exact preview ownership
+        tuple before allowing this delete.
+        """
+        try:
+            self.core_api.delete_namespaced_secret(
+                namespace=ARGO_NAMESPACE,
+                name=mapping_secret_name(preview_id),
+            )
+        except ApiException as exc:
+            if _status(exc) == 404:
+                return True
+            raise
+        return False
+
     def _delete_agent_namespace(
         self, preview_id: str, environment_uid: str
     ) -> None:
@@ -836,7 +850,6 @@ class PreviewAgentRegistrationAdapter:
             value is None
             for value in (
                 self._get_mapping_external_secret(preview_id),
-                self._get_secret(ARGO_NAMESPACE, mapping_secret_name(preview_id)),
                 self._get_certificate(preview_id),
                 self._get_secret(
                     CERTIFICATE_NAMESPACE, certificate_secret_name(preview_id)

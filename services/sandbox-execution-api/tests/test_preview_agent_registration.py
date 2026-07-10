@@ -204,6 +204,7 @@ class FakeCoreApi:
         self.calls: list[tuple[Any, ...]] = []
         self.read_secret_error: ApiException | None = None
         self.hold_delete_secret: tuple[str, str] | None = None
+        self.delete_secret_errors: dict[tuple[str, str], ApiException] = {}
 
     def read_namespaced_secret(self, *, namespace: str, name: str) -> dict[str, Any]:
         self.calls.append(("read-secret", namespace, name))
@@ -216,8 +217,13 @@ class FakeCoreApi:
 
     def delete_namespaced_secret(self, *, namespace: str, name: str) -> None:
         self.calls.append(("delete-secret", namespace, name))
+        key = (namespace, name)
+        if error := self.delete_secret_errors.get(key):
+            raise error
+        if key not in self.secrets:
+            raise _not_found()
         if self.hold_delete_secret != (namespace, name):
-            self.secrets.pop((namespace, name), None)
+            self.secrets.pop(key)
 
     def read_namespace(self, *, name: str) -> dict[str, Any]:
         self.calls.append(("read-namespace", name))
@@ -546,6 +552,8 @@ def test_cleanup_waits_for_mapping_gc_before_certificate_or_leaf() -> None:
     assert (CERTIFICATE_NAMESPACE, certificate_secret_name(PREVIEW_ID)) in core.secrets
 
     custom.hold_delete_plural = None
+    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is False
+    assert (ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID)) not in core.secrets
     assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
     assert custom.objects == {}
     assert core.secrets == {}
@@ -562,17 +570,21 @@ def test_cleanup_waits_for_generated_mapping_secret_absence() -> None:
     assert (ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID)) in core.secrets
 
     core.hold_delete_secret = None
-    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
+    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is False
     assert (ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID)) not in core.secrets
+    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
 
 
-def test_cleanup_refuses_hostile_generated_mapping_secret() -> None:
+def test_cleanup_preserves_finalizer_when_mapping_delete_is_denied() -> None:
     adapter, core, _custom = _adapter()
     core.secrets[(ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID))] = _mapping_secret(
         environment_uid="attacker"
     )
+    core.delete_secret_errors[(ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID))] = ApiException(
+        status=403, reason="admission denied hostile mapping"
+    )
 
-    with pytest.raises(PreviewAgentRegistrationOwnershipError):
+    with pytest.raises(ApiException, match="admission denied hostile mapping"):
         adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID)
     assert (ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID)) in core.secrets
 
