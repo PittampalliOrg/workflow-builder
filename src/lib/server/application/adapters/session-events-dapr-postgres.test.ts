@@ -82,6 +82,8 @@ function fakeFallback(): SessionEventLog {
 		),
 		getSessionEvent: vi.fn(),
 		listSessionEvents: vi.fn(),
+		claimUnraisedTeamEvents: vi.fn(async () => []),
+		unclaimSessionEvents: vi.fn(async () => {}),
 	};
 }
 

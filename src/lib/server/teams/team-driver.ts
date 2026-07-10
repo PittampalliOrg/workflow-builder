@@ -25,6 +25,7 @@ import {
 	setMemberStatus,
 } from "$lib/server/teams/team-repo";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
+import { runTeamSuspendTick } from "$lib/server/teams/team-suspend";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
 
@@ -99,10 +100,16 @@ export async function onTeamSessionEvent(
  * (keyed on the member's updated_at) means a stable idle state is nudged at most
  * once, so repeated ticks don't spam — the same exactly-once discipline the goal
  * loop's tick reaper uses.
+ *
+ * Nudge candidates include SUSPENDED members: the nudge routes through the
+ * team-message topic (injectTeamMessage → team-delivery), which wakes the
+ * suspended sandbox — so "claimable work appeared" wakes the teammate for free.
+ * After the nudge pass, the suspend tick scales genuinely idle teammates'
+ * sandboxes to zero (team-suspend.ts; gated on TEAM_SUSPEND_ENABLED).
  */
 export async function runTeamDriverTick(
 	store: TeamStore = getApplicationAdapters().teamStore,
-): Promise<{ nudged: number }> {
+): Promise<{ nudged: number; suspended: number }> {
 	const idle = await listIdleMembers(store);
 	let nudged = 0;
 	for (const m of idle) {
@@ -120,5 +127,9 @@ export async function runTeamDriverTick(
 		});
 		nudged++;
 	}
-	return { nudged };
+	const suspend = await runTeamSuspendTick(store).catch((err) => {
+		console.warn("[team-driver] suspend tick failed:", err);
+		return { suspended: 0, skipped: 0 };
+	});
+	return { nudged, suspended: suspend.suspended };
 }

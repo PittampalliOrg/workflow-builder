@@ -248,6 +248,63 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 		);
 	}
 
+	/** See PostgresSessionEventLog.claimUnraisedTeamEvents — same contract,
+	 * routed through the Dapr postgres binding. UPDATE...RETURNING keeps the
+	 * claim atomic (concurrent deliveries can never claim the same row). */
+	async claimUnraisedTeamEvents(
+		sessionId: string,
+	): Promise<Array<{ id: string; sequence: number; data: Record<string, unknown> }>> {
+		const result = await this.client.query({
+			summary: "session_events.claim_unraised_team_events",
+			collection: "session_events",
+			sql: `
+				UPDATE session_events
+				SET processed_at = now()
+				WHERE session_id = $1
+					AND processed_at IS NULL
+					AND type = 'user.message'
+					AND data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+				RETURNING id, sequence, data
+			`,
+			params: [sessionId],
+			paramNames: ["session_id"],
+		});
+		// Binding rows are POSITIONAL arrays matching the RETURNING list.
+		return result.rows
+			.map((row) => {
+				const rawData = row[2];
+				const data =
+					typeof rawData === "string"
+						? (JSON.parse(rawData) as Record<string, unknown>)
+						: ((rawData ?? {}) as Record<string, unknown>);
+				return {
+					id: String(row[0]),
+					sequence: Number(row[1]),
+					data,
+				};
+			})
+			.sort((a, b) => a.sequence - b.sequence);
+	}
+
+	async unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void> {
+		// Per-id exec: the Dapr postgres binding JSON-serializes params, so a JS
+		// array does not bind reliably as text[]. Unclaim is a rare failure path
+		// with a handful of rows — N tiny statements is fine.
+		for (const id of ids) {
+			await this.client.exec({
+				summary: "session_events.unclaim",
+				collection: "session_events",
+				sql: `
+					UPDATE session_events
+					SET processed_at = NULL
+					WHERE session_id = $1 AND id = $2
+				`,
+				params: [sessionId, id],
+				paramNames: ["session_id", "id"],
+			});
+		}
+	}
+
 	private async selectBySourceEventId(
 		sessionId: string,
 		sourceEventId: string,

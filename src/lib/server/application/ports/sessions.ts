@@ -785,6 +785,13 @@ export type ListSessionEventsInput = {
 	preview?: boolean;
 };
 
+/** Row shape returned by the team-event claim: enough to raise + unclaim. */
+export type ClaimedSessionEventRecord = {
+	id: string;
+	sequence: number;
+	data: Record<string, unknown>;
+};
+
 export interface SessionEventLog {
 	appendSessionEvent(
 		sessionId: string,
@@ -798,6 +805,11 @@ export interface SessionEventLog {
 		sessionId: string,
 		input?: ListSessionEventsInput,
 	): Promise<SessionEventEnvelope[]>;
+	/** Atomically claim unraised team-origin user events (processed_at stamp) —
+	 * the raise-side dedup for the Agent Teams wake-on-deliver path. */
+	claimUnraisedTeamEvents(sessionId: string): Promise<ClaimedSessionEventRecord[]>;
+	/** Roll back a claim after a failed raise (JetStream will redeliver). */
+	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
 }
 
 export interface SessionRuntimeEventRaiser {

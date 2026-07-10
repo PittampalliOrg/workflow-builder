@@ -104,10 +104,13 @@ export class PostgresTeamStore implements TeamStore {
 		return rows<TeamMemberRow>(r)[0] ?? null;
 	}
 
-	/** All members currently idle (across active teams) — the tick's lost-idle set. */
+	/** All members currently idle OR suspended (across active teams) — the tick's
+	 * lost-idle/nudge set. Nudging a SUSPENDED member is deliberate: the nudge
+	 * publishes to the delivery topic, and team-delivery wakes the sandbox —
+	 * "wake when claimable work appears" falls out of the same path. */
 	async listIdleMembers(): Promise<TeamMemberRow[]> {
 		const r = await this.db.execute<TeamMemberRow>(sql`
-			SELECT * FROM team_members WHERE status = 'idle'
+			SELECT * FROM team_members WHERE status IN ('idle', 'suspended')
 		`);
 		return rows<TeamMemberRow>(r);
 	}
@@ -211,6 +214,73 @@ export class PostgresTeamStore implements TeamStore {
 			RETURNING *
 		`);
 		return rows<TeamTaskRow>(r)[0] ?? null;
+	}
+
+	/** One-query snapshot for the wake-on-deliver decision (team-delivery.ts). */
+	async getSessionDeliveryState(sessionId: string): Promise<{
+		status: string;
+		daprInstanceId: string | null;
+		runtimeAppId: string | null;
+		runtimeSandboxName: string | null;
+	} | null> {
+		const r = (await this.db.execute(sql`
+			SELECT status, dapr_instance_id, runtime_app_id, runtime_sandbox_name
+			FROM sessions WHERE id = ${sessionId} LIMIT 1
+		`)) as Array<{
+			status: string;
+			dapr_instance_id: string | null;
+			runtime_app_id: string | null;
+			runtime_sandbox_name: string | null;
+		}>;
+		const row = r[0];
+		if (!row) return null;
+		return {
+			status: row.status,
+			daprInstanceId: row.dapr_instance_id,
+			runtimeAppId: row.runtime_app_id,
+			runtimeSandboxName: row.runtime_sandbox_name,
+		};
+	}
+
+	/**
+	 * Teammates idle past the silence threshold — the suspend tick's candidates.
+	 * Silence is measured on sessions.last_event_at (the throttled liveness stamp
+	 * the reconciler trusts), falling back to the member's own updated_at. Only
+	 * members the driver marked 'idle' qualify (never the lead, never terminal
+	 * sessions, never sessions that were never spawned).
+	 */
+	async listSuspendCandidates(input: { idleSeconds: number }): Promise<
+		Array<{
+			team_id: string;
+			session_id: string;
+			name: string;
+			runtime_sandbox_name: string | null;
+			last_event_at: string | null;
+			updated_at: string;
+			idle_seconds: number;
+		}>
+	> {
+		const r = (await this.db.execute(sql`
+			SELECT m.team_id, m.session_id, m.name, m.updated_at,
+			       s.runtime_sandbox_name, s.last_event_at,
+			       EXTRACT(EPOCH FROM (now() - COALESCE(s.last_event_at, m.updated_at)))::int AS idle_seconds
+			FROM team_members m
+			JOIN sessions s ON s.id = m.session_id
+			WHERE m.status = 'idle'
+			  AND m.role <> 'lead'
+			  AND s.status NOT IN ('terminated', 'completed', 'failed', 'canceled', 'cancelled', 'error', 'crashed')
+			  AND s.dapr_instance_id IS NOT NULL
+			  AND COALESCE(s.last_event_at, m.updated_at) < now() - make_interval(secs => ${input.idleSeconds})
+		`)) as Array<{
+			team_id: string;
+			session_id: string;
+			name: string;
+			runtime_sandbox_name: string | null;
+			last_event_at: string | null;
+			updated_at: string;
+			idle_seconds: number;
+		}>;
+		return r;
 	}
 
 	// ── team-run container execution rollup ─────────────────────────────────

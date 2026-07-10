@@ -1452,6 +1452,12 @@ export interface WorkflowDataService {
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
+	/** Agent Teams wake-on-deliver: atomic claim of unraised team-origin user
+	 * events (the raise-side dedup) + rollback for failed raises. */
+	claimUnraisedTeamEvents(
+		sessionId: string,
+	): Promise<Array<{ id: string; sequence: number; data: Record<string, unknown> }>>;
+	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
 	getSessionEvent(input: {
 		sessionId: string;
 		eventId: string;

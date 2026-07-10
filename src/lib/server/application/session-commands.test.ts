@@ -828,6 +828,8 @@ function fakeSessionEvents(): SessionEventLog {
 		}) satisfies SessionEventEnvelope),
 		getSessionEvent: vi.fn(async () => null),
 		listSessionEvents: vi.fn(async () => []),
+		claimUnraisedTeamEvents: vi.fn(async () => []),
+		unclaimSessionEvents: vi.fn(async () => {}),
 	};
 }
 

@@ -98,6 +98,7 @@
 	const taskById = $derived(new Map((view?.tasks ?? []).map((t) => [t.id, t])));
 
 	function memberTone(s: string) {
+		// 'suspended' = sandbox scaled to zero (hibernating; any message wakes it).
 		return s === 'working' ? 'default' : s === 'idle' ? 'secondary' : 'outline';
 	}
 	function taskTone(s: string) {
