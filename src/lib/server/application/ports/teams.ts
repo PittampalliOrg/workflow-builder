@@ -91,6 +91,10 @@ export type CreateTeamTaskInput = {
 	description?: string | null;
 	dependsOn?: string[];
 	createdBySessionId?: string | null;
+	/** Pre-assign to a member (script-authored teams): row is created already
+	 * assigned; pair with status 'in_progress' so the claim query skips it. */
+	assigneeSessionId?: string | null;
+	status?: "pending" | "in_progress";
 };
 
 export interface TeamStore {
@@ -138,6 +142,29 @@ export interface TeamStore {
 	listSessionsWithStrandedTeamMessages(input: {
 		olderThanSeconds: number;
 	}): Promise<Array<{ session_id: string; stranded: number }>>;
+
+	// ── script-authored teams ("the script is the lead") ─────────────────────
+
+	/** Owner context of an execution — the script team's user/project scope. */
+	getExecutionContext(
+		executionId: string,
+	): Promise<{ userId: string; projectId: string | null } | null>;
+
+	/** Idempotently create the script team's lead ANCHOR session (plus the
+	 * synthetic archived `script-team-lead` agent the sessions.agent_id FK
+	 * requires). The anchor is a plain row — no runtime — that mailbox appends
+	 * and project scoping resolve against; workflow_execution_id ties it (and
+	 * therefore the team) to the script's run. */
+	ensureScriptLeadSession(input: {
+		sessionId: string;
+		userId: string;
+		projectId: string | null;
+		executionId: string;
+		title?: string;
+	}): Promise<void>;
+
+	/** The execution a session already belongs to (team-run adoption). */
+	getSessionExecutionId(sessionId: string): Promise<string | null>;
 
 	// team-run container execution rollup
 	getTeamExecutionId(teamId: string): Promise<string | null>;

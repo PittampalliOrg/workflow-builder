@@ -30,7 +30,7 @@ import {
 	workflowSemanticOpts,
 } from "./call-id.js";
 
-export const EVALUATOR_VERSION = "1.1.0";
+export const EVALUATOR_VERSION = "1.2.0"; // 1.2.0: team.* namespace (script-led Agent Teams)
 
 /** Response cap: no /evaluate response may carry more than this many tasks. */
 export const MAX_TASKS_PER_RESPONSE = 4096;
@@ -75,12 +75,14 @@ export interface TaskOpts {
 
 export interface EvaluateTask {
 	callId: string;
-	kind: "agent" | "workflow";
+	kind: "agent" | "workflow" | "team";
 	prompt: string;
 	opts: TaskOpts;
 	baseHash: string;
 	occurrence: number;
 	workflowRef?: unknown;
+	/** team-kind only: which op (spawn|task|send|broadcast|status|join|shutdown). */
+	teamOp?: string;
 	args?: unknown;
 }
 
@@ -495,17 +497,34 @@ function workflowChildErrorMessage(cr: CompletedResult): string {
 	return "workflow() child failed";
 }
 
+/** Message thrown into the script for a failed team.* op — same result.message
+ * ride-along the workflow() contract uses (errorCode 'team_op_error'). */
+function teamOpErrorMessage(op: string, cr: CompletedResult): string {
+	const value = cr.value as { message?: unknown } | null | undefined;
+	if (
+		value &&
+		typeof value === "object" &&
+		typeof value.message === "string" &&
+		value.message.length > 0
+	) {
+		return value.message;
+	}
+	if (cr.errorCode) return String(cr.errorCode);
+	return `team.${op}() failed`;
+}
+
 // ── The evaluator ────────────────────────────────────────────────────────────
 
 interface Pending {
 	callId: string;
-	kind: "agent" | "workflow";
+	kind: "agent" | "workflow" | "team";
 	prompt: string;
 	optsRaw?: Record<string, unknown>;
 	phaseAtCall: string | null;
 	baseHash: string;
 	occurrence: number;
 	workflowRef?: unknown;
+	teamOp?: string;
 	args?: unknown;
 }
 
@@ -637,6 +656,148 @@ export async function evaluateScript(
 		return neverSettle();
 	}
 
+	// ── team.* — script-led Agent Teams ("the script is the lead") ──
+	// Journaled like workflow(): success resolves the op result; a journaled
+	// error THROWS its message into the script (catchable); skips resolve null.
+	// join() RESOLVES on timeout ({timedOut: true}) — never throws for time.
+	function teamCall(op: string, args: Record<string, unknown>): Promise<unknown> {
+		state.totalCallsSeen++;
+		if (nested) throw new Error("team.* is not available in nested workflow() scripts");
+		const promptSub = "team:" + op;
+		const baseHash = computeBaseHash(promptSub, workflowSemanticOpts(args));
+		const occurrence = nextOccurrence(baseHash);
+		const callId = deriveCallId(baseHash, occurrence);
+
+		const cr = completedResults[callId];
+		if (cr) {
+			if (cr.status === "done" || cr.status === "skipped") {
+				return resolveFromJournal(cr);
+			}
+			state.progress++;
+			throw new Error(teamOpErrorMessage(op, cr));
+		}
+		if (budgetExhausted) throw makeBudgetError();
+		if (lifetimeExceeded) throw makeAgentLimitError();
+
+		state.pendings.push({
+			callId,
+			kind: "team",
+			prompt: "",
+			phaseAtCall: state.currentPhase,
+			baseHash,
+			occurrence,
+			teamOp: op,
+			args,
+		});
+		state.progress++;
+		return neverSettle();
+	}
+
+	function requireString(op: string, field: string, value: unknown, max = 100_000): string {
+		if (typeof value !== "string" || !value.trim()) {
+			throw new TypeError(`team.${op}(): ${field} must be a non-empty string`);
+		}
+		if (value.length > max) {
+			throw new TypeError(`team.${op}(): ${field} exceeds ${max} chars`);
+		}
+		return value;
+	}
+
+	const team = Object.freeze({
+		/** Spawn a teammate: {name, agent, prompt, model?, planModeRequired?} → {name, sessionId}. */
+		spawn(input: unknown): Promise<unknown> {
+			if (typeof input !== "object" || input === null) {
+				throw new TypeError("team.spawn(input): input must be an object");
+			}
+			const o = input as Record<string, unknown>;
+			const name = requireString("spawn", "name", o.name, 32);
+			if (name.includes("@")) throw new TypeError("team.spawn(): name must not contain '@'");
+			return teamCall("spawn", {
+				name,
+				agent: requireString("spawn", "agent", o.agent, 200),
+				prompt: requireString("spawn", "prompt", o.prompt),
+				...(typeof o.model === "string" && o.model ? { model: o.model } : {}),
+				...(o.planModeRequired === true ? { planModeRequired: true } : {}),
+			});
+		},
+		/** Add a shared task: {title, description?, dependsOn?, assignTo?} → {ok, task}. */
+		task(input: unknown): Promise<unknown> {
+			if (typeof input !== "object" || input === null) {
+				throw new TypeError("team.task(input): input must be an object");
+			}
+			const o = input as Record<string, unknown>;
+			const dependsOn = o.dependsOn;
+			if (
+				dependsOn !== undefined &&
+				(!Array.isArray(dependsOn) || dependsOn.some((d) => typeof d !== "string"))
+			) {
+				throw new TypeError("team.task(): dependsOn must be an array of task ids");
+			}
+			return teamCall("task", {
+				title: requireString("task", "title", o.title, 500),
+				...(typeof o.description === "string" && o.description
+					? { description: o.description }
+					: {}),
+				...(dependsOn !== undefined ? { dependsOn } : {}),
+				...(typeof o.assignTo === "string" && o.assignTo ? { assignTo: o.assignTo } : {}),
+			});
+		},
+		/** Point-to-point message to a teammate by name. */
+		send(to: unknown, content: unknown): Promise<unknown> {
+			return teamCall("send", {
+				to: requireString("send", "to", to, 32),
+				content: requireString("send", "content", content),
+			});
+		},
+		/** Message every teammate at once. */
+		broadcast(content: unknown): Promise<unknown> {
+			return teamCall("broadcast", {
+				content: requireString("broadcast", "content", content),
+			});
+		},
+		/** Snapshot of {team, members, tasks}. */
+		status(): Promise<unknown> {
+			return teamCall("status", {});
+		},
+		/** Await quiescence: {until?: 'tasks-complete'|'all-idle', timeoutMinutes?}.
+		 * Resolves with the final snapshot (+ satisfied/timedOut) — never throws
+		 * on timeout. */
+		join(input?: unknown): Promise<unknown> {
+			const o =
+				input === undefined
+					? {}
+					: (() => {
+							if (typeof input !== "object" || input === null) {
+								throw new TypeError("team.join(input): input must be an object");
+							}
+							return input as Record<string, unknown>;
+						})();
+			const until = o.until;
+			if (until !== undefined && until !== "tasks-complete" && until !== "all-idle") {
+				throw new TypeError(
+					"team.join(): until must be 'tasks-complete' or 'all-idle'",
+				);
+			}
+			const timeoutMinutes = o.timeoutMinutes;
+			if (
+				timeoutMinutes !== undefined &&
+				(typeof timeoutMinutes !== "number" || !Number.isFinite(timeoutMinutes))
+			) {
+				throw new TypeError("team.join(): timeoutMinutes must be a finite number");
+			}
+			return teamCall("join", {
+				...(until !== undefined ? { until } : {}),
+				...(timeoutMinutes !== undefined ? { timeoutMinutes } : {}),
+			});
+		},
+		/** Shut a teammate down by name — or every teammate when omitted. */
+		shutdown(name?: unknown): Promise<unknown> {
+			return teamCall("shutdown", {
+				...(name !== undefined ? { name: requireString("shutdown", "name", name, 32) } : {}),
+			});
+		},
+	});
+
 	function parallel(thunks: unknown): Promise<unknown[]> {
 		if (!Array.isArray(thunks)) {
 			throw new TypeError("parallel(thunks): expected an array of thunks");
@@ -738,6 +899,7 @@ export async function evaluateScript(
 	sandbox.phase = Object.freeze(phase);
 	sandbox.log = Object.freeze(log);
 	sandbox.workflow = Object.freeze(workflow);
+	sandbox.team = team; // frozen namespace: spawn/task/send/broadcast/status/join/shutdown
 	sandbox.console = consoleShim;
 	sandbox.args = argsGlobal;
 	sandbox.budget = budgetGlobal;
@@ -920,6 +1082,26 @@ export async function evaluateScript(
 function toTask(p: Pending): EvaluateTask {
 	const phase =
 		(p.optsRaw?.phase as string | undefined) ?? p.phaseAtCall ?? null;
+	if (p.kind === "team") {
+		return {
+			callId: p.callId,
+			kind: "team",
+			prompt: "",
+			opts: {
+				label: null,
+				phase,
+				schema: null,
+				model: null,
+				effort: null,
+				isolation: null,
+				agentType: null,
+			},
+			baseHash: p.baseHash,
+			occurrence: p.occurrence,
+			teamOp: p.teamOp,
+			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
+		};
+	}
 	if (p.kind === "workflow") {
 		return {
 			callId: p.callId,
@@ -997,7 +1179,10 @@ function deepFreeze<T>(value: T): T {
 
 export async function validateScript(script: string): Promise<ValidateResponse> {
 	const extracted = extractMeta(script);
-	const estimatedAgentCalls = (script.match(/\bagent\s*\(/g) ?? []).length;
+	// team.spawn() launches a real agent session — count it toward the estimate.
+	const estimatedAgentCalls =
+		(script.match(/\bagent\s*\(/g) ?? []).length +
+		(script.match(/\bteam\s*\.\s*spawn\s*\(/g) ?? []).length;
 	const lintError = staticDeterminismError(extracted.body);
 	if (lintError) {
 		return {

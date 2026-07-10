@@ -350,3 +350,16 @@ synthesis. (Script-spawned `agent()`s set no `allowedTools`, so they get every d
 
 Both default to GLM 5.2 (the platform `DYNAMIC_SCRIPT_DEFAULT_MODEL`); set `agent(..., {model})` or
 a per-phase `meta.phases[].model` to run a heavier synthesis/verify step on a different key.
+
+## Team primitives (script-led Agent Teams)
+
+The script can be the deterministic LEAD of a persistent agent team: `team.spawn({name, agent, prompt})`
+creates autonomous teammates (real sessions that claim tasks, message each other, and suspend/wake);
+`team.task({title, dependsOn?, assignTo?})` seeds the shared ledger; `team.send/broadcast` message them;
+`await team.join({until: 'tasks-complete'|'all-idle', timeoutMinutes})` parks the run until the team
+quiesces (resolves with `{satisfied, timedOut}` — never throws on timeout); `team.shutdown()` ends them
+(auto-shutdown also fires at run terminal). Failures (unknown agent slug, unknown teammate) THROW into
+the script like `workflow()`. One team per run (`team-<executionId>`); teammates + their usage roll up
+under the run. Full dialect text: `get_workflow_script_spec` (workflow-mcp-server) or
+`services/workflow-mcp-server/src/script-tools.ts` § TEAM PRIMITIVES. Fixture:
+`scripts/fixtures/dynamic-scripts/team-research.js`.

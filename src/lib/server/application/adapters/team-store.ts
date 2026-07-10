@@ -148,10 +148,12 @@ export class PostgresTeamStore implements TeamStore {
 	async createTask(input: CreateTeamTaskInput): Promise<TeamTaskRow> {
 		const r = await this.db.execute<TeamTaskRow>(sql`
 			INSERT INTO team_tasks
-				(id, team_id, title, description, depends_on, created_by_session_id)
+				(id, team_id, title, description, depends_on, created_by_session_id,
+				 assignee_session_id, status)
 			VALUES (
 				${nanoid()}, ${input.teamId}, ${input.title}, ${input.description ?? null},
-				${JSON.stringify(input.dependsOn ?? [])}::jsonb, ${input.createdBySessionId ?? null}
+				${JSON.stringify(input.dependsOn ?? [])}::jsonb, ${input.createdBySessionId ?? null},
+				${input.assigneeSessionId ?? null}, ${input.status ?? "pending"}
 			)
 			RETURNING *
 		`);
@@ -310,6 +312,57 @@ export class PostgresTeamStore implements TeamStore {
 		return r;
 	}
 
+	// ── script-authored teams ("the script is the lead") ─────────────────────
+
+	async getExecutionContext(
+		executionId: string,
+	): Promise<{ userId: string; projectId: string | null } | null> {
+		const r = (await this.db.execute(sql`
+			SELECT user_id, project_id FROM workflow_executions WHERE id = ${executionId} LIMIT 1
+		`)) as Array<{ user_id: string; project_id: string | null }>;
+		const row = r[0];
+		if (!row) return null;
+		return { userId: row.user_id, projectId: row.project_id };
+	}
+
+	/**
+	 * Idempotent lead-anchor provisioning for a script team. Two inserts, both
+	 * ON CONFLICT DO NOTHING:
+	 *   1. the synthetic global agent `script-team-lead` (archived, disabled —
+	 *      exists only to satisfy sessions.agent_id's NOT NULL FK; slug is
+	 *      globally unique so one row serves every project),
+	 *   2. the anchor sessions row (status idle, no runtime, stamped with the
+	 *      script's execution so it rolls up under the run).
+	 */
+	async ensureScriptLeadSession(input: {
+		sessionId: string;
+		userId: string;
+		projectId: string | null;
+		executionId: string;
+		title?: string;
+	}): Promise<void> {
+		await this.db.execute(sql`
+			INSERT INTO agents (id, name, slug, model, is_default, is_enabled, is_archived, user_id)
+			VALUES ('script-team-lead', 'Script Team Lead (synthetic)', 'script-team-lead',
+			        '"none"'::jsonb, false, false, true, ${input.userId})
+			ON CONFLICT DO NOTHING
+		`);
+		await this.db.execute(sql`
+			INSERT INTO sessions (id, user_id, project_id, agent_id, status, title, workflow_execution_id)
+			VALUES (${input.sessionId}, ${input.userId}, ${input.projectId},
+			        'script-team-lead', 'idle',
+			        ${input.title ?? "team:script-lead"}, ${input.executionId})
+			ON CONFLICT (id) DO NOTHING
+		`);
+	}
+
+	async getSessionExecutionId(sessionId: string): Promise<string | null> {
+		const r = (await this.db.execute(sql`
+			SELECT workflow_execution_id FROM sessions WHERE id = ${sessionId} LIMIT 1
+		`)) as Array<{ workflow_execution_id: string | null }>;
+		return r[0]?.workflow_execution_id ?? null;
+	}
+
 	// ── team-run container execution rollup ─────────────────────────────────
 
 	async getTeamExecutionId(teamId: string): Promise<string | null> {
@@ -373,6 +426,15 @@ export class PostgresTeamStore implements TeamStore {
 		)) as Array<{ workflow_execution_id: string | null }>;
 		const execId = t[0]?.workflow_execution_id;
 		if (!execId) return;
+
+		// Only the SYNTHETIC team-run container execution is ours to reduce.
+		// A script team ADOPTS the dynamic-script run's execution — its status
+		// belongs to the pump (persist_results_to_db); writing here would fight
+		// it (e.g. flip a running script to success when the team drains).
+		const engine = (await this.db.execute(sql`
+			SELECT execution_ir->>'engine' AS engine FROM workflow_executions WHERE id = ${execId}
+		`)) as Array<{ engine: string | null }>;
+		if ((engine[0]?.engine ?? null) !== "team-run") return;
 
 		const counts = (await this.db.execute(sql`
 			SELECT

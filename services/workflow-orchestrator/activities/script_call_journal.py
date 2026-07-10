@@ -337,6 +337,31 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             _persist(row)
             return {"status": "error", "errorCode": _ERROR_WORKFLOW_CHILD}
 
+        # 2b. Team op (script-led teams). Same THROW-on-failure contract as
+        #     workflow(): success -> done with the op result (plain JSON — no
+        #     schema validation, no structured retries); anything else -> error
+        #     whose message the evaluator throws into the script (catchable).
+        if (spec.get("kind") or "agent") == "team":
+            if isinstance(raw, dict) and raw.get("success"):
+                row = _base_row("done")
+                row["result"] = raw.get("result")
+                _persist(row)
+                return {"status": "done"}
+            message = None
+            if isinstance(raw, dict):
+                err = raw.get("error")
+                if isinstance(err, str) and err.strip():
+                    message = err.strip()
+                elif raw.get("cancelled"):
+                    message = "team op was cancelled"
+            if not message:
+                message = f"team.{spec.get('teamOp') or 'op'} failed"
+            row = _base_row("error")
+            row["result"] = {"message": message}
+            row["errorCode"] = "team_op_error"
+            _persist(row)
+            return {"status": "error", "errorCode": "team_op_error"}
+
         # 3. Death / cancel / failure / timeout -> null.
         if _is_null_result(raw):
             row = _base_row("null")

@@ -54,6 +54,10 @@ from workflows.dynamic_script_workflow import (
     dynamic_script_workflow,
     DYNAMIC_SCRIPT_WORKFLOW_NAME,
 )
+from workflows.team_join_workflow import (
+    team_join_workflow,
+    TEAM_JOIN_WORKFLOW_NAME,
+)
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
@@ -1155,6 +1159,19 @@ async def lifespan(app: FastAPI):
     logger.info(
         "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
         DYNAMIC_SCRIPT_WORKFLOW_NAME,
+    )
+
+    # Register the team-join awaitable (script-led teams: `team.join()` runs as
+    # a child of the pump so its poll/timer replay stays in its own history).
+    wfr.register_versioned_workflow(
+        team_join_workflow,
+        name=TEAM_JOIN_WORKFLOW_NAME,
+        version_name="1.0.0",
+        is_latest=True,
+    )
+    logger.info(
+        "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
+        TEAM_JOIN_WORKFLOW_NAME,
     )
 
     # Start the workflow runtime

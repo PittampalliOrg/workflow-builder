@@ -52,7 +52,9 @@ from workflows.script_agent_dispatch import (
     _start_script_call,
     script_child_instance_id,
     start_prepared_script_call,
+    start_team_call,
 )
+from activities.team_ops import execute_team_op
 from workflows.sw_workflow import _freeze
 
 logger = logging.getLogger(__name__)
@@ -204,6 +206,9 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     last_status_json: str | None = None
     current_phase = ""
     declared_phases: list[str] = []
+    # Any team.* call dispatched this run → auto-shutdown teammates at terminal
+    # (deterministic: set only from journaled dispatch decisions).
+    team_used = False
 
     # cancel task: created ONCE. control task: re-created after each firing.
     cancel_task = ctx.wait_for_external_event(CANCEL_EVENT_NAME)
@@ -307,6 +312,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         # value -> record_script_call_result; the row belongs to the root alone.
         if status == "done":
             _set_status(current_phase or "completed", budget)
+            yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
                     persist_results_to_db,
@@ -336,6 +342,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if status == "script_error":
             error = plan.get("error") if isinstance(plan.get("error"), dict) else {}
             _set_status(current_phase or "failed", budget)
+            yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
                     persist_results_to_db,
@@ -378,6 +385,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     "baseHash": task.get("baseHash"),
                     "occurrence": task.get("occurrence"),
                     "workflowRef": task.get("workflowRef"),
+                    "teamOp": task.get("teamOp"),
                 }
             )
             # workflow() child args: VERBATIM any-JSON value; key-absence means
@@ -406,6 +414,84 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     lifetime_exceeded = True
                     break
                 batch.append(queue.pop(0))
+
+            # Team ops bypass prepare_script_call entirely (no session
+            # provisioning / runtime resolution): dispatch each as an un-awaited
+            # activity Task (or the join child workflow) straight into
+            # `outstanding` — activity Tasks multiplex through when_any exactly
+            # like child-workflow Tasks.
+            team_batch = [
+                cid for cid in batch if (task_specs[cid].get("kind") or "agent") == "team"
+            ]
+            batch = [cid for cid in batch if cid not in set(team_batch)]
+            for cid in team_batch:
+                spec = task_specs[cid]
+                child_instance_id = script_child_instance_id(
+                    ctx.instance_id, cid, spec.get("retries", 0)
+                )
+                spec["_instance_id"] = child_instance_id
+                spec["seq"] = seq_counter
+                seq_counter += 1
+                team_task = start_team_call(
+                    ctx,
+                    call_id=cid,
+                    spec=spec,
+                    exec_id=exec_id,
+                    meta=meta,
+                    otel=otel,
+                )
+                if isinstance(team_task, dict) and team_task.get("dispatchError"):
+                    yield ctx.call_activity(
+                        record_script_call_result,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec["seq"],
+                                "spec": _spec_for_journal(spec),
+                                "raw": {
+                                    "success": False,
+                                    "error": str(team_task["dispatchError"]),
+                                },
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
+                    resolved.add(cid)
+                    resolved_at_dispatch += 1
+                    continue
+                team_used = True
+                outstanding[cid] = team_task
+                dispatched += 1
+                dispatched_this_round += 1
+                yield ctx.call_activity(
+                    record_script_call_dispatch,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec["seq"],
+                            "sessionId": None,  # no child session — a team op
+                            "spec": _spec_for_journal(spec),
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                yield ctx.call_activity(
+                    update_execution_node,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "nodeId": cid,
+                            "nodeName": f"team:{spec.get('teamOp') or 'op'}",
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                # No track_agent_run_scheduled: team ops are not agent runs.
 
             if batch:
                 prepare_tasks = []
@@ -540,20 +626,33 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     break
                 cid = queue.pop(0)
                 spec = task_specs[cid]
-                child_task = yield from _start_script_call(
-                    ctx,
-                    call_id=cid,
-                    spec=spec,
-                    exec_id=exec_id,
-                    meta=meta,
-                    defaults=defaults,
-                    limits=limits,
-                    budget_total=budget_total,
-                    workflow_id=workflow_id,
-                    user_id=user_id,
-                    project_id=project_id,
-                    otel=otel,
-                )
+                if (spec.get("kind") or "agent") == "team":
+                    # Team ops skip session provisioning — dispatch directly.
+                    child_task = start_team_call(
+                        ctx,
+                        call_id=cid,
+                        spec=spec,
+                        exec_id=exec_id,
+                        meta=meta,
+                        otel=otel,
+                    )
+                    if not (isinstance(child_task, dict) and child_task.get("dispatchError")):
+                        team_used = True
+                else:
+                    child_task = yield from _start_script_call(
+                        ctx,
+                        call_id=cid,
+                        spec=spec,
+                        exec_id=exec_id,
+                        meta=meta,
+                        defaults=defaults,
+                        limits=limits,
+                        budget_total=budget_total,
+                        workflow_id=workflow_id,
+                        user_id=user_id,
+                        project_id=project_id,
+                        otel=otel,
+                    )
                 child_instance_id = script_child_instance_id(
                     ctx.instance_id, cid, spec.get("retries", 0)
                 )
@@ -631,23 +730,25 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                     retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
-                yield ctx.call_activity(
-                    track_agent_run_scheduled,
-                    input=_freeze(
-                        {
-                            "id": child_instance_id,
-                            "workflowExecutionId": exec_id,
-                            "workflowId": workflow_id or "",
-                            "nodeId": cid,
-                            "mode": "run",
-                            "agentWorkflowId": child_instance_id,
-                            "daprInstanceId": child_instance_id,
-                            "parentExecutionId": ctx.instance_id,
-                            "_otel": otel,
-                        }
-                    ),
-                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                )
+                if (spec.get("kind") or "agent") != "team":
+                    # Team ops are not agent runs — no Agents-tab tracking row.
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input=_freeze(
+                            {
+                                "id": child_instance_id,
+                                "workflowExecutionId": exec_id,
+                                "workflowId": workflow_id or "",
+                                "nodeId": cid,
+                                "mode": "run",
+                                "agentWorkflowId": child_instance_id,
+                                "daprInstanceId": child_instance_id,
+                                "parentExecutionId": ctx.instance_id,
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
 
         _set_status(current_phase or "running", budget)
 
@@ -660,6 +761,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if not outstanding:
             if lifetime_exceeded or dispatched_this_round or resolved_at_dispatch:
                 continue
+            yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
                     persist_results_to_db,
@@ -693,6 +795,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             event = event if isinstance(event, dict) else {}
             reason = event.get("reason") or "workflow cancelled"
             _set_status("cancelled", budget)
+            yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
                     persist_results_to_db,
@@ -792,7 +895,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             else:
                 resolved.add(cid)
                 drained_done += 1
-            if run_id:
+            if run_id and (spec.get("kind") or "agent") != "team":
                 yield ctx.call_activity(
                     track_agent_run_completed,
                     input=_freeze(
@@ -822,6 +925,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
 def _spec_for_journal(spec: dict[str, Any]) -> dict[str, Any]:
     return {
         "kind": spec.get("kind") or "agent",
+        "teamOp": spec.get("teamOp"),
         "label": spec.get("label"),
         "phase": spec.get("phase"),
         "promptSha256": spec.get("promptSha256"),
@@ -831,6 +935,24 @@ def _spec_for_journal(spec: dict[str, Any]) -> dict[str, Any]:
         "retries": _as_int(spec.get("retries"), 0),
         "maxStructuredRetries": _as_int(spec.get("maxStructuredRetries"), DEFAULT_MAX_STRUCTURED_RETRIES),
     }
+
+
+def _team_auto_shutdown(ctx, exec_id: str, team_used: bool, otel):
+    """Terminal cleanup for script-led teams: shut every teammate down so they
+    never outlive the run (suspend/sweeper ticks are only a cost backstop).
+    Best-effort — a shutdown failure must not mask the run's own outcome."""
+    if not team_used:
+        return
+    try:
+        yield ctx.call_activity(
+            execute_team_op,
+            input=_freeze(
+                {"executionId": exec_id, "op": "shutdown", "args": {}, "_otel": otel}
+            ),
+            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[dynamic-script] team auto-shutdown failed for %s", exec_id)
 
 
 def _journal_skip(ctx, exec_id, call_id, task_specs, otel):

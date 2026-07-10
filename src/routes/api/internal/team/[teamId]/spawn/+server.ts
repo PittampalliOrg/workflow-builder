@@ -5,8 +5,17 @@ import { getApplicationAdapters } from "$lib/server/application";
 import {
 	addMember,
 	ensureTeam,
+	listMembers,
 	resolveAgentIdBySlug,
 } from "$lib/server/teams/team-repo";
+
+/** Cost guardrail (Codex-ultra parity: their concurrency cap + warning): a
+ * team may not exceed this many members incl. the lead. Proactive leads and
+ * runaway scripts hit a clear 400 instead of silently fanning out. */
+const TEAM_MAX_MEMBERS = () => {
+	const raw = Number(process.env.TEAM_MAX_MEMBERS ?? 8);
+	return Number.isFinite(raw) && raw >= 2 ? Math.trunc(raw) : 8;
+};
 import {
 	ensureTeamRunExecution,
 	linkSessionToTeamRun,
@@ -51,6 +60,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		leadSessionId: body.leadSessionId,
 		projectId,
 	});
+
+	// Guardrail: cap the team size BEFORE provisioning anything expensive.
+	const members = await listMembers(params.teamId);
+	const cap = TEAM_MAX_MEMBERS();
+	if (members.length >= cap) {
+		return error(
+			400,
+			`team is at its member cap (${cap}, incl. the lead) — shut a teammate down first or raise TEAM_MAX_MEMBERS`,
+		);
+	}
 
 	// Give the team a container execution (created once) so it renders as ONE
 	// unified run and all teammate sessions roll up under it. Also sets

@@ -115,10 +115,33 @@ run log. Need time/randomness -> pass via args or derive from the item index.
 STRUCTURED OUTPUT: pass opts.schema (JSON Schema). The engine enforces an output contract, validates,
 and retries a corrective session up to 5 times; still-invalid -> the call resolves to null.
 
+TEAM PRIMITIVES (script-led Agent Teams — THE SCRIPT IS THE LEAD; teammates are persistent
+autonomous agents that claim tasks, message each other, and suspend/wake, while your script
+deterministically forms the team, seeds work, and awaits quiescence):
+  await team.spawn({name, agent, prompt, model?, planModeRequired?}) -> {name, sessionId}
+      name <=32 chars, no '@'; agent = a PROJECT AGENT SLUG (e.g. 'team-tester-glm'); prompt must be
+      SELF-CONTAINED (the teammate does not see your script). Each spawn = a real agent session.
+  await team.task({title, description?, dependsOn?: [taskIds], assignTo?: name}) -> {ok, task}
+      assignTo pre-assigns (in_progress); unassigned tasks are CLAIMABLE by idle teammates
+      (dependsOn gates claimability until prerequisites complete).
+  await team.send(name, content) / await team.broadcast(content)   — messages wake suspended teammates.
+  await team.status() -> {team, members, tasks}                     — point-in-time snapshot.
+  await team.join({until?: 'tasks-complete'|'all-idle', timeoutMinutes? (<=120, default 30)})
+      -> final snapshot + {satisfied, timedOut}. RESOLVES on timeout (never throws for time) — check
+      .timedOut. This is how the script waits for the team.
+  await team.shutdown(name?)                                        — one teammate, or ALL when omitted.
+Semantics: team.* failures (unknown agent slug, unknown teammate, project-less run) THROW into the
+script (try/catch-able), like workflow(). One team per run (id team-<executionId>); teammates and their
+LLM usage roll up under YOUR run + budget. Teammates cannot spawn nested teams; nested workflow()
+children cannot use team.*. Auto-shutdown fires at run end, but ending with join() then shutdown() is
+good practice. Each sequential await team.* costs a pump round — batch independent calls with
+parallel([() => team.task({...}), () => team.task({...})]). Teammates do NOT report results to your
+script — inspect team.status()/join() snapshots (task states) or have teammates write artifacts.
+
 VALIDATE THEN RUN: call validate_workflow_script(script) first; fix any error; then run_workflow_script
 with { script } (inline) or { workflowName } (saved). Fixtures to pattern-match live in
 scripts/fixtures/dynamic-scripts/ (best-of-n, audit-fanout, iterate-until-approved, discover-until-dry,
-nested-parent + summarize-child, demo-review).`;
+nested-parent + summarize-child, demo-review, team-research).`;
 
 /** Fetch implementation is injectable for tests; defaults to global fetch. */
 export type ScriptToolsContext = {
