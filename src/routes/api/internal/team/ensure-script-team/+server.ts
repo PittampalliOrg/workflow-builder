@@ -2,7 +2,6 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
-import { ensureTeam } from "$lib/server/teams/team-repo";
 
 /**
  * POST /api/internal/team/ensure-script-team  { executionId, name? }
@@ -51,7 +50,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		executionId,
 		title: body.name ? `team:script-lead (${body.name})` : "team:script-lead",
 	});
-	await ensureTeam({
+	await store.ensureTeam({
 		teamId,
 		leadSessionId,
 		projectId: ctx.projectId,
