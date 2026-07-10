@@ -22,6 +22,7 @@ export const PRODUCT_DATA_STORE_ADAPTERS = [
 	"postgres",
 	"dapr-postgres-binding",
 ] as const;
+export const PREVIEW_GOVERNANCE_STATUS_MODES = ["strict", "poc"] as const;
 
 export type AppProfile = (typeof APP_PROFILES)[number];
 export type PersistenceAdapter = (typeof PERSISTENCE_ADAPTERS)[number];
@@ -35,6 +36,8 @@ export type ScriptCallsStoreAdapter =
 	(typeof SCRIPT_CALLS_STORE_ADAPTERS)[number];
 export type ProductDataStoreAdapter =
 	(typeof PRODUCT_DATA_STORE_ADAPTERS)[number];
+export type PreviewGovernanceStatusMode =
+	(typeof PREVIEW_GOVERNANCE_STATUS_MODES)[number];
 
 export type ApplicationAdapterConfig = {
 	appProfile: AppProfile;
@@ -62,6 +65,8 @@ export type ApplicationAdapterConfig = {
 	previewPlatformRef: string;
 	previewSourceRepository: string;
 	previewSourceRef: string;
+	/** Strict GitHub status/gate reporting is the default; poc disables it for acceptance only. */
+	previewGovernanceStatusMode: PreviewGovernanceStatusMode;
 	/** D2: dispatch the Playwright-critic verify pass on a ready PR preview. Off by default. */
 	prPreviewVerifyEnabled: boolean;
 	/** D2: Promote adds the `preview` label to the PRs it opens. Off by default. */
@@ -226,6 +231,12 @@ export function getApplicationAdapterConfig(
 		previewSourceRepository:
 			source.PREVIEW_SOURCE_REPOSITORY?.trim() || prPreviewRepo,
 		previewSourceRef: source.PREVIEW_SOURCE_REF?.trim() || "main",
+		previewGovernanceStatusMode: readAdapter(
+			source,
+			"PREVIEW_GOVERNANCE_STATUS_MODE",
+			"strict",
+			PREVIEW_GOVERNANCE_STATUS_MODES,
+		),
 		prPreviewVerifyEnabled: readFlag(source, "PR_PREVIEW_VERIFY_ENABLED"),
 		promoteAutoPreviewLabel: readFlag(source, "PROMOTE_AUTO_PREVIEW_LABEL"),
 		previewReadProxyEnabled: readFlag(source, "PREVIEW_READ_PROXY_ENABLED"),

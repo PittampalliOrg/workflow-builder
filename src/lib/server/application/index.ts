@@ -492,6 +492,7 @@ import {
   HttpPreviewSourcePromotionBrokerAdapter,
   VclusterPreviewControlEnvironmentAdapter,
 } from "$lib/server/application/adapters/preview-control";
+import { resolvePreviewAcceptanceStatusReporting } from "$lib/server/application/adapters/preview-acceptance-status-reporting";
 import type {
   PreviewAcceptanceBrokerPort,
   PreviewEnvironmentDesiredStatePort,
@@ -2192,21 +2193,30 @@ export function getApplicationAdapters(
         ?.trim()
         .toLowerCase() === "true";
     previewAcceptanceBroker = brokerMode
-      ? new ApplicationPreviewAcceptanceBrokerService({
-          authority: getPreviewControlSourceAuthority(),
-          pullRequests: new GithubPreviewControlPullRequestAdapter({
-            credentials: getPreviewGithubReadToken(),
-          }),
-          statuses: new GithubPreviewAcceptanceCommitStatusAdapter({
-            credentials: getPreviewGithubStatusToken(),
-          }),
-          receipts: getPreviewAcceptedImageReceipts(),
-          receiptAttestations: getPreviewAcceptedImageReceiptAttestations(),
-          gate: getPreviewGateReconciler(),
-          catalog: new DevPreviewServiceCatalogAdapter(),
-          acceptance: getPreviewEnvironmentAcceptance(),
-          sourceRepository: config.previewSourceRepository,
-        })
+      ? (() => {
+          const reporting = resolvePreviewAcceptanceStatusReporting(
+            config.previewGovernanceStatusMode,
+            () => ({
+              statuses: new GithubPreviewAcceptanceCommitStatusAdapter({
+                credentials: getPreviewGithubStatusToken(),
+              }),
+              gate: getPreviewGateReconciler(),
+            }),
+          );
+          return new ApplicationPreviewAcceptanceBrokerService({
+            authority: getPreviewControlSourceAuthority(),
+            pullRequests: new GithubPreviewControlPullRequestAdapter({
+              credentials: getPreviewGithubReadToken(),
+            }),
+            statuses: reporting.statuses,
+            receipts: getPreviewAcceptedImageReceipts(),
+            receiptAttestations: getPreviewAcceptedImageReceiptAttestations(),
+            gate: reporting.gate,
+            catalog: new DevPreviewServiceCatalogAdapter(),
+            acceptance: getPreviewEnvironmentAcceptance(),
+            sourceRepository: config.previewSourceRepository,
+          });
+        })()
       : new HttpPreviewAcceptanceBrokerAdapter({
           catalog: new DevPreviewServiceCatalogAdapter(),
         });

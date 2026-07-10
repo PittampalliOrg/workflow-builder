@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ApplicationPreviewAcceptanceBrokerService } from "$lib/server/application/preview-acceptance-broker";
 import { preparePreviewAcceptedImageReceipt } from "$lib/server/application/preview-accepted-images";
 import { previewGateRequirementDigest } from "$lib/server/application/preview-gate-requirements";
+import { resolvePreviewAcceptanceStatusReporting } from "$lib/server/application/adapters/preview-acceptance-status-reporting";
+import type { PreviewGovernanceStatusMode } from "$lib/server/application/config";
 import type {
   PreviewAcceptanceChangedServiceCatalogPort,
   PreviewAcceptedImageReceiptStorePort,
@@ -49,7 +51,9 @@ const ACCEPTED_RECEIPT = Object.freeze({
   createdAt: "2026-07-09T21:00:00.000Z",
 });
 
-function harness() {
+function harness(
+  options: Readonly<{ statusMode?: PreviewGovernanceStatusMode }> = {},
+) {
   const pullRequests: PreviewControlPullRequestInspectionPort = {
     inspectOpen: vi.fn(),
     inspect: vi.fn(async (input) => ({
@@ -111,6 +115,11 @@ function harness() {
     verify: vi.fn(() => true),
   };
   const gate = { reconcile: vi.fn(async () => undefined) };
+  const strictReporting = vi.fn(() => ({ statuses, gate }));
+  const reporting = resolvePreviewAcceptanceStatusReporting(
+    options.statusMode ?? "strict",
+    strictReporting,
+  );
   return {
     pullRequests,
     catalog,
@@ -120,15 +129,16 @@ function harness() {
     receipts,
     receiptAttestations,
     gate,
+    strictReporting,
     service: new ApplicationPreviewAcceptanceBrokerService({
       pullRequests,
       catalog,
       authority,
       acceptance,
-      statuses,
+      statuses: reporting.statuses,
       receipts,
       receiptAttestations,
-      gate,
+      gate: reporting.gate,
       sourceRepository: "PittampalliOrg/workflow-builder",
       now: () => new Date("2026-07-09T21:00:00.000Z"),
     }),
@@ -242,7 +252,7 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
     expect(h.gate.reconcile).toHaveBeenCalledTimes(2);
   });
 
-  it("fails closed when the final acceptance result cannot become a pre-merge status", async () => {
+  it("fails closed in strict mode when the final acceptance result cannot become a pre-merge status", async () => {
     const h = harness();
     vi.mocked(h.statuses.publish)
       .mockResolvedValueOnce(undefined)
@@ -252,6 +262,22 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
       stage: "reporting",
       message: expect.stringContaining("status denied"),
     });
+  });
+
+  it("keeps a successful POC replay successful when strict status reporting is unavailable", async () => {
+    const h = harness({ statusMode: "poc" });
+    vi.mocked(h.statuses.publish).mockRejectedValue(new Error("status denied"));
+    vi.mocked(h.gate.reconcile).mockRejectedValue(
+      new Error("gate unavailable"),
+    );
+
+    await expect(h.service.replay(input)).resolves.toMatchObject({
+      ok: true,
+      evidenceReceiptDigest: ACCEPTED_RECEIPT.receiptDigest,
+    });
+    expect(h.strictReporting).not.toHaveBeenCalled();
+    expect(h.statuses.publish).not.toHaveBeenCalled();
+    expect(h.gate.reconcile).not.toHaveBeenCalled();
   });
 
   it("republishes a durable receipt without rebuilding after a reporting failure", async () => {
