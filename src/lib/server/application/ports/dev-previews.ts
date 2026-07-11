@@ -84,6 +84,13 @@ export type VclusterPreviewRuntimeSnapshot = {
   name: string;
   resourceName: string;
   reconciliationSucceeded: boolean;
+  upJob: {
+    name: string;
+    found: boolean;
+    active: boolean;
+    succeeded: boolean;
+    failed: boolean;
+  };
   services: Array<{
     service: string;
     containers: VclusterPreviewRuntimeContainer[];

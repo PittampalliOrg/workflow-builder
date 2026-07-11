@@ -393,6 +393,7 @@ import { DrizzlePrPreviewRecordStore } from "$lib/server/application/adapters/pr
 import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
 import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
 import { ApplicationPreviewAccessService } from "$lib/server/application/preview-access";
+import { ApplicationPreviewTeardownService } from "$lib/server/application/preview-teardown";
 import { ApplicationPreviewLifecycleReaperService } from "$lib/server/application/preview-lifecycle-reaper";
 import { ApplicationPreviewReadBrokerService } from "$lib/server/application/preview-read-broker";
 import {
@@ -793,6 +794,7 @@ export function getApplicationAdapters(
   let previewReadBroker: ApplicationPreviewReadBrokerService | undefined;
   let previewArchive: ApplicationPreviewArchiveService | undefined;
   let previewAccess: ApplicationPreviewAccessService | undefined;
+  let previewTeardown: ApplicationPreviewTeardownService | undefined;
   let previewLifecycleReaper:
     | ApplicationPreviewLifecycleReaperService
     | undefined;
@@ -1702,6 +1704,14 @@ export function getApplicationAdapters(
       admins: {
         isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
       },
+    }));
+  const getPreviewTeardown = () =>
+    (previewTeardown ??= new ApplicationPreviewTeardownService({
+      access: getPreviewAccess(),
+      archive: getPreviewArchive(),
+      previews: getVclusterPreviewGateway(),
+      archiveOnTeardownEnabled: config.previewArchiveOnTeardownEnabled,
+      now: () => new Date(),
     }));
   const getPreviewLifecycleReaper = () => {
     if (isPreviewControlBroker()) {
@@ -2721,6 +2731,9 @@ export function getApplicationAdapters(
     },
     get previewAccess() {
       return getPreviewAccess();
+    },
+    get previewTeardown() {
+      return getPreviewTeardown();
     },
     get previewLifecycleReaper() {
       return getPreviewLifecycleReaper();

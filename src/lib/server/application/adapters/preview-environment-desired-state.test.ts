@@ -137,6 +137,10 @@ function json(value: unknown, status = 200) {
   });
 }
 
+function bodyOf(init: RequestInit | undefined): Record<string, unknown> {
+  return JSON.parse(String(init?.body));
+}
+
 function previewRecord(): VclusterPreviewRecord {
   return {
     name: command.name,
@@ -179,6 +183,13 @@ function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
       name: command.name,
       resourceName: command.name,
       reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${command.name}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
       services: [],
     })),
     cleanup: vi.fn(async () => ({
@@ -833,7 +844,7 @@ describe("BrokeredVclusterPreviewGateway", () => {
       requestId: command.provenance.requestId,
       sourceRevision: command.sourceRevision,
     };
-    const brokerFetch = vi.fn(async () =>
+    const brokerFetch = vi.fn(async (_url: string, _init?: RequestInit) =>
       json({
         ok: true,
         preview: sparseSeaReceipt,
@@ -865,6 +876,52 @@ describe("BrokeredVclusterPreviewGateway", () => {
         }),
       }),
     );
+  });
+
+  it("round-trips the exact archive quarantine guard through the physical broker", async () => {
+    const local = gateway();
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+      archiveConfirmed: true as const,
+      archiveQuarantine: {
+        forcedAt: "2026-07-11T12:00:00.000Z",
+        graceExpiredAt: "2026-07-11T12:00:00.000Z",
+        reason: "archive incomplete; forced failed-launch cleanup",
+        summaryFileId: "quarantine-summary-1",
+      },
+    };
+    const preview = {
+      name: command.name,
+      phase: "terminating",
+      ready: false,
+      sourceRevision: null,
+      provenance: null,
+    };
+    const brokerFetch = vi.fn(async (_url: string, _init?: RequestInit) =>
+      json({
+        ok: true,
+        preview,
+        receipt: {
+          name: command.name,
+          guard,
+          desiredStateAbsent: true,
+        },
+      }),
+    );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: local,
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+    });
+
+    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(
+      preview,
+    );
+    expect(local.teardown).not.toHaveBeenCalled();
+    expect(bodyOf(brokerFetch.mock.calls[0]?.[1])).toEqual({ guard });
   });
 
   it("refuses unguarded destructive commands before network access", async () => {

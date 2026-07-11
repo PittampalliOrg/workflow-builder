@@ -316,6 +316,13 @@ describe("vcluster-preview A3 claim-first client", () => {
           name: "feature-x",
           resourceName: "feature-x",
           reconciliationSucceeded: true,
+          upJob: {
+            name: "vcpreview-up-feature-x",
+            found: true,
+            active: false,
+            succeeded: true,
+            failed: false,
+          },
           services: [
             {
               service: "workflow-builder",
@@ -367,6 +374,17 @@ describe("vcluster-preview A3 claim-first client", () => {
         ],
       },
     );
+    await expect(getVclusterPreviewRuntime("feature-x")).resolves.toMatchObject(
+      {
+        name: "feature-x",
+        resourceName: "feature-x",
+        upJob: {
+          name: "vcpreview-up-feature-x",
+          found: true,
+          succeeded: true,
+        },
+      },
+    );
     await expect(getVclusterPreviewCleanup("feature-x")).resolves.toMatchObject(
       {
         complete: true,
@@ -379,8 +397,69 @@ describe("vcluster-preview A3 claim-first client", () => {
     );
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://sandbox-api/internal/vcluster-preview/feature-x/runtime",
+      "http://sandbox-api/internal/vcluster-preview/feature-x/runtime",
       "http://sandbox-api/internal/vcluster-preview/feature-x/cleanup",
     ]);
+  });
+
+  it.each([
+    [
+      "missing name",
+      {
+        resourceName: "feature-x",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-feature-x",
+          found: false,
+          active: false,
+          succeeded: false,
+          failed: false,
+        },
+        services: [],
+      },
+    ],
+    [
+      "empty resource identity",
+      {
+        name: "feature-x",
+        resourceName: "",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-feature-x",
+          found: false,
+          active: false,
+          succeeded: false,
+          failed: false,
+        },
+        services: [],
+      },
+    ],
+    [
+      "wrong up job identity",
+      {
+        name: "feature-x",
+        resourceName: "feature-x",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-another",
+          found: false,
+          active: false,
+          succeeded: false,
+          failed: false,
+        },
+        services: [],
+      },
+    ],
+  ])("rejects runtime proof with %s", async (_label, body) => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(body)),
+    );
+
+    await expect(getVclusterPreviewRuntime("feature-x")).rejects.toThrow(
+      "SEA returned an invalid preview runtime snapshot",
+    );
   });
 
   it("listVclusterPreviewsWithCounts parses previews and capacity counts", async () => {

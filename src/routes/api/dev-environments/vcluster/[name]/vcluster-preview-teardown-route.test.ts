@@ -9,20 +9,19 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 		"utf8",
 	);
 
-	it("archives BEFORE issuing the SEA teardown", () => {
-		const archiveAt = source.indexOf("previewArchive.archivePreview");
-		const teardownAt = source.indexOf("vclusterPreviews.teardown");
-		expect(archiveAt).toBeGreaterThan(-1);
-		expect(teardownAt).toBeGreaterThan(archiveAt);
+	it("delegates teardown policy to the hexagonal application service", () => {
+		expect(source).toContain("previewTeardown.teardown");
+		expect(source).not.toContain("previewArchive.archivePreview");
+		expect(source).not.toContain("vclusterPreviews.teardown");
+		expect(source).not.toContain("previewArchiveOnTeardownEnabled");
 	});
 
-	it("treats mutable-live archive as a teardown precondition", () => {
-		expect(source).toContain("previewArchiveOnTeardownEnabled");
-		expect(source).toContain("archiveRequired");
-		expect(source).toContain("teardown refused");
-		expect(source.indexOf("catch")).toBeLessThan(
-			source.indexOf("vclusterPreviews.teardown"),
-		);
+	it("opts into forced failed cleanup only for the exact query value", () => {
+		expect(source).toContain("url.searchParams.get('forceFailed') === 'true'");
+		expect(source).toContain("PreviewAccessDeniedError");
+		expect(source).toContain("PreviewTeardownRefusedError");
+		expect(source).toContain("error(403");
+		expect(source).toContain("error(409");
 	});
 
 	it("stays session-gated and adapter-free", () => {
@@ -30,5 +29,6 @@ describe("vcluster preview teardown route (E3 archive-on-teardown)", () => {
 		expect(source).toContain("previewAccess.authorize");
 		expect(source).not.toContain("$lib/server/application/adapters");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("drizzle-orm");
 	});
 });

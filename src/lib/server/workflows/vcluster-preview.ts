@@ -535,6 +535,13 @@ export interface VclusterPreviewRuntimeObservation {
   name: string;
   resourceName: string;
   reconciliationSucceeded: boolean;
+  upJob: {
+    name: string;
+    found: boolean;
+    active: boolean;
+    succeeded: boolean;
+    failed: boolean;
+  };
   services: Array<{
     service: string;
     containers: Array<{
@@ -554,8 +561,26 @@ export async function getVclusterPreviewRuntime(
     "GET",
     `/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}/runtime`,
   );
+  const nameValue = data.name;
+  const resourceNameValue = data.resourceName;
+  const upJob = objectValue(data.upJob);
   if (
+    typeof nameValue !== "string" ||
+    nameValue.trim().length === 0 ||
+    typeof resourceNameValue !== "string" ||
+    resourceNameValue.trim().length === 0 ||
     typeof data.reconciliationSucceeded !== "boolean" ||
+    !upJob ||
+    Object.keys(upJob).length !== 5 ||
+    !Object.keys(upJob).every((key) =>
+      ["name", "found", "active", "succeeded", "failed"].includes(key),
+    ) ||
+    typeof upJob.name !== "string" ||
+    upJob.name !== `vcpreview-up-${resourceNameValue}` ||
+    typeof upJob.found !== "boolean" ||
+    typeof upJob.active !== "boolean" ||
+    typeof upJob.succeeded !== "boolean" ||
+    typeof upJob.failed !== "boolean" ||
     !Array.isArray(data.services)
   ) {
     throw new Error("SEA returned an invalid preview runtime snapshot");
@@ -593,10 +618,16 @@ export async function getVclusterPreviewRuntime(
     };
   });
   return {
-    name: typeof data.name === "string" ? data.name : name,
-    resourceName:
-      typeof data.resourceName === "string" ? data.resourceName : name,
+    name: nameValue,
+    resourceName: resourceNameValue,
     reconciliationSucceeded: data.reconciliationSucceeded,
+    upJob: {
+      name: upJob.name,
+      found: upJob.found,
+      active: upJob.active,
+      succeeded: upJob.succeeded,
+      failed: upJob.failed,
+    },
     services,
   };
 }

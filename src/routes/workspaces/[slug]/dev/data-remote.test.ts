@@ -15,10 +15,13 @@ describe("dev hub data remote", () => {
 		expect(source).toContain("vclusterPreviews.presentLaunch");
 		expect(source).toContain("vclusterPreviews.sleep");
 		expect(source).toContain("vclusterPreviews.wake");
-		expect(source).toContain("vclusterPreviews.teardown");
+		expect(source).toContain("previewTeardown.teardown");
+		expect(source).not.toContain("previewArchive.archivePreview");
+		expect(source).not.toContain("vclusterPreviews.teardown");
 		expect(source).toContain("workflowData.listDevEnvironmentGroups");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("drizzle-orm");
+		expect(source).not.toContain("$lib/server/application/adapters");
 		expect(source).not.toContain("$lib/server/workflows/vcluster-preview");
 	});
 
@@ -41,16 +44,16 @@ describe("dev hub data remote", () => {
 		expect(source).not.toContain("prPreviews.peek(");
 	});
 
-	it("guards every query/command on the session and composes archive-before-teardown", () => {
+	it("guards every query/command and maps application teardown refusals", () => {
 		expect(source).toContain("getRequestEvent");
 		expect(source).toContain("Authentication required");
 		expect(source).toContain("requirePlatformAdmin");
 		expect(source).toContain("requireAdminSession");
 		expect(source).toContain("command(");
-		// Teardown archives first (flag-gated) then tears down.
-		const archiveAt = source.indexOf("previewArchive.archivePreview");
-		const teardownAt = source.indexOf("vclusterPreviews.teardown");
-		expect(archiveAt).toBeGreaterThan(-1);
-		expect(teardownAt).toBeGreaterThan(archiveAt);
+		expect(source).toContain("input.forceFailed === true");
+		expect(source).toContain("PreviewAccessDeniedError");
+		expect(source).toContain("PreviewTeardownRefusedError");
+		expect(source).toContain("error(403");
+		expect(source).toContain("error(409");
 	});
 });
