@@ -109,6 +109,50 @@ describe("team-driver onTeamSessionEvent", () => {
 		expect(injectMock).not.toHaveBeenCalled();
 	});
 
+	it("nudges an idle member that still HOLDS an in_progress task (deadlock breaker)", async () => {
+		const { db, store } = await fresh();
+		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
+		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+		// mate1 claimed tk1 but went idle without completing it — NOT claimable,
+		// so the claim nudge can't fire; the hold nudge must.
+		await db.execute(
+			sql.raw(
+				`INSERT INTO team_tasks (id, team_id, title, status, assignee_session_id) VALUES ('tk1','t1','write summary','in_progress','mate1')`,
+			),
+		);
+		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+		const nudge = recipients().find((a) => a.recipientSessionId === "mate1");
+		expect(nudge).toBeDefined();
+		expect(nudge!.content).toContain("tk1");
+		expect(nudge!.content).toContain("update_task");
+		expect(nudge!.sourceEventId).toContain("team-hold-nudge:mate1:tk1:");
+	});
+
+	it("hold nudge takes priority over the claim nudge and dedupes on the task's updated_at", async () => {
+		const { db, store } = await fresh();
+		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
+		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+		await db.execute(
+			sql.raw(
+				`INSERT INTO team_tasks (id, team_id, title, status, assignee_session_id) VALUES ('tk1','t1','write summary','in_progress','mate1')`,
+			),
+		);
+		// claimable work ALSO exists — the held task must still win
+		await db.execute(
+			sql.raw(`INSERT INTO team_tasks (id, team_id, title) VALUES ('tk2','t1','other')`),
+		);
+		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+		const mate = recipients().filter((a) => a.recipientSessionId === "mate1");
+		expect(mate).toHaveLength(1);
+		expect(mate[0].sourceEventId).toContain("team-hold-nudge:");
+		// stable hold state → identical sourceEventId on a repeat idle (dedupe key)
+		injectMock.mockClear();
+		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+		const again = recipients().filter((a) => a.recipientSessionId === "mate1");
+		expect(again).toHaveLength(1);
+		expect(again[0].sourceEventId).toBe(mate[0].sourceEventId);
+	});
+
 	it("never resurrects a shutdown member on its final idle", async () => {
 		const { db, store } = await fresh();
 		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
