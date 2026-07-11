@@ -841,6 +841,141 @@ def test_repeat_delete_after_namespace_and_identity_absence_is_complete(
     _assert_identity_absent(core, rbac, "already-gone")
 
 
+def test_repeat_delete_preserves_receipt_while_identity_cleanup_is_pending(
+    monkeypatch,
+) -> None:
+    name = "cleanup-pending"
+    request_id = "request-one"
+    source_revision = "a" * 40
+    environment_uid = "12345678-1234-1234-1234-123456789abc"
+    deletion_intent_id = f"sha256:{'d' * 64}"
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    _seed_identity(core, rbac, name)
+    contract = PreviewRunnerIdentityContract(name, "ephemeral")
+    del core.namespaces[contract.target_namespace]
+    del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
+    batch = FakeBatch(
+        down_succeeded=True,
+        down_annotations={
+            "preview.stacks.io/teardown-request-id": request_id,
+            "preview.stacks.io/teardown-source-revision": source_revision,
+            "preview.stacks.io/teardown-environment-uid": environment_uid,
+            "preview.stacks.io/teardown-intent-id": deletion_intent_id,
+        },
+    )
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_coordination_client",
+        lambda: pytest.fail("a successful receipt must not reacquire authority"),
+    )
+    request = SimpleNamespace(headers={"authorization": "Bearer test-token"})
+    teardown = app_module.VclusterPreviewTeardownRequest(
+        expectedRequestId=request_id,
+        expectedSourceRevision=source_revision,
+        environmentUid=environment_uid,
+        deletionIntentId=deletion_intent_id,
+    )
+
+    first = app_module.teardown_vcluster_preview(request, name, teardown)
+    second = app_module.teardown_vcluster_preview(request, name, teardown)
+
+    assert first == second
+    assert first["status"] == "terminating"
+    assert "complete" not in first
+    assert batch.jobs == []
+    assert (CONTROL_NAMESPACE, contract.identity_name) in core.service_accounts
+    assert contract.identity_name in rbac.cluster_role_bindings
+
+
+def test_fenced_repeat_delete_preserves_receipt_that_just_succeeded(
+    monkeypatch,
+) -> None:
+    name = "just-completed"
+    request_id = "request-two"
+    source_revision = "b" * 40
+    environment_uid = "87654321-4321-4321-4321-cba987654321"
+    deletion_intent_id = f"sha256:{'e' * 64}"
+    annotations = {
+        "preview.stacks.io/teardown-request-id": request_id,
+        "preview.stacks.io/teardown-source-revision": source_revision,
+        "preview.stacks.io/teardown-environment-uid": environment_uid,
+        "preview.stacks.io/teardown-intent-id": deletion_intent_id,
+    }
+
+    class CompletingBatch(FakeBatch):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status_reads = 0
+
+        def read_namespaced_job_status(self, *, name: str, **_kwargs):
+            self.status_reads += 1
+            preview_name = name.removeprefix("vcpreview-down-")
+            job = _down_job(preview_name, succeeded=self.status_reads > 1)
+            if self.status_reads == 1:
+                job.status.failed = 0
+            job.metadata.annotations.update(annotations)
+            return job
+
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    _seed_identity(core, rbac, name)
+    contract = PreviewRunnerIdentityContract(name, "ephemeral")
+    del core.namespaces[contract.target_namespace]
+    del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
+    batch = CompletingBatch()
+    coordination = SimpleNamespace()
+    operation_holder = f"op:{'f' * 32}"
+    releases: list[dict] = []
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_acquire_preview_operation_lease",
+        lambda *_args, **_kwargs: operation_holder,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_release_preview_operation_lease",
+        lambda *_args, **kwargs: releases.append(kwargs),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_submit_preview_job",
+        lambda *_args, **_kwargs: pytest.fail("completed receipt must not be replaced"),
+    )
+
+    result = app_module.teardown_vcluster_preview(
+        SimpleNamespace(headers={"authorization": "Bearer test-token"}),
+        name,
+        app_module.VclusterPreviewTeardownRequest(
+            expectedRequestId=request_id,
+            expectedSourceRevision=source_revision,
+            environmentUid=environment_uid,
+            deletionIntentId=deletion_intent_id,
+        ),
+    )
+
+    assert result["status"] == "terminating"
+    assert "complete" not in result
+    assert batch.status_reads == 2
+    assert batch.jobs == []
+    assert releases == [
+        {
+            "namespace": CONTROL_NAMESPACE,
+            "real_name": name,
+            "holder": operation_holder,
+        }
+    ]
+
+
 def test_repeat_delete_rejects_a_success_receipt_from_an_older_generation(
     monkeypatch,
 ) -> None:

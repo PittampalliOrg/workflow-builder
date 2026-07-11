@@ -8238,6 +8238,14 @@ def provision_vcluster_preview(
     job_name = manifest["metadata"]["name"]
     tailnet_host = _vcluster_preview_tailnet_host(body)
     url = f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}"
+    response = {
+        "name": body.name,
+        "action": body.action,
+        "job": job_name,
+        "status": "provisioning" if body.action == "up" else "terminating",
+        "tailnetHost": tailnet_host,
+        "url": url if body.action == "up" else None,
+    }
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() not in {
         "1",
         "true",
@@ -8245,8 +8253,22 @@ def provision_vcluster_preview(
     }:
         batch, core = _load_k8s_clients()
         safe_name = _safe_resource_name(body.name, max_length=40)
+
+        def exact_down_receipt_succeeded() -> bool:
+            return _preview_down_receipt_succeeded(
+                batch,
+                namespace=namespace,
+                preview_name=safe_name,
+                expected_request_id=body.teardownExpectedRequestId,
+                expected_source_revision=body.teardownExpectedSourceRevision,
+                protected_request_id=body.teardownProtectedRequestId,
+                environment_uid=body.teardownEnvironmentUid,
+                deletion_intent_id=body.teardownIntentId,
+            )
+
         allow_absent_down_bootstrap = False
         if body.action == "down" and not _namespace_exists(core, safe_name):
+            receipt_succeeded = exact_down_receipt_succeeded()
             try:
                 identity_absent = PreviewRunnerIdentityAdapter(
                     core, _load_k8s_rbac_client()
@@ -8257,16 +8279,6 @@ def provision_vcluster_preview(
                     detail=f"could not prove preview runner identity absence: {exc}",
                 ) from exc
             if identity_absent:
-                receipt_succeeded = _preview_down_receipt_succeeded(
-                    batch,
-                    namespace=namespace,
-                    preview_name=safe_name,
-                    expected_request_id=body.teardownExpectedRequestId,
-                    expected_source_revision=body.teardownExpectedSourceRevision,
-                    protected_request_id=body.teardownProtectedRequestId,
-                    environment_uid=body.teardownEnvironmentUid,
-                    deletion_intent_id=body.teardownIntentId,
-                )
                 if not receipt_succeeded and not (
                     body.teardownEnvironmentUid and body.teardownIntentId
                 ):
@@ -8294,6 +8306,18 @@ def provision_vcluster_preview(
                 # controller intent is allowed to create a control-only runner
                 # identity so the normal down Job can emit durable absence proof.
                 allow_absent_down_bootstrap = True
+            elif receipt_succeeded:
+                owned_guard = bool(
+                    body.teardownExpectedRequestId
+                    and body.teardownExpectedSourceRevision
+                )
+                superseded_guard = bool(body.teardownProtectedRequestId)
+                if owned_guard != superseded_guard:
+                    # The destructive runner already succeeded, but the independent
+                    # identity reconciler has not yet completed. Preserve the exact
+                    # durable receipt and keep reporting teardown in progress.
+                    set_current_span_io("output", response)
+                    return response
         coordination = _load_k8s_coordination_client()
         operation_holder = _acquire_preview_operation_lease(
             coordination, namespace=namespace, real_name=body.name
@@ -8344,7 +8368,9 @@ def provision_vcluster_preview(
                                 "or superseded ownership guard"
                             ),
                         )
+                    receipt_succeeded = exact_down_receipt_succeeded()
                 else:
+                    receipt_succeeded = False
                     observed_request_id = (
                         member.provenance.get("requestId")
                         if member.provenance is not None
@@ -8394,15 +8420,18 @@ def provision_vcluster_preview(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="refusing to teardown the protected preview generation",
                         )
-                _submit_preview_job(
-                    batch,
-                    core,
-                    namespace=namespace,
-                    manifest=manifest,
-                    lifecycle=member.lifecycle if member is not None else None,
-                    allow_absent_down_bootstrap=allow_absent_down_bootstrap,
-                )
-            handed_to_runner = True
+                if not receipt_succeeded:
+                    _submit_preview_job(
+                        batch,
+                        core,
+                        namespace=namespace,
+                        manifest=manifest,
+                        lifecycle=member.lifecycle if member is not None else None,
+                        allow_absent_down_bootstrap=allow_absent_down_bootstrap,
+                    )
+                    handed_to_runner = True
+            if body.action == "up":
+                handed_to_runner = True
         finally:
             if not handed_to_runner:
                 _release_preview_operation_lease(
@@ -8411,14 +8440,6 @@ def provision_vcluster_preview(
                     real_name=body.name,
                     holder=operation_holder,
                 )
-    response = {
-        "name": body.name,
-        "action": body.action,
-        "job": job_name,
-        "status": "provisioning" if body.action == "up" else "terminating",
-        "tailnetHost": tailnet_host,
-        "url": url if body.action == "up" else None,
-    }
     set_current_span_io("output", response)
     return response
 
