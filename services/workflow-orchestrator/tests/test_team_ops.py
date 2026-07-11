@@ -79,6 +79,43 @@ def test_simple_ops_dispatch_as_activity_tasks(op):
     assert call["retry_policy"] is not None
 
 
+def test_meta_team_token_budget_flows_to_ops_and_join():
+    ctx = RoutingCtx()
+    meta = {"name": "demo", "team": {"tokenBudget": 150_000}}
+    start_team_call(
+        ctx,
+        call_id="abc123",
+        spec={"teamOp": "spawn", "args": {"name": "r"}},
+        exec_id="e1",
+        meta=meta,
+        otel=None,
+    )
+    assert ctx.activity_calls[0]["input"]["teamTokenBudget"] == 150_000
+    start_team_call(
+        ctx,
+        call_id="def456",
+        spec={"teamOp": "join", "args": {}},
+        exec_id="e1",
+        meta=meta,
+        otel=None,
+    )
+    assert ctx.child_calls[0]["input"]["teamTokenBudget"] == 150_000
+
+
+@pytest.mark.parametrize("bad", [None, 0, -5, "150000", True, {"nested": 1}])
+def test_invalid_meta_team_token_budget_is_dropped(bad):
+    ctx = RoutingCtx()
+    start_team_call(
+        ctx,
+        call_id="abc123",
+        spec={"teamOp": "spawn", "args": {"name": "r"}},
+        exec_id="e1",
+        meta={"name": "demo", "team": {"tokenBudget": bad}},
+        otel=None,
+    )
+    assert ctx.activity_calls[0]["input"]["teamTokenBudget"] is None
+
+
 def test_unknown_op_is_a_dispatch_error():
     ctx = RoutingCtx()
     task = start_team_call(
@@ -91,6 +128,41 @@ def test_unknown_op_is_a_dispatch_error():
     )
     assert isinstance(task, dict)
     assert "unknown team op" in task["dispatchError"]
+
+
+def test_ensure_body_carries_token_budget(monkeypatch):
+    import activities.team_ops as ops
+
+    seen: list[tuple[str, str, dict | None]] = []
+
+    def fake_request(method, path, json_body=None):
+        seen.append((method, path, json_body))
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(ops, "_request", fake_request)
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    ops.execute_team_op(
+        None,
+        {
+            "executionId": "e1",
+            "op": "broadcast",
+            "args": {"content": "hi"},
+            "teamName": "demo",
+            "teamTokenBudget": 150_000,
+        },
+    )
+    ensure = next(b for m, p, b in seen if p.endswith("ensure-script-team"))
+    assert ensure["tokenBudget"] == 150_000
+    # And absent budgets stay OUT of the body (create keeps NULL = unlimited).
+    seen.clear()
+    ops.execute_team_op(
+        None,
+        {"executionId": "e1", "op": "broadcast", "args": {"content": "hi"}},
+    )
+    ensure = next(b for m, p, b in seen if p.endswith("ensure-script-team"))
+    assert "tokenBudget" not in ensure
 
 
 # ── journal team branch ───────────────────────────────────────────────────

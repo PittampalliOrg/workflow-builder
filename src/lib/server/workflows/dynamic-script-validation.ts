@@ -100,6 +100,24 @@ function normalizeMeta(
 	const phases = normalizePhases(m.phases);
 	if (phases) meta.phases = phases;
 	else delete meta.phases;
+	// meta.team.tokenBudget — the team-wide token cap the orchestrator forwards
+	// to ensure-script-team. Validated here so authors get a clear error at
+	// validate time instead of a silently-ignored budget at run time.
+	if (m.team !== undefined) {
+		if (!m.team || typeof m.team !== "object" || Array.isArray(m.team)) {
+			return { ok: false, error: "spec.meta.team must be an object when present" };
+		}
+		const budget = (m.team as Record<string, unknown>).tokenBudget;
+		if (
+			budget !== undefined &&
+			(typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0)
+		) {
+			return {
+				ok: false,
+				error: "spec.meta.team.tokenBudget must be a positive number when present",
+			};
+		}
+	}
 	return { ok: true, meta };
 }
 

@@ -6,6 +6,11 @@ export const meta = {
 		{ title: 'Form' },
 		{ title: 'Work' },
 	],
+	// Team-wide token cap (input+output across every member session). Once
+	// exhausted, spawn refuses and idle teammates stop being fed new tasks —
+	// a healthy full run of this demo uses ~50k, so 150k is a generous ceiling
+	// that still demonstrates the budget chip draining in TeamPulse.
+	team: { tokenBudget: 150000 },
 }
 
 // THE SCRIPT IS THE LEAD: it deterministically forms the team and seeds work;

@@ -103,7 +103,13 @@ def team_join_workflow(ctx: wf.DaprWorkflowContext, input_data: dict):
         polls += 1
         state = yield ctx.call_activity(
             get_team_state,
-            input={"executionId": execution_id, "_otel": otel},
+            input={
+                "executionId": execution_id,
+                # Forwarded so a join-before-any-other-op still creates the team
+                # WITH its meta.team.tokenBudget (ensure applies it on create only).
+                "teamTokenBudget": input_data.get("teamTokenBudget"),
+                "_otel": otel,
+            },
             retry_policy=_TEAM_STATE_RETRY_POLICY,
         )
         if not isinstance(state, dict) or not state.get("success"):
