@@ -294,6 +294,9 @@ export class ApplicationPreviewTeardownService {
     const observedServices = runtime.services
       .map((service) => service.service)
       .sort();
+    const noReadyContainers = runtime.services.every((service) =>
+      service.containers.every((container) => !container.ready),
+    );
     const exactFailedJob =
       preview.phase === "failed" &&
       runtime.upJob.found &&
@@ -317,7 +320,7 @@ export class ApplicationPreviewTeardownService {
       expectedServices.every(
         (service, index) => service === observedServices[index],
       ) &&
-      runtime.services.every((service) => service.containers.length === 0)
+      noReadyContainers
     );
   }
 

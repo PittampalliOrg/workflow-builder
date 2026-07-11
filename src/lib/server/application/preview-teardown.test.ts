@@ -284,6 +284,51 @@ describe("ApplicationPreviewTeardownService", () => {
     );
   });
 
+  it("allows failed-launch quarantine when exact services have only non-ready containers", async () => {
+    const h = harness({
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "preview-unreachable",
+      },
+      runtime: {
+        name: "failed-five",
+        resourceName: "failed-five",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-failed-five",
+          found: true,
+          active: false,
+          succeeded: false,
+          failed: true,
+        },
+        services: [
+          {
+            service: "function-router",
+            containers: [
+              { pod: "router-1", image: "router", imageId: null, ready: false },
+            ],
+          },
+          {
+            service: "workflow-builder",
+            containers: [
+              { pod: "builder-1", image: "builder", imageId: null, ready: false },
+            ],
+          },
+        ],
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        forceFailed: true,
+      }),
+    ).resolves.toMatchObject({ archive: { quarantined: true } });
+    expect(h.events).toEqual(["archive", "runtime", "quarantine", "teardown"]);
+  });
+
   it.each([
     ["ready state", { ready: true }],
     ["nonfailed phase", { phase: "terminating" }],
@@ -497,13 +542,13 @@ describe("ApplicationPreviewTeardownService", () => {
       },
     ],
     [
-      "a container is observed",
+      "a ready container is observed",
       {
         services: [
           {
             service: "function-router",
             containers: [
-              { pod: "pod-1", image: "image", imageId: null, ready: false },
+              { pod: "pod-1", image: "image", imageId: null, ready: true },
             ],
           },
           { service: "workflow-builder", containers: [] },
