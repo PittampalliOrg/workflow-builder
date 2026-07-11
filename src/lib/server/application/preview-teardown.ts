@@ -235,6 +235,7 @@ export class ApplicationPreviewTeardownService {
       !failedLaunchPhase ||
       preview.ready ||
       preview.bootSeconds !== null ||
+      preview.lastActive !== null ||
       preview.trustedCode !== true ||
       preview.pool !== null ||
       preview.allocation?.kind !== "cold" ||
@@ -294,9 +295,9 @@ export class ApplicationPreviewTeardownService {
     const observedServices = runtime.services
       .map((service) => service.service)
       .sort();
-    const noReadyContainers = runtime.services.every((service) =>
-      service.containers.every((container) => !container.ready),
-    );
+    // A later sync wave can fail after earlier containers start. The explicit
+    // force path is archive-first, requires no activity/readiness receipt, and
+    // persists loss accounting; container readiness is not proof of user data.
     const exactFailedJob =
       preview.phase === "failed" &&
       runtime.upJob.found &&
@@ -319,8 +320,7 @@ export class ApplicationPreviewTeardownService {
       expectedServices.length === observedServices.length &&
       expectedServices.every(
         (service, index) => service === observedServices[index],
-      ) &&
-      noReadyContainers
+      )
     );
   }
 
