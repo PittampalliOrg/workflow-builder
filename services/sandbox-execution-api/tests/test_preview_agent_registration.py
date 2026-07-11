@@ -575,6 +575,42 @@ def test_cleanup_waits_for_generated_mapping_secret_absence() -> None:
     assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
 
 
+def test_cleanup_preserves_leaf_until_foreground_certificate_is_absent() -> None:
+    adapter, core, custom = _adapter()
+    _install_ready_material(core, custom)
+    core.namespaces[agent_name(PREVIEW_ID)] = {
+        "metadata": {
+            "name": agent_name(PREVIEW_ID),
+            "labels": registration_labels(PREVIEW_ID),
+            "annotations": registration_annotations(ENVIRONMENT_UID),
+        }
+    }
+    custom.hold_delete_plural = CERTIFICATE_PLURAL
+
+    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is False
+    assert (CERTIFICATE_NAMESPACE, CERTIFICATE_PLURAL, certificate_name(PREVIEW_ID)) in custom.objects
+    assert (CERTIFICATE_NAMESPACE, certificate_secret_name(PREVIEW_ID)) in core.secrets
+    assert agent_name(PREVIEW_ID) in core.namespaces
+    assert (
+        "delete",
+        CERTIFICATE_NAMESPACE,
+        CERTIFICATE_PLURAL,
+        certificate_name(PREVIEW_ID),
+        {"propagationPolicy": "Foreground"},
+    ) in custom.calls
+    assert (
+        "delete-secret",
+        CERTIFICATE_NAMESPACE,
+        certificate_secret_name(PREVIEW_ID),
+    ) not in core.calls
+
+    custom.hold_delete_plural = None
+    assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
+    assert custom.objects == {}
+    assert core.secrets == {}
+    assert core.namespaces == {}
+
+
 def test_cleanup_preserves_finalizer_when_mapping_delete_is_denied() -> None:
     adapter, core, _custom = _adapter()
     core.secrets[(ARGO_NAMESPACE, mapping_secret_name(PREVIEW_ID))] = _mapping_secret(
