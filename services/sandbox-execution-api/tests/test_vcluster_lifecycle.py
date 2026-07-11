@@ -272,12 +272,15 @@ class _FakeBatch:
 class _FakeCoordination:
     def __init__(self) -> None:
         self.leases: dict[str, SimpleNamespace] = {}
+        self.deleted: list[dict] = []
+        self.replaced: list[dict] = []
+        self._uid_sequence = 0
 
     @staticmethod
-    def _lease(body, resource_version: str):
+    def _lease(body, resource_version: str, uid: str):
         spec = body["spec"]
         return SimpleNamespace(
-            metadata=SimpleNamespace(resource_version=resource_version),
+            metadata=SimpleNamespace(resource_version=resource_version, uid=uid),
             spec=SimpleNamespace(
                 holder_identity=spec["holderIdentity"],
                 lease_duration_seconds=spec["leaseDurationSeconds"],
@@ -296,17 +299,33 @@ class _FakeCoordination:
         name = body["metadata"]["name"]
         if name in self.leases:
             raise _ApiExc(409)
-        self.leases[name] = self._lease(body, "1")
+        self._uid_sequence += 1
+        uid = f"00000000-0000-0000-0000-{self._uid_sequence:012d}"
+        self.leases[name] = self._lease(body, "1", uid)
         return self.leases[name]
 
     def replace_namespaced_lease(self, name, namespace, body):
         current = self.read_namespaced_lease(name, namespace)
         if body["metadata"].get("resourceVersion") != current.metadata.resource_version:
             raise _ApiExc(409)
+        if body["metadata"].get("uid", current.metadata.uid) != current.metadata.uid:
+            raise _ApiExc(409)
+        self.replaced.append(body)
         self.leases[name] = self._lease(
-            body, str(int(current.metadata.resource_version) + 1)
+            body,
+            str(int(current.metadata.resource_version) + 1),
+            current.metadata.uid,
         )
         return self.leases[name]
+
+    def delete_namespaced_lease(self, name, namespace, body):
+        current = self.read_namespaced_lease(name, namespace)
+        if body.get("preconditions", {}).get("uid") != current.metadata.uid:
+            raise _ApiExc(409)
+        if current.spec.holder_identity:
+            raise _ApiExc(403)
+        self.deleted.append(body)
+        del self.leases[name]
 
 
 def _env(entries) -> dict[str, str]:
@@ -866,6 +885,124 @@ def test_operation_lease_blocks_overlap_and_releases_by_exact_holder() -> None:
     assert app_module._acquire_preview_operation_lease(
         coordination, namespace="workflow-builder", real_name="feature-one"
     ).startswith("op:")
+
+
+def test_operation_lease_delete_cas_releases_then_uid_fences_absence() -> None:
+    coordination = _FakeCoordination()
+    holder = app_module._acquire_preview_operation_lease(
+        coordination, namespace="workflow-builder", real_name="feature-one"
+    )
+    uid = coordination.leases["vcpreview-op-feature-one"].metadata.uid
+
+    assert app_module._delete_preview_operation_lease(
+        coordination,
+        namespace="workflow-builder",
+        real_name="feature-one",
+        holder=holder,
+    )
+
+    assert "vcpreview-op-feature-one" not in coordination.leases
+    assert coordination.replaced[-1]["metadata"] == {
+        "name": "vcpreview-op-feature-one",
+        "namespace": "workflow-builder",
+        "resourceVersion": "1",
+        "uid": uid,
+    }
+    assert coordination.replaced[-1]["spec"]["holderIdentity"] == ""
+    assert coordination.deleted == [
+        {
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "propagationPolicy": "Background",
+            "preconditions": {"uid": uid},
+        }
+    ]
+
+
+def test_operation_lease_delete_preserves_same_name_replacement() -> None:
+    replacement_uid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+    class ReplacementCoordination(_FakeCoordination):
+        def delete_namespaced_lease(self, name, namespace, body):
+            current = self.read_namespaced_lease(name, namespace)
+            assert body["preconditions"] == {"uid": current.metadata.uid}
+            self.deleted.append(body)
+            replacement = app_module._preview_operation_lease_body(
+                name=name, namespace=namespace, holder=""
+            )
+            self.leases[name] = self._lease(replacement, "99", replacement_uid)
+            raise _ApiExc(404)
+
+    coordination = ReplacementCoordination()
+    coordination.create_namespaced_lease(
+        namespace="workflow-builder",
+        body=app_module._preview_operation_lease_body(
+            name="vcpreview-op-feature-one",
+            namespace="workflow-builder",
+            holder="",
+        ),
+    )
+
+    with pytest.raises(
+        app_module.PreviewRunnerIdentityError, match="replacement appeared"
+    ):
+        app_module._delete_preview_operation_lease(
+            coordination,
+            namespace="workflow-builder",
+            real_name="feature-one",
+            holder="",
+        )
+
+    assert (
+        coordination.leases["vcpreview-op-feature-one"].metadata.uid == replacement_uid
+    )
+
+
+def test_empty_operation_lease_delete_needs_only_stable_uid() -> None:
+    coordination = _FakeCoordination()
+    lease = coordination.create_namespaced_lease(
+        namespace="workflow-builder",
+        body=app_module._preview_operation_lease_body(
+            name="vcpreview-op-feature-one",
+            namespace="workflow-builder",
+            holder="",
+        ),
+    )
+    lease.metadata.resource_version = None
+
+    assert app_module._delete_preview_operation_lease(
+        coordination,
+        namespace="workflow-builder",
+        real_name="feature-one",
+        holder="",
+    )
+    assert "vcpreview-op-feature-one" not in coordination.leases
+
+
+def test_operation_lease_reacquisition_is_preserved_by_empty_holder_policy() -> None:
+    successor = f"op:{'e' * 32}"
+
+    class ReacquiredCoordination(_FakeCoordination):
+        def delete_namespaced_lease(self, name, namespace, body):
+            self.leases[name].spec.holder_identity = successor
+            return super().delete_namespaced_lease(name, namespace, body)
+
+    coordination = ReacquiredCoordination()
+    holder = app_module._acquire_preview_operation_lease(
+        coordination, namespace="workflow-builder", real_name="feature-one"
+    )
+
+    with pytest.raises(
+        app_module.PreviewRunnerIdentityError, match="could not delete cleanup Lease"
+    ):
+        app_module._delete_preview_operation_lease(
+            coordination,
+            namespace="workflow-builder",
+            real_name="feature-one",
+            holder=holder,
+        )
+
+    assert coordination.leases["vcpreview-op-feature-one"].spec.holder_identity == successor
 
 
 def test_stale_down_cannot_delete_a_reopened_generation(monkeypatch) -> None:
@@ -2530,9 +2667,11 @@ def test_cleanup_endpoint_emits_exact_controller_deletion_receipt(monkeypatch) -
     }
 
 
-def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) -> None:
-    generation = f"op:{'c' * 32}"
-    job_uid = "87654321-4321-4321-4321-cba987654321"
+def _completed_cleanup_receipt_job(
+    *,
+    generation: str = f"op:{'c' * 32}",
+    job_uid: str = "87654321-4321-4321-4321-cba987654321",
+) -> SimpleNamespace:
     annotations = {
         app_module.RUNNER_GENERATION_ANNOTATION: generation,
         app_module._PREVIEW_IDENTITY_CLEANED_ANNOTATION: "true",
@@ -2544,7 +2683,7 @@ def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) 
         "preview.stacks.io/managed": "true",
         "preview.stacks.io/preview-name": "acceptance",
     }
-    job = SimpleNamespace(
+    return SimpleNamespace(
         metadata=SimpleNamespace(
             name="vcpreview-down-acceptance",
             uid=job_uid,
@@ -2566,10 +2705,32 @@ def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) 
         status=SimpleNamespace(succeeded=1, failed=0, conditions=[]),
     )
 
+
+def _empty_cleanup_operation_lease(coordination: _FakeCoordination) -> str:
+    lease = coordination.create_namespaced_lease(
+        namespace="workflow-builder",
+        body=app_module._preview_operation_lease_body(
+            name="vcpreview-op-acceptance",
+            namespace="workflow-builder",
+            holder="",
+        ),
+    )
+    return lease.metadata.uid
+
+
+def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) -> None:
+    generation = f"op:{'c' * 32}"
+    job_uid = "87654321-4321-4321-4321-cba987654321"
+    job = _completed_cleanup_receipt_job(
+        generation=generation,
+        job_uid=job_uid,
+    )
+
     class ReceiptBatch:
         def __init__(self) -> None:
             self.job = job
             self.deleted = False
+            self.delete_body = None
 
         def list_namespaced_job(self, **_kwargs):
             return SimpleNamespace(items=[] if self.deleted else [self.job])
@@ -2579,7 +2740,8 @@ def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) 
                 raise _ApiExc(404)
             return self.job
 
-        def delete_namespaced_job(self, **_kwargs):
+        def delete_namespaced_job(self, **kwargs):
+            self.delete_body = kwargs["body"]
             self.deleted = True
 
         def read_namespaced_job(self, **_kwargs):
@@ -2589,7 +2751,12 @@ def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) 
 
     batch = ReceiptBatch()
     core = _FakeCore([])
+    coordination = _FakeCoordination()
+    lease_uid = _empty_cleanup_operation_lease(coordination)
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
 
     inventory = app_module.list_vcluster_preview_cleanup_receipts(_no_auth_request())
     assert inventory == {
@@ -2612,9 +2779,97 @@ def test_completed_down_receipt_is_pruned_only_after_exact_release(monkeypatch) 
     )
     assert released["absent"] is True
     assert batch.deleted is True
+    assert batch.delete_body == {
+        "apiVersion": "v1",
+        "kind": "DeleteOptions",
+        "propagationPolicy": "Background",
+        "preconditions": {"uid": job_uid},
+    }
+    assert "vcpreview-op-acceptance" not in coordination.leases
+    assert coordination.deleted[-1]["preconditions"] == {"uid": lease_uid}
     assert app_module.list_vcluster_preview_cleanup_receipts(_no_auth_request()) == {
         "receipts": []
     }
+
+
+def test_missing_cleanup_receipt_retry_still_deletes_empty_operation_lease(
+    monkeypatch,
+) -> None:
+    class MissingReceiptBatch:
+        def read_namespaced_job_status(self, **_kwargs):
+            raise _ApiExc(404)
+
+    coordination = _FakeCoordination()
+    lease_uid = _empty_cleanup_operation_lease(coordination)
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_clients",
+        lambda: (MissingReceiptBatch(), _FakeCore([])),
+    )
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+
+    released = app_module.release_vcluster_preview_cleanup_receipt(
+        _no_auth_request(),
+        "acceptance",
+        app_module.VclusterPreviewCleanupReceiptReleaseRequest(
+            jobUid="87654321-4321-4321-4321-cba987654321",
+            runnerGeneration=f"op:{'c' * 32}",
+        ),
+    )
+
+    assert released["absent"] is True
+    assert "vcpreview-op-acceptance" not in coordination.leases
+    assert coordination.deleted[-1]["preconditions"] == {"uid": lease_uid}
+
+
+@pytest.mark.parametrize("delete_status", [None, 404])
+def test_cleanup_receipt_release_preserves_same_name_job_replacement(
+    monkeypatch, delete_status: int | None
+) -> None:
+    job_uid = "87654321-4321-4321-4321-cba987654321"
+    replacement_uid = "11111111-2222-3333-4444-555555555555"
+
+    class ReplacementReceiptBatch:
+        def __init__(self) -> None:
+            self.job = _completed_cleanup_receipt_job(job_uid=job_uid)
+            self.delete_body = None
+
+        def read_namespaced_job_status(self, **_kwargs):
+            return self.job
+
+        def delete_namespaced_job(self, **kwargs):
+            self.delete_body = kwargs["body"]
+            self.job = _completed_cleanup_receipt_job(job_uid=replacement_uid)
+            if delete_status is not None:
+                raise _ApiExc(delete_status)
+
+        def read_namespaced_job(self, **_kwargs):
+            return self.job
+
+    batch = ReplacementReceiptBatch()
+    coordination = _FakeCoordination()
+    _empty_cleanup_operation_lease(coordination)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, _FakeCore([])))
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.release_vcluster_preview_cleanup_receipt(
+            _no_auth_request(),
+            "acceptance",
+            app_module.VclusterPreviewCleanupReceiptReleaseRequest(
+                jobUid=job_uid,
+                runnerGeneration=f"op:{'c' * 32}",
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert batch.job.metadata.uid == replacement_uid
+    assert "vcpreview-op-acceptance" in coordination.leases
+    assert coordination.deleted == []
 
 
 def test_cleanup_endpoint_reports_failed_runner_without_claiming_absence(
