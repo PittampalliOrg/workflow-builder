@@ -44,6 +44,11 @@ export class ApplicationVclusterPreviewService {
     };
   }
 
+  /** Present an application-service record through the existing UI DTO. */
+  present(record: VclusterPreviewRecord): VclusterPreviewSummary {
+    return this.decorate(record);
+  }
+
   /** Present the new aggregate launch result through the existing Dev-hub DTO. */
   presentLaunch(
     outcome: PreviewEnvironmentLaunchOutcome,

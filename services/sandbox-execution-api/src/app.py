@@ -8736,10 +8736,18 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
         "true",
         "yes",
     }:
+        up_job_name = _vcluster_preview_job_name(safe_name, "up")
         return {
             "name": name,
             "resourceName": safe_name,
             "reconciliationSucceeded": True,
+            "upJob": {
+                "name": up_job_name,
+                "found": False,
+                "active": False,
+                "succeeded": False,
+                "failed": False,
+            },
             "services": [],
         }
     batch, core = _load_k8s_clients()
@@ -8752,9 +8760,10 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     up_job_active = False
     up_job_succeeded = False
     up_job_failed = False
+    up_job_name = _vcluster_preview_job_name(member.real_name, "up")
     try:
         up_job = batch.read_namespaced_job_status(
-            name=_vcluster_preview_job_name(member.real_name, "up"),
+            name=up_job_name,
             namespace=_vcluster_preview_control_namespace(),
             _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
         )
@@ -8776,6 +8785,13 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
                 or not up_job_found
             )
         ),
+        "upJob": {
+            "name": up_job_name,
+            "found": up_job_found,
+            "active": up_job_active,
+            "succeeded": up_job_succeeded,
+            "failed": up_job_failed,
+        },
         "services": _preview_runtime_services(pods, member.services or ()),
     }
     set_current_span_io("output", result)

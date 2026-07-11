@@ -235,6 +235,13 @@ function gateway(
       name,
       resourceName: name,
       reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${name}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
       services: [],
     })),
     cleanup: vi.fn(async (name) => ({

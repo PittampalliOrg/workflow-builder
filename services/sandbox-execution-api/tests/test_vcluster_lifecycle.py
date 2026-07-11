@@ -2539,6 +2539,13 @@ def test_runtime_endpoint_reads_exact_selected_service_containers(monkeypatch) -
 
     assert result["resourceName"] == "acceptance"
     assert result["reconciliationSucceeded"] is True
+    assert result["upJob"] == {
+        "name": "vcpreview-up-acceptance",
+        "found": True,
+        "active": False,
+        "succeeded": True,
+        "failed": False,
+    }
     assert [item["service"] for item in result["services"]] == [
         "function-router",
         "workflow-builder",
@@ -2564,6 +2571,56 @@ def test_runtime_endpoint_reads_exact_selected_service_containers(monkeypatch) -
         _no_auth_request(), "acceptance"
     )
     assert after_ttl_gc["reconciliationSucceeded"] is True
+    assert after_ttl_gc["upJob"] == {
+        "name": "vcpreview-up-acceptance",
+        "found": False,
+        "active": False,
+        "succeeded": False,
+        "failed": False,
+    }
+
+
+def test_runtime_endpoint_preserves_conflicting_up_job_state(monkeypatch) -> None:
+    namespace = _ns("acceptance")
+    core = _FakeCore([namespace])
+    core.list_namespaced_pod = lambda **_kwargs: SimpleNamespace(items=[])
+    conflicting_job = SimpleNamespace(
+        status=SimpleNamespace(active=1, succeeded=1, failed=1, conditions=[])
+    )
+    batch = SimpleNamespace(
+        read_namespaced_job_status=lambda **_kwargs: conflicting_job
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_runtime(_no_auth_request(), "acceptance")
+
+    assert result["upJob"] == {
+        "name": "vcpreview-up-acceptance",
+        "found": True,
+        "active": True,
+        "succeeded": True,
+        "failed": True,
+    }
+
+
+def test_runtime_endpoint_dry_run_returns_deterministic_up_job(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_DRY_RUN", "true")
+
+    result = app_module.get_vcluster_preview_runtime(_no_auth_request(), "acceptance")
+
+    assert result == {
+        "name": "acceptance",
+        "resourceName": "acceptance",
+        "reconciliationSucceeded": True,
+        "upJob": {
+            "name": "vcpreview-up-acceptance",
+            "found": False,
+            "active": False,
+            "succeeded": False,
+            "failed": False,
+        },
+        "services": [],
+    }
 
 
 def test_runtime_endpoint_rejects_bff_ready_before_reconciliation_finishes(

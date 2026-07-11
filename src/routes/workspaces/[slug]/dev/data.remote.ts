@@ -3,13 +3,14 @@ import { error } from '@sveltejs/kit';
 import { getApplicationAdapters } from '$lib/server/application';
 import { PreviewEnvironmentLaunchAuthorizationError } from '$lib/server/application/preview-environment-launch-broker';
 import { getApplicationAdapterConfig } from '$lib/server/application/config';
+import { PreviewAccessDeniedError } from '$lib/server/application/preview-access';
+import { PreviewTeardownRefusedError } from '$lib/server/application/preview-teardown';
 import {
 	PreviewEnvironmentRevisionResolutionError,
 	PreviewEnvironmentUnavailableError,
 	PreviewEnvironmentValidationError
 } from '$lib/server/application/preview-environments';
-import type { PreviewArchiveResult } from '$lib/server/application/preview-archive';
-import type { PrPreviewStatus } from '$lib/server/application/ports';
+import type { PreviewArchiveResult, PrPreviewStatus } from '$lib/server/application/ports';
 import { safePreviewName } from '$lib/types/dev-previews';
 import type {
 	PreviewSleepResult,
@@ -22,8 +23,6 @@ import type {
 } from '$lib/types/dev-previews';
 import type { DevEnvironmentGroupReadModel } from '$lib/server/application/ports';
 import { requirePlatformAdmin } from '$lib/server/platform-admin';
-
-const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /** Auth guard for the Dev-hub reads/mutations (mirrors the REST routes' 401). */
 function requireSession() {
@@ -197,62 +196,28 @@ export const teardownPreview = command(
 	'unchecked',
 	async (input: {
 		name: string;
+		forceFailed?: boolean;
 	}): Promise<{
 		archive: PreviewArchiveResult | null;
 		preview: VclusterPreviewSummary;
 	}> => {
 		const session = await requireAdminSession();
-		const adapters = getApplicationAdapters();
-		const access = await adapters.previewAccess.authorize({
-			name: input.name,
-			actorUserId: session.userId
-		});
-		let archive: PreviewArchiveResult | null = null;
-		const archiveRequired = access.preview.profile === 'app-live' && access.preview.mode === 'live';
-		if (archiveRequired || getApplicationAdapterConfig().previewArchiveOnTeardownEnabled) {
-			try {
-				archive = await adapters.previewArchive.archivePreview({
-					name: input.name,
-					userId: access.ownerId,
-					projectId: access.actorIsOwner ? (session.projectId ?? null) : null
-				});
-			} catch (err) {
-				if (archiveRequired) {
-					error(
-						409,
-						`Preview archive failed; teardown refused: ${err instanceof Error ? err.message : String(err)}`
-					);
-				}
-				archive = {
-					archived: false,
-					preview: input.name,
-					reason: err instanceof Error ? err.message : String(err)
-				};
-			}
-			if (archiveRequired && archive?.archived !== true) {
-				error(
-					409,
-					`Preview archive is incomplete; teardown refused: ${archive?.reason ?? 'unknown'}`
-				);
-			}
+		try {
+			const adapters = getApplicationAdapters();
+			const result = await adapters.previewTeardown.teardown({
+				name: input.name,
+				actorUserId: session.userId,
+				projectId: session.projectId ?? null,
+				...(input.forceFailed === true ? { forceFailed: true } : {})
+			});
+			return {
+				archive: result.archive,
+				preview: adapters.vclusterPreviews.present(result.preview)
+			};
+		} catch (cause) {
+			if (cause instanceof PreviewAccessDeniedError) error(403, cause.message);
+			if (cause instanceof PreviewTeardownRefusedError) error(409, cause.message);
+			throw cause;
 		}
-		const requestId =
-			typeof access.preview.provenance?.requestId === 'string'
-				? access.preview.provenance.requestId
-				: null;
-		if (
-			!requestId ||
-			!access.preview.sourceRevision ||
-			!FULL_SHA.test(access.preview.sourceRevision)
-		) {
-			error(409, 'Preview teardown ownership tuple is incomplete');
-		}
-		const preview = await adapters.vclusterPreviews.teardown(input.name, {
-			mode: 'owned',
-			requestId,
-			sourceRevision: access.preview.sourceRevision,
-			...(archive?.archived === true ? { archiveConfirmed: true } : {})
-		});
-		return { archive, preview };
 	}
 );

@@ -502,6 +502,13 @@ describe("preview acceptance infrastructure adapters", () => {
         name: "acceptance-one",
         resourceName: "acceptance-one",
         reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-acceptance-one",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
         services: [
           {
             service: "workflow-builder",
@@ -536,6 +543,13 @@ describe("preview acceptance infrastructure adapters", () => {
         name: "acceptance-one",
         resourceName: "acceptance-one",
         reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-acceptance-one",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
         services: [
           {
             service: "workflow-builder",
@@ -577,6 +591,13 @@ describe("preview acceptance infrastructure adapters", () => {
         name: "acceptance-one",
         resourceName: "acceptance-one",
         reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-acceptance-one",
+          found: true,
+          active: true,
+          succeeded: false,
+          failed: false,
+        },
         services: [
           {
             service: "workflow-builder",
