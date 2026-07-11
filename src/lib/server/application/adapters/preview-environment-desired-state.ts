@@ -466,7 +466,6 @@ function deletionIdentity(
   guard: PreviewEnvironmentDesiredStateDeleteGuard,
 ) {
   const envelope = assertResourceEnvelope(resource, expectedName);
-  const resourceVersion = metadata(resource).resourceVersion;
   const provenance = record(envelope.spec.provenance);
   const requestId = provenance?.requestId;
   const sourceRevision = envelope.spec.sourceRevision;
@@ -478,9 +477,7 @@ function deletionIdentity(
     typeof envelope.spec.platformRevision !== "string" ||
     !FULL_SHA.test(envelope.spec.platformRevision) ||
     typeof envelope.spec.catalogDigest !== "string" ||
-    !SHA256.test(envelope.spec.catalogDigest) ||
-    typeof resourceVersion !== "string" ||
-    !resourceVersion
+    !SHA256.test(envelope.spec.catalogDigest)
   ) {
     throw new PreviewEnvironmentDesiredStateOwnershipError(
       "PreviewEnvironment deletion identity is incomplete",
@@ -500,7 +497,7 @@ function deletionIdentity(
       "PreviewEnvironment deletion would remove the protected contract",
     );
   }
-  return { ...envelope, requestId, sourceRevision, resourceVersion };
+  return { ...envelope, requestId, sourceRevision };
 }
 
 export class KubernetesPreviewEnvironmentDesiredStateAdapter
@@ -619,10 +616,9 @@ export class KubernetesPreviewEnvironmentDesiredStateAdapter
       body: JSON.stringify({
         apiVersion: "v1",
         kind: "DeleteOptions",
-        propagationPolicy: "Foreground",
+        propagationPolicy: "Background",
         preconditions: {
           uid: identity.uid,
-          resourceVersion: identity.resourceVersion,
         },
       }),
       retries: 0,

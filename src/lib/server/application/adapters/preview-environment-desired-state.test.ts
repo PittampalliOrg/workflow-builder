@@ -383,7 +383,7 @@ describe("KubernetesPreviewEnvironmentDesiredStateAdapter", () => {
     );
   });
 
-  it("uses UID preconditions and waits for finalizer convergence", async () => {
+  it("uses a Background UID-only precondition and waits for absence", async () => {
     let reads = 0;
     const fetch = vi.fn(async (_path: string, init: RequestInit = {}) => {
       if (init.method === "DELETE") return json({ kind: "Status" }, 202);
@@ -406,9 +406,81 @@ describe("KubernetesPreviewEnvironmentDesiredStateAdapter", () => {
     const deleteCall = fetch.mock.calls.find(
       ([, init]) => init?.method === "DELETE",
     );
-    expect(JSON.parse(String(deleteCall?.[1]?.body))).toMatchObject({
-      propagationPolicy: "Foreground",
-      preconditions: { uid: "uid-1", resourceVersion: "7" },
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      propagationPolicy: "Background",
+      preconditions: { uid: "uid-1" },
+    });
+  });
+
+  it("preserves a same-name replacement that appears during convergence", async () => {
+    let reads = 0;
+    const replacement = resource();
+    replacement.metadata.uid = "uid-2";
+    const fetch = vi.fn(async (_path: string, init: RequestInit = {}) => {
+      if (init.method === "DELETE") return json({ kind: "Status" }, 202);
+      reads += 1;
+      return reads === 1 ? json(resource()) : json(replacement);
+    });
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: fetch as never,
+      sleep: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      adapter.deleteAndWait({
+        name: command.name,
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toThrow(
+      "PreviewEnvironment was replaced while deletion was pending",
+    );
+    expect(
+      fetch.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(1);
+  });
+
+  it("does not require a resourceVersion for UID-fenced deletion", async () => {
+    const missingVersion = resource();
+    delete (missingVersion.metadata as Record<string, unknown>).resourceVersion;
+    let reads = 0;
+    const fetch = vi.fn(async (_path: string, init: RequestInit = {}) => {
+      if (init.method === "DELETE") return json({ kind: "Status" }, 202);
+      reads += 1;
+      return reads === 1
+        ? json(missingVersion)
+        : json({ reason: "NotFound" }, 404);
+    });
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch,
+      sleep: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      adapter.deleteAndWait({
+        name: command.name,
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+        timeoutMs: 1_000,
+      }),
+    ).resolves.toBeUndefined();
+    const deleteCall = fetch.mock.calls.find(
+      ([, init]) => init?.method === "DELETE",
+    );
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      propagationPolicy: "Background",
+      preconditions: { uid: "uid-1" },
     });
   });
 
@@ -432,27 +504,6 @@ describe("KubernetesPreviewEnvironmentDesiredStateAdapter", () => {
       expect.anything(),
       expect.objectContaining({ method: "DELETE" }),
     );
-  });
-
-  it("requires a resourceVersion before issuing a deletion", async () => {
-    const missingVersion = resource();
-    delete (missingVersion.metadata as Record<string, unknown>).resourceVersion;
-    const fetch = vi.fn(async () => json(missingVersion));
-    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
-      fetch,
-    });
-    await expect(
-      adapter.deleteAndWait({
-        name: command.name,
-        guard: {
-          mode: "owned",
-          requestId: command.provenance.requestId,
-          sourceRevision: command.sourceRevision,
-        },
-        timeoutMs: 1_000,
-      }),
-    ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
-    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("lists direct CR deletions only after the controller-authored intent is exact", async () => {
