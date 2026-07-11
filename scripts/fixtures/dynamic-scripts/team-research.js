@@ -21,13 +21,13 @@ const researcher = await team.spawn({
 	name: 'researcher',
 	agent: args?.agent ?? 'team-tester-glm',
 	prompt:
-		'You are the `researcher` on a 2-person team. Call claim_task to take your next unblocked task from the shared list; do the work, then call update_task(taskId, "completed", note) where note IS THE FULL DELIVERABLE TEXT — the note is how your work reaches the lead and the run output. After completing Task 1, ALSO send_message the full list to "writer" (they need it for the summary). Repeat claim_task until it returns null, then stop. Task 1 will ask you to list 5 practical use-cases for suspend/resume of idle AI agents (one line each).',
+		'You are the `researcher` on a 2-person team. Call claim_task to take your next unblocked task from the shared list; do the work, then: (1) publish_knowledge({path: "findings/use-cases.md", type: "Finding", title: "Suspend/resume use-cases", description: "Five one-line use-cases.", body: <the full list>}) so the team knowledge bundle carries your work, (2) call update_task(taskId, "completed", note) where note IS THE FULL DELIVERABLE TEXT, and (3) send_message the full list to "writer" (they need it for the summary). Repeat claim_task until it returns null, then stop. Task 1 will ask you to list 5 practical use-cases for suspend/resume of idle AI agents (one line each).',
 })
 const writer = await team.spawn({
 	name: 'writer',
 	agent: args?.agent ?? 'team-tester-glm',
 	prompt:
-		'You are the `writer` on a 2-person team. Call claim_task to take your next unblocked task; your task depends on the researcher finishing, so if claim_task returns null just reply "waiting" and stop — you will be nudged when work unblocks. When you get the task: use the researcher\'s 5 use-cases (they will send_message them to you; if missing, ask them), write a crisp 5-sentence summary paragraph, and call update_task(taskId, "completed", note) with THE PARAGRAPH AS THE NOTE — the note is how your work reaches the run output.',
+		'You are the `writer` on a 2-person team. Call claim_task to take your next unblocked task; your task depends on the researcher finishing, so if claim_task returns null just reply "waiting" and stop — you will be nudged when work unblocks. When you get the task: read the researcher\'s finding (read_knowledge({path: "findings/use-cases.md"}) — or use their message), write a crisp 5-sentence summary paragraph, then: (1) publish_knowledge({path: "deliverable/summary.md", type: "Deliverable", title: "Executive summary", description: "One-paragraph synthesis of the use-cases.", body: <the paragraph, ending with a citation line linking [the finding](/findings/use-cases.md)>}), and (2) call update_task(taskId, "completed", note) with THE PARAGRAPH AS THE NOTE.',
 })
 
 // Seed the shared ledger: t2 is GATED on t1 (the writer stays idle/suspended
@@ -66,6 +66,12 @@ const useCases = notes['List 5 practical use-cases for suspending idle AI agents
 return {
 	deliverable: summary ?? '(writer did not attach a completion note)',
 	supporting: { useCases: useCases ?? '(researcher did not attach a completion note)' },
+	// The durable CONTENT layer: teammates also published their work as OKF
+	// concepts (findings/use-cases.md, deliverable/summary.md) — exportable as a
+	// spec-conformant bundle and listed in TeamPulse's Knowledge section.
+	knowledgeBundle: final.team
+		? `/api/v1/teams/${final.team.id}/knowledge/bundle`
+		: null,
 	spawned: [researcher.name, writer.name],
 	satisfied: final.satisfied,
 	timedOut: final.timedOut,

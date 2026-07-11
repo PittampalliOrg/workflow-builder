@@ -16,12 +16,15 @@ import type {
 	AddMemberInput,
 	CreateTeamTaskInput,
 	EnsureTeamInput,
+	TeamKnowledgeIndexEntry,
+	TeamKnowledgeRow,
 	TeamMemberRow,
 	TeamMemberStatus,
 	TeamRow,
 	TeamStore,
 	TeamTaskListItem,
 	TeamTaskRow,
+	UpsertTeamKnowledgeInput,
 } from "$lib/server/application/ports";
 
 type Database = typeof defaultDb;
@@ -156,6 +159,55 @@ export class PostgresTeamStore implements TeamStore {
 			UPDATE team_members SET plan_mode_required = false, updated_at = now()
 			WHERE session_id = ${sessionId}
 		`);
+	}
+
+	// ── shared knowledge (OKF-shaped content layer) ───────────────────────────
+
+	async upsertKnowledge(input: UpsertTeamKnowledgeInput): Promise<TeamKnowledgeRow> {
+		const r = await this.db.execute<TeamKnowledgeRow>(sql`
+			INSERT INTO team_knowledge
+				(id, team_id, path, type, title, description, tags, body, created_by_session_id)
+			VALUES (
+				${nanoid()}, ${input.teamId}, ${input.path}, ${input.type},
+				${input.title ?? null}, ${input.description ?? null},
+				${JSON.stringify(input.tags ?? [])}::jsonb, ${input.body},
+				${input.createdBySessionId ?? null}
+			)
+			ON CONFLICT (team_id, path) DO UPDATE SET
+				type = EXCLUDED.type,
+				title = EXCLUDED.title,
+				description = EXCLUDED.description,
+				tags = EXCLUDED.tags,
+				body = EXCLUDED.body,
+				updated_at = now()
+			RETURNING *
+		`);
+		return rows<TeamKnowledgeRow>(r)[0];
+	}
+
+	async listKnowledge(
+		teamId: string,
+		filter?: { type?: string },
+	): Promise<TeamKnowledgeIndexEntry[]> {
+		const r = filter?.type
+			? await this.db.execute(sql`
+					SELECT path, type, title, description, tags, created_by_session_id, created_at, updated_at
+					FROM team_knowledge WHERE team_id = ${teamId} AND type = ${filter.type}
+					ORDER BY path ASC
+				`)
+			: await this.db.execute(sql`
+					SELECT path, type, title, description, tags, created_by_session_id, created_at, updated_at
+					FROM team_knowledge WHERE team_id = ${teamId}
+					ORDER BY path ASC
+				`);
+		return rows<TeamKnowledgeIndexEntry>(r);
+	}
+
+	async getKnowledge(teamId: string, path: string): Promise<TeamKnowledgeRow | null> {
+		const r = await this.db.execute<TeamKnowledgeRow>(sql`
+			SELECT * FROM team_knowledge WHERE team_id = ${teamId} AND path = ${path} LIMIT 1
+		`);
+		return rows<TeamKnowledgeRow>(r)[0] ?? null;
 	}
 
 	/** Resolve an agent slug to its id within a project, for peer spawn. */

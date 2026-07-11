@@ -72,6 +72,34 @@ export type TeamTaskListItem = {
 	completion_note: string | null;
 };
 
+export type TeamKnowledgeRow = {
+	id: string;
+	team_id: string;
+	path: string;
+	type: string;
+	title: string | null;
+	description: string | null;
+	tags: string[];
+	body: string;
+	created_by_session_id: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+export type TeamKnowledgeIndexEntry = Omit<TeamKnowledgeRow, "body" | "id" | "team_id">;
+
+export type UpsertTeamKnowledgeInput = {
+	teamId: string;
+	/** Sanitized bundle-relative path ('findings/use-cases.md'). */
+	path: string;
+	type: string;
+	title?: string | null;
+	description?: string | null;
+	tags?: string[];
+	body: string;
+	createdBySessionId?: string | null;
+};
+
 export type EnsureTeamInput = {
 	teamId: string;
 	leadSessionId: string;
@@ -131,6 +159,18 @@ export interface TeamStore {
 
 	/** Flip plan_mode_required off once the lead approves the member's plan. */
 	setMemberPlanApproved(sessionId: string): Promise<void>;
+
+	// ── shared knowledge (OKF-shaped content layer) ───────────────────────────
+
+	/** Publish/revise one concept document (upsert on (team, path)). */
+	upsertKnowledge(input: UpsertTeamKnowledgeInput): Promise<TeamKnowledgeRow>;
+	/** Bundle index: frontmatter-level fields for every concept, no bodies. */
+	listKnowledge(
+		teamId: string,
+		filter?: { type?: string },
+	): Promise<TeamKnowledgeIndexEntry[]>;
+	/** One full concept document, or null. */
+	getKnowledge(teamId: string, path: string): Promise<TeamKnowledgeRow | null>;
 
 	// shared task list (atomic claim)
 	listTeamTasks(teamId: string): Promise<TeamTaskListItem[]>;

@@ -694,6 +694,13 @@
       "when": 1784145600000,
       "tag": "0104_team_task_completion_note",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1784145660000,
+      "tag": "0105_team_knowledge",
+      "breakpoints": true
     }
   ]
 }

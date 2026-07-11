@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedFromCommit": "4969ac3f75435bc57ad5e1c19528403a616c345f",
+  "generatedFromCommit": "f4730a1b0e1ea648aee2e96dc586a91e0087bbb8",
   "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
   "counts": {
     "error": 0,
-    "warn": 204,
+    "warn": 206,
     "info": 0
   },
   "violations": [
@@ -1308,6 +1308,18 @@
       "severity": "warn",
       "rule": "routes-through-application",
       "type": "dependency",
+      "from": "src/routes/api/internal/team/[teamId]/knowledge/+server.ts",
+      "to": "src/lib/server/teams/team-okf.ts",
+      "unresolvedTo": "$lib/server/teams/team-okf",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
       "from": "src/routes/api/internal/team/[teamId]/message/+server.ts",
       "to": "src/lib/server/teams/team-messaging.ts",
       "unresolvedTo": "$lib/server/teams/team-messaging",
@@ -2331,6 +2343,18 @@
       "from": "src/routes/api/v1/teams/[teamId]/+server.ts",
       "to": "src/lib/server/teams/team-view.ts",
       "unresolvedTo": "$lib/server/teams/team-view",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/teams/[teamId]/knowledge/bundle/+server.ts",
+      "to": "src/lib/server/teams/team-okf.ts",
+      "unresolvedTo": "$lib/server/teams/team-okf",
       "dependencyTypes": [
         "import",
         "undetermined"

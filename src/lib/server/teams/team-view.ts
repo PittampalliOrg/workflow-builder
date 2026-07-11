@@ -13,6 +13,7 @@ import {
 	getMemberBySession,
 	getTeam,
 	getTeamTokensUsed,
+	listKnowledge,
 	listMembers,
 	listRecentTeamMessages,
 	listTeamTasks,
@@ -71,6 +72,16 @@ export type TeamView = {
 	activity: TeamActivityEvent[];
 	/** Recent message traffic, newest first (TeamPulse pulses + feed). */
 	recentMessages: TeamMessageEvent[];
+	/** OKF knowledge index (frontmatter-level, no bodies): what the team has
+	 * published. Bodies via GET /api/v1/teams/[id]/knowledge/bundle. */
+	knowledge: Array<{
+		path: string;
+		type: string;
+		title: string | null;
+		description: string | null;
+		author: string | null;
+		updatedAt: string;
+	}>;
 } | null;
 
 /** Assemble the team view for a team id (null if the team doesn't exist). */
@@ -80,13 +91,14 @@ export async function getTeamView(
 ): Promise<TeamView> {
 	const team = await getTeam(teamId, s);
 	if (!team) return null;
-	const [members, tasks, messages, tokensUsed] = await Promise.all([
+	const [members, tasks, messages, tokensUsed, knowledgeIndex] = await Promise.all([
 		listMembers(teamId, s),
 		listTeamTasks(teamId, s),
 		listRecentTeamMessages(teamId, 30, s),
 		// Budget consumption only matters when a budget exists — skip the
 		// session_events aggregate otherwise (this view polls every ~3s).
 		team.token_budget != null ? getTeamTokensUsed(teamId, s) : Promise.resolve(0),
+		listKnowledge(teamId, undefined, s),
 	]);
 
 	const nameBySession = new Map(members.map((m) => [m.session_id, m.name]));
@@ -162,6 +174,16 @@ export async function getTeamView(
 			toSessionId: m.to_session_id,
 			kind: m.kind,
 			preview: m.preview,
+		})),
+		knowledge: knowledgeIndex.map((k) => ({
+			path: k.path,
+			type: k.type,
+			title: k.title,
+			description: k.description,
+			author: k.created_by_session_id
+				? nameBySession.get(k.created_by_session_id) ?? null
+				: null,
+			updatedAt: k.updated_at,
 		})),
 	};
 }
