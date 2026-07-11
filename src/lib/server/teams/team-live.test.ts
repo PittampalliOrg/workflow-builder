@@ -99,4 +99,25 @@ describe("getTeamLiveActivity", () => {
 		expect(live.stream[1].origin).toBe("team-broadcast");
 		expect(live.stream[1].from_agent).toBe("lead");
 	});
+
+	it("extracts the tool input path for knowledge-publish click-through", async () => {
+		await seedMember(db, "t1", "researcher", "s1");
+		await seedEvent(
+			db,
+			"e1",
+			"s1",
+			"agent.tool_use",
+			{ name: "wfb_goal_publish_knowledge", input: { path: "findings/latency.md", body: "..." } },
+			"2026-07-11 10:00:00",
+		);
+
+		const live = await store.getTeamLiveActivity({ teamId: "t1", streamLimit: 10 });
+		const researcher = live.members.find((m) => m.name === "researcher");
+		expect(researcher?.tool_path).toBe("findings/latency.md");
+		expect(live.stream[0].tool_path).toBe("findings/latency.md");
+		// Non-publish tools without an input.path stay null.
+		await seedEvent(db, "e2", "s1", "agent.tool_use", { name: "Bash" }, "2026-07-11 10:01:00");
+		const live2 = await store.getTeamLiveActivity({ teamId: "t1", streamLimit: 10 });
+		expect(live2.stream[0].tool_path).toBeNull();
+	});
 });

@@ -22,6 +22,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 				? {
 						type: m.event_type,
 						tool: m.tool_name,
+						path: m.tool_path,
 						origin: m.origin,
 						from: m.from_agent,
 						preview: m.preview,
@@ -34,6 +35,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			sessionId: e.session_id,
 			type: e.event_type,
 			tool: e.tool_name,
+			path: e.tool_path,
 			origin: e.origin,
 			from: e.from_agent,
 			preview: e.preview,

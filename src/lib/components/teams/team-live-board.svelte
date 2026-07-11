@@ -9,7 +9,7 @@
   when the run stops so the board settles on terminal states).
 -->
 <script lang="ts">
-	import { ChevronDown, ChevronRight, Activity } from '@lucide/svelte';
+	import { ChevronDown, ChevronRight, Activity, BookOpen } from '@lucide/svelte';
 	import { fly } from 'svelte/transition';
 	import { memberColor, memberInitials } from './member-color';
 	import {
@@ -26,6 +26,7 @@
 		event: {
 			type: string;
 			tool: string | null;
+			path: string | null;
 			origin: string | null;
 			from: string | null;
 			preview: string | null;
@@ -37,6 +38,7 @@
 		sessionId: string;
 		type: string;
 		tool: string | null;
+		path: string | null;
 		origin: string | null;
 		from: string | null;
 		preview: string | null;
@@ -48,6 +50,10 @@
 		isRunning?: boolean;
 		selectedSessionId?: string | null;
 		onSelectMember?: (sessionId: string) => void;
+		/** Knowledge click-through: fired when a knowledge-publish activity is
+		 * clicked, with the published concept path (may be null) — the host
+		 * opens the knowledge drawer focused there. */
+		onOpenKnowledge?: (path: string | null) => void;
 		class?: string;
 	}
 	let {
@@ -55,8 +61,18 @@
 		isRunning = false,
 		selectedSessionId = null,
 		onSelectMember,
+		onOpenKnowledge,
 		class: klass = ''
 	}: Props = $props();
+
+	/** A knowledge PUBLISH activity — the row that links straight to the doc. */
+	function isPublish(e: { type: string; tool?: string | null } | null | undefined): boolean {
+		return (
+			!!e &&
+			(e.type === 'agent.tool_use' || e.type === 'mcp.tool_call') &&
+			!!e.tool?.endsWith('publish_knowledge')
+		);
+	}
 
 	let members = $state<LiveMember[]>([]);
 	let stream = $state<LiveStreamItem[]>([]);
@@ -132,7 +148,10 @@
 					type="button"
 					class="flex min-w-40 shrink-0 items-center gap-2 rounded-md border px-2 py-1 text-left transition hover:bg-accent/40
 						{selectedSessionId === m.sessionId ? 'border-primary/50 bg-primary/10' : 'border-border/60 bg-background'}"
-					onclick={() => onSelectMember?.(m.sessionId)}
+					onclick={() => {
+						onSelectMember?.(m.sessionId);
+						if (isPublish(m.event)) onOpenKnowledge?.(m.event?.path ?? null);
+					}}
 					title={m.event?.preview ? `${act.label} — ${m.event.preview}` : act.label}
 				>
 					<span class="relative flex size-7 shrink-0 items-center justify-center rounded-full {c.bg} border {c.ring}">
@@ -176,13 +195,20 @@
 					<button
 						type="button"
 						class="flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left text-[11px] hover:bg-accent/30"
-						onclick={() => onSelectMember?.(e.sessionId)}
+						onclick={() => {
+							if (isPublish(e)) onOpenKnowledge?.(e.path ?? null);
+							else onSelectMember?.(e.sessionId);
+						}}
+						title={isPublish(e) ? 'Open in the knowledge drawer' : 'Focus this transcript'}
 					>
 						<span class="w-10 shrink-0 text-right font-mono text-[10px] text-muted-foreground/60">{ago(e.at)}</span>
 						<span class="inline-flex shrink-0 items-center gap-1 font-medium {c.text}">
 							<span class="size-1.5 rounded-full {c.dot}"></span>{e.member}
 						</span>
-						<span class="shrink-0 {TONE_TEXT[act.tone]}">{act.label}</span>
+						<span class="inline-flex shrink-0 items-center gap-1 {TONE_TEXT[act.tone]}">
+							{act.label}
+							{#if isPublish(e)}<BookOpen class="size-3 text-sky-300" />{/if}
+						</span>
 						{#if e.preview}
 							<span class="truncate text-muted-foreground/70">— {e.preview}</span>
 						{/if}

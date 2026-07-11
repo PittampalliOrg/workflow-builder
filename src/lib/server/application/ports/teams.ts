@@ -186,6 +186,7 @@ export interface TeamStore {
 			session_id: string;
 			event_type: string | null;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
@@ -196,6 +197,7 @@ export interface TeamStore {
 			session_id: string;
 			event_type: string;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
