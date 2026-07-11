@@ -388,6 +388,13 @@
 		if (typeof localStorage !== 'undefined')
 			localStorage.setItem(KNOWLEDGE_OPEN_KEY, open ? '1' : '0');
 	}
+	// Click-through from the live board: open the drawer focused on the
+	// concept a "publishing knowledge" activity refers to.
+	let knowledgeFocus = $state<{ path: string | null; nonce: number } | null>(null);
+	function openKnowledgeAt(path: string | null) {
+		knowledgeFocus = { path, nonce: (knowledgeFocus?.nonce ?? 0) + 1 };
+		toggleKnowledge(true);
+	}
 
 	// ── Per-active-session preview streams (capped) ─────────────────────────
 	const MAX_PREVIEW_STREAMS = 4;
@@ -617,6 +624,7 @@
 			isRunning={runActive}
 			selectedSessionId={focusedId}
 			onSelectMember={(id) => focusSession(id)}
+			onOpenKnowledge={openKnowledgeAt}
 		/>
 	{/if}
 
@@ -1001,6 +1009,7 @@
 					isRunning={runActive}
 					open={knowledgeOpen}
 					onToggle={toggleKnowledge}
+					focus={knowledgeFocus}
 				/>
 			{/if}
 		</div>

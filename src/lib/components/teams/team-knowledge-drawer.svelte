@@ -22,8 +22,11 @@
 		isRunning?: boolean;
 		open?: boolean;
 		onToggle?: (open: boolean) => void;
+		/** Click-through from the live board: focus a concept. nonce retriggers
+		 * on every click; path null = "whatever was just published" (latest). */
+		focus?: { path: string | null; nonce: number } | null;
 	}
-	let { teamId, isRunning = false, open = false, onToggle }: Props = $props();
+	let { teamId, isRunning = false, open = false, onToggle, focus = null }: Props = $props();
 
 	let files = $state<BundleFile[]>([]);
 	let selectedPath = $state<string | null>(null);
@@ -85,6 +88,39 @@
 		if (!isRunning) return;
 		const t = setInterval(load, 6000);
 		return () => clearInterval(t);
+	});
+
+	/** Resolve a focus path against the bundle: exact → '.md' appended →
+	 * suffix match → the most recently updated concept (frontmatter timestamp). */
+	function resolveFocus(path: string | null): string | null {
+		const paths = concepts.map((f) => f.path);
+		if (path) {
+			const clean = path.replace(/^\/+/, '');
+			const withMd = clean.endsWith('.md') ? clean : `${clean}.md`;
+			if (paths.includes(clean)) return clean;
+			if (paths.includes(withMd)) return withMd;
+			const suffix = paths.find((p) => p.endsWith(withMd));
+			if (suffix) return suffix;
+		}
+		let best: string | null = null;
+		let bestTs = '';
+		for (const f of concepts) {
+			const ts = fm(f.content, 'timestamp') ?? '';
+			if (ts >= bestTs) {
+				bestTs = ts;
+				best = f.path;
+			}
+		}
+		return best;
+	}
+	let lastFocusNonce = -1;
+	$effect(() => {
+		if (!focus || focus.nonce === lastFocusNonce) return;
+		lastFocusNonce = focus.nonce;
+		// The publish may be seconds ahead of our last poll — refresh, then focus.
+		load().then(() => {
+			selectedPath = resolveFocus(focus.path);
+		});
 	});
 </script>
 

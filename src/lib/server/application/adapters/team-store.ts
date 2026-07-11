@@ -237,6 +237,7 @@ export class PostgresTeamStore implements TeamStore {
 			session_id: string;
 			event_type: string | null;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
@@ -247,6 +248,7 @@ export class PostgresTeamStore implements TeamStore {
 			session_id: string;
 			event_type: string;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
@@ -262,6 +264,7 @@ export class PostgresTeamStore implements TeamStore {
 		const eventCols = sql`
 			e.type AS event_type,
 			coalesce(e.data->>'name', e.data->>'tool_name') AS tool_name,
+			e.data->'input'->>'path' AS tool_path,
 			e.data->>'origin' AS origin,
 			e.data->>'fromAgent' AS from_agent,
 			left(coalesce(e.data->'content'->0->>'text', e.data->>'preview', ''), 160) AS preview,
@@ -287,6 +290,7 @@ export class PostgresTeamStore implements TeamStore {
 			session_id: string;
 			event_type: string | null;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
@@ -305,6 +309,7 @@ export class PostgresTeamStore implements TeamStore {
 			session_id: string;
 			event_type: string;
 			tool_name: string | null;
+			tool_path: string | null;
 			origin: string | null;
 			from_agent: string | null;
 			preview: string | null;
