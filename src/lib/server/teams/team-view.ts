@@ -12,6 +12,7 @@
 import {
 	getMemberBySession,
 	getTeam,
+	getTeamTokensUsed,
 	listMembers,
 	listRecentTeamMessages,
 	listTeamTasks,
@@ -39,7 +40,15 @@ export type TeamMessageEvent = {
 };
 
 export type TeamView = {
-	team: { id: string; name: string; status: string; tokenBudget: number | null };
+	team: {
+		id: string;
+		name: string;
+		status: string;
+		tokenBudget: number | null;
+		/** input+output tokens consumed across all member sessions — only
+		 * computed (non-zero) when a budget is set, to keep the poll cheap. */
+		tokensUsed: number;
+	};
 	members: Array<{
 		name: string;
 		role: string;
@@ -69,10 +78,13 @@ export async function getTeamView(
 ): Promise<TeamView> {
 	const team = await getTeam(teamId, s);
 	if (!team) return null;
-	const [members, tasks, messages] = await Promise.all([
+	const [members, tasks, messages, tokensUsed] = await Promise.all([
 		listMembers(teamId, s),
 		listTeamTasks(teamId, s),
 		listRecentTeamMessages(teamId, 30, s),
+		// Budget consumption only matters when a budget exists — skip the
+		// session_events aggregate otherwise (this view polls every ~3s).
+		team.token_budget != null ? getTeamTokensUsed(teamId, s) : Promise.resolve(0),
 	]);
 
 	const nameBySession = new Map(members.map((m) => [m.session_id, m.name]));
@@ -115,7 +127,13 @@ export async function getTeamView(
 	activity.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
 
 	return {
-		team: { id: team.id, name: team.name, status: team.status, tokenBudget: team.token_budget },
+		team: {
+			id: team.id,
+			name: team.name,
+			status: team.status,
+			tokenBudget: team.token_budget,
+			tokensUsed,
+		},
 		members: members.map((m) => ({
 			name: m.name,
 			role: m.role,

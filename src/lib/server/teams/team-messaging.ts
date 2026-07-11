@@ -24,7 +24,14 @@
 
 import { getApplicationAdapters } from "$lib/server/application";
 
-export type TeamMessageKind = "teammate-message" | "team-broadcast" | "team-idle";
+export type TeamMessageKind =
+	| "teammate-message"
+	| "team-broadcast"
+	| "team-idle"
+	// A teammate's turn ended on an ERROR (not a normal idle) — the lead's
+	// notice carries the error text so failure is distinguishable from
+	// completion (Claude Code v2.1.198 parity).
+	| "team-error";
 
 /** Topic carrying team message delivery triggers (subject under `workflow.>`
  * on the ORCHESTRATOR JetStream stream — see stacks Subscription-team-message). */

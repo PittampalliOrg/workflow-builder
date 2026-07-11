@@ -20,13 +20,7 @@ import { setSpanOutput } from "./observability/content.js";
 import type { RegisteredTool } from "./workflow-tools.js";
 import { currentGoalSessionId } from "./goal-context.js";
 import { currentTeamId } from "./team-context.js";
-import {
-	completeTask,
-	createTask,
-	getTeam,
-	listMembers,
-	listTasks,
-} from "./team-db.js";
+import { getTeam, listMembers, listTasks } from "./team-db.js";
 
 const WORKFLOW_BUILDER_URL =
 	process.env.WORKFLOW_BUILDER_URL ??
@@ -264,20 +258,46 @@ export function registerTeamTools(
 					.array(z.string())
 					.optional()
 					.describe("Task ids that must be completed before this is claimable."),
+				assignTo: z
+					.string()
+					.optional()
+					.describe(
+						"Reserve for one teammate by name: only they can claim it, and they pick it up before any open task.",
+					),
 			},
 		},
-		async (args: { title: string; description?: string; dependsOn?: string[] }) => {
+		async (args: {
+			title: string;
+			description?: string;
+			dependsOn?: string[];
+			assignTo?: string;
+		}) => {
 			const ctx = requireCtx();
 			if ("error" in ctx) return ctx.error;
+			if (!INTERNAL_API_TOKEN)
+				return errorResult("INTERNAL_API_TOKEN is not configured; cannot create a task.");
 			try {
-				const task = await createTask({
-					teamId: ctx.teamId,
+				// Routed through the BFF so the TaskCreated quality gate covers EVERY
+				// authoring path. assignTo uses 'queue' mode: reserved for the
+				// designee's claim rather than handed over already-in_progress.
+				const r = await callBff(ctx.teamId, "tasks", {
 					title: args.title,
 					description: args.description ?? null,
 					dependsOn: args.dependsOn ?? [],
+					assignTo: args.assignTo,
+					assignMode: args.assignTo ? "queue" : undefined,
 					createdBySessionId: ctx.sessionId,
 				});
-				return textResult({ ok: true, task });
+				if (r.status === 422 && (r.json as { blocked?: boolean } | null)?.blocked) {
+					return errorResult(
+						`Task creation was blocked by a team quality gate: ${
+							(r.json as { reason?: string }).reason ?? "no reason given"
+						}`,
+					);
+				}
+				if (!r.ok)
+					return errorResult(`create_task failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+				return textResult(r.json ?? { ok: true });
 			} catch (err) {
 				return errorResult(`Failed to create task: ${err}`);
 			}
@@ -291,7 +311,7 @@ export function registerTeamTools(
 		{
 			title: "Claim Next Task",
 			description:
-				"Atomically claim the oldest unblocked, unassigned team task for yourself. Returns the claimed task, or null when nothing is claimable. Race-safe: no two teammates can claim the same task.",
+				"Atomically claim your next team task: tasks reserved for you first, then the oldest unblocked open task. Returns the claimed task, or null when nothing is claimable. The task you claim is YOURS regardless of your role name — complete it before going idle. Race-safe: no two teammates can claim the same task.",
 			inputSchema: {},
 		},
 		async () => {
@@ -302,6 +322,13 @@ export function registerTeamTools(
 			try {
 				const r = await callBff(ctx.teamId, "claim", { sessionId: ctx.sessionId });
 				if (!r.ok) return errorResult(`claim_task failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+				const payload = r.json as { blocked?: string; message?: string } | null;
+				if (payload?.blocked === "plan_approval_required") {
+					return errorResult(
+						payload.message ??
+							"Plan approval required: call submit_plan and wait for the lead before claiming tasks.",
+					);
+				}
 				return textResult(r.json ?? { task: null });
 			} catch (err) {
 				return errorResult(`Failed to claim task: ${err}`);
@@ -320,17 +347,39 @@ export function registerTeamTools(
 			inputSchema: {
 				taskId: z.string().describe("The task id to update."),
 				status: z.string().describe('Must be "completed".'),
+				note: z
+					.string()
+					.optional()
+					.describe("Completion note: the deliverable or a summary of the work done."),
 			},
 		},
-		async (args: { taskId: string; status: string }) => {
+		async (args: { taskId: string; status: string; note?: string }) => {
 			const ctx = requireCtx();
 			if ("error" in ctx) return ctx.error;
 			if (args.status !== "completed")
 				return errorResult('update_task can only set status="completed".');
+			if (!INTERNAL_API_TOKEN)
+				return errorResult("INTERNAL_API_TOKEN is not configured; cannot update a task.");
 			try {
-				const task = await completeTask({ teamId: ctx.teamId, taskId: args.taskId });
-				if (!task) return errorResult(`No task ${args.taskId} in this team.`);
-				return textResult({ ok: true, task });
+				// Routed through the BFF so the TaskCompleted quality gate covers
+				// every completion path. A blocked completion returns the gate's
+				// feedback — fix the work, then complete again.
+				const r = await callBff(
+					ctx.teamId,
+					`tasks/${encodeURIComponent(args.taskId)}/complete`,
+					{ sessionId: ctx.sessionId, note: args.note ?? null },
+				);
+				if (r.status === 422 && (r.json as { blocked?: boolean } | null)?.blocked) {
+					return errorResult(
+						`Completion was blocked by a team quality gate: ${
+							(r.json as { reason?: string }).reason ?? "no reason given"
+						}\nAddress the feedback, then call update_task again.`,
+					);
+				}
+				if (r.status === 404) return errorResult(`No task ${args.taskId} in this team.`);
+				if (!r.ok)
+					return errorResult(`update_task failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+				return textResult(r.json ?? { ok: true });
 			} catch (err) {
 				return errorResult(`Failed to update task: ${err}`);
 			}
@@ -404,6 +453,156 @@ export function registerTeamTools(
 		},
 	);
 	tools.push({ name: "wait_teammates", description: "Bounded wait for team quiescence" });
+
+	// ── depth refusal (members) ─────────────────────────────
+	// A teammate that WANTS to delegate gets an explicit refusal instead of a
+	// silent capability gap (Codex parity: "depth limit reached — solve the
+	// task yourself"). Silent suppression makes models improvise; a clear "no,
+	// and here's what to do instead" self-corrects.
+	if (!includeLeadTools) {
+		const refuse = (what: string) =>
+			errorResult(
+				`Team nesting is not allowed: teammates cannot ${what}. Solve the task yourself, or send_message the lead to ask for more help.`,
+			);
+		reg(
+			"spawn_teammate",
+			{
+				title: "Spawn Teammate (unavailable)",
+				description:
+					"NOT AVAILABLE to teammates: team nesting is not allowed. Solve the task yourself or ask the lead (send_message) for more help.",
+				inputSchema: {},
+			},
+			async () => refuse("spawn nested teammates"),
+		);
+		tools.push({ name: "spawn_teammate", description: "Refused for teammates (nesting guard)" });
+		reg(
+			"shutdown_teammate",
+			{
+				title: "Shut Down Teammate (unavailable)",
+				description:
+					"NOT AVAILABLE to teammates: only the lead manages the team. Ask the lead via send_message.",
+				inputSchema: {},
+			},
+			async () => refuse("shut down peers"),
+		);
+		tools.push({ name: "shutdown_teammate", description: "Refused for teammates (lead-only)" });
+
+		// ── submit_plan (members) ─────────────────────────────
+		reg(
+			"submit_plan",
+			{
+				title: "Submit Plan For Approval",
+				description:
+					"Plan-mode teammates: submit your implementation plan to the lead for approval. You cannot claim tasks until the lead approves. If revisions are requested, revise and submit again.",
+				inputSchema: {
+					plan: z.string().describe("The concrete plan: steps, files, risks, done-criteria."),
+				},
+			},
+			async (args: { plan: string }) => {
+				const ctx = requireCtx();
+				if ("error" in ctx) return ctx.error;
+				if (!INTERNAL_API_TOKEN)
+					return errorResult("INTERNAL_API_TOKEN is not configured; cannot submit a plan.");
+				try {
+					const members = await listMembers(ctx.teamId);
+					const me = members.find((m) => m.session_id === ctx.sessionId);
+					const lead = members.find((m) => m.role === "lead");
+					if (!lead) return errorResult("No lead found for this team.");
+					const r = await callBff(ctx.teamId, "message", {
+						fromSessionId: ctx.sessionId,
+						to: lead.name,
+						content: `PLAN APPROVAL REQUEST from "${me?.name ?? "teammate"}":\n\n${args.plan}\n\nReply with approve_plan(name: "${me?.name ?? "?"}", approved: true|false, feedback?).`,
+					});
+					if (!r.ok)
+						return errorResult(`submit_plan failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+					return textResult({
+						ok: true,
+						status: "submitted",
+						note: "Wait for the lead's decision message before claiming tasks.",
+					});
+				} catch (err) {
+					return errorResult(`Failed to submit plan: ${err}`);
+				}
+			},
+		);
+		tools.push({ name: "submit_plan", description: "Submit a plan for lead approval" });
+	}
+
+	// ── approve_plan (lead only) ────────────────────────────
+	if (includeLeadTools) {
+		reg(
+			"approve_plan",
+			{
+				title: "Approve Or Reject A Teammate's Plan",
+				description:
+					"Decide a plan-mode teammate's PLAN APPROVAL REQUEST. approved=true lifts plan mode (the teammate can claim tasks); approved=false keeps the gate and sends your feedback for revision.",
+				inputSchema: {
+					name: z.string().describe("Teammate name whose plan you are deciding."),
+					approved: z.boolean().describe("true = approve, false = request revisions."),
+					feedback: z
+						.string()
+						.optional()
+						.describe("Required when rejecting: what must change. Optional praise when approving."),
+				},
+			},
+			async (args: { name: string; approved: boolean; feedback?: string }) => {
+				const ctx = requireCtx();
+				if ("error" in ctx) return ctx.error;
+				if (!INTERNAL_API_TOKEN)
+					return errorResult("INTERNAL_API_TOKEN is not configured; cannot decide a plan.");
+				try {
+					const r = await callBff(ctx.teamId, "plan-approval", {
+						requestedBySessionId: ctx.sessionId,
+						name: args.name,
+						approved: args.approved,
+						feedback: args.feedback,
+					});
+					if (!r.ok)
+						return errorResult(`approve_plan failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+					return textResult(r.json ?? { ok: true });
+				} catch (err) {
+					return errorResult(`Failed to decide plan: ${err}`);
+				}
+			},
+		);
+		tools.push({ name: "approve_plan", description: "Approve/reject a teammate's plan" });
+
+		// ── revive_teammate (lead only) ───────────────────────
+		reg(
+			"revive_teammate",
+			{
+				title: "Revive Teammate",
+				description:
+					"Respawn a SHUTDOWN or FAILED teammate under the same name with a fresh session (it does not inherit the old session's memory — the task list and messages are its ground truth). Use after a teammate fails, or when finished work needs a follow-up.",
+				inputSchema: {
+					name: z.string().describe("The shutdown/failed teammate's name."),
+					prompt: z
+						.string()
+						.optional()
+						.describe("Fresh instruction for the revived teammate (what to do now)."),
+				},
+			},
+			async (args: { name: string; prompt?: string }) => {
+				const ctx = requireCtx();
+				if ("error" in ctx) return ctx.error;
+				if (!INTERNAL_API_TOKEN)
+					return errorResult("INTERNAL_API_TOKEN is not configured; cannot revive a teammate.");
+				try {
+					const r = await callBff(ctx.teamId, "revive", {
+						requestedBySessionId: ctx.sessionId,
+						name: args.name,
+						prompt: args.prompt,
+					});
+					if (!r.ok)
+						return errorResult(`revive_teammate failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+					return textResult(r.json ?? { ok: true });
+				} catch (err) {
+					return errorResult(`Failed to revive teammate: ${err}`);
+				}
+			},
+		);
+		tools.push({ name: "revive_teammate", description: "Respawn a shutdown/failed teammate" });
+	}
 
 	// ── shutdown_teammate (lead only) ───────────────────────
 	if (includeLeadTools) {

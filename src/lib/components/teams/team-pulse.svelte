@@ -10,7 +10,13 @@
 -->
 <script lang="ts" module>
 	export type TeamPulseView = {
-		team: { id: string; name: string; status: string } | null;
+		team: {
+			id: string;
+			name: string;
+			status: string;
+			tokenBudget?: number | null;
+			tokensUsed?: number;
+		} | null;
 		members: Array<{
 			name: string;
 			role: string;
@@ -117,6 +123,19 @@
 	}
 	// SVG progress ring geometry (r=8 → C ≈ 50.27).
 	const RING_C = 2 * Math.PI * 8;
+
+	// Token budget (enforced server-side; this is the legibility half).
+	const budget = $derived.by(() => {
+		const b = effective?.team?.tokenBudget;
+		if (b == null || b <= 0) return null;
+		const used = effective?.team?.tokensUsed ?? 0;
+		return { total: b, used, pct: Math.min(100, Math.round((used / b) * 100)) };
+	});
+	function fmtTok(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+		return String(n);
+	}
 </script>
 
 {#if effective?.team}
@@ -127,6 +146,18 @@
 			<span class="truncate text-sm font-semibold">{effective.team.name}</span>
 			<Badge variant="outline" class="text-[10px]">{effective.team.status}</Badge>
 			<span class="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+				{#if budget}
+					<span
+						class="rounded-full border px-1.5 py-0 text-[10px] tabular-nums {budget.pct >= 100
+							? 'border-red-400/40 text-red-300'
+							: budget.pct >= 80
+								? 'border-amber-400/40 text-amber-300'
+								: 'border-border/60 text-muted-foreground'}"
+						title="Team token budget: {budget.used.toLocaleString()} of {budget.total.toLocaleString()} tokens used{budget.pct >= 100 ? ' — exhausted: no new spawns or claim nudges' : ''}"
+					>
+						{fmtTok(budget.used)}/{fmtTok(budget.total)}
+					</span>
+				{/if}
 				{#if taskCount > 0}
 					<svg viewBox="0 0 20 20" class="size-4 -rotate-90">
 						<circle cx="10" cy="10" r="8" class="fill-none stroke-muted-foreground/20" stroke-width="3" />

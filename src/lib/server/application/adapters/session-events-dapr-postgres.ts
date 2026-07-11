@@ -263,7 +263,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 				WHERE session_id = $1
 					AND processed_at IS NULL
 					AND type = 'user.message'
-					AND data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+					AND data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')
 				RETURNING id, sequence, data
 			`,
 			params: [sessionId],

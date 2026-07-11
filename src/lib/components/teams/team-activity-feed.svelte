@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
 	import { fly } from 'svelte/transition';
-	import { CircleDot, CheckCircle2, MessageSquare, Megaphone, Bot } from '@lucide/svelte';
+	import { CircleDot, CheckCircle2, MessageSquare, Megaphone, Bot, TriangleAlert } from '@lucide/svelte';
 	import { memberColor } from './member-color';
 
 	type Activity = {
@@ -88,14 +88,18 @@
 					<span class="whitespace-nowrap text-muted-foreground/60"> · {ago(item.ts)}</span>
 				</span>
 			{:else}
-				{#if item.m.kind === 'team-broadcast'}
+				{#if item.m.kind === 'team-error'}
+					<TriangleAlert class="mt-0.5 size-3 shrink-0 text-red-400" />
+				{:else if item.m.kind === 'team-broadcast'}
 					<Megaphone class="mt-0.5 size-3 shrink-0 text-amber-400" />
 				{:else}
 					<MessageSquare class="mt-0.5 size-3 shrink-0 {memberColor(item.m.from).text}" />
 				{/if}
 				<span class="min-w-0 flex-1 leading-snug">
 					{@render chip(item.m.from)}
-					{#if item.m.kind === 'team-broadcast'}
+					{#if item.m.kind === 'team-error'}
+						<span class="font-medium text-red-300"> failed</span>
+					{:else if item.m.kind === 'team-broadcast'}
 						<span> broadcast</span>
 					{:else}
 						<span> → </span>{@render chip(item.m.to)}

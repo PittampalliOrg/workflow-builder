@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionEventEnvelope } from '$lib/types/sessions';
 	import EventTypePill, { eventKindFor } from './event-type-pill.svelte';
-	import { Clock, FileText, Moon, Zap, Megaphone } from '@lucide/svelte';
+	import { Clock, FileText, Moon, Zap, Megaphone, TriangleAlert } from '@lucide/svelte';
 	import { memberColor } from '$lib/components/teams/member-color';
 
 	interface Props {
@@ -35,12 +35,18 @@
 		if (event.type !== 'user.message') return null;
 		const d = event.data as Record<string, unknown>;
 		const origin = typeof d.origin === 'string' ? d.origin : '';
-		if (origin !== 'teammate-message' && origin !== 'team-broadcast' && origin !== 'team-idle') {
+		if (
+			origin !== 'teammate-message' &&
+			origin !== 'team-broadcast' &&
+			origin !== 'team-idle' &&
+			origin !== 'team-error'
+		) {
 			return null;
 		}
 		return {
 			name: typeof d.fromAgent === 'string' ? d.fromAgent : 'team',
-			broadcast: origin === 'team-broadcast'
+			broadcast: origin === 'team-broadcast',
+			failed: origin === 'team-error'
 		};
 	});
 
@@ -228,9 +234,10 @@
 	{/if}
 	{#if teamSender}
 		{@const c = memberColor(teamSender.name)}
-		<span class="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0 text-[9px] font-medium {c.ring} {c.bg} {c.text}">
-			<span class="size-1.5 rounded-full {c.dot}"></span>{teamSender.name}
+		<span class="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0 text-[9px] font-medium {teamSender.failed ? 'border-red-400/50 bg-red-500/10 text-red-300' : `${c.ring} ${c.bg} ${c.text}`}">
+			<span class="size-1.5 rounded-full {teamSender.failed ? 'bg-red-400' : c.dot}"></span>{teamSender.name}
 			{#if teamSender.broadcast}<Megaphone class="size-2.5 text-amber-400" />{/if}
+			{#if teamSender.failed}<TriangleAlert class="size-2.5 text-red-400" />{/if}
 		</span>
 	{/if}
 	<span class="flex-1 truncate text-foreground/90" title={preview}>

@@ -96,6 +96,30 @@ export function setMemberStatus(
 	return s.setMemberStatus(sessionId, status);
 }
 
+/** Whole-team token consumption (budget gate). */
+export function getTeamTokensUsed(
+	teamId: string,
+	s: TeamStore = store(),
+): Promise<number> {
+	return s.getTeamTokensUsed(teamId);
+}
+
+/** Re-point a member row at a fresh session (teammate revival). */
+export function setMemberSession(
+	input: { memberId: string; sessionId: string; status?: TeamMemberStatus },
+	s: TeamStore = store(),
+): Promise<void> {
+	return s.setMemberSession(input);
+}
+
+/** Lead approved the member's plan — drop the plan-mode gate. */
+export function setMemberPlanApproved(
+	sessionId: string,
+	s: TeamStore = store(),
+): Promise<void> {
+	return s.setMemberPlanApproved(sessionId);
+}
+
 /** Resolve an agent slug to its id within a project, for peer spawn. */
 export function resolveAgentIdBySlug(
 	projectId: string,

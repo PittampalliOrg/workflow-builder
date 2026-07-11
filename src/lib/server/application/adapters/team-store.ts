@@ -47,10 +47,11 @@ export class PostgresTeamStore implements TeamStore {
 
 	async ensureTeam(input: EnsureTeamInput): Promise<void> {
 		await this.db.execute(sql`
-			INSERT INTO teams (id, workflow_execution_id, project_id, name, lead_session_id)
+			INSERT INTO teams (id, workflow_execution_id, project_id, name, lead_session_id, token_budget)
 			VALUES (
 				${input.teamId}, ${input.workflowExecutionId ?? null}, ${input.projectId},
-				${input.name ?? `team-${input.teamId.slice(0, 8)}`}, ${input.leadSessionId}
+				${input.name ?? `team-${input.teamId.slice(0, 8)}`}, ${input.leadSessionId},
+				${input.tokenBudget ?? null}
 			)
 			ON CONFLICT (id) DO NOTHING
 		`);
@@ -122,6 +123,41 @@ export class PostgresTeamStore implements TeamStore {
 		`);
 	}
 
+	/** Tokens consumed by the whole team: sum agent.llm_usage input+output over
+	 * every member session. Same source as the run metrics aggregate (the
+	 * sessions.usage rollup is runtime-dependent; llm_usage events are not). */
+	async getTeamTokensUsed(teamId: string): Promise<number> {
+		const r = await this.db.execute<{ used: string | number }>(sql`
+			SELECT coalesce(sum(
+				coalesce((e.data->>'input_tokens')::bigint, 0) +
+				coalesce((e.data->>'output_tokens')::bigint, 0)
+			), 0) AS used
+			FROM session_events e
+			JOIN team_members m ON m.session_id = e.session_id
+			WHERE m.team_id = ${teamId} AND e.type = 'agent.llm_usage'
+		`);
+		return Number(rows<{ used: string | number }>(r)[0]?.used ?? 0);
+	}
+
+	async setMemberSession(input: {
+		memberId: string;
+		sessionId: string;
+		status?: TeamMemberStatus;
+	}): Promise<void> {
+		await this.db.execute(sql`
+			UPDATE team_members
+			SET session_id = ${input.sessionId}, status = ${input.status ?? "working"}, updated_at = now()
+			WHERE id = ${input.memberId}
+		`);
+	}
+
+	async setMemberPlanApproved(sessionId: string): Promise<void> {
+		await this.db.execute(sql`
+			UPDATE team_members SET plan_mode_required = false, updated_at = now()
+			WHERE session_id = ${sessionId}
+		`);
+	}
+
 	/** Resolve an agent slug to its id within a project, for peer spawn. */
 	async resolveAgentIdBySlug(
 		projectId: string,
@@ -161,9 +197,12 @@ export class PostgresTeamStore implements TeamStore {
 	}
 
 	/**
-	 * Atomically claim the oldest eligible task for `sessionId`. Eligible = pending,
-	 * unassigned, and every id in depends_on is completed. FOR UPDATE SKIP LOCKED
-	 * lets N idle teammates claim concurrently without contending on the same row.
+	 * Atomically claim the oldest eligible task for `sessionId`. Eligible =
+	 * pending, all depends_on completed, and (unassigned OR pre-assigned to the
+	 * CALLER) — a task the lead pre-assigned via assignTo is claimable only by
+	 * its designated member, and that member picks it up BEFORE any open task
+	 * (role-affinity: your assigned work outranks the general queue). FOR UPDATE
+	 * SKIP LOCKED lets N idle teammates claim concurrently without contending.
 	 */
 	async claimNextTask(input: {
 		teamId: string;
@@ -176,13 +215,13 @@ export class PostgresTeamStore implements TeamStore {
 				SELECT t.id FROM team_tasks t
 				WHERE t.team_id = ${input.teamId}
 				  AND t.status = 'pending'
-				  AND t.assignee_session_id IS NULL
+				  AND (t.assignee_session_id IS NULL OR t.assignee_session_id = ${input.sessionId})
 				  AND NOT EXISTS (
 					SELECT 1 FROM jsonb_array_elements_text(t.depends_on) dep
 					JOIN team_tasks d ON d.id = dep
 					WHERE d.status <> 'completed'
 				  )
-				ORDER BY t.created_at
+				ORDER BY (t.assignee_session_id = ${input.sessionId}) DESC NULLS LAST, t.created_at
 				FOR UPDATE SKIP LOCKED
 				LIMIT 1
 			)
@@ -192,11 +231,12 @@ export class PostgresTeamStore implements TeamStore {
 	}
 
 	async countClaimableTasks(teamId: string): Promise<number> {
+		// Pending + deps met, regardless of pre-assignment: a pre-assigned pending
+		// task is claimable by SOMEONE (its designee), so it still justifies a nudge.
 		const r = await this.db.execute<{ n: number }>(sql`
 			SELECT count(*)::int AS n FROM team_tasks t
 			WHERE t.team_id = ${teamId}
 			  AND t.status = 'pending'
-			  AND t.assignee_session_id IS NULL
 			  AND NOT EXISTS (
 				SELECT 1 FROM jsonb_array_elements_text(t.depends_on) dep
 				JOIN team_tasks d ON d.id = dep WHERE d.status <> 'completed'
@@ -302,7 +342,7 @@ export class PostgresTeamStore implements TeamStore {
 			JOIN sessions s ON s.id = e.session_id
 			WHERE e.type = 'user.message'
 			  AND e.processed_at IS NULL
-			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')
 			  AND e.created_at < now() - make_interval(secs => ${input.olderThanSeconds})
 			  AND m.role <> 'lead'
 			  AND s.dapr_instance_id IS NOT NULL
@@ -344,7 +384,7 @@ export class PostgresTeamStore implements TeamStore {
 			JOIN team_members m ON m.session_id = e.session_id
 			WHERE m.team_id = ${input.teamId}
 			  AND e.type = 'user.message'
-			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')
+			  AND e.data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')
 			ORDER BY e.created_at DESC
 			LIMIT ${limit}
 		`)) as Array<{

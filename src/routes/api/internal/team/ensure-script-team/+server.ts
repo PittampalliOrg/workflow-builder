@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
+import { defaultTeamTokenBudget } from "$lib/server/teams/team-budget";
 
 /**
  * POST /api/internal/team/ensure-script-team  { executionId, name? }
@@ -24,6 +25,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	const body = (await request.json().catch(() => ({}))) as {
 		executionId?: string;
 		name?: string;
+		/** Optional team-wide token budget (input+output across all members). */
+		tokenBudget?: number;
 	};
 	if (!body.executionId || !body.executionId.trim()) {
 		return error(400, "executionId is required");
@@ -50,11 +53,16 @@ export const POST: RequestHandler = async ({ request }) => {
 		executionId,
 		title: body.name ? `team:script-lead (${body.name})` : "team:script-lead",
 	});
+	const tokenBudget =
+		typeof body.tokenBudget === "number" && Number.isFinite(body.tokenBudget) && body.tokenBudget > 0
+			? Math.trunc(body.tokenBudget)
+			: defaultTeamTokenBudget();
 	await store.ensureTeam({
 		teamId,
 		leadSessionId,
 		projectId: ctx.projectId,
 		name: body.name ?? `team-${executionId.slice(0, 8)}`,
+		tokenBudget,
 	});
 	// Adopt the script's execution as the container (idempotent; only sets when
 	// unset — getTeamExecutionId short-circuit lives in ensureTeamRunExecution,

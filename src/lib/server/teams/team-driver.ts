@@ -29,6 +29,8 @@ import { injectTeamMessage, TEAM_MESSAGE_TOPIC } from "$lib/server/teams/team-me
 import { runTeamSuspendTick } from "$lib/server/teams/team-suspend";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
+import { getTeamBudget } from "$lib/server/teams/team-budget";
+import { runTeamHook } from "$lib/server/teams/team-hooks";
 
 const AUTO_CLAIM = (process.env.TEAM_AUTO_CLAIM ?? "true") !== "false";
 
@@ -71,13 +73,34 @@ export async function onTeamSessionEvent(
 	store: TeamStore = getApplicationAdapters().teamStore,
 ): Promise<void> {
 	try {
-		if (event.type !== "session.status_idle") return;
+		if (event.type !== "session.status_idle" && event.type !== "session.error") return;
 		const member = await getMemberBySession(sessionId, store);
 		if (!member || member.role === "lead") return; // only teammates notify the lead
 		// `shutdown` is TERMINAL: a stopping teammate's final turn still emits one
 		// last status_idle, which used to overwrite the shutdown marker back to
 		// idle (observed on the first team-script E2E). Never resurrect it.
 		if (member.status === "shutdown") return;
+
+		// Failure ≠ idle: an errored teammate must not look like a finished one
+		// (CC v2.1.198 parity). Mark it failed and give the lead the error text —
+		// "failed" is quiescent for join/wait predicates, so the run still drains.
+		if (event.type === "session.error") {
+			const errorText = String(event.data?.error ?? "").slice(0, 300);
+			await setMemberStatus(sessionId, "failed", store);
+			await refreshTeamRunStatus(member.team_id, store);
+			const errMembers = await listMembers(member.team_id, store);
+			const errLead = errMembers.find((m) => m.role === "lead");
+			if (errLead) {
+				await injectTeamMessage({
+					recipientSessionId: errLead.session_id,
+					fromName: member.name,
+					content: `Teammate "${member.name}" FAILED${errorText ? `: ${errorText}` : " (no error detail)"}. It is no longer working; revive_teammate can respawn it from its transcript.`,
+					kind: "team-error",
+					sourceEventId: `team-error:${sessionId}:${member.updated_at}`,
+				});
+			}
+			return;
+		}
 
 		// Any idle means the teammate finished its turn and is now available/done —
 		// notify the lead regardless of the specific stop reason (end_turn,
@@ -90,6 +113,26 @@ export async function onTeamSessionEvent(
 		// Recompute the container run's status from team state so the Fleet/runs
 		// list reflects the team live (no-op for teams without an execution row).
 		await refreshTeamRunStatus(member.team_id, store);
+
+		// TeammateIdle quality gate (Claude Code hook parity): a configured hook
+		// can BLOCK the idle and send the teammate back to work with feedback —
+		// the platform analog of exit-code-2. Fail-open (no hook/timeout = allow).
+		const idleGate = await runTeamHook("TeammateIdle", {
+			team_name: member.team_id,
+			teamId: member.team_id,
+			teammate: { name: member.name, status: "idle" },
+			sessionId,
+		});
+		if (idleGate.blocked) {
+			await injectTeamMessage({
+				recipientSessionId: sessionId,
+				fromName: "team",
+				content: `Your idle was rejected by a team quality gate: ${idleGate.reason}\nAddress the feedback, then finish properly.`,
+				kind: "team-idle",
+				sourceEventId: `team-hook-idle:${sessionId}:${member.updated_at}`,
+			});
+			return;
+		}
 
 		// Notify the lead. Deterministic id keyed on the member + a coarse idle
 		// marker so repeated idles within the same turn dedupe. We include the
@@ -122,6 +165,12 @@ export async function onTeamSessionEvent(
 			});
 			return;
 		}
+
+		// Token-budget brake: an exhausted team gets no NEW work fed to it (the
+		// hold nudge above still runs — finishing held work is always right).
+		// In-flight turns are untouched; the budget is a brake, not a kill switch.
+		const budget = await getTeamBudget(member.team_id, store).catch(() => null);
+		if (budget?.exhausted) return;
 
 		// Auto-claim: offer the idle teammate its next unblocked task by nudging it
 		// to call claim_task — but ONLY when there is actually claimable work.
@@ -180,8 +229,10 @@ export async function runTeamDriverTick(
 			continue;
 		}
 		// Only nudge when the member's team actually has claimable work — same
-		// loop-guard as the reactive path.
+		// loop-guard as the reactive path — and never feed an exhausted budget.
 		if ((await countClaimableTasks(m.team_id, store)) === 0) continue;
+		const budget = await getTeamBudget(m.team_id, store).catch(() => null);
+		if (budget?.exhausted) continue;
 		await injectTeamMessage({
 			recipientSessionId: m.session_id,
 			fromName: "team",
