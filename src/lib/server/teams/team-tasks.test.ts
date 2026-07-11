@@ -35,7 +35,8 @@ async function freshStore(): Promise<TeamStore> {
 			created_by_session_id text,
 			created_at timestamp NOT NULL DEFAULT now(),
 			updated_at timestamp NOT NULL DEFAULT now(),
-			completed_at timestamp
+			completed_at timestamp,
+			completion_note text
 		)`),
 	);
 	return new PostgresTeamStore(() => db as never);
@@ -53,6 +54,22 @@ describe("team-tasks atomic claim", () => {
 		expect(claimed?.id).toBe(t.id);
 		expect(claimed?.status).toBe("in_progress");
 		expect(claimed?.assignee_session_id).toBe("sess-x");
+	});
+
+	it("persists the completion note (the results channel) and lists it back", async () => {
+		const t = await createTask({ teamId: TEAM, title: "deliver" }, store);
+		await claimNextTask({ teamId: TEAM, sessionId: "s1" }, store);
+		const done = await completeTask(
+			{ teamId: TEAM, taskId: t.id, note: "THE DELIVERABLE: five crisp use-cases…" },
+			store,
+		);
+		expect(done?.completion_note).toBe("THE DELIVERABLE: five crisp use-cases…");
+		const listed = await store.listTeamTasks(TEAM);
+		expect(listed[0].completion_note).toBe("THE DELIVERABLE: five crisp use-cases…");
+		// A note-less re-complete must not WIPE an existing note (coalesce).
+		await completeTask({ teamId: TEAM, taskId: t.id }, store);
+		const again = await store.listTeamTasks(TEAM);
+		expect(again[0].completion_note).toBe("THE DELIVERABLE: five crisp use-cases…");
 	});
 
 	it("never double-assigns a single task under concurrent claims", async () => {

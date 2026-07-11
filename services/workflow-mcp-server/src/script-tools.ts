@@ -138,8 +138,10 @@ cap the team's total input+output tokens across every member session — once ex
 THROWS and idle teammates stop being fed new tasks (in-flight turns finish). Omit for unlimited. Teammates cannot spawn nested teams; nested workflow()
 children cannot use team.*. Auto-shutdown fires at run end, but ending with join() then shutdown() is
 good practice. Each sequential await team.* costs a pump round — batch independent calls with
-parallel([() => team.task({...}), () => team.task({...})]). Teammates do NOT report results to your
-script — inspect team.status()/join() snapshots (task states) or have teammates write artifacts.
+parallel([() => team.task({...}), () => team.task({...})]). RESULTS: instruct teammates to pass the
+DELIVERABLE as update_task's note — it lands on the task row and comes back in team.status()/join()
+snapshots as tasks[].note. Synthesize your run's return value from those notes (pure JS, or feed them
+to a final agent() call for judgment-heavy synthesis) so the run's Outputs tab carries the deliverable.
 
 VALIDATE THEN RUN: call validate_workflow_script(script) first; fix any error; then run_workflow_script
 with { script } (inline) or { workflowName } (saved). Fixtures to pattern-match live in

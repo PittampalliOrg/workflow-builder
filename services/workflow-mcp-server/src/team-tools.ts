@@ -343,14 +343,16 @@ export function registerTeamTools(
 		{
 			title: "Update Task Status",
 			description:
-				'Mark a task complete. status must be "completed". Completing a task unblocks any tasks that depend on it.',
+				'Mark a task complete. status must be "completed". ALWAYS pass `note` with the DELIVERABLE (the actual work product, or where to find it) — the note is the results channel: the lead, the run output, and the UI read it. Completing a task unblocks any tasks that depend on it.',
 			inputSchema: {
 				taskId: z.string().describe("The task id to update."),
 				status: z.string().describe('Must be "completed".'),
 				note: z
 					.string()
 					.optional()
-					.describe("Completion note: the deliverable or a summary of the work done."),
+					.describe(
+						"The deliverable itself (preferred) or a pointer to it. This is how your work reaches the lead and the run output — a completion without a note is invisible.",
+					),
 			},
 		},
 		async (args: { taskId: string; status: string; note?: string }) => {
@@ -442,6 +444,7 @@ export function registerTeamTools(
 								id: t.id,
 								title: t.title,
 								status: t.status,
+								note: (t as { completion_note?: string | null }).completion_note ?? null,
 							})),
 						});
 					}

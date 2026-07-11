@@ -21,13 +21,13 @@ const researcher = await team.spawn({
 	name: 'researcher',
 	agent: args?.agent ?? 'team-tester-glm',
 	prompt:
-		'You are the `researcher` on a 2-person team. Call claim_task to take your next unblocked task from the shared list; do the work IN YOUR REPLY (no file tools needed); call update_task(taskId, "completed") when done; repeat until claim_task returns null, then stop. Task 1 will ask you to list 5 practical use-cases for suspend/resume of idle AI agents (one line each).',
+		'You are the `researcher` on a 2-person team. Call claim_task to take your next unblocked task from the shared list; do the work, then call update_task(taskId, "completed", note) where note IS THE FULL DELIVERABLE TEXT — the note is how your work reaches the lead and the run output. After completing Task 1, ALSO send_message the full list to "writer" (they need it for the summary). Repeat claim_task until it returns null, then stop. Task 1 will ask you to list 5 practical use-cases for suspend/resume of idle AI agents (one line each).',
 })
 const writer = await team.spawn({
 	name: 'writer',
 	agent: args?.agent ?? 'team-tester-glm',
 	prompt:
-		'You are the `writer` on a 2-person team. Call claim_task to take your next unblocked task; your task depends on the researcher finishing, so if claim_task returns null just reply "waiting" and stop — you will be nudged when work unblocks. When you get the task: write a crisp 5-sentence summary paragraph of the use-cases (from the task description), reply with it, and call update_task(taskId, "completed").',
+		'You are the `writer` on a 2-person team. Call claim_task to take your next unblocked task; your task depends on the researcher finishing, so if claim_task returns null just reply "waiting" and stop — you will be nudged when work unblocks. When you get the task: use the researcher\'s 5 use-cases (they will send_message them to you; if missing, ask them), write a crisp 5-sentence summary paragraph, and call update_task(taskId, "completed", note) with THE PARAGRAPH AS THE NOTE — the note is how your work reaches the run output.',
 })
 
 // Seed the shared ledger: t2 is GATED on t1 (the writer stays idle/suspended
@@ -52,10 +52,27 @@ const final = await team.join({ until: 'tasks-complete', timeoutMinutes: 15 })
 log(
 	`team.join: satisfied=${final.satisfied} timedOut=${final.timedOut} after ${final.polls} polls`,
 )
+
+// THE RESULTS CHANNEL: completed tasks carry the deliverable in `note`
+// (update_task's third argument). The script — the lead — synthesizes the
+// run's OUTPUT from those notes, so the Outputs tab holds the actual work
+// product, not just coordination state.
+const notes = Object.fromEntries(
+	(final.tasks ?? []).map((t) => [t.title, t.note ?? null]),
+)
+const summary = notes['Write the summary paragraph']
+const useCases = notes['List 5 practical use-cases for suspending idle AI agents']
+
 return {
+	deliverable: summary ?? '(writer did not attach a completion note)',
+	supporting: { useCases: useCases ?? '(researcher did not attach a completion note)' },
 	spawned: [researcher.name, writer.name],
 	satisfied: final.satisfied,
 	timedOut: final.timedOut,
-	tasks: (final.tasks ?? []).map((t) => ({ title: t.title, status: t.status })),
+	tasks: (final.tasks ?? []).map((t) => ({
+		title: t.title,
+		status: t.status,
+		hasNote: !!t.note,
+	})),
 	members: (final.members ?? []).map((m) => ({ name: m.name, status: m.status })),
 }

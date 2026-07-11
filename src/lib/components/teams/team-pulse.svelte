@@ -31,6 +31,8 @@
 			assignee: string | null;
 			assigneeName: string | null;
 			dependsOn: string[];
+			/** Deliverable text the completer passed via update_task note. */
+			note?: string | null;
 		}>;
 		activity?: Array<{
 			ts: string;
@@ -234,6 +236,15 @@
 												.map((b) => taskById.get(b)?.title ?? b)
 												.join(', ')}
 										{/if}
+									</span>
+								{/if}
+								{#if t.note}
+									<!-- The deliverable: what the completer handed back via update_task. -->
+									<span
+										class="line-clamp-2 rounded border-l-2 border-emerald-400/40 bg-emerald-500/5 px-1.5 py-0.5 text-[10px] leading-snug text-foreground/80"
+										title={t.note}
+									>
+										{t.note}
 									</span>
 								{/if}
 							</button>

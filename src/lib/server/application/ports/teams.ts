@@ -55,6 +55,9 @@ export type TeamTaskRow = {
 	created_at: string;
 	updated_at: string;
 	completed_at: string | null;
+	/** The RESULTS channel: the deliverable (or a pointer to it) the completer
+	 * passed via update_task(taskId, "completed", note). */
+	completion_note: string | null;
 };
 
 /** The projection `listTeamTasks` returns for the team view. */
@@ -66,6 +69,7 @@ export type TeamTaskListItem = {
 	depends_on: string[];
 	updated_at: string;
 	completed_at: string | null;
+	completion_note: string | null;
 };
 
 export type EnsureTeamInput = {
@@ -133,7 +137,12 @@ export interface TeamStore {
 	createTask(input: CreateTeamTaskInput): Promise<TeamTaskRow>;
 	claimNextTask(input: { teamId: string; sessionId: string }): Promise<TeamTaskRow | null>;
 	countClaimableTasks(teamId: string): Promise<number>;
-	completeTask(input: { teamId: string; taskId: string }): Promise<TeamTaskRow | null>;
+	completeTask(input: {
+		teamId: string;
+		taskId: string;
+		/** Deliverable text (or pointer) persisted as completion_note. */
+		note?: string | null;
+	}): Promise<TeamTaskRow | null>;
 
 	/** One-query snapshot for the wake-on-deliver decision (team-delivery.ts). */
 	getSessionDeliveryState(sessionId: string): Promise<{
