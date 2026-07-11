@@ -23,6 +23,7 @@
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import CliTerminalTabs from '$lib/components/sessions/cli-terminal-tabs.svelte';
 	import TeamLiveBoard from '$lib/components/teams/team-live-board.svelte';
+	import TeamKnowledgeDrawer from '$lib/components/teams/team-knowledge-drawer.svelte';
 	import RunMetricsBar, {
 		type RunMetricsLive,
 		type RunMetricsOutcome
@@ -373,6 +374,21 @@
 			localStorage.setItem(RAIL_COLLAPSE_KEY, railCollapsed ? '1' : '0');
 	}
 
+	// ── Knowledge drawer (team runs): the right-hand counterpart of the rail —
+	// keep the OKF bundle in view WHILE watching live activity. Collapsed to a
+	// slim strip by default; preference persisted like the rail's.
+	let knowledgeOpen = $state(false);
+	const KNOWLEDGE_OPEN_KEY = 'wfb:run-console:knowledge-open';
+	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		knowledgeOpen = localStorage.getItem(KNOWLEDGE_OPEN_KEY) === '1';
+	});
+	function toggleKnowledge(open: boolean) {
+		knowledgeOpen = open;
+		if (typeof localStorage !== 'undefined')
+			localStorage.setItem(KNOWLEDGE_OPEN_KEY, open ? '1' : '0');
+	}
+
 	// ── Per-active-session preview streams (capped) ─────────────────────────
 	const MAX_PREVIEW_STREAMS = 4;
 	type PreviewData = { lastLine: string; inTok: number; outTok: number; activity: string | null };
@@ -709,7 +725,11 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="grid min-h-0 flex-1 overflow-hidden"
-			style:grid-template-columns="{railCollapsed ? '2.5rem' : railWidth + 'px'} 1fr"
+			style:grid-template-columns="{railCollapsed ? '2.5rem' : railWidth + 'px'} 1fr{teamId
+				? knowledgeOpen
+					? ' 340px'
+					: ' 2.5rem'
+				: ''}"
 			onmousemove={onResizeMove}
 			onmouseup={onResizeEnd}
 			onmouseleave={onResizeEnd}
@@ -972,6 +992,17 @@
 					{/if}
 				</div>
 			</div>
+
+			<!-- Right rail (team runs): the knowledge bundle beside the activity —
+			     slim pulsing strip when closed, index + inline OKF docs when open. -->
+			{#if teamId}
+				<TeamKnowledgeDrawer
+					{teamId}
+					isRunning={runActive}
+					open={knowledgeOpen}
+					onToggle={toggleKnowledge}
+				/>
+			{/if}
 		</div>
 	{/if}
 
