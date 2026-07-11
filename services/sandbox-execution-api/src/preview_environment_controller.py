@@ -184,6 +184,10 @@ data:
   WORKFLOW_BUILDER_APP_ID: "workflow-builder"
 """,
     },
+    # The workflow-builder Deployment reads the six canonical environment,
+    # request, revision, catalog, and service fields from the runner-staged
+    # preview-environment-identity ConfigMap. Do not add literal duplicates:
+    # strategic merge would retain valueFrom and produce invalid EnvVars.
     {
         "target": {"kind": "Deployment", "name": "workflow-builder"},
         "patch": """apiVersion: apps/v1
@@ -215,28 +219,16 @@ spec:
               value: "false"
             - name: PREVIEW_ENVIRONMENT_ID
               value: "__PREVIEW_ID__"
-            - name: PREVIEW_ENVIRONMENT_NAME
-              value: "__PREVIEW_ID__"
-            - name: PREVIEW_ENVIRONMENT_REQUEST_ID
-              value: "__REQUEST_ID__"
             - name: PREVIEW_ENVIRONMENT_PROFILE
               value: "__PREVIEW_PROFILE__"
             - name: PREVIEW_ENVIRONMENT_LANE
               value: "__PREVIEW_LANE__"
             - name: PREVIEW_PLATFORM_REVISION
               value: "__PLATFORM_REVISION__"
-            - name: PREVIEW_ENVIRONMENT_PLATFORM_REVISION
-              value: "__PLATFORM_REVISION__"
             - name: PREVIEW_SOURCE_REVISION
-              value: "__SOURCE_REVISION__"
-            - name: PREVIEW_ENVIRONMENT_SOURCE_REVISION
               value: "__SOURCE_REVISION__"
             - name: DEV_PREVIEW_CATALOG_DIGEST
               value: "__CATALOG_DIGEST__"
-            - name: PREVIEW_ENVIRONMENT_CATALOG_DIGEST
-              value: "__CATALOG_DIGEST__"
-            - name: PREVIEW_ENVIRONMENT_SERVICES_JSON
-              value: '__SERVICES_JSON__'
             - name: PREVIEW_CONTROL_CAPABILITY_TOKEN
               valueFrom:
                 secretKeyRef:
