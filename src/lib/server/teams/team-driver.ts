@@ -22,6 +22,7 @@ import {
 	getMemberBySession,
 	listIdleMembers,
 	listMembers,
+	listTeamTasks,
 	setMemberStatus,
 } from "$lib/server/teams/team-repo";
 import { injectTeamMessage, TEAM_MESSAGE_TOPIC } from "$lib/server/teams/team-messaging";
@@ -30,6 +31,35 @@ import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
 
 const AUTO_CLAIM = (process.env.TEAM_AUTO_CLAIM ?? "true") !== "false";
+
+/**
+ * Tasks this member CLAIMED but never completed. An idle member holding an
+ * in_progress task is the stall mode neither nudge above covers: the task is
+ * not claimable (someone holds it) so the claim nudge never fires, and the
+ * holder thinks it's done — the team deadlocks until the join times out.
+ * Observed on dev 2026-07-11: the role-agnostic claim queue handed the
+ * "writer's" task to the researcher, which decided it wasn't its job and
+ * idled while holding it.
+ */
+async function listHeldTasks(
+	teamId: string,
+	sessionId: string,
+	store: TeamStore,
+): Promise<Array<{ id: string; title: string; updated_at: string }>> {
+	const tasks = await listTeamTasks(teamId, store);
+	return tasks
+		.filter((t) => t.status === "in_progress" && t.assignee_session_id === sessionId)
+		.map((t) => ({ id: t.id, title: t.title, updated_at: t.updated_at }));
+}
+
+function heldTaskNudge(task: { id: string; title: string }): string {
+	return (
+		`You still hold task ${task.id} ("${task.title}") — it is in_progress and assigned to YOU. ` +
+		"A claimed task is yours regardless of your role name. Do the work now and call " +
+		`update_task("${task.id}", "completed") with the deliverable; if you genuinely cannot, ` +
+		"send_message the lead explaining why — but do not go idle while holding it."
+	);
+}
 
 /**
  * React to a session event for a session that belongs to a team. No-op (and
@@ -76,6 +106,23 @@ export async function onTeamSessionEvent(
 			});
 		}
 
+		// Held-task check FIRST: an idle member still holding an in_progress task
+		// must finish (or escalate) it before anything else — that task is
+		// invisible to the claim nudge (not claimable) and blocks the join.
+		// sourceEventId keys on the TASK's updated_at (stable while held), so a
+		// stubborn holder is nudged at most once per hold — no idle→nudge loop.
+		const held = AUTO_CLAIM ? await listHeldTasks(member.team_id, sessionId, store) : [];
+		if (held.length > 0) {
+			await injectTeamMessage({
+				recipientSessionId: sessionId,
+				fromName: "team",
+				content: heldTaskNudge(held[0]),
+				kind: "team-idle",
+				sourceEventId: `team-hold-nudge:${sessionId}:${held[0].id}:${held[0].updated_at}`,
+			});
+			return;
+		}
+
 		// Auto-claim: offer the idle teammate its next unblocked task by nudging it
 		// to call claim_task — but ONLY when there is actually claimable work.
 		// Nudging on every idle regardless of work causes an idle→nudge→idle loop
@@ -118,6 +165,20 @@ export async function runTeamDriverTick(
 	let nudged = 0;
 	for (const m of idle) {
 		if (m.role === "lead") continue;
+		// Held-task backstop first — same reasoning + dedupe key as the reactive
+		// path, so a hold that already got the reactive nudge is not re-nudged.
+		const held = await listHeldTasks(m.team_id, m.session_id, store);
+		if (held.length > 0) {
+			await injectTeamMessage({
+				recipientSessionId: m.session_id,
+				fromName: "team",
+				content: heldTaskNudge(held[0]),
+				kind: "team-idle",
+				sourceEventId: `team-hold-nudge:${m.session_id}:${held[0].id}:${held[0].updated_at}`,
+			});
+			nudged++;
+			continue;
+		}
 		// Only nudge when the member's team actually has claimable work — same
 		// loop-guard as the reactive path.
 		if ((await countClaimableTasks(m.team_id, store)) === 0) continue;
