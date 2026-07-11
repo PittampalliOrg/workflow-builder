@@ -56,9 +56,10 @@ only `<agent>-agent-cert`, validates it independently, stages the leaf in the
 virtual `argocd` namespace, and removes the physical transport copy. There is no
 claim of virtual certificate rotation; the fixed lifetime covers the maximum
 preview TTL plus cleanup margin. The `preview.stacks.io/agent-registration`
-finalizer first foreground-deletes the mapping `ExternalSecret`, then removes
-the Certificate, isolated leaf, and agent namespace. Its controller has no
-Secret verb in `argocd`.
+finalizer first foreground-deletes the mapping `ExternalSecret`, then
+background-deletes the Certificate with a UID precondition, waits for
+Certificate absence, and removes the isolated leaf and agent namespace. Its
+controller has no Secret verb in `argocd`.
 
 ## Capabilities
 
@@ -167,9 +168,10 @@ Secret, or vCluster workload credential. Missing archive/provenance proof
 preserves the environment.
 
 The physical broker is the only application-facing hub desired-state writer.
-DELETE places the exact UID/request/source-owned PreviewEnvironment into
-termination. Its hub finalizer then publishes a tuple-bound deletion intent in
-status. A continuously reconciled dev broker consumes that intent, runs SEA
+DELETE background-deletes the exact UID/request/source-owned PreviewEnvironment
+with a UID-only Kubernetes precondition, then waits for API absence. Its hub
+finalizer publishes a tuple-bound deletion intent in status. A continuously
+reconciled dev broker consumes that intent, runs SEA
 `down`, proves the exact Job UID/runner generation plus dev-side absence checks,
 and records the acknowledgement through the status subresource. Only after that
 acknowledgement does the hub controller remove the Application, namespace, agent
