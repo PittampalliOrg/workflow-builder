@@ -16,6 +16,13 @@ const COMMIT = "c".repeat(40) as ImmutableGitSha;
 const CATALOG = `sha256:${"d".repeat(64)}` as const;
 const FILE = `sha256:${"e".repeat(64)}` as const;
 const BRANCH = "preview-feature-central-artifact-1";
+const FIVE_CAPTURED_SERVICES = Object.freeze([
+  "function-router",
+  "mcp-gateway",
+  "workflow-builder",
+  "workflow-mcp-server",
+  "workflow-orchestrator",
+]);
 
 const identity: PreviewImportedArtifactIdentity = {
   previewName: "preview-one",
@@ -45,6 +52,57 @@ const command: PreviewSourcePromotionBrokerRequest = {
   bodyMarkdown: "Tested in preview-one.",
   draft: true,
 };
+const fiveServiceCommand: PreviewSourcePromotionBrokerRequest = {
+  ...command,
+  artifactIdentity: {
+    ...identity,
+    services: FIVE_CAPTURED_SERVICES,
+  },
+};
+
+function promotionBrokerProof(services: readonly string[]) {
+  return {
+    ok: true,
+    previewName: "preview-one",
+    requestId: "request-1",
+    executionId: "execution-1",
+    artifactId: "central-artifact-1",
+    services,
+    branch: BRANCH,
+    commitSha: COMMIT,
+    prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+    pullRequest: {
+      repository: "PittampalliOrg/workflow-builder",
+      number: 42,
+      baseSha: SOURCE,
+      headSha: COMMIT,
+    },
+    draft: true,
+  };
+}
+
+function promotionHttpHarness(body: unknown) {
+  const fetchImpl = vi.fn(
+    async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  const adapter = new HttpPreviewSourcePromotionBrokerAdapter({
+    baseUrl: () => "http://preview-control-broker:3000/",
+    token: () => "leaf-token",
+    identity: () => ({
+      previewName: "preview-one",
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: PLATFORM,
+      environmentSourceRevision: SOURCE,
+      catalogDigest: CATALOG,
+    }),
+    fetch: fetchImpl as typeof fetch,
+  });
+  return { adapter, fetchImpl };
+}
 
 function brokerHarness() {
   const authority = {
@@ -325,42 +383,9 @@ describe("preview source promotion", () => {
 
 describe("preview source promotion HTTP adapter", () => {
   it("sends the tuple capability to the fixed physical broker route", async () => {
-    const fetchImpl = vi.fn(
-      async (_url: string | URL | Request, _init?: RequestInit) =>
-        new Response(
-          JSON.stringify({
-            ok: true,
-            previewName: "preview-one",
-            requestId: "request-1",
-            executionId: "execution-1",
-            artifactId: "central-artifact-1",
-            services: ["workflow-builder"],
-            branch: BRANCH,
-            commitSha: COMMIT,
-            prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
-            pullRequest: {
-              repository: "PittampalliOrg/workflow-builder",
-              number: 42,
-              baseSha: SOURCE,
-              headSha: COMMIT,
-            },
-            draft: true,
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
+    const { adapter, fetchImpl } = promotionHttpHarness(
+      promotionBrokerProof(["workflow-builder"]),
     );
-    const adapter = new HttpPreviewSourcePromotionBrokerAdapter({
-      baseUrl: () => "http://preview-control-broker:3000/",
-      token: () => "leaf-token",
-      identity: () => ({
-        previewName: "preview-one",
-        environmentRequestId: "request-1",
-        environmentPlatformRevision: PLATFORM,
-        environmentSourceRevision: SOURCE,
-        catalogDigest: CATALOG,
-      }),
-      fetch: fetchImpl as typeof fetch,
-    });
     await expect(adapter.promote(command)).resolves.toMatchObject({
       ok: true,
       prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
@@ -379,5 +404,58 @@ describe("preview source promotion HTTP adapter", () => {
       "leaf-token",
     );
     expect(JSON.parse(String(init?.body))).toEqual(command);
+  });
+
+  it("accepts a canonical changed-service subset of five captured services", async () => {
+    const changedServices = ["workflow-builder", "workflow-orchestrator"];
+    const { adapter } = promotionHttpHarness(
+      promotionBrokerProof(changedServices),
+    );
+
+    await expect(adapter.promote(fiveServiceCommand)).resolves.toMatchObject({
+      services: changedServices,
+    });
+  });
+
+  it("rejects an extra service outside the captured artifact", async () => {
+    const { adapter } = promotionHttpHarness(
+      promotionBrokerProof(["unknown-service", "workflow-builder"]),
+    );
+
+    await expect(adapter.promote(fiveServiceCommand)).rejects.toThrow(
+      "preview source promotion broker returned invalid proof",
+    );
+  });
+
+  it("rejects a known service that was not captured", async () => {
+    const capturedCommand: PreviewSourcePromotionBrokerRequest = {
+      ...command,
+      artifactIdentity: {
+        ...identity,
+        services: FIVE_CAPTURED_SERVICES.filter(
+          (service) => service !== "function-router",
+        ),
+      },
+    };
+    const { adapter } = promotionHttpHarness(
+      promotionBrokerProof(["function-router"]),
+    );
+
+    await expect(adapter.promote(capturedCommand)).rejects.toThrow(
+      "preview source promotion broker returned invalid proof",
+    );
+  });
+
+  it.each([
+    ["empty", []],
+    ["duplicate", ["workflow-builder", "workflow-builder"]],
+    ["out-of-order", ["workflow-orchestrator", "workflow-builder"]],
+    ["noncanonical", ["workflow-builder "]],
+  ])("rejects a %s changed-service proof", async (_case, services) => {
+    const { adapter } = promotionHttpHarness(promotionBrokerProof(services));
+
+    await expect(adapter.promote(fiveServiceCommand)).rejects.toThrow(
+      "preview source promotion broker returned invalid proof",
+    );
   });
 });
