@@ -332,6 +332,11 @@ class PreviewAgentRegistrationAdapter:
         if not self._delete_mapping_secret(preview_id):
             return False
         self._delete_certificate(preview_id, environment_uid)
+        # cert-manager can reissue a foreground-deleting Certificate when its
+        # target Secret disappears first. Preserve the leaf until the
+        # Certificate and its owned CertificateRequests are fully gone.
+        if self._get_certificate(preview_id) is not None:
+            return False
         self._delete_secret(
             namespace=CERTIFICATE_NAMESPACE,
             name=certificate_secret_name(preview_id),
