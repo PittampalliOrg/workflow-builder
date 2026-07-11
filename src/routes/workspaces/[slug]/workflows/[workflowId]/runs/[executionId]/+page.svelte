@@ -912,10 +912,11 @@
 	// Files tab gate: a lightweight summary fetch decides whether the run has
 	// persisted output files or a live sandbox worth browsing. RunFilesTree
 	// re-fetches its own data when the tab is opened.
-	let filesSummary = $state<{ count: number; live: boolean; cli: boolean }>({
+	let filesSummary = $state<{ count: number; live: boolean; cli: boolean; knowledge: number }>({
 		count: 0,
 		live: false,
-		cli: false
+		cli: false,
+		knowledge: 0
 	});
 	$effect(() => {
 		const id = executionId;
@@ -926,10 +927,25 @@
 				const r = await fetch(`/api/workflows/executions/${id}/files`);
 				if (!r.ok || cancelled) return;
 				const d = await r.json();
+				// Team runs: the OKF knowledge bundle is a durable Files source even
+				// after teammate sandboxes are reaped.
+				let knowledge = 0;
+				if (runTeamId) {
+					try {
+						const kr = await fetch(`/api/v1/teams/${encodeURIComponent(runTeamId)}`);
+						if (kr.ok) {
+							const kd = await kr.json();
+							knowledge = Array.isArray(kd.knowledge) ? kd.knowledge.length : 0;
+						}
+					} catch {
+						/* transient */
+					}
+				}
 				filesSummary = {
 					count: Array.isArray(d.files) ? d.files.length : 0,
 					live: !!d.liveSandbox,
-					cli: !!d.cliWorkspace
+					cli: !!d.cliWorkspace,
+					knowledge
 				};
 			} catch {
 				/* transient */
@@ -953,7 +969,9 @@
 			clearInterval(t);
 		};
 	});
-	const hasFilesTab = $derived(filesSummary.count > 0 || filesSummary.live || filesSummary.cli);
+	const hasFilesTab = $derived(
+		filesSummary.count > 0 || filesSummary.live || filesSummary.cli || filesSummary.knowledge > 0
+	);
 	// Unified post-run live preview: which backend (if any) is previewable —
 	// `cli` (JuiceFS execution-keyed pod) or `openshell` (retained dapr sandbox).
 	// Resolved once from /preview-info so one Preview tab serves every runtime.
@@ -2645,7 +2663,7 @@
 		<TabsContent value="files" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl">
 				{#if activeTab === 'files'}
-					<RunFilesTree {executionId} />
+					<RunFilesTree {executionId} teamId={runTeamId} />
 				{/if}
 			</div>
 		</TabsContent>

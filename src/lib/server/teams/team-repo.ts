@@ -121,6 +121,15 @@ export function listKnowledge(
 	return s.listKnowledge(teamId, filter);
 }
 
+/** Live per-member activity + merged stream (the Live tab's team board). */
+export function getTeamLiveActivity(
+	teamId: string,
+	streamLimit?: number,
+	s: TeamStore = store(),
+): ReturnType<TeamStore["getTeamLiveActivity"]> {
+	return s.getTeamLiveActivity({ teamId, streamLimit });
+}
+
 /** Lead approved the member's plan — drop the plan-mode gate. */
 export function setMemberPlanApproved(
 	sessionId: string,

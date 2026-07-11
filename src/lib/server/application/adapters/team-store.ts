@@ -211,6 +211,108 @@ export class PostgresTeamStore implements TeamStore {
 		return rows<TeamKnowledgeRow>(r)[0] ?? null;
 	}
 
+	/** Event types that tell the "what is this member doing" story. Kept small
+	 * so the LATERAL latest-per-member probe stays cheap. */
+	private static readonly LIVE_EVENT_TYPES = [
+		"agent.message",
+		"agent.thinking",
+		"agent.tool_use",
+		"mcp.tool_call",
+		"user.message",
+		"session.status_idle",
+		"session.status_running",
+		"session.host_suspended",
+		"session.host_woken",
+		"session.error",
+	] as const;
+
+	async getTeamLiveActivity(input: {
+		teamId: string;
+		streamLimit?: number;
+	}): Promise<{
+		members: Array<{
+			name: string;
+			role: string;
+			status: string;
+			session_id: string;
+			event_type: string | null;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string | null;
+		}>;
+		stream: Array<{
+			name: string;
+			session_id: string;
+			event_type: string;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string;
+		}>;
+	}> {
+		const limit = Math.min(Math.max(input.streamLimit ?? 40, 1), 100);
+		// Static literal list (values are compile-time constants) — portable
+		// across postgres-js and PGlite without array-param binding differences.
+		const typeList = sql.raw(
+			PostgresTeamStore.LIVE_EVENT_TYPES.map((t) => `'${t}'`).join(", "),
+		);
+		const eventCols = sql`
+			e.type AS event_type,
+			coalesce(e.data->>'name', e.data->>'tool_name') AS tool_name,
+			e.data->>'origin' AS origin,
+			e.data->>'fromAgent' AS from_agent,
+			left(coalesce(e.data->'content'->0->>'text', e.data->>'preview', ''), 160) AS preview,
+			e.created_at AS event_at
+		`;
+		const members = (await this.db.execute(sql`
+			SELECT m.name, m.role, m.status, m.session_id, ev.*
+			FROM team_members m
+			LEFT JOIN LATERAL (
+				SELECT ${eventCols}
+				FROM session_events e
+				WHERE e.session_id = m.session_id
+				  AND e.type IN (${typeList})
+				ORDER BY e.created_at DESC
+				LIMIT 1
+			) ev ON true
+			WHERE m.team_id = ${input.teamId}
+			ORDER BY m.joined_at ASC
+		`)) as Array<{
+			name: string;
+			role: string;
+			status: string;
+			session_id: string;
+			event_type: string | null;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string | null;
+		}>;
+		const stream = (await this.db.execute(sql`
+			SELECT m.name, e.session_id, ${eventCols}
+			FROM session_events e
+			JOIN team_members m ON m.session_id = e.session_id
+			WHERE m.team_id = ${input.teamId}
+			  AND e.type IN (${typeList})
+			ORDER BY e.created_at DESC
+			LIMIT ${limit}
+		`)) as Array<{
+			name: string;
+			session_id: string;
+			event_type: string;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string;
+		}>;
+		return { members, stream };
+	}
+
 	/** Resolve an agent slug to its id within a project, for peer spawn. */
 	async resolveAgentIdBySlug(
 		projectId: string,
