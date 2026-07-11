@@ -109,6 +109,16 @@ def _namespace(value: Any) -> str:
     return str(_field(_metadata(value), "namespace") or "")
 
 
+def _delete_preconditions(value: Any) -> dict[str, str]:
+    metadata = _metadata(value)
+    uid = str(_field(metadata, "uid") or "")
+    if not uid:
+        raise PreviewAgentRegistrationError(
+            "registration object has no stable Kubernetes UID"
+        )
+    return {"uid": uid}
+
+
 def _parse_timestamp(value: Any, description: str) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise PreviewAgentRegistrationError(f"{description} is not RFC3339 UTC")
@@ -332,9 +342,8 @@ class PreviewAgentRegistrationAdapter:
         if not self._delete_mapping_secret(preview_id):
             return False
         self._delete_certificate(preview_id, environment_uid)
-        # cert-manager can reissue a foreground-deleting Certificate when its
-        # target Secret disappears first. Preserve the leaf until the
-        # Certificate and its owned CertificateRequests are fully gone.
+        # cert-manager can reissue a deleting Certificate when its target Secret
+        # disappears first. Preserve the leaf until the Certificate is gone.
         if self._get_certificate(preview_id) is not None:
             return False
         self._delete_secret(
@@ -800,13 +809,18 @@ class PreviewAgentRegistrationAdapter:
             expected_name=certificate_name(preview_id),
         )
         try:
+            # Foreground GC clears its finalizer with an UPDATE, but Certificate
+            # updates are intentionally reserved to this controller by admission.
             self.custom_api.delete_namespaced_custom_object(
                 group=CERTIFICATE_GROUP,
                 version=CERTIFICATE_VERSION,
                 namespace=CERTIFICATE_NAMESPACE,
                 plural=CERTIFICATE_PLURAL,
                 name=certificate_name(preview_id),
-                body={"propagationPolicy": "Foreground"},
+                body={
+                    "propagationPolicy": "Background",
+                    "preconditions": _delete_preconditions(existing),
+                },
             )
         except ApiException as exc:
             if _status(exc) != 404:

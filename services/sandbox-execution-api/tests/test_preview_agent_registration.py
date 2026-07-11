@@ -44,6 +44,8 @@ from src.preview_agent_registration import (
 
 PREVIEW_ID = "feature-x"
 ENVIRONMENT_UID = "12345678-1234-1234-1234-123456789abc"
+CERTIFICATE_UID = "87654321-4321-4321-4321-cba987654321"
+REPLACEMENT_CERTIFICATE_UID = "99999999-9999-4999-8999-999999999999"
 EXPIRES_AT = datetime(2026, 7, 17, 12, tzinfo=UTC)
 NOT_AFTER = EXPIRES_AT + CERTIFICATE_EXPIRY_MARGIN + timedelta(hours=1)
 NOW = datetime(2026, 7, 10, 12, tzinfo=UTC)
@@ -63,7 +65,13 @@ def _timestamp(value: datetime) -> str:
 
 def _ready_certificate(*, not_after: datetime = NOT_AFTER) -> dict[str, Any]:
     certificate = build_certificate_manifest(_environment())
-    certificate["metadata"].update({"generation": 1, "resourceVersion": "3"})
+    certificate["metadata"].update(
+        {
+            "generation": 1,
+            "resourceVersion": "3",
+            "uid": CERTIFICATE_UID,
+        }
+    )
     certificate["status"] = {
         "conditions": [{"type": "Ready", "status": "True"}],
         "notAfter": _timestamp(not_after),
@@ -243,6 +251,7 @@ class FakeCustomApi:
         self.calls: list[tuple[Any, ...]] = []
         self.ambiguous_create_plural: str | None = None
         self.hold_delete_plural: str | None = None
+        self.replace_before_delete: dict[str, Any] | None = None
 
     @staticmethod
     def _key(kwargs: dict[str, Any]) -> tuple[str, str, str]:
@@ -278,6 +287,15 @@ class FakeCustomApi:
     def delete_namespaced_custom_object(self, **kwargs: Any) -> None:
         key = self._key(kwargs)
         self.calls.append(("delete", *key, copy.deepcopy(kwargs.get("body"))))
+        if self.replace_before_delete is not None:
+            self.objects[key] = copy.deepcopy(self.replace_before_delete)
+            self.replace_before_delete = None
+        existing = self.objects.get(key)
+        preconditions = (kwargs.get("body") or {}).get("preconditions") or {}
+        expected_uid = preconditions.get("uid")
+        actual_uid = (existing or {}).get("metadata", {}).get("uid")
+        if expected_uid and actual_uid != expected_uid:
+            raise ApiException(status=409, reason="UID precondition failed")
         if self.hold_delete_plural != kwargs["plural"]:
             self.objects.pop(key, None)
 
@@ -575,9 +593,21 @@ def test_cleanup_waits_for_generated_mapping_secret_absence() -> None:
     assert adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID) is True
 
 
-def test_cleanup_preserves_leaf_until_foreground_certificate_is_absent() -> None:
+def test_cleanup_recovers_foreground_certificate_with_guarded_background_delete() -> None:
     adapter, core, custom = _adapter()
     _install_ready_material(core, custom)
+    certificate_key = (
+        CERTIFICATE_NAMESPACE,
+        CERTIFICATE_PLURAL,
+        certificate_name(PREVIEW_ID),
+    )
+    custom.objects[certificate_key]["metadata"].update(
+        {
+            "deletionTimestamp": "2026-07-11T07:08:56Z",
+            "deletionGracePeriodSeconds": 0,
+            "finalizers": ["foregroundDeletion"],
+        }
+    )
     core.namespaces[agent_name(PREVIEW_ID)] = {
         "metadata": {
             "name": agent_name(PREVIEW_ID),
@@ -596,7 +626,12 @@ def test_cleanup_preserves_leaf_until_foreground_certificate_is_absent() -> None
         CERTIFICATE_NAMESPACE,
         CERTIFICATE_PLURAL,
         certificate_name(PREVIEW_ID),
-        {"propagationPolicy": "Foreground"},
+        {
+            "propagationPolicy": "Background",
+            "preconditions": {
+                "uid": CERTIFICATE_UID,
+            },
+        },
     ) in custom.calls
     assert (
         "delete-secret",
@@ -609,6 +644,57 @@ def test_cleanup_preserves_leaf_until_foreground_certificate_is_absent() -> None
     assert custom.objects == {}
     assert core.secrets == {}
     assert core.namespaces == {}
+
+
+def test_cleanup_refuses_certificate_without_stable_uid() -> None:
+    adapter, core, custom = _adapter()
+    _install_ready_material(core, custom)
+    certificate_key = (
+        CERTIFICATE_NAMESPACE,
+        CERTIFICATE_PLURAL,
+        certificate_name(PREVIEW_ID),
+    )
+    custom.objects[certificate_key]["metadata"].pop("uid")
+
+    with pytest.raises(
+        PreviewAgentRegistrationError,
+        match="no stable Kubernetes UID",
+    ):
+        adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID)
+    assert certificate_key in custom.objects
+    assert (
+        CERTIFICATE_NAMESPACE,
+        certificate_secret_name(PREVIEW_ID),
+    ) in core.secrets
+
+
+def test_cleanup_uid_precondition_preserves_same_name_replacement() -> None:
+    adapter, core, custom = _adapter()
+    _install_ready_material(core, custom)
+    certificate_key = (
+        CERTIFICATE_NAMESPACE,
+        CERTIFICATE_PLURAL,
+        certificate_name(PREVIEW_ID),
+    )
+    replacement = _ready_certificate()
+    replacement["metadata"].update(
+        {"uid": REPLACEMENT_CERTIFICATE_UID, "resourceVersion": "4"}
+    )
+    custom.replace_before_delete = replacement
+
+    with pytest.raises(ApiException) as exc_info:
+        adapter.cleanup(preview_id=PREVIEW_ID, environment_uid=ENVIRONMENT_UID)
+    assert exc_info.value.status == 409
+    assert custom.objects[certificate_key]["metadata"]["uid"] == REPLACEMENT_CERTIFICATE_UID
+    assert (
+        CERTIFICATE_NAMESPACE,
+        certificate_secret_name(PREVIEW_ID),
+    ) in core.secrets
+    assert (
+        "delete-secret",
+        CERTIFICATE_NAMESPACE,
+        certificate_secret_name(PREVIEW_ID),
+    ) not in core.calls
 
 
 def test_cleanup_preserves_finalizer_when_mapping_delete_is_denied() -> None:

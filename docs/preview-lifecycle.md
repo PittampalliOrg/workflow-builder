@@ -56,9 +56,10 @@ only `<agent>-agent-cert`, validates it independently, stages the leaf in the
 virtual `argocd` namespace, and removes the physical transport copy. There is no
 claim of virtual certificate rotation; the fixed lifetime covers the maximum
 preview TTL plus cleanup margin. The `preview.stacks.io/agent-registration`
-finalizer first foreground-deletes the mapping `ExternalSecret`, then removes
-the Certificate, isolated leaf, and agent namespace. Its controller has no
-Secret verb in `argocd`.
+finalizer first foreground-deletes the mapping `ExternalSecret`, then
+background-deletes the Certificate with a UID precondition, waits for
+Certificate absence, and removes the isolated leaf and agent namespace. Its
+controller has no Secret verb in `argocd`.
 
 ## Capabilities
 
