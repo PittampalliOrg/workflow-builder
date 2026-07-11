@@ -7438,7 +7438,7 @@ def _delete_preview_operation_lease(
     real_name: str,
     holder: str,
 ) -> bool:
-    """Delete only the caller-owned Lease using a resourceVersion precondition."""
+    """Release and delete only the exact caller-owned operation Lease."""
     name = _preview_operation_lease_name(real_name)
     try:
         lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
@@ -7454,24 +7454,97 @@ def _delete_preview_operation_lease(
             f"cleanup Lease ownership changed for {real_name}"
         )
     metadata = getattr(lease, "metadata", None)
-    resource_version = getattr(metadata, "resource_version", None)
-    if not resource_version:
+    resource_version = str(getattr(metadata, "resource_version", None) or "")
+    lease_uid = str(getattr(metadata, "uid", None) or "")
+    if not lease_uid:
         raise PreviewRunnerIdentityError(
-            f"cleanup Lease resourceVersion is missing for {real_name}"
+            f"cleanup Lease UID is missing for {real_name}"
         )
+    if current:
+        if not resource_version:
+            raise PreviewRunnerIdentityError(
+                f"cleanup Lease resourceVersion is missing for {real_name}"
+            )
+        try:
+            release_body = _preview_operation_lease_body(
+                name=name,
+                namespace=namespace,
+                holder="",
+                resource_version=resource_version,
+                transitions=_transitions,
+            )
+            release_body["metadata"]["uid"] = lease_uid
+            coordination.replace_namespaced_lease(
+                name=name,
+                namespace=namespace,
+                body=release_body,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                raise PreviewRunnerIdentityError(
+                    f"could not release cleanup Lease for {real_name}: {exc}"
+                ) from exc
+        try:
+            lease = coordination.read_namespaced_lease(name=name, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            raise PreviewRunnerIdentityError(
+                f"could not prove cleanup Lease release for {real_name}: {exc}"
+            ) from exc
+        released_metadata = getattr(lease, "metadata", None)
+        released_uid = str(getattr(released_metadata, "uid", None) or "")
+        released_holder, _duration, _renewed, _transitions = (
+            _preview_operation_lease_fields(lease)
+        )
+        if released_uid != lease_uid or released_holder:
+            raise PreviewRunnerIdentityError(
+                f"cleanup Lease identity changed while releasing {real_name}"
+            )
     try:
         coordination.delete_namespaced_lease(
             name=name,
             namespace=namespace,
-            body={"preconditions": {"resourceVersion": resource_version}},
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "propagationPolicy": "Background",
+                "preconditions": {"uid": lease_uid},
+            },
         )
     except Exception as exc:
-        if getattr(exc, "status", None) == 404:
-            return True
-        raise PreviewRunnerIdentityError(
-            f"could not delete cleanup Lease for {real_name}: {exc}"
-        ) from exc
-    return True
+        if getattr(exc, "status", None) != 404:
+            raise PreviewRunnerIdentityError(
+                f"could not delete cleanup Lease for {real_name}: {exc}"
+            ) from exc
+    for _ in range(30):
+        try:
+            remaining = coordination.read_namespaced_lease(
+                name=name, namespace=namespace
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            raise PreviewRunnerIdentityError(
+                f"could not prove cleanup Lease absence for {real_name}: {exc}"
+            ) from exc
+        remaining_metadata = getattr(remaining, "metadata", None)
+        remaining_uid = str(getattr(remaining_metadata, "uid", None) or "")
+        if remaining_uid != lease_uid:
+            raise PreviewRunnerIdentityError(
+                f"cleanup Lease replacement appeared for {real_name}"
+            )
+        remaining_holder, _duration, _renewed, _transitions = (
+            _preview_operation_lease_fields(remaining)
+        )
+        if remaining_holder:
+            raise PreviewRunnerIdentityError(
+                f"cleanup Lease was reacquired for {real_name}"
+            )
+        time.sleep(0.1)
+    raise PreviewRunnerIdentityError(
+        f"cleanup Lease deletion did not converge for {real_name}"
+    )
 
 
 @dataclass(frozen=True)
@@ -9327,15 +9400,23 @@ def release_vcluster_preview_cleanup_receipt(
     _require_internal(request)
     safe_name = _safe_resource_name(name, max_length=40)
     batch, core = _load_k8s_clients()
+    coordination = _load_k8s_coordination_client()
+    namespace = _vcluster_preview_control_namespace()
     job_name = _vcluster_preview_job_name(safe_name, "down")
     try:
         job = batch.read_namespaced_job_status(
             name=job_name,
-            namespace=_vcluster_preview_control_namespace(),
+            namespace=namespace,
             _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
         )
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
+            _delete_preview_operation_lease(
+                coordination,
+                namespace=namespace,
+                real_name=safe_name,
+                holder="",
+            )
             return {"name": safe_name, "jobName": job_name, "absent": True}
         raise
     receipt = _cleanup_receipt_from_job(job, core)
@@ -9348,26 +9429,55 @@ def release_vcluster_preview_cleanup_receipt(
             status_code=status.HTTP_409_CONFLICT,
             detail="cleanup receipt identity or absence proof no longer matches",
         )
-    batch.delete_namespaced_job(
-        name=job_name,
-        namespace=_vcluster_preview_control_namespace(),
-        propagation_policy="Foreground",
-    )
+    try:
+        batch.delete_namespaced_job(
+            name=job_name,
+            namespace=namespace,
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "propagationPolicy": "Background",
+                "preconditions": {"uid": body.jobUid},
+            },
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            if getattr(exc, "status", None) == 409:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="cleanup receipt Job identity changed before deletion",
+                ) from exc
+            raise
     for _ in range(30):
         try:
-            batch.read_namespaced_job(
+            remaining = batch.read_namespaced_job(
                 name=job_name,
-                namespace=_vcluster_preview_control_namespace(),
+                namespace=namespace,
             )
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
-                return {"name": safe_name, "jobName": job_name, "absent": True}
+                break
             raise
+        remaining_metadata = _kube_field(remaining, "metadata")
+        remaining_uid = str(_kube_field(remaining_metadata, "uid") or "")
+        if remaining_uid != body.jobUid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="cleanup receipt Job replacement appeared during deletion",
+            )
         time.sleep(0.1)
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="cleanup receipt deletion did not converge",
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="cleanup receipt deletion did not converge",
+        )
+    _delete_preview_operation_lease(
+        coordination,
+        namespace=namespace,
+        real_name=safe_name,
+        holder="",
     )
+    return {"name": safe_name, "jobName": job_name, "absent": True}
 
 
 def _read_preview_member(core, name: str) -> PreviewMember:
