@@ -74,6 +74,9 @@ export type EnsureTeamInput = {
 	projectId: string;
 	name?: string;
 	workflowExecutionId?: string | null;
+	/** Team-wide token budget (input+output across every member session). Applied
+	 * only when the row is CREATED; null/absent = unlimited. */
+	tokenBudget?: number | null;
 };
 
 export type AddMemberInput = {
@@ -108,6 +111,22 @@ export interface TeamStore {
 	listIdleMembers(): Promise<TeamMemberRow[]>;
 	setMemberStatus(sessionId: string, status: TeamMemberStatus): Promise<void>;
 	resolveAgentIdBySlug(projectId: string, slug: string): Promise<{ id: string } | null>;
+
+	/** Tokens consumed by the whole team so far: sum of agent.llm_usage
+	 * input+output across every member session. Feeds the token-budget gate
+	 * (Codex RolloutBudget parity). */
+	getTeamTokensUsed(teamId: string): Promise<number>;
+
+	/** Re-point a member row at a fresh session (teammate revival: the old
+	 * session is terminal; the member identity persists). */
+	setMemberSession(input: {
+		memberId: string;
+		sessionId: string;
+		status?: TeamMemberStatus;
+	}): Promise<void>;
+
+	/** Flip plan_mode_required off once the lead approves the member's plan. */
+	setMemberPlanApproved(sessionId: string): Promise<void>;
 
 	// shared task list (atomic claim)
 	listTeamTasks(teamId: string): Promise<TeamTaskListItem[]>;

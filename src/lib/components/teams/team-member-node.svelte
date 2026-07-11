@@ -8,7 +8,7 @@
   shutdown = grayscale + struck name.
 -->
 <script lang="ts">
-	import { Crown, Moon } from '@lucide/svelte';
+	import { Crown, Moon, TriangleAlert } from '@lucide/svelte';
 	import * as HoverCard from '$lib/components/ui/hover-card';
 	import { Badge } from '$lib/components/ui/badge';
 	import { memberColor, memberInitials } from './member-color';
@@ -39,6 +39,7 @@
 	const aura = $derived.by(() => {
 		if (status === 'working') return `team-aura-working border-2 ${color.ring}`;
 		if (status === 'suspended') return 'border-2 border-indigo-400/60';
+		if (status === 'failed') return 'border-2 border-red-400/70';
 		if (status === 'shutdown') return 'border border-border grayscale';
 		return `border ${color.ring} opacity-60`; // idle
 	});
@@ -73,6 +74,11 @@
 							<Moon class="size-2.5 text-white" />
 						</span>
 					{/if}
+					{#if status === 'failed'}
+						<span class="absolute -right-1 -bottom-1 flex size-4 items-center justify-center rounded-full bg-red-500/90">
+							<TriangleAlert class="size-2.5 text-white" />
+						</span>
+					{/if}
 					{#if status === 'working'}
 						<span class="absolute -right-0.5 -bottom-0.5 size-2.5 animate-pulse rounded-full {color.dot} ring-2 ring-background"></span>
 					{/if}
@@ -97,6 +103,8 @@
 				<span class="capitalize">{status}</span>
 				{#if status === 'suspended'}
 					<span class="text-indigo-300">· hibernating — any message wakes it</span>
+				{:else if status === 'failed'}
+					<span class="text-red-300">· errored — the lead can revive it</span>
 				{/if}
 			</div>
 			{#if currentTaskTitle}

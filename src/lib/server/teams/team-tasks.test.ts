@@ -79,6 +79,34 @@ describe("team-tasks atomic claim", () => {
 		expect(ids).toHaveLength(5); // 5 tasks claimed, 3 empty claims returned null
 	});
 
+	it("reserves a pre-assigned pending task for its designee (queue mode)", async () => {
+		const reserved = await createTask(
+			{ teamId: TEAM, title: "reserved", assigneeSessionId: "sess-me", status: "pending" },
+			store,
+		);
+		// Another teammate cannot claim it...
+		const other = await claimNextTask({ teamId: TEAM, sessionId: "sess-other" }, store);
+		expect(other).toBeNull();
+		// ...but the designee can.
+		const mine = await claimNextTask({ teamId: TEAM, sessionId: "sess-me" }, store);
+		expect(mine?.id).toBe(reserved.id);
+		expect(mine?.status).toBe("in_progress");
+	});
+
+	it("prefers the caller's reserved task over an OLDER open task", async () => {
+		const open = await createTask({ teamId: TEAM, title: "open-first" }, store);
+		const reserved = await createTask(
+			{ teamId: TEAM, title: "reserved-later", assigneeSessionId: "sess-me", status: "pending" },
+			store,
+		);
+		// Despite the open task being older, the designee gets its own work first.
+		const mine = await claimNextTask({ teamId: TEAM, sessionId: "sess-me" }, store);
+		expect(mine?.id).toBe(reserved.id);
+		// The open task remains for anyone else.
+		const other = await claimNextTask({ teamId: TEAM, sessionId: "sess-other" }, store);
+		expect(other?.id).toBe(open.id);
+	});
+
 	it("does not claim a task with an unmet dependency until it completes", async () => {
 		const dep = await createTask({ teamId: TEAM, title: "dep" }, store);
 		const blocked = await createTask(

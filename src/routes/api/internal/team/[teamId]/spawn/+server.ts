@@ -20,6 +20,7 @@ import {
 	ensureTeamRunExecution,
 	linkSessionToTeamRun,
 } from "$lib/server/teams/team-run";
+import { getTeamBudget } from "$lib/server/teams/team-budget";
 
 /**
  * POST /api/internal/team/[teamId]/spawn
@@ -71,6 +72,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		);
 	}
 
+	// Token-budget gate (Codex RolloutBudget parity): an exhausted team may not
+	// grow. Deterministic refusal (4xx) so a script's team.spawn surfaces it as
+	// a catchable error rather than retrying.
+	const budget = await getTeamBudget(params.teamId).catch(() => null);
+	if (budget?.exhausted) {
+		return error(
+			400,
+			`team token budget exhausted (${budget.used}/${budget.budget} tokens used) — cannot spawn '${body.name}'. Finish with the teammates you have.`,
+		);
+	}
+
 	// Give the team a container execution (created once) so it renders as ONE
 	// unified run and all teammate sessions roll up under it. Also sets
 	// teams.workflow_execution_id + stamps the lead session.
@@ -100,10 +112,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		planModeRequired: body.planModeRequired ?? false,
 	});
 
+	// Plan-approval handshake: a plan-mode teammate must plan first — claim_task
+	// is gated server-side until the lead approves (claim route), and this
+	// fragment teaches the protocol (submit_plan → wait for approval).
+	const planFragment = body.planModeRequired
+		? "\n\n# Plan approval required\nYou are in PLAN MODE. Before doing any work: study the task, write a concrete plan, and call submit_plan with it. You cannot claim tasks until the lead approves your plan (you will receive an approval or revision-request message). If revisions are requested, update the plan and submit_plan again."
+		: "";
+
 	const spawn = await getApplicationAdapters().peerSessionSpawn.spawnPeerSession({
 		sessionId: teammateSessionId,
 		peerAgentId: agent.id,
-		prompt: body.prompt,
+		prompt: `${body.prompt}${planFragment}`,
 		parentSessionId: body.leadSessionId,
 		title: `teammate:${body.name}`,
 		// Teammates do real file/command work — give each its own OpenShell

@@ -47,6 +47,12 @@ async function fresh(): Promise<{ db: PgliteHandle; store: TeamStore }> {
 			`CREATE TABLE team_tasks (id text primary key, team_id text not null, title text not null, description text, status text default 'pending', assignee_session_id text, depends_on jsonb default '[]'::jsonb, created_by_session_id text, created_at timestamp default now(), updated_at timestamp default now(), completed_at timestamp)`,
 		),
 	);
+	// Minimal session_events for the token-budget aggregate (getTeamTokensUsed).
+	await db.execute(
+		sql.raw(
+			`CREATE TABLE session_events (id text primary key, session_id text not null, type text not null, data jsonb not null default '{}'::jsonb, created_at timestamp default now())`,
+		),
+	);
 	return { db, store: new PostgresTeamStore(() => db as never) };
 }
 
@@ -151,6 +157,48 @@ describe("team-driver onTeamSessionEvent", () => {
 		const again = recipients().filter((a) => a.recipientSessionId === "mate1");
 		expect(again).toHaveLength(1);
 		expect(again[0].sourceEventId).toBe(mate[0].sourceEventId);
+	});
+
+	it("marks the member FAILED on session.error and gives the lead the error text", async () => {
+		const { db, store } = await fresh();
+		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
+		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+		await onTeamSessionEvent(
+			"mate1",
+			{ type: "session.error", data: { error: "LLM provider 500" } },
+			store,
+		);
+		const rows = (await db.execute(
+			sql.raw(`SELECT status FROM team_members WHERE session_id='mate1'`),
+		)) as Array<{ status: string }>;
+		expect(rows[0].status).toBe("failed");
+		const notice = recipients().find((a) => a.recipientSessionId === "lead1");
+		expect(notice).toBeDefined();
+		expect(notice!.kind).toBe("team-error");
+		expect(notice!.content).toContain("FAILED");
+		expect(notice!.content).toContain("LLM provider 500");
+	});
+
+	it("stops feeding claim nudges to a team whose token budget is exhausted", async () => {
+		const { db, store } = await fresh();
+		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
+		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
+		await db.execute(sql.raw(`UPDATE teams SET token_budget = 100 WHERE id='t1'`));
+		// 150 tokens consumed by the member — over the 100 budget.
+		await db.execute(
+			sql.raw(
+				`INSERT INTO session_events (id, session_id, type, data) VALUES ('e1','mate1','agent.llm_usage','{"input_tokens":100,"output_tokens":50}'::jsonb)`,
+			),
+		);
+		// Claimable work exists, but the budget brake wins: lead still notified,
+		// NO claim nudge to the teammate.
+		await db.execute(
+			sql.raw(`INSERT INTO team_tasks (id, team_id, title) VALUES ('tk1','t1','more work')`),
+		);
+		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+		const r = recipients();
+		expect(r.some((a) => a.recipientSessionId === "lead1")).toBe(true);
+		expect(r.some((a) => a.recipientSessionId === "mate1")).toBe(false);
 	});
 
 	it("never resurrects a shutdown member on its final idle", async () => {

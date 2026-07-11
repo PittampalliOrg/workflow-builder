@@ -214,10 +214,12 @@ export async function runSessionEventPostAppendHooks(
 	}
 
 	// Agent Teams driver. On a teammate's end_turn idle, notify the lead and
-	// (auto-claim mode) nudge the teammate to claim its next task. Lazy-imported
-	// + fire-and-forget for the same reasons as the goal loop; a no-op for
+	// (auto-claim mode) nudge the teammate to claim its next task; on
+	// session.error, mark the member failed and give the lead the error text
+	// (failure must not look like a normal finish). Lazy-imported +
+	// fire-and-forget for the same reasons as the goal loop; a no-op for
 	// sessions that are not team members.
-	if (eventType === "session.status_idle") {
+	if (eventType === "session.status_idle" || eventType === "session.error") {
 		void import("$lib/server/teams/team-driver")
 			.then((m) =>
 				m.onTeamSessionEvent(sessionId, {
