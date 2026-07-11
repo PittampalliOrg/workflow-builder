@@ -1140,6 +1140,10 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
     const expectedPullRequestUrl = pullRequest
       ? `https://github.com/${expectedRepository}/pull/${String(pullRequest.number)}`
       : "";
+    const services = canonicalCapturedServiceSubset(
+      body.services,
+      input.artifactIdentity.services,
+    );
     if (
       body.ok !== true ||
       body.previewName !== input.previewName ||
@@ -1157,9 +1161,7 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
       pullRequest.headSha !== body.commitSha ||
       body.prUrl !== expectedPullRequestUrl ||
       body.draft !== input.draft ||
-      !Array.isArray(body.services) ||
-      !body.services.every((service) => typeof service === "string") ||
-      !sameStrings(body.services as string[], input.artifactIdentity.services)
+      !services
     ) {
       throw new Error("preview source promotion broker returned invalid proof");
     }
@@ -1169,7 +1171,7 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
       requestId: body.requestId,
       executionId: body.executionId,
       artifactId: body.artifactId,
-      services: Object.freeze([...(body.services as string[])]),
+      services,
       branch: body.branch,
       commitSha: body.commitSha as never,
       prUrl: body.prUrl,
@@ -1182,6 +1184,29 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
       draft: body.draft,
     });
   }
+}
+
+function canonicalCapturedServiceSubset(
+  value: unknown,
+  capturedServices: readonly string[],
+): readonly string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const captured = new Set(capturedServices);
+  const services: string[] = [];
+  let previous: string | null = null;
+  for (const service of value) {
+    if (
+      typeof service !== "string" ||
+      !service ||
+      !captured.has(service) ||
+      (previous !== null && previous >= service)
+    ) {
+      return null;
+    }
+    services.push(service);
+    previous = service;
+  }
+  return Object.freeze(services);
 }
 
 /** Normal-BFF client for GitHub-verified infrastructure candidate admission. */
