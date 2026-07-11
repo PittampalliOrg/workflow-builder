@@ -30,7 +30,7 @@ import {
 	workflowSemanticOpts,
 } from "./call-id.js";
 
-export const EVALUATOR_VERSION = "1.2.0"; // 1.2.0: team.* namespace (script-led Agent Teams)
+export const EVALUATOR_VERSION = "1.2.1"; // 1.2.1: team.task assignMode (reserved claims); 1.2.0: team.* namespace
 
 /** Response cap: no /evaluate response may carry more than this many tasks. */
 export const MAX_TASKS_PER_RESPONSE = 4096;
@@ -720,7 +720,9 @@ export async function evaluateScript(
 				...(o.planModeRequired === true ? { planModeRequired: true } : {}),
 			});
 		},
-		/** Add a shared task: {title, description?, dependsOn?, assignTo?} → {ok, task}. */
+		/** Add a shared task: {title, description?, dependsOn?, assignTo?, assignMode?} → {ok, task}.
+		 * assignMode 'queue' RESERVES the task for assignTo's claim (pending,
+		 * dependency-gated); 'direct' (default) hands it over in_progress. */
 		task(input: unknown): Promise<unknown> {
 			if (typeof input !== "object" || input === null) {
 				throw new TypeError("team.task(input): input must be an object");
@@ -733,6 +735,13 @@ export async function evaluateScript(
 			) {
 				throw new TypeError("team.task(): dependsOn must be an array of task ids");
 			}
+			if (
+				o.assignMode !== undefined &&
+				o.assignMode !== "direct" &&
+				o.assignMode !== "queue"
+			) {
+				throw new TypeError("team.task(): assignMode must be 'direct' or 'queue'");
+			}
 			return teamCall("task", {
 				title: requireString("task", "title", o.title, 500),
 				...(typeof o.description === "string" && o.description
@@ -740,6 +749,7 @@ export async function evaluateScript(
 					: {}),
 				...(dependsOn !== undefined ? { dependsOn } : {}),
 				...(typeof o.assignTo === "string" && o.assignTo ? { assignTo: o.assignTo } : {}),
+				...(o.assignMode !== undefined ? { assignMode: o.assignMode } : {}),
 			});
 		},
 		/** Point-to-point message to a teammate by name. */
