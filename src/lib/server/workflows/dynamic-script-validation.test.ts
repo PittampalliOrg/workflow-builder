@@ -68,6 +68,30 @@ describe("validateDynamicScriptSpec", () => {
 		const result = validateDynamicScriptSpec({ engine: "dapr", script: SCRIPT, meta: {} });
 		expect(result.ok).toBe(false);
 	});
+
+	it("accepts meta.team.tokenBudget and passes it through", () => {
+		const result = validateDynamicScriptSpec({
+			engine: "dynamic-script",
+			script: SCRIPT,
+			meta: { name: "Demo", team: { tokenBudget: 150000 } },
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect((result.meta as { team?: { tokenBudget?: number } }).team?.tokenBudget).toBe(150000);
+	});
+
+	it("rejects a non-positive or non-numeric meta.team.tokenBudget", () => {
+		for (const bad of [0, -1, "150000"]) {
+			const result = validateDynamicScriptSpec({
+				engine: "dynamic-script",
+				script: SCRIPT,
+				meta: { name: "Demo", team: { tokenBudget: bad } },
+			});
+			expect(result.ok).toBe(false);
+			if (result.ok) continue;
+			expect(result.error).toMatch(/tokenBudget/);
+		}
+	});
 });
 
 describe("validateWithEvaluator", () => {

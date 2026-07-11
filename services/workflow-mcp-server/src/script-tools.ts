@@ -121,9 +121,10 @@ deterministically forms the team, seeds work, and awaits quiescence):
   await team.spawn({name, agent, prompt, model?, planModeRequired?}) -> {name, sessionId}
       name <=32 chars, no '@'; agent = a PROJECT AGENT SLUG (e.g. 'team-tester-glm'); prompt must be
       SELF-CONTAINED (the teammate does not see your script). Each spawn = a real agent session.
-  await team.task({title, description?, dependsOn?: [taskIds], assignTo?: name}) -> {ok, task}
-      assignTo pre-assigns (in_progress); unassigned tasks are CLAIMABLE by idle teammates
-      (dependsOn gates claimability until prerequisites complete).
+  await team.task({title, description?, dependsOn?: [taskIds], assignTo?: name, assignMode?}) -> {ok, task}
+      assignTo pre-assigns; assignMode 'direct' (default) hands it over in_progress, 'queue' RESERVES
+      it (pending, claimable only by the designee, picked up before open tasks). Unassigned tasks are
+      CLAIMABLE by idle teammates (dependsOn gates claimability until prerequisites complete).
   await team.send(name, content) / await team.broadcast(content)   — messages wake suspended teammates.
   await team.status() -> {team, members, tasks}                     — point-in-time snapshot.
   await team.join({until?: 'tasks-complete'|'all-idle', timeoutMinutes? (<=120, default 30)})
@@ -132,7 +133,9 @@ deterministically forms the team, seeds work, and awaits quiescence):
   await team.shutdown(name?)                                        — one teammate, or ALL when omitted.
 Semantics: team.* failures (unknown agent slug, unknown teammate, project-less run) THROW into the
 script (try/catch-able), like workflow(). One team per run (id team-<executionId>); teammates and their
-LLM usage roll up under YOUR run + budget. Teammates cannot spawn nested teams; nested workflow()
+LLM usage roll up under YOUR run + budget. TEAM TOKEN BUDGET: set meta.team = { tokenBudget: N } to
+cap the team's total input+output tokens across every member session — once exhausted, team.spawn
+THROWS and idle teammates stop being fed new tasks (in-flight turns finish). Omit for unlimited. Teammates cannot spawn nested teams; nested workflow()
 children cannot use team.*. Auto-shutdown fires at run end, but ending with join() then shutdown() is
 good practice. Each sequential await team.* costs a pump round — batch independent calls with
 parallel([() => team.task({...}), () => team.task({...})]). Teammates do NOT report results to your

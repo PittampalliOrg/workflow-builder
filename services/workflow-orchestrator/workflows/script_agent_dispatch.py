@@ -506,6 +506,7 @@ def start_team_call(
     team_op = str(spec.get("teamOp") or "").strip()
     args = spec.get("args") if isinstance(spec.get("args"), dict) else {}
     team_name = str((meta or {}).get("name") or "") or None
+    team_token_budget = _team_token_budget(meta)
 
     if team_op == "join":
         child_instance_id = script_child_instance_id(ctx.instance_id, call_id, 0)
@@ -516,6 +517,7 @@ def start_team_call(
                     "executionId": exec_id,
                     "until": args.get("until") or "tasks-complete",
                     "timeoutMinutes": args.get("timeoutMinutes"),
+                    "teamTokenBudget": team_token_budget,
                     "_otel": otel,
                 }
             ),
@@ -533,11 +535,27 @@ def start_team_call(
                 "op": team_op,
                 "args": args,
                 "teamName": team_name,
+                "teamTokenBudget": team_token_budget,
                 "_otel": otel,
             }
         ),
         retry_policy=_TEAM_OP_RETRY_POLICY,
     )
+
+
+def _team_token_budget(meta: dict[str, Any] | None) -> int | None:
+    """`meta.team.tokenBudget` — the script's team-wide token cap (input+output
+    across every member session). Applied by the BFF only when the team row is
+    CREATED, so passing it on every ensure is idempotent. Pure function of the
+    replayed meta — deterministic."""
+    team = (meta or {}).get("team")
+    if not isinstance(team, dict):
+        return None
+    raw = team.get("tokenBudget")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = int(raw)
+    return value if value > 0 else None
 
 
 def start_prepared_script_call(ctx: wf.DaprWorkflowContext, prepared: dict[str, Any]):

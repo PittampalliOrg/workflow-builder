@@ -100,16 +100,35 @@ def _client_error_message(status: int, body: Any) -> str:
     return f"team API returned HTTP {status}"
 
 
-def _ensure_script_team(execution_id: str, name: str | None) -> dict[str, Any]:
+def _ensure_script_team(
+    execution_id: str,
+    name: str | None,
+    token_budget: int | None = None,
+) -> dict[str, Any]:
+    """Idempotent team provisioning. `token_budget` (meta.team.tokenBudget) is
+    applied by the BFF only when the team row is CREATED — passing it on every
+    ensure is safe and means whichever op runs first carries it."""
     status, body = _request(
         "POST",
         "/api/internal/team/ensure-script-team",
-        {"executionId": execution_id, **({"name": name} if name else {})},
+        {
+            "executionId": execution_id,
+            **({"name": name} if name else {}),
+            **({"tokenBudget": token_budget} if token_budget else {}),
+        },
     )
     if status >= 400:
         # Deterministic (unknown execution / no project) — surface to the script.
         return {"success": False, "error": _client_error_message(status, body)}
     return {"success": True, "teamId": body["teamId"], "leadSessionId": body["leadSessionId"]}
+
+
+def _token_budget_from_input(input_data: dict) -> int | None:
+    raw = input_data.get("teamTokenBudget")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = int(raw)
+    return value if value > 0 else None
 
 
 def _op_request(
@@ -197,14 +216,18 @@ def _op_request(
 
 def execute_team_op(ctx, input_data: dict) -> dict:
     """Dapr activity: run one script `team.*` op. See module docstring for the
-    error contract. Input: {executionId, op, args?, teamName?}."""
+    error contract. Input: {executionId, op, args?, teamName?, teamTokenBudget?}."""
     execution_id = str(input_data.get("executionId") or "").strip()
     op = str(input_data.get("op") or "").strip()
     args = input_data.get("args") if isinstance(input_data.get("args"), dict) else {}
     if not execution_id or not op:
         return {"success": False, "error": "executionId and op are required"}
 
-    ensured = _ensure_script_team(execution_id, input_data.get("teamName"))
+    ensured = _ensure_script_team(
+        execution_id,
+        input_data.get("teamName"),
+        _token_budget_from_input(input_data),
+    )
     if not ensured.get("success"):
         return ensured
     team_id = ensured["teamId"]
@@ -227,7 +250,9 @@ def get_team_state(ctx, input_data: dict) -> dict:
     execution_id = str(input_data.get("executionId") or "").strip()
     if not execution_id:
         return {"success": False, "error": "executionId is required"}
-    ensured = _ensure_script_team(execution_id, None)
+    ensured = _ensure_script_team(
+        execution_id, None, _token_budget_from_input(input_data)
+    )
     if not ensured.get("success"):
         return ensured
     status, body = _request(
