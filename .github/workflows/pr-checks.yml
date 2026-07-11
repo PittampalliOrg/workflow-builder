@@ -16,6 +16,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Detect whether the BUILD-CONFIG surface changed. `pnpm build` is a
+      # smoke build only (Tekton builds the authoritative image on merge), and
+      # the failure classes ONLY a vite build catches are config-shaped:
+      # vite/svelte config, dependency graph, Dockerfile, CSS entry, hooks,
+      # app shell. Everything else is already covered by svelte-check + unit
+      # tests, so ordinary src changes skip the ~3min build.
+      - name: Detect build-config changes
+        id: build_surface
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            build:
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - '.npmrc'
+              - 'vite.config.*'
+              - 'svelte.config.*'
+              - 'Dockerfile'
+              - 'src/app.html'
+              - 'src/app.css'
+              - 'src/hooks.*'
+              - '.github/workflows/pr-checks.yml'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -45,11 +69,11 @@ jobs:
       - name: Generate plugin registry
         run: pnpm discover-plugins
 
+      # NOTE: `pnpm check` already runs svelte-check (which IS the type check —
+      # the package.json `type-check` script is the identical invocation, kept
+      # for local use). Running it twice here cost ~3min per CI run.
       - name: Run check
         run: pnpm check
-
-      - name: Run type check
-        run: pnpm type-check
 
       - name: Run import-boundary check
         run: pnpm check:boundaries:ratchet
@@ -60,12 +84,14 @@ jobs:
       - name: Run unit tests
         run: pnpm test:unit --run
 
-      # Pre-merge smoke build only: on pushes to main the Tekton outer-loop
-      # builds the same commit authoritatively (inside the Dockerfile), so a
-      # second build here adds nothing — tests/boundaries above still run.
+      # Pre-merge smoke build, PATH-GATED: only when the build-config surface
+      # changed (see build_surface above). On pushes to main the Tekton
+      # outer-loop builds the same commit authoritatively (inside the
+      # Dockerfile), so a second build here adds nothing — tests/boundaries
+      # above still run.
       - name: Run build
         run: pnpm build
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.build_surface.outputs.build == 'true'
 
   orchestrator-tests:
     runs-on: ubuntu-latest
