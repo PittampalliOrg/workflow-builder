@@ -13,7 +13,6 @@ import http from "node:http";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { initDb } from "./db.js";
 import {
 	registerWorkflowTools,
@@ -40,8 +39,16 @@ const PORT = parseInt(process.env.PORT || "3200", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const RESPONSE_CAPTURE_MAX_BYTES = 60_000;
 
-// Session-scoped transports
-const sessions = new Map<string, StreamableHTTPServerTransport>();
+// STATELESS transport (SDK "Stateless Mode"): every POST gets a fresh
+// transport + server derived entirely from that request's headers (user id,
+// team role, script depth, structured-output schema) — there is NO per-pod
+// session map. This is what makes replicas>1 safe: the streamable-http
+// session handshake is otherwise pod-local, so behind a non-sticky Service a
+// follow-up POST that lands on the other replica 400s ("No valid session ID
+// provided") and the client's tool load silently fails (observed on dev
+// 2026-07-10: teammates lost claim_task/update_task and idled forever).
+// Clients that still send mcp-session-id (mid-rollout, or ephemeral clients
+// that cached one) are served fine — stateless transports don't validate it.
 
 // Loaded at startup
 let registeredTools: RegisteredTool[] = [];
@@ -264,64 +271,44 @@ async function handleMcpPost(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 ): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	let transport: StreamableHTTPServerTransport;
-
 	const body = await parseBody(req);
-	setSpanInput({ sessionId, body });
+	setSpanInput({ body });
 
-	if (sessionId && sessions.has(sessionId)) {
-		transport = sessions.get(sessionId)!;
-	} else if (!sessionId && isInitializeRequest(body)) {
-		const userId = (req.headers["x-user-id"] as string) || undefined;
+	const userId = (req.headers["x-user-id"] as string) || undefined;
+	// Recursion guard: a present X-Wfb-Script-Depth header (stamped by the BFF
+	// on the MCP entry for script-spawned sessions) suppresses the dynamic
+	// script tool so a running script can't launch further scripts.
+	const suppressScriptTools = shouldSuppressScriptTools(req.headers);
+	const teamRole = teamRoleFromHeaders(req.headers);
 
-		transport = new StreamableHTTPServerTransport({
-			sessionIdGenerator: () => crypto.randomUUID(),
-			onsessioninitialized: (sid) => {
-				sessions.set(sid, transport);
-				console.log(
-					`[wf-mcp] New session: ${sid}${userId ? ` (user: ${userId})` : ""}`,
-				);
-			},
-		});
-
-		transport.onclose = () => {
-			if (transport.sessionId) {
-				sessions.delete(transport.sessionId);
-				console.log(`[wf-mcp] Session closed: ${transport.sessionId}`);
-			}
-		};
-
-		// Recursion guard: a present X-Wfb-Script-Depth header (stamped by the BFF
-		// on the MCP entry for script-spawned sessions) suppresses the dynamic
-		// script tool so a running script can't launch further scripts.
-		const suppressScriptTools = shouldSuppressScriptTools(req.headers);
-		const teamRole = teamRoleFromHeaders(req.headers);
-
-		let structuredOutputContext;
-		try {
-			structuredOutputContext = parseStructuredOutputContext(req.headers);
-		} catch (error) {
-			sendJson(res, 400, {
-				error: {
-					message:
-						error instanceof Error
-							? error.message
-							: `Invalid structured-output MCP context: ${String(error)}`,
-				},
-			});
-			return;
-		}
-		const server = structuredOutputContext
-			? createStructuredOutputMcpServer(structuredOutputContext.schema)
-			: createMcpServer(userId, { suppressScriptTools, teamRole });
-		await server.connect(transport);
-	} else {
+	let structuredOutputContext;
+	try {
+		structuredOutputContext = parseStructuredOutputContext(req.headers);
+	} catch (error) {
 		sendJson(res, 400, {
-			error: { message: "Bad Request: No valid session ID provided" },
+			error: {
+				message:
+					error instanceof Error
+						? error.message
+						: `Invalid structured-output MCP context: ${String(error)}`,
+			},
 		});
 		return;
 	}
+
+	// Fresh per-request transport + server (stateless mode: no session id is
+	// issued and none is required). Torn down when the response closes.
+	const transport = new StreamableHTTPServerTransport({
+		sessionIdGenerator: undefined,
+	});
+	const server = structuredOutputContext
+		? createStructuredOutputMcpServer(structuredOutputContext.schema)
+		: createMcpServer(userId, { suppressScriptTools, teamRole });
+	res.on("close", () => {
+		void transport.close();
+		void server.close();
+	});
+	await server.connect(transport);
 
 	// Bind the workflow-builder session (codex thread) for this request so the
 	// goal tools can resolve which session they act on.
@@ -334,44 +321,25 @@ async function handleMcpPost(
 	);
 }
 
+// Stateless mode: no standalone SSE stream and no client-initiated session
+// termination — 405 per the SDK's stateless example. MCP clients treat both
+// as "server doesn't offer this" and carry on.
 async function handleMcpGet(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 ): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	setSpanInput({ method: "GET", path: "/mcp", sessionId });
-	if (!sessionId || !sessions.has(sessionId)) {
-		sendJson(res, 404, { error: "Session not found" });
-		return;
-	}
-	const transport = sessions.get(sessionId)!;
-	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
-	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
-	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
-			transport.handleRequest(req, res),
-		),
-	);
+	setSpanInput({ method: "GET", path: "/mcp" });
+	res.writeHead(405, { Allow: "POST" });
+	res.end("Method Not Allowed");
 }
 
 async function handleMcpDelete(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 ): Promise<void> {
-	const sessionId = req.headers["mcp-session-id"] as string | undefined;
-	setSpanInput({ method: "DELETE", path: "/mcp", sessionId });
-	if (!sessionId || !sessions.has(sessionId)) {
-		sendJson(res, 404, { error: "Session not found" });
-		return;
-	}
-	const transport = sessions.get(sessionId)!;
-	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
-	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
-	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
-			transport.handleRequest(req, res),
-		),
-	);
+	setSpanInput({ method: "DELETE", path: "/mcp" });
+	res.writeHead(405, { Allow: "POST" });
+	res.end("Method Not Allowed");
 }
 
 // ── Main ─────────────────────────────────────────────────────
