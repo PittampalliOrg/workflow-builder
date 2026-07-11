@@ -161,6 +161,10 @@ def _op_request(
                 **({"description": args["description"]} if args.get("description") else {}),
                 **({"dependsOn": args["dependsOn"]} if args.get("dependsOn") else {}),
                 **({"assignTo": args["assignTo"]} if args.get("assignTo") else {}),
+                # 'queue' RESERVES the task for the designee's claim (pending,
+                # dependency-gated) instead of handing it over in_progress —
+                # the fix for the observed first-come role mismatch.
+                **({"assignMode": args["assignMode"]} if args.get("assignMode") else {}),
                 "createdBySessionId": lead_session_id,
             },
         )

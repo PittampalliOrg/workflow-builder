@@ -130,6 +130,44 @@ def test_unknown_op_is_a_dispatch_error():
     assert "unknown team op" in task["dispatchError"]
 
 
+def test_task_op_passes_assign_mode(monkeypatch):
+    import activities.team_ops as ops
+
+    seen: list[tuple[str, str, dict | None]] = []
+
+    def fake_request(method, path, json_body=None):
+        seen.append((method, path, json_body))
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        return 200, {"ok": True, "task": {"id": "t1"}}
+
+    monkeypatch.setattr(ops, "_request", fake_request)
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    ops.execute_team_op(
+        None,
+        {
+            "executionId": "e1",
+            "op": "task",
+            "args": {
+                "title": "Write summary",
+                "assignTo": "writer",
+                "assignMode": "queue",
+            },
+        },
+    )
+    task_body = next(b for m, p, b in seen if p.endswith("/tasks"))
+    assert task_body["assignTo"] == "writer"
+    assert task_body["assignMode"] == "queue"
+    # And absent assignMode stays out of the body (route default = 'direct').
+    seen.clear()
+    ops.execute_team_op(
+        None,
+        {"executionId": "e1", "op": "task", "args": {"title": "open task"}},
+    )
+    task_body = next(b for m, p, b in seen if p.endswith("/tasks"))
+    assert "assignMode" not in task_body and "assignTo" not in task_body
+
+
 def test_ensure_body_carries_token_budget(monkeypatch):
     import activities.team_ops as ops
 

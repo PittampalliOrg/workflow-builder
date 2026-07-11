@@ -30,6 +30,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		type?: string;
 		title?: string;
 		description?: string;
+		resource?: string;
 		tags?: string[];
 		body?: string;
 	};
@@ -54,6 +55,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		type: body.type.trim(),
 		title: body.title?.trim() || null,
 		description: body.description?.trim() || null,
+		resource: body.resource?.trim() || null,
 		tags: Array.isArray(body.tags) ? body.tags.map(String).slice(0, 20) : [],
 		body: content,
 		createdBySessionId: body.sessionId,

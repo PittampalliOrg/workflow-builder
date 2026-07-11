@@ -20,6 +20,7 @@ async function freshStore(): Promise<TeamStore> {
 			type text NOT NULL,
 			title text,
 			description text,
+			resource text,
 			tags jsonb NOT NULL DEFAULT '[]'::jsonb,
 			body text NOT NULL DEFAULT '',
 			created_by_session_id text,
@@ -44,6 +45,7 @@ describe("team knowledge store", () => {
 			type: "Finding",
 			title: "Use-cases",
 			description: "Five one-liners.",
+			resource: "https://example.com/source",
 			tags: ["research"],
 			body: "1. Cost.",
 			createdBySessionId: "s-researcher",
@@ -52,6 +54,7 @@ describe("team knowledge store", () => {
 		expect(row?.type).toBe("Finding");
 		expect(row?.body).toBe("1. Cost.");
 		expect(row?.tags).toEqual(["research"]);
+		expect(row?.resource).toBe("https://example.com/source");
 	});
 
 	it("re-publishing the same path is a revision, not a duplicate", async () => {

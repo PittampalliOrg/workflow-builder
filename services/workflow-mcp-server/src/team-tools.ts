@@ -486,16 +486,24 @@ export function registerTeamTools(
 		{
 			title: "Publish Team Knowledge",
 			description:
-				'Publish (or revise) one concept document to the team\'s shared knowledge bundle (Open Knowledge Format). Use for CONTENT — findings, drafts, deliverables, evidence — not coordination (tasks/messages do that). One concept per path; re-publishing the same path revises it. Cross-reference other concepts with markdown links like [title](/findings/other.md). Put the FULL content in body; keep description to one sentence.',
+				"Publish (or revise) one concept document to the team's shared knowledge bundle (Open Knowledge Format). Use for CONTENT — findings, drafts, deliverables, evidence — not coordination (tasks/messages do that). One concept per path; re-publishing the same path revises it. CONVENTIONS: put intermediate research under findings/ with type 'Finding'; put THE final work product under deliverable/ with type 'Deliverable' — the type tells consumers which concept IS the answer. Prefer structural markdown (headings/lists/tables) in body; cross-reference other concepts with links like [title](/findings/other.md); when your claims come from sources, end the body with a '# Citations' section of numbered links. Keep description to one sentence.",
 			inputSchema: {
 				path: z
 					.string()
-					.describe("Bundle-relative path, e.g. 'findings/use-cases.md' (letters/digits/._-/)."),
+					.describe(
+						"Bundle-relative path (letters/digits/._-/): findings/<slug>.md for research, deliverable/<slug>.md for the final work product.",
+					),
 				type: z
 					.string()
-					.describe("Concept kind, e.g. 'Finding', 'Draft', 'Deliverable', 'Hypothesis'."),
+					.describe(
+						"Concept kind — 'Finding' (research), 'Deliverable' (THE final work product), 'Draft', 'Hypothesis', 'Reference'. Pick 'Deliverable' only for the answer itself.",
+					),
 				title: z.string().optional().describe("Human-readable name."),
 				description: z.string().optional().describe("One-sentence summary (shown in the index)."),
+				resource: z
+					.string()
+					.optional()
+					.describe("URI of the underlying asset this concept describes (omit for abstract concepts)."),
 				tags: z.array(z.string()).optional().describe("Cross-cutting labels."),
 				body: z.string().describe("The full markdown content of the concept."),
 			},
@@ -505,6 +513,7 @@ export function registerTeamTools(
 			type: string;
 			title?: string;
 			description?: string;
+			resource?: string;
 			tags?: string[];
 			body: string;
 		}) => {
@@ -519,6 +528,7 @@ export function registerTeamTools(
 					type: args.type,
 					title: args.title,
 					description: args.description,
+					resource: args.resource,
 					tags: args.tags,
 					body: args.body,
 				});

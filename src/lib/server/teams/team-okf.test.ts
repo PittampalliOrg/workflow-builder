@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
 	renderBundle,
 	renderConcept,
+	renderDirIndex,
 	renderIndex,
 	renderLog,
 	sanitizeKnowledgePath,
@@ -35,6 +36,7 @@ describe("renderConcept", () => {
 			type: "Finding",
 			title: 'Use-cases: "suspend" agents',
 			description: "Five one-liners.",
+			resource: "https://example.com/run/abc",
 			tags: ["research"],
 			updated_at: "2026-07-11 12:00:00",
 			body: "1. Cost.\n\nSee [summary](/deliverable/summary.md).",
@@ -43,6 +45,7 @@ describe("renderConcept", () => {
 		expect(doc).toContain('type: "Finding"');
 		// Quotes in titles must stay valid YAML (JSON-encoded scalars).
 		expect(doc).toContain('title: "Use-cases: \\"suspend\\" agents"');
+		expect(doc).toContain('resource: "https://example.com/run/abc"');
 		expect(doc).toContain("tags: [\"research\"]");
 		expect(doc).toContain("timestamp:");
 		expect(doc.split("---\n").length).toBeGreaterThanOrEqual(3);
@@ -56,6 +59,7 @@ const ENTRIES = [
 		type: "Finding",
 		title: "Use-cases",
 		description: "Five one-liners.",
+		resource: null,
 		tags: [],
 		created_by_session_id: "s1",
 		created_at: "2026-07-11T12:00:00Z",
@@ -66,6 +70,7 @@ const ENTRIES = [
 		type: "Deliverable",
 		title: "Summary",
 		description: null,
+		resource: null,
 		tags: [],
 		created_by_session_id: "s2",
 		created_at: "2026-07-11T12:10:00Z",
@@ -74,22 +79,29 @@ const ENTRIES = [
 ];
 
 describe("renderIndex / renderLog / renderBundle", () => {
-	it("index carries the okf_version declaration and type-grouped links", () => {
+	it("root index declares okf_version and lists subdirectories (reference-bundle shape)", () => {
 		const idx = renderIndex("team-research", ENTRIES);
 		expect(idx).toContain('okf_version: "0.1"');
-		expect(idx).toContain("## Finding");
-		expect(idx).toContain("## Deliverable");
-		expect(idx).toContain("[Use-cases](/findings/use-cases.md) — Five one-liners.");
+		expect(idx).toContain("# Subdirectories");
+		expect(idx).toContain("* [findings](findings/index.md) - Five one-liners.");
+		expect(idx).toContain("* [deliverable](deliverable/index.md)");
 	});
-	it("log is newest-first with ISO date headings and creation/update verbs", () => {
+
+	it("subdirectory index groups by type with RELATIVE basename links, no frontmatter", () => {
+		const dirIdx = renderDirIndex("findings", [ENTRIES[0]]);
+		expect(dirIdx.startsWith("# Finding")).toBe(true);
+		expect(dirIdx).toContain("* [Use-cases](use-cases.md) - Five one-liners.");
+		expect(dirIdx).not.toContain("---");
+	});
+	it("log is newest-first with ISO date headings and conventional verb prefixes", () => {
 		const log = renderLog(ENTRIES);
 		expect(log).toContain("## 2026-07-11");
 		// summary (created==updated) is a Creation; use-cases (revised) an Update.
-		expect(log.indexOf("**Creation** [Summary]")).toBeLessThan(
-			log.indexOf("**Update** [Use-cases]"),
+		expect(log.indexOf("**Creation**: Published [Summary]")).toBeLessThan(
+			log.indexOf("**Update**: Revised [Use-cases]"),
 		);
 	});
-	it("bundle = index + log + one file per concept", () => {
+	it("bundle = root index + log + per-directory indexes + concepts", () => {
 		const files = renderBundle(
 			"team-research",
 			ENTRIES,
@@ -98,9 +110,11 @@ describe("renderIndex / renderLog / renderBundle", () => {
 		expect(files.map((f) => f.path)).toEqual([
 			"index.md",
 			"log.md",
+			"deliverable/index.md",
+			"findings/index.md",
 			"findings/use-cases.md",
 			"deliverable/summary.md",
 		]);
-		for (const f of files.slice(2)) expect(f.content).toContain("type:");
+		for (const f of files.slice(4)) expect(f.content).toContain("type:");
 	});
 });
