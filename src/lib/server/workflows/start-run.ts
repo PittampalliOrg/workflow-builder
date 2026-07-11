@@ -329,7 +329,16 @@ async function startDynamicScriptRun(
 			error: evaluatorValidation.error
 		};
 	}
-	const meta = evaluatorValidation.meta;
+	// The evaluator returns a NORMALIZED meta (name/description/phases/
+	// estimatedAgentCalls) and drops keys it doesn't model — graft the
+	// platform-owned `team` block (validated by validateDynamicScriptSpec
+	// above) back in so meta.team.tokenBudget reaches the orchestrator's
+	// team ops without an evaluator contract change.
+	const specTeam = (validation.meta as Record<string, unknown>).team;
+	const meta = {
+		...evaluatorValidation.meta,
+		...(specTeam !== undefined ? { team: specTeam } : {})
+	};
 	const dispatchMode = 'batch-v2';
 	// args is the script's VERBATIM input — any JSON value. undefined means "not
 	// provided": the key is omitted end-to-end so the script's `args` global is
