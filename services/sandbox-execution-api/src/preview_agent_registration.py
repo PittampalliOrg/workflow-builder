@@ -36,6 +36,7 @@ PREVIEW_NAME_LABEL = "preview.stacks.io/preview-name"
 AGENT_NAME_LABEL = "preview.stacks.io/agent-name"
 ENVIRONMENT_UID_ANNOTATION = "preview.stacks.io/preview-environment-uid"
 ARGO_SECRET_TYPE_LABEL = "argocd.argoproj.io/secret-type"
+ARGO_AGENT_NAME_LABEL = "argocd-agent.argoproj-labs.io/agent-name"
 
 
 class PreviewAgentRegistrationError(RuntimeError):
@@ -205,6 +206,7 @@ def build_mapping_external_secret(
     target_labels = {
         **registration_labels(environment.id),
         ARGO_SECRET_TYPE_LABEL: "cluster",
+        ARGO_AGENT_NAME_LABEL: agent_name(environment.id),
     }
     return {
         "apiVersion": f"{EXTERNAL_SECRET_GROUP}/{EXTERNAL_SECRET_VERSION}",
