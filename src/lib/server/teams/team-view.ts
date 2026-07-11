@@ -64,6 +64,8 @@ export type TeamView = {
 		assignee: string | null;
 		assigneeName: string | null;
 		dependsOn: string[];
+		/** The deliverable (or pointer) the completer passed via update_task. */
+		note: string | null;
 	}>;
 	/** Coordination timeline, most-recent first: who claimed/completed what, when. */
 	activity: TeamActivityEvent[];
@@ -150,6 +152,7 @@ export async function getTeamView(
 				? nameBySession.get(t.assignee_session_id) ?? null
 				: null,
 			dependsOn: t.depends_on ?? [],
+			note: t.completion_note ?? null,
 		})),
 		activity,
 		recentMessages: messages.map((m) => ({

@@ -175,7 +175,8 @@ export class PostgresTeamStore implements TeamStore {
 
 	async listTeamTasks(teamId: string): Promise<TeamTaskListItem[]> {
 		const r = await this.db.execute(sql`
-			SELECT id, title, status, assignee_session_id, depends_on, updated_at, completed_at
+			SELECT id, title, status, assignee_session_id, depends_on, updated_at,
+			       completed_at, completion_note
 			FROM team_tasks WHERE team_id = ${teamId} ORDER BY created_at ASC
 		`);
 		return rows<TeamTaskListItem>(r);
@@ -248,10 +249,12 @@ export class PostgresTeamStore implements TeamStore {
 	async completeTask(input: {
 		teamId: string;
 		taskId: string;
+		note?: string | null;
 	}): Promise<TeamTaskRow | null> {
 		const r = await this.db.execute<TeamTaskRow>(sql`
 			UPDATE team_tasks
-			SET status = 'completed', completed_at = now(), updated_at = now()
+			SET status = 'completed', completed_at = now(), updated_at = now(),
+			    completion_note = coalesce(${input.note ?? null}, completion_note)
 			WHERE team_id = ${input.teamId} AND id = ${input.taskId}
 			RETURNING *
 		`);

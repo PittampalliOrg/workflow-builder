@@ -49,7 +49,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		return json({ blocked: true, reason: gate.reason }, { status: 422 });
 	}
 
-	const task = await store.completeTask({ teamId: params.teamId, taskId: params.taskId });
+	const task = await store.completeTask({
+		teamId: params.teamId,
+		taskId: params.taskId,
+		note: typeof body.note === "string" && body.note.trim() ? body.note.trim() : null,
+	});
 	await store.refreshTeamRunStatus(params.teamId).catch(() => {});
 	return json({ ok: true, task });
 };

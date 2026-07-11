@@ -60,9 +60,10 @@ export function countClaimableTasks(
 	return s.countClaimableTasks(teamId);
 }
 
-/** Mark a claimed task completed. Unblocks dependents on the next claim. */
+/** Mark a claimed task completed; `note` persists the deliverable (results
+ * channel). Unblocks dependents on the next claim. */
 export function completeTask(
-	input: { teamId: string; taskId: string },
+	input: { teamId: string; taskId: string; note?: string | null },
 	s: TeamStore = store(),
 ): Promise<TeamTaskRow | null> {
 	return s.completeTask(input);
