@@ -329,10 +329,56 @@ describe("ApplicationPreviewTeardownService", () => {
     expect(h.events).toEqual(["archive", "runtime", "quarantine", "teardown"]);
   });
 
+  it("allows loss-accounted quarantine after an unstamped launch starts containers and then fails", async () => {
+    const h = harness({
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "preview-unreachable",
+      },
+      runtime: {
+        name: "failed-five",
+        resourceName: "failed-five",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-failed-five",
+          found: true,
+          active: false,
+          succeeded: false,
+          failed: true,
+        },
+        services: [
+          {
+            service: "function-router",
+            containers: [
+              {
+                pod: "router-1",
+                image: "router",
+                imageId: "sha256:started",
+                ready: true,
+              },
+            ],
+          },
+          { service: "workflow-builder", containers: [] },
+        ],
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        forceFailed: true,
+      }),
+    ).resolves.toMatchObject({ archive: { quarantined: true } });
+    expect(h.events).toEqual(["archive", "runtime", "quarantine", "teardown"]);
+  });
+
   it.each([
     ["ready state", { ready: true }],
     ["nonfailed phase", { phase: "terminating" }],
     ["active boot receipt", { bootSeconds: 12 }],
+    ["recorded activity", { lastActive: "2026-07-11T11:30:00.000Z" }],
     ["untrusted code", { trustedCode: false }],
     ["pool member", { pool: "warm-1" }],
     ["missing expiry", { expiresAt: null }],
@@ -539,20 +585,6 @@ describe("ApplicationPreviewTeardownService", () => {
           succeeded: false,
           failed: true,
         },
-      },
-    ],
-    [
-      "a ready container is observed",
-      {
-        services: [
-          {
-            service: "function-router",
-            containers: [
-              { pod: "pod-1", image: "image", imageId: null, ready: true },
-            ],
-          },
-          { service: "workflow-builder", containers: [] },
-        ],
       },
     ],
   ] satisfies Array<[string, Partial<VclusterPreviewRuntimeSnapshot>]>)(
