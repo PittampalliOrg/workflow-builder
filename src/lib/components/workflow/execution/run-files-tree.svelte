@@ -16,9 +16,12 @@
 
 	interface Props {
 		executionId: string;
+		/** Team runs: also surface the team's OKF knowledge bundle as a durable
+		 * virtual directory (teammate sandboxes are reaped; the bundle is not). */
+		teamId?: string | null;
 	}
 
-	let { executionId }: Props = $props();
+	let { executionId, teamId = null }: Props = $props();
 
 	// A unified leaf/dir model so the same tree renders three sources:
 	//  - cli:       JuiceFS shared workspace via webdav (durable, live + after reap)
@@ -29,6 +32,7 @@
 		isDir: boolean;
 		sizeBytes: number;
 		contentUrl?: string; // for files
+		contentText?: string; // inline content (knowledge bundle) — no fetch needed
 	}
 	interface TreeNode {
 		name: string;
@@ -47,6 +51,7 @@
 	let items = $state.raw<Item[]>([]);
 	let truncated = $state(false);
 
+	let knowledgeItems = $state.raw<Item[]>([]);
 	let expanded = $state<Set<string>>(new Set());
 	let selected = $state<Item | null>(null);
 	let previewText = $state<string | null>(null);
@@ -90,6 +95,29 @@
 					})
 				);
 			}
+			// Team knowledge bundle → a durable virtual directory. One fetch (the
+			// bundle endpoint returns rendered OKF files inline), so previews are
+			// instant and nothing depends on reaped sandboxes.
+			if (teamId) {
+				try {
+					const kb = await fetch(
+						`/api/v1/teams/${encodeURIComponent(teamId)}/knowledge/bundle`
+					);
+					if (kb.ok) {
+						const kd = await kb.json();
+						knowledgeItems = (kd.files ?? []).map(
+							(f: { path: string; content: string }) => ({
+								path: `team-knowledge/${f.path}`,
+								isDir: false,
+								sizeBytes: new Blob([f.content]).size,
+								contentText: f.content
+							})
+						);
+					}
+				} catch {
+					knowledgeItems = [];
+				}
+			}
 			// Auto-expand top-level directories.
 			expanded = new Set(tree.filter((n) => n.isDir).map((n) => n.path));
 		} catch (err) {
@@ -103,7 +131,8 @@
 		if (executionId) load();
 	});
 
-	const tree = $derived(buildTree(items));
+	const allItems = $derived([...knowledgeItems, ...items]);
+	const tree = $derived(buildTree(allItems));
 
 	function buildTree(list: Item[]): TreeNode[] {
 		const root: TreeNode = { name: '', path: '', isDir: true, children: [] };
@@ -179,6 +208,11 @@
 		selected = item;
 		previewText = null;
 		previewError = null;
+		if (item.contentText != null) {
+			// Knowledge bundle files carry their content inline.
+			previewText = item.contentText;
+			return;
+		}
 		if (!item.contentUrl || !isTextual(item.path)) return;
 		previewLoading = true;
 		try {
@@ -238,7 +272,7 @@
 	{/if}
 {/snippet}
 
-{#if mode === 'openshell' && liveSandbox}
+{#if mode === 'openshell' && liveSandbox && knowledgeItems.length === 0}
 	<SandboxFileBrowser sandboxName={liveSandbox.name} />
 {:else if loading}
 	<div class="flex items-center gap-2 p-4 text-sm text-muted-foreground">
@@ -246,7 +280,7 @@
 	</div>
 {:else if loadError}
 	<div class="p-4 text-sm text-destructive">Failed to load files: {loadError}</div>
-{:else if items.length === 0}
+{:else if allItems.length === 0}
 	<div class="p-4 text-sm text-muted-foreground">
 		{mode === 'cli'
 			? 'No files in the run workspace yet.'

@@ -175,6 +175,34 @@ export interface TeamStore {
 	/** One full concept document, or null. */
 	getKnowledge(teamId: string, path: string): Promise<TeamKnowledgeRow | null>;
 
+	/** Live activity across every member session: the latest classifiable event
+	 * per member (the "now" board) + a recent merged stream. Feeds the Live
+	 * tab's team board; poll-friendly (two indexed queries). */
+	getTeamLiveActivity(input: { teamId: string; streamLimit?: number }): Promise<{
+		members: Array<{
+			name: string;
+			role: string;
+			status: string;
+			session_id: string;
+			event_type: string | null;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string | null;
+		}>;
+		stream: Array<{
+			name: string;
+			session_id: string;
+			event_type: string;
+			tool_name: string | null;
+			origin: string | null;
+			from_agent: string | null;
+			preview: string | null;
+			event_at: string;
+		}>;
+	}>;
+
 	// shared task list (atomic claim)
 	listTeamTasks(teamId: string): Promise<TeamTaskListItem[]>;
 	createTask(input: CreateTeamTaskInput): Promise<TeamTaskRow>;

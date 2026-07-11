@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedFromCommit": "f4730a1b0e1ea648aee2e96dc586a91e0087bbb8",
+  "generatedFromCommit": "09841ff2fda85eb2c1c9c99bd6f32cabba67c382",
   "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
   "counts": {
     "error": 0,
-    "warn": 206,
+    "warn": 207,
     "info": 0
   },
   "violations": [
@@ -2355,6 +2355,18 @@
       "from": "src/routes/api/v1/teams/[teamId]/knowledge/bundle/+server.ts",
       "to": "src/lib/server/teams/team-okf.ts",
       "unresolvedTo": "$lib/server/teams/team-okf",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/api/v1/teams/[teamId]/live/+server.ts",
+      "to": "src/lib/server/teams/team-repo.ts",
+      "unresolvedTo": "$lib/server/teams/team-repo",
       "dependencyTypes": [
         "import",
         "undetermined"

@@ -22,6 +22,7 @@
 	import type { ExecutionReadModel, ExecutionStepLog } from '$lib/types/execution-stream';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import CliTerminalTabs from '$lib/components/sessions/cli-terminal-tabs.svelte';
+	import TeamLiveBoard from '$lib/components/teams/team-live-board.svelte';
 	import RunMetricsBar, {
 		type RunMetricsLive,
 		type RunMetricsOutcome
@@ -590,6 +591,18 @@
 <div class="flex h-full flex-col overflow-hidden">
 	<!-- Top strip: aggregate run metrics -->
 	<RunMetricsBar {executionId} {sessions} {runActive} {live} {outcome} {teamId} />
+
+	<!-- Team runs: the live "newsroom" board — what every member is doing right
+	     now (classified, member-colored, pulsing while fresh) + a merged event
+	     ticker. Clicking a member focuses its transcript below. -->
+	{#if teamId}
+		<TeamLiveBoard
+			{teamId}
+			isRunning={runActive}
+			selectedSessionId={focusedId}
+			onSelectMember={(id) => focusSession(id)}
+		/>
+	{/if}
 
 	<!-- Flow-progress band is now rendered once at the run-page level (persistent
 	     header on every tab) so switching tabs doesn't shift layout. -->
