@@ -49,11 +49,20 @@
 			kind: string;
 			preview: string | null;
 		}>;
+		/** OKF knowledge index — what the team has published (no bodies). */
+		knowledge?: Array<{
+			path: string;
+			type: string;
+			title: string | null;
+			description: string | null;
+			author: string | null;
+			updatedAt: string;
+		}>;
 	};
 </script>
 
 <script lang="ts">
-	import { ChevronDown, ChevronRight, Users } from '@lucide/svelte';
+	import { BookOpen, ChevronDown, ChevronRight, Users } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import TeamTopology from './team-topology.svelte';
 	import TeamActivityFeed from './team-activity-feed.svelte';
@@ -125,6 +134,10 @@
 	}
 	// SVG progress ring geometry (r=8 → C ≈ 50.27).
 	const RING_C = 2 * Math.PI * 8;
+
+	const knowledge = $derived(effective?.knowledge ?? []);
+	let knowledgeOpenOverride = $state<boolean | null>(null);
+	const knowledgeOpen = $derived(knowledgeOpenOverride ?? !compact);
 
 	// Token budget (enforced server-side; this is the legibility half).
 	const budget = $derived.by(() => {
@@ -248,6 +261,37 @@
 									</span>
 								{/if}
 							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		<!-- knowledge (OKF bundle index) -->
+		{#if knowledge.length > 0}
+			<div class="rounded-lg border border-border/60">
+				<button
+					type="button"
+					class="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium hover:bg-accent/40"
+					onclick={() => (knowledgeOpenOverride = !knowledgeOpen)}
+				>
+					{#if knowledgeOpen}<ChevronDown class="size-3.5" />{:else}<ChevronRight class="size-3.5" />{/if}
+					<BookOpen class="size-3.5 text-sky-300" />
+					Knowledge
+					<span class="text-muted-foreground">({knowledge.length})</span>
+				</button>
+				{#if knowledgeOpen}
+					<div class="divide-y divide-border/40 border-t border-border/60">
+						{#each knowledge as k (k.path)}
+							<div class="flex flex-col gap-0.5 px-2.5 py-1.5" title={k.description ?? k.path}>
+								<span class="flex items-center justify-between gap-2 text-xs">
+									<span class="truncate">{k.title ?? k.path}</span>
+									<Badge variant="outline" class="shrink-0 text-[9px]">{k.type}</Badge>
+								</span>
+								<span class="truncate text-[10px] text-muted-foreground">
+									/{k.path}{k.author ? ` · by ${k.author}` : ''}
+								</span>
+							</div>
 						{/each}
 					</div>
 				{/if}

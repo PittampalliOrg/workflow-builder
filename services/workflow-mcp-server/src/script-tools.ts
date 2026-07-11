@@ -142,6 +142,13 @@ parallel([() => team.task({...}), () => team.task({...})]). RESULTS: instruct te
 DELIVERABLE as update_task's note — it lands on the task row and comes back in team.status()/join()
 snapshots as tasks[].note. Synthesize your run's return value from those notes (pure JS, or feed them
 to a final agent() call for judgment-heavy synthesis) so the run's Outputs tab carries the deliverable.
+KNOWLEDGE (the CONTENT layer, Open Knowledge Format): teammates also have publish_knowledge({path,
+type, title?, description?, tags?, body}) and read_knowledge({path?|type?}) — a shared, durable
+concept store (one markdown doc per path; re-publishing revises; cross-link with [t](/other/path.md)).
+Use notes for the SUMMARY-sized result and knowledge for the FULL artifact: instruct teammates to
+publish findings as type 'Finding' and the final work as type 'Deliverable', citing sources. The
+bundle is exportable as a spec-conformant OKF directory (GET /api/v1/teams/{id}/knowledge/bundle)
+and its index renders in TeamPulse.
 
 VALIDATE THEN RUN: call validate_workflow_script(script) first; fix any error; then run_workflow_script
 with { script } (inline) or { workflowName } (saved). Fixtures to pattern-match live in

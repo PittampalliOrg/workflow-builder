@@ -37,6 +37,11 @@ async function fresh(): Promise<{ db: Pglite; store: TeamStore }> {
 			`CREATE TABLE session_events (id text primary key, session_id text not null, sequence int not null, type text not null, data jsonb not null default '{}'::jsonb, processed_at timestamp, created_at timestamp not null default now())`,
 		),
 	);
+	await db.execute(
+		sql.raw(
+			`CREATE TABLE team_knowledge (id text primary key, team_id text not null, path text not null, type text not null, title text, description text, tags jsonb not null default '[]'::jsonb, body text not null default '', created_by_session_id text, created_at timestamp not null default now(), updated_at timestamp not null default now(), unique (team_id, path))`,
+		),
+	);
 	const store = new PostgresTeamStore(() => db as never);
 	await store.ensureTeam({ teamId: TEAM, leadSessionId: "lead-s", projectId: "p1" });
 	await store.addMember({ teamId: TEAM, sessionId: "s-critic", name: "critic" });

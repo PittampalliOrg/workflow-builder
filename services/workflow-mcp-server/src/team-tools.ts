@@ -61,6 +61,29 @@ function requireCtx():
 }
 
 /** POST a team action to the BFF internal API. */
+/** GET a team endpoint on the BFF internal API (query-param reads). */
+async function callBffGet(
+	teamId: string,
+	action: string,
+	query?: Record<string, string>,
+): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+	const qs = query ? `?${new URLSearchParams(query).toString()}` : "";
+	const url = `${WORKFLOW_BUILDER_URL}/api/internal/team/${encodeURIComponent(
+		teamId,
+	)}/${action}${qs}`;
+	const resp = await fetch(url, {
+		headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+	});
+	const text = await resp.text();
+	let json: unknown = null;
+	try {
+		json = text ? JSON.parse(text) : null;
+	} catch {
+		/* non-JSON body */
+	}
+	return { ok: resp.ok, status: resp.status, json, text };
+}
+
 async function callBff(
 	teamId: string,
 	action: string,
@@ -456,6 +479,98 @@ export function registerTeamTools(
 		},
 	);
 	tools.push({ name: "wait_teammates", description: "Bounded wait for team quiescence" });
+
+	// ── publish_knowledge (all roles) ───────────────────────
+	reg(
+		"publish_knowledge",
+		{
+			title: "Publish Team Knowledge",
+			description:
+				'Publish (or revise) one concept document to the team\'s shared knowledge bundle (Open Knowledge Format). Use for CONTENT — findings, drafts, deliverables, evidence — not coordination (tasks/messages do that). One concept per path; re-publishing the same path revises it. Cross-reference other concepts with markdown links like [title](/findings/other.md). Put the FULL content in body; keep description to one sentence.',
+			inputSchema: {
+				path: z
+					.string()
+					.describe("Bundle-relative path, e.g. 'findings/use-cases.md' (letters/digits/._-/)."),
+				type: z
+					.string()
+					.describe("Concept kind, e.g. 'Finding', 'Draft', 'Deliverable', 'Hypothesis'."),
+				title: z.string().optional().describe("Human-readable name."),
+				description: z.string().optional().describe("One-sentence summary (shown in the index)."),
+				tags: z.array(z.string()).optional().describe("Cross-cutting labels."),
+				body: z.string().describe("The full markdown content of the concept."),
+			},
+		},
+		async (args: {
+			path: string;
+			type: string;
+			title?: string;
+			description?: string;
+			tags?: string[];
+			body: string;
+		}) => {
+			const ctx = requireCtx();
+			if ("error" in ctx) return ctx.error;
+			if (!INTERNAL_API_TOKEN)
+				return errorResult("INTERNAL_API_TOKEN is not configured; cannot publish knowledge.");
+			try {
+				const r = await callBff(ctx.teamId, "knowledge", {
+					sessionId: ctx.sessionId,
+					path: args.path,
+					type: args.type,
+					title: args.title,
+					description: args.description,
+					tags: args.tags,
+					body: args.body,
+				});
+				if (!r.ok)
+					return errorResult(`publish_knowledge failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+				return textResult(r.json ?? { ok: true });
+			} catch (err) {
+				return errorResult(`Failed to publish knowledge: ${err}`);
+			}
+		},
+	);
+	tools.push({ name: "publish_knowledge", description: "Publish a concept to team knowledge" });
+
+	// ── read_knowledge (all roles) ──────────────────────────
+	reg(
+		"read_knowledge",
+		{
+			title: "Read Team Knowledge",
+			description:
+				"Read the team's shared knowledge bundle. Without arguments: the INDEX (path/type/title/description per concept) — read this first, then fetch only the concepts you need. With path: that concept's full document (OKF markdown). With type: index filtered to one kind.",
+			inputSchema: {
+				path: z.string().optional().describe("Fetch one concept's full document."),
+				type: z.string().optional().describe("Filter the index to one concept kind."),
+			},
+		},
+		async (args: { path?: string; type?: string }) => {
+			const ctx = requireCtx();
+			if ("error" in ctx) return ctx.error;
+			if (!INTERNAL_API_TOKEN)
+				return errorResult("INTERNAL_API_TOKEN is not configured; cannot read knowledge.");
+			try {
+				const r = await callBffGet(
+					ctx.teamId,
+					"knowledge",
+					args.path ? { path: args.path } : args.type ? { type: args.type } : undefined,
+				);
+				if (r.status === 404) return errorResult(`No concept at ${args.path}.`);
+				if (!r.ok)
+					return errorResult(`read_knowledge failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`);
+				if (args.path) {
+					const okf = (r.json as { okf?: string } | null)?.okf;
+					return {
+						content: [{ type: "text" as const, text: okf ?? r.text }],
+					};
+				}
+				return textResult(r.json ?? { entries: [] });
+			} catch (err) {
+				return errorResult(`Failed to read knowledge: ${err}`);
+			}
+		},
+	);
+	tools.push({ name: "read_knowledge", description: "Read the team knowledge index or a concept" });
 
 	// ── depth refusal (members) ─────────────────────────────
 	// A teammate that WANTS to delegate gets an explicit refusal instead of a

@@ -112,6 +112,15 @@ export function setMemberSession(
 	return s.setMemberSession(input);
 }
 
+/** OKF knowledge index for a team (frontmatter-level, no bodies). */
+export function listKnowledge(
+	teamId: string,
+	filter?: { type?: string },
+	s: TeamStore = store(),
+): ReturnType<TeamStore["listKnowledge"]> {
+	return s.listKnowledge(teamId, filter);
+}
+
 /** Lead approved the member's plan — drop the plan-mode gate. */
 export function setMemberPlanApproved(
 	sessionId: string,
