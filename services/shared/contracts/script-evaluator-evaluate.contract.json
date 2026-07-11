@@ -1,7 +1,7 @@
 {
 	"$comment": "SSOT contract for the script-evaluator /evaluate exchange. Consumed by services/script-evaluator vitest suite and services/workflow-orchestrator pytest suite. Version bumps require updating BOTH suites. callId derivation is FROZEN by this contract: baseHash = sha256(prompt + '\\u0000' + canonicalJSON(semanticOpts)) hex; semanticOpts = {schema, model, effort, isolation, agentType, label} with undefined/null keys OMITTED and remaining keys sorted lexicographically at every nesting level (canonicalJSON); callId = baseHash[:40] + '_' + occurrence where occurrence is the per-baseHash encounter counter (0-based) in script issue order.",
 	"contractVersion": "1.1.0",
-	"evaluatorVersion": "1.2.0",
+	"evaluatorVersion": "1.2.1",
 	"limits": {
 		"maxScriptBytes": 262144,
 		"maxItemsPerCall": 4096,
@@ -103,7 +103,7 @@
 			"counts": {
 				"totalCallsSeen": 1
 			},
-			"evaluatorVersion": "1.2.0"
+			"evaluatorVersion": "1.2.1"
 		},
 		"done": {
 			"status": "done",
@@ -123,7 +123,7 @@
 			"counts": {
 				"totalCallsSeen": 1
 			},
-			"evaluatorVersion": "1.2.0"
+			"evaluatorVersion": "1.2.1"
 		},
 		"script_error": {
 			"status": "script_error",
@@ -142,7 +142,7 @@
 			"counts": {
 				"totalCallsSeen": 0
 			},
-			"evaluatorVersion": "1.2.0"
+			"evaluatorVersion": "1.2.1"
 		}
 	},
 	"responseRules": [
