@@ -166,10 +166,10 @@ export class PostgresTeamStore implements TeamStore {
 	async upsertKnowledge(input: UpsertTeamKnowledgeInput): Promise<TeamKnowledgeRow> {
 		const r = await this.db.execute<TeamKnowledgeRow>(sql`
 			INSERT INTO team_knowledge
-				(id, team_id, path, type, title, description, tags, body, created_by_session_id)
+				(id, team_id, path, type, title, description, resource, tags, body, created_by_session_id)
 			VALUES (
 				${nanoid()}, ${input.teamId}, ${input.path}, ${input.type},
-				${input.title ?? null}, ${input.description ?? null},
+				${input.title ?? null}, ${input.description ?? null}, ${input.resource ?? null},
 				${JSON.stringify(input.tags ?? [])}::jsonb, ${input.body},
 				${input.createdBySessionId ?? null}
 			)
@@ -177,6 +177,7 @@ export class PostgresTeamStore implements TeamStore {
 				type = EXCLUDED.type,
 				title = EXCLUDED.title,
 				description = EXCLUDED.description,
+				resource = EXCLUDED.resource,
 				tags = EXCLUDED.tags,
 				body = EXCLUDED.body,
 				updated_at = now()
@@ -191,12 +192,12 @@ export class PostgresTeamStore implements TeamStore {
 	): Promise<TeamKnowledgeIndexEntry[]> {
 		const r = filter?.type
 			? await this.db.execute(sql`
-					SELECT path, type, title, description, tags, created_by_session_id, created_at, updated_at
+					SELECT path, type, title, description, resource, tags, created_by_session_id, created_at, updated_at
 					FROM team_knowledge WHERE team_id = ${teamId} AND type = ${filter.type}
 					ORDER BY path ASC
 				`)
 			: await this.db.execute(sql`
-					SELECT path, type, title, description, tags, created_by_session_id, created_at, updated_at
+					SELECT path, type, title, description, resource, tags, created_by_session_id, created_at, updated_at
 					FROM team_knowledge WHERE team_id = ${teamId}
 					ORDER BY path ASC
 				`);

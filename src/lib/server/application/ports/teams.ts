@@ -79,6 +79,8 @@ export type TeamKnowledgeRow = {
 	type: string;
 	title: string | null;
 	description: string | null;
+	/** OKF §4.1: URI of the underlying asset (absent for abstract concepts). */
+	resource: string | null;
 	tags: string[];
 	body: string;
 	created_by_session_id: string | null;
@@ -95,6 +97,7 @@ export type UpsertTeamKnowledgeInput = {
 	type: string;
 	title?: string | null;
 	description?: string | null;
+	resource?: string | null;
 	tags?: string[];
 	body: string;
 	createdBySessionId?: string | null;
