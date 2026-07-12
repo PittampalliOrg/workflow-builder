@@ -21,6 +21,7 @@
 	import VclusterPreviewPanel from '$lib/components/dev/vcluster-preview-panel.svelte';
 	import PrPreviewsPanel from '$lib/components/dev/pr-previews-panel.svelte';
 	import PreviewRunFeedPanel from '$lib/components/dev/preview-run-feed-panel.svelte';
+	import { teardownDevEnvironmentUntilComplete } from '$lib/dev-environment-teardown';
 	import { getDevEnvironmentGroups, getPrPreviews, getVclusterPreviews } from './data.remote';
 	import type { PageData } from './$types';
 
@@ -90,12 +91,11 @@
 		busyId = env.executionId;
 		toTeardown = null;
 		try {
-			const res = await fetch(`/api/dev-environments/${env.executionId}`, { method: 'DELETE' });
-			if (!res.ok) {
-				errorMessage = `Teardown failed (${res.status})`;
-				return;
-			}
+			await teardownDevEnvironmentUntilComplete(env.executionId);
+			errorMessage = null;
 			await groupsQuery.refresh();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
 			busyId = null;
 		}

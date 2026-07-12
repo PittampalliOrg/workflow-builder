@@ -1237,6 +1237,23 @@ function fakeDevEnvironments(): DevEnvironmentReadRepository {
 			runStatus: "running",
 			createdAt: "2026-07-02T00:00:00.000Z",
 		})),
+		getDevEnvironmentTeardownTarget: vi.fn(async (input) => ({
+			executionId: input.executionId,
+			workspaceRef: "workspace-1",
+			service: "workflow-builder",
+			browseUrl: "https://preview.example.test",
+			podIP: null,
+			port: 3000,
+			syncUrl: null,
+			ready: false,
+			needsDapr: true,
+			daprAppId: null,
+			sandboxName: "sandbox-1",
+			sessionId: "session-1",
+			sessionUrl: "/sessions/session-1",
+			runStatus: "cancelled",
+			createdAt: "2026-07-02T00:00:00.000Z",
+		})),
 		resolveCanonicalExecutionId: vi.fn(async (input) =>
 			input.executionId === "sw-wf-1-exec-exec-1"
 				? "exec-1"
@@ -8640,6 +8657,22 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		);
 		expect(devEnvironments.getDevEnvironmentOrPending).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			projectId: "project-1",
+		});
+
+		await expect(
+			service.getDevEnvironmentTeardownTarget({
+				executionId: "exec-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(
+			expect.objectContaining({
+				executionId: "exec-1",
+				runStatus: "cancelled",
+			}),
+		);
+		expect(devEnvironments.getDevEnvironmentTeardownTarget).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			projectId: "project-1",
 		});

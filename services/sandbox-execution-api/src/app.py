@@ -7,7 +7,7 @@ import re
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.content_tracing import set_current_span_io
@@ -152,6 +153,10 @@ async def _lifespan(_app: "FastAPI"):
         _start_preview_identity_cleanup_controller()
     except Exception as exc:  # pragma: no cover - never block startup on cleanup
         logger.warning("preview-identity-cleanup: startup failed: %s", exc)
+    try:
+        _start_dev_preview_activation_recovery()
+    except Exception as exc:  # pragma: no cover - never block startup on recovery
+        logger.warning("dev-preview-activation: startup recovery failed: %s", exc)
     yield
 
 
@@ -468,6 +473,19 @@ class DevPreviewRequest(BaseModel):
     # BFF carries the prod CLI-runtime app-ids/images + DAPR_* knobs needed to
     # dispatch CLI agent sandboxes (else interactive CLI sessions wedge).
     adoptInheritedEnv: list[dict[str, Any]] | None = None
+    # Two-phase multi-service adoption. Stage creates and proves the exact
+    # Lease/Sandbox/pod tuple but leaves every production Deployment running.
+    # One later /internal/dev-previews/activate request commits the whole set.
+    stageAdoption: bool = False
+
+
+class DevPreviewActivationRequest(BaseModel):
+    executionId: str = Field(min_length=1, max_length=256)
+    sandboxNames: list[str] = Field(min_length=1, max_length=16)
+
+
+class DevPreviewTeardownIntentRequest(BaseModel):
+    executionId: str = Field(min_length=1, max_length=256)
 
 
 def _safe_name(value: str, *, max_length: int = 52) -> str:
@@ -918,6 +936,32 @@ def _load_k8s_rbac_client():
 # so teardown can restore it (survives an SEA restart — state lives on the object).
 DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION = "wfb-dev-preview/original-replicas"
 
+# These Deployments carry the synchronous dev-preview request while SEA prepares
+# their replacements. Cut them over only after the response has had time to leave
+# the workload data path; every other adopted peer can be scaled down immediately.
+DEV_PREVIEW_DEFERRED_CUTOVER_DEPLOYMENTS = frozenset(
+    {"workflow-builder", "function-router"}
+)
+_DEV_PREVIEW_ADOPTION_TRANSITION_LOCKS: dict[tuple[str, str], Any] = {}
+_DEV_PREVIEW_ADOPTION_TRANSITION_LOCKS_GUARD = threading.Lock()
+_DEV_PREVIEW_TEARDOWN_INTENTS: set[str] = set()
+_DEV_PREVIEW_TEARDOWN_INTENTS_GUARD = threading.Lock()
+_DEV_PREVIEW_ACTIVATION_WORKERS: set[str] = set()
+_DEV_PREVIEW_ACTIVATION_WORKERS_GUARD = threading.Lock()
+
+
+def _dev_preview_adoption_transition_lock(namespace: str, deployment: str) -> Any:
+    key = (namespace, deployment)
+    with _DEV_PREVIEW_ADOPTION_TRANSITION_LOCKS_GUARD:
+        return _DEV_PREVIEW_ADOPTION_TRANSITION_LOCKS.setdefault(
+            key, threading.RLock()
+        )
+
+
+def _dev_preview_teardown_intended(execution_id: str) -> bool:
+    with _DEV_PREVIEW_TEARDOWN_INTENTS_GUARD:
+        return execution_id in _DEV_PREVIEW_TEARDOWN_INTENTS
+
 _ADOPT_ENV_LITERAL_NAMES = frozenset(
     {
         "AGY_CLI_APP_ID",
@@ -1042,8 +1086,30 @@ def _filter_adopted_container_env(
 DEV_PREVIEW_ADOPTION_LEASE_LABEL = "wfb-dev-preview-adoption"
 DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION = "wfb-dev-preview/adopt-deployment"
 DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION = "wfb-dev-preview/adopt-holder"
+DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION = (
+    "wfb-dev-preview/adopt-cutover-cancelled"
+)
+DEV_PREVIEW_ADOPT_STAGED_ANNOTATION = "wfb-dev-preview/adopt-staged"
 DEV_PREVIEW_ADOPT_EXECUTION_ANNOTATION = "wfb-dev-preview/adopt-execution-id"
 DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION = "wfb-dev-preview/adopt-service"
+DEV_PREVIEW_ADOPT_SELECTOR_ANNOTATION = "wfb-dev-preview/adopt-selector"
+DEV_PREVIEW_ADOPT_GATE_KEY_ANNOTATION = "wfb-dev-preview/adopt-gate-key"
+DEV_PREVIEW_ADOPT_GATE_STAGED_VALUE_ANNOTATION = (
+    "wfb-dev-preview/adopt-gate-staged-value"
+)
+DEV_PREVIEW_ADOPT_BATCH_ID_ANNOTATION = "wfb-dev-preview/adopt-batch-id"
+DEV_PREVIEW_ADOPT_BATCH_NAMES_ANNOTATION = "wfb-dev-preview/adopt-batch-names"
+DEV_PREVIEW_ADOPT_BATCH_EXECUTION_ANNOTATION = (
+    "wfb-dev-preview/adopt-batch-execution"
+)
+DEV_PREVIEW_ADOPT_BATCH_PHASE_ANNOTATION = "wfb-dev-preview/adopt-batch-phase"
+DEV_PREVIEW_ADOPT_BATCH_ERROR_ANNOTATION = "wfb-dev-preview/adopt-batch-error"
+DEV_PREVIEW_ADOPT_BATCH_UPDATED_ANNOTATION = "wfb-dev-preview/adopt-batch-updated-at"
+DEV_PREVIEW_SECRET_NAME_ANNOTATION = "wfb-dev-preview/secret-name"
+DEV_PREVIEW_MANAGED_LABEL = "preview.stacks.io/managed-by"
+DEV_PREVIEW_MANAGED_VALUE = "sandbox-execution-api"
+_DEV_PREVIEW_ADOPT_BATCH_PENDING_PHASES = frozenset({"scheduled", "activating"})
+_DEV_PREVIEW_ADOPT_BATCH_TERMINAL_PHASES = frozenset({"active", "failed"})
 _DEV_PREVIEW_ADOPTION_LEASE_SECONDS = 120
 
 
@@ -1071,6 +1137,44 @@ def _adopt_lease_holder(execution_id: str, service: str | None) -> str:
     execution_prefix = _safe_name(execution_id, max_length=36)
     execution_digest = sha256(execution_id.encode("utf-8")).hexdigest()[:12]
     return f"adopt:{execution_prefix}:{execution_digest}:{service_name}"
+
+
+def _canonical_adopt_selector(selector: Any) -> dict[str, str]:
+    if not isinstance(selector, dict):
+        raise ValueError("adopted Service selector must be an object")
+    canonical = {
+        str(key): str(value)
+        for key, value in selector.items()
+        if isinstance(key, str)
+        and key
+        and isinstance(value, str)
+        and value
+    }
+    if not canonical or len(canonical) != len(selector):
+        raise ValueError("adopted Service selector must be a non-empty string map")
+    return dict(sorted(canonical.items()))
+
+
+def _adopt_stage_gate_key(selector: dict[str, str]) -> str:
+    # The Dapr-generated Services in this stack select `app=<app-id>`, so prefer
+    # the same key when the application Service carries it. Other services use
+    # their first canonical selector key (for example app.kubernetes.io/name).
+    return "app" if "app" in selector else sorted(selector)[0]
+
+
+def _adopt_stage_gate_value(holder: str) -> str:
+    return f"wfb-stage-{sha256(holder.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _adopt_selector_contract(
+    selector: dict[str, str] | None, *, holder: str
+) -> tuple[dict[str, str], str, str]:
+    active = _canonical_adopt_selector(selector)
+    gate_key = _adopt_stage_gate_key(active)
+    staged_value = _adopt_stage_gate_value(holder)
+    if staged_value == active[gate_key]:
+        raise ValueError("staged adoption gate must not match the active selector")
+    return active, gate_key, staged_value
 
 
 def _adopt_lease_body(
@@ -1364,10 +1468,15 @@ def _adopt_scale_deployment_down(
             if observed.spec and observed.spec.replicas is not None
             else 1
         )
+        observed_status = getattr(observed, "status", None)
+        available_replicas = getattr(observed_status, "available_replicas", None)
+        ready_replicas = getattr(observed_status, "ready_replicas", None)
         if (
             observed_replicas == 0
             and observed_annotations.get(DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION)
             == original
+            and (available_replicas is None or available_replicas == 0)
+            and (ready_replicas is None or ready_replicas == 0)
         ):
             break
         if time.monotonic() >= deadline:
@@ -1440,12 +1549,12 @@ def _adopt_deferred_scale_down(
     needs_dapr: bool = False,
 ) -> None:
     """Background target: wait for the dev pod to be Ready, THEN scale the prod
-    Deployment to 0. Deferring is REQUIRED when the dev pod adopts the BFF's own
-    Service: scaling the BFF to 0 during the provision request would kill the very
-    pod serving it (→ 502). By the time this runs, the provision response has long
-    returned through the still-up prod pod. Only scales once the dev pod is Ready,
-    so there is NO downtime; if the dev pod never becomes Ready, the prod Deployment
-    is LEFT UP (failsafe — the preview keeps serving)."""
+    Deployment to 0. Deferring is REQUIRED when the dev pod adopts a Deployment on
+    the synchronous response path (the BFF or function-router): scaling it to 0
+    during provisioning would kill the request carrying the result. By the time this
+    runs, the response has left the still-up prod pod. Only scales once the dev pod
+    is Ready, so there is NO downtime; if the dev pod never becomes Ready, the prod
+    Deployment is LEFT UP (failsafe — the preview keeps serving)."""
     import time
 
     try:
@@ -1464,6 +1573,7 @@ def _adopt_deferred_scale_down(
     # every dev pod (build_dev_preview_sandbox_manifest) and never appears in a
     # Service selector, so it survives the adopt-selector merge.
     selector = (
+        f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
         f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
         f"dev-preview-service={_dev_preview_service_label(service)}"
     )
@@ -1524,30 +1634,32 @@ def _adopt_deferred_scale_down(
                     )
                     return
                 # Grace so the provision HTTP response (which returns when the dev
-                # pod is Ready) fully propagates orchestrator←router←BFF BEFORE we
-                # scale the BFF to 0 — otherwise the scale could still kill the pod
-                # mid-response.
+                # pod is Ready) fully propagates orchestrator<-router<-BFF BEFORE we
+                # scale a response-path Deployment to 0.
                 time.sleep(15)
-                if (
-                    sandbox_name
-                    and holder
-                    and custom is not None
-                    and coordination is not None
-                    and not _dev_preview_adoption_is_current(
-                    custom,
-                    coordination,
-                    namespace=namespace,
-                    sandbox_name=sandbox_name,
-                    deployment=deployment,
-                    holder=holder,
+                with _dev_preview_adoption_transition_lock(namespace, deployment):
+                    if (
+                        sandbox_name
+                        and holder
+                        and custom is not None
+                        and coordination is not None
+                        and not _dev_preview_adoption_is_current(
+                            custom,
+                            coordination,
+                            namespace=namespace,
+                            sandbox_name=sandbox_name,
+                            deployment=deployment,
+                            holder=holder,
+                        )
+                    ):
+                        logger.info(
+                            "adopt: cutover for %s was cancelled before scale-down",
+                            sandbox_name,
+                        )
+                        return
+                    _adopt_scale_deployment_down(
+                        apps, namespace=namespace, name=deployment
                     )
-                ):
-                    logger.info(
-                        "adopt: cutover for %s was cancelled before scale-down",
-                        sandbox_name,
-                    )
-                    return
-                _adopt_scale_deployment_down(apps, namespace=namespace, name=deployment)
                 logger.info(
                     "adopt: dev pod ready (daprd ok) → scaled %s to 0 (exec %s)",
                     deployment,
@@ -1611,9 +1723,12 @@ def _adopt_restore_deployment(
             if observed.spec and observed.spec.replicas is not None
             else 1
         )
+        observed_status = getattr(observed, "status", None)
+        available_replicas = getattr(observed_status, "available_replicas", None)
         if (
             observed_replicas == target
             and DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION not in observed_annotations
+            and (available_replicas is None or available_replicas >= target)
         ):
             break
         if time.monotonic() >= deadline:
@@ -1660,6 +1775,7 @@ def _dev_preview_adoption_is_current(
 def _adopt_cleanup_stale_leases(
     coordination: Any,
     *,
+    custom: Any,
     namespace: str,
     claimed_holders: dict[str, set[str]],
     blocked_releases: set[str],
@@ -1718,13 +1834,37 @@ def _adopt_cleanup_stale_leases(
             continue
         if current_time < renewed + timedelta(seconds=duration):
             continue
-        if _delete_dev_preview_adoption_lease(
-            coordination,
-            namespace=namespace,
-            deployment=deployment,
-            holder=holder,
-        ):
-            released.append(name)
+        with _dev_preview_adoption_transition_lock(namespace, deployment):
+            try:
+                current_crs = custom.list_namespaced_custom_object(
+                    group="agents.x-k8s.io",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="sandboxes",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "adopt: stale Lease cleanup could not recheck claims for %s: %s",
+                    deployment,
+                    exc,
+                )
+                continue
+            if any(
+                ((item.get("metadata") or {}).get("annotations") or {}).get(
+                    DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION
+                )
+                == deployment
+                for item in (current_crs.get("items") or [])
+                if isinstance(item, dict)
+            ):
+                continue
+            if _delete_dev_preview_adoption_lease(
+                coordination,
+                namespace=namespace,
+                deployment=deployment,
+                holder=holder,
+            ):
+                released.append(name)
     return released
 
 
@@ -1768,7 +1908,9 @@ def _adopt_restore_orphans(
         if dep_name:
             claimed.add(dep_name)
             claimed_holders.setdefault(dep_name, set())
-            holder = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+            holder = annotations.get(
+                DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION
+            ) or annotations.get(DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION)
             if isinstance(holder, str) and holder:
                 claimed_holders[dep_name].add(holder)
     try:
@@ -1790,8 +1932,40 @@ def _adopt_restore_orphans(
         if replicas not in (0, None):
             continue
         try:
-            _adopt_restore_deployment(apps, namespace=namespace, name=name)
-            restored.append(name)
+            with _dev_preview_adoption_transition_lock(namespace, name):
+                current_crs = custom.list_namespaced_custom_object(
+                    group="agents.x-k8s.io",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="sandboxes",
+                )
+                if any(
+                    ((item.get("metadata") or {}).get("annotations") or {}).get(
+                        DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION
+                    )
+                    == name
+                    for item in (current_crs.get("items") or [])
+                    if isinstance(item, dict)
+                ):
+                    continue
+                current_dep = apps.read_namespaced_deployment(
+                    name=name, namespace=namespace
+                )
+                current_metadata = getattr(current_dep, "metadata", None)
+                current_annotations = (
+                    getattr(current_metadata, "annotations", None) or {}
+                )
+                current_replicas = getattr(
+                    getattr(current_dep, "spec", None), "replicas", None
+                )
+                if (
+                    DEV_PREVIEW_ORIGINAL_REPLICAS_ANNOTATION
+                    not in current_annotations
+                    or current_replicas not in (0, None)
+                ):
+                    continue
+                _adopt_restore_deployment(apps, namespace=namespace, name=name)
+                restored.append(name)
         except Exception as exc:
             blocked_releases.add(name)
             logger.warning("adopt: orphan restore failed for %s: %s", name, exc)
@@ -1800,6 +1974,7 @@ def _adopt_restore_orphans(
     released_leases = (
         _adopt_cleanup_stale_leases(
             coordination,
+            custom=custom,
             namespace=namespace,
             claimed_holders=claimed_holders,
             blocked_releases=blocked_releases,
@@ -1949,6 +2124,21 @@ def _redacted_host_request_dump(request: AgentWorkflowHostRequest) -> dict[str, 
     dump = request.model_dump()
     if dump.get("sessionSecretEnv"):
         dump["sessionSecretEnv"] = {key: "***" for key in dump["sessionSecretEnv"]}
+    return dump
+
+
+def _redacted_dev_preview_request_dump(request: DevPreviewRequest) -> dict[str, Any]:
+    """Mask credentials and caller-controlled environment values in telemetry."""
+
+    dump = request.model_dump()
+    for field in ("syncToken", "syncAgentToken"):
+        if dump.get(field):
+            dump[field] = "***"
+    for field in ("env", "serviceSecretEnv"):
+        if isinstance(dump.get(field), dict):
+            dump[field] = {key: "***" for key in dump[field]}
+    if isinstance(dump.get("adoptInheritedEnv"), list):
+        dump["adoptInheritedEnv"] = "***"
     return dump
 
 
@@ -3823,6 +4013,7 @@ def _ensure_dev_preview_secret(
     secret_name = _dev_preview_secret_name(request.executionId, request.service)
     labels = {
         "app": "wfb-dev-preview",
+        DEV_PREVIEW_MANAGED_LABEL: DEV_PREVIEW_MANAGED_VALUE,
         "workflow-execution-id": _safe_name(request.executionId, max_length=63),
         # Service-scoped so tearing down one service deletes only ITS secret, not a
         # sibling service's secret sharing the same execution id.
@@ -3847,6 +4038,67 @@ def _ensure_dev_preview_secret(
             body={"metadata": {"labels": labels}, "stringData": string_data},
         )
     return secret_name
+
+
+def _delete_dev_preview_secret_and_wait(
+    core: Any,
+    *,
+    namespace: str,
+    name: str,
+    execution_id: str,
+    service: str,
+    timeout_s: float = 30.0,
+) -> None:
+    """Delete only the exact labeled dev-preview Secret and prove absence."""
+
+    try:
+        secret = core.read_namespaced_secret(name=name, namespace=namespace)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return
+        raise
+    metadata = _adopt_value(secret, "metadata")
+    labels = _adopt_value(metadata, "labels") or {}
+    uid = str(_adopt_value(metadata, "uid") or "")
+    resource_version = str(
+        _adopt_value(metadata, "resource_version", "resourceVersion") or ""
+    )
+    if (
+        _adopt_value(metadata, "name") != name
+        or _adopt_value(metadata, "namespace") not in (None, namespace)
+        or labels.get("app") != "wfb-dev-preview"
+        or labels.get(DEV_PREVIEW_MANAGED_LABEL) != DEV_PREVIEW_MANAGED_VALUE
+        or labels.get("workflow-execution-id") != execution_id
+        or labels.get("dev-preview-service") != service
+        or not uid
+        or not resource_version
+    ):
+        raise RuntimeError(f"dev-preview Secret ownership changed for {name}")
+    try:
+        core.delete_namespaced_secret(
+            name=name,
+            namespace=namespace,
+            body={
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "preconditions": {"uid": uid, "resourceVersion": resource_version},
+            },
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+        return
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        try:
+            core.read_namespaced_secret(name=name, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return
+            raise
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"dev-preview Secret deletion was not observed for {name}")
+        time.sleep(0.1)
 
 
 def _dev_preview_dapr_app_id(request: DevPreviewRequest) -> str:
@@ -4366,17 +4618,34 @@ def build_dev_preview_sandbox_manifest(
         )
     pod_labels = {
         "app": "wfb-dev-preview",
+        DEV_PREVIEW_MANAGED_LABEL: DEV_PREVIEW_MANAGED_VALUE,
         "dev-preview-service": service_label,
         "workflow-execution-id": exec_label,
     }
     # Preview-native adopt: merge the target Service's selector LAST so it wins on
-    # collisions (e.g. `app` flips from `wfb-dev-preview` to the prod value) and the
-    # preview's own Service routes to this dev pod. `workflow-execution-id` is never
-    # in a Service selector, so it survives → readiness/teardown still find the pod.
+    # collisions. A staged batch deliberately quarantines one selector key: the pod
+    # can become fully Ready (including daprd) without joining either the application
+    # Service or the generated Dapr Service before the batch activation transaction.
+    # agent-sandbox v0.4.5 propagates later Sandbox podTemplate label changes to the
+    # existing Pod, so activation does not need direct Pod mutation privileges.
+    adopt_selector_contract: tuple[dict[str, str], str, str] | None = None
     if request.previewNative and adopt_selector:
-        for key, value in adopt_selector.items():
+        active_selector = _canonical_adopt_selector(adopt_selector)
+        selector_labels = active_selector
+        if request.stageAdoption:
+            holder = _adopt_lease_holder(request.executionId, request.service)
+            adopt_selector_contract = _adopt_selector_contract(
+                active_selector, holder=holder
+            )
+            active_selector, gate_key, staged_value = adopt_selector_contract
+            selector_labels = {**active_selector, gate_key: staged_value}
+        for key, value in selector_labels.items():
             if key and value is not None:
                 pod_labels[key] = value
+    # This controller-ownership label is not part of any adopted Service selector.
+    # Stamp it last so inventory and destructive cleanup can never select an
+    # unrelated workflow Sandbox even if a Service selector uses the same key.
+    pod_labels[DEV_PREVIEW_MANAGED_LABEL] = DEV_PREVIEW_MANAGED_VALUE
     # Empty localQueue → no Kueue gate (vcluster-synced preview pods).
     if class_config.localQueue:
         pod_labels[KUEUE_QUEUE_LABEL] = class_config.localQueue
@@ -4451,6 +4720,7 @@ def build_dev_preview_sandbox_manifest(
         "namespace": namespace,
         "labels": {
             "app": "wfb-dev-preview",
+            DEV_PREVIEW_MANAGED_LABEL: DEV_PREVIEW_MANAGED_VALUE,
             "dev-preview-service": service_label,
             "workflow-execution-id": exec_label,
             "sandbox-execution-class": _safe_name(request.executionClass),
@@ -4460,13 +4730,36 @@ def build_dev_preview_sandbox_manifest(
     # re-supplying it (teardown only receives the Sandbox name).
     if request.previewNative and request.adoptDeployment:
         deployment_name = _safe_resource_name(request.adoptDeployment)
+        holder = _adopt_lease_holder(request.executionId, request.service)
         cr_metadata["annotations"] = {
             DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION: deployment_name,
-            DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION: _adopt_lease_holder(
-                request.executionId, request.service
-            ),
+            DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION: holder,
             "wfb-dev-preview/adopt-lease": _adopt_lease_name(deployment_name),
+            **(
+                {DEV_PREVIEW_ADOPT_STAGED_ANNOTATION: holder}
+                if request.stageAdoption
+                else {}
+            ),
+            **(
+                {
+                    DEV_PREVIEW_ADOPT_SELECTOR_ANNOTATION: json.dumps(
+                        adopt_selector_contract[0],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    DEV_PREVIEW_ADOPT_GATE_KEY_ANNOTATION: adopt_selector_contract[1],
+                    DEV_PREVIEW_ADOPT_GATE_STAGED_VALUE_ANNOTATION: (
+                        adopt_selector_contract[2]
+                    ),
+                }
+                if adopt_selector_contract is not None
+                else {}
+            ),
         }
+    if request.serviceSecretEnv:
+        cr_metadata.setdefault("annotations", {})[
+            DEV_PREVIEW_SECRET_NAME_ANNOTATION
+        ] = _dev_preview_secret_name(request.executionId, request.service)
     return {
         "apiVersion": "agents.x-k8s.io/v1alpha1",
         "kind": "Sandbox",
@@ -4489,27 +4782,15 @@ def _dev_preview_manifest_image(manifest: dict[str, Any]) -> str | None:
     return None
 
 
-def _dev_preview_cr_image(custom: Any, namespace: str, name: str) -> str | None:
-    """The `dev` container image of the EXISTING dev-preview Sandbox CR (read live via
-    the custom objects API). None if unreadable or the container is absent — the caller
-    then conservatively adopts (never recreates on a transient read error)."""
-    try:
-        existing = custom.get_namespaced_custom_object(
-            group="agents.x-k8s.io",
-            version="v1alpha1",
-            namespace=namespace,
-            plural="sandboxes",
-            name=name,
-        )
-    except Exception as exc:
-        logger.warning("dev-preview CR %s read failed during 409 check: %s", name, exc)
-        return None
-    return _dev_preview_manifest_image(existing or {})
-
-
 def _delete_dev_preview_cr_and_wait(
-    custom: Any, namespace: str, name: str, timeout_s: float = 30.0
-) -> None:
+    custom: Any,
+    namespace: str,
+    name: str,
+    timeout_s: float = 30.0,
+    *,
+    uid: str | None = None,
+    resource_version: str | None = None,
+) -> bool:
     """Foreground-delete a dev-preview Sandbox CR and wait for it to disappear (so the
     deterministic name is free to recreate). Modeled on _delete_agent_host_cr_and_wait."""
     try:
@@ -4523,15 +4804,31 @@ def _delete_dev_preview_cr_and_wait(
                 "apiVersion": "v1",
                 "kind": "DeleteOptions",
                 "propagationPolicy": "Foreground",
+                **(
+                    {
+                        "preconditions": {
+                            **({"uid": uid} if uid else {}),
+                            **(
+                                {"resourceVersion": resource_version}
+                                if resource_version
+                                else {}
+                            ),
+                        }
+                    }
+                    if uid or resource_version
+                    else {}
+                ),
             },
         )
     except Exception as exc:
-        if getattr(exc, "status", None) != 404:
-            logger.warning("dev-preview CR %s delete failed: %s", name, exc)
+        if getattr(exc, "status", None) == 404:
+            return True
+        logger.warning("dev-preview CR %s delete failed: %s", name, exc)
+        return False
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            custom.get_namespaced_custom_object(
+            observed = custom.get_namespaced_custom_object(
                 group="agents.x-k8s.io",
                 version="v1alpha1",
                 namespace=namespace,
@@ -4540,13 +4837,22 @@ def _delete_dev_preview_cr_and_wait(
             )
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
-                return
+                return True
+        else:
+            observed_metadata = (
+                (observed.get("metadata", {}) or {})
+                if isinstance(observed, dict)
+                else {}
+            )
+            if uid and observed_metadata.get("uid") not in (None, uid):
+                return True
         time.sleep(1.0)
     logger.warning(
         "dev-preview CR %s still present after %ss",
         name,
         timeout_s,
     )
+    return False
     raise RuntimeError(f"dev-preview CR {name} deletion was not observed")
 
 
@@ -4566,6 +4872,7 @@ def _wait_for_dev_preview_ready(
     # never in a Service selector, so they survive the preview-native adopt-selector
     # merge (which overwrites `app`).
     selector = (
+        f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
         f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
         f"dev-preview-service={_dev_preview_service_label(service)}"
     )
@@ -4628,6 +4935,7 @@ def _ready_dev_preview_pod(
     pod_ip: str | None,
 ) -> Any | None:
     selector = (
+        f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
         f"workflow-execution-id={_safe_name(execution_id, max_length=63)},"
         f"dev-preview-service={_dev_preview_service_label(service)}"
     )
@@ -4637,6 +4945,12 @@ def _ready_dev_preview_pod(
             pod
             for pod in pods
             if _pod_is_ready(pod)
+            and (
+                (_adopt_value(_adopt_value(pod, "metadata"), "labels") or {}).get(
+                    DEV_PREVIEW_MANAGED_LABEL
+                )
+                == DEV_PREVIEW_MANAGED_VALUE
+            )
             and (
                 pod_ip is None
                 or getattr(getattr(pod, "status", None), "pod_ip", None) == pod_ip
@@ -4840,9 +5154,30 @@ def submit_agent_workflow_host(
 @app.post("/internal/dev-preview", status_code=status.HTTP_202_ACCEPTED)
 def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str, Any]:
     _require_internal(request)
-    set_current_span_io("input", body.model_dump())
+    set_current_span_io("input", _redacted_dev_preview_request_dump(body))
+    if _dev_preview_teardown_intended(body.executionId):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="dev-preview teardown has already been requested for this execution",
+        )
     # This field is controller-owned. Never accept caller-provided valueFrom refs.
     body.adoptInheritedEnv = None
+    if body.stageAdoption:
+        service = _dev_preview_service_label(body.service)
+        if (
+            not body.previewNative
+            or not body.service
+            or body.service != service
+            or _safe_resource_name(body.adoptService or "") != service
+            or _safe_resource_name(body.adoptDeployment or "") != service
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "stageAdoption requires an exact previewNative "
+                    "service/adoptService/adoptDeployment tuple"
+                ),
+            )
     if body.previewNative and (
         os.environ.get("DEV_PREVIEW_PLATFORM_SCOPE", "").strip().lower() != "vcluster"
     ):
@@ -4925,6 +5260,14 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                     body.adoptService,
                     exc,
                 )
+            if body.stageAdoption:
+                try:
+                    _canonical_adopt_selector(adopt_selector)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="staged adoption could not establish the Service selector",
+                    ) from exc
         if body.previewNative and body.adoptDeployment:
             # Faithfully assume the prod pod's identity (don't override an explicit
             # caller value). Critical when needsDapr: the dev pod must use the SAME
@@ -4959,61 +5302,31 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         if body.previewNative and body.adoptDeployment:
             adoption_deployment = _safe_resource_name(body.adoptDeployment)
             adoption_coordination = _load_k8s_coordination_client()
-            adoption_holder = _acquire_dev_preview_adoption_lease(
-                adoption_coordination,
-                namespace=namespace,
-                deployment=adoption_deployment,
-                execution_id=body.executionId,
-                service=body.service,
-            )
-        try:
-            if preview_secret_name:
-                _ensure_dev_preview_secret(core, body, namespace=namespace)
-            custom.create_namespaced_custom_object(
-                group="agents.x-k8s.io",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="sandboxes",
-                body=manifest,
-            )
-        except Exception as exc:
+        with ExitStack() as creation_locks:
+            if adoption_deployment:
+                creation_locks.enter_context(
+                    _dev_preview_adoption_transition_lock(
+                        namespace, adoption_deployment
+                    )
+                )
+            creation_locks.enter_context(_DEV_PREVIEW_TEARDOWN_INTENTS_GUARD)
+            if body.executionId in _DEV_PREVIEW_TEARDOWN_INTENTS:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="dev-preview teardown began before Sandbox creation",
+                )
             try:
-                if getattr(exc, "status", None) != 409:
-                    raise
-                if adoption_holder is not None:
-                    existing_holder = _dev_preview_cr_adoption_holder(
-                        custom, namespace, sandbox_name
+                if adoption_deployment and adoption_coordination:
+                    adoption_holder = _acquire_dev_preview_adoption_lease(
+                        adoption_coordination,
+                        namespace=namespace,
+                        deployment=adoption_deployment,
+                        execution_id=body.executionId,
+                        service=body.service,
                     )
-                    if existing_holder != adoption_holder:
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="existing dev preview does not own the adoption Lease",
-                        )
-                # Deterministic per-execution name already exists. Adopt it only when its
-                # dev image MATCHES the manifest we just built; otherwise the existing
-                # preview is stale (image drift on a re-provision), so delete + recreate.
-                requested_image = _dev_preview_manifest_image(manifest)
-                existing_image = _dev_preview_cr_image(custom, namespace, sandbox_name)
-                if (
-                    requested_image
-                    and existing_image
-                    and existing_image != requested_image
-                ):
-                    if adoption_deployment == "workflow-builder":
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=(
-                                "adopted workflow-builder image replacement is not "
-                                "synchronous; launch a fresh acceptance preview"
-                            ),
-                        )
-                    logger.warning(
-                        "dev-preview image drift: existing=%s requested=%s; recreating %s",
-                        existing_image,
-                        requested_image,
-                        sandbox_name,
-                    )
-                    _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
+                if preview_secret_name:
+                    _ensure_dev_preview_secret(core, body, namespace=namespace)
+                try:
                     custom.create_namespaced_custom_object(
                         group="agents.x-k8s.io",
                         version="v1alpha1",
@@ -5021,29 +5334,186 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                         plural="sandboxes",
                         body=manifest,
                     )
-                else:
-                    # Same image (or an unreadable existing CR) → idempotent adopt (same
-                    # run re-requesting its own preview).
-                    logger.info(
-                        "dev-preview CR %s already exists; adopting", sandbox_name
-                    )
-            except Exception:
-                if adoption_holder and adoption_coordination and adoption_deployment:
+                except Exception as exc:
+                    if getattr(exc, "status", None) != 409:
+                        raise
                     try:
-                        observed_holder = _dev_preview_cr_adoption_holder(
+                        existing_cr = custom.get_namespaced_custom_object(
+                            group="agents.x-k8s.io",
+                            version="v1alpha1",
+                            namespace=namespace,
+                            plural="sandboxes",
+                            name=sandbox_name,
+                        )
+                    except Exception as read_exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="existing Sandbox ownership could not be proven",
+                        ) from read_exc
+                    existing_metadata = (
+                        (existing_cr.get("metadata", {}) or {})
+                        if isinstance(existing_cr, dict)
+                        else {}
+                    )
+                    existing_labels = existing_metadata.get("labels", {}) or {}
+                    if (
+                        existing_metadata.get("name") not in (None, sandbox_name)
+                        or existing_metadata.get("namespace") not in (None, namespace)
+                        or existing_labels.get("app") != "wfb-dev-preview"
+                        or existing_labels.get(DEV_PREVIEW_MANAGED_LABEL)
+                        != DEV_PREVIEW_MANAGED_VALUE
+                        or existing_labels.get("workflow-execution-id")
+                        != _safe_name(body.executionId, max_length=63)
+                        or existing_labels.get("dev-preview-service")
+                        != _dev_preview_service_label(body.service)
+                    ):
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="existing Sandbox is not the exact managed dev preview",
+                        )
+                    if adoption_holder is not None:
+                        existing_holder = _dev_preview_cr_adoption_holder(
                             custom, namespace, sandbox_name
                         )
-                    except Exception:
-                        # Ambiguous API state: retain the Lease. Periodic cleanup will
-                        # release it only after the claim is definitively absent.
-                        observed_holder = adoption_holder
-                    if observed_holder is None:
-                        _delete_dev_preview_adoption_lease(
-                            adoption_coordination,
-                            namespace=namespace,
-                            deployment=adoption_deployment,
-                            holder=adoption_holder,
+                        if existing_holder != adoption_holder:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=(
+                                    "existing dev preview does not own the adoption Lease"
+                                ),
+                            )
+                        existing_staged = _dev_preview_cr_annotation(
+                            custom,
+                            namespace,
+                            sandbox_name,
+                            DEV_PREVIEW_ADOPT_STAGED_ANNOTATION,
                         )
+                        if (existing_staged and not body.stageAdoption) or (
+                            body.stageAdoption and existing_staged != adoption_holder
+                        ):
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=(
+                                    "existing staged dev preview must be committed by "
+                                    "the batch activation endpoint"
+                                ),
+                            )
+                    # A deterministic name is idempotent only while its image agrees.
+                    requested_image = _dev_preview_manifest_image(manifest)
+                    existing_image = _dev_preview_manifest_image(existing_cr)
+                    if (
+                        requested_image
+                        and existing_image
+                        and existing_image != requested_image
+                    ):
+                        if (
+                            adoption_deployment
+                            in DEV_PREVIEW_DEFERRED_CUTOVER_DEPLOYMENTS
+                        ):
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=(
+                                    f"adopted {adoption_deployment} image replacement "
+                                    "is not synchronous; launch a fresh acceptance preview"
+                                ),
+                            )
+                        logger.warning(
+                            "dev-preview image drift: existing=%s requested=%s; recreating %s",
+                            existing_image,
+                            requested_image,
+                            sandbox_name,
+                        )
+                        if not _delete_dev_preview_cr_and_wait(
+                            custom, namespace, sandbox_name
+                        ):
+                            raise RuntimeError(
+                                f"stale dev-preview deletion was not proven for {sandbox_name}"
+                            )
+                        # The teardown-intent guard remains held across delete/create.
+                        custom.create_namespaced_custom_object(
+                            group="agents.x-k8s.io",
+                            version="v1alpha1",
+                            namespace=namespace,
+                            plural="sandboxes",
+                            body=manifest,
+                        )
+                    else:
+                        logger.info(
+                            "dev-preview CR %s already exists; adopting", sandbox_name
+                        )
+            except Exception:
+                # Compensate each support resource unless an exact managed Sandbox
+                # claims it. Ambiguous reads retain both as fail-closed evidence.
+                secret_claimed = True
+                lease_claimed = True
+                try:
+                    observed_cr = custom.get_namespaced_custom_object(
+                        group="agents.x-k8s.io",
+                        version="v1alpha1",
+                        namespace=namespace,
+                        plural="sandboxes",
+                        name=sandbox_name,
+                    )
+                    observed_metadata = (
+                        (observed_cr.get("metadata", {}) or {})
+                        if isinstance(observed_cr, dict)
+                        else {}
+                    )
+                    observed_labels = observed_metadata.get("labels", {}) or {}
+                    observed_annotations = (
+                        observed_metadata.get("annotations", {}) or {}
+                    )
+                    managed_exact = (
+                        observed_labels.get("app") == "wfb-dev-preview"
+                        and observed_labels.get(DEV_PREVIEW_MANAGED_LABEL)
+                        == DEV_PREVIEW_MANAGED_VALUE
+                        and observed_labels.get("workflow-execution-id")
+                        == _safe_name(body.executionId, max_length=63)
+                        and observed_labels.get("dev-preview-service")
+                        == _dev_preview_service_label(body.service)
+                    )
+                    secret_claimed = managed_exact and (
+                        not preview_secret_name
+                        or observed_annotations.get(
+                            DEV_PREVIEW_SECRET_NAME_ANNOTATION
+                        )
+                        == preview_secret_name
+                    )
+                    observed_holder = observed_annotations.get(
+                        DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION
+                    ) or observed_annotations.get(
+                        DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION
+                    )
+                    lease_claimed = managed_exact and (
+                        not adoption_holder or observed_holder == adoption_holder
+                    )
+                except Exception as read_exc:
+                    if getattr(read_exc, "status", None) == 404:
+                        secret_claimed = False
+                        lease_claimed = False
+                if preview_secret_name and not secret_claimed:
+                    _delete_dev_preview_secret_and_wait(
+                        core,
+                        namespace=namespace,
+                        name=preview_secret_name,
+                        execution_id=_safe_name(body.executionId, max_length=63),
+                        service=_dev_preview_service_label(body.service),
+                    )
+                if (
+                    adoption_holder
+                    and adoption_coordination
+                    and adoption_deployment
+                    and not lease_claimed
+                    and not _delete_dev_preview_adoption_lease(
+                        adoption_coordination,
+                        namespace=namespace,
+                        deployment=adoption_deployment,
+                        holder=adoption_holder,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"failed provisioning cleanup retained adoption Lease for {adoption_deployment}"
+                    )
                 raise
         try:
             readiness_status, pod_ip = _wait_for_dev_preview_ready(
@@ -5082,21 +5552,46 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                             "did not satisfy the complete readiness contract; the Sandbox was removed without cutover"
                         ),
                     )
-                # Only the workflow-builder cutover can terminate the BFF serving
-                # this request. Peer Deployments are scaled synchronously so the
-                # batch coordinator never receives success for a merely scheduled
-                # cutover that can race compensating teardown.
-                if adoption_deployment != "workflow-builder":
-                    _adopt_scale_deployment_down(
-                        apps,
-                        namespace=namespace,
-                        name=adoption_deployment,
-                    )
+                # Response-path Deployments cut over after the response grace below.
+                # Other peers stay synchronous so the batch coordinator never sees
+                # success for a merely scheduled cutover that can race compensation.
+                if (
+                    not body.stageAdoption
+                    and adoption_deployment
+                    not in DEV_PREVIEW_DEFERRED_CUTOVER_DEPLOYMENTS
+                ):
+                    with _dev_preview_adoption_transition_lock(
+                        namespace, adoption_deployment
+                    ):
+                        if (
+                            adoption_holder is None
+                            or adoption_coordination is None
+                            or not _dev_preview_adoption_is_current(
+                                custom,
+                                adoption_coordination,
+                                namespace=namespace,
+                                sandbox_name=sandbox_name,
+                                deployment=adoption_deployment,
+                                holder=adoption_holder,
+                            )
+                        ):
+                            raise RuntimeError(
+                                "adoption ownership changed before synchronous cutover"
+                            )
+                        _adopt_scale_deployment_down(
+                            apps,
+                            namespace=namespace,
+                            name=adoption_deployment,
+                        )
         except Exception as readiness_error:
             if body.previewNative and body.adoptDeployment:
                 try:
                     context = _dev_preview_teardown_context(
-                        custom, namespace=namespace, sandbox_name=sandbox_name
+                        custom,
+                        namespace=namespace,
+                        sandbox_name=sandbox_name,
+                        requested_execution_id=body.executionId,
+                        requested_service=_dev_preview_service_label(body.service),
                     )
                     _teardown_dev_preview_resources(
                         namespace=namespace,
@@ -5123,7 +5618,8 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         # therefore never cut production over minutes after its caller saw failure.
         if (
             body.previewNative
-            and adoption_deployment == "workflow-builder"
+            and not body.stageAdoption
+            and adoption_deployment in DEV_PREVIEW_DEFERRED_CUTOVER_DEPLOYMENTS
             and adoption_holder is not None
         ):
             threading.Thread(
@@ -5161,13 +5657,1385 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         # Dapr-shadow: surface the isolated app-id so callers can prove isolation.
         "needsDapr": body.needsDapr,
         "daprAppId": _dev_preview_dapr_app_id(body) if body.needsDapr else None,
+        "staged": bool(body.stageAdoption and readiness_status == "ready"),
     }
     set_current_span_io("output", response)
     return response
 
 
+@dataclass(frozen=True)
+class _DevPreviewRoutingSurface:
+    name: str
+    selector: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class _StagedDevPreviewAdoption:
+    execution_id: str
+    sandbox_name: str
+    service: str
+    deployment: str
+    holder: str
+    needs_dapr: bool
+    active_selector: tuple[tuple[str, str], ...]
+    routing_surfaces: tuple[_DevPreviewRoutingSurface, ...]
+    gate_key: str
+    staged_gate_value: str
+    pod_name: str
+    pod_ip: str
+    gate_active: bool
+
+
+def _staged_member_selector(member: _StagedDevPreviewAdoption) -> dict[str, str]:
+    return dict(member.active_selector)
+
+
+def _staged_member_routing_surfaces(
+    member: _StagedDevPreviewAdoption,
+) -> tuple[_DevPreviewRoutingSurface, ...]:
+    if not member.routing_surfaces:
+        raise RuntimeError(f"routing surfaces are missing for {member.sandbox_name}")
+    return member.routing_surfaces
+
+
+def _read_dev_preview_routing_surfaces(
+    core: Any,
+    *,
+    namespace: str,
+    service: str,
+    pod_annotations: dict[str, Any],
+    active_selector: dict[str, str],
+    gate_key: str,
+) -> tuple[_DevPreviewRoutingSurface, ...]:
+    names = [service]
+    if pod_annotations.get("dapr.io/enabled") == "true":
+        dapr_app_id = pod_annotations.get("dapr.io/app-id")
+        if (
+            not isinstance(dapr_app_id, str)
+            or dapr_app_id != service
+            or _safe_name(dapr_app_id, max_length=63) != dapr_app_id
+        ):
+            raise ValueError("adopted Dapr app-id is not the canonical service")
+        names.append(_safe_resource_name(f"{dapr_app_id}-dapr"))
+    surfaces: list[_DevPreviewRoutingSurface] = []
+    for name in dict.fromkeys(names):
+        observed = core.read_namespaced_service(name=name, namespace=namespace)
+        selector = _canonical_adopt_selector(
+            dict(observed.spec.selector or {}) if observed.spec else None
+        )
+        if selector.get(gate_key) != active_selector[gate_key]:
+            raise ValueError(
+                f"routing Service {name} is not controlled by the staged gate"
+            )
+        surfaces.append(
+            _DevPreviewRoutingSurface(
+                name=name,
+                selector=tuple(selector.items()),
+            )
+        )
+    return tuple(surfaces)
+
+
+def _dev_preview_batch_id(execution_id: str, sandbox_names: list[str]) -> str:
+    payload = json.dumps(
+        {"executionId": execution_id, "sandboxNames": sorted(sandbox_names)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"sha256:{sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _dev_preview_batch_anchor(
+    members: tuple[_StagedDevPreviewAdoption, ...],
+) -> _StagedDevPreviewAdoption:
+    if not members:
+        raise ValueError("activation batch requires at least one member")
+    return min(members, key=lambda member: member.sandbox_name)
+
+
+def _validate_staged_dev_preview_batch(
+    custom: Any,
+    coordination: Any,
+    core: Any,
+    *,
+    namespace: str,
+    execution_id: str,
+    sandbox_names: list[str] | tuple[str, ...],
+) -> tuple[_StagedDevPreviewAdoption, ...]:
+    """Validate the complete staged set without mutating any workload."""
+
+    requested = tuple(sorted(sandbox_names))
+    if len(set(requested)) != len(requested) or any(
+        not name or _safe_resource_name(name, max_length=63) != name
+        for name in requested
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="activation sandboxNames must be unique exact resource names",
+        )
+
+    execution_label = _safe_name(execution_id, max_length=63)
+    try:
+        listed = custom.list_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            label_selector=(
+                f"app=wfb-dev-preview,"
+                f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
+                f"workflow-execution-id={execution_label}"
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="could not enumerate the staged dev-preview batch",
+        ) from exc
+    actual_staged: list[str] = []
+    for item in (listed.get("items") or []) if isinstance(listed, dict) else []:
+        metadata = (item.get("metadata", {}) or {}) if isinstance(item, dict) else {}
+        annotations = metadata.get("annotations", {}) or {}
+        name = metadata.get("name")
+        if annotations.get(DEV_PREVIEW_ADOPT_STAGED_ANNOTATION) and isinstance(
+            name, str
+        ):
+            actual_staged.append(name)
+    if tuple(sorted(actual_staged)) != requested:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="activation sandboxNames do not match the complete staged set",
+        )
+
+    members: list[_StagedDevPreviewAdoption] = []
+    for sandbox_name in requested:
+        try:
+            cr = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+        except Exception as exc:
+            code = (
+                status.HTTP_409_CONFLICT
+                if getattr(exc, "status", None) == 404
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+            raise HTTPException(
+                status_code=code,
+                detail=f"could not read staged dev preview {sandbox_name}",
+            ) from exc
+        metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+        labels = metadata.get("labels", {}) or {}
+        annotations = metadata.get("annotations", {}) or {}
+        service = labels.get("dev-preview-service")
+        if not isinstance(service, str) or service != _dev_preview_service_label(service):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has an invalid service",
+            )
+        holder = _adopt_lease_holder(execution_id, service)
+        deployment = annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION)
+        expected_name = _dev_preview_sandbox_name(execution_id, service)
+        if (
+            metadata.get("name") != sandbox_name
+            or metadata.get("namespace") not in (None, namespace)
+            or labels.get("app") != "wfb-dev-preview"
+            or labels.get(DEV_PREVIEW_MANAGED_LABEL) != DEV_PREVIEW_MANAGED_VALUE
+            or labels.get("workflow-execution-id") != execution_label
+            or sandbox_name != expected_name
+            or deployment != _safe_resource_name(service)
+            or annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) != holder
+            or annotations.get(DEV_PREVIEW_ADOPT_STAGED_ANNOTATION) != holder
+            or annotations.get(DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION)
+            or annotations.get("wfb-dev-preview/adopt-lease")
+            != _adopt_lease_name(deployment or "")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has a mismatched tuple",
+            )
+
+        try:
+            stored_selector = _canonical_adopt_selector(
+                json.loads(
+                    str(
+                        annotations.get(DEV_PREVIEW_ADOPT_SELECTOR_ANNOTATION) or ""
+                    )
+                )
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has an invalid selector contract",
+            ) from exc
+        gate_key = annotations.get(DEV_PREVIEW_ADOPT_GATE_KEY_ANNOTATION)
+        staged_gate_value = annotations.get(
+            DEV_PREVIEW_ADOPT_GATE_STAGED_VALUE_ANNOTATION
+        )
+        if (
+            not isinstance(gate_key, str)
+            or gate_key not in stored_selector
+            or not isinstance(staged_gate_value, str)
+            or not staged_gate_value
+            or staged_gate_value == stored_selector[gate_key]
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has an invalid selector gate",
+            )
+        cr_spec = (cr.get("spec") or {}) if isinstance(cr, dict) else {}
+        pod_template = cr_spec.get("podTemplate") or {}
+        pod_metadata = pod_template.get("metadata") or {}
+        pod_annotations = pod_metadata.get("annotations") or {}
+        needs_dapr = pod_annotations.get("dapr.io/enabled") == "true"
+        try:
+            routing_surfaces = _read_dev_preview_routing_surfaces(
+                core,
+                namespace=namespace,
+                service=service,
+                pod_annotations=pod_annotations,
+                active_selector=stored_selector,
+                gate_key=gate_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"adopted routing Service contract drifted for {sandbox_name}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"could not verify adopted routing Services for {sandbox_name}",
+            ) from exc
+        if dict(routing_surfaces[0].selector) != stored_selector:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"adopted Service selector drifted for {sandbox_name}",
+            )
+
+        try:
+            lease = coordination.read_namespaced_lease(
+                name=_adopt_lease_name(deployment), namespace=namespace
+            )
+        except Exception as exc:
+            code = (
+                status.HTTP_409_CONFLICT
+                if getattr(exc, "status", None) == 404
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+            raise HTTPException(
+                status_code=code,
+                detail=f"could not read staged adoption Lease for {sandbox_name}",
+            ) from exc
+        lease_name, lease_holder, lease_deployment, lease_execution, lease_rv = (
+            _adopt_lease_identity(lease)
+        )
+        lease_metadata = _adopt_value(lease, "metadata")
+        lease_annotations = _adopt_value(lease_metadata, "annotations") or {}
+        lease_labels = _adopt_value(lease_metadata, "labels") or {}
+        if (
+            lease_name != _adopt_lease_name(deployment)
+            or _adopt_value(lease_metadata, "namespace") != namespace
+            or lease_holder != holder
+            or lease_deployment != deployment
+            or lease_execution != execution_id
+            or not lease_rv
+            or lease_annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) != holder
+            or lease_annotations.get(DEV_PREVIEW_ADOPT_SERVICE_ANNOTATION) != service
+            or lease_labels.get("app") != DEV_PREVIEW_ADOPTION_LEASE_LABEL
+            or lease_labels.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION)
+            != deployment
+            or lease_labels.get("dev-preview-service") != service
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged adoption Lease for {sandbox_name} is mismatched",
+            )
+
+        try:
+            ready_pod = _ready_dev_preview_pod(
+                core,
+                namespace=namespace,
+                execution_id=execution_id,
+                service=service,
+                pod_ip=None,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"could not verify staged pod readiness for {sandbox_name}",
+            ) from exc
+        if ready_pod is None or (needs_dapr and not _dev_pod_has_daprd(ready_pod)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} is not fully ready",
+            )
+        ready_metadata = _adopt_value(ready_pod, "metadata")
+        ready_labels = _adopt_value(ready_metadata, "labels") or {}
+        pod_name = str(_adopt_value(ready_metadata, "name") or "")
+        pod_status = _adopt_value(ready_pod, "status")
+        pod_ip = str(_adopt_value(pod_status, "pod_ip", "podIP") or "")
+        gate_value = ready_labels.get(gate_key)
+        for surface in routing_surfaces:
+            for key, value in surface.selector:
+                if key != gate_key and ready_labels.get(key) != value:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"staged dev preview {sandbox_name} has routing selector drift"
+                        ),
+                    )
+        if gate_value not in (staged_gate_value, stored_selector[gate_key]):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has an invalid live gate",
+            )
+        if not pod_name or not pod_ip:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"staged dev preview {sandbox_name} has no exact ready pod identity",
+            )
+        members.append(
+            _StagedDevPreviewAdoption(
+                execution_id=execution_id,
+                sandbox_name=sandbox_name,
+                service=service,
+                deployment=deployment,
+                holder=holder,
+                needs_dapr=needs_dapr,
+                active_selector=tuple(stored_selector.items()),
+                routing_surfaces=routing_surfaces,
+                gate_key=gate_key,
+                staged_gate_value=staged_gate_value,
+                pod_name=pod_name,
+                pod_ip=pod_ip,
+                gate_active=gate_value == stored_selector[gate_key],
+            )
+        )
+    return tuple(members)
+
+
+def _dev_preview_batch_annotations(
+    *,
+    execution_id: str,
+    sandbox_names: list[str],
+    batch_id: str,
+    phase: str,
+    error_code: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        DEV_PREVIEW_ADOPT_BATCH_ID_ANNOTATION: batch_id,
+        DEV_PREVIEW_ADOPT_BATCH_NAMES_ANNOTATION: json.dumps(
+            sorted(sandbox_names), separators=(",", ":")
+        ),
+        DEV_PREVIEW_ADOPT_BATCH_EXECUTION_ANNOTATION: execution_id,
+        DEV_PREVIEW_ADOPT_BATCH_PHASE_ANNOTATION: phase,
+        DEV_PREVIEW_ADOPT_BATCH_ERROR_ANNOTATION: error_code,
+        DEV_PREVIEW_ADOPT_BATCH_UPDATED_ANNOTATION: datetime.now(UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+    }
+
+
+def _read_dev_preview_batch_phase(
+    custom: Any,
+    *,
+    namespace: str,
+    members: tuple[_StagedDevPreviewAdoption, ...],
+    execution_id: str,
+    sandbox_names: list[str],
+    batch_id: str,
+) -> tuple[str | None, str | None]:
+    anchor = _dev_preview_batch_anchor(members)
+    cr = custom.get_namespaced_custom_object(
+        group="agents.x-k8s.io",
+        version="v1alpha1",
+        namespace=namespace,
+        plural="sandboxes",
+        name=anchor.sandbox_name,
+    )
+    metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+    annotations = metadata.get("annotations", {}) or {}
+    if (
+        annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) != anchor.holder
+        or annotations.get(DEV_PREVIEW_ADOPT_STAGED_ANNOTATION) != anchor.holder
+    ):
+        raise RuntimeError("activation anchor ownership changed")
+    phase = annotations.get(DEV_PREVIEW_ADOPT_BATCH_PHASE_ANNOTATION)
+    observed_batch_id = annotations.get(DEV_PREVIEW_ADOPT_BATCH_ID_ANNOTATION)
+    if phase is None and observed_batch_id is None:
+        return None, None
+    try:
+        observed_names = json.loads(
+            str(annotations.get(DEV_PREVIEW_ADOPT_BATCH_NAMES_ANNOTATION) or "")
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("activation anchor has malformed batch names") from exc
+    if (
+        observed_batch_id != batch_id
+        or annotations.get(DEV_PREVIEW_ADOPT_BATCH_EXECUTION_ANNOTATION)
+        != execution_id
+        or observed_names != sorted(sandbox_names)
+        or phase
+        not in (
+            _DEV_PREVIEW_ADOPT_BATCH_PENDING_PHASES
+            | _DEV_PREVIEW_ADOPT_BATCH_TERMINAL_PHASES
+        )
+    ):
+        raise RuntimeError("activation anchor batch identity changed")
+    error_code = annotations.get(DEV_PREVIEW_ADOPT_BATCH_ERROR_ANNOTATION)
+    return str(phase), str(error_code) if error_code else None
+
+
+def _set_dev_preview_batch_phase(
+    custom: Any,
+    *,
+    namespace: str,
+    members: tuple[_StagedDevPreviewAdoption, ...],
+    execution_id: str,
+    sandbox_names: list[str],
+    batch_id: str,
+    phase: str,
+    allowed_from: set[str | None],
+    error_code: str | None = None,
+    attempts: int = 5,
+) -> None:
+    if phase not in (
+        _DEV_PREVIEW_ADOPT_BATCH_PENDING_PHASES
+        | _DEV_PREVIEW_ADOPT_BATCH_TERMINAL_PHASES
+    ):
+        raise ValueError(f"unsupported activation phase {phase}")
+    anchor = _dev_preview_batch_anchor(members)
+    for _attempt in range(max(attempts, 1)):
+        cr = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=anchor.sandbox_name,
+        )
+        metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+        annotations = metadata.get("annotations", {}) or {}
+        resource_version = metadata.get("resourceVersion")
+        if (
+            annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) != anchor.holder
+            or annotations.get(DEV_PREVIEW_ADOPT_STAGED_ANNOTATION) != anchor.holder
+            or not isinstance(resource_version, str)
+            or not resource_version
+        ):
+            raise RuntimeError("activation anchor ownership is not exact")
+        current_phase = annotations.get(DEV_PREVIEW_ADOPT_BATCH_PHASE_ANNOTATION)
+        current_batch_id = annotations.get(DEV_PREVIEW_ADOPT_BATCH_ID_ANNOTATION)
+        if current_phase == phase and current_batch_id == batch_id:
+            return
+        if current_phase not in allowed_from:
+            raise RuntimeError(
+                f"activation phase transition {current_phase!r} -> {phase!r} is not allowed"
+            )
+        if current_batch_id not in (None, "", batch_id):
+            raise RuntimeError("activation anchor is owned by another batch")
+        try:
+            custom.patch_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=anchor.sandbox_name,
+                body={
+                    "metadata": {
+                        "resourceVersion": resource_version,
+                        "annotations": _dev_preview_batch_annotations(
+                            execution_id=execution_id,
+                            sandbox_names=sandbox_names,
+                            batch_id=batch_id,
+                            phase=phase,
+                            error_code=error_code,
+                        ),
+                    }
+                },
+            )
+            observed_phase, observed_error = _read_dev_preview_batch_phase(
+                custom,
+                namespace=namespace,
+                members=members,
+                execution_id=execution_id,
+                sandbox_names=sandbox_names,
+                batch_id=batch_id,
+            )
+            if observed_phase == phase and observed_error == error_code:
+                return
+            raise RuntimeError("activation phase mutation was not observed")
+        except Exception as exc:
+            if getattr(exc, "status", None) == 409:
+                continue
+            raise
+    raise RuntimeError("activation phase update conflicted repeatedly")
+
+
+def _ready_endpoint_identities(endpoints: Any) -> set[tuple[str, str]]:
+    identities: set[tuple[str, str]] = set()
+    subsets = _adopt_value(endpoints, "subsets") or []
+    for subset in subsets:
+        for address in _adopt_value(subset, "addresses") or []:
+            target = _adopt_value(address, "target_ref", "targetRef")
+            identities.add(
+                (
+                    str(_adopt_value(target, "name") or ""),
+                    str(_adopt_value(address, "ip") or ""),
+                )
+            )
+    return identities
+
+
+def _wait_for_adopted_service_endpoints(
+    core: Any,
+    *,
+    namespace: str,
+    service: str,
+    expected_pod: tuple[str, str] | None,
+    require_any: bool = False,
+    timeout_s: float = 30.0,
+) -> None:
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        endpoints = core.read_namespaced_endpoints(name=service, namespace=namespace)
+        identities = _ready_endpoint_identities(endpoints)
+        if (
+            expected_pod is None
+            and not require_any
+            and not identities
+        ) or (
+            expected_pod is not None and identities == {expected_pod}
+        ) or (require_any and bool(identities)):
+            return
+        if time.monotonic() >= deadline:
+            expectation = (
+                "the dev pod"
+                if expected_pod is not None
+                else "at least one Ready endpoint"
+                if require_any
+                else "no Ready endpoint"
+            )
+            raise RuntimeError(
+                f"Service {service} did not converge to {expectation}"
+            )
+        time.sleep(0.1)
+
+
+def _wait_for_service_without_managed_dev_preview_endpoints(
+    core: Any,
+    *,
+    namespace: str,
+    service: str,
+    active_selector: dict[str, str],
+    timeout_s: float = 30.0,
+) -> None:
+    """Allow current production endpoints, but reject managed or stale dev pods."""
+
+    label_selector = ",".join(
+        f"{key}={value}" for key, value in sorted(active_selector.items())
+    )
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        selected_pods = core.list_namespaced_pod(
+            namespace=namespace, label_selector=label_selector
+        ).items
+        allowed: set[tuple[str, str]] = set()
+        for pod in selected_pods:
+            metadata = _adopt_value(pod, "metadata")
+            labels = _adopt_value(metadata, "labels") or {}
+            status_value = _adopt_value(pod, "status")
+            identity = (
+                str(_adopt_value(metadata, "name") or ""),
+                str(_adopt_value(status_value, "pod_ip", "podIP") or ""),
+            )
+            if (
+                labels.get(DEV_PREVIEW_MANAGED_LABEL)
+                != DEV_PREVIEW_MANAGED_VALUE
+                and all(identity)
+            ):
+                allowed.add(identity)
+        endpoints = core.read_namespaced_endpoints(
+            name=service, namespace=namespace
+        )
+        identities = _ready_endpoint_identities(endpoints)
+        if identities <= allowed:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Service {service} retained a managed or stale dev-preview endpoint"
+            )
+        time.sleep(0.1)
+
+
+def _set_staged_dev_preview_gate(
+    custom: Any,
+    core: Any,
+    *,
+    namespace: str,
+    member: _StagedDevPreviewAdoption,
+    active: bool,
+    require_exact_pod: bool = True,
+    timeout_s: float = 30.0,
+) -> None:
+    selector = _staged_member_selector(member)
+    target_value = (
+        selector[member.gate_key] if active else member.staged_gate_value
+    )
+    for _attempt in range(5):
+        cr = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=member.sandbox_name,
+        )
+        metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+        annotations = metadata.get("annotations", {}) or {}
+        resource_version = metadata.get("resourceVersion")
+        observed_holder = annotations.get(
+            DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION
+        ) or annotations.get(DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION)
+        if (
+            observed_holder != member.holder
+            or annotations.get(DEV_PREVIEW_ADOPT_SELECTOR_ANNOTATION)
+            != json.dumps(selector, sort_keys=True, separators=(",", ":"))
+            or annotations.get(DEV_PREVIEW_ADOPT_GATE_KEY_ANNOTATION)
+            != member.gate_key
+            or annotations.get(DEV_PREVIEW_ADOPT_GATE_STAGED_VALUE_ANNOTATION)
+            != member.staged_gate_value
+            or not isinstance(resource_version, str)
+            or not resource_version
+        ):
+            raise RuntimeError(f"selector ownership changed for {member.sandbox_name}")
+        pod_template = ((cr.get("spec") or {}).get("podTemplate") or {})
+        template_labels = ((pod_template.get("metadata") or {}).get("labels") or {})
+        if template_labels.get(member.gate_key) != target_value:
+            try:
+                custom.patch_namespaced_custom_object(
+                    group="agents.x-k8s.io",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="sandboxes",
+                    name=member.sandbox_name,
+                    body={
+                        "metadata": {"resourceVersion": resource_version},
+                        "spec": {
+                            "podTemplate": {
+                                "metadata": {
+                                    "labels": {member.gate_key: target_value}
+                                }
+                            }
+                        },
+                    },
+                )
+            except Exception as exc:
+                if getattr(exc, "status", None) == 409:
+                    continue
+                raise
+        break
+    else:
+        raise RuntimeError(f"selector gate update conflicted for {member.sandbox_name}")
+
+    deadline = time.monotonic() + max(timeout_s, 0)
+    while True:
+        pods = core.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=(
+                f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
+                f"workflow-execution-id={_safe_name(member.execution_id, max_length=63)},"
+                f"dev-preview-service={member.service}"
+            ),
+        ).items
+        observed = next(
+            (
+                pod
+                for pod in pods
+                if str(_adopt_value(_adopt_value(pod, "metadata"), "name") or "")
+                == member.pod_name
+            ),
+            None,
+        )
+        observed_labels = (
+            _adopt_value(_adopt_value(observed, "metadata"), "labels") or {}
+            if observed is not None
+            else {}
+        )
+        managed_pods_converged = all(
+            (
+                (
+                    _adopt_value(_adopt_value(pod, "metadata"), "labels") or {}
+                ).get(DEV_PREVIEW_MANAGED_LABEL)
+                == DEV_PREVIEW_MANAGED_VALUE
+                and (
+                    _adopt_value(_adopt_value(pod, "metadata"), "labels") or {}
+                ).get(member.gate_key)
+                == target_value
+            )
+            for pod in pods
+        )
+        if (
+            require_exact_pod
+            and observed_labels.get(DEV_PREVIEW_MANAGED_LABEL)
+            == DEV_PREVIEW_MANAGED_VALUE
+            and observed_labels.get(member.gate_key) == target_value
+        ) or (not require_exact_pod and managed_pods_converged):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"selector gate did not propagate for {member.sandbox_name}"
+            )
+        time.sleep(0.1)
+
+    if not active:
+        # A staged template can still have a lagging Endpoint for a deleted active
+        # pod. Permit only live non-managed pods, which preserves an already-running
+        # production Deployment without accepting a stale dev endpoint.
+        for surface in _staged_member_routing_surfaces(member):
+            _wait_for_service_without_managed_dev_preview_endpoints(
+                core,
+                namespace=namespace,
+                service=surface.name,
+                active_selector=dict(surface.selector),
+                timeout_s=timeout_s,
+            )
+    elif require_exact_pod:
+        for surface in _staged_member_routing_surfaces(member):
+            _wait_for_adopted_service_endpoints(
+                core,
+                namespace=namespace,
+                service=surface.name,
+                expected_pod=(member.pod_name, member.pod_ip),
+                timeout_s=timeout_s,
+            )
+
+
+def _activate_staged_dev_preview_batch(
+    *,
+    namespace: str,
+    execution_id: str,
+    sandbox_names: list[str],
+    batch_id: str,
+) -> None:
+    """Converge one durable staged batch to active or a proven failed rollback."""
+
+    delay = _env_int("DEV_PREVIEW_BATCH_ACTIVATION_DELAY_SECONDS", 15, minimum=1)
+    time.sleep(delay)
+    try:
+        apps = _load_k8s_apps_client()
+        _, core = _load_k8s_clients()
+        custom = _load_k8s_custom_objects_client()
+        coordination = _load_k8s_coordination_client()
+    except Exception as exc:
+        logger.warning("adopt: batch activation could not load clients: %s", exc)
+        # The durable scheduled/activating phase remains retryable. A later
+        # idempotent POST or the next SEA startup will redrive it.
+        return
+
+    try:
+        initial = _validate_staged_dev_preview_batch(
+            custom,
+            coordination,
+            core,
+            namespace=namespace,
+            execution_id=execution_id,
+            sandbox_names=sandbox_names,
+        )
+    except Exception as exc:
+        logger.warning("adopt: batch activation could not revalidate: %s", exc)
+        return
+
+    with ExitStack() as locks:
+        for deployment in sorted({member.deployment for member in initial}):
+            locks.enter_context(
+                _dev_preview_adoption_transition_lock(namespace, deployment)
+            )
+        try:
+            current = _validate_staged_dev_preview_batch(
+                custom,
+                coordination,
+                core,
+                namespace=namespace,
+                execution_id=execution_id,
+                sandbox_names=sandbox_names,
+            )
+            phase, _error_code = _read_dev_preview_batch_phase(
+                custom,
+                namespace=namespace,
+                members=current,
+                execution_id=execution_id,
+                sandbox_names=sandbox_names,
+                batch_id=batch_id,
+            )
+            if phase == "active":
+                return
+            if phase == "failed":
+                return
+            if phase == "scheduled":
+                _set_dev_preview_batch_phase(
+                    custom,
+                    namespace=namespace,
+                    members=current,
+                    execution_id=execution_id,
+                    sandbox_names=sandbox_names,
+                    batch_id=batch_id,
+                    phase="activating",
+                    allowed_from={"scheduled"},
+                )
+            elif phase != "activating":
+                raise RuntimeError("staged batch was not durably scheduled")
+
+            fully_released = phase == "activating" and all(
+                member.gate_active for member in current
+            )
+            if fully_released:
+                # A crash can occur after every gate reaches the live Service but
+                # before the terminal phase patch. Prove the exact endpoints and
+                # persist completion without draining a working batch again.
+                for member in current:
+                    for surface in _staged_member_routing_surfaces(member):
+                        _wait_for_adopted_service_endpoints(
+                            core,
+                            namespace=namespace,
+                            service=surface.name,
+                            expected_pod=(member.pod_name, member.pod_ip),
+                        )
+            else:
+                # A crash during gate release can leave a partial new service set.
+                # Quarantine those endpoints before replaying the complete cutover.
+                for member in current:
+                    if member.gate_active:
+                        _set_staged_dev_preview_gate(
+                            custom,
+                            core,
+                            namespace=namespace,
+                            member=member,
+                            active=False,
+                        )
+
+                # The initiating BFF/router request has already returned. Drain the
+                # complete old service set before exposing any staged pod, then use
+                # Sandbox metadata reconciliation to release every gate.
+                for member in current:
+                    _adopt_scale_deployment_down(
+                        apps, namespace=namespace, name=member.deployment
+                    )
+                for member in current:
+                    for surface in _staged_member_routing_surfaces(member):
+                        _wait_for_adopted_service_endpoints(
+                            core,
+                            namespace=namespace,
+                            service=surface.name,
+                            expected_pod=None,
+                        )
+                for member in current:
+                    _set_staged_dev_preview_gate(
+                        custom,
+                        core,
+                        namespace=namespace,
+                        member=member,
+                        active=True,
+                    )
+        except Exception as exc:
+            logger.warning("adopt: batch activation failed for %s: %s", execution_id, exc)
+            rollback_errors: list[str] = []
+            rollback_members = current if "current" in locals() else initial
+            quarantined_members: list[_StagedDevPreviewAdoption] = []
+            # Remove every new endpoint before restoring the old Deployments. This
+            # deliberately prefers a short isolated-preview outage over mixed code.
+            for member in rollback_members:
+                try:
+                    _set_staged_dev_preview_gate(
+                        custom,
+                        core,
+                        namespace=namespace,
+                        member=member,
+                        active=False,
+                    )
+                    quarantined_members.append(member)
+                except Exception as quarantine_error:
+                    rollback_errors.append(member.service)
+                    logger.warning(
+                        "adopt: batch rollback failed quarantining %s: %s",
+                        member.sandbox_name,
+                        quarantine_error,
+                    )
+            # Never restore an old Deployment beside an unproven dev endpoint.
+            # An incomplete quarantine leaves that one Service unavailable and
+            # preserves a terminal receipt for operator recovery instead of mixing
+            # two code versions behind the same selector.
+            for member in quarantined_members:
+                try:
+                    _adopt_restore_deployment(
+                        apps, namespace=namespace, name=member.deployment
+                    )
+                    for surface in _staged_member_routing_surfaces(member):
+                        _wait_for_adopted_service_endpoints(
+                            core,
+                            namespace=namespace,
+                            service=surface.name,
+                            expected_pod=None,
+                            require_any=True,
+                        )
+                except Exception as restore_error:
+                    rollback_errors.append(member.deployment)
+                    logger.warning(
+                        "adopt: batch rollback failed restoring %s: %s",
+                        member.deployment,
+                        restore_error,
+                    )
+            try:
+                _set_dev_preview_batch_phase(
+                    custom,
+                    namespace=namespace,
+                    members=rollback_members,
+                    execution_id=execution_id,
+                    sandbox_names=sandbox_names,
+                    batch_id=batch_id,
+                    phase="failed",
+                    allowed_from={"scheduled", "activating"},
+                    error_code=(
+                        "activation-rollback-incomplete"
+                        if rollback_errors
+                        else "activation-rolled-back"
+                    ),
+                )
+            except Exception as state_error:
+                logger.warning(
+                    "adopt: batch failure state could not be persisted for %s: %s",
+                    execution_id,
+                    state_error,
+                )
+            return
+        try:
+            _set_dev_preview_batch_phase(
+                custom,
+                namespace=namespace,
+                members=current,
+                execution_id=execution_id,
+                sandbox_names=sandbox_names,
+                batch_id=batch_id,
+                phase="active",
+                allowed_from={"activating"},
+            )
+        except Exception as exc:
+            # Do not roll a working batch back only because its receipt patch raced a
+            # status update. The durable `activating` phase is idempotently redriven.
+            logger.warning(
+                "adopt: activated batch %s but could not persist completion: %s",
+                execution_id,
+                exc,
+            )
+            return
+    logger.info(
+        "adopt: activated staged batch %s (%s services)", execution_id, len(current)
+    )
+
+
+def _dev_preview_activation_receipt(
+    *,
+    execution_id: str,
+    sandbox_names: list[str],
+    batch_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    active = phase == "active"
+    pending = phase in _DEV_PREVIEW_ADOPT_BATCH_PENDING_PHASES
+    return {
+        "executionId": execution_id,
+        "sandboxNames": sorted(sandbox_names),
+        "batchId": batch_id,
+        "activationPhase": phase,
+        "accepted": active or pending,
+        "complete": active,
+        "pending": pending,
+        "activated": active,
+    }
+
+
+def _start_dev_preview_activation_worker(
+    *, namespace: str, execution_id: str, sandbox_names: list[str], batch_id: str
+) -> None:
+    with _DEV_PREVIEW_ACTIVATION_WORKERS_GUARD:
+        if batch_id in _DEV_PREVIEW_ACTIVATION_WORKERS:
+            return
+        _DEV_PREVIEW_ACTIVATION_WORKERS.add(batch_id)
+
+    def run() -> None:
+        try:
+            _activate_staged_dev_preview_batch(
+                namespace=namespace,
+                execution_id=execution_id,
+                sandbox_names=sorted(sandbox_names),
+                batch_id=batch_id,
+            )
+        finally:
+            with _DEV_PREVIEW_ACTIVATION_WORKERS_GUARD:
+                _DEV_PREVIEW_ACTIVATION_WORKERS.discard(batch_id)
+
+    worker = threading.Thread(
+        target=run,
+        daemon=True,
+        name=f"dev-preview-activate-{_safe_name(execution_id)}",
+    )
+    try:
+        worker.start()
+    except Exception:
+        with _DEV_PREVIEW_ACTIVATION_WORKERS_GUARD:
+            _DEV_PREVIEW_ACTIVATION_WORKERS.discard(batch_id)
+        raise
+
+
+def _resume_pending_dev_preview_activations() -> None:
+    """One-shot restart recovery for the single-replica development POC."""
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return
+    try:
+        namespace = _agent_workflow_host_namespace()
+        custom = _load_k8s_custom_objects_client()
+        listed = custom.list_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            label_selector=(
+                f"app=wfb-dev-preview,"
+                f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE}"
+            ),
+        )
+    except Exception as exc:
+        logger.warning("adopt: activation recovery scan failed: %s", exc)
+        return
+    recovered: set[str] = set()
+    for item in (listed.get("items") or []) if isinstance(listed, dict) else []:
+        metadata = (item.get("metadata", {}) or {}) if isinstance(item, dict) else {}
+        annotations = metadata.get("annotations", {}) or {}
+        phase = annotations.get(DEV_PREVIEW_ADOPT_BATCH_PHASE_ANNOTATION)
+        if phase not in _DEV_PREVIEW_ADOPT_BATCH_PENDING_PHASES:
+            continue
+        execution_id = annotations.get(DEV_PREVIEW_ADOPT_BATCH_EXECUTION_ANNOTATION)
+        batch_id = annotations.get(DEV_PREVIEW_ADOPT_BATCH_ID_ANNOTATION)
+        try:
+            sandbox_names = json.loads(
+                str(annotations.get(DEV_PREVIEW_ADOPT_BATCH_NAMES_ANNOTATION) or "")
+            )
+        except json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(execution_id, str)
+            or not execution_id
+            or not isinstance(batch_id, str)
+            or not isinstance(sandbox_names, list)
+            or not sandbox_names
+            or any(not isinstance(name, str) or not name for name in sandbox_names)
+            or sandbox_names != sorted(set(sandbox_names))
+            or metadata.get("name") != min(sandbox_names)
+            or batch_id != _dev_preview_batch_id(execution_id, sandbox_names)
+            or batch_id in recovered
+        ):
+            logger.warning(
+                "adopt: refusing malformed activation recovery anchor %s",
+                metadata.get("name"),
+            )
+            continue
+        recovered.add(batch_id)
+        try:
+            _start_dev_preview_activation_worker(
+                namespace=namespace,
+                execution_id=execution_id,
+                sandbox_names=sandbox_names,
+                batch_id=batch_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "adopt: activation recovery worker failed to start for %s: %s",
+                execution_id,
+                exc,
+            )
+
+
+def _start_dev_preview_activation_recovery() -> None:
+    threading.Thread(
+        target=_resume_pending_dev_preview_activations,
+        daemon=True,
+        name="dev-preview-activation-recovery",
+    ).start()
+
+
+@app.post("/internal/dev-previews/activate", status_code=status.HTTP_202_ACCEPTED)
+def activate_dev_previews(
+    request: Request, body: DevPreviewActivationRequest, response_status: Response
+) -> dict[str, Any]:
+    _require_internal(request)
+    response_status.status_code = status.HTTP_202_ACCEPTED
+    set_current_span_io("input", body.model_dump())
+    names = sorted(body.sandboxNames)
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        response = _dev_preview_activation_receipt(
+            execution_id=body.executionId,
+            sandbox_names=names,
+            batch_id=_dev_preview_batch_id(body.executionId, names),
+            phase="active",
+        )
+        response_status.status_code = status.HTTP_200_OK
+        set_current_span_io("output", response)
+        return response
+    namespace = _agent_workflow_host_namespace()
+    batch_id = _dev_preview_batch_id(body.executionId, names)
+    try:
+        custom = _load_k8s_custom_objects_client()
+        coordination = _load_k8s_coordination_client()
+        _, core = _load_k8s_clients()
+        expected = _validate_staged_dev_preview_batch(
+            custom,
+            coordination,
+            core,
+            namespace=namespace,
+            execution_id=body.executionId,
+            sandbox_names=names,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="could not validate staged dev-preview activation",
+        ) from exc
+    with ExitStack() as locks:
+        for deployment in sorted({member.deployment for member in expected}):
+            locks.enter_context(
+                _dev_preview_adoption_transition_lock(namespace, deployment)
+            )
+        try:
+            expected = _validate_staged_dev_preview_batch(
+                custom,
+                coordination,
+                core,
+                namespace=namespace,
+                execution_id=body.executionId,
+                sandbox_names=names,
+            )
+            phase, error_code = _read_dev_preview_batch_phase(
+                custom,
+                namespace=namespace,
+                members=expected,
+                execution_id=body.executionId,
+                sandbox_names=names,
+                batch_id=batch_id,
+            )
+            if phase is None:
+                _set_dev_preview_batch_phase(
+                    custom,
+                    namespace=namespace,
+                    members=expected,
+                    execution_id=body.executionId,
+                    sandbox_names=names,
+                    batch_id=batch_id,
+                    phase="scheduled",
+                    allowed_from={None},
+                )
+                phase = "scheduled"
+            if phase == "failed":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "staged dev-preview activation failed"
+                        + (f" ({error_code})" if error_code else "")
+                    ),
+                )
+            if phase == "active":
+                response = _dev_preview_activation_receipt(
+                    execution_id=body.executionId,
+                    sandbox_names=names,
+                    batch_id=batch_id,
+                    phase=phase,
+                )
+                response_status.status_code = status.HTTP_200_OK
+                set_current_span_io("output", response)
+                return response
+            try:
+                _start_dev_preview_activation_worker(
+                    namespace=namespace,
+                    execution_id=body.executionId,
+                    sandbox_names=names,
+                    batch_id=batch_id,
+                )
+            except Exception as exc:
+                try:
+                    _set_dev_preview_batch_phase(
+                        custom,
+                        namespace=namespace,
+                        members=expected,
+                        execution_id=body.executionId,
+                        sandbox_names=names,
+                        batch_id=batch_id,
+                        phase="failed",
+                        allowed_from={"scheduled", "activating"},
+                        error_code="activation-worker-not-started",
+                    )
+                except Exception as state_error:
+                    logger.warning(
+                        "adopt: could not persist worker-start failure: %s", state_error
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="staged dev-preview activation was not scheduled",
+                ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="could not establish staged dev-preview activation state",
+            ) from exc
+    response = _dev_preview_activation_receipt(
+        execution_id=body.executionId,
+        sandbox_names=names,
+        batch_id=batch_id,
+        phase=phase,
+    )
+    set_current_span_io("output", response)
+    return response
+
+
+def _cancel_dev_preview_deferred_cutover(
+    custom: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    holder: str,
+    attempts: int = 3,
+) -> bool:
+    """Revoke a pending response-path cutover before acknowledging teardown.
+
+    The active holder is moved, rather than discarded, so a later retry can still
+    release the exact Lease if SEA restarts after accepting deferred cleanup.
+    Including resourceVersion makes each patch a compare-and-swap against the CR
+    revision that carried the expected holder.
+    """
+    for _attempt in range(max(attempts, 1)):
+        try:
+            cr = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            logger.warning(
+                "adopt: could not read %s for cutover cancellation: %s",
+                sandbox_name,
+                exc,
+            )
+            return False
+        metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+        annotations = metadata.get("annotations", {}) or {}
+        active_holder = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+        cancelled_holder = annotations.get(
+            DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION
+        )
+        if not active_holder:
+            return cancelled_holder == holder
+        if active_holder != holder or cancelled_holder not in (None, "", holder):
+            logger.warning(
+                "adopt: refusing mismatched cutover cancellation for %s", sandbox_name
+            )
+            return False
+        resource_version = metadata.get("resourceVersion")
+        if not isinstance(resource_version, str) or not resource_version:
+            logger.warning(
+                "adopt: refusing cutover cancellation without resourceVersion for %s",
+                sandbox_name,
+            )
+            return False
+        try:
+            custom.patch_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+                body={
+                    "metadata": {
+                        "resourceVersion": resource_version,
+                        "annotations": {
+                            DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION: None,
+                            DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION: holder,
+                        },
+                    }
+                },
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 409:
+                continue
+            if getattr(exc, "status", None) == 404:
+                return True
+            logger.warning(
+                "adopt: cutover cancellation failed for %s: %s", sandbox_name, exc
+            )
+            return False
+        try:
+            observed = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return True
+            logger.warning(
+                "adopt: could not prove cutover cancellation for %s: %s",
+                sandbox_name,
+                exc,
+            )
+            return False
+        observed_metadata = (
+            (observed.get("metadata", {}) or {})
+            if isinstance(observed, dict)
+            else {}
+        )
+        observed_annotations = observed_metadata.get("annotations", {}) or {}
+        if (
+            not observed_annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+            and observed_annotations.get(
+                DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION
+            )
+            == holder
+        ):
+            return True
+        logger.warning(
+            "adopt: cutover cancellation was not observed for %s", sandbox_name
+        )
+        return False
+    logger.warning(
+        "adopt: cutover cancellation conflicted repeatedly for %s", sandbox_name
+    )
+    return False
+
+
 def _dev_preview_teardown_context(
-    custom: Any, *, namespace: str, sandbox_name: str
+    custom: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    requested_execution_id: str | None = None,
+    requested_service: str | None = None,
 ) -> dict[str, str | None]:
     try:
         cr = custom.get_namespaced_custom_object(
@@ -5184,17 +7052,366 @@ def _dev_preview_teardown_context(
                 "service": None,
                 "deployment": None,
                 "holder": None,
+                "secret": None,
+                "uid": None,
+                "resourceVersion": None,
+                "requestedExecution": requested_execution_id,
+                "requestedService": requested_service,
             }
         raise
     metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
     labels = metadata.get("labels", {}) or {}
     annotations = metadata.get("annotations", {}) or {}
+    if (
+        labels.get("app") != "wfb-dev-preview"
+        or labels.get(DEV_PREVIEW_MANAGED_LABEL) != DEV_PREVIEW_MANAGED_VALUE
+    ):
+        raise RuntimeError("Sandbox is not managed by dev-preview teardown")
+    holder = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION) or annotations.get(
+        DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION
+    )
     return {
         "execution": labels.get("workflow-execution-id"),
         "service": labels.get("dev-preview-service"),
         "deployment": annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION),
-        "holder": annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION),
+        "holder": holder,
+        "secret": annotations.get(DEV_PREVIEW_SECRET_NAME_ANNOTATION),
+        "uid": metadata.get("uid"),
+        "resourceVersion": metadata.get("resourceVersion"),
+        "requestedExecution": requested_execution_id,
+        "requestedService": requested_service,
     }
+
+
+def _validate_dev_preview_teardown_context(
+    context: dict[str, str | None], *, execution_id: str, service: str
+) -> None:
+    expected_holder = _adopt_lease_holder(execution_id, service)
+    deployment = context.get("deployment")
+    holder = context.get("holder")
+    secret = context.get("secret")
+    if (
+        not context.get("uid")
+        or not context.get("resourceVersion")
+        or context.get("execution") != _safe_name(execution_id, max_length=63)
+        or context.get("service") != service
+        or deployment not in (None, service)
+        or (deployment is not None and holder != expected_holder)
+        or (deployment is None and holder is not None)
+        or secret not in (None, _dev_preview_secret_name(execution_id, service))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="dev-preview teardown identity does not match the managed Sandbox",
+        )
+
+
+def _prove_dev_preview_teardown_owner(
+    custom: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    expected: dict[str, str | None],
+) -> tuple[dict[str, Any], Any | None] | None:
+    expected_uid = expected.get("uid")
+    if not expected_uid:
+        return None
+    try:
+        cr = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=sandbox_name,
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return None
+        raise
+    metadata = (cr.get("metadata", {}) or {}) if isinstance(cr, dict) else {}
+    labels = metadata.get("labels", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    observed_holder = annotations.get(
+        DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION
+    ) or annotations.get(DEV_PREVIEW_ADOPT_CUTOVER_CANCELLED_ANNOTATION)
+    if (
+        metadata.get("uid") != expected_uid
+        or labels.get("app") != "wfb-dev-preview"
+        or labels.get(DEV_PREVIEW_MANAGED_LABEL) != DEV_PREVIEW_MANAGED_VALUE
+        or labels.get("workflow-execution-id") != expected.get("execution")
+        or labels.get("dev-preview-service") != expected.get("service")
+        or annotations.get(DEV_PREVIEW_ADOPT_DEPLOYMENT_ANNOTATION)
+        != expected.get("deployment")
+        or observed_holder != expected.get("holder")
+        or annotations.get(DEV_PREVIEW_SECRET_NAME_ANNOTATION)
+        != expected.get("secret")
+    ):
+        raise RuntimeError("dev-preview teardown ownership changed")
+    deployment = expected.get("deployment")
+    holder = expected.get("holder")
+    if not deployment or not holder:
+        return cr, None
+    try:
+        lease = coordination.read_namespaced_lease(
+            name=_adopt_lease_name(deployment), namespace=namespace
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return cr, None
+        raise
+    lease_name, lease_holder, lease_deployment, _execution, _rv = (
+        _adopt_lease_identity(lease)
+    )
+    if (
+        lease_name != _adopt_lease_name(deployment)
+        or lease_holder != holder
+        or lease_deployment != deployment
+    ):
+        raise RuntimeError("dev-preview teardown Lease ownership changed")
+    return cr, lease
+
+
+def _dev_preview_gate_member_for_teardown(
+    core: Any,
+    *,
+    namespace: str,
+    cr: dict[str, Any],
+    context: dict[str, str | None],
+) -> _StagedDevPreviewAdoption | None:
+    metadata = cr.get("metadata", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    selector_raw = annotations.get(DEV_PREVIEW_ADOPT_SELECTOR_ANNOTATION)
+    if not selector_raw:
+        return None
+    try:
+        selector = _canonical_adopt_selector(json.loads(str(selector_raw)))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("dev-preview teardown selector contract is invalid") from exc
+    gate_key = annotations.get(DEV_PREVIEW_ADOPT_GATE_KEY_ANNOTATION)
+    staged_value = annotations.get(DEV_PREVIEW_ADOPT_GATE_STAGED_VALUE_ANNOTATION)
+    execution = context.get("execution")
+    service = context.get("service")
+    deployment = context.get("deployment")
+    holder = context.get("holder")
+    if (
+        not isinstance(gate_key, str)
+        or gate_key not in selector
+        or not isinstance(staged_value, str)
+        or not staged_value
+        or not execution
+        or not service
+        or not deployment
+        or not holder
+    ):
+        raise RuntimeError("dev-preview teardown selector identity is incomplete")
+    pod_template = ((cr.get("spec") or {}).get("podTemplate") or {})
+    pod_metadata = pod_template.get("metadata") or {}
+    template_labels = pod_metadata.get("labels") or {}
+    pod_annotations = pod_metadata.get("annotations") or {}
+    template_gate_value = template_labels.get(gate_key)
+    if template_gate_value not in (staged_value, selector[gate_key]):
+        raise RuntimeError("dev-preview teardown selector gate is invalid")
+    routing_surfaces = _read_dev_preview_routing_surfaces(
+        core,
+        namespace=namespace,
+        service=service,
+        pod_annotations=pod_annotations,
+        active_selector=selector,
+        gate_key=gate_key,
+    )
+    pods = core.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=(
+            f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
+            f"workflow-execution-id={execution},dev-preview-service={service}"
+        ),
+    ).items
+    pod = next(iter(pods), None)
+    pod_metadata = _adopt_value(pod, "metadata") if pod is not None else None
+    pod_status = _adopt_value(pod, "status") if pod is not None else None
+    pod_name = str(_adopt_value(pod_metadata, "name") or "")
+    pod_ip = str(_adopt_value(pod_status, "pod_ip", "podIP") or "")
+    return _StagedDevPreviewAdoption(
+        execution_id=execution,
+        sandbox_name=str(metadata.get("name") or ""),
+        service=service,
+        deployment=deployment,
+        holder=holder,
+        needs_dapr=pod_annotations.get("dapr.io/enabled") == "true",
+        active_selector=tuple(selector.items()),
+        routing_surfaces=routing_surfaces,
+        gate_key=gate_key,
+        staged_gate_value=staged_value,
+        pod_name=pod_name,
+        pod_ip=pod_ip,
+        gate_active=template_gate_value == selector[gate_key],
+    )
+
+
+def _cleanup_dev_preview_support_resources_without_cr(
+    core: Any,
+    coordination: Any,
+    *,
+    namespace: str,
+    execution_id: str,
+    service: str,
+) -> None:
+    """Remove only support objects whose exact Sandbox owner is already absent."""
+
+    _delete_dev_preview_secret_and_wait(
+        core,
+        namespace=namespace,
+        name=_dev_preview_secret_name(execution_id, service),
+        execution_id=_safe_name(execution_id, max_length=63),
+        service=service,
+    )
+    if not _delete_dev_preview_adoption_lease(
+        coordination,
+        namespace=namespace,
+        deployment=service,
+        holder=_adopt_lease_holder(execution_id, service),
+    ):
+        raise RuntimeError(
+            f"dev-preview adoption Lease cleanup was not proven for {service}"
+        )
+
+
+def _teardown_dev_preview_resources_locked(
+    *,
+    namespace: str,
+    sandbox_name: str,
+    context: dict[str, str | None],
+) -> None:
+    custom = _load_k8s_custom_objects_client()
+    _, core = _load_k8s_clients()
+    coordination = _load_k8s_coordination_client()
+    execution = context.get("execution")
+    service = context.get("service")
+    deployment = context.get("deployment")
+    holder = context.get("holder")
+    secret_name = context.get("secret")
+
+    proved = _prove_dev_preview_teardown_owner(
+        custom,
+        coordination,
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        expected=context,
+    )
+    if proved is None:
+        requested_execution = context.get("requestedExecution")
+        requested_service = context.get("requestedService")
+        if requested_execution and requested_service:
+            _cleanup_dev_preview_support_resources_without_cr(
+                core,
+                coordination,
+                namespace=namespace,
+                execution_id=requested_execution,
+                service=requested_service,
+            )
+        return
+    cr, lease = proved
+
+    # Preserve the Sandbox CR (and therefore its exact ownership tuple) until
+    # restoration and Lease release both succeed. Deleting it first turns a
+    # transient restore error into an ambiguous orphan with no retry context.
+    if deployment:
+        apps = _load_k8s_apps_client()
+        gate_member = _dev_preview_gate_member_for_teardown(
+            core, namespace=namespace, cr=cr, context=context
+        )
+        if gate_member is not None:
+            _set_staged_dev_preview_gate(
+                custom,
+                core,
+                namespace=namespace,
+                member=gate_member,
+                active=False,
+                require_exact_pod=False,
+            )
+        _adopt_restore_deployment(apps, namespace=namespace, name=deployment)
+        restore_surfaces = (
+            _staged_member_routing_surfaces(gate_member)
+            if gate_member is not None
+            else (
+                _DevPreviewRoutingSurface(
+                    name=service or deployment,
+                    selector=(),
+                ),
+            )
+        )
+        for surface in restore_surfaces:
+            _wait_for_adopted_service_endpoints(
+                core,
+                namespace=namespace,
+                service=surface.name,
+                expected_pod=None,
+                require_any=True,
+            )
+
+    # Secrets have no owner reference. Delete and prove them while the exact CR
+    # and Lease still preserve retryable execution/service ownership evidence.
+    if secret_name:
+        if not execution or not service:
+            raise RuntimeError("dev-preview Secret identity is incomplete")
+        _delete_dev_preview_secret_and_wait(
+            core,
+            namespace=namespace,
+            name=secret_name,
+            execution_id=execution,
+            service=service,
+        )
+
+    # Gate/restore patches update resourceVersion. Re-prove the same UID/holder
+    # immediately before the preconditioned delete so a delayed duplicate worker
+    # can never touch a newer adoption with the same deterministic name.
+    reproved = _prove_dev_preview_teardown_owner(
+        custom,
+        coordination,
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        expected=context,
+    )
+    if reproved is None:
+        requested_execution = context.get("requestedExecution")
+        requested_service = context.get("requestedService")
+        if requested_execution and requested_service:
+            _cleanup_dev_preview_support_resources_without_cr(
+                core,
+                coordination,
+                namespace=namespace,
+                execution_id=requested_execution,
+                service=requested_service,
+            )
+        return
+    current_cr, current_lease = reproved
+    if lease is not None and current_lease is None:
+        raise RuntimeError("adoption Lease disappeared before Sandbox deletion")
+    current_metadata = current_cr.get("metadata", {}) or {}
+    if not _delete_dev_preview_cr_and_wait(
+        custom,
+        namespace,
+        sandbox_name,
+        uid=str(current_metadata.get("uid") or "") or None,
+        resource_version=(
+            str(current_metadata.get("resourceVersion") or "") or None
+        ),
+    ):
+        raise RuntimeError(f"dev-preview Sandbox deletion was not proven for {sandbox_name}")
+    # The Lease remains the exclusivity fence until CR absence is observed. A
+    # stale Lease after this point blocks availability but cannot mix owners and
+    # is safely reclaimable by the stale-Lease sweep.
+    if deployment and holder and current_lease is not None:
+        if not _delete_dev_preview_adoption_lease(
+            coordination,
+            namespace=namespace,
+            deployment=deployment,
+            holder=holder,
+        ):
+            raise RuntimeError(
+                f"adoption Lease release was not proven for {deployment}"
+            )
 
 
 def _teardown_dev_preview_resources(
@@ -5203,62 +7420,20 @@ def _teardown_dev_preview_resources(
     sandbox_name: str,
     context: dict[str, str | None],
 ) -> None:
-    custom = _load_k8s_custom_objects_client()
-    execution = context.get("execution")
-    service = context.get("service")
     deployment = context.get("deployment")
-    holder = context.get("holder")
-
-    # Preserve the Sandbox CR (and therefore its exact ownership tuple) until
-    # restoration and Lease release both succeed. Deleting it first turns a
-    # transient restore error into an ambiguous orphan with no retry context.
     if deployment:
-        _adopt_restore_deployment(
-            _load_k8s_apps_client(), namespace=namespace, name=deployment
-        )
-        if holder:
-            coordination = _load_k8s_coordination_client()
-            if not _delete_dev_preview_adoption_lease(
-                coordination,
+        with _dev_preview_adoption_transition_lock(namespace, deployment):
+            _teardown_dev_preview_resources_locked(
                 namespace=namespace,
-                deployment=deployment,
-                holder=holder,
-            ):
-                raise RuntimeError(
-                    f"adoption Lease release was not proven for {deployment}"
-                )
-
-    _delete_dev_preview_cr_and_wait(custom, namespace, sandbox_name)
-
-    if execution:
-        try:
-            _, core = _load_k8s_clients()
-            secret_selector = f"app=wfb-dev-preview,workflow-execution-id={execution}"
-            if service:
-                secret_selector += f",dev-preview-service={service}"
-            core.delete_collection_namespaced_secret(
-                namespace=namespace,
-                label_selector=secret_selector,
+                sandbox_name=sandbox_name,
+                context=context,
             )
-        except Exception as exc:
-            logger.info("dev-preview secret cleanup skipped: %s", exc)
-
-    coordination: Any | None = None
-    try:
-        coordination = _load_k8s_coordination_client()
-    except Exception as exc:
-        logger.warning(
-            "adopt: coordination client unavailable during orphan sweep: %s", exc
-        )
-    try:
-        _adopt_restore_orphans(
-            _load_k8s_apps_client(),
-            custom,
-            namespace=namespace,
-            coordination=coordination,
-        )
-    except Exception as exc:
-        logger.warning("adopt: orphan sweep failed: %s", exc)
+        return
+    _teardown_dev_preview_resources_locked(
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        context=context,
+    )
 
 
 def _deferred_dev_preview_teardown(
@@ -5270,66 +7445,152 @@ def _deferred_dev_preview_teardown(
     delay = _env_int("DEV_PREVIEW_SELF_TEARDOWN_DELAY_SECONDS", 15, minimum=1)
     time.sleep(delay)
     try:
-        _teardown_dev_preview_resources(
-            namespace=namespace,
-            sandbox_name=sandbox_name,
-            context=context,
-        )
+        deployment = context.get("deployment")
+        if deployment:
+            with _dev_preview_adoption_transition_lock(namespace, deployment):
+                _teardown_dev_preview_resources(
+                    namespace=namespace,
+                    sandbox_name=sandbox_name,
+                    context=context,
+                )
+        else:
+            _teardown_dev_preview_resources(
+                namespace=namespace,
+                sandbox_name=sandbox_name,
+                context=context,
+            )
     except Exception as exc:
         logger.warning(
             "dev-preview deferred teardown failed for %s: %s", sandbox_name, exc
         )
 
 
-@app.delete("/internal/dev-preview/{name}")
-def teardown_dev_preview(request: Request, name: str) -> dict[str, Any]:
+@app.delete("/internal/dev-preview/{name}", response_model=None)
+def teardown_dev_preview(
+    request: Request,
+    name: str,
+    execution_id: str = Query(
+        ..., alias="executionId", min_length=1, max_length=256
+    ),
+    service: str = Query(..., min_length=1, max_length=63),
+) -> dict[str, Any] | JSONResponse:
     _require_internal(request)
+    canonical_service = _dev_preview_service_label(service)
+    expected_name = _dev_preview_sandbox_name(execution_id, canonical_service)
+    if service != canonical_service:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dev-preview teardown service must be canonical",
+        )
+    if name != expected_name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="dev-preview teardown name does not match execution/service",
+        )
     namespace = _agent_workflow_host_namespace()
-    safe_name = _safe_resource_name(name, max_length=63)
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }:
-        return {"sandboxName": safe_name, "deleted": True, "deferred": False}
+        return {
+            "sandboxName": expected_name,
+            "accepted": True,
+            "deleted": True,
+            "deferred": False,
+        }
     custom = _load_k8s_custom_objects_client()
     try:
-        context = _dev_preview_teardown_context(
-            custom, namespace=namespace, sandbox_name=safe_name
-        )
+        with _dev_preview_adoption_transition_lock(namespace, canonical_service):
+            context = _dev_preview_teardown_context(
+                custom,
+                namespace=namespace,
+                sandbox_name=expected_name,
+                requested_execution_id=execution_id,
+                requested_service=canonical_service,
+            )
+            if context.get("uid") is None:
+                _, core = _load_k8s_clients()
+                coordination = _load_k8s_coordination_client()
+                _cleanup_dev_preview_support_resources_without_cr(
+                    core,
+                    coordination,
+                    namespace=namespace,
+                    execution_id=execution_id,
+                    service=canonical_service,
+                )
+                return {
+                    "sandboxName": expected_name,
+                    "accepted": True,
+                    "deleted": True,
+                    "deferred": False,
+                }
+
+            _validate_dev_preview_teardown_context(
+                context, execution_id=execution_id, service=canonical_service
+            )
+            deployment = context.get("deployment")
+            self_adopt = (
+                canonical_service == deployment
+                and deployment in DEV_PREVIEW_DEFERRED_CUTOVER_DEPLOYMENTS
+            )
+            if self_adopt:
+                holder = context.get("holder")
+                if not holder:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="could not establish response-path cutover ownership",
+                    )
+                if not _cancel_dev_preview_deferred_cutover(
+                    custom,
+                    namespace=namespace,
+                    sandbox_name=expected_name,
+                    holder=holder,
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="could not prove response-path cutover cancellation",
+                    )
+                try:
+                    threading.Thread(
+                        target=_deferred_dev_preview_teardown,
+                        kwargs={
+                            "namespace": namespace,
+                            "sandbox_name": expected_name,
+                            "context": context,
+                        },
+                        daemon=True,
+                        name=f"dev-preview-teardown-{expected_name}",
+                    ).start()
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="response-path teardown was cancelled but not scheduled",
+                    ) from exc
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content={
+                        "sandboxName": expected_name,
+                        "accepted": True,
+                        "deleted": False,
+                        "deferred": True,
+                    },
+                )
+
+            _teardown_dev_preview_resources_locked(
+                namespace=namespace,
+                sandbox_name=expected_name,
+                context=context,
+            )
     except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="could not establish dev-preview teardown ownership",
+            detail="dev-preview teardown could not be proven",
         ) from exc
-    self_adopt = (
-        context.get("service") == "workflow-builder"
-        and context.get("deployment") == "workflow-builder"
-    )
-    if self_adopt:
-        threading.Thread(
-            target=_deferred_dev_preview_teardown,
-            kwargs={
-                "namespace": namespace,
-                "sandbox_name": safe_name,
-                "context": context,
-            },
-            daemon=True,
-            name=f"dev-preview-teardown-{safe_name}",
-        ).start()
-        return {
-            "sandboxName": safe_name,
-            "accepted": True,
-            "deleted": False,
-            "deferred": True,
-        }
-    _teardown_dev_preview_resources(
-        namespace=namespace,
-        sandbox_name=safe_name,
-        context=context,
-    )
     return {
-        "sandboxName": safe_name,
+        "sandboxName": expected_name,
         "accepted": True,
         "deleted": True,
         "deferred": False,
@@ -5359,6 +7620,42 @@ def restore_dev_preview_orphans(request: Request) -> dict[str, Any]:
     )
 
 
+@app.post("/internal/dev-previews/teardown-intent")
+def establish_dev_preview_teardown_intent(
+    request: Request, body: DevPreviewTeardownIntentRequest
+) -> dict[str, Any]:
+    """Fence future creates before an execution-wide product teardown inventories.
+
+    The development POC runs one SEA replica. Holding the same process lock across
+    this write and Sandbox creation closes the provision-vs-teardown interleaving;
+    a durable/multi-replica intent controller remains post-POC hardening.
+    """
+
+    _require_internal(request)
+    with _DEV_PREVIEW_TEARDOWN_INTENTS_GUARD:
+        _DEV_PREVIEW_TEARDOWN_INTENTS.add(body.executionId)
+    return {"accepted": True, "executionId": body.executionId}
+
+
+@app.get("/internal/dev-previews/teardown-intent")
+def read_dev_preview_teardown_intent(
+    request: Request,
+    executionId: str = Query(min_length=1, max_length=256),
+) -> dict[str, Any]:
+    """Confirm whether execution-wide teardown won the provision race.
+
+    Provision persists its product row before this final confirmation. Therefore,
+    teardown either inventories the row or this read observes the intent fence.
+    The process-local fence is sufficient for the single-replica development POC.
+    """
+
+    _require_internal(request)
+    return {
+        "executionId": executionId,
+        "teardownIntent": _dev_preview_teardown_intended(executionId),
+    }
+
+
 @app.get("/internal/dev-previews")
 def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
     """Per-service dev-preview status for one workflow execution (Dev-hub polling).
@@ -5379,7 +7676,10 @@ def list_dev_previews(request: Request, executionId: str) -> dict[str, Any]:
     }:
         custom = _load_k8s_custom_objects_client()
         _, core = _load_k8s_clients()
-        selector = f"workflow-execution-id={exec_label}"
+        selector = (
+            f"{DEV_PREVIEW_MANAGED_LABEL}={DEV_PREVIEW_MANAGED_VALUE},"
+            f"workflow-execution-id={exec_label}"
+        )
         # First pod per service (readiness/IP). The `app` label is overwritten by the
         # adopted Service selector, so key on the two labels that survive.
         pod_by_service: dict[str, Any] = {}
@@ -5451,10 +7751,10 @@ def _resolve_juicefs_class(execution_class: str | None) -> ExecutionClassConfig 
     return None
 
 
-def _dev_preview_cr_adoption_holder(
-    custom: Any, namespace: str, name: str
+def _dev_preview_cr_annotation(
+    custom: Any, namespace: str, name: str, annotation: str
 ) -> str | None:
-    """Read the exact adoption holder, distinguishing absence from API ambiguity."""
+    """Read one CR annotation, distinguishing absence from API ambiguity."""
     try:
         existing = custom.get_namespaced_custom_object(
             group="agents.x-k8s.io",
@@ -5470,8 +7770,17 @@ def _dev_preview_cr_adoption_holder(
     annotations = ((existing or {}).get("metadata", {}) or {}).get(
         "annotations", {}
     ) or {}
-    value = annotations.get(DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION)
+    value = annotations.get(annotation)
     return value if isinstance(value, str) and value else ""
+
+
+def _dev_preview_cr_adoption_holder(
+    custom: Any, namespace: str, name: str
+) -> str | None:
+    """Read the exact adoption holder, distinguishing absence from API ambiguity."""
+    return _dev_preview_cr_annotation(
+        custom, namespace, name, DEV_PREVIEW_ADOPT_HOLDER_ANNOTATION
+    )
 
 
 @app.post("/internal/workspace/purge-data", status_code=status.HTTP_202_ACCEPTED)

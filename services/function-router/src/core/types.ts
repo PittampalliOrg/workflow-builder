@@ -76,8 +76,10 @@ export type ExecuteResponse = {
 	success: boolean;
 	data?: unknown;
 	error?: string;
-	/** Piece-runtime failure classification driving the orchestrator's AP retry policy */
+	/** Failure classification consumed by action-specific durable retry semantics. */
 	errorClass?: "retryable" | "permanent";
+	/** HTTP status returned by a proxied target before the router action envelope. */
+	responseStatus?: number;
 	duration_ms: number;
 	routed_to?: string;
 	/** Pause metadata from the piece-runtime when a piece requests DELAY or WEBHOOK pause */

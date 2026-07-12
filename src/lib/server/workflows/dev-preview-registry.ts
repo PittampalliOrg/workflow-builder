@@ -203,6 +203,45 @@ export interface DevPreviewCaptureMapping {
   to: string;
 }
 
+function safeDevPreviewName(value: string, maxLength = 52): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return (
+    (normalized || "execution").slice(0, maxLength).replace(/-+$/g, "") ||
+    "execution"
+  );
+}
+
+function safeDevPreviewResourceName(value: string, maxLength = 63): string {
+  const normalized =
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "execution";
+  if (normalized.length <= maxLength) return normalized;
+  const digest = createHash("sha256")
+    .update(normalized)
+    .digest("hex")
+    .slice(0, 10);
+  const prefixLength = maxLength - digest.length - 1;
+  const prefix =
+    normalized.slice(0, prefixLength).replace(/-+$/g, "") || "execution";
+  return `${prefix}-${digest}`;
+}
+
+/** Canonical Sandbox identity shared with sandbox-execution-api. */
+export function devPreviewSandboxName(
+  executionId: string,
+  service: string,
+): string {
+  const canonicalService = resolveDevPreviewDescriptor(service).service;
+  return safeDevPreviewResourceName(
+    `wfb-dev-preview-${safeDevPreviewName(canonicalService, 24)}-${executionId}`,
+  );
+}
+
 /** Build inputs staged under a hidden pod path for capture, never hot-applied. */
 export function devPreviewCaptureOnly(
   d: DevPreviewDescriptor,

@@ -4625,6 +4625,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
+	async getDevEnvironmentTeardownTarget(input: {
+		executionId: string;
+		projectId?: string | null;
+	}) {
+		return this.requireDevEnvironments().getDevEnvironmentTeardownTarget({
+			executionId: input.executionId,
+			projectId: input.projectId ?? null,
+		});
+	}
+
 	resolveCanonicalExecutionId(input: { executionId: string }) {
 		return this.requireDevEnvironments().resolveCanonicalExecutionId(input);
 	}

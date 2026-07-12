@@ -19,6 +19,9 @@ describe("fast path routes", () => {
 		expect(source).toContain("previewEnvironmentProvisioner.provision");
 		expect(source).toContain("previewEnvironmentProvisioner.provisionMany");
 		expect(source).toContain("previewEnvironmentProvisioner.teardown");
+		expect(source).toContain(
+			"status: !result.ok ? 503 : result.complete ? 200 : 202",
+		);
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/workflows/dev-preview");
 	});

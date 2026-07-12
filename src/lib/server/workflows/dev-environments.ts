@@ -32,6 +32,7 @@ export interface DevEnvironmentSummary {
 
 export type PreviewDetails = {
 	kind?: string;
+	executionId?: string;
 	service?: string;
 	browseUrl?: string | null;
 	podIP?: string | null;

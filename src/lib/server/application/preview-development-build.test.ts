@@ -79,7 +79,10 @@ function dependencies() {
     provisionMany: vi.fn(),
     replaceMany: vi.fn(async (input: ReplaceDevPreviewImagesParams) => ({
       executionId: input.executionId,
-      ok: true,
+      ok: true as const,
+      complete: true as const,
+      pending: false as const,
+      activationPhase: "not-required" as const,
       services: input.services.map(({ service, image }) => ({
         service,
         ok: true,
@@ -462,6 +465,9 @@ describe("ApplicationPreviewDevelopmentBuildService", () => {
     vi.mocked(deps.provisioner.replaceMany).mockResolvedValueOnce({
       executionId: "exec-1",
       ok: false,
+      complete: false,
+      pending: false,
+      activationPhase: "failed",
       services: [
         { service: "function-router", ok: false, error: "replacement failed" },
         { service: "workflow-builder", ok: true },

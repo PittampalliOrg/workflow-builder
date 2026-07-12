@@ -272,11 +272,19 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 # Knative cold-start timeout) is transient for AP routes.
                 if raise_on_retryable and status >= 500:
                     raise RetryableActivityError(error_msg)
-                return {
+                failure_result = {
                     "success": False,
                     "error": error_msg,
                     "duration_ms": duration_ms,
                 }
+                # dev/preview uses a durable workflow-level poll. A router pod
+                # replacement is therefore a retryable observation, not a task
+                # failure; responseStatus=0 distinguishes it from a BFF HTTP
+                # lifecycle receipt carried by the router envelope.
+                if action_type == "dev/preview" and status >= 500:
+                    failure_result["errorClass"] = "retryable"
+                    failure_result["responseStatus"] = 0
+                return failure_result
 
             duration_ms = int((time.time() - start_time) * 1000)
 
@@ -293,6 +301,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             }
             if result.get("errorClass"):
                 activity_result["errorClass"] = result["errorClass"]
+            if isinstance(result.get("responseStatus"), int):
+                activity_result["responseStatus"] = result["responseStatus"]
 
             # Retryable piece failures RAISE so the AP RetryPolicy fires;
             # permanent failures return normally (deterministic task failure).

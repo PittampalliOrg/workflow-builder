@@ -21,6 +21,7 @@
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
 	import SessionGoalBadge from '$lib/components/sessions/session-goal-badge.svelte';
+	import { teardownDevEnvironmentUntilComplete } from '$lib/dev-environment-teardown';
 	import { getDevEnvironment } from './data.remote';
 	import type { PageData } from './$types';
 
@@ -114,14 +115,11 @@
 		confirmTeardown = false;
 		busy = true;
 		try {
-			const res = await fetch(`/api/dev-environments/${environment.executionId}`, {
-				method: 'DELETE'
-			});
-			if (!res.ok) {
-				errorMessage = `Teardown failed (${res.status})`;
-				return;
-			}
-			goto(`/workspaces/${slug}/dev`);
+			await teardownDevEnvironmentUntilComplete(environment.executionId);
+			errorMessage = null;
+			await goto(`/workspaces/${slug}/dev`);
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
 			busy = false;
 		}

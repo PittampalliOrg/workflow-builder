@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	buildPrSeedCommand,
 	GithubPrPreviewGateway,
 	HttpPrPreviewCommandBrokerAdapter,
-	prPreviewRegistryEntries
+	PreviewBffDevPodGateway,
+	prPreviewRegistryEntries,
 } from './pr-previews';
 import { buildPromotionCommand } from './workflow-code-version-promotion';
 import type { SourceBundlePromotionRunnerInput } from '$lib/server/application/ports';
@@ -22,7 +23,7 @@ describe('buildPrSeedCommand', () => {
 				syncPort: 3000,
 				syncToken: 'a'.repeat(64),
 				appPort: 3000,
-				healthPath: '/'
+				healthPath: '/',
 			},
 			{
 				service: 'workflow-orchestrator',
@@ -31,20 +32,23 @@ describe('buildPrSeedCommand', () => {
 				extraSync: [
 					{
 						from: '../shared/workflow-data-contract',
-						to: '.contract-fixtures'
-					}
+						to: '.contract-fixtures',
+					},
 				],
 				podIp: '10.1.2.4',
 				syncPort: 8001,
 				syncToken: 'b'.repeat(64),
 				appPort: 8080,
-				healthPath: '/healthz'
-			}
-		]
+				healthPath: '/healthz',
+			},
+		],
 	};
 
 	it('clones the PR head once via pull/<n>/head (fork-safe)', () => {
-		const cmd = buildPrSeedCommand(input, 'PittampalliOrg/workflow-builder');
+		const cmd = buildPrSeedCommand(
+			input,
+			'PittampalliOrg/workflow-builder',
+		);
 		expect(cmd).toContain('git fetch -q --depth 1 origin "pull/42/head"');
 		expect(cmd.match(/git fetch/g)).toHaveLength(1);
 		expect(cmd).toContain('SEED_ERR=head_moved');
@@ -52,14 +56,19 @@ describe('buildPrSeedCommand', () => {
 	});
 
 	it("gzip-tar-POSTs each target's tree to its /__sync with the x-sync-token", () => {
-		const cmd = buildPrSeedCommand(input, 'PittampalliOrg/workflow-builder');
+		const cmd = buildPrSeedCommand(
+			input,
+			'PittampalliOrg/workflow-builder',
+		);
 		expect(cmd).toContain('"http://10.1.2.3:3000/__sync"');
 		expect(cmd).toContain('"http://10.1.2.4:8001/__sync"');
 		expect(cmd).toContain('x-sync-token: $SYNC_TOKEN');
 		expect(cmd).toContain('x-sync-generation: deadbeef');
 		expect(cmd).toContain('x-sync-service: workflow-builder');
 		expect(cmd).toContain('x-sync-roots: ["src"]');
-		expect(cmd).toContain('x-sync-roots: [".contract-fixtures","app.py","core"]');
+		expect(cmd).toContain(
+			'x-sync-roots: [".contract-fixtures","app.py","core"]',
+		);
 		expect(cmd).toContain(`SYNC_TOKEN='${'a'.repeat(64)}'`);
 		expect(cmd).toContain(`SYNC_TOKEN='${'b'.repeat(64)}'`);
 		expect(cmd).toContain('Content-Type: application/gzip');
@@ -67,21 +76,32 @@ describe('buildPrSeedCommand', () => {
 	});
 
 	it('roots each service at its repoSubdir and stages extraSync trees', () => {
-		const cmd = buildPrSeedCommand(input, 'PittampalliOrg/workflow-builder');
+		const cmd = buildPrSeedCommand(
+			input,
+			'PittampalliOrg/workflow-builder',
+		);
 		expect(cmd).toContain('cd "/tmp/pr-src"'); // '.' → repo root
-		expect(cmd).toContain('cd "/tmp/pr-src/services/workflow-orchestrator"');
+		expect(cmd).toContain(
+			'cd "/tmp/pr-src/services/workflow-orchestrator"',
+		);
 		expect(cmd).toContain("'../shared/workflow-data-contract'");
 		expect(cmd).toContain('.contract-fixtures');
 	});
 
 	it('emits a per-service result marker for the adapter to parse', () => {
-		const cmd = buildPrSeedCommand(input, 'PittampalliOrg/workflow-builder');
+		const cmd = buildPrSeedCommand(
+			input,
+			'PittampalliOrg/workflow-builder',
+		);
 		expect(cmd).toContain('echo "SEED_workflow_builder=$CODE"');
 		expect(cmd).toContain('echo "SEED_workflow_orchestrator=$CODE"');
 	});
 
 	it("gates each seed on the dev server's APP port answering (#41 readiness gate)", () => {
-		const cmd = buildPrSeedCommand(input, 'PittampalliOrg/workflow-builder');
+		const cmd = buildPrSeedCommand(
+			input,
+			'PittampalliOrg/workflow-builder',
+		);
 		// The gate polls the app port's health route — NOT the sync receiver
 		// (the sidecar answers long before uvicorn does).
 		expect(cmd).toContain('"http://10.1.2.3:3000/"');
@@ -97,7 +117,7 @@ describe('buildPrSeedCommand', () => {
 		expect(cmd).toContain('echo "SEED_READY_workflow_orchestrator=$READY"');
 		// The gate runs BEFORE the sync POST for each target.
 		expect(cmd.indexOf('"http://10.1.2.4:8080/healthz"')).toBeLessThan(
-			cmd.indexOf('"http://10.1.2.4:8001/__sync"')
+			cmd.indexOf('"http://10.1.2.4:8001/__sync"'),
 		);
 	});
 
@@ -112,9 +132,9 @@ describe('buildPrSeedCommand', () => {
 					extraSync: [],
 					podIp: '10.1.2.3',
 					syncPort: 3000,
-					syncToken: 'a'.repeat(64)
-				}
-			]
+					syncToken: 'a'.repeat(64),
+				},
+			],
 		};
 		const cmd = buildPrSeedCommand(bare, 'PittampalliOrg/workflow-builder');
 		expect(cmd).toContain('"http://10.1.2.3:3000/"'); // gate on syncPort + "/"
@@ -146,14 +166,18 @@ describe('prPreviewRegistryEntries', () => {
 const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
 
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
+
 describe('GithubPrPreviewGateway', () => {
 	it('fails closed when the broker read credential is absent', async () => {
 		const fetch = vi.fn();
 		await expect(
 			new GithubPrPreviewGateway({
 				fetch,
-				readToken: () => null
-			}).inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA })
+				readToken: () => null,
+			}).inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA }),
 		).rejects.toThrow('preview control GitHub App token');
 		expect(fetch).not.toHaveBeenCalled();
 	});
@@ -161,51 +185,57 @@ describe('GithubPrPreviewGateway', () => {
 	it('verifies the canonical open same-repo main PR and paginates every file', async () => {
 		const first = Array.from({ length: 100 }, (_, index) => ({
 			filename: `src/file-${index}.ts`,
-			status: 'modified'
+			status: 'modified',
 		}));
-		const fetch = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
-			const href = String(url);
-			if (!href.includes('/files?')) {
-				return Response.json({
-					number: 42,
-					state: 'open',
-					labels: [{ name: 'preview' }],
-					changed_files: 101,
-					base: {
-						ref: 'main',
-						sha: BASE_SHA,
-						repo: { full_name: 'PittampalliOrg/workflow-builder' }
-					},
-					head: {
-						sha: HEAD_SHA,
-						repo: { full_name: 'PittampalliOrg/workflow-builder' }
-					}
-				});
-			}
-			return new URL(href).searchParams.get('page') === '1'
-				? Response.json(first)
-				: Response.json([
-						{
-							filename: 'src/new-name.ts',
-							previous_filename: 'src/old-name.ts',
-							status: 'renamed'
-						}
-					]);
-		});
+		const fetch = vi.fn(
+			async (url: string | URL | Request, _init?: RequestInit) => {
+				const href = String(url);
+				if (!href.includes('/files?')) {
+					return Response.json({
+						number: 42,
+						state: 'open',
+						labels: [{ name: 'preview' }],
+						changed_files: 101,
+						base: {
+							ref: 'main',
+							sha: BASE_SHA,
+							repo: {
+								full_name: 'PittampalliOrg/workflow-builder',
+							},
+						},
+						head: {
+							sha: HEAD_SHA,
+							repo: {
+								full_name: 'PittampalliOrg/workflow-builder',
+							},
+						},
+					});
+				}
+				return new URL(href).searchParams.get('page') === '1'
+					? Response.json(first)
+					: Response.json([
+							{
+								filename: 'src/new-name.ts',
+								previous_filename: 'src/old-name.ts',
+								status: 'renamed',
+							},
+						]);
+			},
+		);
 		const gateway = new GithubPrPreviewGateway({
 			repository: 'PittampalliOrg/workflow-builder',
 			readToken: () => 'read-only',
-			fetch
+			fetch,
 		});
 		const result = await gateway.inspect({
 			prNumber: 42,
-			expectedHeadSha: HEAD_SHA
+			expectedHeadSha: HEAD_SHA,
 		});
 		expect(result).toMatchObject({
 			repository: 'PittampalliOrg/workflow-builder',
 			baseRef: 'main',
 			baseSha: BASE_SHA,
-			headSha: HEAD_SHA
+			headSha: HEAD_SHA,
 		});
 		expect(result.changedPaths).toHaveLength(102);
 		expect(result.changedPaths).toContain('src/old-name.ts');
@@ -220,8 +250,11 @@ describe('GithubPrPreviewGateway', () => {
 		['closed PR', { state: 'closed' }],
 		['missing preview label', { labels: [] }],
 		['non-main base', { base: { ref: 'release' } }],
-		['fork head', { head: { repo: { full_name: 'someone/workflow-builder' } } }],
-		['moved head', { head: { sha: 'c'.repeat(40) } }]
+		[
+			'fork head',
+			{ head: { repo: { full_name: 'someone/workflow-builder' } } },
+		],
+		['moved head', { head: { sha: 'c'.repeat(40) } }],
 	])('rejects %s before reading files', async (_label, override) => {
 		const pull = {
 			number: 42,
@@ -231,24 +264,25 @@ describe('GithubPrPreviewGateway', () => {
 			base: {
 				ref: 'main',
 				sha: BASE_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
 			},
 			head: {
 				sha: HEAD_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
 			},
-			...override
+			...override,
 		};
 		if ('base' in override) pull.base = { ...pull.base, ...override.base };
-		if ('head' in override) pull.head = { ...pull.head, ...override.head } as never;
+		if ('head' in override)
+			pull.head = { ...pull.head, ...override.head } as never;
 		const fetch = vi.fn(async () => Response.json(pull));
 		const gateway = new GithubPrPreviewGateway({
 			fetch,
-			readToken: () => 'read-only'
+			readToken: () => 'read-only',
 		});
-		await expect(gateway.inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA })).rejects.toThrow(
-			/expected open, same-repository main PR/
-		);
+		await expect(
+			gateway.inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA }),
+		).rejects.toThrow(/expected open, same-repository main PR/);
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 
@@ -261,12 +295,12 @@ describe('GithubPrPreviewGateway', () => {
 			base: {
 				ref: 'main',
 				sha: BASE_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
 			},
 			head: {
 				sha: HEAD_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
-			}
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
+			},
 		};
 		const fetch = vi
 			.fn()
@@ -275,23 +309,25 @@ describe('GithubPrPreviewGateway', () => {
 		await expect(
 			new GithubPrPreviewGateway({
 				fetch,
-				readToken: () => 'read-only'
+				readToken: () => 'read-only',
 			}).inspect({
 				prNumber: 42,
-				expectedHeadSha: HEAD_SHA
-			})
+				expectedHeadSha: HEAD_SHA,
+			}),
 		).rejects.toThrow('changed-file count mismatch');
 
-		const capped = vi.fn(async () => Response.json({ ...pull, changed_files: 3 }));
+		const capped = vi.fn(async () =>
+			Response.json({ ...pull, changed_files: 3 }),
+		);
 		await expect(
 			new GithubPrPreviewGateway({
 				fetch: capped,
 				maxChangedFiles: 2,
-				readToken: () => 'read-only'
+				readToken: () => 'read-only',
 			}).inspect({
 				prNumber: 42,
-				expectedHeadSha: HEAD_SHA
-			})
+				expectedHeadSha: HEAD_SHA,
+			}),
 		).rejects.toThrow('exceeding the 2 file cap');
 		expect(capped).toHaveBeenCalledTimes(1);
 	});
@@ -305,51 +341,54 @@ describe('GithubPrPreviewGateway', () => {
 			base: {
 				ref: 'main',
 				sha: BASE_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
 			},
 			head: {
 				sha: HEAD_SHA,
-				repo: { full_name: 'PittampalliOrg/workflow-builder' }
-			}
+				repo: { full_name: 'PittampalliOrg/workflow-builder' },
+			},
 		};
 		const fetch = vi
 			.fn()
 			.mockResolvedValueOnce(Response.json(pull))
-			.mockResolvedValueOnce(new Response('unavailable', { status: 503 }));
+			.mockResolvedValueOnce(
+				new Response('unavailable', { status: 503 }),
+			);
 		await expect(
 			new GithubPrPreviewGateway({
 				fetch,
-				readToken: () => 'read-only'
-			}).inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA })
+				readToken: () => 'read-only',
+			}).inspect({ prNumber: 42, expectedHeadSha: HEAD_SHA }),
 		).rejects.toThrow('files page 1 failed (HTTP 503)');
 	});
 });
 
 describe('HttpPrPreviewCommandBrokerAdapter', () => {
 	it('projects only the broker credential and narrow PR command', async () => {
-		const fetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
-			Response.json(
-				{
-					prNumber: 42,
-					alias: 'pr-42',
-					url: null,
-					state: 'provisioning',
-					headSha: HEAD_SHA,
-					services: ['workflow-builder'],
-					error: null,
-					verify: null,
-					updatedAt: '2026-07-09T12:00:00.000Z'
-				},
-				{ status: 202 }
-			)
+		const fetch = vi.fn(
+			async (_url: string | URL | Request, _init?: RequestInit) =>
+				Response.json(
+					{
+						prNumber: 42,
+						alias: 'pr-42',
+						url: null,
+						state: 'provisioning',
+						headSha: HEAD_SHA,
+						services: ['workflow-builder'],
+						error: null,
+						verify: null,
+						updatedAt: '2026-07-09T12:00:00.000Z',
+					},
+					{ status: 202 },
+				),
 		);
 		const adapter = new HttpPrPreviewCommandBrokerAdapter({
 			baseUrl: () => 'http://preview-control-broker:3000/',
 			token: () => 'broker-only',
-			fetch
+			fetch,
 		});
 		await expect(
-			adapter.up({ prNumber: 42, headSha: HEAD_SHA, verify: true })
+			adapter.up({ prNumber: 42, headSha: HEAD_SHA, verify: true }),
 		).resolves.toMatchObject({ state: 'provisioning' });
 		expect(fetch).toHaveBeenCalledWith(
 			'http://preview-control-broker:3000/api/internal/preview-control/pr-preview',
@@ -357,15 +396,15 @@ describe('HttpPrPreviewCommandBrokerAdapter', () => {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'X-Preview-Control-Broker-Token': 'broker-only'
+					'X-Preview-Control-Broker-Token': 'broker-only',
 				},
 				body: JSON.stringify({
 					action: 'up',
 					prNumber: 42,
 					headSha: HEAD_SHA,
-					verify: true
-				})
-			})
+					verify: true,
+				}),
+			}),
 		);
 		const init = fetch.mock.calls[0]?.[1];
 		expect(JSON.stringify(init)).not.toContain('GITHUB');
@@ -375,14 +414,205 @@ describe('HttpPrPreviewCommandBrokerAdapter', () => {
 	it('fails closed without broker location or credential', async () => {
 		const noUrl = new HttpPrPreviewCommandBrokerAdapter({
 			baseUrl: () => null,
-			token: () => 'token'
+			token: () => 'token',
 		});
-		await expect(noUrl.status(42)).rejects.toThrow('PREVIEW_CONTROL_BROKER_URL');
+		await expect(noUrl.status(42)).rejects.toThrow(
+			'PREVIEW_CONTROL_BROKER_URL',
+		);
 		const noToken = new HttpPrPreviewCommandBrokerAdapter({
 			baseUrl: () => 'http://broker',
-			token: () => null
+			token: () => null,
 		});
-		await expect(noToken.status(42)).rejects.toThrow('PREVIEW_CONTROL_BROKER_TOKEN');
+		await expect(noToken.status(42)).rejects.toThrow(
+			'PREVIEW_CONTROL_BROKER_TOKEN',
+		);
+	});
+});
+
+describe('PreviewBffDevPodGateway', () => {
+	const input = {
+		previewUrl: 'https://wfb-pr-42.tail286401.ts.net/',
+		alias: 'pr-42',
+		services: ['workflow-builder', 'workflow-orchestrator'],
+		syncToken: 'unused',
+		requestId: 'request-42',
+		platformRevision: 'c'.repeat(40) as `${string}`,
+		sourceRevision: 'd'.repeat(40) as `${string}`,
+		catalogDigest: `sha256:${'e'.repeat(64)}` as const,
+	};
+
+	function receipt(
+		phase: 'scheduled' | 'activating' | 'active',
+		batchId = 'batch-request-42',
+	) {
+		const active = phase === 'active';
+		return {
+			executionId: 'pr-adopt-request-42',
+			ok: true,
+			complete: active,
+			pending: !active,
+			activationPhase: phase,
+			batchId,
+			services: input.services.map((service, index) => ({
+				service,
+				ok: true,
+				info: {
+					podIP: `10.0.0.${index + 10}`,
+					syncPort: index === 0 ? 3000 : 8001,
+					syncCapability: String(index + 1).repeat(64),
+				},
+			})),
+		};
+	}
+
+	function gateway(fetch: typeof globalThis.fetch) {
+		let now = 0;
+		return {
+			adapter: new PreviewBffDevPodGateway({
+				fetch,
+				sleep: async (milliseconds) => {
+					now += milliseconds;
+				},
+				now: () => now,
+				resolveBaseUrl: async () => 'http://preview-bff:3000',
+				activationTimeoutMs: 100,
+				retryDelayMs: 10,
+			}),
+			getNow: () => now,
+		};
+	}
+
+	it('retries pending and transient cutover responses until the exact batch is active', async () => {
+		vi.stubEnv('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN', 'f'.repeat(64));
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(
+				Response.json(receipt('scheduled'), { status: 202 }),
+			)
+			.mockResolvedValueOnce(
+				Response.json(
+					{ error: 'upstream reconnecting' },
+					{ status: 503 },
+				),
+			)
+			.mockResolvedValueOnce(Response.json(receipt('active')));
+		const { adapter, getNow } = gateway(fetch);
+
+		await expect(adapter.provision(input)).resolves.toEqual([
+			expect.objectContaining({
+				service: 'workflow-builder',
+				ok: true,
+				podIp: '10.0.0.10',
+				syncPort: 3000,
+			}),
+			expect.objectContaining({
+				service: 'workflow-orchestrator',
+				ok: true,
+				podIp: '10.0.0.11',
+				syncPort: 8001,
+			}),
+		]);
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(getNow()).toBe(20);
+		expect(
+			fetch.mock.calls.every(([url]) =>
+				String(url).startsWith('http://preview-bff:3000/'),
+			),
+		).toBe(true);
+	});
+
+	it.each([200, 202])(
+		'replays the exact activation request after a lost HTTP %s receipt body',
+		async (lostStatus) => {
+			vi.stubEnv('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN', 'f'.repeat(64));
+			const fetch = vi
+				.fn<typeof globalThis.fetch>()
+				.mockResolvedValueOnce(
+					new Response('truncated', { status: lostStatus }),
+				)
+				.mockResolvedValueOnce(Response.json(receipt('active')));
+			const { adapter } = gateway(fetch);
+
+			await expect(adapter.provision(input)).resolves.toEqual([
+				expect.objectContaining({
+					service: 'workflow-builder',
+					ok: true,
+				}),
+				expect.objectContaining({
+					service: 'workflow-orchestrator',
+					ok: true,
+				}),
+			]);
+			expect(fetch).toHaveBeenCalledTimes(2);
+			expect(fetch.mock.calls[1]?.[1]?.body).toBe(
+				fetch.mock.calls[0]?.[1]?.body,
+			);
+			expect(fetch.mock.calls[1]?.[1]?.headers).toEqual(
+				fetch.mock.calls[0]?.[1]?.headers,
+			);
+		},
+	);
+
+	it('retries a malformed successful receipt but stops on an explicit rejection', async () => {
+		vi.stubEnv('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN', 'f'.repeat(64));
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(Response.json({ ok: true }, { status: 202 }))
+			.mockResolvedValueOnce(
+				Response.json({
+					ok: false,
+					activationPhase: 'failed',
+					error: 'cutover failed',
+				}),
+			);
+		const { adapter } = gateway(fetch);
+
+		await expect(adapter.provision(input)).rejects.toThrow(
+			'cutover failed',
+		);
+		expect(fetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('fails closed when an idempotent poll changes the activation batch identity', async () => {
+		vi.stubEnv('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN', 'f'.repeat(64));
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(
+				Response.json(receipt('activating'), { status: 202 }),
+			)
+			.mockResolvedValueOnce(
+				Response.json(receipt('active', 'different-batch')),
+			);
+		const { adapter } = gateway(fetch);
+
+		await expect(adapter.provision(input)).rejects.toThrow(
+			'batch identity changed',
+		);
+		expect(fetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('bounds polling when activation never reaches the terminal receipt', async () => {
+		vi.stubEnv('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN', 'f'.repeat(64));
+		let now = 0;
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json(receipt('scheduled'), { status: 202 }),
+		);
+		const adapter = new PreviewBffDevPodGateway({
+			fetch,
+			sleep: async (milliseconds) => {
+				now += milliseconds;
+			},
+			now: () => now,
+			resolveBaseUrl: async () => 'http://preview-bff:3000',
+			activationTimeoutMs: 25,
+			retryDelayMs: 10,
+		});
+
+		await expect(adapter.provision(input)).rejects.toThrow(
+			'preview dev-pod activation timed out: activation scheduled',
+		);
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(now).toBe(25);
 	});
 });
 
@@ -396,25 +626,34 @@ describe('buildPromotionCommand preview label (D2)', () => {
 		title: 'Promote test',
 		tier: 'tar-overlay',
 		repoSubdir: '.',
-		syncPaths: ['src']
+		syncPaths: ['src'],
 	};
 
 	it('adds the preview-label curl only when the flag is on', () => {
-		const withLabel = buildPromotionCommand(input, 'tok', 'http://bff/bundle', {
-			addPreviewLabel: true
-		});
+		const withLabel = buildPromotionCommand(
+			input,
+			'tok',
+			'http://bff/bundle',
+			{
+				addPreviewLabel: true,
+			},
+		);
 		expect(withLabel).toContain('/issues/$NUM/labels');
 		expect(withLabel).toContain('{"labels":["preview"]}');
 		expect(withLabel).toContain('PREVIEW_LABEL_HTTP=');
 
-		const withoutLabel = buildPromotionCommand(input, 'tok', 'http://bff/bundle');
+		const withoutLabel = buildPromotionCommand(
+			input,
+			'tok',
+			'http://bff/bundle',
+		);
 		expect(withoutLabel).not.toContain('/labels');
 		expect(withoutLabel).not.toContain('PREVIEW_LABEL_HTTP');
 	});
 
 	it('keeps the PR-create call untouched', () => {
 		const cmd = buildPromotionCommand(input, 'tok', 'http://bff/bundle', {
-			addPreviewLabel: true
+			addPreviewLabel: true,
 		});
 		expect(cmd).toContain('https://api.github.com/repos/$REPO/pulls');
 		expect(cmd).toContain('echo "PR_URL=$URL"');
