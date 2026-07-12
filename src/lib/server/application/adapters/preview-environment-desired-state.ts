@@ -1033,18 +1033,29 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
         "physical preview lifecycle broker is not configured",
       );
     }
-    const response = await this.fetchImpl(
-      `${baseUrl}/api/internal/preview-control/environment/${encodeURIComponent(name)}/teardown`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Preview-Control-Broker-Token": token,
+    const requestTeardown = () =>
+      this.fetchImpl(
+        `${baseUrl}/api/internal/preview-control/environment/${encodeURIComponent(name)}/teardown`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Preview-Control-Broker-Token": token,
+          },
+          body: JSON.stringify({ guard }),
+          signal: AbortSignal.timeout(this.options.timeoutMs ?? 25 * 60_000),
         },
-        body: JSON.stringify({ guard }),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 25 * 60_000),
-      },
-    );
+      );
+    let response: Response;
+    try {
+      response = await requestTeardown();
+    } catch (cause) {
+      // The broker operation is idempotent and ownership-fenced. A long-running
+      // cleanup can outlive Undici's response-header window even though it keeps
+      // converging, so replay the exact command once and still require its receipt.
+      if (!(cause instanceof TypeError)) throw cause;
+      response = await requestTeardown();
+    }
     const body = (await response.json().catch(() => null)) as unknown;
     const envelope = record(body);
     if (!response.ok) {
