@@ -59,6 +59,7 @@ import {
 
 type DevPreviewWorkspaceSessionRecord = {
   workspaceRef: string;
+  status?: string;
   sandboxState: Record<string, unknown> | null;
 };
 
@@ -472,6 +473,63 @@ export async function provisionDevPreviews(
   if (new Set(services).size !== services.length) {
     throw new Error("Dev-preview service ids must be unique");
   }
+  const selfCutover =
+    shared.mode === "preview-native" && shared.adopt !== false;
+  if (selfCutover) {
+    let resumed: DevPreviewServiceResult[] | null;
+    try {
+      resumed = await persistedReadyDevPreviewBatch(
+        { ...shared, executionId: params.executionId, services },
+        persistence,
+        credentialOptions,
+      );
+    } catch (cause) {
+      if (!(cause instanceof DevPreviewActivationRejectedError)) throw cause;
+      const failure = `persisted batch activation rejected: ${message(cause)}`;
+      const rejected = services.map((service) => ({
+        service,
+        ok: false,
+        error: failure,
+      }));
+      return {
+        executionId: params.executionId,
+        services: await compensateProvisionedPreviewBatch(
+          params.executionId,
+          rejected,
+          persistence,
+          failure,
+        ),
+        ok: false,
+        complete: false,
+        pending: false,
+        activationPhase: "failed",
+      };
+    }
+    if (resumed) {
+      const baseUrl = sandboxExecutionApiUrl();
+      if (!baseUrl) {
+        throw new RetryableDevPreviewActivationError(
+          "SANDBOX_EXECUTION_API_URL not configured",
+        );
+      }
+      if (
+        await readDevPreviewTeardownIntent({
+          baseUrl,
+          executionId: params.executionId,
+          token: internalToken(),
+        })
+      ) {
+        throw new DevPreviewActivationRejectedError(
+          `dev-preview teardown is already in progress for ${params.executionId}`,
+        );
+      }
+      return activateReadyDevPreviewBatch(
+        params.executionId,
+        resumed,
+        persistence,
+      );
+    }
+  }
   const settled: PromiseSettledResult<DevPreviewInfo>[] = new Array(
     services.length,
   );
@@ -496,8 +554,6 @@ export async function provisionDevPreviews(
       ] as PromiseSettledResult<DevPreviewInfo>;
     });
   };
-  const selfCutover =
-    shared.mode === "preview-native" && shared.adopt !== false;
   if (selfCutover) {
     const peerIndexes = services
       .map((service, index) => ({ service, index }))
@@ -559,39 +615,11 @@ export async function provisionDevPreviews(
     };
   }
   if (selfCutover) {
-    const sandboxNames = results
-      .map((result) => result.info?.sandboxName ?? "")
-      .sort();
-    try {
-      const activation = await activateStagedDevPreviewBatch({
-        executionId: params.executionId,
-        sandboxNames,
-      });
-      return {
-        executionId: params.executionId,
-        services: results,
-        ok: true,
-        ...activation,
-      };
-    } catch (cause) {
-      if (!(cause instanceof DevPreviewActivationRejectedError)) {
-        throw cause;
-      }
-      const failure = `batch activation failed: ${message(cause)}`;
-      return {
-        executionId: params.executionId,
-        services: await compensateProvisionedPreviewBatch(
-          params.executionId,
-          results,
-          persistence,
-          failure,
-        ),
-        ok: false,
-        complete: false,
-        pending: false,
-        activationPhase: "failed",
-      };
-    }
+    return activateReadyDevPreviewBatch(
+      params.executionId,
+      results,
+      persistence,
+    );
   }
   return {
     executionId: params.executionId,
@@ -601,6 +629,46 @@ export async function provisionDevPreviews(
     pending: false,
     activationPhase: "not-required",
   };
+}
+
+async function activateReadyDevPreviewBatch(
+  executionId: string,
+  results: readonly DevPreviewServiceResult[],
+  persistence?: DevPreviewPersistence,
+): Promise<DevPreviewsResult> {
+  const sandboxNames = results
+    .map((result) => result.info?.sandboxName ?? "")
+    .sort();
+  try {
+    const activation = await activateStagedDevPreviewBatch({
+      executionId,
+      sandboxNames,
+    });
+    return {
+      executionId,
+      services: [...results],
+      ok: true,
+      ...activation,
+    };
+  } catch (cause) {
+    if (!(cause instanceof DevPreviewActivationRejectedError)) {
+      throw cause;
+    }
+    const failure = `batch activation failed: ${message(cause)}`;
+    return {
+      executionId,
+      services: await compensateProvisionedPreviewBatch(
+        executionId,
+        results,
+        persistence,
+        failure,
+      ),
+      ok: false,
+      complete: false,
+      pending: false,
+      activationPhase: "failed",
+    };
+  }
 }
 
 async function compensateProvisionedPreviewBatch(
@@ -1335,6 +1403,179 @@ function fulfilledPreviewResult(
 }
 
 /**
+ * Reconstruct an already-staged batch from durable application data before any
+ * infrastructure write. Durable workflow replay can arrive while SEA is still
+ * activating the first exact batch; issuing the five provision requests again
+ * would race that worker and can turn a valid pending receipt into compensation.
+ */
+async function persistedReadyDevPreviewBatch(
+  params: ProvisionDevPreviewsParams,
+  persistence?: DevPreviewPersistence,
+  credentialOptions?: DevSyncCredentialResolverOptions,
+): Promise<DevPreviewServiceResult[] | null> {
+  if (!persistence) return null;
+
+  let rows: DevPreviewWorkspaceSessionRecord[];
+  try {
+    rows = await persistence.listWorkflowWorkspaceSessionsByExecutionId({
+      executionId: params.executionId,
+      limit: 50,
+    });
+  } catch (cause) {
+    throw new RetryableDevPreviewActivationError(
+      `persisted dev-preview batch could not be read: ${message(cause)}`,
+    );
+  }
+
+  const candidates = rows
+    .filter((row) => row.status == null || row.status === "active")
+    .map((row) => ({
+      row,
+      details: asRecord(asRecord(row.sandboxState)?.details),
+    }))
+    .filter(
+      (
+        candidate,
+      ): candidate is {
+        row: DevPreviewWorkspaceSessionRecord;
+        details: Record<string, unknown>;
+      } =>
+        candidate.details?.kind === "dev-preview" &&
+        candidate.details.executionId === params.executionId,
+    );
+  if (candidates.length === 0) return null;
+
+  const expectedServices = [...params.services].sort();
+  const receivedServices = candidates
+    .map(({ details }) =>
+      typeof details.service === "string" ? details.service : "",
+    )
+    .sort();
+  if (
+    new Set(receivedServices).size !== receivedServices.length ||
+    receivedServices.some((service) => !expectedServices.includes(service))
+  ) {
+    throw new DevPreviewActivationRejectedError(
+      "persisted dev-preview batch does not match the exact requested service set",
+    );
+  }
+  if (JSON.stringify(receivedServices) !== JSON.stringify(expectedServices)) {
+    throw new RetryableDevPreviewActivationError(
+      "persisted dev-preview batch is still being staged",
+    );
+  }
+
+  const byService = new Map(
+    candidates.map((candidate) => [
+      String(candidate.details.service),
+      candidate,
+    ]),
+  );
+  return Promise.all(
+    params.services.map(async (service): Promise<DevPreviewServiceResult> => {
+      const candidate = byService.get(service);
+      if (!candidate) {
+        throw new RetryableDevPreviewActivationError(
+          `persisted dev-preview batch is missing ${service}`,
+        );
+      }
+      const { row, details } = candidate;
+      const descriptor = resolveDevPreviewDescriptor(service, {
+        ...process.env,
+        ...env,
+      });
+      const sandboxName = devPreviewSandboxName(params.executionId, service);
+      let image: string | null = null;
+      if (typeof details.image === "string") {
+        try {
+          image = assertDevPreviewImage(descriptor, details.image);
+        } catch (cause) {
+          throw new DevPreviewActivationRejectedError(
+            `persisted dev-preview image is invalid for ${service}: ${message(cause)}`,
+          );
+        }
+      }
+      const podIP =
+        typeof details.podIP === "string" ? details.podIP.trim() : "";
+      const port =
+        typeof details.port === "number" && Number.isInteger(details.port)
+          ? details.port
+          : null;
+      const syncPort =
+        typeof details.syncPort === "number" &&
+        Number.isInteger(details.syncPort)
+          ? details.syncPort
+          : null;
+      const syncUrl =
+        typeof details.syncUrl === "string" ? details.syncUrl : null;
+      const expectedBrowseUrl =
+        params.origin ?? devPreviewBrowseUrl(descriptor);
+      const browseUrl =
+        typeof details.browseUrl === "string"
+          ? details.browseUrl
+          : details.browseUrl === null
+            ? null
+            : expectedBrowseUrl;
+      const expectedDaprAppId =
+        descriptor.capabilities.previewNative?.daprAppId ?? null;
+      const daprAppId =
+        typeof details.daprAppId === "string" ? details.daprAppId : null;
+      if (
+        row.workspaceRef !== sandboxName ||
+        details.sandboxName !== sandboxName ||
+        details.service !== service ||
+        details.executionId !== params.executionId ||
+        details.catalogDigest !== DEV_PREVIEW_CATALOG_DIGEST ||
+        details.ready !== true ||
+        !image ||
+        !podIP ||
+        port !== descriptor.port ||
+        syncPort !== descriptor.syncPort ||
+        syncUrl !== `http://${podIP}:${syncPort}/__sync` ||
+        (typeof details.url === "string" &&
+          details.url !== `http://${podIP}:${port}`) ||
+        browseUrl !== expectedBrowseUrl ||
+        details.needsDapr !== Boolean(descriptor.needsDapr) ||
+        daprAppId !== expectedDaprAppId ||
+        (params.image != null && params.image !== image)
+      ) {
+        throw new DevPreviewActivationRejectedError(
+          `persisted dev-preview identity is invalid for ${service}`,
+        );
+      }
+      const { agentActionToken: syncCapability } =
+        await resolveDevSyncCredentials(
+          { executionId: params.executionId, service },
+          credentialOptions,
+        );
+      const info: DevPreviewInfo = {
+        sandboxName,
+        executionId: params.executionId,
+        service,
+        image,
+        podIP,
+        port,
+        syncPort,
+        url: typeof details.url === "string" ? details.url : null,
+        syncUrl,
+        syncCapability,
+        browseUrl,
+        repoUrl: descriptor.repoUrl,
+        repoSubdir: descriptor.repoSubdir,
+        syncPaths: devPreviewSyncPaths(descriptor),
+        extraSync: descriptor.extraSync ?? [],
+        captureOnly: devPreviewCaptureOnly(descriptor),
+        ready: true,
+        status: typeof details.status === "string" ? details.status : "running",
+        needsDapr: Boolean(descriptor.needsDapr),
+        daprAppId,
+      };
+      return { service, ok: true, info };
+    }),
+  );
+}
+
+/**
  * The image a prior provision of this (executionId, service) was pinned to, read
  * back from the persisted workspace-session row's `sandboxState.details.image`.
  * Null when no persistence, no matching row, or no stored image — the caller then
@@ -1393,6 +1634,7 @@ async function persistDevPreviewSession(
     needsDapr: info.needsDapr,
     daprAppId: info.daprAppId,
     ready: info.ready,
+    status: info.status,
     executionId: info.executionId,
     provider: "agent-sandbox-dev-preview",
     previewEnvironmentId:
