@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:ca04bd654b42d317715c51c5d9a1ea85d58f8d640f90374be885507d5a415fab",
+  "catalogDigest": "sha256:1d639999ffda95be1a236235190c195a41c9361a6f5a285587729b72b28184a3",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -102,7 +102,7 @@
           "dockerfile": "skaffold/dev/function-router/Dockerfile.dev",
           "image": "ghcr.io/pittampalliorg/function-router-dev"
         },
-        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "depsCommand": "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
         "env": {},
         "envFrom": [],
         "functional": false,
@@ -213,7 +213,7 @@
           "dockerfile": "skaffold/dev/mcp-gateway/Dockerfile.dev",
           "image": "ghcr.io/pittampalliorg/mcp-gateway-dev"
         },
-        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "depsCommand": "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
         "env": {
           "OTEL_SDK_DISABLED": "true",
           "WORKFLOW_BUILDER_URL": "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
@@ -467,7 +467,7 @@
           "dockerfile": "skaffold/dev/workflow-builder/Dockerfile.dev",
           "image": "ghcr.io/pittampalliorg/workflow-builder-dev"
         },
-        "depsCommand": "pnpm install --no-frozen-lockfile",
+        "depsCommand": "CI=true pnpm install --no-frozen-lockfile",
         "env": {},
         "envFrom": [
           {
@@ -674,7 +674,7 @@
           "dockerfile": "skaffold/dev/workflow-mcp-server/Dockerfile.dev",
           "image": "ghcr.io/pittampalliorg/workflow-mcp-server-dev"
         },
-        "depsCommand": "pnpm install --no-frozen-lockfile && touch src/index.ts",
+        "depsCommand": "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
         "env": {},
         "envFrom": [],
         "functional": false,

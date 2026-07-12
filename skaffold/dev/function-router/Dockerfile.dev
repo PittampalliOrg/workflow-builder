@@ -8,11 +8,12 @@ WORKDIR /app
 USER root
 
 ARG PNPM_VERSION
-RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+RUN npm install -g pnpm@${PNPM_VERSION}
+ENV npm_config_store_dir=/app/.pnpm-store
 
 COPY services/function-router/package.json ./
 COPY services/function-router/pnpm-lock.yaml ./
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+RUN --mount=type=cache,target=/app/.pnpm-store \
     pnpm install --frozen-lockfile --ignore-scripts
 
 COPY services/function-router/ ./
@@ -29,10 +30,13 @@ RUN addgroup -g 1001 dev-runtime \
 
 ENV NODE_ENV=development
 ENV PORT=8080
+ENV HOME=/home/dev-runtime
 
 EXPOSE 8080
 
 USER 1001:1001
 
-# Bridge as background child; `exec` keeps the dev server as PID 1.
-CMD ["sh", "-c", "node /devtools/exec-bridge.mjs & exec pnpm dev"]
+# Start the baked watcher directly so boot never performs package-manager
+# reconciliation. The pinned global pnpm remains available to the allowlisted
+# dependency action after a manifest sync.
+CMD ["sh", "-c", "node /devtools/exec-bridge.mjs & exec /app/node_modules/.bin/tsx watch src/index.ts"]

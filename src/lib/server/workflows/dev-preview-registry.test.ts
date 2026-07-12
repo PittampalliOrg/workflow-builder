@@ -52,7 +52,7 @@ describe("dev-preview registry", () => {
     expect(
       devPreviewCommands(DEV_PREVIEW_SERVICES["workflow-builder"]),
     ).toEqual({
-      deps: "pnpm install --no-frozen-lockfile",
+      deps: "CI=true pnpm install --no-frozen-lockfile",
       migrate: "node scripts/db-migrate-runtime.mjs",
       contract:
         "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
@@ -74,6 +74,38 @@ describe("dev-preview registry", () => {
     ).toEqual({
       deps: "pip install -e . && touch src/app.py",
     });
+  });
+
+  it("keeps Node dev images independent of root-scoped Corepack state", () => {
+    const images = [
+      [
+        "skaffold/dev/workflow-builder/Dockerfile.dev",
+        "/app/node_modules/.bin/vite",
+      ],
+      [
+        "skaffold/dev/function-router/Dockerfile.dev",
+        "/app/node_modules/.bin/tsx",
+      ],
+      ["skaffold/dev/mcp-gateway/Dockerfile.dev", "/app/node_modules/.bin/tsx"],
+      [
+        "skaffold/dev/workflow-mcp-server/Dockerfile.dev",
+        "/app/node_modules/.bin/tsx",
+      ],
+    ] as const;
+
+    for (const [path, executable] of images) {
+      const dockerfile = readFileSync(join(process.cwd(), path), "utf8");
+      expect(dockerfile).toContain("RUN npm install -g pnpm@${PNPM_VERSION}");
+      expect(dockerfile).toContain("ENV HOME=/home/dev-runtime");
+      expect(dockerfile).toContain("ENV npm_config_store_dir=/app/.pnpm-store");
+      expect(dockerfile).toContain("USER 1001:1001");
+      expect(dockerfile).toContain(executable);
+      expect(dockerfile).not.toContain("corepack prepare");
+    }
+
+    expect(
+      readFileSync(join(process.cwd(), ".dockerignore"), "utf8"),
+    ).toContain("**/node_modules/");
   });
 
   it("flips a plugin service to sidecar transport only when WFB_DEV_SYNC_MODE=sidecar", () => {
