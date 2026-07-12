@@ -54,6 +54,7 @@ test-results
 
 # Exclude python venv + caches from services/ (devspace leftovers; bloats
 # Skaffold build context to >100MB if included)
+**/node_modules/
 **/.venv/
 **/__pycache__/
 **/.pytest_cache/

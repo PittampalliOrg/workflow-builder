@@ -319,7 +319,7 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     tailnetHostnameRole: "wfb",
     // In-pod dep reinstall on a package.json/pnpm-lock/.npmrc change; vite HMR
     // picks up the refreshed node_modules with no restart.
-    depsCommand: "pnpm install --no-frozen-lockfile",
+    depsCommand: "CI=true pnpm install --no-frozen-lockfile",
     // Fast contract lane: the single shared-fixture vitest (seconds), cwd /app.
     // `migrate` applies hot-synced Drizzle migrations against this preview's DB;
     // the runtime script serializes callers with a Postgres advisory lock and
@@ -490,7 +490,8 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     // tsx watch follows the import graph from src/.
     syncPaths: ["src", "config", "package.json", "pnpm-lock.yaml"],
     // tsx watch doesn't rescan node_modules; touch the entrypoint after install.
-    depsCommand: "pnpm install --no-frozen-lockfile && touch src/index.ts",
+    depsCommand:
+      "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
     tailnetHostnameRole: "function-router",
     needsDapr: true,
     applyDaprShadowDefaults: false,
@@ -528,7 +529,8 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     repoSubdir: "services/mcp-gateway",
     // syncPaths omitted → node default; mcp-gateway has no
     // config/ dir, which the sync/export path filters out harmlessly.
-    depsCommand: "pnpm install --no-frozen-lockfile && touch src/index.ts",
+    depsCommand:
+      "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
     tailnetHostnameRole: "mcp-gateway",
     envFrom: [{ secretRef: { name: "workflow-builder-secrets" } }],
     extraEnv: {
@@ -571,7 +573,8 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     repoUrl: "PittampalliOrg/workflow-builder",
     repoSubdir: "services/workflow-mcp-server",
     // syncPaths omitted → node default.
-    depsCommand: "pnpm install --no-frozen-lockfile && touch src/index.ts",
+    depsCommand:
+      "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
     tailnetHostnameRole: "workflow-mcp-server",
   },
 };
