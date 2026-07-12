@@ -56,6 +56,35 @@ describe('preview dev-sync credential adapters', () => {
 		expect(timeout).toHaveBeenCalledWith(45_000);
 	});
 
+	it('serializes physical authority calls across concurrent consumers', async () => {
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const fetch = vi.fn(async () => {
+			inFlight += 1;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			inFlight -= 1;
+			return Response.json({
+				receiverToken: 'd'.repeat(64),
+				agentActionToken: 'e'.repeat(64)
+			});
+		});
+		const adapter = new HttpPreviewDevSyncCredentialBrokerAdapter({
+			baseUrl: () => 'http://preview-control',
+			mintToken: () => 'f'.repeat(64),
+			fetch
+		});
+
+		await Promise.all([
+			adapter.mint({ ...request, service: 'function-router' }),
+			adapter.mint({ ...request, service: 'workflow-builder' }),
+			adapter.mint({ ...request, service: 'workflow-orchestrator' })
+		]);
+
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(maxInFlight).toBe(1);
+	});
+
 	it('rejects malformed broker leaves', async () => {
 		const adapter = new HttpPreviewDevSyncCredentialBrokerAdapter({
 			baseUrl: () => 'http://preview-control',
