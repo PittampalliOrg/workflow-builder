@@ -18,9 +18,11 @@ const inputProperties = fixture.input.schema.document.properties;
 const provision = fixture.do.find(
   (entry: Record<string, unknown>) => "provision_preview" in entry,
 ).provision_preview;
-const cloneCommand = fixture.do.find(
+const cloneStep = fixture.do.find(
   (entry: Record<string, unknown>) => "clone_repo" in entry,
-).clone_repo.with.command as string;
+).clone_repo;
+const cloneCommand = cloneStep.with.command as string;
+const cloneTimeoutMs = cloneStep.with.timeoutMs as number;
 const commandText = cloneCommand.replaceAll('\\"', '"');
 const handoffInstructions = fixture.do.find(
   (entry: Record<string, unknown>) => "handoff" in entry,
@@ -99,6 +101,10 @@ describe("microservice dev session source checkout", () => {
     expect(commandText).toContain(
       'test "$ACTUAL_REVISION" = "$SOURCE_REVISION"',
     );
+  });
+
+  it("allows the bounded shared-storage cold checkout to finish", () => {
+    expect(cloneTimeoutMs).toBe(1_200_000);
   });
 
   it("tells the interactive agent to apply hot-synced schema changes explicitly", () => {
