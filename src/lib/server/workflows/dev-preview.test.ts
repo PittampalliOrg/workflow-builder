@@ -874,6 +874,269 @@ describe("dev-preview portability boundary", () => {
     );
   });
 
+  it("resumes a pending five-service activation from persistence without reprovision or compensation", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.stubEnv(
+      "MCP_GATEWAY_DEV_IMAGE",
+      `ghcr.io/pittampalliorg/mcp-gateway-dev:git-${"a".repeat(40)}`,
+    );
+    vi.stubEnv(
+      "WORKFLOW_MCP_SERVER_DEV_IMAGE",
+      `ghcr.io/pittampalliorg/workflow-mcp-server-dev:git-${"a".repeat(40)}`,
+    );
+    const rows: Array<{
+      workspaceRef: string;
+      status: string;
+      sandboxState: Record<string, unknown> | null;
+    }> = [];
+    const persistence = fakePersistence(rows);
+    vi.mocked(persistence.upsertWorkflowWorkspaceSession).mockImplementation(
+      async (input) => {
+        const next = {
+          workspaceRef: input.workspaceRef,
+          status: input.status ?? "active",
+          sandboxState: input.sandboxState ?? null,
+        };
+        const index = rows.findIndex(
+          ({ workspaceRef }) => workspaceRef === input.workspaceRef,
+        );
+        if (index === -1) rows.push(next);
+        else rows[index] = next;
+        return { workspaceRef: input.workspaceRef };
+      },
+    );
+    const stageCalls: string[] = [];
+    const activationBodies: Array<Record<string, unknown>> = [];
+    const deletes: string[] = [];
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (init?.method === "DELETE") {
+        deletes.push(target);
+        throw new Error("pending replay must not compensate");
+      }
+      const body = JSON.parse(String((init as RequestInit).body));
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        activationBodies.push(body);
+        const activationPhase =
+          activationBodies.length === 1 ? "scheduled" : "activating";
+        return Response.json(
+          {
+            accepted: true,
+            complete: false,
+            pending: true,
+            activated: false,
+            activationPhase,
+            batchId: "batch-exec-1",
+            executionId: body.executionId,
+            sandboxNames: body.sandboxNames,
+          },
+          { status: 202 },
+        );
+      }
+      if (!target.endsWith("/internal/dev-preview")) {
+        throw new Error(`unexpected request ${target}`);
+      }
+      const service = String(body.service);
+      if (stageCalls.includes(service)) {
+        throw new Error(`reprovisioned ${service}`);
+      }
+      stageCalls.push(service);
+      const descriptor = resolveDevPreviewDescriptor(service);
+      const podIP = `10.0.0.${stageCalls.length + 10}`;
+      return Response.json({
+        sandboxName: `wfb-dev-preview-${service}-exec-1`,
+        executionId: "exec-1",
+        service,
+        staged: true,
+        podIP,
+        port: descriptor.port,
+        syncPort: descriptor.syncPort,
+        url: `http://${podIP}:${descriptor.port}`,
+        syncUrl: `http://${podIP}:${descriptor.syncPort}/__sync`,
+        ready: true,
+        status: "running",
+        needsDapr: body.needsDapr === true,
+        daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
+      });
+    });
+    stubDevPreviewFetch(fetchMock);
+    const input = {
+      executionId: "exec-1",
+      services: [
+        "workflow-builder",
+        "workflow-orchestrator",
+        "function-router",
+        "mcp-gateway",
+        "workflow-mcp-server",
+      ],
+      mode: "preview-native" as const,
+      adopt: true,
+      origin: "https://wfb-preview.tailnet.example",
+    };
+
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "scheduled",
+      batchId: "batch-exec-1",
+    });
+    const firstCallCount = fetchMock.mock.calls.length;
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "activating",
+      batchId: "batch-exec-1",
+      services: input.services.map((service) => ({ service, ok: true })),
+    });
+
+    expect(stageCalls).toHaveLength(5);
+    expect(new Set(stageCalls)).toEqual(new Set(input.services));
+    expect(activationBodies).toHaveLength(2);
+    expect(activationBodies[1]).toEqual(activationBodies[0]);
+    expect(deletes).toEqual([]);
+    expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledTimes(5);
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.slice(firstCallCount).map(([url]) => String(url)),
+    ).toEqual(["http://sandbox-api/internal/dev-previews/activate"]);
+  });
+
+  it("terminally fails and compensates a contradictory persisted batch", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const rows: Array<{
+      workspaceRef: string;
+      status: string;
+      sandboxState: Record<string, unknown> | null;
+    }> = [];
+    const persistence = fakePersistence(rows);
+    vi.mocked(persistence.upsertWorkflowWorkspaceSession).mockImplementation(
+      async (input) => {
+        rows.push({
+          workspaceRef: input.workspaceRef,
+          status: input.status ?? "active",
+          sandboxState: input.sandboxState ?? null,
+        });
+        return { workspaceRef: input.workspaceRef };
+      },
+    );
+    const sandboxName = "wfb-dev-preview-workflow-orchestrator-exec-1";
+    let live = true;
+    let stageCalls = 0;
+    let activationCalls = 0;
+    let deleteCalls = 0;
+    stubDevPreviewFetch(
+      vi.fn(async (url, init) => {
+        const target = String(url);
+        if (target.includes("/internal/dev-previews?")) {
+          return Response.json({
+            executionId: "exec-1",
+            complete: true,
+            services: live
+              ? [{ service: "workflow-orchestrator", sandboxName }]
+              : [],
+          });
+        }
+        if (target.endsWith("/internal/dev-preview/restore-orphans")) {
+          return Response.json({ restored: [], releasedLeases: [] });
+        }
+        if (init?.method === "DELETE") {
+          deleteCalls += 1;
+          live = false;
+          return Response.json({
+            sandboxName,
+            accepted: true,
+            deleted: true,
+            deferred: false,
+          });
+        }
+        const body = JSON.parse(String((init as RequestInit).body));
+        if (target.endsWith("/internal/dev-previews/activate")) {
+          activationCalls += 1;
+          return Response.json(
+            {
+              accepted: true,
+              complete: false,
+              pending: true,
+              activated: false,
+              activationPhase: "scheduled",
+              batchId: "batch-exec-1",
+              executionId: body.executionId,
+              sandboxNames: body.sandboxNames,
+            },
+            { status: 202 },
+          );
+        }
+        stageCalls += 1;
+        const descriptor = resolveDevPreviewDescriptor("workflow-orchestrator");
+        return Response.json({
+          sandboxName,
+          executionId: "exec-1",
+          service: "workflow-orchestrator",
+          staged: true,
+          podIP: "10.0.0.12",
+          port: descriptor.port,
+          syncPort: descriptor.syncPort,
+          url: `http://10.0.0.12:${descriptor.port}`,
+          syncUrl: `http://10.0.0.12:${descriptor.syncPort}/__sync`,
+          ready: true,
+          status: "running",
+          needsDapr: body.needsDapr === true,
+          daprAppId: typeof body.daprAppId === "string" ? body.daprAppId : null,
+        });
+      }),
+    );
+    const input = {
+      executionId: "exec-1",
+      services: ["workflow-orchestrator"],
+      mode: "preview-native" as const,
+      adopt: true,
+    };
+
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "scheduled",
+    });
+    const state = rows[0]?.sandboxState;
+    const details = state?.details;
+    expect(details).toBeTypeOf("object");
+    (details as Record<string, unknown>).image =
+      `ghcr.io/pittampalliorg/not-workflow-orchestrator:git-${"b".repeat(40)}`;
+
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: false,
+      complete: false,
+      pending: false,
+      activationPhase: "failed",
+      services: [
+        {
+          service: "workflow-orchestrator",
+          ok: false,
+          error: expect.stringContaining("persisted batch activation rejected"),
+        },
+      ],
+    });
+    expect(stageCalls).toBe(1);
+    expect(activationCalls).toBe(1);
+    expect(deleteCalls).toBe(1);
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).toHaveBeenCalledWith({ workspaceRef: sandboxName });
+  });
+
   it("reports terminal activation only after an idempotent call observes the active batch", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
     let activationCalls = 0;

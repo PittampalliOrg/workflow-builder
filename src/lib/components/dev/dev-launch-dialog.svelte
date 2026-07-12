@@ -14,6 +14,7 @@
 		DialogTitle
 	} from '$lib/components/ui/dialog';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { resolvePreviewLaunchOrigin } from '$lib/components/dev/dev-launch-origin';
 	import { ShieldCheck, Rocket } from '@lucide/svelte';
 
 	export interface ServiceCatalogEntry {
@@ -97,7 +98,11 @@
 				keepPreview: keepAlive ? 'true' : 'false'
 			};
 			if (insideAppPreview && previewEnvironment) {
-				if (previewEnvironment.origin) input.previewOrigin = previewEnvironment.origin;
+				const previewOrigin = resolvePreviewLaunchOrigin(
+					previewEnvironment.origin,
+					typeof window === 'undefined' ? null : window.location.origin
+				);
+				if (previewOrigin) input.previewOrigin = previewOrigin;
 				if (previewEnvironment.sourceRevision)
 					input.sourceRevision = previewEnvironment.sourceRevision;
 			}
