@@ -924,6 +924,74 @@ describe("BrokeredVclusterPreviewGateway", () => {
     expect(bodyOf(brokerFetch.mock.calls[0]?.[1])).toEqual({ guard });
   });
 
+  it("replays the exact guarded teardown once after a transport failure", async () => {
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    };
+    const preview = {
+      name: command.name,
+      phase: "terminating",
+      ready: false,
+      sourceRevision: null,
+      provenance: null,
+    };
+    const brokerFetch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(
+        json({
+          ok: true,
+          preview,
+          receipt: {
+            name: command.name,
+            guard,
+            desiredStateAbsent: true,
+          },
+        }),
+      );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+    });
+
+    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(
+      preview,
+    );
+    expect(brokerFetch).toHaveBeenCalledTimes(2);
+    for (const call of brokerFetch.mock.calls) {
+      expect(call[0]).toBe(
+        `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown`,
+      );
+      expect(bodyOf(call[1])).toEqual({ guard });
+    }
+  });
+
+  it("fails closed when the guarded teardown transport fails twice", async () => {
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    };
+    const brokerFetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+    });
+
+    await expect(adapter.teardown(command.name, guard)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(brokerFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses unguarded destructive commands before network access", async () => {
     const brokerFetch = vi.fn();
     const adapter = new BrokeredVclusterPreviewGateway({
