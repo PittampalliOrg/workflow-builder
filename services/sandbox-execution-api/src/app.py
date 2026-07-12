@@ -2486,6 +2486,18 @@ def _cli_transcript_resource_name(session_id: str) -> str:
     return _safe_resource_name(f"cli-tx-{session_id}", max_length=63)
 
 
+def _cli_transcript_claim_name(
+    request: AgentWorkflowHostRequest,
+    preview_storage: PreviewStorageContext | None,
+) -> str:
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            _cli_transcript_conversation_key(request), field="conversation key"
+        )
+        return _preview_storage_pvc_name("transcript", logical_key)
+    return _cli_transcript_resource_name(request.sessionId)
+
+
 def _ensure_cli_transcript_volume(
     core: Any,
     request: AgentWorkflowHostRequest,
@@ -2688,6 +2700,18 @@ def _cli_shared_workspace_resource_name(session_id: str) -> str:
     # `cli-ws-` prefix keeps the name off the driver's `pvc-<uuid>` dynamic-PV
     # regex, so DeleteVolume stays a data-safe no-op (same as cli-tx-).
     return _safe_resource_name(f"cli-ws-{session_id}", max_length=63)
+
+
+def _cli_shared_workspace_claim_name(
+    request: AgentWorkflowHostRequest,
+    preview_storage: PreviewStorageContext | None,
+) -> str:
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            request.sharedWorkspaceKey, field="shared workspace key"
+        )
+        return _preview_storage_pvc_name("workspace", logical_key)
+    return _cli_shared_workspace_resource_name(request.sessionId)
 
 
 def _ensure_cli_shared_workspace_volume(
@@ -2966,6 +2990,18 @@ def _ensure_cli_seed_workspace_volume(
         if getattr(exc, "status", None) != 409:
             raise
     return name
+
+
+def _cli_seed_workspace_claim_name(
+    request: AgentWorkflowHostRequest,
+    preview_storage: PreviewStorageContext | None,
+) -> str:
+    if preview_storage is not None:
+        logical_key = _preview_storage_logical_key(
+            request.seedWorkspaceFrom, field="seed workspace key"
+        )
+        return _preview_storage_pvc_name("workspace", logical_key)
+    return f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
 
 
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
@@ -3357,7 +3393,8 @@ def build_agent_workflow_host_sandbox_manifest(
         # SIBLING to the CLI config dir; cli-agent-py symlinks the CLI's
         # transcript dir into it (CLI_TRANSCRIPT_MOUNT) so only the transcript
         # persists and all credential state stays on the ephemeral emptyDir.
-        transcript_pvc = _cli_transcript_resource_name(request.sessionId)
+        preview_storage = _preview_storage_context()
+        transcript_pvc = _cli_transcript_claim_name(request, preview_storage)
         mount_path = class_config.transcriptStoreMountPath
         pod_spec["volumes"].append(
             {
@@ -3379,7 +3416,8 @@ def build_agent_workflow_host_sandbox_manifest(
         # emptyDir provides /sandbox + the CLI's config dirs; this PVC overlays
         # only the build subdir, shared across the workflow's CLI pods). Nested
         # mount: kubelet mounts the parent emptyDir before this child path.
-        shared_pvc = _cli_shared_workspace_resource_name(request.sessionId)
+        preview_storage = _preview_storage_context()
+        shared_pvc = _cli_shared_workspace_claim_name(request, preview_storage)
         shared_mount_path = class_config.sharedWorkspaceStoreMountPath
         pod_spec["volumes"].append(
             {
@@ -3399,7 +3437,7 @@ def build_agent_workflow_host_sandbox_manifest(
         # pods of the same fork see it populated and no-op). Source is small (build
         # artifacts live on localScratch, not the shared FS).
         if (request.seedWorkspaceFrom or "").strip():
-            seed_pvc = f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
+            seed_pvc = _cli_seed_workspace_claim_name(request, preview_storage)
             pod_spec["volumes"].append(
                 {
                     "name": "cli-seed-workspace",
