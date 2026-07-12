@@ -129,6 +129,57 @@ def test_preview_transcript_and_workspace_use_only_host_issued_dynamic_class(
         assert pvc.metadata.labels["preview.stacks.io/storage-scope"] == "1" * 32
 
 
+def test_preview_agent_manifest_mounts_the_dynamic_claims_it_provisions(
+    monkeypatch,
+) -> None:
+    set_preview_env(monkeypatch, "1" * 32)
+    core = FakeCore()
+    cfg = storage_class()
+    source_key = "source-execution"
+    preview_storage = app_module._preview_storage_context()
+    assert preview_storage is not None
+    source_pvc = app_module._ensure_preview_dynamic_pvc(
+        core,
+        namespace="workflow-builder",
+        context=preview_storage,
+        kind="workspace",
+        logical_key=source_key,
+        capacity=cfg.sharedWorkspaceStoreCapacity,
+    )
+    host = AgentWorkflowHostRequest(
+        sessionId="session-1",
+        agentAppId="agent-1",
+        executionClass="interactive-cli",
+        sharedWorkspaceKey="execution-1",
+        seedWorkspaceFrom=source_key,
+    )
+
+    transcript_pvc = app_module._ensure_cli_transcript_volume(
+        core, host, cfg, namespace="workflow-builder"
+    )
+    workspace_pvc = app_module._ensure_cli_shared_workspace_volume(
+        core, host, cfg, namespace="workflow-builder"
+    )
+    seed_pvc = app_module._ensure_cli_seed_workspace_volume(
+        core, host, cfg, namespace="workflow-builder"
+    )
+    manifest = app_module.build_agent_workflow_host_sandbox_manifest(
+        host, namespace="workflow-builder", class_config=cfg
+    )
+    volumes = {
+        volume["name"]: volume["persistentVolumeClaim"]["claimName"]
+        for volume in manifest["spec"]["podTemplate"]["spec"]["volumes"]
+        if "persistentVolumeClaim" in volume
+    }
+
+    assert volumes == {
+        "cli-transcripts": transcript_pvc,
+        "cli-shared-workspace": workspace_pvc,
+        "cli-seed-workspace": source_pvc,
+    }
+    assert seed_pvc == source_pvc
+
+
 def test_other_preview_cannot_read_or_purge_an_existing_scope(monkeypatch) -> None:
     core = FakeCore()
     cfg = storage_class()
