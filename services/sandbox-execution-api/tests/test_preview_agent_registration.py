@@ -16,6 +16,7 @@ from kubernetes.client.exceptions import ApiException
 
 from src.preview_agent_registration import (
     ARGO_NAMESPACE,
+    ARGO_AGENT_NAME_LABEL,
     ARGO_SECRET_TYPE_LABEL,
     CERTIFICATE_DURATION,
     CERTIFICATE_EXPIRY_MARGIN,
@@ -187,6 +188,7 @@ def _mapping_secret(*, environment_uid: str = ENVIRONMENT_UID) -> dict[str, Any]
             "labels": {
                 **registration_labels(PREVIEW_ID),
                 ARGO_SECRET_TYPE_LABEL: "cluster",
+                ARGO_AGENT_NAME_LABEL: agent_name(PREVIEW_ID),
             },
             "annotations": registration_annotations(environment_uid),
         },
@@ -357,6 +359,7 @@ def test_mapping_external_secret_contract_is_exact() -> None:
     target_labels = {
         **registration_labels(PREVIEW_ID),
         ARGO_SECRET_TYPE_LABEL: "cluster",
+        ARGO_AGENT_NAME_LABEL: agent_name(PREVIEW_ID),
     }
     assert manifest == {
         "apiVersion": f"{EXTERNAL_SECRET_GROUP}/{EXTERNAL_SECRET_VERSION}",
