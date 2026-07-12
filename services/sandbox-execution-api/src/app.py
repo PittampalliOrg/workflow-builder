@@ -10707,18 +10707,22 @@ def provision_vcluster_preview(
                 # after the first down attempt removed the namespace; exact ownership
                 # guards plus the pre-existing bounded identity preserve that recovery
                 # path without recreating the capacity-bearing namespace.
+                owned_guard = bool(
+                    body.teardownExpectedRequestId
+                    and body.teardownExpectedSourceRevision
+                )
+                superseded_guard = bool(body.teardownProtectedRequestId)
                 try:
-                    member = _read_preview_member(core, body.name)
+                    member = _read_preview_member(
+                        core,
+                        body.name,
+                        allow_terminating=owned_guard != superseded_guard,
+                    )
                 except HTTPException as exc:
                     if exc.status_code != status.HTTP_404_NOT_FOUND:
                         raise
                     member = None
                 if member is None:
-                    owned_guard = bool(
-                        body.teardownExpectedRequestId
-                        and body.teardownExpectedSourceRevision
-                    )
-                    superseded_guard = bool(body.teardownProtectedRequestId)
                     if owned_guard == superseded_guard:
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
@@ -10735,11 +10739,6 @@ def provision_vcluster_preview(
                         if member.provenance is not None
                         else None
                     )
-                    owned_guard = bool(
-                        body.teardownExpectedRequestId
-                        and body.teardownExpectedSourceRevision
-                    )
-                    superseded_guard = bool(body.teardownProtectedRequestId)
                     if _preview_member_is_controller_owned(member) and (
                         owned_guard == superseded_guard
                     ):
@@ -11876,7 +11875,9 @@ def release_vcluster_preview_cleanup_receipt(
     return {"name": safe_name, "jobName": job_name, "absent": True}
 
 
-def _read_preview_member(core, name: str) -> PreviewMember:
+def _read_preview_member(
+    core, name: str, *, allow_terminating: bool = False
+) -> PreviewMember:
     """Resolve a user-facing name (alias or real) to its PreviewMember, 404-ing on
     anything that is not a live preview vcluster namespace. The app=vcluster-preview
     label check is the HARD safety rule: lifecycle endpoints can never act on an
@@ -11892,7 +11893,7 @@ def _read_preview_member(core, name: str) -> PreviewMember:
     if labels.get("app") != "vcluster-preview":
         raise HTTPException(status_code=404, detail="not a preview vcluster")
     member = _preview_member_from_ns(ns)
-    if member.terminating:
+    if member.terminating and not allow_terminating:
         raise HTTPException(status_code=409, detail="preview is terminating")
     return member
 
@@ -12098,7 +12099,11 @@ def teardown_vcluster_preview(
                     detail="owned teardown requires expectedSourceRevision",
                 )
         try:
-            member = _read_preview_member(core, name)
+            member = _read_preview_member(
+                core,
+                name,
+                allow_terminating=body is not None,
+            )
         except HTTPException as exc:
             if exc.status_code != status.HTTP_404_NOT_FOUND:
                 raise

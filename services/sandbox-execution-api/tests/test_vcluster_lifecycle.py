@@ -1202,6 +1202,121 @@ def test_profiled_teardown_route_requires_exact_guard_before_job(
     assert batch.created == []
 
 
+def test_controller_intent_retries_down_for_terminating_preview(monkeypatch) -> None:
+    request_id = "request-terminating-1"
+    source_revision = "b" * 40
+    environment_uid = "12345678-1234-1234-1234-123456789abc"
+    deletion_intent_id = f"sha256:{'d' * 64}"
+    member = _ns(
+        "terminating-one",
+        phase="Terminating",
+        profile="app-live",
+        mode="live",
+        source_revision=source_revision,
+        provenance={"requestId": request_id},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setenv("PREVIEW_ARCHIVE_TEARDOWN_TOKEN", "host-archive-proof")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.teardown_vcluster_preview(
+        SimpleNamespace(
+            headers={
+                "authorization": "Bearer test-token",
+                "x-preview-archive-teardown-token": "host-archive-proof",
+            }
+        ),
+        "terminating-one",
+        app_module.VclusterPreviewTeardownRequest(
+            expectedRequestId=request_id,
+            expectedSourceRevision=source_revision,
+            environmentUid=environment_uid,
+            deletionIntentId=deletion_intent_id,
+        ),
+    )
+
+    assert result["status"] == "terminating"
+    assert _created_actions(batch) == [("terminating-one", "down")]
+    annotations = batch.created[0]["metadata"]["annotations"]
+    assert annotations["preview.stacks.io/teardown-request-id"] == request_id
+    assert annotations["preview.stacks.io/teardown-source-revision"] == source_revision
+    assert annotations["preview.stacks.io/teardown-environment-uid"] == environment_uid
+    assert annotations["preview.stacks.io/teardown-intent-id"] == deletion_intent_id
+
+
+def test_terminating_preview_retry_still_requires_matching_guard(monkeypatch) -> None:
+    source_revision = "b" * 40
+    member = _ns(
+        "terminating-one",
+        phase="Terminating",
+        profile="app-live",
+        mode="live",
+        source_revision=source_revision,
+        provenance={"requestId": "request-1"},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.teardown_vcluster_preview(
+            _no_auth_request(),
+            "terminating-one",
+            app_module.VclusterPreviewTeardownRequest(
+                expectedRequestId="wrong-request",
+                expectedSourceRevision=source_revision,
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert "ownership no longer matches" in str(caught.value.detail)
+    assert batch.created == []
+
+
+def test_terminating_preview_retry_refuses_protected_generation(monkeypatch) -> None:
+    request_id = "request-1"
+    member = _ns(
+        "terminating-one",
+        phase="Terminating",
+        profile="app-live",
+        mode="live",
+        source_revision="b" * 40,
+        provenance={"requestId": request_id},
+    )
+    core = _FakeCore([member])
+    batch = _FakeBatch()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.teardown_vcluster_preview(
+            _no_auth_request(),
+            "terminating-one",
+            app_module.VclusterPreviewTeardownRequest(
+                protectedRequestId=request_id,
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert "protected preview generation" in str(caught.value.detail)
+    assert batch.created == []
+
+
+def test_terminating_preview_rejects_unguarded_lifecycle_read(monkeypatch) -> None:
+    core = _FakeCore([_ns("terminating-one", phase="Terminating")])
+    batch = _FakeBatch()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.teardown_vcluster_preview(
+            _no_auth_request(), "terminating-one", None
+        )
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == "preview is terminating"
+    assert batch.created == []
+
+
 def test_up_job_manifest_omits_d1_env_by_default_and_rejects_bad_origin() -> None:
     m = app_module._vcluster_preview_job_manifest(
         VclusterPreviewRequest(name="prv", action="up"), namespace="workflow-builder"
