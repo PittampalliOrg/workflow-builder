@@ -19,6 +19,53 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR = path.resolve(HERE, '..', '..', 'services', 'dev-sync-sidecar', 'server.mjs');
 const SYNC_SH = path.join(HERE, 'sync.sh');
 const TOKEN = '3'.repeat(64);
+const REQUIRED_SYNC_TOOLS = [
+	'basename',
+	'cat',
+	'chmod',
+	'cp',
+	'curl',
+	'cut',
+	'date',
+	'dirname',
+	'gzip',
+	'ls',
+	'mkdir',
+	'python3',
+	'rm',
+	'sed',
+	'sh',
+	'sha256sum',
+	'tar',
+	'tr'
+];
+
+function findExecutable(name, searchPath = process.env.PATH ?? '') {
+	for (const dir of searchPath.split(path.delimiter)) {
+		if (!dir) continue;
+		const candidate = path.join(dir, name);
+		try {
+			fs.accessSync(candidate, fs.constants.X_OK);
+			return candidate;
+		} catch {
+			// Keep searching PATH.
+		}
+	}
+	return null;
+}
+
+function syncToolPath(work) {
+	const bin = path.join(work, '.sync-test-tools-no-jq');
+	fs.mkdirSync(bin, { recursive: true });
+	for (const name of REQUIRED_SYNC_TOOLS) {
+		const target = findExecutable(name);
+		assert.ok(target, `required sync test tool is unavailable: ${name}`);
+		const link = path.join(bin, name);
+		if (!fs.existsSync(link)) fs.symlinkSync(target, link);
+	}
+	assert.equal(findExecutable('jq', bin), null, 'isolated sync PATH excludes jq');
+	return bin;
+}
 
 function freePort() {
 	return new Promise((resolve, reject) => {
@@ -68,11 +115,18 @@ function runSync(work, extraEnv = {}) {
 			...process.env,
 			DEV_SYNC_WORK: work,
 			DEV_SYNC_REPO: path.join(work, 'repo'),
+			PATH: syncToolPath(work),
 			...extraEnv
 		},
 		encoding: 'utf8'
 	});
 }
+
+test('sync.sh uses Python 3 stdlib and has no jq runtime dependency', () => {
+	const source = fs.readFileSync(SYNC_SH, 'utf8');
+	assert.doesNotMatch(source, /\bjq\b/);
+	assert.match(source, /python3 -c/);
+});
 
 function write(p, contents) {
 	fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -272,7 +326,7 @@ test('sync.sh never runs dependency actions after a failed source upload', (t) =
 
 	const result = runSync(work, {
 		CURL_LOG: curlLog,
-		PATH: `${path.dirname(curl)}:${process.env.PATH}`
+		PATH: `${path.dirname(curl)}:${syncToolPath(work)}`
 	});
 	assert.notEqual(result.status, 0, result.stderr + result.stdout);
 	const requests = fs.readFileSync(curlLog, 'utf8').trim().split('\n');

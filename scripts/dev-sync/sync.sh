@@ -79,7 +79,7 @@ maybe_deps() {
 	fi
 	sed 's/^/deps> /' /tmp/dev-sync-deps.out 2>/dev/null
 	echo "deps: /__run?cmd=deps → HTTP $code"
-	if [ "$code" != "200" ] || ! jq -e '.ok == true and ((.exitCode // 0) == 0)' \
+	if [ "$code" != "200" ] || ! python3 -c 'import json, sys; data = json.load(open(sys.argv[1], encoding="utf-8")); exit_code = data.get("exitCode") if isinstance(data, dict) else None; sys.exit(0 if isinstance(data, dict) and data.get("ok") is True and (0 if exit_code is None or exit_code is False else exit_code) == 0 else 1)' \
 		/tmp/dev-sync-deps.out >/dev/null 2>&1; then
 		echo "deps: install failed for $_subdir; leaving the prior manifest baseline for retry" >&2
 		rc=1
@@ -136,9 +136,7 @@ sync_one() {
 		rc=1
 		return
 	}
-	declared_roots_json=$(printf '%s\n' "$declared_roots" | jq -Rsc '
-		split("\n") | map(select(length > 0)) | unique
-	') || {
+	declared_roots_json=$(printf '%s\n' "$declared_roots" | python3 -c 'import json, sys; print(json.dumps(sorted(set(filter(None, (line.rstrip("\n") for line in sys.stdin)))), separators=(",", ":")))') || {
 		echo "invalid sync roots for $SUBDIR" >&2
 		rc=1
 		return
