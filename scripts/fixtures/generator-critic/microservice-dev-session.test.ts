@@ -27,6 +27,17 @@ const commandText = cloneCommand.replaceAll('\\"', '"');
 const handoffInstructions = fixture.do.find(
   (entry: Record<string, unknown>) => "handoff" in entry,
 ).handoff.with.instructions as string;
+const seedWorkflowsSource = readFileSync(
+  new URL("../../seed-workflows.ts", import.meta.url),
+  "utf8",
+);
+const seedWorkflowsBundle = readFileSync(
+  new URL("../../seed-workflows.bundle.js", import.meta.url),
+  "utf8",
+);
+const handoff = fixture.do.find(
+  (entry: Record<string, unknown>) => "handoff" in entry,
+).handoff;
 
 function previewActions(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) return value.flatMap(previewActions);
@@ -43,11 +54,24 @@ describe("microservice dev session source checkout", () => {
   it("defaults to the five-service preview-native baseline", () => {
     expect(inputProperties.mode.default).toBe("preview-native");
     expect(inputProperties.services.default).toEqual(catalogServices);
+    expect(inputProperties).not.toHaveProperty("agentSlug");
+    expect(handoff.with).not.toHaveProperty("agentSlug");
     expect(provision.with.mode).toContain('.trigger.mode // "preview-native"');
     expect(provision.with.services).toContain("workflow-mcp-server");
     for (const service of catalogServices) {
       expect(fixture.document.summary).toContain(service);
       expect(inputProperties.service.description).toContain(service);
+    }
+  });
+
+  it("seeds the credential-free default agent on the shared JuiceFS runtime", () => {
+    for (const source of [seedWorkflowsSource, seedWorkflowsBundle]) {
+      const start = source.indexOf('slug: "dapr-juicefs-dev-agent"');
+      const agent = source.slice(start, start + 900);
+      expect(start).toBeGreaterThan(-1);
+      expect(agent).toContain('runtime: "dapr-agent-py-juicefs"');
+      expect(agent).toContain('modelSpec: "deepseek-v4-pro"');
+      expect(agent).not.toContain("SEED_SHOWCASE_AGENT_MODEL");
     }
   });
 

@@ -18,6 +18,21 @@ export type SessionRuntimeTarget = {
 	source: "persisted" | "agent" | "legacy";
 };
 
+export type RuntimeWorkspaceCapabilities = {
+	interactiveTerminal?: boolean;
+	workspaceBackend?: string;
+};
+
+/** Runtimes that mount the workflow execution's controller-owned workspace. */
+export function runtimeUsesSharedWorkspace(
+	capabilities: RuntimeWorkspaceCapabilities | null | undefined,
+): boolean {
+	return (
+		capabilities?.interactiveTerminal === true ||
+		capabilities?.workspaceBackend === "juicefs-shared"
+	);
+}
+
 export async function resolveSessionRuntimeTarget(
 	sessionId: string,
 ): Promise<SessionRuntimeTarget | null> {

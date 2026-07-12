@@ -3,7 +3,7 @@ import crypto4 from "node:crypto";
 import fs2 from "node:fs";
 import path from "node:path";
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/entity.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/entity.js
 var entityKind = /* @__PURE__ */ Symbol.for("drizzle:entityKind");
 function is(value, type) {
   if (!value || typeof value !== "object") {
@@ -29,7 +29,7 @@ function is(value, type) {
   return false;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/column.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/column.js
 var Column = class {
   constructor(table, config) {
     this.table = table;
@@ -80,7 +80,7 @@ var Column = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/column-builder.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/column-builder.js
 var ColumnBuilder = class {
   static [entityKind] = "ColumnBuilder";
   config;
@@ -183,10 +183,10 @@ var ColumnBuilder = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/table.utils.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/table.utils.js
 var TableName = /* @__PURE__ */ Symbol.for("drizzle:Name");
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/foreign-keys.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/foreign-keys.js
 var ForeignKeyBuilder = class {
   static [entityKind] = "PgForeignKeyBuilder";
   /** @internal */
@@ -254,12 +254,12 @@ function foreignKey(config) {
   return new ForeignKeyBuilder(mappedConfig);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/tracing-utils.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/tracing-utils.js
 function iife(fn, ...args) {
   return fn(...args);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/unique-constraint.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/unique-constraint.js
 function unique(name) {
   return new UniqueOnConstraintBuilder(name);
 }
@@ -312,7 +312,7 @@ var UniqueConstraint = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/utils/array.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/utils/array.js
 function parsePgArrayValue(arrayString, startFrom, inQuotes) {
   for (let i = startFrom; i < arrayString.length; i++) {
     const char2 = arrayString[i];
@@ -388,7 +388,7 @@ function makePgArray(array) {
   }).join(",")}}`;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/common.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/common.js
 var PgColumnBuilder = class extends ColumnBuilder {
   foreignKeyConfigs = [];
   static [entityKind] = "PgColumnBuilder";
@@ -572,7 +572,7 @@ var PgArray = class _PgArray extends PgColumn {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/enum.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/enum.js
 var PgEnumObjectColumnBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgEnumObjectColumnBuilder";
   constructor(name, enumInstance) {
@@ -630,7 +630,7 @@ var PgEnumColumn = class extends PgColumn {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/subquery.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/subquery.js
 var Subquery = class {
   static [entityKind] = "Subquery";
   constructor(sql2, fields, alias, isWith = false, usedTables = []) {
@@ -651,10 +651,10 @@ var WithSubquery = class extends Subquery {
   static [entityKind] = "WithSubquery";
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/version.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/version.js
 var version = "0.44.7";
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/tracing.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/tracing.js
 var otel;
 var rawTracer;
 var tracer = {
@@ -689,10 +689,10 @@ var tracer = {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/view-common.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/view-common.js
 var ViewBaseConfig = /* @__PURE__ */ Symbol.for("drizzle:ViewBaseConfig");
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/table.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/table.js
 var Schema = /* @__PURE__ */ Symbol.for("drizzle:Schema");
 var Columns = /* @__PURE__ */ Symbol.for("drizzle:Columns");
 var ExtraConfigColumns = /* @__PURE__ */ Symbol.for("drizzle:ExtraConfigColumns");
@@ -754,7 +754,7 @@ function getTableUniqueName(table) {
   return `${table[Schema] ?? "public"}.${table[TableName]}`;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/sql.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/sql.js
 var FakePrimitiveParam = class {
   static [entityKind] = "FakePrimitiveParam";
 };
@@ -1148,7 +1148,7 @@ Subquery.prototype.getSQL = function() {
   return new SQL([this]);
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/alias.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/alias.js
 var ColumnAliasProxyHandler = class {
   constructor(table) {
     this.table = table;
@@ -1244,7 +1244,7 @@ function mapColumnsInSQLToAlias(query, alias) {
   }));
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/errors.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/errors.js
 var DrizzleError = class extends Error {
   static [entityKind] = "DrizzleError";
   constructor({ message, cause }) {
@@ -1271,7 +1271,7 @@ var TransactionRollbackError = class extends DrizzleError {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/logger.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/logger.js
 var ConsoleLogWriter = class {
   static [entityKind] = "ConsoleLogWriter";
   write(message) {
@@ -1302,7 +1302,7 @@ var NoopLogger = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/query-promise.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/query-promise.js
 var QueryPromise = class {
   static [entityKind] = "QueryPromise";
   [Symbol.toStringTag] = "QueryPromise";
@@ -1326,7 +1326,7 @@ var QueryPromise = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/utils.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/utils.js
 function mapResultRow(columns, row, joinsNotNullableMap) {
   const nullifyMap = {};
   const result = columns.reduce(
@@ -1475,7 +1475,7 @@ function isConfig(data) {
 }
 var textDecoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/int.common.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/int.common.js
 var PgIntColumnBaseBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgIntColumnBaseBuilder";
   generatedAlwaysAsIdentity(sequence) {
@@ -1514,7 +1514,7 @@ var PgIntColumnBaseBuilder = class extends PgColumnBuilder {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/bigint.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/bigint.js
 var PgBigInt53Builder = class extends PgIntColumnBaseBuilder {
   static [entityKind] = "PgBigInt53Builder";
   constructor(name) {
@@ -1568,7 +1568,7 @@ function bigint(a, b2) {
   return new PgBigInt64Builder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/bigserial.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/bigserial.js
 var PgBigSerial53Builder = class extends PgColumnBuilder {
   static [entityKind] = "PgBigSerial53Builder";
   constructor(name) {
@@ -1628,7 +1628,7 @@ function bigserial(a, b2) {
   return new PgBigSerial64Builder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/boolean.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/boolean.js
 var PgBooleanBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgBooleanBuilder";
   constructor(name) {
@@ -1649,7 +1649,7 @@ function boolean(name) {
   return new PgBooleanBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/char.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/char.js
 var PgCharBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgCharBuilder";
   constructor(name, config) {
@@ -1678,7 +1678,7 @@ function char(a, b2 = {}) {
   return new PgCharBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/cidr.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/cidr.js
 var PgCidrBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgCidrBuilder";
   constructor(name) {
@@ -1699,7 +1699,7 @@ function cidr(name) {
   return new PgCidrBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/custom.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/custom.js
 var PgCustomColumnBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgCustomColumnBuilder";
   constructor(name, fieldConfig, customTypeParams) {
@@ -1743,7 +1743,7 @@ function customType(customTypeParams) {
   };
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/date.common.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/date.common.js
 var PgDateColumnBaseBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgDateColumnBaseBuilder";
   defaultNow() {
@@ -1751,7 +1751,7 @@ var PgDateColumnBaseBuilder = class extends PgColumnBuilder {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/date.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/date.js
 var PgDateBuilder = class extends PgDateColumnBaseBuilder {
   static [entityKind] = "PgDateBuilder";
   constructor(name) {
@@ -1801,7 +1801,7 @@ function date(a, b2) {
   return new PgDateStringBuilder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/double-precision.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/double-precision.js
 var PgDoublePrecisionBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgDoublePrecisionBuilder";
   constructor(name) {
@@ -1831,7 +1831,7 @@ function doublePrecision(name) {
   return new PgDoublePrecisionBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/inet.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/inet.js
 var PgInetBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgInetBuilder";
   constructor(name) {
@@ -1852,7 +1852,7 @@ function inet(name) {
   return new PgInetBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/integer.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/integer.js
 var PgIntegerBuilder = class extends PgIntColumnBaseBuilder {
   static [entityKind] = "PgIntegerBuilder";
   constructor(name) {
@@ -1879,7 +1879,7 @@ function integer(name) {
   return new PgIntegerBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/interval.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/interval.js
 var PgIntervalBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgIntervalBuilder";
   constructor(name, intervalConfig) {
@@ -1906,7 +1906,7 @@ function interval(a, b2 = {}) {
   return new PgIntervalBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/json.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/json.js
 var PgJsonBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgJsonBuilder";
   constructor(name) {
@@ -1943,7 +1943,7 @@ function json(name) {
   return new PgJsonBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/jsonb.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/jsonb.js
 var PgJsonbBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgJsonbBuilder";
   constructor(name) {
@@ -1980,7 +1980,7 @@ function jsonb(name) {
   return new PgJsonbBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/line.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/line.js
 var PgLineBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgLineBuilder";
   constructor(name) {
@@ -2041,7 +2041,7 @@ function line(a, b2) {
   return new PgLineABCBuilder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/macaddr.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/macaddr.js
 var PgMacaddrBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgMacaddrBuilder";
   constructor(name) {
@@ -2062,7 +2062,7 @@ function macaddr(name) {
   return new PgMacaddrBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/macaddr8.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/macaddr8.js
 var PgMacaddr8Builder = class extends PgColumnBuilder {
   static [entityKind] = "PgMacaddr8Builder";
   constructor(name) {
@@ -2083,7 +2083,7 @@ function macaddr8(name) {
   return new PgMacaddr8Builder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/numeric.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/numeric.js
 var PgNumericBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgNumericBuilder";
   constructor(name, precision, scale) {
@@ -2200,7 +2200,7 @@ function numeric(a, b2) {
   return mode === "number" ? new PgNumericNumberBuilder(name, config?.precision, config?.scale) : mode === "bigint" ? new PgNumericBigIntBuilder(name, config?.precision, config?.scale) : new PgNumericBuilder(name, config?.precision, config?.scale);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/point.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/point.js
 var PgPointTupleBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgPointTupleBuilder";
   constructor(name) {
@@ -2267,7 +2267,7 @@ function point(a, b2) {
   return new PgPointObjectBuilder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/postgis_extension/utils.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/postgis_extension/utils.js
 function hexToBytes(hex) {
   const bytes = [];
   for (let c = 0; c < hex.length; c += 2) {
@@ -2306,7 +2306,7 @@ function parseEWKB(hex) {
   throw new Error("Unsupported geometry type");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/postgis_extension/geometry.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/postgis_extension/geometry.js
 var PgGeometryBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgGeometryBuilder";
   constructor(name) {
@@ -2366,7 +2366,7 @@ function geometry(a, b2) {
   return new PgGeometryObjectBuilder(name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/real.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/real.js
 var PgRealBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgRealBuilder";
   constructor(name, length) {
@@ -2397,7 +2397,7 @@ function real(name) {
   return new PgRealBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/serial.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/serial.js
 var PgSerialBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgSerialBuilder";
   constructor(name) {
@@ -2420,7 +2420,7 @@ function serial(name) {
   return new PgSerialBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/smallint.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/smallint.js
 var PgSmallIntBuilder = class extends PgIntColumnBaseBuilder {
   static [entityKind] = "PgSmallIntBuilder";
   constructor(name) {
@@ -2447,7 +2447,7 @@ function smallint(name) {
   return new PgSmallIntBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/smallserial.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/smallserial.js
 var PgSmallSerialBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgSmallSerialBuilder";
   constructor(name) {
@@ -2473,7 +2473,7 @@ function smallserial(name) {
   return new PgSmallSerialBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/text.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/text.js
 var PgTextBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgTextBuilder";
   constructor(name, config) {
@@ -2497,7 +2497,7 @@ function text(a, b2 = {}) {
   return new PgTextBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/time.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/time.js
 var PgTimeBuilder = class extends PgDateColumnBaseBuilder {
   constructor(name, withTimezone, precision) {
     super(name, "string", "PgTime");
@@ -2531,7 +2531,7 @@ function time(a, b2 = {}) {
   return new PgTimeBuilder(name, config.withTimezone ?? false, config.precision);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/timestamp.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/timestamp.js
 var PgTimestampBuilder = class extends PgDateColumnBaseBuilder {
   static [entityKind] = "PgTimestampBuilder";
   constructor(name, withTimezone, precision) {
@@ -2601,7 +2601,7 @@ function timestamp(a, b2 = {}) {
   return new PgTimestampBuilder(name, config?.withTimezone ?? false, config?.precision);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/uuid.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/uuid.js
 var PgUUIDBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgUUIDBuilder";
   constructor(name) {
@@ -2628,7 +2628,7 @@ function uuid(name) {
   return new PgUUIDBuilder(name ?? "");
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/varchar.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/varchar.js
 var PgVarcharBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgVarcharBuilder";
   constructor(name, config) {
@@ -2657,7 +2657,7 @@ function varchar(a, b2 = {}) {
   return new PgVarcharBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/bit.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/bit.js
 var PgBinaryVectorBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgBinaryVectorBuilder";
   constructor(name, config) {
@@ -2684,7 +2684,7 @@ function bit(a, b2) {
   return new PgBinaryVectorBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/halfvec.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/halfvec.js
 var PgHalfVectorBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgHalfVectorBuilder";
   constructor(name, config) {
@@ -2717,7 +2717,7 @@ function halfvec(a, b2) {
   return new PgHalfVectorBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/sparsevec.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/sparsevec.js
 var PgSparseVectorBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgSparseVectorBuilder";
   constructor(name, config) {
@@ -2744,7 +2744,7 @@ function sparsevec(a, b2) {
   return new PgSparseVectorBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/vector.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/vector_extension/vector.js
 var PgVectorBuilder = class extends PgColumnBuilder {
   static [entityKind] = "PgVectorBuilder";
   constructor(name, config) {
@@ -2777,7 +2777,7 @@ function vector(a, b2) {
   return new PgVectorBuilder(name, config);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/all.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/columns/all.js
 function getPgColumnBuilders() {
   return {
     bigint,
@@ -2815,7 +2815,7 @@ function getPgColumnBuilders() {
   };
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/table.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/table.js
 var InlineForeignKeys = /* @__PURE__ */ Symbol.for("drizzle:PgInlineForeignKeys");
 var EnableRLS = /* @__PURE__ */ Symbol.for("drizzle:EnableRLS");
 var PgTable = class extends Table {
@@ -2871,7 +2871,7 @@ var pgTable = (name, columns, extraConfig) => {
   return pgTableWithSchema(name, columns, extraConfig, void 0);
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/primary-keys.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/primary-keys.js
 function primaryKey(...config) {
   if (config[0].columns) {
     return new PrimaryKeyBuilder(config[0].columns, config[0].name);
@@ -2907,7 +2907,7 @@ var PrimaryKey = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/expressions/conditions.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/expressions/conditions.js
 function bindIfParam(value, column) {
   if (isDriverValueEncoder(column) && !isSQLWrapper(value) && !is(value, Param) && !is(value, Placeholder) && !is(value, Column) && !is(value, Table) && !is(value, View)) {
     return new Param(value, column);
@@ -3022,7 +3022,7 @@ function notIlike(column, value) {
   return sql`${column} not ilike ${value}`;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/expressions/select.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/sql/expressions/select.js
 function asc(column) {
   return sql`${column} asc`;
 }
@@ -3030,7 +3030,7 @@ function desc(column) {
   return sql`${column} desc`;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/relations.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/relations.js
 var Relation = class {
   constructor(sourceTable, referencedTable, relationName) {
     this.sourceTable = sourceTable;
@@ -5424,7 +5424,7 @@ function osUsername() {
   }
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/selection-proxy.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/selection-proxy.js
 var SelectionProxyHandler = class _SelectionProxyHandler {
   static [entityKind] = "SelectionProxyHandler";
   config;
@@ -5492,7 +5492,7 @@ var SelectionProxyHandler = class _SelectionProxyHandler {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/indexes.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/indexes.js
 var IndexBuilderOn = class {
   constructor(unique2, name) {
     this.unique = unique2;
@@ -5604,7 +5604,7 @@ function uniqueIndex(name) {
   return new IndexBuilderOn(true, name);
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/casing.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/casing.js
 function toSnakeCase(input) {
   const words = input.replace(/['\u2019]/g, "").match(/[\da-z]+|[A-Z]+(?![a-z])|[A-Z][\da-z]+/g) ?? [];
   return words.map((word) => word.toLowerCase()).join("_");
@@ -5656,12 +5656,12 @@ var CasingCache = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/view-base.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/view-base.js
 var PgViewBase = class extends View {
   static [entityKind] = "PgViewBase";
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/dialect.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/dialect.js
 var PgDialect = class {
   static [entityKind] = "PgDialect";
   /** @internal */
@@ -6755,7 +6755,7 @@ var PgDialect = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/query-builders/query-builder.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/query-builders/query-builder.js
 var TypedQueryBuilder = class {
   static [entityKind] = "TypedQueryBuilder";
   /** @internal */
@@ -6764,7 +6764,7 @@ var TypedQueryBuilder = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/select.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/select.js
 var PgSelectBuilder = class {
   static [entityKind] = "PgSelectBuilder";
   fields;
@@ -7580,7 +7580,7 @@ var intersectAll = createSetOperator("intersect", true);
 var except = createSetOperator("except", false);
 var exceptAll = createSetOperator("except", true);
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/query-builder.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/query-builder.js
 var QueryBuilder = class {
   static [entityKind] = "PgQueryBuilder";
   dialect;
@@ -7667,7 +7667,7 @@ var QueryBuilder = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/utils.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/utils.js
 function extractUsedTable(table) {
   if (is(table, PgTable)) {
     return [table[Schema] ? `${table[Schema]}.${table[Table.Symbol.BaseName]}` : table[Table.Symbol.BaseName]];
@@ -7681,7 +7681,7 @@ function extractUsedTable(table) {
   return [];
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/delete.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/delete.js
 var PgDeleteBase = class extends QueryPromise {
   constructor(table, session, dialect, withList) {
     super();
@@ -7777,7 +7777,7 @@ var PgDeleteBase = class extends QueryPromise {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/insert.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/insert.js
 var PgInsertBuilder = class {
   constructor(table, session, dialect, withList, overridingSystemValue_) {
     this.table = table;
@@ -7970,7 +7970,7 @@ var PgInsertBase = class extends QueryPromise {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/refresh-materialized-view.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/refresh-materialized-view.js
 var PgRefreshMaterializedView = class extends QueryPromise {
   constructor(view, session, dialect) {
     super();
@@ -8024,7 +8024,7 @@ var PgRefreshMaterializedView = class extends QueryPromise {
   };
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/update.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/update.js
 var PgUpdateBuilder = class {
   constructor(table, session, dialect, withList) {
     this.table = table;
@@ -8236,7 +8236,7 @@ var PgUpdateBase = class extends QueryPromise {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/count.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/count.js
 var PgCountBuilder = class _PgCountBuilder extends SQL {
   constructor(params) {
     super(_PgCountBuilder.buildEmbeddedCount(params.source, params.filters).queryChunks);
@@ -8287,7 +8287,7 @@ var PgCountBuilder = class _PgCountBuilder extends SQL {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/query.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/query.js
 var RelationalQueryBuilder = class {
   constructor(fullSchema, schema, tableNamesMap, table, tableConfig, dialect, session) {
     this.fullSchema = fullSchema;
@@ -8400,7 +8400,7 @@ var PgRelationalQuery = class extends QueryPromise {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/raw.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/query-builders/raw.js
 var PgRaw = class extends QueryPromise {
   constructor(execute, sql2, query, mapBatchResult) {
     super();
@@ -8429,7 +8429,7 @@ var PgRaw = class extends QueryPromise {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/db.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/db.js
 var PgDatabase = class {
   constructor(dialect, session, schema) {
     this.dialect = dialect;
@@ -8708,7 +8708,7 @@ var PgDatabase = class {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/cache/core/cache.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/cache/core/cache.js
 var Cache = class {
   static [entityKind] = "Cache";
 };
@@ -8735,7 +8735,7 @@ async function hashQuery(sql2, params) {
   return hashHex;
 }
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/session.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/pg-core/session.js
 var PgPreparedQuery = class {
   constructor(query, cache, queryMetadata, cacheConfig) {
     this.query = query;
@@ -8895,7 +8895,7 @@ var PgTransaction = class extends PgDatabase {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/session.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/session.js
 var PostgresJsPreparedQuery = class extends PgPreparedQuery {
   constructor(client, queryString, params, logger, cache, queryMetadata, cacheConfig, fields, _isResponseInArrayMode, customResultMapper) {
     super({ sql: queryString, params }, cache, queryMetadata, cacheConfig);
@@ -9031,7 +9031,7 @@ var PostgresJsTransaction = class _PostgresJsTransaction extends PgTransaction {
   }
 };
 
-// node_modules/.pnpm/drizzle-orm@0.44.7_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/driver.js
+// node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/postgres-js/driver.js
 var PostgresJsDatabase = class extends PgDatabase {
   static [entityKind] = "PostgresJsDatabase";
 };
@@ -9500,6 +9500,10 @@ var workflowExecutions = pgTable(
     errorStackTrace: text("error_stack_trace"),
     rerunOfExecutionId: text("rerun_of_execution_id"),
     rerunSourceInstanceId: text("rerun_source_instance_id"),
+    // Resume/fork: the top-level node this run was forked FROM (skip-prefix point).
+    // NULL for normal (non-fork) runs. Drives the fork-lineage tree's "fork @<node>"
+    // labels so each branch shows where it diverged.
+    resumeFromNode: text("resume_from_node"),
     // Set when this run was started by the event-driven trigger spine (to the
     // firing trigger's id/kind). NULL for manual/API runs. Drives the triggered-
     // run concurrency gate + the "pending/active triggered runs" capacity lens.
@@ -9534,19 +9538,42 @@ var workflowExecutions = pgTable(
     mlflowRunIdx: index("idx_workflow_executions_mlflow_run").on(
       table.mlflowRunId
     ),
-    projectIdx: index("idx_workflow_executions_project_id").on(
-      table.projectId
-    ),
+    projectIdx: index("idx_workflow_executions_project_id").on(table.projectId),
     // Active-triggered-run count (concurrency gate + capacity lens).
-    triggerSourceStatusIdx: index("idx_workflow_executions_trigger_source_status").on(
-      table.triggerSource,
-      table.status
-    ),
+    triggerSourceStatusIdx: index(
+      "idx_workflow_executions_trigger_source_status"
+    ).on(table.triggerSource, table.status),
     rerunOfExecutionFk: foreignKey({
       columns: [table.rerunOfExecutionId],
       foreignColumns: [table.id],
       name: "workflow_executions_rerun_of_execution_id_workflow_executions_id_fk"
     }).onDelete("set null")
+  })
+);
+var workflowScriptCalls = pgTable(
+  "workflow_script_calls",
+  {
+    workflowExecutionId: text("workflow_execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
+    callId: text("call_id").notNull(),
+    seq: integer("seq").notNull(),
+    kind: text("kind").notNull().default("agent"),
+    baseHash: text("base_hash"),
+    occurrence: integer("occurrence").notNull().default(0),
+    label: text("label"),
+    phase: text("phase"),
+    promptSha256: text("prompt_sha256"),
+    status: text("status").notNull(),
+    sessionId: text("session_id"),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - parsed agent output
+    result: jsonb("result").$type(),
+    errorCode: text("error_code"),
+    retries: integer("retries").notNull().default(0),
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.workflowExecutionId, table.callId] })
   })
 );
 var workflowTriggers = pgTable(
@@ -9700,7 +9727,9 @@ var workflowArtifacts = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     inlinePayload: jsonb("inline_payload"),
-    fileId: text("file_id").references(() => files.id, { onDelete: "set null" }),
+    fileId: text("file_id").references(() => files.id, {
+      onDelete: "set null"
+    }),
     contentType: text("content_type"),
     sizeBytes: integer("size_bytes"),
     metadata: jsonb("metadata").$type(),
@@ -9718,6 +9747,107 @@ var workflowArtifacts = pgTable(
     executionSlotIdx: index("idx_workflow_artifacts_execution_slot").on(
       table.workflowExecutionId,
       table.slot
+    )
+  })
+);
+var previewControlArtifacts = pgTable(
+  "preview_control_artifacts",
+  {
+    id: text("id").primaryKey(),
+    previewName: text("preview_name").notNull(),
+    environmentRequestId: text("environment_request_id").notNull(),
+    executionId: text("execution_id").notNull(),
+    sourceArtifactId: text("source_artifact_id").notNull(),
+    fileId: text("file_id").notNull().references(() => files.id, { onDelete: "restrict" }),
+    fileDigest: text("file_digest").notNull(),
+    artifactSnapshot: jsonb("artifact_snapshot").notNull(),
+    platformRevision: text("platform_revision").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    services: jsonb("services").$type().notNull(),
+    captureId: text("capture_id").notNull(),
+    generation: text("generation").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow()
+  },
+  (table) => ({
+    sourceIdentity: uniqueIndex(
+      "uq_preview_control_artifact_source_identity"
+    ).on(
+      table.previewName,
+      table.environmentRequestId,
+      table.executionId,
+      table.sourceArtifactId
+    ),
+    requestIdx: index("idx_preview_control_artifact_request").on(
+      table.previewName,
+      table.environmentRequestId
+    )
+  })
+);
+var previewAcceptedImageReceipts = pgTable(
+  "preview_accepted_image_receipts",
+  {
+    receiptDigest: text("receipt_digest").primaryKey(),
+    repository: text("repository").notNull(),
+    pullRequestNumber: integer("pull_request_number").notNull(),
+    baseSha: text("base_sha").notNull(),
+    headSha: text("head_sha").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    context: text("context").notNull(),
+    attestation: text("attestation").notNull(),
+    subjects: jsonb("subjects").$type().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow()
+  },
+  (table) => ({
+    tupleContext: uniqueIndex(
+      "uq_preview_accepted_image_receipt_tuple_context"
+    ).on(
+      table.repository,
+      table.pullRequestNumber,
+      table.baseSha,
+      table.headSha,
+      table.context
+    ),
+    headContextIdx: index("idx_preview_accepted_image_receipt_head_context").on(
+      table.repository,
+      table.headSha,
+      table.context
+    )
+  })
+);
+var previewRuntimeBudgets = pgTable(
+  "preview_runtime_budgets",
+  {
+    previewName: text("preview_name").notNull(),
+    environmentRequestId: text("environment_request_id").notNull(),
+    platformRevision: text("platform_revision").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    minuteStartedAt: timestamp("minute_started_at", {
+      withTimezone: true
+    }).notNull(),
+    minuteRequests: integer("minute_requests").notNull(),
+    minuteReservedTokens: integer("minute_reserved_tokens").notNull(),
+    totalRequests: integer("total_requests").notNull(),
+    totalReservedTokens: integer("total_reserved_tokens").notNull(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    deleteAfter: timestamp("delete_after", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    identity: primaryKey({
+      name: "pk_preview_runtime_budgets_identity",
+      columns: [
+        table.previewName,
+        table.environmentRequestId,
+        table.platformRevision,
+        table.sourceRevision,
+        table.catalogDigest
+      ]
+    }),
+    updatedIdx: index("idx_preview_runtime_budgets_updated_at").on(
+      table.updatedAt
     )
   })
 );
@@ -9931,10 +10061,9 @@ var workflowExecutionLogs = pgTable(
     wasColdStart: boolean("was_cold_start")
   },
   (table) => ({
-    executionStartedIdx: index("idx_workflow_execution_logs_execution_started").on(
-      table.executionId,
-      table.startedAt
-    ),
+    executionStartedIdx: index(
+      "idx_workflow_execution_logs_execution_started"
+    ).on(table.executionId, table.startedAt),
     executionNodeIdx: index("idx_workflow_execution_logs_execution_node").on(
       table.executionId,
       table.nodeId
@@ -10646,15 +10775,16 @@ var resourcePromptVersions = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow()
   },
   (table) => ({
-    promptVersionUnique: unique("uq_resource_prompt_versions_prompt_version").on(
-      table.promptId,
-      table.version
-    ),
+    promptVersionUnique: unique(
+      "uq_resource_prompt_versions_prompt_version"
+    ).on(table.promptId, table.version),
     promptIdx: index("idx_resource_prompt_versions_prompt").on(table.promptId),
     templateHashIdx: index("idx_resource_prompt_versions_template_hash").on(
       table.templateHash
     ),
-    mlflowUriIdx: index("idx_resource_prompt_versions_mlflow_uri").on(table.mlflowUri)
+    mlflowUriIdx: index("idx_resource_prompt_versions_mlflow_uri").on(
+      table.mlflowUri
+    )
   })
 );
 var resourceSchemas = pgTable(
@@ -10968,7 +11098,9 @@ var agents = pgTable(
     archivedIdx: index("idx_agents_archived").on(table.isArchived),
     environmentIdx: index("idx_agents_environment").on(table.environmentId),
     projectIdx: index("idx_agents_project").on(table.projectId),
-    registryStatusIdx: index("idx_agents_registry_status").on(table.registryStatus)
+    registryStatusIdx: index("idx_agents_registry_status").on(
+      table.registryStatus
+    )
   })
 );
 var agentVersions = pgTable(
@@ -11045,7 +11177,9 @@ var capabilityBundleVersions = pgTable(
       table.bundleId,
       table.version
     ),
-    bundleIdx: index("idx_capability_bundle_versions_bundle").on(table.bundleId),
+    bundleIdx: index("idx_capability_bundle_versions_bundle").on(
+      table.bundleId
+    ),
     hashIdx: index("idx_capability_bundle_versions_hash").on(table.configHash)
   })
 );
@@ -11170,8 +11304,12 @@ var vaultCredentialRefreshLog = pgTable(
     attemptedAt: timestamp("attempted_at").notNull().defaultNow()
   },
   (table) => ({
-    credentialIdx: index("idx_vault_refresh_log_credential").on(table.credentialId),
-    attemptedIdx: index("idx_vault_refresh_log_attempted").on(table.attemptedAt)
+    credentialIdx: index("idx_vault_refresh_log_credential").on(
+      table.credentialId
+    ),
+    attemptedIdx: index("idx_vault_refresh_log_attempted").on(
+      table.attemptedAt
+    )
   })
 );
 var userCliCredentials = pgTable(
@@ -11195,6 +11333,35 @@ var userCliCredentials = pgTable(
     userIdx: index("idx_user_cli_credentials_user").on(table.userId)
   })
 );
+var cliCredentialLocks = pgTable(
+  "cli_credential_locks",
+  {
+    userId: text("user_id").notNull(),
+    provider: text("provider").notNull(),
+    holderSessionId: text("holder_session_id").notNull(),
+    acquiredAt: timestamp("acquired_at").notNull().defaultNow()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.provider] })
+  })
+);
+var prPreviews = pgTable("pr_previews", {
+  prNumber: integer("pr_number").primaryKey(),
+  alias: text("alias").notNull(),
+  url: text("url"),
+  state: text("state").notNull(),
+  headSha: text("head_sha"),
+  services: jsonb("services").$type().notNull().default([]),
+  /** GitHub/catalog/platform facts derived by the server before launch. */
+  authority: jsonb("authority").$type(),
+  error: text("error"),
+  verify: jsonb("verify").$type(),
+  /** Ownership fencing token: bumped by every up/resume takeover; all pipeline
+   * writes CAS on it so a deposed pipeline aborts instead of clobbering. */
+  ownerGen: integer("owner_gen").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow()
+});
 var sessions = pgTable(
   "sessions",
   {
@@ -11206,9 +11373,8 @@ var sessions = pgTable(
     // set when a stop is requested; cleared implicitly when status→terminated.
     stopRequestedAt: timestamp("stop_requested_at"),
     // Lifecycle pause-intent: set when the user pauses the run (Dapr
-    // suspend_workflow); cleared on resume. The terminal reaper skips rows
-    // with this set, so a paused session is never purged even if its pod
-    // dies while the workflow is suspended.
+    // suspend_workflow); cleared on resume. Stop/cleanup paths treat rows with
+    // this set as an intentional hold rather than terminal cleanup candidates.
     pauseRequestedAt: timestamp("pause_requested_at"),
     agentId: text("agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
     agentVersion: integer("agent_version"),
@@ -11241,7 +11407,7 @@ var sessions = pgTable(
     }),
     // Per-session ACTUAL sandbox-pod resource consumption is accumulated by
     // the session-resource-sample CronJob under usage.resource (no dedicated
-    // columns — see SessionResourceUsage in metrics/session-usage.ts):
+    // columns — see SessionResourceUsage in application/adapters/session-resource-usage.ts):
     // { peakCpuMillicores, peakMemoryMiB, cpuMillicoreSum, memoryMiBSum,
     //   sampleCount, sampledAt }. peak = max observed; *Sum/sampleCount → avg.
     // Feeds request right-sizing. docs/session-resource-metrics-and-kueue-admission.md.
@@ -11249,6 +11415,18 @@ var sessions = pgTable(
     errorMessage: text("error_message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // Throttled liveness stamp (migration 0095): last time ANY session event
+    // was ingested, bumped at most once per 5s. Distinct from updatedAt (which
+    // only moves on status/usage mutations) so the liveness reconciler can tell
+    // a quiet-but-alive session from a dead one without scanning session_events.
+    lastEventAt: timestamp("last_event_at"),
+    // Needs-input cache (migration 0096): a rebuildable snapshot of "this
+    // session is waiting on a human" maintained by the single ingest writer —
+    // SET on a blocked idle / permission / tool-confirmation request, CLEARed on
+    // resume/terminate/error/answer. Lets the session LIST + Fleet surfaces
+    // badge a parked session without scanning session_events. Shape = PendingInput
+    // ($lib/types/sessions); events stay the source of truth.
+    pendingInput: jsonb("pending_input").$type(),
     completedAt: timestamp("completed_at"),
     archivedAt: timestamp("archived_at")
   },
@@ -11264,9 +11442,7 @@ var sessions = pgTable(
     workspaceSandboxIdx: index("idx_sessions_workspace_sandbox").on(
       table.workspaceSandboxName
     ),
-    runtimeAppIdx: index("idx_sessions_runtime_app_id").on(
-      table.runtimeAppId
-    ),
+    runtimeAppIdx: index("idx_sessions_runtime_app_id").on(table.runtimeAppId),
     runtimeSandboxIdx: index("idx_sessions_runtime_sandbox_name").on(
       table.runtimeSandboxName
     ),
@@ -11402,9 +11578,7 @@ var benchmarkInstances = pgTable(
       table.instanceId
     ),
     suiteIdx: index("idx_benchmark_instances_suite").on(table.suiteId),
-    instanceIdx: index("idx_benchmark_instances_instance").on(
-      table.instanceId
-    ),
+    instanceIdx: index("idx_benchmark_instances_instance").on(table.instanceId),
     repoIdx: index("idx_benchmark_instances_repo").on(table.repo),
     mlflowDatasetIdx: index("idx_benchmark_instances_mlflow_dataset").on(
       table.mlflowDatasetId
@@ -11458,9 +11632,7 @@ var benchmarkRuns = pgTable(
     statusIdx: index("idx_benchmark_runs_status").on(table.status),
     suiteIdx: index("idx_benchmark_runs_suite").on(table.suiteId),
     agentIdx: index("idx_benchmark_runs_agent").on(table.agentId),
-    mlflowRunIdx: index("idx_benchmark_runs_mlflow_run").on(
-      table.mlflowRunId
-    ),
+    mlflowRunIdx: index("idx_benchmark_runs_mlflow_run").on(table.mlflowRunId),
     mlflowDatasetIdx: index("idx_benchmark_runs_mlflow_dataset").on(
       table.mlflowDatasetId
     ),
@@ -11758,7 +11930,9 @@ var gitopsActivityEvents = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow()
   },
   (table) => ({
-    sequenceUnique: unique("uq_gitops_activity_events_sequence").on(table.sequence),
+    sequenceUnique: unique("uq_gitops_activity_events_sequence").on(
+      table.sequence
+    ),
     activityKeyIdx: index("idx_gitops_activity_events_activity_key").on(
       table.activityKey,
       table.observedAt
@@ -11768,7 +11942,9 @@ var gitopsActivityEvents = pgTable(
       table.resourceNamespace,
       table.resourceName
     ),
-    observedAtIdx: index("idx_gitops_activity_events_observed_at").on(table.observedAt),
+    observedAtIdx: index("idx_gitops_activity_events_observed_at").on(
+      table.observedAt
+    ),
     sourceIdx: index("idx_gitops_activity_events_source").on(table.source)
   })
 );
@@ -11854,9 +12030,9 @@ var evaluationDatasetRows = pgTable(
     datasetExternalUnique: unique(
       "uq_evaluation_dataset_rows_dataset_external"
     ).on(table.datasetId, table.externalId),
-    originRunInstanceIdx: index("idx_evaluation_dataset_rows_origin_run_instance").on(
-      table.originRunInstanceId
-    ),
+    originRunInstanceIdx: index(
+      "idx_evaluation_dataset_rows_origin_run_instance"
+    ).on(table.originRunInstanceId),
     originSessionIdx: index("idx_evaluation_dataset_rows_origin_session").on(
       table.originSessionId
     )
@@ -12123,42 +12299,46 @@ var codeFunctions = pgTable("code_functions", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   createdBy: text("created_by").references(() => users.id)
 });
-var codeFunctionRevisions = pgTable("code_function_revisions", {
-  id: text("id").primaryKey().$defaultFn(() => generateId()),
-  codeFunctionId: text("code_function_id").notNull().references(() => codeFunctions.id, { onDelete: "cascade" }),
-  version: text("version").notNull(),
-  name: text("name").notNull(),
-  slug: text("slug").notNull(),
-  description: text("description"),
-  language: text("language").notNull().$type(),
-  entrypoint: text("entrypoint").notNull().default("main"),
-  path: text("path"),
-  source: text("source").notNull(),
-  // biome-ignore lint/suspicious/noExplicitAny: map of relative file path -> source text
-  supportingFiles: jsonb("supporting_files").$type(),
-  sourceHash: text("source_hash").notNull(),
-  // biome-ignore lint/suspicious/noExplicitAny: semantic parser payload is JSONB
-  semanticModel: jsonb("semantic_model").$type(),
-  // biome-ignore lint/suspicious/noExplicitAny: parser-generated JSON Schema
-  inputSchema: jsonb("input_schema").$type(),
-  // biome-ignore lint/suspicious/noExplicitAny: parser-generated semantic type payload
-  returnType: jsonb("return_type").$type(),
-  // biome-ignore lint/suspicious/noExplicitAny: parser-generated import list
-  imports: jsonb("imports").$type(),
-  // biome-ignore lint/suspicious/noExplicitAny: parser-generated diagnostics list
-  diagnostics: jsonb("diagnostics").$type(),
-  // biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
-  capabilities: jsonb("capabilities").$type(),
-  role: text("role").notNull().default("function").$type(),
-  compositionGraph: jsonb("composition_graph").$type(),
-  publishedAt: timestamp("published_at").notNull().defaultNow(),
-  createdBy: text("created_by").references(() => users.id)
-}, (table) => ({
-  codeFunctionVersionIdx: unique("uq_code_function_revision_version").on(
-    table.codeFunctionId,
-    table.version
-  )
-}));
+var codeFunctionRevisions = pgTable(
+  "code_function_revisions",
+  {
+    id: text("id").primaryKey().$defaultFn(() => generateId()),
+    codeFunctionId: text("code_function_id").notNull().references(() => codeFunctions.id, { onDelete: "cascade" }),
+    version: text("version").notNull(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    language: text("language").notNull().$type(),
+    entrypoint: text("entrypoint").notNull().default("main"),
+    path: text("path"),
+    source: text("source").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: map of relative file path -> source text
+    supportingFiles: jsonb("supporting_files").$type(),
+    sourceHash: text("source_hash").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: semantic parser payload is JSONB
+    semanticModel: jsonb("semantic_model").$type(),
+    // biome-ignore lint/suspicious/noExplicitAny: parser-generated JSON Schema
+    inputSchema: jsonb("input_schema").$type(),
+    // biome-ignore lint/suspicious/noExplicitAny: parser-generated semantic type payload
+    returnType: jsonb("return_type").$type(),
+    // biome-ignore lint/suspicious/noExplicitAny: parser-generated import list
+    imports: jsonb("imports").$type(),
+    // biome-ignore lint/suspicious/noExplicitAny: parser-generated diagnostics list
+    diagnostics: jsonb("diagnostics").$type(),
+    // biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
+    capabilities: jsonb("capabilities").$type(),
+    role: text("role").notNull().default("function").$type(),
+    compositionGraph: jsonb("composition_graph").$type(),
+    publishedAt: timestamp("published_at").notNull().defaultNow(),
+    createdBy: text("created_by").references(() => users.id)
+  },
+  (table) => ({
+    codeFunctionVersionIdx: unique("uq_code_function_revision_version").on(
+      table.codeFunctionId,
+      table.version
+    )
+  })
+);
 var functionExecutions = pgTable("function_executions", {
   id: text("id").primaryKey().$defaultFn(() => generateId()),
   functionId: text("function_id").references(() => functions.id),
@@ -12203,16 +12383,19 @@ var codeFunctionsRelations = relations(codeFunctions, ({ one }) => ({
     references: [users.id]
   })
 }));
-var codeFunctionRevisionsRelations = relations(codeFunctionRevisions, ({ one }) => ({
-  codeFunction: one(codeFunctions, {
-    fields: [codeFunctionRevisions.codeFunctionId],
-    references: [codeFunctions.id]
-  }),
-  createdByUser: one(users, {
-    fields: [codeFunctionRevisions.createdBy],
-    references: [users.id]
+var codeFunctionRevisionsRelations = relations(
+  codeFunctionRevisions,
+  ({ one }) => ({
+    codeFunction: one(codeFunctions, {
+      fields: [codeFunctionRevisions.codeFunctionId],
+      references: [codeFunctions.id]
+    }),
+    createdByUser: one(users, {
+      fields: [codeFunctionRevisions.createdBy],
+      references: [users.id]
+    })
   })
-}));
+);
 var functionExecutionsRelations = relations(
   functionExecutions,
   ({ one }) => ({
@@ -16467,7 +16650,13 @@ function buildGeneratorCriticGraph(spec) {
       position: { x: 80, y: 40 },
       data: {
         label: "Manual trigger",
-        description: "Provide the intent (and optional agentSlug)."
+        description: "Provide the intent (and optional agentSlug).",
+        // Materialize the SW 1.0 trigger-input schema onto the START node so the
+        // canvas run dialog renders editable parameter fields (intent/targetRoute/
+        // agents). The execute-dialog reads
+        // `startNode.data.taskConfig.input.schema.document`; without this the inputs
+        // live only in `spec.input` and can't be changed from the UI.
+        ...spec.input ? { taskConfig: { input: spec.input } } : {}
       }
     },
     ...taskNames.map((name, i) => {
@@ -16529,6 +16718,8 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
   const config = {
     runtime,
     ...opts.modelSpec ? { modelSpec: opts.modelSpec } : {},
+    ...opts.effort ? { effort: opts.effort } : {},
+    ...opts.instructions ? { instructions: opts.instructions } : {},
     maxTurns: 50,
     timeoutMinutes: 30,
     skills: [],
@@ -16550,7 +16741,7 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
     await sqlClient`
 			insert into agent_versions (id, agent_id, version, config, config_hash)
 			values (${newVersionId}, ${agentId2}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
-    await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"} where id = ${agentId2}`;
+    await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"}, instructions = ${opts.instructions ?? null} where id = ${agentId2}`;
     console.log(
       `[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`
     );
@@ -16560,12 +16751,12 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
   const versionId = generateId();
   if (!existing.length) {
     await sqlClient`
-			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime)
+			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime, instructions)
 			values (${agentId}, ${name},
 				${description},
-				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime})`;
+				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
   } else {
-    await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime} where id = ${agentId}`;
+    await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
   }
   await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
@@ -16593,6 +16784,13 @@ async function seedGeneratorCriticShowcases(params) {
     modelSpec: process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro"
   });
   await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+    slug: "dapr-juicefs-dev-agent",
+    runtime: "dapr-agent-py-juicefs",
+    name: "Dapr JuiceFS Dev Agent",
+    description: "Interactive PreviewEnvironment developer that edits the per-execution JuiceFS workspace, runs the service-aware sync helper, and validates the isolated live system without a host CLI credential.",
+    modelSpec: "deepseek-v4-pro"
+  });
+  await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
     slug: "glm-juicefs-builder-agent",
     runtime: "dapr-agent-py-juicefs",
     name: "GLM-5.2 (JuiceFS) Builder Agent",
@@ -16604,7 +16802,7 @@ async function seedGeneratorCriticShowcases(params) {
       server_name: "playwright",
       displayName: "Playwright",
       transport: "streamable_http",
-      url: "http://127.0.0.1:3100/mcp"
+      url: "http://127.0.0.1:8002/internal/pw-proxy/mcp"
     }
   ];
   await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
@@ -16612,6 +16810,13 @@ async function seedGeneratorCriticShowcases(params) {
     runtime: "claude-code-cli",
     name: "CLI Playwright Critic Agent",
     description: "claude-code-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
+    mcpServers: PLAYWRIGHT_CRITIC_MCP
+  });
+  await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+    slug: "cli-dev-agent",
+    runtime: "claude-code-cli",
+    name: "CLI Dev Agent",
+    description: "claude-code-cli interactive developer agent for microservice dev-sessions: edits the cloned repo in /sandbox/work, runs ./sync.sh to live-sync the per-run dev preview, and inspects the result (Playwright MCP).",
     mcpServers: PLAYWRIGHT_CRITIC_MCP
   });
   await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
@@ -16639,6 +16844,48 @@ async function seedGeneratorCriticShowcases(params) {
     name: "Antigravity Playwright Critic Agent",
     description: "agy-cli design critic with the Playwright MCP server; drives Chromium in-pod to inspect the rendered app and judge it against a design rubric.",
     mcpServers: PLAYWRIGHT_CRITIC_MCP
+  });
+  const GAN_PLANNER_PERSONA = "You are the PLANNER in a GAN frontend-redesign harness. You NEVER write or edit application code \u2014 a separate GENERATOR does that, and ANY edit you make to app source is thrown away (this step does not sync). Read the current page for understanding ONLY, then write a single TESTABLE contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric) and verify it with cat. Stay high-level; do not enumerate granular code steps. The SPECIFIC redesign objective and target page come from YOUR TASK PROMPT (the change request) \u2014 derive the contract's objective, acceptanceCriteria, and rubric STRICTLY from that change request and from reading the current target page; do NOT assume any particular page, product area, or a fixed rubric (never default to a generic monitoring/command-center framing unless the change request asks for it). Write the contract file, then STOP. This is a HEADLESS automated run \u2014 there is NO human. NEVER use AskUserQuestion, NEVER wait for permission or input. When you are blocked, write a concise diagnosis as your final message and STOP the turn; the harness reads your message and the loop continues.";
+  const GAN_GENERATOR_PERSONA = "You are the GENERATOR in a GAN frontend-redesign harness. You build and iterate the REAL UI: pull the dev server source from $EXPORT_URL (/__export), edit ONLY files under src/ to satisfy the contract + the latest critic feedback, push live via $SYNC_URL (/__sync), then STOP. Wire REAL data via +page.server.ts from existing repo endpoints; NEVER fabricate data; graceful empty states. HARD RULES (the critic boots the live page \u2014 broken builds waste a whole iteration): (1) Every server-side data fetch (in +page.server.ts `load` and any server route) MUST be individually guarded \u2014 wrap each in try/catch or use Promise.allSettled \u2014 and degrade THAT region to its empty state. A single failing/empty /api source must NEVER throw and 500 the whole page. (2) IMPORT every component/symbol you reference (e.g. Badge) \u2014 an undefined reference crashes the page on mount. (3) Before you STOP, do a CHEAP smoke check only: curl $PREVIEW_URL + TARGET_ROUTE and confirm HTTP 200 (not 500) and no top-level ReferenceError \u2014 do NOT do a full visual self-grade (the Playwright critic does that; grading cold vite wastes the turn). If the smoke check fails, fix it before stopping. (4) When you fix a critic point, do NOT regress a previously-working area \u2014 keep all prior guards/imports intact. (5) Leave NO debug/scratch routes or files in the diff (no /api/v1/debug-*, no throwaway endpoints). Keep existing functionality working; NEVER touch the sign-in/auth pages. This is a HEADLESS automated run \u2014 there is NO human. NEVER use AskUserQuestion, NEVER wait for permission or input. When you are blocked, write a concise diagnosis as your final message and STOP the turn; the harness reads your message and the loop continues.";
+  const GAN_CRITIC_PERSONA = 'You are the EVALUATOR/CRITIC in a GAN frontend-redesign harness (Anthropic skeptical-evaluator pattern). You NEVER write code. Using your Playwright MCP tools you log into the LIVE app with the provided credentials, drive the real DOM at desktop AND mobile widths, and grade it strictly against the contract + rubric, DEFAULTING TO NOT SATISFIED. Boot the live app, never grade from a static diff. READINESS: the dev preview RESTARTS on every /__sync, so its URL flaps between grades \u2014 before grading EACH route, poll it (a cheap GET, e.g. PREVIEW_URL/api/health) and retry for up to ~90s until HTTP 200, then navigate (keep a 180000 ms navigation timeout + a retry or two); a transient 502/503/connection-reset/blank page during that window is the restart, NOT a defect. CLASSIFY every problem into exactly one bucket: FEATURE defects \u2014 perRoute + feedback (these gate acceptance); IN-APP issues in THIS repo\'s own src but OUTSIDE the feature (a broken shared component, a server-adapter data-shape bug, an app-shell defect like the mobile nav never collapsing or a favicon 404 the app itself serves) \u2014 the `ecosystemIssues` array as {area,detail,suggestedFix} (REQUIRED reporting, but they do NOT lower `score` or block `meets_criteria`); INFRASTRUCTURE failures OUTSIDE the app\'s code (other services 5xx e.g. /metrics, DB/cluster/timeout, preview machinery) \u2014 the `envIssues` array (do NOT lower `score`). HARD BOUNDARY: if it lives in this repo\'s src it is NEVER an env issue; a failure that also reproduces on an unchanged route is an in-app (ecosystem) issue, not a feature defect. Grade the CHANGE the generator made. VERDICT FILE (do this FIRST, before your final message): when your task prompt gives you an iteration index, mkdir -p /sandbox/work/gan and write the exact verdict JSON below \u2014 PLUS two extra keys "iteration":<idx> and "schema":"gan.verdict/v1" \u2014 to /sandbox/work/gan/verdict-<idx>.json. The file is the PRIMARY loop-exit signal; your final message is the fallback. OUTPUT CONTRACT (a machine parses your FINAL message to decide whether the loop stops \u2014 this is critical): your FINAL message MUST be EXACTLY the strict JSON verdict object and NOTHING ELSE, of the shape {"meets_criteria":<bool>,"score":<0-10>,"perRoute":[{"route":<string>,"passes":<bool>,"note":<string>}],"ecosystemIssues":[{"area":<string>,"detail":<string>,"suggestedFix":<string>}],"envIssues":[{"route":<string>,"detail":<string>}],"feedback":<string>}. It MUST start with `{` and end with `}`. Do NOT add any preamble, \'Summary of findings\', explanation, or commentary before or after it, and do NOT wrap it in ``` markdown fences. Put ALL of your reasoning INSIDE the JSON\'s `feedback` field (in-app-but-out-of-feature issues go in `ecosystemIssues`, infrastructure failures go in `envIssues`, not `feedback`). If you emit any text outside the JSON, the harness cannot read your verdict and the loop will run forever. This is a HEADLESS automated run \u2014 there is NO human. NEVER use AskUserQuestion, NEVER wait for permission or input. When you are blocked, write a concise diagnosis as your final message and STOP the turn; the harness reads your message and the loop continues.';
+  const GAN_CLI_RUNTIMES = [
+    { suffix: "claude", runtime: "claude-code-cli", label: "Claude Code" },
+    { suffix: "codex", runtime: "codex-cli", label: "Codex" },
+    { suffix: "agy", runtime: "agy-cli", label: "Antigravity" }
+  ];
+  for (const cli of GAN_CLI_RUNTIMES) {
+    await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+      slug: `gan-planner-${cli.suffix}`,
+      runtime: cli.runtime,
+      name: `GAN Planner (${cli.label})`,
+      description: `${cli.label} PLANNER for the GAN frontend-redesign harness \u2014 writes the testable contract, never app code.`,
+      instructions: GAN_PLANNER_PERSONA
+    });
+    await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+      slug: `gan-generator-${cli.suffix}`,
+      runtime: cli.runtime,
+      name: `GAN Generator (${cli.label})`,
+      description: `${cli.label} GENERATOR for the GAN frontend-redesign harness \u2014 builds/iterates the UI via /__export + /__sync.`,
+      instructions: GAN_GENERATOR_PERSONA
+    });
+    await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+      slug: `gan-critic-${cli.suffix}`,
+      runtime: cli.runtime,
+      name: `GAN Critic (${cli.label})`,
+      description: `${cli.label} skeptical Playwright EVALUATOR for the GAN frontend-redesign harness \u2014 logs in, grades the live app against the contract.`,
+      mcpServers: PLAYWRIGHT_CRITIC_MCP,
+      instructions: GAN_CRITIC_PERSONA
+    });
+  }
+  const GAN_GENERATOR_ULTRACODE_PERSONA = `You are a SENIOR PRODUCT ENGINEER driving a UI feature or refactor against a LIVE, hot-reloading workflow-builder preview \u2014 the dev pod IS the source of truth and serves warm vite SSR. You hold a high craft bar and HEXAGONAL-ARCHITECTURE discipline: keep domain/application logic in the application ports (src/lib/server/application) and push framework/IO concerns to adapters + routes; never leak DB, HTTP, or SvelteKit specifics into domain code; respect the module boundaries the repo already enforces (depcruise / check:boundaries). ECOSYSTEM SCOPE: this preview is fully isolated, so beyond the feature, if the app's OWN code blocks or degrades the evaluated routes (a server-adapter data-shape bug, a broken shared component, an app-shell defect like the nav not collapsing on mobile), FIX IT TOO \u2014 keep the change minimal and tested, the gate must stay green, and NEVER touch the sign-in/auth pages; do not declare in-app issues out of scope. You work in one of two modes, chosen by YOUR TASK PROMPT: PLAN mode (the prompt asks for a contract) \u2014 read the current target routes for understanding ONLY; NEVER write app code (this step does not sync and any edits are discarded). Write ONE testable contract as strict JSON to /sandbox/work/contract.json (objective, acceptanceCriteria, designTokens, rubric), cat it to verify, then STOP. Derive everything from the change request; do NOT assume a fixed product area or a generic rubric. BUILD mode (the prompt asks you to implement) \u2014 each turn: (1) PULL the complete receiver-owned source set: FIRST pick a writable scratch root (SCRATCH=/sandbox/scratch if /sandbox/scratch is writable, else SCRATCH=/tmp/scratch; mkdir -p "$SCRATCH" \u2014 never assume /sandbox/scratch exists), then rm -rf "$SCRATCH/repo" && mkdir -p "$SCRATCH/repo" && curl -sS -H "x-sync-token: $SYNC_TOKEN" -D "$SCRATCH/export.headers" "$EXPORT_URL" -o "$SCRATCH/source.tgz" && ROOTS_JSON="$(sed -n 's/^x-sync-roots:[[:space:]]*//p' "$SCRATCH/export.headers" | tr -d '\\r' | tail -1)" && printf '%s' "$ROOTS_JSON" | jq -e 'type == "array" and length > 0' >/dev/null && tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo". (2) Implement the feature editing ONLY files under src/ (plus any shared-contract dirs the preview syncs) to satisfy the contract + latest critic feedback; wire REAL data via +page.server.ts from EXISTING repo endpoints, NEVER fabricate data, and guard EACH server-side fetch independently (try/catch or Promise.allSettled) so one failing/empty source degrades THAT region to its empty state and never 500s the page; IMPORT every symbol you reference. KNOWN LANDMINE in this repo: list endpoints (dashboard recent-changes/agents/runs) can return entries with DUPLICATE ids (same resource, multiple versions); in Svelte 5 a keyed {#each} with a duplicate key throws each_key_duplicate during hydration and unmounts the whole subtree even though SSR looks fine \u2014 ALWAYS dedupe lists in the server load AND key {#each} blocks by a guaranteed-unique composite (id + version/index). Keep existing functionality working, NEVER touch the sign-in/auth pages, and leave NO debug/scratch routes in the diff. (3) PUSH one atomic generation: cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && printf '%s' "$ROOTS_JSON" | jq -r '.[]' > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: $SYNC_TOKEN" -H "x-sync-generation: $GEN" -H 'x-sync-service: workflow-builder' -H "x-sync-roots: $ROOTS_JSON" "$SYNC_URL"; never reuse a generation with different bytes. (4) SMOKE before you stop: this preview exposes NO /__run endpoint \u2014 NEVER call /__run (it 404s and validates nothing). A 302 \u2192 /auth/sign-in on app routes is HEALTHY (the auth guard), never a failure \u2014 for an AUTHENTICATED smoke, sign in once to a cookie jar via POST $PREVIEW_URL/api/v1/auth/sign-in with the provided previewLogin/previewPassword, then curl each target route with that cookie and confirm HTTP 200 with no top-level ReferenceError and no each_key_duplicate in the served HTML; fix any 500/crash (usually an unguarded server load or a missing import) before stopping, and NEVER edit the sign-in page. A deterministic gate step then runs pnpm check + check:boundaries + test-unit against a full checkout of your synced src and feeds any failures back into your next turn's prompt \u2014 fix them there; a separate Playwright critic grades the live routes. Do NOT do a full visual self-grade (the critic does that; grading cold vite wastes the turn). When you address a critic point, do NOT regress a previously-working area. End with a one-line summary of what you changed. This is a HEADLESS automated run \u2014 there is NO human. NEVER use AskUserQuestion, NEVER wait for permission or input. When you are blocked, write a concise diagnosis as your final message and STOP the turn; the harness reads your message and the loop continues.`;
+  await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+    slug: "gan-generator-ultracode",
+    runtime: "claude-code-cli",
+    name: "GAN Generator (Ultracode)",
+    description: "claude-code-cli senior-product-engineer planner/generator pinned to Opus 4.8 at ultracode effort; builds UI features against a live preview via /__export + /__sync and smoke-checks the routes (this preview has NO /__run endpoint) before a deterministic gate + Playwright critic evaluate.",
+    modelSpec: "claude-opus-4-8",
+    effort: "ultracode",
+    instructions: GAN_GENERATOR_ULTRACODE_PERSONA
   });
   const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
   for (const file of [
@@ -16691,7 +16938,31 @@ async function seedGeneratorCriticShowcases(params) {
     // Minimal clone + single-agent-edit workflow: fast verification of W3
     // local-build, uid alignment, durable source-bundle persistence, and
     // concurrency-safe parallel tool calls — no GAN plan/negotiate/refine loop.
-    "bundle-proof.json"
+    "bundle-proof.json",
+    // Self-update P1: clone workflow-builder, edit a visible UI string, push src to
+    // the workflow-builder-dev (vite/HMR) pod via Dapr service invocation (/__sync),
+    // and verify the change is LIVE on the preview — skaffold-style live-sync from a
+    // workflow, no kubectl/RBAC. See docs/agentic-deploy-inspect-loop.md.
+    "workflow-builder-self-edit-livesync.json",
+    // P3: generalized per-service dev preview + interactive coding-agent handoff.
+    "microservice-dev-session.json",
+    // In-preview GAN dev loop: enter preview-native dev mode (dev pod replaces the
+    // prod BFF, serves HMR) → clone → generator edits+./sync.sh ↔ Playwright visual
+    // critic inspects the LIVE preview URL, looping until accepted. Runs INSIDE a
+    // Tier-2 preview. docs/agentic-deploy-inspect-loop.md.
+    "preview-dev-gan.json",
+    // Comprehensive GAN frontend redesign (Anthropic harness, V2-simplified): Planner
+    // authors a testable JSON contract + frontend-design token system → two-pass
+    // design_review → refine loop (trimmed generator edit→/__sync ↔ skeptical Playwright
+    // critic that LOGS IN, boots the live authenticated page, grades per-criterion) →
+    // per-iteration tar-overlay snapshot → promote→PR. dev-pod-as-source, per-CLI.
+    "preview-gan-redesign.json",
+    // Generic GAN UI-feature/refactor loop against the ADOPTED workflow-builder
+    // preview (dev pod becomes the BFF): Planner (gan-generator-ultracode, Opus 4.8
+    // ultracode) writes a contract → two-pass design_review → generate ↔ skeptical
+    // Playwright critic over evaluationRoutes → per-iteration snapshot → promote→PR
+    // on PittampalliOrg/workflow-builder. Task is passed as `intent` at run time.
+    "preview-gan-ui-feature.json"
   ]) {
     const full = path.join(dir, file);
     if (!fs2.existsSync(full)) {

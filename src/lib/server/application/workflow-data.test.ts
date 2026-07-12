@@ -75,7 +75,7 @@ import type {
 } from "$lib/server/application/ports";
 import { ApplicationWorkflowDataService } from "$lib/server/application/workflow-data";
 import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
-import { createDefaultAgentConfig } from "$lib/types/agents";
+import { createDefaultAgentConfig, type AgentConfig } from "$lib/types/agents";
 import type { SessionDetail } from "$lib/types/sessions";
 
 const dynamicPrivateEnv = vi.hoisted(() => ({} as Record<string, string | undefined>));
@@ -958,6 +958,33 @@ function fakeSessionAgentResolver(): SessionAgentResolver {
 			mlflowModelName: null,
 			mlflowUri: null,
 		})),
+	};
+}
+
+function fakePreviewDevSessionAgentResolver(
+	overrides: {
+		slug?: string;
+		rowRuntime?: string;
+		config?: Partial<Pick<AgentConfig, "runtime" | "modelSpec">>;
+	} = {},
+): SessionAgentResolver {
+	const base = fakeSessionAgentResolver();
+	return {
+		resolveSessionAgent: vi.fn(async (input) => {
+			const agent = await base.resolveSessionAgent(input);
+			if (!agent) return null;
+			return {
+				...agent,
+				slug: overrides.slug ?? "dapr-juicefs-dev-agent",
+				runtime: overrides.rowRuntime ?? "dapr-agent-py-juicefs",
+				config: {
+					...agent.config,
+					runtime:
+						overrides.config?.runtime ?? "dapr-agent-py-juicefs",
+					modelSpec: overrides.config?.modelSpec ?? "deepseek-v4-pro",
+				},
+			};
+		}),
 	};
 }
 
@@ -4050,7 +4077,7 @@ describe("ApplicationWorkflowDataService", () => {
 			}) as SessionDetail),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
-		const sessionAgents = fakeSessionAgentResolver();
+		const sessionAgents = fakePreviewDevSessionAgentResolver();
 		const sessionAgentSlugs = fakeSessionAgentSlugs();
 		const workflowExecutions = fakeWorkflowExecutions();
 		const { service } = makeService({
@@ -4064,20 +4091,24 @@ describe("ApplicationWorkflowDataService", () => {
 		await expect(
 			service.createWorkflowDevSession({
 				executionId: "exec-1",
-				agentSlug: "cli-dev-agent",
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
 				instructions: "open repo",
 				title: "Dev handoff",
 			}),
 		).resolves.toEqual({
 			status: "created",
 			sessionId: "dev-session-1",
-			agentSlug: "cli-dev-agent",
+			agentSlug: "dapr-juicefs-dev-agent",
 		});
 		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith(
 			"exec-1",
 		);
 		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
-			"cli-dev-agent",
+			"dapr-juicefs-dev-agent",
 		);
 		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
 			agentId: "agent-1",
@@ -4183,7 +4214,11 @@ describe("ApplicationWorkflowDataService", () => {
 		await expect(
 			service.createWorkflowDevSession({
 				executionId: "missing-exec",
-				agentSlug: "cli-dev-agent",
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
 				instructions: "open repo",
 			}),
 		).resolves.toEqual({ status: "execution_not_found" });
@@ -4207,16 +4242,56 @@ describe("ApplicationWorkflowDataService", () => {
 		await expect(
 			service.createWorkflowDevSession({
 				executionId: "exec-1",
-				agentSlug: "missing-agent",
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
 				instructions: "open repo",
 			}),
 		).resolves.toEqual({
 			status: "agent_not_found",
-			agentSlug: "missing-agent",
+			agentSlug: "dapr-juicefs-dev-agent",
 		});
 		expect(sessions.createSession).not.toHaveBeenCalled();
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
+
+	it.each([
+		["slug", { slug: "other-agent" }],
+		["row runtime", { rowRuntime: "codex-cli" }],
+		["version runtime", { config: { runtime: "codex-cli" as const } }],
+		["model", { config: { modelSpec: "openai/gpt-5-mini" } }],
+	])(
+		"rejects workflow dev agents with a mismatched %s before side effects",
+		async (_field, overrides) => {
+			const sessions = fakeSessions();
+			const sessionEvents = fakeSessionEvents();
+			const { service } = makeService({
+				sessions,
+				sessionEvents,
+				sessionAgents: fakePreviewDevSessionAgentResolver(overrides),
+				workflowExecutions: fakeWorkflowExecutions(),
+			});
+
+			await expect(
+				service.createWorkflowDevSession({
+					executionId: "exec-1",
+					agentPolicy: {
+						slug: "dapr-juicefs-dev-agent",
+						runtime: "dapr-agent-py-juicefs",
+						modelSpec: "deepseek-v4-pro",
+					},
+					instructions: "open repo",
+				}),
+			).resolves.toEqual({
+				status: "agent_policy_mismatch",
+				agentSlug: "dapr-juicefs-dev-agent",
+			});
+			expect(sessions.createSession).not.toHaveBeenCalled();
+			expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+		},
+	);
 
 	it("creates a session experiment agent when fork config differs", async () => {
 		const sourceSession = {

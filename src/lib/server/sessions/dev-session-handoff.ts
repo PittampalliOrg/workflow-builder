@@ -18,21 +18,23 @@ import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
  *
  * The session shares the workspace because its row carries
  * `workflowExecutionId = executionId`; spawn.ts maps that to the host's
- * `sharedWorkspaceKey` for interactive-cli runtimes (same `/sandbox/work` subtree
- * the workflow's cliWorkspace nodes used).
+ * `sharedWorkspaceKey` for controller-owned workspace runtimes (the same
+ * `/sandbox/work` subtree the workflow's cliWorkspace nodes used).
  */
 
-const DEFAULT_DEV_AGENT_SLUG = "cli-dev-agent";
+const DEV_AGENT_POLICY = Object.freeze({
+	slug: "dapr-juicefs-dev-agent",
+	runtime: "dapr-agent-py-juicefs",
+	modelSpec: "deepseek-v4-pro",
+});
 
 export interface SpawnDevSessionParams {
 	executionId: string;
 	/** Kickoff prompt: repo path, preview syncUrl, browse URL, the `./sync.sh` hint. */
 	instructions: string;
-	/** claude-code-cli agent slug (persona). Default `cli-dev-agent`. */
-	agentSlug?: string | null;
 	title?: string | null;
 	/**
-	 * Keep the CLI host alive after the workflow handoff so users can send
+	 * Keep the agent host alive after the workflow handoff so users can send
 	 * follow-up messages. Defaults true for this handoff endpoint.
 	 */
 	persistent?: boolean;
@@ -41,10 +43,9 @@ export interface SpawnDevSessionParams {
 export async function spawnDevSession(
 	params: SpawnDevSessionParams,
 ): Promise<{ sessionId: string; url: string; agentSlug: string }> {
-	const agentSlug = (params.agentSlug || DEFAULT_DEV_AGENT_SLUG).trim();
 	const created = await getApplicationAdapters().workflowData.createWorkflowDevSession({
 		executionId: params.executionId,
-		agentSlug,
+		agentPolicy: DEV_AGENT_POLICY,
 		instructions: params.instructions,
 		title: params.title,
 	});
@@ -55,7 +56,12 @@ export async function spawnDevSession(
 	}
 	if (created.status === "agent_not_found") {
 		throw new Error(
-			`dev-session agent "${agentSlug}" not found — seed it (scripts/seed-workflows.ts)`,
+			`dev-session agent "${DEV_AGENT_POLICY.slug}" not found — seed it (scripts/seed-workflows.ts)`,
+		);
+	}
+	if (created.status === "agent_policy_mismatch") {
+		throw new Error(
+			`dev-session agent "${DEV_AGENT_POLICY.slug}" does not match the required preview runtime policy`,
 		);
 	}
 
@@ -64,6 +70,7 @@ export async function spawnDevSession(
 	// session; callers can opt into the old bounded host with persistent:false.
 	await spawnSessionWorkflow(created.sessionId, {
 		persistentHost: params.persistent !== false,
+		requireWorkflowHost: true,
 	});
 
 	return {

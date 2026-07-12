@@ -4508,6 +4508,17 @@ async function seedGeneratorCriticShowcases(params: {
 			"Pilot dapr-agent-py agent on the juicefs-shared backend: runs file/command tools pod-locally against the per-execution JuiceFS /sandbox/work (no openshell RPC), sharing the workspace with the cliWorkspace deterministic gate.",
 		modelSpec: process.env.SEED_SHOWCASE_AGENT_MODEL?.trim() || "deepseek-v4-pro",
 	});
+	// Credential-free interactive developer for isolated PreviewEnvironments. It
+	// uses the tuple-authorized model proxy while source stays in the execution's
+	// JuiceFS workspace; no host CLI subscription credential crosses the boundary.
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "dapr-juicefs-dev-agent",
+		runtime: "dapr-agent-py-juicefs",
+		name: "Dapr JuiceFS Dev Agent",
+		description:
+			"Interactive PreviewEnvironment developer that edits the per-execution JuiceFS workspace, runs the service-aware sync helper, and validates the isolated live system without a host CLI credential.",
+		modelSpec: "deepseek-v4-pro",
+	});
 	// GLM-5.2 BUILDER on the juicefs-shared backend (zai/glm-5.2 → /coding/paas/v4).
 	// The planner/generator/design-reviewer of the all-on-juicefs GAN visual loop
 	// (gan-harness-glm-visual-dashboard); the visual critic is the dev-verified

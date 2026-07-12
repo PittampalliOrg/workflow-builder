@@ -29,6 +29,7 @@ import {
 import {
 	decideGoalHarness,
 	runtimeHasNativeGoalHarness,
+	runtimeUsesSharedWorkspace,
 } from "$lib/server/sessions/runtime-target";
 import {
 	ensureGoalMcpServer,
@@ -501,8 +502,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			// (dapr-agent-py-juicefs) key on it so agents, the deterministic
 			// cliWorkspace spine, and the Files tab all land on one subtree.
 			sharedWorkspaceKey:
-				swapTarget?.capabilities?.interactiveTerminal ||
-				swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+				runtimeUsesSharedWorkspace(swapTarget?.capabilities)
 					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
 			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
@@ -688,8 +688,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		// juicefs-shared resolve their workspaceRef to it — see the spawn site
 		// above for the full rationale.
 		sharedWorkspaceKey:
-			swapTarget?.capabilities?.interactiveTerminal ||
-			swapTarget?.capabilities?.workspaceBackend === "juicefs-shared"
+			runtimeUsesSharedWorkspace(swapTarget?.capabilities)
 				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
 		seedWorkspaceFrom: bridgeSeedWorkspaceFrom,

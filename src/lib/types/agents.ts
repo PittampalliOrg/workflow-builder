@@ -22,6 +22,7 @@ export type PromptPresetRef = {
 
 export type AgentRuntime =
 	| "dapr-agent-py"
+	| "dapr-agent-py-juicefs"
 	| "dapr-agent-py-testing"
 	| "adk-agent-py"
 	| "claude-agent-py"
