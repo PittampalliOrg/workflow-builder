@@ -984,8 +984,35 @@ describe("dev-preview portability boundary", () => {
       batchId: "batch-exec-1",
     });
     const firstCallCount = fetchMock.mock.calls.length;
+    let credentialMintsInFlight = 0;
+    let maxCredentialMintsInFlight = 0;
+    const credentialBroker = {
+      mint: vi.fn(async () => {
+        credentialMintsInFlight += 1;
+        maxCredentialMintsInFlight = Math.max(
+          maxCredentialMintsInFlight,
+          credentialMintsInFlight,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        credentialMintsInFlight -= 1;
+        return {
+          receiverToken: "2".repeat(64),
+          agentActionToken: "3".repeat(64),
+        };
+      }),
+    };
     await expect(
-      provisionDevPreviews(input, persistence),
+      provisionDevPreviews(input, persistence, undefined, {
+        mintToken: () => "f".repeat(64),
+        identity: () => ({
+          previewName: "preview-one",
+          environmentRequestId: "request-one",
+          environmentPlatformRevision: "a".repeat(40),
+          environmentSourceRevision: "b".repeat(40),
+          catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+        }),
+        broker: credentialBroker,
+      }),
     ).resolves.toMatchObject({
       ok: true,
       complete: false,
@@ -1007,6 +1034,8 @@ describe("dev-preview portability boundary", () => {
     expect(
       fetchMock.mock.calls.slice(firstCallCount).map(([url]) => String(url)),
     ).toEqual(["http://sandbox-api/internal/dev-previews/activate"]);
+    expect(credentialBroker.mint).toHaveBeenCalledTimes(5);
+    expect(maxCredentialMintsInFlight).toBe(1);
   });
 
   it("terminally fails and compensates a contradictory persisted batch", async () => {
