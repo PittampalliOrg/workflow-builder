@@ -2,6 +2,7 @@ import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { requirePreviewActionInternal } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
+import { withDevPreviewFailureSummary } from "$lib/server/application/preview-provisioning-result";
 
 /**
  * POST /api/internal/workflows/executions/[executionId]/dev-preview
@@ -79,7 +80,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
       });
       // A multi-service development session is one system. Preserve the detailed
       // results for retry/cleanup, but do not hand an incomplete system to an agent.
-      return json(result, { status: result.ok ? 200 : 503 });
+      return json(withDevPreviewFailureSummary(result), {
+        status: result.ok ? 200 : 503,
+      });
     }
     const info = await app.previewEnvironmentProvisioner.provision({
       executionId,

@@ -220,7 +220,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 		const activeExecutions = executions.filter(
 			(execution) =>
 				execution.completedAt == null ||
-				!['success', 'failed', 'cancelled', 'canceled'].includes(
+					!['success', 'failed', 'error', 'cancelled', 'canceled'].includes(
 					(execution.status ?? '').toLowerCase()
 				)
 		);

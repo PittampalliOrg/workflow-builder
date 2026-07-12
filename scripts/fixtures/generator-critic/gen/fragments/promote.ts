@@ -1,8 +1,9 @@
 /**
  * Promote node — emits `call: "dev/preview-promote"` (no inline git shell).
  *
- * The action (implemented server-side) takes the executionId + the best snapshot
- * and opens the PR; we pass iteration:"best" + bestIteration and a title/body
+ * The action binds execution authority from the activity envelope, selects the
+ * best snapshot, and opens the PR; we pass iteration:"best" + bestIteration and
+ * a title/body
  * derived ENTIRELY from the read_verdict output (feedback / best_score / terminal
  * state), with draft = NOT accepted. Node result data: { ok, prUrl, branch,
  * draft, error }.
@@ -39,7 +40,6 @@ export function buildPromoteNode(
 				`(.trigger.outputMode // "${cfg.defaults.outputMode}") == "pr"`,
 			),
 			with: {
-				executionId: jqExpr(".runtime.executionId"),
 				services: [cfg.defaults.service],
 				iteration: "best",
 				bestIteration: jqExpr(`(${RV}) | (.best_iteration // 0)`),

@@ -66,7 +66,6 @@
       "provision_preview": {
         "call": "dev/preview",
         "with": {
-          "executionId": "${ .runtime.executionId }",
           "timeoutSeconds": "${ if (.trigger.keepPreview // \"false\") == \"true\" then 86400 else 3600 end }",
           "waitReadySeconds": 180
         },
@@ -205,7 +204,6 @@
       "teardown_preview": {
         "call": "dev/preview-teardown",
         "with": {
-          "executionId": "${ .runtime.executionId }",
           "sandboxName": "${ .provision_preview.sandboxName // .provision_preview.data.sandboxName // \"\" }"
         },
         "if": "${ (.trigger.perRunPreview // \"true\") == \"true\" and (.trigger.keepPreview // \"false\") != \"true\" }",

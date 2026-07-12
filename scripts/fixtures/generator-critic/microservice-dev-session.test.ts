@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const fixture = JSON.parse(
@@ -26,6 +26,17 @@ const handoffInstructions = fixture.do.find(
   (entry: Record<string, unknown>) => "handoff" in entry,
 ).handoff.with.instructions as string;
 
+function previewActions(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.flatMap(previewActions);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const current =
+    typeof record.call === "string" && record.call.startsWith("dev/preview")
+      ? [record]
+      : [];
+  return [...current, ...Object.values(record).flatMap(previewActions)];
+}
+
 describe("microservice dev session source checkout", () => {
   it("defaults to the five-service preview-native baseline", () => {
     expect(inputProperties.mode.default).toBe("preview-native");
@@ -35,6 +46,26 @@ describe("microservice dev session source checkout", () => {
     for (const service of catalogServices) {
       expect(fixture.document.summary).toContain(service);
       expect(inputProperties.service.description).toContain(service);
+    }
+  });
+
+  it("leaves preview execution authority to the trusted workflow context", () => {
+    expect(provision.with).not.toHaveProperty("executionId");
+  });
+
+  it("keeps every fixture preview action bound to the activity envelope", () => {
+    const actions = readdirSync(new URL(".", import.meta.url))
+      .filter((name) => name.endsWith(".json"))
+      .flatMap((name) =>
+        previewActions(
+          JSON.parse(
+            readFileSync(new URL(name, import.meta.url), "utf8"),
+          ) as unknown,
+        ),
+      );
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) {
+      expect(action.with).not.toHaveProperty("executionId");
     }
   });
 

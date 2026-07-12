@@ -712,7 +712,8 @@ export function bindDevPreviewExecutionId(
   if (!executionId) {
     return {
       ok: false,
-      error: "dev/preview: missing trusted `db_execution_id` context.",
+      error:
+        "dev/preview: missing trusted `db_execution_id` context; caller-supplied execution IDs are not accepted.",
     };
   }
   if (input.executionId !== undefined) {

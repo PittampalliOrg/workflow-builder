@@ -124,7 +124,6 @@ function enterDevModeNode(cfg: GanFixtureConfig): Json {
 		enter_dev_mode: {
 			call: "dev/preview",
 			with: {
-				executionId: jqExpr(".runtime.executionId"),
 				service: jqExpr(
 					`.trigger.service // "${cfg.defaults.service}"`,
 				),
@@ -246,7 +245,6 @@ function snapshotNode(): Json {
 		snapshot: {
 			call: "dev/preview-snapshot",
 			with: {
-				executionId: jqExpr(".runtime.executionId"),
 				nodeId: "generate",
 				iteration: jqExpr(".idx"),
 				services: ["workflow-builder"],
