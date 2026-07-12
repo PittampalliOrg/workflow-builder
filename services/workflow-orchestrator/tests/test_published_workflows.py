@@ -166,6 +166,7 @@ if "dapr" not in sys.modules:
         LINEAGE="LINEAGE",
     )
     workflow_module.when_any = lambda tasks: {"kind": "when_any", "tasks": tasks}
+    workflow_module.when_all = lambda tasks: {"kind": "when_all", "tasks": tasks}
     workflow_module._durabletask = sys.modules.get("dapr.ext.workflow._durabletask")
     clients_module.DaprClient = _FakeDaprClient
     dapr_module.ext = ext_module
@@ -1145,6 +1146,355 @@ def test_execute_action_includes_otel_body_fallback(monkeypatch):
     assert "workflow.activity.correlation_id=exec-1:profile:0" in captured["metadata"][
         "baggage"
     ]
+
+
+def test_execute_action_preserves_dev_preview_target_status(monkeypatch):
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_preview_status_test",
+        "activities/execute_action.py",
+    )
+    monkeypatch.setattr(
+        execute_action_module,
+        "dapr_invoke",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "success": True,
+                "data": {"activationPhase": "scheduled"},
+                "responseStatus": 202,
+            },
+            "{}",
+        ),
+    )
+
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {
+                "id": "provision",
+                "config": {"actionType": "dev/preview", "mode": "preview-native"},
+            },
+            "nodeOutputs": {},
+            "executionId": "sw-exec-1",
+            "workflowId": "wf-1",
+            "dbExecutionId": "db-exec-1",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["responseStatus"] == 202
+
+
+def test_execute_action_classifies_router_replacement_for_dev_preview(monkeypatch):
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_preview_transport_test",
+        "activities/execute_action.py",
+    )
+    monkeypatch.setattr(
+        execute_action_module,
+        "dapr_invoke",
+        lambda *_args, **_kwargs: (500, {"error": "router unavailable"}, ""),
+    )
+
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {
+                "id": "provision",
+                "config": {"actionType": "dev/preview", "mode": "preview-native"},
+            },
+            "nodeOutputs": {},
+            "executionId": "sw-exec-1",
+            "workflowId": "wf-1",
+            "dbExecutionId": "db-exec-1",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errorClass"] == "retryable"
+    assert result["responseStatus"] == 0
+
+
+class _DevPreviewActivationCtx:
+    def __init__(self):
+        self.current_utc_datetime = datetime(2026, 7, 12, tzinfo=timezone.utc)
+
+    def call_activity(self, activity, input=None, **kwargs):
+        return _FakeWorkflowTask(
+            "call_activity",
+            activity=getattr(activity, "__name__", str(activity)),
+            input=input,
+            kwargs=kwargs,
+        )
+
+    def create_timer(self, timeout):
+        return _FakeWorkflowTask("timer", timeout=timeout)
+
+
+def _dev_preview_activation_generator(
+    *,
+    max_attempts: int = 5,
+    services: list[str] | None = None,
+    adopt=True,
+):
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="preview-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "preview-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="preview-workflow",
+        trigger_data={},
+        execution_id="sw-exec-1",
+        db_execution_id="db-exec-1",
+        integrations=None,
+    )
+
+    ctx = _DevPreviewActivationCtx()
+    workflow_gen = SW_WORKFLOW._handle_call_task(
+        ctx,
+        "provision_preview",
+        {
+            "call": "dev/preview",
+            "with": {
+                "mode": "preview-native",
+                "services": services
+                if services is not None
+                else ["workflow-builder", "function-router"],
+                "adopt": adopt,
+                "activationTimeoutSeconds": 300,
+                "activationPollSeconds": 2,
+                "activationMaxAttempts": max_attempts,
+            },
+        },
+        tc,
+    )
+    return workflow_gen, ctx
+
+
+def _dev_preview_service_result(service: str):
+    return {
+        "service": service,
+        "ok": True,
+        "info": {
+            "executionId": "db-exec-1",
+            "service": service,
+            "ready": True,
+            "sandboxName": f"dev-{service}",
+            "podIP": "10.0.0.10" if service == "workflow-builder" else "10.0.0.11",
+            "syncUrl": f"http://dev-{service}:8001/__sync",
+        },
+    }
+
+
+def _dev_preview_receipt(
+    phase: str,
+    *,
+    batch_id: str = "batch-1",
+    response_status: int | None = None,
+    services=None,
+):
+    active = phase == "active"
+    return {
+        "success": True,
+        "responseStatus": (
+            response_status if response_status is not None else (200 if active else 202)
+        ),
+        "data": {
+            "executionId": "db-exec-1",
+            "services": services
+            if services is not None
+            else [
+                _dev_preview_service_result("workflow-builder"),
+                _dev_preview_service_result("function-router"),
+            ],
+            "ok": True,
+            "complete": active,
+            "pending": not active,
+            "activationPhase": phase,
+            "batchId": batch_id,
+        },
+    }
+
+
+def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input():
+    workflow_gen, _ctx = _dev_preview_activation_generator()
+    first_race = next(workflow_gen)
+    assert first_race["kind"] == "when_any"
+    first_call, deadline = first_race["tasks"]
+    assert first_call.activity == "execute_action"
+    assert deadline.kind == "timer"
+    assert deadline.timeout == timedelta(seconds=300)
+
+    first_call.result = _dev_preview_receipt("scheduled")
+    first_poll_race = workflow_gen.send(first_call)
+    first_poll, same_deadline = first_poll_race["tasks"]
+    assert first_poll.timeout == timedelta(seconds=2)
+    assert same_deadline is deadline
+
+    second_race = workflow_gen.send(first_poll)
+    second_call, same_deadline = second_race["tasks"]
+    assert second_call.input == first_call.input
+    assert same_deadline is deadline
+    second_call.result = {
+        "success": False,
+        "error": "BFF deployment is replacing",
+        "errorClass": "retryable",
+        "responseStatus": 503,
+    }
+    second_poll_race = workflow_gen.send(second_call)
+    second_poll, same_deadline = second_poll_race["tasks"]
+    assert second_poll.timeout == timedelta(seconds=2)
+    assert same_deadline is deadline
+
+    third_race = workflow_gen.send(second_poll)
+    third_call, same_deadline = third_race["tasks"]
+    assert third_call.input == first_call.input
+    assert same_deadline is deadline
+    third_call.result = _dev_preview_receipt("active")
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(third_call)
+
+    assert stop.value.value["success"] is True
+    assert stop.value.value["responseStatus"] == 200
+    assert stop.value.value["data"]["batchId"] == "batch-1"
+
+
+def test_dev_preview_activation_rejects_batch_identity_change():
+    workflow_gen, _ctx = _dev_preview_activation_generator()
+    first_race = next(workflow_gen)
+    first_call, _deadline = first_race["tasks"]
+    first_call.result = _dev_preview_receipt("scheduled")
+    poll_race = workflow_gen.send(first_call)
+    second_race = workflow_gen.send(poll_race["tasks"][0])
+    second_call = second_race["tasks"][0]
+    second_call.result = _dev_preview_receipt("active", batch_id="batch-2")
+
+    with pytest.raises(RuntimeError, match="batch identity changed"):
+        workflow_gen.send(second_call)
+
+
+def test_dev_preview_activation_requires_exact_http_200_active():
+    workflow_gen, _ctx = _dev_preview_activation_generator()
+    first_race = next(workflow_gen)
+    first_call = first_race["tasks"][0]
+    first_call.result = _dev_preview_receipt("active", response_status=202)
+
+    with pytest.raises(RuntimeError, match="exact HTTP 202 pending or HTTP 200 active"):
+        workflow_gen.send(first_call)
+
+
+def test_dev_preview_activation_retry_is_attempt_bounded():
+    workflow_gen, _ctx = _dev_preview_activation_generator(max_attempts=2)
+    first_race = next(workflow_gen)
+    retryable = {
+        "success": False,
+        "error": "router unavailable",
+        "errorClass": "retryable",
+        "responseStatus": 0,
+    }
+    first_call = first_race["tasks"][0]
+    first_call.result = retryable
+    poll_race = workflow_gen.send(first_call)
+    second_race = workflow_gen.send(poll_race["tasks"][0])
+    second_call = second_race["tasks"][0]
+    second_call.result = retryable
+
+    with pytest.raises(RuntimeError, match=r"300000ms \(2 attempts\)"):
+        workflow_gen.send(second_call)
+
+
+def test_dev_preview_activation_deadline_includes_initial_activity():
+    workflow_gen, _ctx = _dev_preview_activation_generator()
+    initial_race = next(workflow_gen)
+    initial_call, deadline = initial_race["tasks"]
+
+    assert initial_call.kind == "call_activity"
+    with pytest.raises(RuntimeError, match=r"300000ms \(1 attempts\)"):
+        workflow_gen.send(deadline)
+
+
+def test_dev_preview_activation_never_accepts_late_active_activity():
+    workflow_gen, ctx = _dev_preview_activation_generator()
+    initial_race = next(workflow_gen)
+    initial_call = initial_race["tasks"][0]
+    initial_call.result = _dev_preview_receipt("scheduled")
+    poll_race = workflow_gen.send(initial_call)
+    activity_race = workflow_gen.send(poll_race["tasks"][0])
+    late_activity = activity_race["tasks"][0]
+    late_activity.result = _dev_preview_receipt("active")
+    ctx.current_utc_datetime += timedelta(seconds=301)
+
+    with pytest.raises(RuntimeError, match=r"300000ms \(2 attempts\)"):
+        workflow_gen.send(late_activity)
+
+
+@pytest.mark.parametrize(
+    "services",
+    [
+        [],
+        [_dev_preview_service_result("workflow-builder")],
+        [
+            _dev_preview_service_result("workflow-builder"),
+            _dev_preview_service_result("workflow-builder"),
+        ],
+        [
+            _dev_preview_service_result("workflow-builder"),
+            {
+                **_dev_preview_service_result("function-router"),
+                "info": {
+                    **_dev_preview_service_result("function-router")["info"],
+                    "ready": False,
+                },
+            },
+        ],
+    ],
+)
+def test_dev_preview_activation_rejects_inexact_service_receipt(services):
+    observation, _batch_id, detail = SW_WORKFLOW._dev_preview_activation_observation(
+        _dev_preview_receipt("active", services=services),
+        execution_id="db-exec-1",
+        expected_services=("workflow-builder", "function-router"),
+        expected_batch_id=None,
+    )
+
+    assert observation == "invalid"
+    assert detail == "activation result does not prove the exact ready service set"
+
+
+def test_dev_preview_activation_rejects_duplicate_requested_services_before_call():
+    workflow_gen, _ctx = _dev_preview_activation_generator(
+        services=["workflow-builder", "workflow-builder"]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="services must be a non-empty list of unique service ids",
+    ):
+        next(workflow_gen)
+
+
+def test_dev_preview_activation_adopt_uses_strict_boolean_semantics():
+    config = {
+        "mode": "preview-native",
+        "services": ["workflow-builder"],
+    }
+
+    assert SW_WORKFLOW._expects_durable_dev_preview_activation(
+        "dev/preview", {**config, "adopt": "false"}
+    )
+    assert not SW_WORKFLOW._expects_durable_dev_preview_activation(
+        "dev/preview", {**config, "adopt": False}
+    )
 
 
 def test_mark_workflow_execution_started_persists_primary_trace_id(monkeypatch):

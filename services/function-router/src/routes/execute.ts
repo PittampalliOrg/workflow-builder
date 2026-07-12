@@ -730,6 +730,166 @@ export function bindDevPreviewExecutionId(
   return { ok: true, executionId };
 }
 
+const TRANSIENT_DEV_PREVIEW_STATUSES = new Set([408, 425, 429, 502, 503, 504]);
+
+function expectsDurableDevPreviewActivation(
+  input: Record<string, unknown>,
+  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build",
+): boolean {
+  return (
+    mode === "ensure" &&
+    input.mode === "preview-native" &&
+    input.adopt !== false &&
+    Array.isArray(input.services)
+  );
+}
+
+function requestedDevPreviewServices(
+  input: Record<string, unknown>,
+): string[] | null {
+  if (!Array.isArray(input.services) || input.services.length === 0)
+    return null;
+  const services: string[] = [];
+  const seen = new Set<string>();
+  for (const value of input.services) {
+    if (typeof value !== "string" || value !== value.trim() || !value)
+      return null;
+    if (seen.has(value)) return null;
+    seen.add(value);
+    services.push(value);
+  }
+  return services;
+}
+
+function hasExactReadyDevPreviewServices(input: {
+  data: Record<string, unknown>;
+  executionId: string;
+  requestedServices: readonly string[];
+}): boolean {
+  if (!Array.isArray(input.data.services)) return false;
+  if (input.data.services.length !== input.requestedServices.length)
+    return false;
+  const requested = new Set(input.requestedServices);
+  const received = new Set<string>();
+  for (const value of input.data.services) {
+    if (!isPlainObject(value) || typeof value.service !== "string")
+      return false;
+    const service = value.service;
+    if (!requested.has(service) || received.has(service) || value.ok !== true) {
+      return false;
+    }
+    if (!isPlainObject(value.info)) return false;
+    const info = value.info;
+    if (
+      info.executionId !== input.executionId ||
+      info.service !== service ||
+      info.ready !== true ||
+      typeof info.sandboxName !== "string" ||
+      !info.sandboxName ||
+      typeof info.podIP !== "string" ||
+      !info.podIP ||
+      typeof info.syncUrl !== "string" ||
+      !info.syncUrl
+    ) {
+      return false;
+    }
+    received.add(service);
+  }
+  return received.size === requested.size;
+}
+
+export function classifyDevPreviewProxyResponse(input: {
+  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build";
+  requestInput: Record<string, unknown>;
+  executionId: string;
+  status: number;
+  parsed: unknown;
+  durationMs?: number;
+}): ExecuteResponse {
+  const data = isPlainObject(input.parsed) ? input.parsed : {};
+  const duration_ms = input.durationMs ?? 0;
+  const activationExpected = expectsDurableDevPreviewActivation(
+    input.requestInput,
+    input.mode,
+  );
+
+  if (activationExpected && input.status >= 200 && input.status < 300) {
+    const requestedServices = requestedDevPreviewServices(input.requestInput);
+    const phase = data.activationPhase;
+    const batchId = typeof data.batchId === "string" ? data.batchId.trim() : "";
+    const validBatchId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(batchId);
+    const exactReadyServices =
+      requestedServices !== null &&
+      hasExactReadyDevPreviewServices({
+        data,
+        executionId: input.executionId,
+        requestedServices,
+      });
+    const pending =
+      input.status === 202 &&
+      data.executionId === input.executionId &&
+      data.ok === true &&
+      data.complete === false &&
+      data.pending === true &&
+      (phase === "scheduled" || phase === "activating") &&
+      validBatchId &&
+      exactReadyServices;
+    const active =
+      input.status === 200 &&
+      data.executionId === input.executionId &&
+      data.ok === true &&
+      data.complete === true &&
+      data.pending === false &&
+      phase === "active" &&
+      validBatchId &&
+      exactReadyServices;
+    if (!pending && !active) {
+      return {
+        success: false,
+        data,
+        error:
+          "dev/preview ensure returned an invalid activation lifecycle receipt",
+        errorClass: "permanent",
+        responseStatus: input.status,
+        duration_ms,
+      };
+    }
+  }
+
+  if (input.status < 200 || input.status >= 300) {
+    const message =
+      typeof data.error === "string"
+        ? data.error
+        : `dev/preview ${input.mode} failed (${input.status})`;
+    const explicitActivationFailure =
+      activationExpected &&
+      (data.activationPhase === "failed" || data.ok === false);
+    return {
+      success: false,
+      data,
+      error: message,
+      ...(activationExpected
+        ? {
+            errorClass:
+              !explicitActivationFailure &&
+              TRANSIENT_DEV_PREVIEW_STATUSES.has(input.status)
+                ? ("retryable" as const)
+                : ("permanent" as const),
+          }
+        : {}),
+      responseStatus: input.status,
+      duration_ms,
+    };
+  }
+
+  return {
+    success: true,
+    data,
+    responseStatus: input.status,
+    duration_ms,
+  };
+}
+
 async function executeDevPreview(
   input: Record<string, unknown>,
   mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build",
@@ -742,6 +902,22 @@ async function executeDevPreview(
       success: false,
       data: {},
       error: binding.error,
+      ...(mode === "ensure" ? { errorClass: "permanent" as const } : {}),
+      responseStatus: 0,
+      duration_ms: Date.now() - started,
+    } as ExecuteResponse;
+  }
+  if (
+    expectsDurableDevPreviewActivation(input, mode) &&
+    requestedDevPreviewServices(input) === null
+  ) {
+    return {
+      success: false,
+      data: {},
+      error:
+        "dev/preview: services must be a non-empty list of unique service ids",
+      errorClass: "permanent",
+      responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
@@ -751,6 +927,8 @@ async function executeDevPreview(
       data: {},
       error:
         "dev/preview: PREVIEW_ACTION_INTERNAL_TOKEN is not configured; refusing privileged proxy",
+      ...(mode === "ensure" ? { errorClass: "permanent" as const } : {}),
+      responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
@@ -866,28 +1044,23 @@ async function executeDevPreview(
     }
     const text = await res.text();
     const parsed = parseJsonResponse(text);
-    if (!res.ok) {
-      const message =
-        isPlainObject(parsed) && typeof parsed.error === "string"
-          ? parsed.error
-          : `dev/preview ${mode} failed (${res.status})`;
-      return {
-        success: false,
-        data: {},
-        error: message,
-        duration_ms: Date.now() - started,
-      } as ExecuteResponse;
-    }
-    return {
-      success: true,
-      data: isPlainObject(parsed) ? parsed : {},
-      duration_ms: Date.now() - started,
-    } as ExecuteResponse;
+    return classifyDevPreviewProxyResponse({
+      mode,
+      requestInput: input,
+      executionId,
+      status: res.status,
+      parsed,
+      durationMs: Date.now() - started,
+    });
   } catch (err) {
     return {
       success: false,
       data: {},
       error: err instanceof Error ? err.message : String(err),
+      ...(expectsDurableDevPreviewActivation(input, mode)
+        ? { errorClass: "retryable" as const }
+        : {}),
+      responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
@@ -1647,7 +1820,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   : "ensure",
         body.db_execution_id,
       );
-      return reply.status(devResponse.success ? 200 : 502).send(devResponse);
+      // A staged dev/preview activation carries retryability and the target HTTP
+      // status in its action envelope. Keep the router request successful so the
+      // durable workflow can poll/retry it across pod replacement.
+      const durableActivationEnvelope =
+        functionSlug === "dev/preview" &&
+        (devResponse.success || devResponse.errorClass !== undefined);
+      return reply
+        .status(durableActivationEnvelope || devResponse.success ? 200 : 502)
+        .send(devResponse);
     }
 
     // session/spawn — workflow → interactive dev-session handoff (proxy to BFF).

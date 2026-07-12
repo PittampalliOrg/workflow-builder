@@ -5,7 +5,14 @@ import { withDevPreviewFailureSummary } from "$lib/server/application/preview-pr
 function failedResult(
   services: DevPreviewsResult["services"],
 ): DevPreviewsResult {
-  return { executionId: "exec-1", services, ok: false };
+  return {
+    executionId: "exec-1",
+    services,
+    ok: false,
+    complete: false,
+    pending: false,
+    activationPhase: "failed",
+  };
 }
 
 describe("withDevPreviewFailureSummary", () => {
@@ -14,6 +21,10 @@ describe("withDevPreviewFailureSummary", () => {
       executionId: "exec-1",
       services: [],
       ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "scheduled",
+      batchId: "batch-1",
     };
     expect(withDevPreviewFailureSummary(result)).toBe(result);
   });

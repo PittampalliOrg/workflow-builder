@@ -13,6 +13,7 @@ import {
   devPreviewCaptureOnly,
   devPreviewChangedPaths,
   devPreviewCommands,
+  devPreviewSandboxName,
   devPreviewSyncPaths,
   resolveRequestedDevPreviewServiceSet,
   resolveDevPreviewDescriptor,
@@ -23,6 +24,20 @@ import {
 } from "./dev-preview-registry";
 
 describe("dev-preview registry", () => {
+  it("matches the sandbox-execution-api canonical Sandbox identity", () => {
+    expect(devPreviewSandboxName("exec-1", "workflow-builder")).toBe(
+      "wfb-dev-preview-workflow-builder-exec-1",
+    );
+    expect(
+      devPreviewSandboxName(
+        `Execution_${"A".repeat(80)}`,
+        "workflow-orchestrator",
+      ),
+    ).toBe(
+      "wfb-dev-preview-workflow-orchestrator-execution-aaaa-264a01ed8c",
+    );
+  });
+
   it("resolves explicit syncPaths, else the language-family default", () => {
     // Explicit list wins.
     expect(

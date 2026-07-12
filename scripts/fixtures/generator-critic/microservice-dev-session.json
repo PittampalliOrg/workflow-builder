@@ -82,7 +82,11 @@
           "mode": "${ .trigger.mode // \"preview-native\" }",
           "origin": "${ .trigger.previewOrigin // \"\" }",
           "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
-          "waitReadySeconds": 180
+          "waitReadySeconds": 180,
+          "timeoutMs": 600000,
+          "activationTimeoutSeconds": 300,
+          "activationPollSeconds": 2,
+          "activationMaxAttempts": 151
         },
         "artifacts": [
           {

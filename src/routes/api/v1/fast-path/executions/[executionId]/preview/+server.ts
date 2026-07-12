@@ -64,13 +64,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		: null;
 	try {
 		if (services && services.length > 0) {
-			return json(
-				await app.previewEnvironmentProvisioner.provisionMany({
-					executionId,
-					services,
-					...shared,
-				}),
-			);
+			const result = await app.previewEnvironmentProvisioner.provisionMany({
+				executionId,
+				services,
+				...shared,
+			});
+			return json(result, {
+				status: !result.ok ? 503 : result.complete ? 200 : 202,
+			});
 		}
 		return json(
 			await app.previewEnvironmentProvisioner.provision({
@@ -95,5 +96,14 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		projectId: locals.session.projectId,
 	});
 	if (!environment) return error(404, "Fast path preview not found");
-	return json(await app.previewEnvironmentProvisioner.teardown({ executionId }));
+	try {
+		const result = await app.previewEnvironmentProvisioner.teardown({ executionId });
+		return json(result, {
+			status: !result.ok ? 503 : result.complete ? 200 : 202,
+		});
+	} catch (cause) {
+		const message = cause instanceof Error ? cause.message : String(cause);
+		console.error("[fast-path] preview teardown failed:", message);
+		return json({ ok: false, error: message }, { status: 503 });
+	}
 };

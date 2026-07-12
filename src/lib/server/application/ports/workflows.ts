@@ -1,9 +1,5 @@
-import type {
-	RuntimeConfigCloudEvent,
-} from "$lib/server/sessions/runtime-config";
-import type {
-	AgentConfig,
-} from "$lib/types/agents";
+import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
+import type { AgentConfig } from "$lib/types/agents";
 import type {
 	GoalFlow,
 	ObservabilityAgentDecisionTurn,
@@ -365,8 +361,12 @@ export type WorkflowTriggerLifecycleActionResult =
 	| { ok: false; error: string };
 
 export interface WorkflowTriggerLifecyclePort {
-	activateTrigger(triggerId: string): Promise<WorkflowTriggerLifecycleActionResult>;
-	deactivateTrigger(triggerId: string): Promise<WorkflowTriggerLifecycleActionResult>;
+	activateTrigger(
+		triggerId: string,
+	): Promise<WorkflowTriggerLifecycleActionResult>;
+	deactivateTrigger(
+		triggerId: string,
+	): Promise<WorkflowTriggerLifecycleActionResult>;
 }
 
 export type WorkflowBrowserCaptureStepInput = {
@@ -411,7 +411,10 @@ export interface WorkflowDefinitionRepository {
 		namePrefix: string;
 	}): Promise<string | null>;
 	create(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition>;
-	update(id: string, input: UpdateWorkflowDefinitionInput): Promise<WorkflowDefinition | null>;
+	update(
+		id: string,
+		input: UpdateWorkflowDefinitionInput,
+	): Promise<WorkflowDefinition | null>;
 	hasActiveExecutions(id: string): Promise<boolean>;
 	delete(id: string): Promise<void>;
 }
@@ -540,7 +543,9 @@ export interface WorkflowFileStore {
 		filter: ListWorkflowFilesByScopePrefixFilter,
 	): Promise<WorkflowFileRecord[]>;
 	getFile(id: string): Promise<WorkflowFileRecord | null>;
-	getFileContent(id: string): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
+	getFileContent(
+		id: string,
+	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
 	archiveFile(input: { id: string; userId: string }): Promise<boolean>;
 	deleteFile(input: { id: string; userId: string }): Promise<boolean>;
 }
@@ -586,7 +591,9 @@ export type WorkflowScriptStartRequest = {
 };
 
 export interface WorkflowScheduler {
-	startSwWorkflow(input: WorkflowStartRequest): Promise<{ instanceId?: string }>;
+	startSwWorkflow(
+		input: WorkflowStartRequest,
+	): Promise<{ instanceId?: string }>;
 	startScriptWorkflow(
 		input: WorkflowScriptStartRequest,
 	): Promise<{ instanceId?: string }>;
@@ -656,7 +663,9 @@ export type WorkflowRunStartResult =
 	| { ok: false; status: number; error: string };
 
 export interface WorkflowRunStarterPort {
-	startWorkflowRun(input: WorkflowRunStartInput): Promise<WorkflowRunStartResult>;
+	startWorkflowRun(
+		input: WorkflowRunStartInput,
+	): Promise<WorkflowRunStartResult>;
 }
 
 export interface WorkflowSpecValidatorPort {
@@ -692,7 +701,9 @@ export interface CliPreviewGatewayPort {
 		search: string;
 		proxyBasePath: string;
 	}): Promise<Response>;
-	executionPreviewBackend(executionId: string): Promise<ExecutionPreviewBackend>;
+	executionPreviewBackend(
+		executionId: string,
+	): Promise<ExecutionPreviewBackend>;
 }
 
 export type DevPreviewServiceReadModel = {
@@ -765,7 +776,14 @@ export interface DevEnvironmentReadRepository {
 		executionId: string;
 		projectId: string | null | undefined;
 	}): Promise<DevEnvironmentSummaryReadModel | null>;
-	resolveCanonicalExecutionId(input: { executionId: string }): Promise<string>;
+	/** Exact cleaned-row tombstone used only to resume idempotent teardown. */
+	getDevEnvironmentTeardownTarget(input: {
+		executionId: string;
+		projectId: string | null | undefined;
+	}): Promise<DevEnvironmentSummaryReadModel | null>;
+	resolveCanonicalExecutionId(input: {
+		executionId: string;
+	}): Promise<string>;
 }
 
 export type PreviewDatabaseProvisionResult = {
@@ -863,7 +881,9 @@ export interface WorkflowDataService {
 		now?: Date;
 	}): Promise<LiveLimitReadModel>;
 	listEnabledModelIds(): Promise<string[]>;
-	listSandboxExecutions(sandboxName: string): Promise<SandboxExecutionReadModel[]>;
+	listSandboxExecutions(
+		sandboxName: string,
+	): Promise<SandboxExecutionReadModel[]>;
 	listSandboxSessionOwners(input: {
 		sandboxNames: string[];
 	}): Promise<SandboxSessionOwnerRecord[]>;
@@ -920,7 +940,9 @@ export interface WorkflowDataService {
 		app?: PlatformOAuthAppMutationRecord | null;
 	}>;
 	deletePlatformOAuthApp(id: string): Promise<void>;
-	listProjectMcpConnections(projectId: string): Promise<McpConnectionRecord[]>;
+	listProjectMcpConnections(
+		projectId: string,
+	): Promise<McpConnectionRecord[]>;
 	createProjectMcpConnection(
 		input: CreateProjectMcpConnectionInput,
 	): Promise<McpConnectionCommandResult>;
@@ -935,7 +957,9 @@ export interface WorkflowDataService {
 		id: string;
 		projectId: string;
 	}): Promise<McpConnectionToolDiscoveryResult>;
-	getMcpCatalogPieceActions(pieceName: string): Promise<McpCatalogPieceActionsResult>;
+	getMcpCatalogPieceActions(
+		pieceName: string,
+	): Promise<McpCatalogPieceActionsResult>;
 	getMcpConnectionCatalog(input: {
 		projectId: string;
 		platformId?: string | null;
@@ -1069,9 +1093,7 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		limit: number;
 	}): Promise<AgentSkillUsedByReadModel | null>;
-	getVaultUsages(input: {
-		vaultId: string;
-	}): Promise<VaultUsagesReadModel>;
+	getVaultUsages(input: { vaultId: string }): Promise<VaultUsagesReadModel>;
 	listAiAssistantMessages(input: {
 		workflowId: string;
 		userId: string;
@@ -1123,7 +1145,10 @@ export interface WorkflowDataService {
 		reasoning?: unknown;
 	}): Promise<
 		| BenchmarkRunInstanceAnnotationCommandResult
-		| { status: "invalid_verdict"; allowed: BenchmarkInstanceAnnotationVerdict[] }
+		| {
+				status: "invalid_verdict";
+				allowed: BenchmarkInstanceAnnotationVerdict[];
+		  }
 	>;
 	deleteBenchmarkRunInstanceAnnotation(input: {
 		runId: string;
@@ -1149,7 +1174,9 @@ export interface WorkflowDataService {
 	ingestBenchmarkEvaluationResults(
 		input: BenchmarkEvaluationResultsCallbackInput,
 	): Promise<BenchmarkEvaluationIngestResult>;
-	recordBenchmarkArtifact(input: BenchmarkArtifactMetadataInput): Promise<void>;
+	recordBenchmarkArtifact(
+		input: BenchmarkArtifactMetadataInput,
+	): Promise<void>;
 	getBenchmarkRunProjectId(runId: string): Promise<string | null>;
 	getDevPreviewHubReadModel(input: {
 		projectId?: string | null;
@@ -1162,8 +1189,16 @@ export interface WorkflowDataService {
 		executionId: string;
 		projectId?: string | null;
 	}): Promise<DevEnvironmentSummaryReadModel | null>;
-	resolveCanonicalExecutionId(input: { executionId: string }): Promise<string>;
-	createWorkflowDefinition(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition>;
+	getDevEnvironmentTeardownTarget(input: {
+		executionId: string;
+		projectId?: string | null;
+	}): Promise<DevEnvironmentSummaryReadModel | null>;
+	resolveCanonicalExecutionId(input: {
+		executionId: string;
+	}): Promise<string>;
+	createWorkflowDefinition(
+		input: CreateWorkflowDefinitionInput,
+	): Promise<WorkflowDefinition>;
 	updateWorkflowDefinition(
 		id: string,
 		input: UpdateWorkflowDefinitionInput,
@@ -1171,13 +1206,20 @@ export interface WorkflowDataService {
 	hasActiveWorkflowExecutions(id: string): Promise<boolean>;
 	deleteWorkflowDefinition(id: string): Promise<void>;
 	listWorkflowTriggers(workflowId: string): Promise<WorkflowTriggerRecord[]>;
-	createWorkflowTrigger(input: CreateWorkflowTriggerInput): Promise<WorkflowTriggerRecord>;
+	createWorkflowTrigger(
+		input: CreateWorkflowTriggerInput,
+	): Promise<WorkflowTriggerRecord>;
 	getWorkflowTrigger(input: {
 		workflowId: string;
 		triggerId: string;
 	}): Promise<WorkflowTriggerRecord | null>;
-	getWorkflowTriggerById(triggerId: string): Promise<WorkflowTriggerRecord | null>;
-	markWorkflowTriggerFired(input: { triggerId: string; firedAt?: Date }): Promise<void>;
+	getWorkflowTriggerById(
+		triggerId: string,
+	): Promise<WorkflowTriggerRecord | null>;
+	markWorkflowTriggerFired(input: {
+		triggerId: string;
+		firedAt?: Date;
+	}): Promise<void>;
 	deleteWorkflowTrigger(triggerId: string): Promise<void>;
 	getPieceExecutionByIdempotencyKey(
 		idempotencyKey: string,
@@ -1233,7 +1275,9 @@ export interface WorkflowDataService {
 	listWorkflowBrowserArtifactsByExecutionId(
 		workflowExecutionId: string,
 	): Promise<WorkflowBrowserArtifactRecord[]>;
-	getWorkflowBrowserBlobPayload(storageRef: string): Promise<WorkflowBrowserBlobPayload | null>;
+	getWorkflowBrowserBlobPayload(
+		storageRef: string,
+	): Promise<WorkflowBrowserBlobPayload | null>;
 	validateApiKeyForUser(input: {
 		authorizationHeader: string | null;
 		userId: string;
@@ -1243,7 +1287,10 @@ export interface WorkflowDataService {
 		userId: string;
 		name: string;
 	}): Promise<UserApiKeyWithPlaintext>;
-	deleteUserApiKey(input: { userId: string; keyId: string }): Promise<boolean>;
+	deleteUserApiKey(input: {
+		userId: string;
+		keyId: string;
+	}): Promise<boolean>;
 	rotateUserApiKey(input: {
 		userId: string;
 		keyId: string;
@@ -1260,7 +1307,9 @@ export interface WorkflowDataService {
 	getWorkflowExecutionSessionOwnerContext(
 		executionId: string,
 	): Promise<WorkflowExecutionSessionOwnerContext | null>;
-	getRunningWorkflowExecution(workflowId: string): Promise<{ id: string; status: string } | null>;
+	getRunningWorkflowExecution(
+		workflowId: string,
+	): Promise<{ id: string; status: string } | null>;
 	listCliWorkspaceCommandCandidates(input: {
 		executionId: string;
 		limit: number;
@@ -1269,7 +1318,9 @@ export interface WorkflowDataService {
 	getWorkflowEnsureSession(
 		sessionId: string,
 	): Promise<WorkflowEnsureSessionRecord | null>;
-	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
+	createWorkflowEnsureSession(
+		input: CreateWorkflowEnsureSessionInput,
+	): Promise<void>;
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
 	): Promise<void>;
@@ -1280,7 +1331,9 @@ export interface WorkflowDataService {
 		runId: string;
 		instanceId?: string | null;
 	}): Promise<BenchmarkSessionProvisioningGateResult>;
-	ensurePeerSession(input: EnsurePeerSessionInput): Promise<EnsurePeerSessionResult>;
+	ensurePeerSession(
+		input: EnsurePeerSessionInput,
+	): Promise<EnsurePeerSessionResult>;
 	resolvePeerAgentDispatchContext(input: {
 		agentId: string;
 		agentVersion?: number | null;
@@ -1291,7 +1344,9 @@ export interface WorkflowDataService {
 		agentId: string;
 		agentVersion?: number | null;
 	}): Promise<SessionCommandAgent | null>;
-	resolveSessionAgentByRef(ref: SessionAgentRef): Promise<SessionCommandAgent | null>;
+	resolveSessionAgentByRef(
+		ref: SessionAgentRef,
+	): Promise<SessionCommandAgent | null>;
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null>;
@@ -1303,7 +1358,9 @@ export interface WorkflowDataService {
 	countActiveTriggeredWorkflowRuns(input: {
 		statuses: WorkflowExecutionStatus[];
 	}): Promise<number>;
-	getExecutionLineage(executionId: string): Promise<WorkflowExecutionLineage | null>;
+	getExecutionLineage(
+		executionId: string,
+	): Promise<WorkflowExecutionLineage | null>;
 	listWorkflowExecutions(input: {
 		workflowId: string;
 		limit: number;
@@ -1341,10 +1398,15 @@ export interface WorkflowDataService {
 		workflowSessionId?: string | null;
 		primaryTraceId?: string | null;
 	}): Promise<void>;
-	markExecutionStartFailed(input: { executionId: string; error: string }): Promise<void>;
+	markExecutionStartFailed(input: {
+		executionId: string;
+		error: string;
+	}): Promise<void>;
 	listStaleRunningExecutions(input: {
 		olderThanMinutes: number;
-	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]>;
+	}): Promise<
+		Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]
+	>;
 	updateExecutionReadModel(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
@@ -1357,7 +1419,9 @@ export interface WorkflowDataService {
 		id: string,
 		patch: WorkflowExecutionLogPatch,
 	): Promise<WorkflowExecutionLogRecord | null>;
-	listExecutionLogs(executionId: string): Promise<WorkflowExecutionLogRecord[]>;
+	listExecutionLogs(
+		executionId: string,
+	): Promise<WorkflowExecutionLogRecord[]>;
 	listObservabilityServiceGraphStepLogs(input: {
 		userId: string;
 		projectId?: string | null;
@@ -1403,7 +1467,9 @@ export interface WorkflowDataService {
 		projectId?: string | null;
 		userId?: string | null;
 		agentDecisions?: ObservabilityAgentDecisionTurn[];
-	}): Promise<{ status: "ok"; goalFlow: GoalFlow | null } | { status: "not_found" }>;
+	}): Promise<
+		{ status: "ok"; goalFlow: GoalFlow | null } | { status: "not_found" }
+	>;
 	listSessionResources(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -1448,7 +1514,9 @@ export interface WorkflowDataService {
 		input?: ListSessionEventsInput,
 	): Promise<SessionEventEnvelope[]>;
 	listenSessionEventNotifications(
-		onNotification: (notification: WorkflowSessionEventNotification) => void,
+		onNotification: (
+			notification: WorkflowSessionEventNotification,
+		) => void,
 	): Promise<WorkflowSessionEventSubscription>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
 	resolveSessionIdForProvisioningEvent(input: {
@@ -1466,7 +1534,9 @@ export interface WorkflowDataService {
 	 * events (the raise-side dedup) + rollback for failed raises. */
 	claimUnraisedTeamEvents(
 		sessionId: string,
-	): Promise<Array<{ id: string; sequence: number; data: Record<string, unknown> }>>;
+	): Promise<
+		Array<{ id: string; sequence: number; data: Record<string, unknown> }>
+	>;
 	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
 	getSessionEvent(input: {
 		sessionId: string;
@@ -1486,7 +1556,9 @@ export interface WorkflowDataService {
 		  }
 		| { status: "not_found" }
 	>;
-	ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult>;
+	ingestSessionEvent(
+		input: IngestSessionEventInput,
+	): Promise<IngestSessionEventResult>;
 	forkSessionFromEvent(input: {
 		sourceSessionId: string;
 		fromSequence: number;
@@ -1504,7 +1576,9 @@ export interface WorkflowDataService {
 		| { status: "not_found" }
 		| { status: "bad_request"; message: string }
 	>;
-	upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }>;
+	upsertWorkflowArtifact(
+		input: WorkflowArtifactInput,
+	): Promise<{ id: string }>;
 	listWorkflowArtifactsByExecutionId(
 		executionId: string,
 	): Promise<WorkflowArtifactRecord[]>;
@@ -1525,7 +1599,9 @@ export interface WorkflowDataService {
 		file: WorkflowFileRecord;
 		deduplicated: boolean;
 	}>;
-	listWorkflowFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]>;
+	listWorkflowFiles(
+		filter: ListWorkflowFilesFilter,
+	): Promise<WorkflowFileRecord[]>;
 	listWorkflowFilesByScopePrefix(
 		filter: ListWorkflowFilesByScopePrefixFilter,
 	): Promise<WorkflowFileRecord[]>;
@@ -1533,7 +1609,10 @@ export interface WorkflowDataService {
 	getWorkflowFileContent(
 		id: string,
 	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null>;
-	archiveWorkflowFile(input: { id: string; userId: string }): Promise<boolean>;
+	archiveWorkflowFile(input: {
+		id: string;
+		userId: string;
+	}): Promise<boolean>;
 	deleteWorkflowFile(input: { id: string; userId: string }): Promise<boolean>;
 	persistRunDiffArtifact(input: PersistWorkflowRunDiffInput): Promise<{
 		id: string;
@@ -1541,7 +1620,9 @@ export interface WorkflowDataService {
 		bytes: number;
 		truncated: boolean;
 	}>;
-	persistSourceBundleArtifact(input: PersistWorkflowSourceBundleInput): Promise<{
+	persistSourceBundleArtifact(
+		input: PersistWorkflowSourceBundleInput,
+	): Promise<{
 		id: string;
 		fileId: string;
 		bytes: number;
@@ -1580,8 +1661,12 @@ export interface WorkflowDataService {
 		status: WorkflowPlanArtifactStatus;
 		metadata?: Record<string, unknown> | null;
 	}): Promise<{ artifactRef: string; status: WorkflowPlanArtifactStatus }>;
-	getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null>;
-	getTraceTargetsForExecution(executionId: string): Promise<TraceLinkTarget[]>;
+	getPlanArtifact(
+		artifactRef: string,
+	): Promise<WorkflowPlanArtifactRecord | null>;
+	getTraceTargetsForExecution(
+		executionId: string,
+	): Promise<TraceLinkTarget[]>;
 	upsertTraceLineageLinks(
 		input: UpsertTraceLineageLinksInput,
 	): Promise<{ recorded: number; sourceKeys: string[] }>;

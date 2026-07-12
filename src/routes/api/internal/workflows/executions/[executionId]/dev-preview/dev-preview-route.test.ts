@@ -17,7 +17,9 @@ describe("internal workflow execution dev-preview route", () => {
     expect(source).toContain("requirePreviewActionInternal(request)");
     expect(source).not.toContain("requireInternal(request)");
     expect(source).toContain("previewEnvironmentProvisioner.provision");
-    expect(source).toContain("status: result.ok ? 200 : 503");
+    expect(source).toContain(
+      "status: !result.ok ? 503 : result.complete ? 200 : 202",
+    );
     expect(source).toContain("withDevPreviewFailureSummary(result)");
     expect(source).toContain("previewEnvironmentProvisioner.teardown");
     expect(source).not.toContain("$lib/server/workflows/dev-preview");

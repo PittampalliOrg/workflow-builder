@@ -19,7 +19,11 @@ import {
 	detailsOf,
 	devPreviewServiceCatalog,
 } from "$lib/server/workflows/dev-environments";
-import { DEV_PREVIEW_SERVICES } from "$lib/server/workflows/dev-preview-registry";
+import {
+	devPreviewSandboxName,
+	DEV_PREVIEW_SERVICES,
+	resolveDevPreviewDescriptor,
+} from "$lib/server/workflows/dev-preview-registry";
 
 type Database = typeof defaultDb;
 
@@ -28,12 +32,12 @@ const TERMINAL_RUN_STATUSES = new Set(["success", "error", "cancelled"]);
 function devPreviewServiceFromInput(input: unknown): string {
 	if (!input || typeof input !== "object") return "workflow-builder";
 	const service = (input as { service?: unknown }).service;
-	return typeof service === "string" && service ? service : "workflow-builder";
+	return typeof service === "string" && service
+		? service
+		: "workflow-builder";
 }
 
-export class PostgresDevEnvironmentReadRepository
-	implements DevEnvironmentReadRepository
-{
+export class PostgresDevEnvironmentReadRepository implements DevEnvironmentReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	listServices(): DevPreviewServiceReadModel[] {
@@ -56,11 +60,17 @@ export class PostgresDevEnvironmentReadRepository
 			.from(workflowWorkspaceSessions)
 			.innerJoin(
 				workflowExecutions,
-				eq(workflowExecutions.id, workflowWorkspaceSessions.workflowExecutionId),
+				eq(
+					workflowExecutions.id,
+					workflowWorkspaceSessions.workflowExecutionId,
+				),
 			)
 			// Scope by the WORKFLOW's project, not workflowExecutions.projectId; the
 			// latter is nullable and the execute route doesn't always stamp it.
-			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.innerJoin(
+				workflows,
+				eq(workflows.id, workflowExecutions.workflowId),
+			)
 			.where(
 				and(
 					eq(workflows.projectId, projectId),
@@ -71,11 +81,15 @@ export class PostgresDevEnvironmentReadRepository
 
 		const previews = rows
 			.map((row) => ({ row, details: detailsOf(row.sandboxState) }))
-			.filter((x) => x.details?.kind === "dev-preview" && x.row.executionId);
+			.filter(
+				(x) => x.details?.kind === "dev-preview" && x.row.executionId,
+			);
 		if (previews.length === 0) return [];
 
 		// Resolve the bound interactive session per execution in one query.
-		const execIds = [...new Set(previews.map((p) => p.row.executionId as string))];
+		const execIds = [
+			...new Set(previews.map((p) => p.row.executionId as string)),
+		];
 		// execIds are already project-scoped via the workflow join, so match the
 		// bound session without re-filtering on sessions.projectId, which can be null.
 		const sessionRows = execIds.length
@@ -91,14 +105,18 @@ export class PostgresDevEnvironmentReadRepository
 			: [];
 		const sessionByExec = new Map<string, string>();
 		for (const s of sessionRows) {
-			if (s.workflowExecutionId && !sessionByExec.has(s.workflowExecutionId)) {
+			if (
+				s.workflowExecutionId &&
+				!sessionByExec.has(s.workflowExecutionId)
+			) {
 				sessionByExec.set(s.workflowExecutionId, s.id);
 			}
 		}
 
 		return previews.map(({ row, details }) => {
 			const service = details?.service || "workflow-builder";
-			const sessionId = sessionByExec.get(row.executionId as string) ?? null;
+			const sessionId =
+				sessionByExec.get(row.executionId as string) ?? null;
 			return {
 				executionId: row.executionId as string,
 				workspaceRef: row.workspaceRef,
@@ -123,14 +141,19 @@ export class PostgresDevEnvironmentReadRepository
 	async listDevEnvironmentGroups(
 		projectId: string | null | undefined,
 	): Promise<DevEnvironmentGroupReadModel[]> {
-		return groupDevEnvironmentSummaries(await this.listDevEnvironments(projectId));
+		return groupDevEnvironmentSummaries(
+			await this.listDevEnvironments(projectId),
+		);
 	}
 
 	async getDevEnvironmentOrPending(input: {
 		executionId: string;
 		projectId: string | null | undefined;
 	}): Promise<DevEnvironmentSummaryReadModel | null> {
-		const found = await this.getDevEnvironment(input.executionId, input.projectId);
+		const found = await this.getDevEnvironment(
+			input.executionId,
+			input.projectId,
+		);
 		if (found) return found;
 		if (!input.projectId) return null;
 
@@ -143,7 +166,10 @@ export class PostgresDevEnvironmentReadRepository
 			})
 			.from(workflowExecutions)
 			// Scope by the workflow's project; executions.projectId is nullable.
-			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+			.innerJoin(
+				workflows,
+				eq(workflows.id, workflowExecutions.workflowId),
+			)
 			.where(
 				and(
 					eq(workflowExecutions.id, input.executionId),
@@ -175,9 +201,100 @@ export class PostgresDevEnvironmentReadRepository
 			daprAppId: null,
 			sandboxName: null,
 			sessionId: boundSession?.id ?? null,
-			sessionUrl: boundSession?.id ? `/sessions/${boundSession.id}` : null,
+			sessionUrl: boundSession?.id
+				? `/sessions/${boundSession.id}`
+				: null,
 			runStatus: exec.status,
 			createdAt: exec.createdAt.toISOString(),
+		};
+	}
+
+	async getDevEnvironmentTeardownTarget(input: {
+		executionId: string;
+		projectId: string | null | undefined;
+	}): Promise<DevEnvironmentSummaryReadModel | null> {
+		if (!input.projectId) return null;
+		const rows = await this.database
+			.select({
+				workspaceRef: workflowWorkspaceSessions.workspaceRef,
+				sandboxState: workflowWorkspaceSessions.sandboxState,
+				createdAt: workflowWorkspaceSessions.createdAt,
+				runStatus: workflowExecutions.status,
+			})
+			.from(workflowWorkspaceSessions)
+			.innerJoin(
+				workflowExecutions,
+				eq(
+					workflowExecutions.id,
+					workflowWorkspaceSessions.workflowExecutionId,
+				),
+			)
+			.innerJoin(
+				workflows,
+				eq(workflows.id, workflowExecutions.workflowId),
+			)
+			.where(
+				and(
+					eq(workflowExecutions.id, input.executionId),
+					eq(workflows.projectId, input.projectId),
+					eq(workflowWorkspaceSessions.status, "cleaned"),
+				),
+			)
+			.orderBy(desc(workflowWorkspaceSessions.updatedAt))
+			.limit(50);
+
+		const tombstone = rows.find((row) => {
+			const details = detailsOf(row.sandboxState);
+			if (
+				details?.kind !== "dev-preview" ||
+				details.executionId !== input.executionId ||
+				typeof details.service !== "string" ||
+				typeof details.sandboxName !== "string"
+			) {
+				return false;
+			}
+			try {
+				const service = resolveDevPreviewDescriptor(
+					details.service,
+				).service;
+				return (
+					service === details.service &&
+					row.workspaceRef === details.sandboxName &&
+					details.sandboxName ===
+						devPreviewSandboxName(input.executionId, service)
+				);
+			} catch {
+				return false;
+			}
+		});
+		if (!tombstone) return null;
+
+		const details = detailsOf(tombstone.sandboxState)!;
+		const [boundSession] = await this.database
+			.select({ id: sessions.id })
+			.from(sessions)
+			.where(eq(sessions.workflowExecutionId, input.executionId))
+			.orderBy(desc(sessions.createdAt))
+			.limit(1);
+		const service = details.service!;
+		return {
+			executionId: input.executionId,
+			workspaceRef: tombstone.workspaceRef,
+			service,
+			browseUrl: browseUrlFor(service, details.browseUrl),
+			podIP: details.podIP ?? null,
+			port: details.port ?? null,
+			syncUrl: details.syncUrl ?? null,
+			ready: false,
+			needsDapr: details.needsDapr === true,
+			daprAppId: details.daprAppId ?? null,
+			sandboxName: details.sandboxName ?? null,
+			sessionId: boundSession?.id ?? null,
+			sessionUrl: boundSession?.id
+				? `/sessions/${boundSession.id}`
+				: null,
+			runStatus: tombstone.runStatus ?? null,
+			createdAt: tombstone.createdAt.toISOString(),
 		};
 	}
 
@@ -187,7 +304,9 @@ export class PostgresDevEnvironmentReadRepository
 	 * Resolve either form so preview rows satisfy the FK and the Dev hub can find
 	 * them. Fall back to the input for ad-hoc verification ids.
 	 */
-	async resolveCanonicalExecutionId(input: { executionId: string }): Promise<string> {
+	async resolveCanonicalExecutionId(input: {
+		executionId: string;
+	}): Promise<string> {
 		const idOrInstanceId = input.executionId;
 		if (!idOrInstanceId) return idOrInstanceId;
 		const [row] = await this.database

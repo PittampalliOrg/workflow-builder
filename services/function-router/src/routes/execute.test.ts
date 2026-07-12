@@ -5,6 +5,7 @@ import {
   buildDevPreviewBuildPayload,
   buildPreviewAcceptancePayload,
   buildWorkspaceCommandPayload,
+  classifyDevPreviewProxyResponse,
   dispatchErrorPayload,
   resolveWorkspaceUtilityTimeoutMs,
 } from "./execute.js";
@@ -95,6 +96,186 @@ describe("dev preview execution binding", () => {
         headSha: "b".repeat(40),
       },
     });
+  });
+});
+
+describe("durable dev preview activation envelope", () => {
+  const executionId = "db-exec-1";
+  const requestInput = {
+    mode: "preview-native",
+    services: ["workflow-builder", "function-router"],
+  };
+  const serviceResult = (service: string) => ({
+    service,
+    ok: true,
+    info: {
+      executionId,
+      service,
+      ready: true,
+      sandboxName: `dev-${service}`,
+      podIP: service === "workflow-builder" ? "10.0.0.10" : "10.0.0.11",
+      syncUrl: `http://dev-${service}:8001/__sync`,
+    },
+  });
+  const lifecycle = {
+    executionId,
+    services: requestInput.services.map(serviceResult),
+    ok: true,
+    batchId: "batch-1",
+  };
+
+  it("preserves exact pending and active target statuses", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 202,
+        parsed: {
+          ...lifecycle,
+          complete: false,
+          pending: true,
+          activationPhase: "scheduled",
+        },
+      }),
+    ).toMatchObject({
+      success: true,
+      responseStatus: 202,
+      data: { batchId: "batch-1", activationPhase: "scheduled" },
+    });
+
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 200,
+        parsed: {
+          ...lifecycle,
+          complete: true,
+          pending: false,
+          activationPhase: "active",
+        },
+      }),
+    ).toMatchObject({
+      success: true,
+      responseStatus: 200,
+      data: { batchId: "batch-1", activationPhase: "active" },
+    });
+  });
+
+  it.each([
+    ["empty", []],
+    ["partial", [serviceResult("workflow-builder")]],
+    [
+      "duplicate",
+      [serviceResult("workflow-builder"), serviceResult("workflow-builder")],
+    ],
+    [
+      "unexpected",
+      [
+        serviceResult("workflow-builder"),
+        serviceResult("workflow-orchestrator"),
+      ],
+    ],
+    [
+      "unready",
+      [
+        serviceResult("workflow-builder"),
+        {
+          ...serviceResult("function-router"),
+          info: { ...serviceResult("function-router").info, ready: false },
+        },
+      ],
+    ],
+  ])("rejects an %s activation service receipt", (_label, services) => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 200,
+        parsed: {
+          ...lifecycle,
+          services,
+          complete: true,
+          pending: false,
+          activationPhase: "active",
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      errorClass: "permanent",
+      responseStatus: 200,
+    });
+  });
+
+  it("rejects duplicate requested services", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput: {
+          ...requestInput,
+          services: ["workflow-builder", "workflow-builder"],
+        },
+        executionId,
+        status: 200,
+        parsed: {
+          ...lifecycle,
+          complete: true,
+          pending: false,
+          activationPhase: "active",
+        },
+      }),
+    ).toMatchObject({ success: false, errorClass: "permanent" });
+  });
+
+  it("rejects a lifecycle phase carried by the wrong HTTP status", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 200,
+        parsed: {
+          ...lifecycle,
+          complete: false,
+          pending: true,
+          activationPhase: "activating",
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      errorClass: "permanent",
+      responseStatus: 200,
+    });
+  });
+
+  it("retries replacement failures but not an explicit failed batch", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 503,
+        parsed: { error: "upstream unavailable" },
+      }),
+    ).toMatchObject({ success: false, errorClass: "retryable" });
+
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "ensure",
+        requestInput,
+        executionId,
+        status: 503,
+        parsed: {
+          error: "activation failed",
+          ok: false,
+          activationPhase: "failed",
+          batchId: "batch-1",
+        },
+      }),
+    ).toMatchObject({ success: false, errorClass: "permanent" });
   });
 });
 

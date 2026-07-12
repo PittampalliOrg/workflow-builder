@@ -62,19 +62,70 @@ export interface DevPreviewServiceResult {
   error?: string;
 }
 
-export interface DevPreviewsResult {
-  executionId: string;
-  services: DevPreviewServiceResult[];
-  ok: boolean;
+export type DevPreviewActivationPhase =
+  | "not-required"
+  | "scheduled"
+  | "activating"
+  | "active"
+  | "failed";
+
+/**
+ * The activation request may have committed in SEA, but its durable receipt was
+ * not observed. Adapters must preserve the staged batch and retry the exact input.
+ */
+export class RetryableDevPreviewActivationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryableDevPreviewActivationError";
+  }
 }
 
-export interface ReplaceDevPreviewImagesResult extends DevPreviewsResult {
+type DevPreviewsResultBase = {
+  executionId: string;
+  services: DevPreviewServiceResult[];
+};
+
+export type DevPreviewsResult = DevPreviewsResultBase &
+  (
+    | {
+        ok: true;
+        complete: true;
+        pending: false;
+        activationPhase: "not-required";
+        batchId?: never;
+      }
+    | {
+        ok: true;
+        complete: false;
+        pending: true;
+        activationPhase: "scheduled" | "activating";
+        /** Stable SEA activation identity for staged preview-native adoption. */
+        batchId: string;
+      }
+    | {
+        ok: true;
+        complete: true;
+        pending: false;
+        activationPhase: "active";
+        /** Stable SEA activation identity for staged preview-native adoption. */
+        batchId: string;
+      }
+    | {
+        ok: false;
+        complete: false;
+        pending: false;
+        activationPhase: "failed";
+        batchId?: string;
+      }
+  );
+
+export type ReplaceDevPreviewImagesResult = DevPreviewsResult & {
   rollback: null | {
     attempted: true;
     ok: boolean;
     services: DevPreviewServiceResult[];
   };
-}
+};
 
 export interface TeardownDevPreviewParams {
   executionId: string;
@@ -82,7 +133,12 @@ export interface TeardownDevPreviewParams {
 }
 
 export interface TeardownDevPreviewResult {
+  /** Every teardown request was accepted by the infrastructure adapter. */
   ok: boolean;
+  /** All requested preview resources were deleted before this call returned. */
+  complete: boolean;
+  /** At least one accepted teardown is still converging asynchronously. */
+  pending: boolean;
   sandboxName: string | null;
 }
 

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RetryableDevPreviewActivationError } from "$lib/server/application/ports/dev-preview-provisioner";
 import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
   captureAllDevPreviewSources,
@@ -54,6 +55,40 @@ function fakePreviewDatabases(): PreviewDatabaseProvisioner {
   };
 }
 
+type TestFetch = (url: any, init?: RequestInit) => Promise<Response>;
+
+function stubDevPreviewFetch(fetchImpl: TestFetch): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (
+        String(url).startsWith(
+          "http://sandbox-api/internal/dev-previews/teardown-intent?executionId=",
+        )
+      ) {
+        return Response.json({
+          executionId: new URL(String(url)).searchParams.get("executionId"),
+          teardownIntent: false,
+        });
+      }
+      return fetchImpl(url, init);
+    }),
+  );
+}
+
+function teardownRequestIdentity(target: string): {
+  sandboxName: string;
+  executionId: string | null;
+  service: string | null;
+} {
+  const url = new URL(target);
+  return {
+    sandboxName: decodeURIComponent(url.pathname.split("/").at(-1) ?? ""),
+    executionId: url.searchParams.get("executionId"),
+    service: url.searchParams.get("service"),
+  };
+}
+
 describe("dev-preview portability boundary", () => {
   beforeEach(() => {
     const sha = "a".repeat(40);
@@ -99,7 +134,7 @@ describe("dev-preview portability boundary", () => {
       async (_url: string | URL | Request, _init?: RequestInit) =>
         new Response(
           JSON.stringify({
-            sandboxName: "dev-preview-exec-1",
+            sandboxName: "wfb-dev-preview-function-router-exec-1",
             podIP: "10.0.0.12",
             port: 8080,
             syncPort: 8001,
@@ -114,7 +149,7 @@ describe("dev-preview portability boundary", () => {
           },
         ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
     const persistence = fakePersistence();
 
     const info = await provisionDevPreview(
@@ -125,7 +160,7 @@ describe("dev-preview portability boundary", () => {
       persistence,
     );
 
-    expect(info.sandboxName).toBe("dev-preview-exec-1");
+    expect(info.sandboxName).toBe("wfb-dev-preview-function-router-exec-1");
     expect(fetchMock).toHaveBeenCalledWith(
       "http://sandbox-api/internal/dev-preview",
       expect.objectContaining({ method: "POST" }),
@@ -146,7 +181,7 @@ describe("dev-preview portability boundary", () => {
     ]);
     expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceRef: "dev-preview-exec-1",
+        workspaceRef: "wfb-dev-preview-function-router-exec-1",
         workflowExecutionId: "exec-1",
         name: "dev-preview",
         backend: "juicefs",
@@ -155,11 +190,57 @@ describe("dev-preview portability boundary", () => {
     );
   });
 
+  it("compensates and fails when the injected teardown tombstone cannot persist", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const persistence = fakePersistence();
+    vi.mocked(persistence.upsertWorkflowWorkspaceSession).mockRejectedValue(
+      new Error("persistence unavailable"),
+    );
+    const deletes: string[] = [];
+    stubDevPreviewFetch(
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (init?.method === "DELETE") {
+          deletes.push(target);
+          return Response.json({
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+            accepted: true,
+            deleted: true,
+            deferred: false,
+          });
+        }
+        return Response.json({
+          sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+          podIP: "10.0.0.8",
+          syncUrl: "http://10.0.0.8:8001/__sync",
+          ready: true,
+          status: "running",
+        });
+      }),
+    );
+
+    await expect(
+      provisionDevPreview(
+        {
+          executionId: "exec-1",
+          service: "workflow-orchestrator",
+          mode: "preview-native",
+          adopt: false,
+        },
+        persistence,
+      ),
+    ).rejects.toThrow("persistence unavailable");
+    expect(deletes).toEqual([
+      "http://sandbox-api/internal/dev-preview/wfb-dev-preview-workflow-orchestrator-exec-1?executionId=exec-1&service=workflow-orchestrator",
+    ]);
+  });
+
   it("fails closed before provisioning when the server sync token is absent", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
     vi.stubEnv("WFB_DEV_SYNC_TOKEN", "");
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     await expect(
       provisionDevPreview(
@@ -192,7 +273,7 @@ describe("dev-preview portability boundary", () => {
           },
         ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     await provisionDevPreview(
       {
@@ -258,13 +339,14 @@ describe("dev-preview portability boundary", () => {
         },
       );
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     await provisionDevPreview(
       {
         executionId: "exec-1",
         service: "workflow-builder",
         mode: "preview-native",
+        adopt: false,
         origin: "https://wfb-myprev.tail286401.ts.net",
       },
       fakePersistence(),
@@ -274,6 +356,210 @@ describe("dev-preview portability boundary", () => {
       "http://sandbox-api/internal/vcluster-preview/myprev/touch",
     );
   });
+
+  it.each(["workflow-builder", "function-router"])(
+    "rejects single-service preview-native adoption of response-path service %s",
+    async (service) => {
+      vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+      const fetchMock = vi.fn();
+      stubDevPreviewFetch(fetchMock);
+
+      await expect(
+        provisionDevPreview({
+          executionId: "exec-1",
+          service,
+          mode: "preview-native",
+          adopt: true,
+        }),
+      ).rejects.toThrow("requires provisionMany");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails and cleans the persisted row when teardown wins after SEA creation", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const events: string[] = [];
+    const persistence = fakePersistence();
+    vi.mocked(persistence.upsertWorkflowWorkspaceSession).mockImplementation(
+      async (input) => {
+        events.push("persist");
+        return { workspaceRef: input.workspaceRef };
+      },
+    );
+    vi.mocked(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).mockImplementation(async () => {
+      events.push("clean");
+      return true;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.includes("/teardown-intent?")) {
+          events.push("confirm-intent");
+          return Response.json({
+            executionId: "exec-1",
+            teardownIntent: true,
+          });
+        }
+        if (init?.method === "DELETE") {
+          expect(teardownRequestIdentity(target)).toEqual({
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+            executionId: "exec-1",
+            service: "workflow-orchestrator",
+          });
+          events.push("delete");
+          return Response.json({
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+            accepted: true,
+            deleted: true,
+            deferred: false,
+          });
+        }
+        events.push("create");
+        return Response.json({
+          sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+          podIP: "10.0.0.8",
+          syncUrl: "http://10.0.0.8:8001/__sync",
+          ready: true,
+          status: "running",
+        });
+      }),
+    );
+
+    await expect(
+      provisionDevPreview(
+        {
+          executionId: "exec-1",
+          service: "workflow-orchestrator",
+          mode: "preview-native",
+          adopt: false,
+        },
+        persistence,
+      ),
+    ).rejects.toThrow("teardown is already in progress");
+    expect(events).toEqual([
+      "create",
+      "persist",
+      "confirm-intent",
+      "delete",
+      "clean",
+    ]);
+  });
+
+  it("preserves the persisted row when unconfirmed provision cleanup is deferred", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const persistence = fakePersistence();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.includes("/teardown-intent?")) {
+          return Response.json({
+            executionId: "exec-1",
+            teardownIntent: true,
+          });
+        }
+        if (init?.method === "DELETE") {
+          expect(teardownRequestIdentity(target)).toEqual({
+            sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+            executionId: "exec-1",
+            service: "workflow-builder",
+          });
+          return Response.json(
+            {
+              sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+              accepted: true,
+              deleted: false,
+              deferred: true,
+            },
+            { status: 202 },
+          );
+        }
+        return Response.json({
+          sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+          podIP: "10.0.0.8",
+          syncUrl: "http://10.0.0.8:3000/__sync",
+          ready: true,
+          status: "running",
+        });
+      }),
+    );
+
+    await expect(
+      provisionDevPreview(
+        {
+          executionId: "exec-1",
+          service: "workflow-builder",
+          mode: "preview-native",
+          adopt: false,
+        },
+        persistence,
+      ),
+    ).rejects.toThrow("teardown is already in progress");
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unavailable", () => Response.json({ detail: "down" }, { status: 503 })],
+    ["malformed", () => Response.json({ executionId: "exec-1" })],
+  ])(
+    "fails closed and cleans an unconfirmed provision when intent status is %s",
+    async (_case, intentResponse) => {
+      vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+      const persistence = fakePersistence();
+      let deleted = false;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+          const target = String(url);
+          if (target.includes("/teardown-intent?")) return intentResponse();
+          if (init?.method === "DELETE") {
+            expect(teardownRequestIdentity(target)).toEqual({
+              sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+              executionId: "exec-1",
+              service: "workflow-orchestrator",
+            });
+            deleted = true;
+            return Response.json({
+              sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+              accepted: true,
+              deleted: true,
+              deferred: false,
+            });
+          }
+          return Response.json({
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+            podIP: "10.0.0.8",
+            syncUrl: "http://10.0.0.8:8001/__sync",
+            ready: true,
+            status: "running",
+          });
+        }),
+      );
+
+      await expect(
+        provisionDevPreview(
+          {
+            executionId: "exec-1",
+            service: "workflow-orchestrator",
+            mode: "preview-native",
+            adopt: false,
+          },
+          persistence,
+        ),
+      ).rejects.toThrow("intent confirmation was not proven");
+      expect(deleted).toBe(true);
+      expect(
+        persistence.markWorkflowWorkspaceSessionCleaned,
+      ).toHaveBeenCalledWith({
+        workspaceRef: "wfb-dev-preview-workflow-orchestrator-exec-1",
+      });
+    },
+  );
 
   it("does not touch on a host-throwaway provision or without an origin", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
@@ -292,7 +578,7 @@ describe("dev-preview portability boundary", () => {
         },
       );
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     // preview-native but NO origin -> no alias to touch.
     await provisionDevPreview(
@@ -314,7 +600,7 @@ describe("dev-preview portability boundary", () => {
       async (_url: string, _init?: RequestInit) =>
         new Response(
           JSON.stringify({
-            sandboxName: "wfb-dev-preview-exec-1",
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
             ready: true,
             status: "running",
           }),
@@ -324,7 +610,7 @@ describe("dev-preview portability boundary", () => {
           },
         ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     await provisionDevPreview(
       { executionId: "exec-1", service: "workflow-orchestrator" },
@@ -338,9 +624,8 @@ describe("dev-preview portability boundary", () => {
     expect("applyDaprShadowDefaults" in body).toBe(false);
   });
 
-  it("compensates staged peers and skips the BFF when any peer fails", async () => {
+  it("skips both response-path stages when an ordinary peer fails readiness", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
-    const live = new Map<string, string>();
     const started: string[] = [];
     const fetchMock = vi.fn(async (url, init) => {
       const target = String(url);
@@ -348,45 +633,21 @@ describe("dev-preview portability boundary", () => {
         return Response.json({
           executionId: "exec-1",
           complete: true,
-          services: [...live].map(([service, sandboxName]) => ({
-            service,
-            sandboxName,
-          })),
+          services: [],
         });
       }
-      if (target.endsWith("/internal/dev-preview/restore-orphans")) {
-        return Response.json({ restored: [], releasedLeases: [] });
-      }
-      if (init?.method === "DELETE") {
-        const sandboxName = decodeURIComponent(target.split("/").at(-1) ?? "");
-        for (const [service, name] of live) {
-          if (name === sandboxName) live.delete(service);
-        }
-        return Response.json({
-          sandboxName,
-          accepted: true,
-          deleted: true,
-          deferred: false,
-        });
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        throw new Error("activation must not run after a peer failure");
       }
       const body = JSON.parse(String((init as RequestInit).body));
       started.push(body.service);
+      expect(body.stageAdoption).toBe(true);
       if (body.service === "workflow-orchestrator") {
         return Response.json({ detail: "boom" }, { status: 503 });
       }
-      const sandboxName = `wfb-dev-preview-${body.service}-exec-1`;
-      live.set(body.service, sandboxName);
-      return Response.json({
-        sandboxName,
-        podIP: "10.0.0.5",
-        port: 3000,
-        syncPort: 3000,
-        syncUrl: "http://10.0.0.5:3000/__sync",
-        ready: true,
-        status: "running",
-      });
+      throw new Error(`unexpected provision for ${body.service}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
     const persistence = fakePersistence();
 
     const result = await provisionDevPreviews(
@@ -412,31 +673,28 @@ describe("dev-preview portability boundary", () => {
     });
     expect(bySvc["function-router"]).toMatchObject({
       ok: false,
-      info: { sandboxName: "wfb-dev-preview-function-router-exec-1" },
-      error: expect.stringContaining("compensating teardown completed"),
+      error: expect.stringContaining("cutover skipped"),
     });
     expect(bySvc["workflow-orchestrator"]).toMatchObject({
       ok: false,
       error: expect.stringContaining("boom"),
     });
-    expect(started.sort()).toEqual([
-      "function-router",
-      "workflow-orchestrator",
-    ]);
-    expect(live.size).toBe(0);
-    expect(persistence.upsertWorkflowWorkspaceSession).toHaveBeenCalledOnce();
+    expect(started).toEqual(["workflow-orchestrator"]);
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/internal/dev-previews/activate"),
+      ),
+    ).toBe(false);
+    expect(persistence.upsertWorkflowWorkspaceSession).not.toHaveBeenCalled();
     expect(
       persistence.markWorkflowWorkspaceSessionCleaned,
-    ).toHaveBeenCalledWith({
-      workspaceRef: "wfb-dev-preview-function-router-exec-1",
-    });
+    ).not.toHaveBeenCalled();
   });
 
   it("treats fulfilled but non-ready services as failed system members", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
     let live = true;
-    vi.stubGlobal(
-      "fetch",
+    stubDevPreviewFetch(
       vi.fn(async (url, init) => {
         const target = String(url);
         if (target.includes("/internal/dev-previews?")) {
@@ -457,6 +715,11 @@ describe("dev-preview portability boundary", () => {
           return Response.json({ restored: [], releasedLeases: [] });
         }
         if (init?.method === "DELETE") {
+          expect(teardownRequestIdentity(target)).toEqual({
+            sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+            executionId: "exec-1",
+            service: "workflow-orchestrator",
+          });
           live = false;
           return Response.json({
             sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
@@ -503,31 +766,462 @@ describe("dev-preview portability boundary", () => {
     expect(live).toBe(false);
   });
 
-  it("settles slower peer services before starting an adopted workflow-builder cutover", async () => {
+  it("stages every service before one exact batch activation and performs no later I/O", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
     const started: string[] = [];
+    const events: string[] = [];
+    const activationBodies: Array<Record<string, unknown>> = [];
     let finishPeer: ((response: Response) => void) | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url, init) => {
-        const body = JSON.parse(String((init as RequestInit).body));
-        started.push(body.service);
-        if (body.service === "workflow-orchestrator") {
-          return new Promise<Response>((resolve) => {
-            finishPeer = resolve;
-          });
-        }
-        return Response.json({
-          sandboxName: `wfb-dev-preview-${body.service}-exec-1`,
-          podIP: "10.0.0.9",
-          syncUrl: "http://10.0.0.9:3000/__sync",
-          ready: true,
-          status: "running",
-        });
-      }),
+    const persistence = fakePersistence();
+    vi.mocked(persistence.upsertWorkflowWorkspaceSession).mockImplementation(
+      async (input) => {
+        const details = input.sandboxState?.details as
+          | Record<string, unknown>
+          | undefined;
+        events.push(`persist:${String(details?.service)}`);
+        return { workspaceRef: input.workspaceRef };
+      },
     );
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      const body = JSON.parse(String((init as RequestInit).body));
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        activationBodies.push(body);
+        events.push("activate");
+        return Response.json(
+          {
+            accepted: true,
+            complete: false,
+            pending: true,
+            activated: false,
+            activationPhase: "scheduled",
+            batchId: "batch-exec-1",
+            executionId: body.executionId,
+            sandboxNames: body.sandboxNames,
+          },
+          { status: 202 },
+        );
+      }
+      started.push(body.service);
+      events.push(`stage:${body.service}`);
+      expect(body.stageAdoption).toBe(true);
+      if (body.service === "workflow-orchestrator") {
+        return new Promise<Response>((resolve) => {
+          finishPeer = resolve;
+        });
+      }
+      return Response.json({
+        sandboxName: `wfb-dev-preview-${body.service}-exec-1`,
+        staged: true,
+        podIP: "10.0.0.9",
+        syncUrl: "http://10.0.0.9:3000/__sync",
+        ready: true,
+        status: "running",
+      });
+    });
+    stubDevPreviewFetch(fetchMock);
 
     const pending = provisionDevPreviews(
+      {
+        executionId: "exec-1",
+        services: [
+          "workflow-builder",
+          "function-router",
+          "workflow-orchestrator",
+        ],
+        mode: "preview-native",
+        adopt: true,
+      },
+      persistence,
+    );
+    await vi.waitFor(() => expect(started).toEqual(["workflow-orchestrator"]));
+    expect(activationBodies).toHaveLength(0);
+    finishPeer?.(
+      Response.json({
+        sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+        staged: true,
+        podIP: "10.0.0.8",
+        syncUrl: "http://10.0.0.8:8001/__sync",
+        ready: true,
+        status: "running",
+      }),
+    );
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "scheduled",
+      batchId: "batch-exec-1",
+    });
+    expect(started[0]).toBe("workflow-orchestrator");
+    expect(started.slice(1).sort()).toEqual([
+      "function-router",
+      "workflow-builder",
+    ]);
+    expect(activationBodies).toEqual([
+      {
+        executionId: "exec-1",
+        sandboxNames: [
+          "wfb-dev-preview-function-router-exec-1",
+          "wfb-dev-preview-workflow-builder-exec-1",
+          "wfb-dev-preview-workflow-orchestrator-exec-1",
+        ],
+      },
+    ]);
+    expect(events.at(-1)).toBe("activate");
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toBe(
+      "http://sandbox-api/internal/dev-previews/activate",
+    );
+  });
+
+  it("reports terminal activation only after an idempotent call observes the active batch", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    let activationCalls = 0;
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      const body = JSON.parse(String((init as RequestInit).body));
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        activationCalls += 1;
+        const active = activationCalls === 2;
+        return Response.json(
+          {
+            accepted: true,
+            complete: active,
+            pending: !active,
+            activated: active,
+            activationPhase: active ? "active" : "activating",
+            batchId: "batch-exec-1",
+            executionId: body.executionId,
+            sandboxNames: body.sandboxNames,
+          },
+          { status: active ? 200 : 202 },
+        );
+      }
+      return Response.json({
+        sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+        staged: true,
+        podIP: "10.0.0.9",
+        syncUrl: "http://10.0.0.9:3000/__sync",
+        ready: true,
+        status: "running",
+      });
+    });
+    stubDevPreviewFetch(fetchMock);
+    const input = {
+      executionId: "exec-1",
+      services: ["workflow-builder"],
+      mode: "preview-native" as const,
+      adopt: true,
+    };
+    const persistence = fakePersistence();
+
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: true,
+      complete: false,
+      pending: true,
+      activationPhase: "activating",
+      batchId: "batch-exec-1",
+    });
+    await expect(
+      provisionDevPreviews(input, persistence),
+    ).resolves.toMatchObject({
+      ok: true,
+      complete: true,
+      pending: false,
+      activationPhase: "active",
+      batchId: "batch-exec-1",
+    });
+    expect(activationCalls).toBe(2);
+  });
+
+  it.each([
+    [
+      "lost response",
+      async () => {
+        throw new Error("connection reset after activation commit");
+      },
+      "batch activation response was not observed",
+    ],
+    [
+      "HTTP 503",
+      async () =>
+        Response.json(
+          { detail: "activation worker unavailable" },
+          { status: 503 },
+        ),
+      "activation worker unavailable",
+    ],
+    [
+      "malformed HTTP 202",
+      async () => Response.json({ accepted: true }, { status: 202 }),
+      "batch activation was not accepted",
+    ],
+  ])(
+    "preserves a stable batch after an uncertain activation %s",
+    async (_case, uncertainResponse, expectedError) => {
+      vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+      const activationBodies: Array<Record<string, unknown>> = [];
+      const deletes: string[] = [];
+      let activationCalls = 0;
+      stubDevPreviewFetch(
+        vi.fn(async (url, init) => {
+          const target = String(url);
+          if (init?.method === "DELETE") {
+            deletes.push(target);
+            throw new Error("uncertain activation must not compensate");
+          }
+          const body = JSON.parse(String((init as RequestInit).body));
+          if (target.endsWith("/internal/dev-previews/activate")) {
+            activationCalls += 1;
+            activationBodies.push(body);
+            if (activationCalls === 1) return uncertainResponse();
+            return Response.json({
+              accepted: true,
+              complete: true,
+              pending: false,
+              activated: true,
+              activationPhase: "active",
+              batchId: "batch-exec-1",
+              executionId: body.executionId,
+              sandboxNames: body.sandboxNames,
+            });
+          }
+          return Response.json({
+            sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+            staged: true,
+            podIP: "10.0.0.9",
+            syncUrl: "http://10.0.0.9:3000/__sync",
+            ready: true,
+            status: "running",
+          });
+        }),
+      );
+      const input = {
+        executionId: "exec-1",
+        services: ["workflow-builder"],
+        mode: "preview-native" as const,
+        adopt: true,
+      };
+      const persistence = fakePersistence();
+
+      let uncertainty: unknown;
+      try {
+        await provisionDevPreviews(input, persistence);
+      } catch (cause) {
+        uncertainty = cause;
+      }
+      expect(uncertainty).toBeInstanceOf(RetryableDevPreviewActivationError);
+      expect((uncertainty as Error).message).toContain(expectedError);
+      expect(deletes).toEqual([]);
+      await expect(
+        provisionDevPreviews(input, persistence),
+      ).resolves.toMatchObject({
+        ok: true,
+        complete: true,
+        pending: false,
+        activationPhase: "active",
+        batchId: "batch-exec-1",
+      });
+      expect(activationBodies).toEqual([
+        {
+          executionId: "exec-1",
+          sandboxNames: ["wfb-dev-preview-workflow-builder-exec-1"],
+        },
+        {
+          executionId: "exec-1",
+          sandboxNames: ["wfb-dev-preview-workflow-builder-exec-1"],
+        },
+      ]);
+      expect(deletes).toEqual([]);
+    },
+  );
+
+  it("compensates staged peers when batch activation is not accepted", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const live = new Map<string, string>();
+    const events: string[] = [];
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target.includes("/internal/dev-previews?")) {
+        events.push("inventory");
+        return Response.json({
+          executionId: "exec-1",
+          complete: true,
+          services: [...live].map(([service, sandboxName]) => ({
+            service,
+            sandboxName,
+          })),
+        });
+      }
+      if (target.endsWith("/internal/dev-preview/restore-orphans")) {
+        events.push("restore-orphans");
+        return Response.json({ restored: [], releasedLeases: [] });
+      }
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        events.push("activate");
+        const request = JSON.parse(String((init as RequestInit).body));
+        return Response.json({
+          accepted: false,
+          complete: false,
+          pending: false,
+          activated: false,
+          activationPhase: "failed",
+          batchId: "batch-exec-1",
+          executionId: request.executionId,
+          sandboxNames: request.sandboxNames,
+          detail: "activation denied",
+        });
+      }
+      if (init?.method === "DELETE") {
+        const request = teardownRequestIdentity(target);
+        const sandboxName = request.sandboxName;
+        const service = [...live].find(([, name]) => name === sandboxName)?.[0];
+        expect(request).toMatchObject({ executionId: "exec-1", service });
+        events.push(`delete:${service}`);
+        if (service === "workflow-builder") {
+          return Response.json(
+            {
+              sandboxName,
+              accepted: true,
+              deleted: false,
+              deferred: true,
+            },
+            { status: 202 },
+          );
+        }
+        if (service) live.delete(service);
+        return Response.json({
+          sandboxName,
+          accepted: true,
+          deleted: true,
+          deferred: false,
+        });
+      }
+      const body = JSON.parse(String((init as RequestInit).body));
+      expect(body.stageAdoption).toBe(true);
+      const sandboxName = `wfb-dev-preview-${body.service}-exec-1`;
+      live.set(body.service, sandboxName);
+      events.push(`stage:${body.service}`);
+      return Response.json({
+        sandboxName,
+        staged: true,
+        podIP: "10.0.0.9",
+        syncUrl: "http://10.0.0.9:3000/__sync",
+        ready: true,
+        status: "running",
+      });
+    });
+    stubDevPreviewFetch(fetchMock);
+    const persistence = fakePersistence();
+
+    const result = await provisionDevPreviews(
+      {
+        executionId: "exec-1",
+        services: ["workflow-builder", "workflow-orchestrator"],
+        mode: "preview-native",
+        adopt: true,
+      },
+      persistence,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.services).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          service: "workflow-orchestrator",
+          error: expect.stringContaining(
+            "batch activation failed: activation denied; compensating teardown completed",
+          ),
+        }),
+        expect.objectContaining({
+          service: "workflow-builder",
+          error: expect.stringContaining(
+            "batch activation failed: activation denied; compensating teardown accepted",
+          ),
+        }),
+      ]),
+    );
+    expect(events).toEqual([
+      "stage:workflow-orchestrator",
+      "stage:workflow-builder",
+      "activate",
+      "inventory",
+      "delete:workflow-orchestrator",
+      "restore-orphans",
+      "inventory",
+      "delete:workflow-builder",
+    ]);
+    expect(events.at(-1)).toBe("delete:workflow-builder");
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).toHaveBeenCalledOnce();
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).toHaveBeenCalledWith({
+      workspaceRef: "wfb-dev-preview-workflow-orchestrator-exec-1",
+    });
+  });
+
+  it("does not tear down the response path when ordinary compensation is unproven", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const live = new Map<string, string>();
+    const deletes: string[] = [];
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target.includes("/teardown-intent?")) {
+        return Response.json({ executionId: "exec-1", teardownIntent: false });
+      }
+      if (target.includes("/internal/dev-previews?")) {
+        return Response.json({
+          executionId: "exec-1",
+          complete: true,
+          services: [...live].map(([service, sandboxName]) => ({
+            service,
+            sandboxName,
+          })),
+        });
+      }
+      if (target.endsWith("/internal/dev-preview/restore-orphans")) {
+        return Response.json({ restored: [], releasedLeases: [] });
+      }
+      if (target.endsWith("/internal/dev-previews/activate")) {
+        return Response.json({
+          accepted: false,
+          complete: false,
+          pending: false,
+          activated: false,
+          activationPhase: "failed",
+          batchId: "batch-exec-1",
+          executionId: "exec-1",
+          sandboxNames: [...live.values()].sort(),
+          detail: "activation denied",
+        });
+      }
+      if (init?.method === "DELETE") {
+        const request = teardownRequestIdentity(target);
+        const name = request.sandboxName;
+        const service = [...live].find(([, value]) => value === name)?.[0];
+        expect(request).toMatchObject({ executionId: "exec-1", service });
+        deletes.push(name);
+        return Response.json({ detail: "restore failed" }, { status: 409 });
+      }
+      const body = JSON.parse(String((init as RequestInit).body));
+      const sandboxName = `wfb-dev-preview-${body.service}-exec-1`;
+      live.set(body.service, sandboxName);
+      return Response.json({
+        sandboxName,
+        staged: true,
+        podIP: "10.0.0.9",
+        syncUrl: "http://10.0.0.9:8001/__sync",
+        ready: true,
+        status: "running",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await provisionDevPreviews(
       {
         executionId: "exec-1",
         services: ["workflow-builder", "workflow-orchestrator"],
@@ -536,31 +1230,83 @@ describe("dev-preview portability boundary", () => {
       },
       fakePersistence(),
     );
-    await vi.waitFor(() => expect(started).toEqual(["workflow-orchestrator"]));
-    finishPeer?.(
-      Response.json({
-        sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
-        podIP: "10.0.0.8",
-        syncUrl: "http://10.0.0.8:8001/__sync",
-        ready: true,
-        status: "running",
+
+    expect(result).toMatchObject({
+      ok: false,
+      complete: false,
+      pending: false,
+      activationPhase: "failed",
+    });
+    expect(deletes).toEqual(["wfb-dev-preview-workflow-orchestrator-exec-1"]);
+    expect(deletes).not.toContain("wfb-dev-preview-workflow-builder-exec-1");
+  });
+
+  it("fails closed when SEA does not acknowledge the private staged-adoption contract", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    let activationCalls = 0;
+    stubDevPreviewFetch(
+      vi.fn(async (url, init) => {
+        const target = String(url);
+        if (target.includes("/internal/dev-previews?")) {
+          return Response.json({
+            executionId: "exec-1",
+            complete: true,
+            services: [],
+          });
+        }
+        if (target.endsWith("/internal/dev-previews/activate")) {
+          activationCalls += 1;
+          return Response.json({});
+        }
+        const body = JSON.parse(String((init as RequestInit).body));
+        expect(body.stageAdoption).toBe(true);
+        // Simulates a pre-handshake SEA that ignores the additive request field.
+        return Response.json({
+          sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+          podIP: "10.0.0.9",
+          syncUrl: "http://10.0.0.9:3000/__sync",
+          ready: true,
+          status: "running",
+        });
       }),
     );
-    await expect(pending).resolves.toMatchObject({ ok: true });
-    expect(started).toEqual(["workflow-orchestrator", "workflow-builder"]);
+    const persistence = fakePersistence();
+
+    const result = await provisionDevPreviews(
+      {
+        executionId: "exec-1",
+        services: ["workflow-builder"],
+        mode: "preview-native",
+        adopt: true,
+      },
+      persistence,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      services: [
+        {
+          service: "workflow-builder",
+          ok: false,
+          error: expect.stringContaining("did not acknowledge staged adoption"),
+        },
+      ],
+    });
+    expect(activationCalls).toBe(0);
+    expect(persistence.upsertWorkflowWorkspaceSession).not.toHaveBeenCalled();
   });
 
   it("restores every prior image when one coherent replacement fails", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
-    const oldRouter = `ghcr.io/pittampalliorg/function-router-dev@sha256:${"1".repeat(64)}`;
+    const oldGateway = `ghcr.io/pittampalliorg/mcp-gateway-dev@sha256:${"1".repeat(64)}`;
     const oldOrchestrator = `ghcr.io/pittampalliorg/workflow-orchestrator-dev@sha256:${"2".repeat(64)}`;
-    const newRouter = `ghcr.io/pittampalliorg/function-router-dev@sha256:${"3".repeat(64)}`;
+    const newGateway = `ghcr.io/pittampalliorg/mcp-gateway-dev@sha256:${"3".repeat(64)}`;
     const newOrchestrator = `ghcr.io/pittampalliorg/workflow-orchestrator-dev@sha256:${"4".repeat(64)}`;
     const rows = [
       {
         workspaceRef: "sandbox-router",
         sandboxState: {
-          details: { service: "function-router", image: oldRouter },
+          details: { service: "mcp-gateway", image: oldGateway },
         },
       },
       {
@@ -574,8 +1320,7 @@ describe("dev-preview portability boundary", () => {
       },
     ];
     const requestedImages: string[] = [];
-    vi.stubGlobal(
-      "fetch",
+    stubDevPreviewFetch(
       vi.fn(async (_url, init) => {
         const body = JSON.parse(String((init as RequestInit).body));
         requestedImages.push(body.image);
@@ -590,7 +1335,7 @@ describe("dev-preview portability boundary", () => {
         }
         return new Response(
           JSON.stringify({
-            sandboxName: `sandbox-${body.service}`,
+            sandboxName: `wfb-dev-preview-${body.service}-exec-1`,
             podIP: "10.0.0.5",
             port: body.service === "workflow-builder" ? 3000 : 8080,
             syncPort: body.service === "workflow-builder" ? 3000 : 8001,
@@ -607,7 +1352,7 @@ describe("dev-preview portability boundary", () => {
       {
         executionId: "exec-1",
         services: [
-          { service: "function-router", image: newRouter },
+          { service: "mcp-gateway", image: newGateway },
           { service: "workflow-orchestrator", image: newOrchestrator },
         ],
         mode: "preview-native",
@@ -622,42 +1367,45 @@ describe("dev-preview portability boundary", () => {
         attempted: true,
         ok: true,
         services: [
-          { service: "function-router", ok: true },
+          { service: "mcp-gateway", ok: true },
           { service: "workflow-orchestrator", ok: true },
         ],
       },
     });
     expect(requestedImages).toEqual([
-      newRouter,
+      newGateway,
       newOrchestrator,
-      oldRouter,
+      oldGateway,
       oldOrchestrator,
     ]);
   });
 
-  it("fails closed before replacing the adopted workflow-builder image in place", async () => {
-    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+  it.each(["workflow-builder", "function-router"])(
+    "fails closed before replacing the adopted %s image in place",
+    async (service) => {
+      vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+      const fetchMock = vi.fn();
+      stubDevPreviewFetch(fetchMock);
 
-    await expect(
-      replaceDevPreviewImages(
-        {
-          executionId: "exec-1",
-          services: [
-            {
-              service: "workflow-builder",
-              image: `ghcr.io/pittampalliorg/workflow-builder-dev@sha256:${"3".repeat(64)}`,
-            },
-          ],
-          mode: "preview-native",
-          adopt: true,
-        },
-        fakePersistence(),
-      ),
-    ).rejects.toThrow("fresh acceptance preview");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      await expect(
+        replaceDevPreviewImages(
+          {
+            executionId: "exec-1",
+            services: [
+              {
+                service,
+                image: `ghcr.io/pittampalliorg/${service}-dev@sha256:${"3".repeat(64)}`,
+              },
+            ],
+            mode: "preview-native",
+            adopt: true,
+          },
+          fakePersistence(),
+        ),
+      ).rejects.toThrow("fresh acceptance preview");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("forwards the sidecar /__run command allowlist + extraSync to SEA", async () => {
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
@@ -678,7 +1426,7 @@ describe("dev-preview portability boundary", () => {
           },
         ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     const info = await provisionDevPreview(
       { executionId: "exec-1", service: "workflow-orchestrator" },
@@ -708,7 +1456,7 @@ describe("dev-preview portability boundary", () => {
       const body = JSON.parse(String((init as RequestInit).body));
       return new Response(
         JSON.stringify({
-          sandboxName: "dev-preview-exec-1",
+          sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
           podIP: "10.0.0.12",
           port: 3000,
           syncPort: 3000,
@@ -724,7 +1472,7 @@ describe("dev-preview portability boundary", () => {
         },
       );
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
     const persistence = fakePersistence();
     const previewDatabases = fakePreviewDatabases();
 
@@ -748,6 +1496,113 @@ describe("dev-preview portability boundary", () => {
     });
   });
 
+  it("cleans an exact malformed provision tuple before marking state and dropping its new database", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const events: string[] = [];
+    const persistence = fakePersistence();
+    vi.mocked(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).mockImplementation(async () => {
+      events.push("mark-cleaned");
+      return true;
+    });
+    const previewDatabases = fakePreviewDatabases();
+    vi.mocked(previewDatabases.drop).mockImplementation(async () => {
+      events.push("drop-database");
+    });
+    stubDevPreviewFetch(
+      vi.fn(async (url, init) => {
+        const target = String(url);
+        if (init?.method === "DELETE") {
+          expect(teardownRequestIdentity(target)).toEqual({
+            sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+            executionId: "exec-1",
+            service: "workflow-builder",
+          });
+          events.push("delete-sandbox");
+          return Response.json({
+            sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+            accepted: true,
+            deleted: true,
+            deferred: false,
+          });
+        }
+        events.push("provision-response");
+        return Response.json({
+          sandboxName: "wrong-sandbox",
+          ready: true,
+        });
+      }),
+    );
+
+    await expect(
+      provisionDevPreview(
+        { executionId: "exec-1", service: "workflow-builder" },
+        persistence,
+        previewDatabases,
+      ),
+    ).rejects.toThrow("invalid dev-preview identity");
+
+    expect(events).toEqual([
+      "provision-response",
+      "delete-sandbox",
+      "mark-cleaned",
+      "drop-database",
+    ]);
+    expect(persistence.upsertWorkflowWorkspaceSession).not.toHaveBeenCalled();
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).toHaveBeenCalledWith({
+      workspaceRef: "wfb-dev-preview-workflow-builder-exec-1",
+    });
+    expect(previewDatabases.drop).toHaveBeenCalledWith({
+      executionId: "exec-1",
+    });
+  });
+
+  it("does not mark state or drop a database when malformed provision cleanup is deferred", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const persistence = fakePersistence();
+    const previewDatabases = fakePreviewDatabases();
+    stubDevPreviewFetch(
+      vi.fn(async (url, init) => {
+        const target = String(url);
+        if (init?.method === "DELETE") {
+          expect(teardownRequestIdentity(target)).toEqual({
+            sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+            executionId: "exec-1",
+            service: "workflow-builder",
+          });
+          return Response.json(
+            {
+              sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+              accepted: true,
+              deleted: false,
+              deferred: true,
+            },
+            { status: 202 },
+          );
+        }
+        return Response.json({ sandboxName: "wrong-sandbox", ready: true });
+      }),
+    );
+
+    await expect(
+      provisionDevPreview(
+        { executionId: "exec-1", service: "workflow-builder" },
+        persistence,
+        previewDatabases,
+      ),
+    ).rejects.toThrow(
+      "unconfirmed provision cleanup was not proven: deterministic provision cleanup was deferred",
+    );
+
+    expect(
+      persistence.markWorkflowWorkspaceSessionCleaned,
+    ).not.toHaveBeenCalled();
+    expect(previewDatabases.drop).not.toHaveBeenCalled();
+  });
+
   it("persists the resolved image and reuses it over a newer pin on re-entry", async () => {
     // function-router is a non-functional (no-DB) preview, so it needs no DB provisioner.
     vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
@@ -768,7 +1623,7 @@ describe("dev-preview portability boundary", () => {
           },
         ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
 
     // First provision: no persisted row, env pins the image → resolver used + persisted.
     const imageV1 = `ghcr.io/pittampalliorg/function-router-dev:git-${"1".repeat(40)}`;
@@ -1076,7 +1931,7 @@ describe("atomic multi-service dev-preview capture", () => {
   it("strict capture rejects caller service subsets and supersets of persisted sessions", async () => {
     const persistence = fakePersistence(rows());
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubDevPreviewFetch(fetchMock);
     for (const expectedServices of [
       ["workflow-builder"],
       ["workflow-builder", "workflow-orchestrator", "function-router"],

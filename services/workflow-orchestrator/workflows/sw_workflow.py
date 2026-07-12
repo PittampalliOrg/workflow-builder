@@ -1024,6 +1024,7 @@ _AGENT_ACTION_TYPES: set[str] = {"durable/run"}
 _NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
 _DURABLE_CRAWL4AI_ACTION_TYPES = {"web/crawl.async"}
 _ENVIRONMENT_ACTION_TYPES = {"environment/ensure"}
+_DURABLE_DEV_PREVIEW_ACTION_TYPES = {"dev/preview"}
 _REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
     "openshell/run",
@@ -2441,6 +2442,273 @@ def _environment_poll_ms(value: Any) -> int:
     return max(5_000, min(parsed, 120_000))
 
 
+def _expects_durable_dev_preview_activation(
+    action_type: str,
+    config: Any,
+) -> bool:
+    return (
+        action_type in _DURABLE_DEV_PREVIEW_ACTION_TYPES
+        and isinstance(config, dict)
+        and config.get("mode") == "preview-native"
+        and config.get("adopt") is not False
+        and isinstance(config.get("services"), list)
+    )
+
+
+def _requested_dev_preview_services(config: dict[str, Any]) -> tuple[str, ...] | None:
+    raw_services = config.get("services")
+    if not isinstance(raw_services, list) or not raw_services:
+        return None
+    services: list[str] = []
+    seen: set[str] = set()
+    for value in raw_services:
+        if not isinstance(value, str) or not value or value != value.strip():
+            return None
+        if value in seen:
+            return None
+        seen.add(value)
+        services.append(value)
+    return tuple(services)
+
+
+def _dev_preview_activation_settings(config: dict[str, Any]) -> tuple[int, int, int]:
+    timeout_seconds = _parse_optional_int(config.get("activationTimeoutSeconds"))
+    timeout_ms = max(30_000, min((timeout_seconds or 300) * 1_000, 1_800_000))
+    poll_seconds = _parse_optional_int(config.get("activationPollSeconds"))
+    poll_ms = max(1_000, min((poll_seconds or 2) * 1_000, 30_000))
+    default_attempts = timeout_ms // poll_ms + 1
+    configured_attempts = _parse_optional_int(config.get("activationMaxAttempts"))
+    max_attempts = max(2, min(configured_attempts or default_attempts, 1_000))
+    return timeout_ms, poll_ms, max_attempts
+
+
+def _has_exact_ready_dev_preview_services(
+    data: dict[str, Any],
+    *,
+    execution_id: str,
+    expected_services: tuple[str, ...],
+) -> bool:
+    raw_services = data.get("services")
+    if not isinstance(raw_services, list) or len(raw_services) != len(expected_services):
+        return False
+    expected = set(expected_services)
+    received: set[str] = set()
+    for value in raw_services:
+        if not isinstance(value, dict) or not isinstance(value.get("service"), str):
+            return False
+        service = value["service"]
+        info = value.get("info")
+        if (
+            service not in expected
+            or service in received
+            or value.get("ok") is not True
+            or not isinstance(info, dict)
+            or info.get("executionId") != execution_id
+            or info.get("service") != service
+            or info.get("ready") is not True
+            or not isinstance(info.get("sandboxName"), str)
+            or not info["sandboxName"]
+            or not isinstance(info.get("podIP"), str)
+            or not info["podIP"]
+            or not isinstance(info.get("syncUrl"), str)
+            or not info["syncUrl"]
+        ):
+            return False
+        received.add(service)
+    return received == expected
+
+
+def _dev_preview_activation_observation(
+    result: Any,
+    *,
+    execution_id: str,
+    expected_services: tuple[str, ...],
+    expected_batch_id: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Classify one router activity result without relying on process memory."""
+    if not isinstance(result, dict):
+        return "invalid", expected_batch_id, "activation returned a non-object result"
+
+    if result.get("success") is False:
+        if result.get("errorClass") == "retryable":
+            return "retry", expected_batch_id, None
+        return "failed", expected_batch_id, str(
+            result.get("error") or "dev-preview activation failed"
+        )
+    if result.get("success") is not True:
+        return "invalid", expected_batch_id, "activation result omitted success=true"
+
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return "invalid", expected_batch_id, "activation result omitted lifecycle data"
+    batch_id = data.get("batchId")
+    if not isinstance(batch_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", batch_id
+    ):
+        return "invalid", expected_batch_id, "activation result has an invalid batchId"
+    if expected_batch_id is not None and batch_id != expected_batch_id:
+        return (
+            "invalid",
+            expected_batch_id,
+            "dev-preview activation batch identity changed during polling",
+        )
+    stable_batch_id = expected_batch_id or batch_id
+    if data.get("executionId") != execution_id or data.get("ok") is not True:
+        return "invalid", stable_batch_id, "activation result has the wrong execution identity"
+    if not _has_exact_ready_dev_preview_services(
+        data,
+        execution_id=execution_id,
+        expected_services=expected_services,
+    ):
+        return (
+            "invalid",
+            stable_batch_id,
+            "activation result does not prove the exact ready service set",
+        )
+
+    phase = data.get("activationPhase")
+    pending = (
+        result.get("responseStatus") == 202
+        and data.get("complete") is False
+        and data.get("pending") is True
+        and phase in {"scheduled", "activating"}
+    )
+    active = (
+        result.get("responseStatus") == 200
+        and data.get("complete") is True
+        and data.get("pending") is False
+        and phase == "active"
+    )
+    if pending:
+        return "pending", stable_batch_id, None
+    if active:
+        return "active", stable_batch_id, None
+    return (
+        "invalid",
+        stable_batch_id,
+        "activation did not return exact HTTP 202 pending or HTTP 200 active",
+    )
+
+
+def _dev_preview_activation_timeout_result(
+    result: Any,
+    *,
+    timeout_ms: int,
+    attempts: int,
+) -> dict[str, Any]:
+    return {
+        **(result if isinstance(result, dict) else {}),
+        "success": False,
+        "error": (
+            "dev-preview activation did not reach HTTP 200 active within "
+            f"{timeout_ms}ms ({attempts} attempts)"
+        ),
+        "errorClass": "permanent",
+    }
+
+
+def _workflow_task_result(task: Any, winner: Any) -> Any:
+    get_result = getattr(task, "get_result", None)
+    return get_result() if callable(get_result) else winner
+
+
+def _dev_preview_deadline_expired(
+    ctx: wf.DaprWorkflowContext,
+    deadline_at_ms: int | None,
+) -> bool:
+    current_ms = _now_ms(ctx)
+    return (
+        deadline_at_ms is not None
+        and current_ms is not None
+        and current_ms >= deadline_at_ms
+    )
+
+
+def _run_durable_dev_preview_activation(
+    ctx: wf.DaprWorkflowContext,
+    *,
+    activity_input: dict[str, Any],
+    call_kwargs: dict[str, Any],
+    config: dict[str, Any],
+    execution_id: str,
+    task_name: str,
+) -> Any:
+    expected_services = _requested_dev_preview_services(config)
+    if expected_services is None:
+        return {
+            "success": False,
+            "error": "dev-preview services must be a non-empty list of unique service ids",
+            "errorClass": "permanent",
+        }
+    timeout_ms, poll_ms, max_attempts = _dev_preview_activation_settings(config)
+    start_ms = _now_ms(ctx)
+    deadline_at_ms = start_ms + timeout_ms if start_ms is not None else None
+    deadline_task = ctx.create_timer(timedelta(milliseconds=timeout_ms))
+    attempts = 0
+    expected_batch_id: str | None = None
+    result: Any = None
+
+    while True:
+        activity_task = ctx.call_activity(
+            execute_action,
+            input=activity_input,
+            **call_kwargs,
+        )
+        winner = yield wf_when_any([activity_task, deadline_task])
+        attempts += 1
+        if winner is deadline_task or _dev_preview_deadline_expired(
+            ctx, deadline_at_ms
+        ):
+            return _dev_preview_activation_timeout_result(
+                result,
+                timeout_ms=timeout_ms,
+                attempts=attempts,
+            )
+        result = _workflow_task_result(activity_task, winner)
+        observation, expected_batch_id, detail = _dev_preview_activation_observation(
+            result,
+            execution_id=execution_id,
+            expected_services=expected_services,
+            expected_batch_id=expected_batch_id,
+        )
+        if observation == "active":
+            return result
+        if observation in {"failed", "invalid"}:
+            return {
+                **(result if isinstance(result, dict) else {}),
+                "success": False,
+                "error": detail or f"dev-preview activation failed: {task_name}",
+                "errorClass": "permanent",
+            }
+        if attempts >= max_attempts:
+            return _dev_preview_activation_timeout_result(
+                result,
+                timeout_ms=timeout_ms,
+                attempts=attempts,
+            )
+
+        _log_info(
+            ctx,
+            "[SW Workflow] dev-preview activation %s; durable poll %s/%s "
+            "(task=%s batchId=%s)",
+            observation,
+            attempts,
+            max_attempts,
+            task_name,
+            expected_batch_id or "pending-first-receipt",
+        )
+        poll_task = ctx.create_timer(timedelta(milliseconds=poll_ms))
+        winner = yield wf_when_any([poll_task, deadline_task])
+        if winner is deadline_task or _dev_preview_deadline_expired(
+            ctx, deadline_at_ms
+        ):
+            return _dev_preview_activation_timeout_result(
+                result,
+                timeout_ms=timeout_ms,
+                attempts=attempts,
+            )
+
+
 def _run_environment_prepare(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -2666,6 +2934,8 @@ def _handle_call_task(
             activity_input["skipIdempotencyGate"] = True
         call_kwargs["retry_policy"] = _AP_RETRY_POLICY
 
+    begin_activity_input = _freeze({**activity_input, "executionType": "BEGIN"})
+
     # interactive-cli shared-workspace gate: a `workspace/command` with
     # `cliWorkspace: true` can't reach the CLI agents' files via openshell
     # (they write to the per-execution JuiceFS mount at /sandbox/work that only
@@ -2715,10 +2985,19 @@ def _handle_call_task(
                 "_otel": tc.otel_ctx,
             }),
         )
+    elif _expects_durable_dev_preview_activation(action_type, final_config):
+        result = yield from _run_durable_dev_preview_activation(
+            ctx,
+            activity_input=begin_activity_input,
+            call_kwargs=call_kwargs,
+            config=final_config,
+            execution_id=tc.db_execution_id or tc.execution_id,
+            task_name=task_name,
+        )
     else:
         result = yield ctx.call_activity(
             execute_action,
-            input=_freeze({**activity_input, "executionType": "BEGIN"}),
+            input=begin_activity_input,
             **call_kwargs,
         )
 

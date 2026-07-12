@@ -110,4 +110,13 @@ describe("microservice dev session source checkout", () => {
     expect(commandText).toContain(".info.syncUrl");
     expect(commandText).toContain("full preview service set is not ready");
   });
+
+  it("uses the orchestrator's bounded durable activation poll", () => {
+    expect(provision.with).toMatchObject({
+      timeoutMs: 600_000,
+      activationTimeoutSeconds: 300,
+      activationPollSeconds: 2,
+      activationMaxAttempts: 151,
+    });
+  });
 });

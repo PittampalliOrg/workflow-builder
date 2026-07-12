@@ -81,7 +81,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
       // A multi-service development session is one system. Preserve the detailed
       // results for retry/cleanup, but do not hand an incomplete system to an agent.
       return json(withDevPreviewFailureSummary(result), {
-        status: result.ok ? 200 : 503,
+        status: !result.ok ? 503 : result.complete ? 200 : 202,
       });
     }
     const info = await app.previewEnvironmentProvisioner.provision({
@@ -107,9 +107,17 @@ export const DELETE: RequestHandler = async ({ params, request, url }) => {
     executionId: rawId,
   });
   const sandboxName = url.searchParams.get("sandboxName");
-  const result = await app.previewEnvironmentProvisioner.teardown({
-    executionId,
-    sandboxName,
-  });
-  return json(result);
+  try {
+    const result = await app.previewEnvironmentProvisioner.teardown({
+      executionId,
+      sandboxName,
+    });
+    return json(result, {
+      status: !result.ok ? 503 : result.complete ? 200 : 202,
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    console.error("[dev-preview] teardown failed:", message);
+    return json({ ok: false, error: message }, { status: 503 });
+  }
 };

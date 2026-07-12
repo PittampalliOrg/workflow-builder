@@ -87,6 +87,30 @@ one checkout at `/sandbox/work/repo`. It writes:
 /sandbox/work/sync.sh               catalog-driven fan-out client
 ```
 
+Preview-native multi-service adoption is a staged transaction. SEA first creates
+the exact Lease and Sandbox for every selected service. Each staged pod carries
+the adopted Service selector except for one holder-derived quarantine value, so
+it can become Ready without joining the live primary or generated Dapr Service.
+The reconciled Deployments continue serving while the complete staged set is
+proved.
+
+The caller then submits one sorted, exact batch. SEA persists its deterministic
+identity and `scheduled` phase on the anchor Sandbox before returning HTTP
+`202`. The durable workflow repeats the identical request through the router and
+BFF, binds every receipt to the exact requested service set and stable batch ID,
+and accepts only HTTP `200` with phase `active` before its bounded deadline.
+After the response-path grace, SEA locks and revalidates the whole set, scales
+every old Deployment to zero, proves every old primary and Dapr routing surface
+empty, releases every selector gate, and requires each active surface to contain
+exactly its selected dev pod. Validation or cutover failure quarantines every
+new routing surface and restores an old Deployment only where that quarantine
+is proved. If any quarantine is uncertain, that Service remains unavailable
+with `activation-rollback-incomplete` evidence rather than serving mixed
+versions. SEA persists an observable `failed` phase. Pending batches are
+redriven after an SEA restart. Single-service preview-native adoption is not a
+shortcut; it must use the same batch contract. Do not replace this handshake
+with independent per-service timers.
+
 Do not clone the same monorepo once per service. Cross-service edits and shared
 contract fixtures must come from one filesystem and one source revision.
 
@@ -469,6 +493,20 @@ After acceptance passes:
 4. verify the persistent dev deployment and exact live image;
 5. tear down any retained PreviewEnvironment and close the interactive session.
 
+Dev-session teardown first establishes an execution-wide intent in SEA, then
+unions the product rows with SEA's live Sandbox inventory. Provisioning persists
+its product row before its final intent confirmation, so teardown either sees
+the row or the late provision observes the intent and compensates. Inventory,
+database drop, durable-run stop, or orphan-restore uncertainty is a failed or
+pending teardown, never success.
+
+For the BFF and function-router, the first product
+`DELETE /api/dev-environments/<executionId>` may return HTTP `202` with
+`pending: true`; this proves SEA accepted cleanup before removing the pods
+carrying that response. Retry the same idempotent DELETE until it returns HTTP
+`200` with `complete: true`, then require the final PreviewEnvironment and orphan
+scans before considering teardown complete.
+
 The preview proves a candidate. The promoted dev lane proves the durable system.
 The two lanes can use the same image bytes without giving acceptance GitOps
 write authority: the broker stores an HMAC-attested receipt before terminal
@@ -495,6 +533,13 @@ Source Hydrator and GitOps Promoter.
 - The BFF never receives the cloud/Talos credentials used for host candidates.
   Host-level infrastructure work remains an operator action in the stacks
   runbook.
+- The development POC runs one SEA replica. Its teardown-intent fence and
+  per-Deployment transition locks are process-local; durable multi-replica
+  coordination is required before treating this as an HA control plane.
+- Selector quarantine prevents staged pods from receiving Service traffic, but
+  a Dapr-enabled staged pod still registers its production app ID with Placement.
+  A per-batch Dapr identity or delayed sidecar registration is post-POC isolation
+  hardening. Keep the POC to one isolated, idle vCluster during cutover.
 - GitHub is the handoff between ephemeral source and durable review. GitOps is
   the handoff between reviewed source and shared environments.
 
