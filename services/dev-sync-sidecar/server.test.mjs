@@ -19,6 +19,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, 'server.mjs');
 const BRIDGE = path.join(HERE, 'exec-bridge.mjs');
 const TOKEN = '1'.repeat(64);
+const BRIDGE_TOKEN = '2'.repeat(64);
 const GENERATION = 'sync-generation-1';
 const SERVICE = 'workflow-builder';
 const ALLOWED_ROOTS = ['src'];
@@ -57,6 +58,7 @@ async function startSidecar(extraEnv = {}) {
 			DEV_SYNC_PORT: String(port),
 			DEV_SYNC_DEST: dest,
 			DEV_SYNC_TOKEN: TOKEN,
+			DEV_SYNC_BRIDGE_TOKEN: BRIDGE_TOKEN,
 			DEV_SYNC_EXEC_PORT: String(execPort),
 			DEV_SYNC_SERVICE: SERVICE,
 			DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(ALLOWED_ROOTS),
@@ -104,7 +106,7 @@ async function startBridge(port, extraEnv = {}) {
 			...process.env,
 			DEV_SYNC_EXEC_PORT: String(port),
 			DEV_SYNC_DEST: dest,
-			DEV_SYNC_TOKEN: TOKEN,
+			DEV_SYNC_BRIDGE_TOKEN: BRIDGE_TOKEN,
 			...extraEnv
 		},
 		stdio: ['ignore', 'pipe', 'pipe']
@@ -286,6 +288,64 @@ test('atomic root replacement propagates file and whole-root deletions', async (
 	assert.ok(!fs.existsSync(path.join(s.dest, 'config')));
 });
 
+test('atomic root replacement preserves an unchanged config root', async (t) => {
+	const roots = ['src', 'tsconfig.json'];
+	const s = await startSidecar({
+		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
+	});
+	t.after(() => s.stop());
+	const first = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('content-aware-1', SERVICE, roots),
+		body: makeTarGz({ 'src/current.txt': 'old', 'tsconfig.json': '{}' })
+	});
+	assert.equal(first.status, 200);
+	const configInode = fs.statSync(path.join(s.dest, 'tsconfig.json')).ino;
+
+	const second = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('content-aware-2', SERVICE, roots),
+		body: makeTarGz({ 'src/current.txt': 'new', 'tsconfig.json': '{}' })
+	});
+	assert.equal(second.status, 200);
+	assert.deepEqual((await second.json()).changedRoots, ['src']);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'new');
+	assert.equal(fs.statSync(path.join(s.dest, 'tsconfig.json')).ino, configInode);
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.generation, 'content-aware-2');
+});
+
+test('an all-content no-op still advances sidecar generation state', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	const body = makeTarGz({ 'src/current.txt': 'same' });
+	assert.equal(
+		(
+			await fetch(`${s.base}/__sync`, {
+				method: 'POST',
+				headers: syncHeaders('no-op-1'),
+				body
+			})
+		).status,
+		200
+	);
+	const sourceInode = fs.statSync(path.join(s.dest, 'src')).ino;
+	const second = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('no-op-2'),
+		body
+	});
+	assert.equal(second.status, 200);
+	assert.deepEqual((await second.json()).changedRoots, []);
+	assert.equal(fs.statSync(path.join(s.dest, 'src')).ino, sourceInode);
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.generation, 'no-op-2');
+});
+
 test('malformed and link-bearing uploads never mutate the committed generation', async (t) => {
 	const s = await startSidecar();
 	t.after(() => s.stop());
@@ -320,29 +380,37 @@ test('malformed and link-bearing uploads never mutate the committed generation',
 });
 
 test('state-write failure rolls roots back and withholds the failed generation from export', async (t) => {
+	const roots = ['src', 'tsconfig.json'];
 	const s = await startSidecar({
 		NODE_ENV: 'test',
-		DEV_SYNC_TEST_FAIL_STATE_WRITE_GENERATION: 'rollback-2'
+		DEV_SYNC_TEST_FAIL_STATE_WRITE_GENERATION: 'rollback-2',
+		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
 	});
 	t.after(() => s.stop());
 	assert.equal(
 		(
 			await fetch(`${s.base}/__sync`, {
 				method: 'POST',
-				headers: syncHeaders('rollback-1'),
-				body: makeTarGz({ 'src/current.txt': 'old', 'src/stays.txt': 'yes' })
+				headers: syncHeaders('rollback-1', SERVICE, roots),
+				body: makeTarGz({
+					'src/current.txt': 'old',
+					'src/stays.txt': 'yes',
+					'tsconfig.json': '{}'
+				})
 			})
 		).status,
 		200
 	);
+	const configInode = fs.statSync(path.join(s.dest, 'tsconfig.json')).ino;
 	const failed = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
-		headers: syncHeaders('rollback-2'),
-		body: makeTarGz({ 'src/current.txt': 'new' })
+		headers: syncHeaders('rollback-2', SERVICE, roots),
+		body: makeTarGz({ 'src/current.txt': 'new', 'tsconfig.json': '{}' })
 	});
 	assert.equal(failed.status, 500);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'old');
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/stays.txt'), 'utf8'), 'yes');
+	assert.equal(fs.statSync(path.join(s.dest, 'tsconfig.json')).ino, configInode);
 
 	const exported = await fetch(`${s.base}/__export`, {
 		headers: { 'x-sync-token': TOKEN }
@@ -470,6 +538,7 @@ test('source export is rejected while a sync generation is still uploading', asy
 
 test('sync and export are rejected while an allowlisted run reads the source tree', async (t) => {
 	const s = await startSidecar({
+		DEV_SYNC_ALLOW_LOCAL_RUN: 'true',
 		DEV_SYNC_COMMANDS_JSON: JSON.stringify({
 			hold: 'sleep 0.3; test -f src/current.txt'
 		})
@@ -527,6 +596,7 @@ test('GET /__status reflects the last sync + last run and lists commands', async
 
 test('POST /__run only runs allowlisted commands and returns the exit code', async (t) => {
 	const s = await startSidecar({
+		DEV_SYNC_ALLOW_LOCAL_RUN: 'true',
 		DEV_SYNC_COMMANDS_JSON: JSON.stringify({
 			deps: 'echo installing-deps',
 			failing: 'echo boom >&2; exit 3'
@@ -579,6 +649,7 @@ test('POST /__run runs in DEST and a bad DEV_SYNC_COMMANDS_JSON fails closed', a
 	assert.equal(resp.status, 404);
 
 	const s2 = await startSidecar({
+		DEV_SYNC_ALLOW_LOCAL_RUN: 'true',
 		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ pwd: 'pwd' })
 	});
 	t.after(() => s2.stop());
@@ -658,43 +729,56 @@ test('bridge run failures propagate the real exit code (no sidecar fallback)', a
 	assert.match(out.output, /bridge-boom/);
 });
 
-test('POST /__run falls back to sidecar execution when no bridge is listening', async (t) => {
-	// startSidecar points DEV_SYNC_EXEC_PORT at a free port with NO listener —
-	// exactly an image that predates the bridge.
+test('POST /__run fails closed when no bridge is listening', async (t) => {
 	const s = await startSidecar({
 		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo installing-deps' })
 	});
 	t.after(() => s.stop());
-	const out = await (
-		await fetch(`${s.base}/__run?cmd=deps`, {
-			method: 'POST',
-			headers: { 'x-sync-token': TOKEN }
-		})
-	).json();
-	assert.equal(out.executedIn, 'sidecar');
-	assert.equal(out.ok, true);
-	assert.match(out.output, /installing-deps/);
-	assert.match(out.bridge, /unreachable|connect timeout/);
+	const response = await fetch(`${s.base}/__run?cmd=deps`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(response.status, 503);
+	const out = await response.json();
+	assert.equal(out.ok, false);
+	assert.equal(out.executedIn, null);
+	assert.match(out.error, /bridge unavailable.*(?:unreachable|connect timeout)/);
 });
 
-test('POST /__run falls back when the bridge refuses the command (empty allowlist 404)', async (t) => {
+test('POST /__run fails closed when the bridge refuses the command', async (t) => {
 	const s = await startSidecar({
-		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo ran-in-sidecar' })
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo must-not-run' })
 	});
 	t.after(() => s.stop());
-	// Bridge WITHOUT DEV_SYNC_COMMANDS_JSON → fail-closed 404 → safe local fallback.
+	// Bridge WITHOUT DEV_SYNC_COMMANDS_JSON rejects the command before execution.
 	const b = await startBridge(s.execPort);
 	t.after(() => b.stop());
-	const out = await (
-		await fetch(`${s.base}/__run?cmd=deps`, {
-			method: 'POST',
-			headers: { 'x-sync-token': TOKEN }
-		})
-	).json();
+	const response = await fetch(`${s.base}/__run?cmd=deps`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(response.status, 503);
+	const out = await response.json();
+	assert.equal(out.ok, false);
+	assert.equal(out.executedIn, null);
+	assert.match(out.error, /bridge unavailable: bridge HTTP 404/);
+});
+
+test('POST /__run permits explicit legacy-only local execution', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_ALLOW_LOCAL_RUN: 'yes',
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo legacy-local' })
+	});
+	t.after(() => s.stop());
+	const response = await fetch(`${s.base}/__run?cmd=deps`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(response.status, 200);
+	const out = await response.json();
 	assert.equal(out.executedIn, 'sidecar');
 	assert.equal(out.ok, true);
-	assert.match(out.output, /ran-in-sidecar/);
-	assert.match(out.bridge, /bridge HTTP 404/);
+	assert.match(out.output, /legacy-local/);
 });
 
 // ----- #41: route-add detection + restart signal -----

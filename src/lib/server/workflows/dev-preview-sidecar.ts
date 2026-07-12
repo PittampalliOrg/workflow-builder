@@ -49,7 +49,7 @@ export type SidecarRunOutput = {
 	output: string;
 	/** Where the command ran (#40): "app" = the app container's exec bridge
 	 * (the service's real toolchain), "sidecar" = the node-only sidecar (the
-	 * pre-bridge fallback). null against a sidecar too old to report it. */
+	 * explicit legacy fallback). null when it did not run or against an old sidecar. */
 	executedIn: 'app' | 'sidecar' | null;
 };
 
@@ -247,8 +247,17 @@ export async function runSidecarCommand(input: {
 			message: err instanceof Error ? err.message : String(err)
 		};
 	}
-	// The sidecar 404s unknown commands with { ok:false, allowed:[...] } and
-	// reports run failures with ok:false + exitCode — both are valid payloads.
+	if (!response.ok) {
+		return {
+			ok: false,
+			reason: response.status >= 500 ? 'unreachable' : 'bad-response',
+			message:
+				typeof body.error === 'string'
+					? body.error
+					: `sidecar run dispatch failed with HTTP ${response.status}`
+		};
+	}
+	// HTTP 200 means the command ran; a nonzero exit remains valid result data.
 	return {
 		ok: true,
 		data: {

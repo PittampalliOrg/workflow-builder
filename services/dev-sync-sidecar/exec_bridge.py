@@ -4,17 +4,17 @@ Runs INSIDE a python dev image's app container (started by the
 `skaffold/dev/<svc>/Dockerfile.dev` entrypoint alongside `uvicorn --reload`) so
 allowlisted deps/test commands execute with the app's real toolchain — the
 node-only dev-sync-sidecar cannot run `python -m pytest` (live repro: exit 127).
-The sidecar's `/__run` proxies to this bridge over pod-localhost and falls back
-to local execution when the bridge is absent (`executedIn: "app" | "sidecar"`).
+The sidecar's `/__run` proxies to this bridge over pod-localhost and fails closed
+when the bridge is absent, keeping the receiver credential out of this process.
 
-SECURITY: binds 127.0.0.1 ONLY (pod-local), requires the shared sync token when
+SECURITY: binds 127.0.0.1 ONLY (pod-local), requires a purpose-specific bridge token,
 set, and runs NOTHING but the named entries of DEV_SYNC_COMMANDS_JSON
 (fail-closed: absent/malformed env means every /__exec 404s).
 
 Env (stamped into the app container by sandbox-execution-api in sidecar mode):
   DEV_SYNC_EXEC_PORT      (default 8002)   - 127.0.0.1 listen port
   DEV_SYNC_DEST           (default /app)   - command cwd (the synced workdir)
-  DEV_SYNC_TOKEN          (optional)       - require matching `x-sync-token`
+  DEV_SYNC_BRIDGE_TOKEN   (required)       - require matching `x-sync-token`
   DEV_SYNC_COMMANDS_JSON  (optional)       - {"<name>": "<shell command>"} allowlist
   DEV_SYNC_RUN_TIMEOUT_MS (default 900000) - hard kill for a child
 
@@ -39,7 +39,7 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("DEV_SYNC_EXEC_PORT") or 8002)
 DEST = os.environ.get("DEV_SYNC_DEST") or "/app"
-TOKEN = os.environ.get("DEV_SYNC_TOKEN") or ""
+TOKEN = os.environ.get("DEV_SYNC_BRIDGE_TOKEN") or ""
 RUN_TIMEOUT_MS = int(os.environ.get("DEV_SYNC_RUN_TIMEOUT_MS") or 900000)
 RUN_OUTPUT_CAP = 64 * 1024
 
@@ -102,7 +102,9 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path != "/__exec":
             return self._reply(404, {"ok": False, "error": "not found"})
-        if TOKEN and self.headers.get("x-sync-token") != TOKEN:
+        if len(TOKEN) != 64 or any(char not in "0123456789abcdef" for char in TOKEN):
+            return self._reply(503, {"ok": False, "error": "bridge token is not configured"})
+        if self.headers.get("x-sync-token") != TOKEN:
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         # Drain+ignore any body (cmd comes from the query only).
         length = int(self.headers.get("content-length") or 0)

@@ -2419,8 +2419,8 @@ def test_sidecar_omits_commands_json_when_none() -> None:
 def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
     # #40: /__run must execute in the APP container (the sidecar image is
     # node-only — the orchestrator's pytest exits 127 there). The dev image's
-    # exec bridge lives in the app container and needs ITS OWN token + allowlist
-    # env (it fails closed without them); the sidecar needs the bridge port.
+    # exec bridge lives in the app container and needs a purpose-specific token
+    # plus its allowlist; the receiver token must remain sidecar-only.
     commands = {
         "deps": "pip install -r requirements.txt && touch /app/app.py",
         "contract": "python -m pytest tests/test_workflow_data_activity_migration.py -q",
@@ -2441,7 +2441,11 @@ def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
     app_env = _container_env(manifest)
     assert app_env["DEV_SYNC_EXEC_PORT"] == "8002"
     assert app_env["DEV_SYNC_DEST"] == "/app"
-    assert app_env["DEV_SYNC_TOKEN"] == "a" * 64
+    expected_bridge_token = hashlib.sha256(
+        f"dev-sync-bridge/v1\0{'a' * 64}".encode("utf-8")
+    ).hexdigest()
+    assert app_env["DEV_SYNC_BRIDGE_TOKEN"] == expected_bridge_token
+    assert "DEV_SYNC_TOKEN" not in app_env
     assert json.loads(app_env["DEV_SYNC_COMMANDS_JSON"]) == commands
     # #41: the sidecar's route-add restart signal file, polled by the Vite
     # plugin (only meaningful for node/vite services; python ones ignore it).
@@ -2452,6 +2456,9 @@ def test_sidecar_mode_stamps_exec_bridge_env_into_app_container() -> None:
     sidecar_env = _sidecar_env(manifest)
     assert sidecar_env is not None
     assert sidecar_env["DEV_SYNC_EXEC_PORT"] == "8002"
+    assert sidecar_env["DEV_SYNC_TOKEN"] == "a" * 64
+    assert sidecar_env["DEV_SYNC_BRIDGE_TOKEN"] == expected_bridge_token
+    assert "DEV_SYNC_ALLOW_LOCAL_RUN" not in sidecar_env
     assert (
         sidecar_env["DEV_SYNC_AGENT_TOKEN_SHA256"]
         == hashlib.sha256(("b" * 64).encode("utf-8")).hexdigest()
@@ -2488,6 +2495,7 @@ def test_plugin_mode_has_no_exec_bridge_env() -> None:
     for key in (
         "DEV_SYNC_EXEC_PORT",
         "DEV_SYNC_TOKEN",
+        "DEV_SYNC_BRIDGE_TOKEN",
         "DEV_SYNC_COMMANDS_JSON",
         "WFB_DEV_SYNC_RESTART_SIGNAL",
     ):

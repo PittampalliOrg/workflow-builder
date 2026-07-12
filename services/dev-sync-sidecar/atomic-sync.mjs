@@ -208,6 +208,58 @@ function lstatIfPresent(target) {
 	}
 }
 
+function filesHaveEqualContents(left, right, size) {
+	let leftFd = null;
+	let rightFd = null;
+	const leftBuffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, size)));
+	const rightBuffer = Buffer.allocUnsafe(leftBuffer.length);
+	let offset = 0;
+	try {
+		leftFd = fs.openSync(left, 'r');
+		rightFd = fs.openSync(right, 'r');
+		while (offset < size) {
+			const length = Math.min(leftBuffer.length, size - offset);
+			const leftBytes = fs.readSync(leftFd, leftBuffer, 0, length, offset);
+			const rightBytes = fs.readSync(rightFd, rightBuffer, 0, length, offset);
+			if (
+				leftBytes === 0 ||
+				rightBytes === 0 ||
+				leftBytes !== rightBytes ||
+				!leftBuffer.subarray(0, leftBytes).equals(rightBuffer.subarray(0, rightBytes))
+			) {
+				return false;
+			}
+			offset += leftBytes;
+		}
+		return true;
+	} finally {
+		if (leftFd !== null) fs.closeSync(leftFd);
+		if (rightFd !== null) fs.closeSync(rightFd);
+	}
+}
+
+function treesHaveEqualContents(left, right) {
+	const leftStat = lstatIfPresent(left);
+	const rightStat = lstatIfPresent(right);
+	if (!leftStat || !rightStat) return leftStat === rightStat;
+	if ((leftStat.mode & 0o7777) !== (rightStat.mode & 0o7777)) return false;
+	if (leftStat.isFile() && rightStat.isFile()) {
+		return leftStat.size === rightStat.size && filesHaveEqualContents(left, right, leftStat.size);
+	}
+	if (!leftStat.isDirectory() || !rightStat.isDirectory()) return false;
+	const leftEntries = fs.readdirSync(left).sort();
+	const rightEntries = fs.readdirSync(right).sort();
+	if (
+		leftEntries.length !== rightEntries.length ||
+		leftEntries.some((entry, index) => entry !== rightEntries[index])
+	) {
+		return false;
+	}
+	return leftEntries.every((entry) =>
+		treesHaveEqualContents(path.join(left, entry), path.join(right, entry))
+	);
+}
+
 function prepareTransactionBase(root, stateFile) {
 	const rootStat = fs.lstatSync(root);
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
@@ -263,26 +315,42 @@ export async function applyAtomicDevSync(options) {
 		throw new DevSyncTransactionError(`archive staging failed: ${error.message}`, true, 'staging');
 	}
 
-	let stateBackedUp = false;
-	let rollbackComplete = true;
+	let changedRoots;
 	try {
 		for (const root of roots) assertSafeLiveParents(options.root, root);
+		changedRoots = roots.filter(
+			(root) =>
+				!treesHaveEqualContents(path.join(options.root, root), path.join(stageRoot, root))
+		);
+	} catch (error) {
+		bestEffortRemove(transactionRoot);
+		throw new DevSyncTransactionError(
+			`live root comparison failed: ${error.message}`,
+			true,
+			'staging'
+		);
+	}
+	let stateBackedUp = false;
+	let rollbackComplete = true;
+	const committedRoots = [];
+	try {
 		stateBackedUp = moveIfPresent(stateTarget, stateBackup);
-		for (const root of roots) {
+		for (const root of changedRoots) {
 			const live = path.join(options.root, root);
 			const backup = path.join(backupRoot, root);
 			const staged = path.join(stageRoot, root);
-			moveIfPresent(live, backup);
+			const liveBackedUp = moveIfPresent(live, backup);
+			committedRoots.push({ root, liveBackedUp });
 			moveIfPresent(staged, live);
 		}
 		options.persistState(options.nextState);
 	} catch (error) {
-		for (const root of [...roots].reverse()) {
+		for (const { root, liveBackedUp } of [...committedRoots].reverse()) {
 			const live = path.join(options.root, root);
 			const backup = path.join(backupRoot, root);
 			try {
 				removeIfPresent(live);
-				moveIfPresent(backup, live);
+				if (liveBackedUp) moveIfPresent(backup, live);
 			} catch {
 				rollbackComplete = false;
 			}
@@ -312,5 +380,5 @@ export async function applyAtomicDevSync(options) {
 	} catch {
 		// Another transaction or recovery artifact still exists.
 	}
-	return { entries };
+	return { entries, changedRoots };
 }

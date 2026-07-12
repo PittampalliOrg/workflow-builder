@@ -377,11 +377,11 @@ function devLiveSyncPlugin(): Plugin {
 							);
 						}
 					})
-						.then(() => {
+						.then(({ changedRoots }) => {
 							cleanup();
 							syncState = nextState;
 							console.log(
-								`[wfb-dev-live-sync] atomically applied ${declaredRoots.join(',')} (${buf.length}B) -> Vite HMR`
+								`[wfb-dev-live-sync] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B) -> Vite HMR`
 							);
 							release();
 							json(200, {
@@ -390,6 +390,7 @@ function devLiveSyncPlugin(): Plugin {
 								generation,
 								service,
 								contentSha256,
+								changedRoots,
 								...(addedRoutes.length
 									? {
 											routesAdded: addedRoutes.slice(0, 50),
@@ -653,7 +654,10 @@ export default defineConfig({
 	server: {
 		port: 3000,
 		host: true,
-		allowedHosts: true
+		allowedHosts: true,
+		// Atomic uploads stage below this hidden directory before committing. Do not
+		// let Vite react to the transaction copy; only the committed live roots matter.
+		watch: { ignored: ['**/.dev-sync-transactions/**'] }
 	},
 	ssr: {
 		noExternal: ['nats']

@@ -375,10 +375,143 @@ describe("ApplicationPreviewTeardownService", () => {
   });
 
   it.each([
+    [
+      "aged-out successful up Job",
+      {
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+    ],
+    [
+      "expired successful up Job",
+      {
+        found: false,
+        active: false,
+        succeeded: false,
+        failed: false,
+      },
+    ],
+  ] as const)(
+    "allows loss-accounted recovery for a post-boot preview with an %s",
+    async (_label, jobState) => {
+      const h = harness({
+        preview: record({
+          phase: "provisioning",
+          lastActive: "2026-07-11T11:45:00+00:00",
+          provenance: {
+            requestId: "request-exact",
+            requestedAt: "2026-07-11T11:00:00.000Z",
+          },
+        }),
+        archiveResult: {
+          archived: false,
+          preview: "failed-five",
+          reason: "executions-bad-response",
+        },
+        runtime: {
+          name: "failed-five",
+          resourceName: "failed-five",
+          reconciliationSucceeded: true,
+          upJob: { name: "vcpreview-up-failed-five", ...jobState },
+          services: [
+            {
+              service: "function-router",
+              containers: [
+                {
+                  pod: "router-1",
+                  image: "router",
+                  imageId: "sha256:ready",
+                  ready: true,
+                },
+              ],
+            },
+            { service: "workflow-builder", containers: [] },
+          ],
+        },
+      });
+
+      await expect(
+        h.service.teardown({
+          name: "failed-five",
+          actorUserId: "owner-1",
+          forceFailed: true,
+        }),
+      ).resolves.toMatchObject({ archive: { quarantined: true } });
+      expect(h.events).toEqual([
+        "archive",
+        "runtime",
+        "quarantine",
+        "teardown",
+      ]);
+      expect(h.archive.quarantinePreview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: expect.stringContaining("forced failed-preview recovery"),
+        }),
+      );
+    },
+  );
+
+  it("rejects post-boot recovery when every expected service is currently ready", async () => {
+    const readyContainer = (service: string) => ({
+      service,
+      containers: [
+        {
+          pod: `${service}-1`,
+          image: service,
+          imageId: "sha256:ready",
+          ready: true,
+        },
+      ],
+    });
+    const h = harness({
+      preview: record({
+        phase: "provisioning",
+        lastActive: "2026-07-11T11:45:00+00:00",
+      }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "executions-bad-response",
+      },
+      runtime: {
+        name: "failed-five",
+        resourceName: "failed-five",
+        reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-failed-five",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [
+          readyContainer("function-router"),
+          readyContainer("workflow-builder"),
+        ],
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        forceFailed: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "failed-quarantine-runtime-mismatch",
+      status: 409,
+    });
+    expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["ready state", { ready: true }],
     ["nonfailed phase", { phase: "terminating" }],
-    ["active boot receipt", { bootSeconds: 12 }],
-    ["recorded activity", { lastActive: "2026-07-11T11:30:00.000Z" }],
+    ["invalid boot receipt", { bootSeconds: -1 }],
+    ["invalid activity receipt", { lastActive: "not-an-instant" }],
     ["untrusted code", { trustedCode: false }],
     ["pool member", { pool: "warm-1" }],
     ["missing expiry", { expiresAt: null }],
@@ -445,6 +578,37 @@ describe("ApplicationPreviewTeardownService", () => {
         provenance: {
           requestId: "request-exact",
           requestedAt: "2026-07-11T11:30:00.001Z",
+        },
+      }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "incomplete",
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        forceFailed: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "failed-quarantine-ineligible",
+      status: 409,
+    });
+    expect(h.previews.runtime).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fresh post-boot failure before the bounded recovery age", async () => {
+    const h = harness({
+      preview: record({
+        phase: "provisioning",
+        lastActive: "2026-07-11T11:55:00+00:00",
+        provenance: {
+          requestId: "request-exact",
+          requestedAt: "2026-07-11T11:45:00.001Z",
         },
       }),
       archiveResult: {

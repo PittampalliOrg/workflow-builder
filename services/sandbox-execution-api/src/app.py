@@ -4007,6 +4007,11 @@ IMAGE_PINS_VOLUME_NAME = "image-pins"
 DEV_SYNC_EXEC_BRIDGE_PORT = int(os.environ.get("DEV_SYNC_EXEC_BRIDGE_PORT", "8002"))
 
 
+def _dev_sync_bridge_token(sync_token: str) -> str:
+    """Derive the pod-local exec capability without exposing the receiver leaf."""
+    return sha256(f"dev-sync-bridge/v1\0{sync_token}".encode("utf-8")).hexdigest()
+
+
 def _dev_preview_service_label(service: str | None) -> str:
     """The `dev-preview-service` label value stamped on every dev-preview pod/CR/Secret.
 
@@ -4235,14 +4240,19 @@ def build_dev_preview_sandbox_manifest(
         # server (127.0.0.1:8002, services/dev-sync-sidecar/exec-bridge.mjs or
         # exec_bridge.py) so /__run commands execute with the APP's toolchain —
         # the node-only sidecar can't run e.g. pytest (exit 127). The bridge
-        # needs ITS OWN copies of the token + command allowlist (it fails closed
-        # without them); the sidecar proxies /__run to it by name.
+        # needs a purpose-specific pod-local token + its own command allowlist;
+        # mutable app code never receives the broader sync receiver leaf.
         env.append(
             {"name": "DEV_SYNC_EXEC_PORT", "value": str(DEV_SYNC_EXEC_BRIDGE_PORT)}
         )
         env.append({"name": "DEV_SYNC_DEST", "value": workdir})
         if request.syncToken:
-            env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+            env.append(
+                {
+                    "name": "DEV_SYNC_BRIDGE_TOKEN",
+                    "value": _dev_sync_bridge_token(request.syncToken),
+                }
+            )
         if request.devSyncCommands:
             env.append(
                 {
@@ -4509,11 +4519,17 @@ def build_dev_preview_sandbox_manifest(
             {"name": "DEV_SYNC_DEST", "value": workdir},
             {"name": "DEV_SYNC_SERVICE", "value": service_label},
             # #40: where the app container's exec bridge listens (pod-localhost);
-            # /__run proxies there first, falling back to local execution.
+            # preview-native /__run fails closed when the bridge is unavailable.
             {"name": "DEV_SYNC_EXEC_PORT", "value": str(DEV_SYNC_EXEC_BRIDGE_PORT)},
         ]
         if request.syncToken:
             sidecar_env.append({"name": "DEV_SYNC_TOKEN", "value": request.syncToken})
+            sidecar_env.append(
+                {
+                    "name": "DEV_SYNC_BRIDGE_TOKEN",
+                    "value": _dev_sync_bridge_token(request.syncToken),
+                }
+            )
         if request.syncAgentToken:
             sidecar_env.append(
                 {

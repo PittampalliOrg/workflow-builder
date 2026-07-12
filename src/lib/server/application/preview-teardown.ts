@@ -62,6 +62,8 @@ type OwnedGuard = Readonly<{
   sourceRevision: string;
 }>;
 
+type FailedQuarantineKind = "failed-launch" | "failed-preview";
+
 /** Coordinates authorization, durability, and the exact destructive ownership guard. */
 export class ApplicationPreviewTeardownService {
   constructor(private readonly deps: PreviewTeardownDeps) {}
@@ -145,7 +147,10 @@ export class ApplicationPreviewTeardownService {
     }>,
   ): Promise<PreviewTeardownResult> {
     const forcedAtDate = this.deps.now?.() ?? new Date();
-    this.assertFailedQuarantineCandidate(input.preview, forcedAtDate.getTime());
+    const quarantineKind = this.assertFailedQuarantineCandidate(
+      input.preview,
+      forcedAtDate.getTime(),
+    );
 
     let runtime: Awaited<ReturnType<VclusterPreviewGatewayPort["runtime"]>>;
     try {
@@ -157,7 +162,7 @@ export class ApplicationPreviewTeardownService {
         { cause },
       );
     }
-    if (!this.matchesFailedRuntime(input.preview, runtime)) {
+    if (!this.matchesFailedRuntime(input.preview, runtime, quarantineKind)) {
       throw new PreviewTeardownRefusedError(
         "failed-quarantine-runtime-mismatch",
         "Failed-preview runtime proof does not match the authoritative preview; teardown refused",
@@ -165,8 +170,12 @@ export class ApplicationPreviewTeardownService {
     }
 
     const forcedAt = forcedAtDate.toISOString();
+    const cleanupScope =
+      quarantineKind === "failed-preview"
+        ? "failed-preview recovery"
+        : "failed-launch cleanup";
     const reason = this.boundReason(
-      `archive incomplete; forced failed-launch cleanup: ${input.archiveFailure}`,
+      `archive incomplete; forced ${cleanupScope}: ${input.archiveFailure}`,
     );
     let quarantine: PreviewArchiveResult;
     try {
@@ -218,24 +227,43 @@ export class ApplicationPreviewTeardownService {
   private assertFailedQuarantineCandidate(
     preview: VclusterPreviewRecord,
     now: number,
-  ): void {
+  ): FailedQuarantineKind {
     const requestedAt = this.parseUtcInstant(
       preview.provenance?.requestedAt,
       CANONICAL_REQUESTED_AT,
     );
-    const failedLaunchPhase =
-      requestedAt !== null &&
-      requestedAt <= now &&
-      (preview.phase === "failed" ||
-        (preview.phase === "provisioning" &&
-          requestedAt <= now - FAILED_LAUNCH_RECEIPT_TTL_MS));
+    const requestedAtValid = requestedAt !== null && requestedAt <= now;
+    const agedOut =
+      requestedAtValid &&
+      requestedAt <= now - FAILED_LAUNCH_RECEIPT_TTL_MS;
+    const failedPhase =
+      preview.phase === "failed" ||
+      (preview.phase === "provisioning" && agedOut);
+    const bootReceiptValid =
+      preview.bootSeconds === null ||
+      (typeof preview.bootSeconds === "number" &&
+        Number.isFinite(preview.bootSeconds) &&
+        preview.bootSeconds >= 0);
+    const lastActive =
+      preview.lastActive === null
+        ? null
+        : this.parseUtcInstant(preview.lastActive, UTC_EXPIRES_AT);
+    const activityReceiptValid =
+      preview.lastActive === null || (lastActive !== null && lastActive <= now);
+    const postBoot = preview.bootSeconds !== null || preview.lastActive !== null;
+    const quarantineKind: FailedQuarantineKind | null =
+      requestedAtValid && failedPhase && !postBoot
+        ? "failed-launch"
+        : requestedAtValid && agedOut && failedPhase && postBoot
+          ? "failed-preview"
+          : null;
     if (
       preview.profile !== "app-live" ||
       preview.mode !== "live" ||
-      !failedLaunchPhase ||
+      quarantineKind === null ||
       preview.ready ||
-      preview.bootSeconds !== null ||
-      preview.lastActive !== null ||
+      !bootReceiptValid ||
+      !activityReceiptValid ||
       preview.trustedCode !== true ||
       preview.pool !== null ||
       preview.allocation?.kind !== "cold" ||
@@ -245,9 +273,10 @@ export class ApplicationPreviewTeardownService {
     ) {
       throw new PreviewTeardownRefusedError(
         "failed-quarantine-ineligible",
-        "Preview is not eligible for explicit failed-launch quarantine; teardown refused",
+        "Preview is not eligible for explicit failed-preview quarantine; teardown refused",
       );
     }
+    return quarantineKind;
   }
 
   private parseUtcInstant(value: unknown, pattern: RegExp): number | null {
@@ -290,32 +319,52 @@ export class ApplicationPreviewTeardownService {
   private matchesFailedRuntime(
     preview: VclusterPreviewRecord,
     runtime: Awaited<ReturnType<VclusterPreviewGatewayPort["runtime"]>>,
+    quarantineKind: FailedQuarantineKind,
   ): boolean {
     const expectedServices = [...(preview.services ?? [])].sort();
     const observedServices = runtime.services
       .map((service) => service.service)
       .sort();
-    // A later sync wave can fail after earlier containers start. The explicit
-    // force path is archive-first, requires no activity/readiness receipt, and
-    // persists loss accounting; container readiness is not proof of user data.
+    // A later sync wave can fail after a successful boot. Failed-launch remains
+    // marker-strict; post-boot recovery instead requires current degraded
+    // container evidence before persisting explicit loss accounting.
     const exactFailedJob =
+      quarantineKind === "failed-launch" &&
       preview.phase === "failed" &&
       runtime.upJob.found &&
       !runtime.upJob.active &&
       !runtime.upJob.succeeded &&
       runtime.upJob.failed;
     const exactAgedOutJob =
+      quarantineKind === "failed-launch" &&
       preview.phase === "provisioning" &&
       !runtime.upJob.found &&
       !runtime.upJob.active &&
       !runtime.upJob.succeeded &&
       !runtime.upJob.failed;
+    const exactPostBootJob =
+      quarantineKind === "failed-preview" &&
+      ((runtime.upJob.found &&
+        !runtime.upJob.active &&
+        runtime.upJob.succeeded &&
+        !runtime.upJob.failed) ||
+        (!runtime.upJob.found &&
+          !runtime.upJob.active &&
+          !runtime.upJob.succeeded &&
+          !runtime.upJob.failed));
+    const failedRuntimeProof =
+      quarantineKind === "failed-launch"
+        ? runtime.reconciliationSucceeded === false
+        : runtime.services.some(
+            (service) =>
+              !service.containers.some((container) => container.ready),
+          );
     return (
       runtime.name === preview.name &&
       runtime.resourceName === preview.name &&
       runtime.upJob.name === `vcpreview-up-${preview.name}` &&
-      (exactFailedJob || exactAgedOutJob) &&
-      runtime.reconciliationSucceeded === false &&
+      (exactFailedJob || exactAgedOutJob || exactPostBootJob) &&
+      failedRuntimeProof &&
       new Set(observedServices).size === observedServices.length &&
       expectedServices.length === observedServices.length &&
       expectedServices.every(

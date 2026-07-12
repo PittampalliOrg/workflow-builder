@@ -82,6 +82,7 @@
 	let resuming = $state<Record<string, boolean>>({});
 	let expandedRuns = $state<Record<string, boolean>>({});
 	let toTeardown = $state<VclusterPreviewSummary | null>(null);
+	let toForceTeardown = $state<VclusterPreviewSummary | null>(null);
 
 	const selectedPreviewServices = $derived(
 		previewNativeServices.filter((service) => selectedServices[service] !== false)
@@ -254,7 +255,41 @@
 			}
 			onchanged?.();
 		} catch (e) {
-			toast.error('Teardown failed', { description: e instanceof Error ? e.message : String(e) });
+			const detail = e instanceof Error ? e.message : String(e);
+			if (
+				p.profile === 'app-live' &&
+				p.mode === 'live' &&
+				!p.ready &&
+				detail.toLowerCase().includes('archive')
+			) {
+				toForceTeardown = p;
+				toast.warning('Preview archive is unavailable', {
+					description: 'Review the loss-accounted teardown confirmation.'
+				});
+			} else {
+				toast.error('Teardown failed', { description: detail });
+			}
+		} finally {
+			clearBusy(p.name);
+		}
+	}
+
+	async function confirmForceTeardown() {
+		const p = toForceTeardown;
+		if (!p) return;
+		toForceTeardown = null;
+		setBusy(p.name, 'teardown');
+		try {
+			const { archive } = await teardownPreview({ name: p.name, forceFailed: true });
+			if (!archive?.quarantined) throw new Error('Loss-accounting receipt was not returned');
+			toast.success(`Preview "${p.name}" teardown started`, {
+				description: 'A durable quarantine summary recorded the incomplete archive.'
+			});
+			onchanged?.();
+		} catch (e) {
+			toast.error('Failed-preview teardown refused', {
+				description: e instanceof Error ? e.message : String(e)
+			});
 		} finally {
 			clearBusy(p.name);
 		}
@@ -568,6 +603,25 @@
 		<AlertDialogFooter>
 			<AlertDialogCancel>Cancel</AlertDialogCancel>
 			<AlertDialogAction onclick={confirmTeardown}>Tear down</AlertDialogAction>
+		</AlertDialogFooter>
+	</AlertDialogContent>
+</AlertDialog>
+
+<AlertDialog
+	open={toForceTeardown !== null}
+	onOpenChange={(open) => !open && (toForceTeardown = null)}
+>
+	<AlertDialogContent>
+		<AlertDialogHeader>
+			<AlertDialogTitle>Record archive loss and tear down "{toForceTeardown?.name}"?</AlertDialogTitle>
+			<AlertDialogDescription>
+				The preview is unhealthy and its archive could not be completed. This records a durable
+				quarantine summary before requesting guarded teardown. Unarchived preview data will be lost.
+			</AlertDialogDescription>
+		</AlertDialogHeader>
+		<AlertDialogFooter>
+			<AlertDialogCancel>Cancel</AlertDialogCancel>
+			<AlertDialogAction onclick={confirmForceTeardown}>Record loss and tear down</AlertDialogAction>
 		</AlertDialogFooter>
 	</AlertDialogContent>
 </AlertDialog>

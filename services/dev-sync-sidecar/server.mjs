@@ -34,14 +34,13 @@ import {
  *                      boundary: /__sync already delivers code the dev server
  *                      executes, so an allowlisted /__run adds none.
  *
- * /__run executes in the APP container when possible (#40): this sidecar image
+ * /__run executes in the APP container (#40): this sidecar image
  * is node-only, so running e.g. the orchestrator's pytest HERE exits 127. The
  * dev images host a tiny exec bridge (exec-bridge.mjs / exec_bridge.py) on
  * 127.0.0.1:8002 INSIDE the app container; /__run proxies the command NAME to
- * it (containers in a pod share localhost) and only falls back to local
- * execution when the bridge provably did not run the command (unreachable, or
- * a non-200 refusal like 401/404). Responses carry `executedIn: "app"|"sidecar"`
- * so callers can tell which runtime ran the command.
+ * it (containers in a pod share localhost). Bridge failures fail closed by
+ * default. A legacy-only opt-in retains the old local runner for images that
+ * predate the bridge.
  *
  * Route-add restart signal (#41): a sync that ADDS files under `src/routes/`
  * while the dev server is mid-restart lands on disk but the route never
@@ -57,8 +56,10 @@ import {
  *   DEV_SYNC_AGENT_TOKEN_SHA256 (required) — hash of the agent-action leaf
  *   DEV_SYNC_COMMANDS_JSON (optional)       — {"<name>":"<shell command>"} allowlist
  *   DEV_SYNC_RUN_TIMEOUT_MS (default 900000) — hard kill for a /__run child
+ *   DEV_SYNC_BRIDGE_TOKEN   (required for bridge) — pod-local exec capability
  *   DEV_SYNC_EXEC_PORT     (default 8002)   — app-container exec bridge port
  *   DEV_SYNC_EXEC_HOST     (default 127.0.0.1) — bridge host (tests only)
+ *   DEV_SYNC_ALLOW_LOCAL_RUN (default false) — legacy-only sidecar fallback
  *
  * Endpoints: POST /__sync (tar.gz body) · GET /__export?paths=… · GET /__status ·
  *            POST /__run?cmd=<name> · GET /healthz
@@ -68,11 +69,13 @@ const PORT = Number(process.env.DEV_SYNC_PORT || 8001);
 const DEST = process.env.DEV_SYNC_DEST || '/app';
 const TOKEN = process.env.DEV_SYNC_TOKEN || '';
 const AGENT_TOKEN_SHA256 = process.env.DEV_SYNC_AGENT_TOKEN_SHA256 || '';
-const MAX = 256 * 1024 * 1024; // 256 MiB ceiling on a /__sync upload
+const BRIDGE_TOKEN = process.env.DEV_SYNC_BRIDGE_TOKEN || '';
+const MAX = 64 * 1024 * 1024; // keep buffering + concat below the 256 MiB limit
 const RUN_TIMEOUT_MS = Number(process.env.DEV_SYNC_RUN_TIMEOUT_MS || 900000); // 15 min
 const RUN_OUTPUT_CAP = 64 * 1024; // cap the captured /__run output at 64 KiB
 const EXEC_PORT = Number(process.env.DEV_SYNC_EXEC_PORT || 8002);
 const EXEC_HOST = process.env.DEV_SYNC_EXEC_HOST || '127.0.0.1';
+const ALLOW_LOCAL_RUN = /^(?:1|true|yes)$/i.test(process.env.DEV_SYNC_ALLOW_LOCAL_RUN || '');
 const CONFIGURED_SERVICE = (process.env.DEV_SYNC_SERVICE || '').trim();
 let ALLOWED_ROOTS = [];
 let ALLOWED_ROOTS_ERROR = null;
@@ -401,7 +404,7 @@ function handleSync(req, res) {
 				addedRoutes = detectAddedRouteFiles(entries);
 			}
 		})
-			.then(() => {
+			.then(({ changedRoots }) => {
 				cleanup();
 				currentGeneration = generation;
 				currentSyncService = syncService;
@@ -424,7 +427,7 @@ function handleSync(req, res) {
 					}
 				}
 				console.log(
-					`[dev-sync-sidecar] atomically applied ${declaredRoots.join(',')} (${buf.length}B) -> ${DEST}`
+					`[dev-sync-sidecar] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B) -> ${DEST}`
 				);
 				release();
 				reply(res, 200, {
@@ -434,6 +437,7 @@ function handleSync(req, res) {
 					generation,
 					service: syncService,
 					contentSha256,
+					changedRoots,
 					...(addedRoutes.length ? { routesAdded: addedRoutes.slice(0, 50), restartSignaled } : {})
 				});
 			})
@@ -589,12 +593,10 @@ function handleStatus(req, res) {
 //
 // #40: the command runs in the APP container when its exec bridge is present
 // (executedIn:"app") — only the NAME crosses the pod-localhost hop, and the
-// bridge enforces its own allowlist copy. Fallback to local execution
-// (executedIn:"sidecar", the pre-bridge behavior) happens ONLY when the bridge
-// provably did not run the command: connection failure or a non-200 refusal
-// (401/404/500-spawn). A 200 that then goes bad mid-body is reported as an
-// error WITHOUT fallback — the command may have run, and double-executing a
-// deps install or test lane is worse than surfacing the broken response.
+// bridge enforces its own allowlist copy. Any bridge failure is fail-closed for
+// preview-native pods. DEV_SYNC_ALLOW_LOCAL_RUN exists only for deliberately
+// configured legacy images that predate the bridge. A 200 that then goes bad
+// mid-body is reported as an error because the command may already have run.
 function handleRun(req, res) {
 	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
@@ -651,7 +653,15 @@ function handleRun(req, res) {
 				executedIn: 'app'
 			});
 		}
-		runLocal(name, command, res, bridge.reason, release);
+		if (ALLOW_LOCAL_RUN) return runLocal(name, command, res, bridge.reason, release);
+		release();
+		return reply(res, 503, {
+			ok: false,
+			cmd: name,
+			exitCode: null,
+			error: `exec bridge unavailable: ${bridge.reason}`,
+			executedIn: null
+		});
 	});
 }
 
@@ -659,7 +669,7 @@ function handleRun(req, res) {
  * Ask the app container's exec bridge (127.0.0.1:EXEC_PORT) to run `name`.
  * Callback receives exactly one of:
  *   {ran:true, body, startedAt}    — bridge returned 200 (the command RAN there)
- *   {ran:false, reason}            — bridge did NOT run it (safe to fall back)
+ *   {ran:false, reason}            — bridge did NOT run it
  *   {ran:false, fatal:true, reason} — ambiguous mid-run failure (do NOT fall back)
  */
 function tryBridgeRun(name, cb) {
@@ -676,7 +686,7 @@ function tryBridgeRun(name, cb) {
 			port: EXEC_PORT,
 			path: `/__exec?cmd=${encodeURIComponent(name)}`,
 			method: 'POST',
-			headers: TOKEN ? { 'x-sync-token': TOKEN } : {}
+			headers: BRIDGE_TOKEN ? { 'x-sync-token': BRIDGE_TOKEN } : {}
 		},
 		(pres) => {
 			let body = '';
@@ -734,9 +744,8 @@ function tryBridgeRun(name, cb) {
 	preq.end();
 }
 
-// Local execution in THIS (node-only) container — the pre-bridge behavior,
-// kept for images that predate the exec bridge. `bridgeNote` says why the
-// bridge was skipped so callers can tell a fallback from the intended path.
+// Legacy-only local execution. Preview-native pods never enable this because
+// the sidecar process holds the receiver token in its environment.
 function runLocal(name, command, res, bridgeNote, release) {
 	const startedAt = new Date().toISOString();
 	const t0 = Date.now();
