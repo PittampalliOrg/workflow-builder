@@ -17,7 +17,7 @@ import { test } from 'node:test';
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TOKEN = 'bridge-secret';
+const TOKEN = '2'.repeat(64);
 const HAVE_PYTHON = spawnSync('python3', ['--version']).status === 0;
 
 function freePort() {
@@ -44,7 +44,7 @@ async function startBridge(variant, extraEnv = {}) {
 			...process.env,
 			DEV_SYNC_EXEC_PORT: String(port),
 			DEV_SYNC_DEST: dest,
-			DEV_SYNC_TOKEN: TOKEN,
+			DEV_SYNC_BRIDGE_TOKEN: TOKEN,
 			DEV_SYNC_COMMANDS_JSON: JSON.stringify({
 				deps: 'echo installing-deps',
 				where: 'pwd',
@@ -110,6 +110,14 @@ for (const variant of ['node', 'python']) {
 			).status,
 			400
 		);
+	});
+
+	test(`[${variant}] /__exec fails closed without a bridge token`, maybe, async (t) => {
+		const b = await startBridge(variant, { DEV_SYNC_BRIDGE_TOKEN: '' });
+		t.after(() => b.stop());
+		const response = await fetch(`${b.base}/__exec?cmd=deps`, { method: 'POST' });
+		assert.equal(response.status, 503);
+		assert.match((await response.json()).error, /bridge token is not configured/);
 	});
 
 	test(`[${variant}] /__exec runs in DEST and returns real exit codes`, maybe, async (t) => {

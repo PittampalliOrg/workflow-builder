@@ -123,21 +123,21 @@ describe("dev-preview registry", () => {
     ).toContain("**/node_modules/");
   });
 
-  it("flips a plugin service to sidecar transport only when WFB_DEV_SYNC_MODE=sidecar", () => {
-    const plugin = resolveDevPreviewDescriptor("workflow-builder", {});
-    expect(plugin.syncMode).toBe("plugin");
-    expect(plugin.syncPort).toBe(3000);
+  it("keeps the workflow-builder on the sidecar transport", () => {
+    const descriptor = resolveDevPreviewDescriptor("workflow-builder", {});
+    expect(descriptor.syncMode).toBe("sidecar");
+    expect(descriptor.syncPort).toBe(8001);
 
-    const flipped = resolveDevPreviewDescriptor("workflow-builder", {
+    const resolved = resolveDevPreviewDescriptor("workflow-builder", {
       WFB_DEV_SYNC_MODE: "sidecar",
     });
-    expect(flipped.syncMode).toBe("sidecar");
-    expect(flipped.syncPort).toBe(8001);
+    expect(resolved.syncMode).toBe("sidecar");
+    expect(resolved.syncPort).toBe(8001);
     // Everything else is preserved (adopt + functional stay intact).
-    expect(flipped.capabilities.previewNative?.service).toBe(
+    expect(resolved.capabilities.previewNative?.service).toBe(
       "workflow-builder",
     );
-    expect(flipped.functional).toBe(true);
+    expect(resolved.functional).toBe(true);
 
     // A service already in sidecar mode is untouched by the flag.
     const orch = resolveDevPreviewDescriptor("workflow-orchestrator", {

@@ -60,6 +60,57 @@ describe('dev sync root contract', () => {
 });
 
 describe('applyAtomicDevSync', () => {
+	it('preserves byte-identical roots while committing changed roots and generation state', async () => {
+		const root = temporaryDirectory('atomic-sync-root-');
+		fs.mkdirSync(path.join(root, 'src'));
+		fs.writeFileSync(path.join(root, 'src/current.txt'), 'old');
+		fs.writeFileSync(path.join(root, 'tsconfig.json'), '{"extends":"./base"}');
+		const configInode = fs.statSync(path.join(root, 'tsconfig.json')).ino;
+		let persisted: AtomicDevSyncState | null = null;
+
+		const result = await applyAtomicDevSync({
+			root,
+			archivePath: archive({
+				'src/current.txt': 'new',
+				'tsconfig.json': '{"extends":"./base"}'
+			}),
+			declaredRoots: ['src', 'tsconfig.json'],
+			nextState: state('generation-2'),
+			stateFile: '.dev-sync-state.json',
+			persistState: (nextState) => {
+				persisted = nextState;
+			}
+		});
+
+		expect(result.changedRoots).toEqual(['src']);
+		expect(fs.readFileSync(path.join(root, 'src/current.txt'), 'utf8')).toBe('new');
+		expect(fs.statSync(path.join(root, 'tsconfig.json')).ino).toBe(configInode);
+		expect(persisted).toEqual(state('generation-2'));
+	});
+
+	it('advances generation state when every declared root is byte-identical', async () => {
+		const root = temporaryDirectory('atomic-sync-root-');
+		fs.mkdirSync(path.join(root, 'src'));
+		fs.writeFileSync(path.join(root, 'src/current.txt'), 'same');
+		const sourceInode = fs.statSync(path.join(root, 'src')).ino;
+		let persisted: AtomicDevSyncState | null = null;
+
+		const result = await applyAtomicDevSync({
+			root,
+			archivePath: archive({ 'src/current.txt': 'same' }),
+			declaredRoots: ['src'],
+			nextState: state('generation-2'),
+			stateFile: '.dev-sync-state.json',
+			persistState: (nextState) => {
+				persisted = nextState;
+			}
+		});
+
+		expect(result.changedRoots).toEqual([]);
+		expect(fs.statSync(path.join(root, 'src')).ino).toBe(sourceInode);
+		expect(persisted).toEqual(state('generation-2'));
+	});
+
 	it('rejects a symlinked transaction base before touching live roots', async () => {
 		const root = temporaryDirectory('atomic-sync-root-');
 		fs.mkdirSync(path.join(root, 'src'));
@@ -136,5 +187,29 @@ describe('applyAtomicDevSync', () => {
 		expect(fs.readFileSync(path.join(root, 'src/current.txt'), 'utf8')).toBe('old');
 		expect(fs.readFileSync(path.join(root, 'config/app.json'), 'utf8')).toBe('old-config');
 		expect(fs.readFileSync(path.join(root, '.dev-sync-state.json'), 'utf8')).toBe(prior);
+	});
+
+	it('does not remove an unchanged root when a changed-root commit rolls back', async () => {
+		const root = temporaryDirectory('atomic-sync-root-');
+		fs.mkdirSync(path.join(root, 'src'));
+		fs.writeFileSync(path.join(root, 'src/current.txt'), 'old');
+		fs.writeFileSync(path.join(root, 'tsconfig.json'), '{}');
+		const configInode = fs.statSync(path.join(root, 'tsconfig.json')).ino;
+
+		await expect(
+			applyAtomicDevSync({
+				root,
+				archivePath: archive({ 'src/current.txt': 'new', 'tsconfig.json': '{}' }),
+				declaredRoots: ['src', 'tsconfig.json'],
+				nextState: state('generation-2'),
+				stateFile: '.dev-sync-state.json',
+				persistState: () => {
+					throw new Error('state device full');
+				}
+			})
+		).rejects.toMatchObject({ phase: 'commit', rollbackComplete: true });
+		expect(fs.readFileSync(path.join(root, 'src/current.txt'), 'utf8')).toBe('old');
+		expect(fs.readFileSync(path.join(root, 'tsconfig.json'), 'utf8')).toBe('{}');
+		expect(fs.statSync(path.join(root, 'tsconfig.json')).ino).toBe(configInode);
 	});
 });

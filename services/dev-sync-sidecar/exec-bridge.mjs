@@ -11,12 +11,12 @@ import http from 'node:http';
  * alongside the dev server), so allowlisted deps/test commands execute with the
  * app's real toolchain (python/pytest, pnpm/node_modules) and cwd = workdir.
  *
- * The sidecar's `/__run` PROXIES here first (containers in a pod share
- * localhost) and falls back to local execution against images that predate the
- * bridge — responses carry `executedIn: "app" | "sidecar"` so callers know.
+ * The sidecar's `/__run` proxies here over pod-localhost and fails closed when
+ * the bridge is unavailable. This keeps the receiver credential out of the
+ * process that executes synchronized code.
  *
  * SECURITY: binds 127.0.0.1 ONLY (pod-local; never reachable from outside the
- * pod), requires the shared sync token when set, and runs NOTHING but the named
+ * pod), requires a purpose-specific bridge token, and runs NOTHING but the named
  * entries of its own DEV_SYNC_COMMANDS_JSON (fail-closed: absent/malformed env
  * → every /__exec 404s). Same trust story as the sidecar's /__run: /__sync
  * already delivers code the dev server executes.
@@ -24,7 +24,7 @@ import http from 'node:http';
  * Env (stamped into the app container by sandbox-execution-api in sidecar mode):
  *   DEV_SYNC_EXEC_PORT      (default 8002)   — 127.0.0.1 listen port
  *   DEV_SYNC_DEST           (default /app)   — command cwd (the synced workdir)
- *   DEV_SYNC_TOKEN          (optional)       — require matching `x-sync-token`
+ *   DEV_SYNC_BRIDGE_TOKEN   (required)       — require matching `x-sync-token`
  *   DEV_SYNC_COMMANDS_JSON  (optional)       — {"<name>":"<shell command>"} allowlist
  *   DEV_SYNC_RUN_TIMEOUT_MS (default 900000) — hard kill for a child
  *
@@ -37,7 +37,7 @@ import http from 'node:http';
 
 const PORT = Number(process.env.DEV_SYNC_EXEC_PORT || 8002);
 const DEST = process.env.DEV_SYNC_DEST || '/app';
-const TOKEN = process.env.DEV_SYNC_TOKEN || '';
+const TOKEN = process.env.DEV_SYNC_BRIDGE_TOKEN || '';
 const RUN_TIMEOUT_MS = Number(process.env.DEV_SYNC_RUN_TIMEOUT_MS || 900000);
 const RUN_OUTPUT_CAP = 64 * 1024;
 
@@ -76,7 +76,9 @@ function reply(res, code, body) {
 
 function handleExec(req, res) {
 	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
-	if (TOKEN && req.headers['x-sync-token'] !== TOKEN)
+	if (!/^[a-f0-9]{64}$/.test(TOKEN))
+		return reply(res, 503, { ok: false, error: 'bridge token is not configured' });
+	if (req.headers['x-sync-token'] !== TOKEN)
 		return reply(res, 401, { ok: false, error: 'unauthorized' });
 	req.resume(); // drain+ignore any body (cmd comes from the query only)
 	const name = (new URL(req.url || '/', 'http://localhost').searchParams.get('cmd') || '').trim();

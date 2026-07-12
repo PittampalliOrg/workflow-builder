@@ -14,8 +14,7 @@
  *                 `/__run` commands execute in the APP container via its exec
  *                 bridge (#40, `services/dev-sync-sidecar/exec-bridge.mjs`/`.py`
  *                 on pod-localhost:8002) so they get the service's real
- *                 toolchain; the sidecar only runs them itself as a fallback
- *                 (`executedIn: "sidecar"`) against pre-bridge images.
+ *                 toolchain; preview-native bridge failures fail closed.
  *
  * The dev images' own CMD already runs the hot-reload server (vite / `uvicorn
  * --reload` / `pnpm dev` → tsx watch), so `command` is null = use the image CMD.
@@ -334,8 +333,11 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     port: 3000,
     healthPath: "/",
     workdir: "/app",
-    syncMode: "plugin",
-    syncPort: 3000,
+    // Seed the baked image into the renderer-owned emptyDir before Vite starts,
+    // then receive atomic uploads through the same sidecar adapter as peers.
+    // Directly renaming a baked lower-overlay directory can fail with EXDEV.
+    syncMode: "sidecar",
+    syncPort: 8001,
     repoUrl: "PittampalliOrg/workflow-builder",
     repoSubdir: ".",
     // B4: sync the shared workflow-data contract so a TS↔Python contract edit
@@ -1104,10 +1106,9 @@ export function resolveDevPreviewDescriptor(
     const known = Object.keys(DEV_PREVIEW_SERVICES).join(", ");
     throw new Error(`Unknown dev-preview service "${id}". Known: ${known}`);
   }
-  // Sidecar-transport flag (parallel rollout): flip a plugin-mode service to
-  // sidecar transport. The dev image's own HMR server stays the engine; the
-  // dev-sync-sidecar becomes the /__sync + /__export transport into the shared
-  // emptyDir workdir. Default (unset) keeps today's in-process Vite plugin path.
+  // Transitional override for any remaining plugin-mode catalog service. The
+  // dev image's own HMR server stays the engine; the sidecar owns transport into
+  // a shared emptyDir workdir.
   if (
     d.syncMode === "plugin" &&
     (env.WFB_DEV_SYNC_MODE || "").trim().toLowerCase() === "sidecar"

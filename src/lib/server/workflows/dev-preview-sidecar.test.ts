@@ -161,4 +161,28 @@ describe('runSidecarCommand', () => {
 			data: { ok: false, exitCode: 1, output: '1 failed' }
 		});
 	});
+
+	it('reports a fail-closed exec bridge response as unreachable', async () => {
+		const result = await runSidecarCommand({
+			syncUrl: 'http://10.0.0.5:8001/__sync',
+			executionId: 'exec-1',
+			service: 'workflow-builder',
+			cmd: 'contract',
+			fetchImpl: vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							ok: false,
+							error: 'exec bridge unavailable: bridge unreachable'
+						}),
+						{ status: 503 }
+					)
+			)
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: 'unreachable',
+			message: 'exec bridge unavailable: bridge unreachable'
+		});
+	});
 });

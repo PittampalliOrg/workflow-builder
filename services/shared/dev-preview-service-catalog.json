@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:a0a846c3b91d8b1a1f6e84e9eb292fb995e9384be171e8223b2fbe2bfffa1c22",
+  "catalogDigest": "sha256:d3da1060e818849faa04b68df115ac9a9a2cd42afcf5ec7d5a225a7fc7cdc329",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -516,8 +516,8 @@
         "port": 3000,
         "previewNativeEnvFrom": [],
         "pubsubName": null,
-        "syncMode": "plugin",
-        "syncPort": 3000,
+        "syncMode": "sidecar",
+        "syncPort": 8001,
         "testCommands": {
           "boundaries": "pnpm check:boundaries",
           "check": "pnpm check",
