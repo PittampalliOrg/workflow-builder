@@ -18,6 +18,7 @@ from src.preview_agent_registration import (
     ARGO_NAMESPACE,
     ARGO_AGENT_NAME_LABEL,
     ARGO_SECRET_TYPE_LABEL,
+    ARGO_SKIP_RECONCILE_ANNOTATION,
     CERTIFICATE_DURATION,
     CERTIFICATE_EXPIRY_MARGIN,
     CERTIFICATE_NAMESPACE,
@@ -382,7 +383,10 @@ def test_mapping_external_secret_contract_is_exact() -> None:
                     "type": "Opaque",
                     "metadata": {
                         "labels": target_labels,
-                        "annotations": registration_annotations(ENVIRONMENT_UID),
+                        "annotations": {
+                            ENVIRONMENT_UID_ANNOTATION: ENVIRONMENT_UID,
+                            ARGO_SKIP_RECONCILE_ANNOTATION: "true",
+                        },
                     },
                     "data": {
                         "name": agent_name(PREVIEW_ID),

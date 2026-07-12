@@ -37,6 +37,7 @@ AGENT_NAME_LABEL = "preview.stacks.io/agent-name"
 ENVIRONMENT_UID_ANNOTATION = "preview.stacks.io/preview-environment-uid"
 ARGO_SECRET_TYPE_LABEL = "argocd.argoproj.io/secret-type"
 ARGO_AGENT_NAME_LABEL = "argocd-agent.argoproj-labs.io/agent-name"
+ARGO_SKIP_RECONCILE_ANNOTATION = "argocd.argoproj.io/skip-reconcile"
 
 
 class PreviewAgentRegistrationError(RuntimeError):
@@ -148,6 +149,13 @@ def registration_annotations(environment_uid: str) -> dict[str, str]:
     return {ENVIRONMENT_UID_ANNOTATION: environment_uid}
 
 
+def mapping_secret_annotations(environment_uid: str) -> dict[str, str]:
+    return {
+        **registration_annotations(environment_uid),
+        ARGO_SKIP_RECONCILE_ANNOTATION: "true",
+    }
+
+
 def certificate_name(preview_id: str) -> str:
     return f"{agent_name(preview_id)}-agent-client"
 
@@ -232,7 +240,7 @@ def build_mapping_external_secret(
                     "type": "Opaque",
                     "metadata": {
                         "labels": target_labels,
-                        "annotations": registration_annotations(environment.uid),
+                        "annotations": mapping_secret_annotations(environment.uid),
                     },
                     "data": {
                         "name": agent_name(environment.id),
