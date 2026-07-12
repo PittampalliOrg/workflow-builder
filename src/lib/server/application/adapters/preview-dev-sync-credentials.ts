@@ -62,9 +62,22 @@ export type HttpPreviewDevSyncCredentialBrokerOptions = Readonly<{
 }>;
 
 export class HttpPreviewDevSyncCredentialBrokerAdapter implements PreviewDevSyncCredentialBrokerPort {
+	// Each mint performs the same physical inventory proof; bound that authority
+	// to one request while unrelated export and sync work remains concurrent.
+	private mintQueue: Promise<void> = Promise.resolve();
+
 	constructor(private readonly options: HttpPreviewDevSyncCredentialBrokerOptions = {}) {}
 
 	async mint(input: PreviewDevSyncCredentialRequest) {
+		const result = this.mintQueue.then(() => this.mintOnce(input));
+		this.mintQueue = result.then(
+			() => undefined,
+			() => undefined
+		);
+		return result;
+	}
+
+	private async mintOnce(input: PreviewDevSyncCredentialRequest) {
 		const baseUrl = (
 			this.options.baseUrl?.() ??
 			env.PREVIEW_CONTROL_BROKER_URL ??
