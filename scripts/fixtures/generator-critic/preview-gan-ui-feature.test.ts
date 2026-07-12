@@ -44,6 +44,9 @@ describe('preview-gan-ui-feature fixture', () => {
 		const snapshot = refine.do.find((n: any) => n.snapshot).snapshot;
 		expect(snapshot.call).toBe('dev/preview-snapshot');
 		expect(snapshot.with.services).toEqual(['workflow-builder']);
+		expect(snapshot.with).not.toHaveProperty('executionId');
+		const enter = spec().do.find((n: any) => n.enter_dev_mode).enter_dev_mode;
+		expect(enter.with).not.toHaveProperty('executionId');
 	});
 
 	it('runs a hardened, helper-pod-pinned deterministic gate that writes a machine-readable gate file', () => {
@@ -134,6 +137,7 @@ describe('preview-gan-ui-feature fixture', () => {
 		expect(promote.with).not.toHaveProperty('branchPrefix');
 		expect(promote.with).not.toHaveProperty('repoUrl');
 		expect(promote.with).not.toHaveProperty('baseBranch');
+		expect(promote.with).not.toHaveProperty('executionId');
 		// draft flag + [draft] title prefix are driven by read_verdict.accepted
 		expect(promote.with.draft).toContain('read_verdict');
 		expect(promote.with.title).toContain('[draft] ');

@@ -331,7 +331,6 @@ the workflow action `dev/preview-snapshot`:
 ```yaml
 call: dev/preview-snapshot
 with:
-  executionId: ${ .runtime.executionId }
   nodeId: dev-preview
   iteration: 1
   services:
@@ -339,9 +338,11 @@ with:
     - workflow-orchestrator
 ```
 
-The caller supplies the expected service set, not trust metadata. The BFF
-derives the platform SHA, source SHA, and catalog digest from the persisted
-preview session and environment. The route always requests immutable provenance.
+The caller supplies the expected service set, not trust metadata. Function-router
+derives execution authority from the trusted `db_execution_id` activity envelope;
+never add `executionId` to a `dev/preview*` action's `with` block. The BFF derives
+the platform SHA, source SHA, and catalog digest from the persisted preview
+session and environment. The route always requests immutable provenance.
 
 A successful strict artifact is a version 2 `tar-overlay-set` containing:
 
@@ -371,7 +372,6 @@ iteration:
 ```yaml
 call: dev/preview-promote
 with:
-  executionId: ${ .runtime.executionId }
   iteration: best
   bestIteration: 1
   services:
@@ -403,7 +403,6 @@ Use the promotion response's exact verified PR tuple with
 ```yaml
 call: dev/preview-acceptance
 with:
-  executionId: ${ .runtime.executionId }
   pullRequest: ${ .promote.pullRequest }
 ```
 

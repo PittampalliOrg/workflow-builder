@@ -401,6 +401,37 @@ describe('ApplicationPreviewArchiveService', () => {
 		expect(result.notes?.join(' ')).toContain('active execution source generation is not frozen');
 	});
 
+	it('treats a completed error execution as a frozen terminal generation', async () => {
+		const terminalError = {
+			...executionRows[0],
+			id: 'exec-error',
+			status: 'error',
+			phase: 'failed',
+			error: 'activity failed'
+		};
+		const proxy = fakeProxy({
+			listExecutions: vi.fn(async () => ({
+				ok: true as const,
+				data: { executions: [terminalError], total: 1 }
+			}))
+		});
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy,
+			listPreviews,
+			files
+		});
+
+		const result = await service.archivePreview({
+			name: 'myfeature',
+			userId: 'u'
+		});
+		expect(result).toMatchObject({ archived: true, executionCount: 1 });
+		expect((result.notes ?? []).join(' ')).not.toContain(
+			'active execution source generation is not frozen'
+		);
+	});
+
 	it('refuses teardown proof when the archive deadline truncates discovery', async () => {
 		const proxy = fakeProxy();
 		const files = fakeFiles();

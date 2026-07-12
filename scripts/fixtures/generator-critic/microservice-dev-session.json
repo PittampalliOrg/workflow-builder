@@ -77,7 +77,6 @@
       "provision_preview": {
         "call": "dev/preview",
         "with": {
-          "executionId": "${ .runtime.executionId }",
           "service": "${ .trigger.service // \"workflow-orchestrator\" }",
           "services": "${ .trigger.services // (if .trigger.service then [.trigger.service] else [\"workflow-builder\", \"workflow-orchestrator\", \"function-router\", \"mcp-gateway\", \"workflow-mcp-server\"] end) }",
           "mode": "${ .trigger.mode // \"preview-native\" }",

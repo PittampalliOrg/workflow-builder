@@ -33,7 +33,8 @@ describe("dev preview execution binding", () => {
     });
     expect(bindDevPreviewExecutionId({ executionId: "exec-1" }, null)).toEqual({
       ok: false,
-      error: "dev/preview: missing trusted `db_execution_id` context.",
+      error:
+        "dev/preview: missing trusted `db_execution_id` context; caller-supplied execution IDs are not accepted.",
     });
   });
 
