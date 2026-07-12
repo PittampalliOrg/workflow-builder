@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:1d639999ffda95be1a236235190c195a41c9361a6f5a285587729b72b28184a3",
+  "catalogDigest": "sha256:a0a846c3b91d8b1a1f6e84e9eb292fb995e9384be171e8223b2fbe2bfffa1c22",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -111,6 +111,24 @@
         "language": "node",
         "needsDapr": true,
         "port": 8080,
+        "previewNativeEnvFrom": [
+          {
+            "configMapRef": {
+              "name": "function-router-config"
+            }
+          },
+          {
+            "configMapRef": {
+              "name": "function-router-dapr-config"
+            }
+          },
+          {
+            "secretRef": {
+              "name": "function-router-secrets",
+              "optional": true
+            }
+          }
+        ],
         "pubsubName": null,
         "syncMode": "sidecar",
         "syncPort": 8001,
@@ -231,6 +249,7 @@
         "language": "node",
         "needsDapr": false,
         "port": 8080,
+        "previewNativeEnvFrom": [],
         "pubsubName": null,
         "syncMode": "sidecar",
         "syncPort": 8001,
@@ -381,6 +400,7 @@
         "language": "python",
         "needsDapr": true,
         "port": 8080,
+        "previewNativeEnvFrom": [],
         "pubsubName": "pubsub-dev",
         "syncMode": "sidecar",
         "syncPort": 8001,
@@ -494,6 +514,7 @@
         "language": "node",
         "needsDapr": true,
         "port": 3000,
+        "previewNativeEnvFrom": [],
         "pubsubName": null,
         "syncMode": "plugin",
         "syncPort": 3000,
@@ -683,6 +704,13 @@
         "language": "node",
         "needsDapr": false,
         "port": 3200,
+        "previewNativeEnvFrom": [
+          {
+            "secretRef": {
+              "name": "workflow-builder-secrets"
+            }
+          }
+        ],
         "pubsubName": null,
         "syncMode": "sidecar",
         "syncPort": 8001,
@@ -801,6 +829,29 @@
         "language": "python",
         "needsDapr": true,
         "port": 8080,
+        "previewNativeEnvFrom": [
+          {
+            "configMapRef": {
+              "name": "workflow-orchestrator-config"
+            }
+          },
+          {
+            "configMapRef": {
+              "name": "workflow-orchestrator-otel-config"
+            }
+          },
+          {
+            "configMapRef": {
+              "name": "workflow-orchestrator-dapr-config"
+            }
+          },
+          {
+            "secretRef": {
+              "name": "workflow-orchestrator-secrets",
+              "optional": true
+            }
+          }
+        ],
         "pubsubName": "pubsub-dev",
         "syncMode": "sidecar",
         "syncPort": 8001,

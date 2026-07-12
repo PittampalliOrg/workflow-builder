@@ -172,6 +172,11 @@ export interface DevPreviewDescriptor {
   applyDaprShadowDefaults?: boolean;
   /** envFrom sources (configmaps/secret) to reuse the prod app's config + DATABASE_URL. */
   envFrom?: Array<Record<string, unknown>>;
+  /**
+   * envFrom sources that exist only inside an isolated preview vCluster. Never
+   * forward these refs to an agent-mutable host-throwaway pod.
+   */
+  previewNativeEnvFrom?: Array<Record<string, unknown>>;
   /** Extra plain env for the dev container (e.g. ORIGIN). */
   extraEnv?: Record<string, string>;
 }
@@ -421,6 +426,17 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     // Startup fetches DATABASE_URL from Dapr secrets + runs `wfr.start()`.
     needsDapr: true,
     pubsubName: "pubsub-dev",
+    previewNativeEnvFrom: [
+      { configMapRef: { name: "workflow-orchestrator-config" } },
+      { configMapRef: { name: "workflow-orchestrator-otel-config" } },
+      { configMapRef: { name: "workflow-orchestrator-dapr-config" } },
+      {
+        secretRef: {
+          name: "workflow-orchestrator-secrets",
+          optional: true,
+        },
+      },
+    ],
   },
   "swebench-coordinator": {
     service: "swebench-coordinator",
@@ -495,6 +511,11 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     tailnetHostnameRole: "function-router",
     needsDapr: true,
     applyDaprShadowDefaults: false,
+    previewNativeEnvFrom: [
+      { configMapRef: { name: "function-router-config" } },
+      { configMapRef: { name: "function-router-dapr-config" } },
+      { secretRef: { name: "function-router-secrets", optional: true } },
+    ],
   },
   "mcp-gateway": {
     service: "mcp-gateway",
@@ -576,6 +597,7 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     depsCommand:
       "CI=true pnpm install --no-frozen-lockfile && touch src/index.ts",
     tailnetHostnameRole: "workflow-mcp-server",
+    previewNativeEnvFrom: [{ secretRef: { name: "workflow-builder-secrets" } }],
   },
 };
 
@@ -928,6 +950,9 @@ function devPreviewCatalogPayload() {
         functional: d.functional === true,
         applyDaprShadowDefaults: d.applyDaprShadowDefaults ?? null,
         envFrom: (d.envFrom ?? []).map((entry) => ({ ...entry })),
+        previewNativeEnvFrom: (d.previewNativeEnvFrom ?? []).map((entry) => ({
+          ...entry,
+        })),
         env: { ...(d.extraEnv ?? {}) },
       },
       acceptance: { ...d.capabilities.acceptanceBuild },

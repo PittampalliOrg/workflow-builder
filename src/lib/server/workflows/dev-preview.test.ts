@@ -207,6 +207,17 @@ describe("dev-preview portability boundary", () => {
     const body = JSON.parse(String(request.body));
     expect(body.previewNative).toBe(true);
     expect(body.applyDaprShadowDefaults).toBe(false);
+    expect(body.envFrom).toEqual([
+      { configMapRef: { name: "workflow-orchestrator-config" } },
+      { configMapRef: { name: "workflow-orchestrator-otel-config" } },
+      { configMapRef: { name: "workflow-orchestrator-dapr-config" } },
+      {
+        secretRef: {
+          name: "workflow-orchestrator-secrets",
+          optional: true,
+        },
+      },
+    ]);
     // The host-only shadow pubsub name must NOT leak into a preview-native pod.
     expect(body.env?.PUBSUB_NAME).toBeUndefined();
   });
@@ -323,6 +334,7 @@ describe("dev-preview portability boundary", () => {
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body));
     expect(body.previewNative).toBeUndefined();
+    expect(body.envFrom).toBeUndefined();
     expect("applyDaprShadowDefaults" in body).toBe(false);
   });
 
