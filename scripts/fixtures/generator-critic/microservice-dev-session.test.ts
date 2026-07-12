@@ -110,7 +110,7 @@ describe("microservice dev session source checkout", () => {
       'test "$ACTUAL_REVISION" = "$SOURCE_REVISION"',
     );
     expect(commandText).toContain(
-      'test "$(git -C repo rev-parse HEAD)" = "$ACTUAL_REVISION"',
+      '"$ACTUAL_REVISION" > "$LOCAL_REPO/.git/wfb-preview-source-revision"',
     );
   });
 
@@ -138,7 +138,7 @@ describe("microservice dev session source checkout", () => {
     expect(commandText).not.toContain("http.extraHeader");
   });
 
-  it("checks out on pod-local storage before sequential shared materialization", () => {
+  it("moves one verified archive onto shared storage without extracting the repo there", () => {
     expect(commandText).toContain(
       "LOCAL_ROOT=$(mktemp -d /tmp/wfb-preview-checkout.XXXXXX)",
     );
@@ -156,8 +156,75 @@ describe("microservice dev session source checkout", () => {
       'tar -C "$LOCAL_REPO" -cf "$LOCAL_ROOT/repo.tar" .',
     );
     expect(commandText).toContain(
-      'tar -C repo -xf "$LOCAL_ROOT/repo.tar"',
+      'ARCHIVE_DIGEST=$(sha256sum "$LOCAL_ROOT/repo.tar")',
     );
+    expect(commandText).toContain(
+      'cp "$LOCAL_ROOT/repo.tar" "$SHARED_ARCHIVE_TMP"',
+    );
+    expect(commandText).toContain('chmod 600 "$SHARED_ARCHIVE_TMP"');
+    expect(commandText).toContain(
+      'mv -f "$SHARED_ARCHIVE_TMP" /sandbox/work/repo.tar',
+    );
+    expect(commandText).not.toContain("mkdir repo");
+    expect(commandText).not.toContain("tar -C repo -xf");
+  });
+
+  it("activates the archive exactly once on pod-local storage and safely reuses edits", () => {
+    expect(commandText).toContain("cat <<'ACTIVATE_REPO'");
+    expect(commandText).toContain("WORKSPACE=/sandbox/work");
+    expect(commandText).toContain("LOCAL_REPO=/tmp/wfb-dev-repo");
+    expect(commandText).toContain('[ ! -L "$LOCAL_REPO" ] || fail');
+    expect(commandText).toContain(
+      "REPO_STAGING=$(mktemp -d /tmp/wfb-dev-repo.activate.XXXXXX)",
+    );
+    expect(commandText).toContain(
+      "LOCAL_ARCHIVE=$(mktemp /tmp/wfb-dev-repo.archive.XXXXXX)",
+    );
+    expect(commandText).toContain('cp "$ARCHIVE" "$LOCAL_ARCHIVE"');
+    expect(commandText).toContain('chmod 600 "$LOCAL_ARCHIVE"');
+    expect(commandText).not.toContain(".archive.$$");
+    expect(commandText).toContain(
+      'test "$ACTUAL_DIGEST" = "$EXPECTED_DIGEST"',
+    );
+    expect(commandText).toContain(
+      'tar -C "$REPO_STAGING" -xf "$LOCAL_ARCHIVE"',
+    );
+    expect(commandText).toContain(
+      'test -z "$(git -C "$REPO_STAGING" status --porcelain --untracked-files=all)"',
+    );
+    expect(commandText).toContain(
+      'mv -Tf "$LINK_STAGING" "$REPO_LINK"',
+    );
+    expect(commandText).toContain("wfb-preview-archive-sha256");
+    expect(commandText).toContain('echo REUSED "$ACTIVE_REVISION"');
+    expect(commandText).not.toContain('rm -rf "$LOCAL_REPO"');
+    expect(commandText).toContain('chmod 700 "$SHARED_ACTIVATOR_TMP"');
+  });
+
+  it("keeps every transport and capability path outside the generic root diff", () => {
+    expect(commandText).toContain("cat > .gitignore <<'WFB_ROOT_GITIGNORE'");
+    for (const path of [
+      "/repo",
+      "/repo.tar",
+      "/repo.tar.sha256",
+      "/activate-repo.sh",
+      "/sync.sh",
+      "/.syncenv",
+      "/.syncenv.d",
+      "/.preview-services.json",
+      "/.preview-services-summary",
+      "/.sparse-paths",
+      "/.sparse-cones",
+      "/.sparse-cones.unsorted",
+      "/.syncdeps.*",
+      "/.repo.tar.tmp.*",
+      "/.repo.tar.sha256.tmp.*",
+      "/.activate-repo.tmp.*",
+    ]) {
+      expect(commandText).toContain(`${path}\\n`);
+      expect(commandText).not.toContain(`${path}/\\n`);
+    }
+    expect(commandText).toContain("rm -f repo.tar repo.tar.sha256 activate-repo.sh sync.sh .syncdeps.*");
   });
 
   it("allows the bounded shared-storage cold checkout to finish", () => {
@@ -166,6 +233,21 @@ describe("microservice dev session source checkout", () => {
 
   it("tells the interactive agent to apply hot-synced schema changes explicitly", () => {
     expect(handoffInstructions).toContain("allowlisted migrate action");
+  });
+
+  it("requires local activation before readiness and documents the POC capture boundary", () => {
+    const activate = handoffInstructions.indexOf(
+      "run /sandbox/work/activate-repo.sh once",
+    );
+    const ready = handoffInstructions.indexOf("reply 'ready'");
+    expect(activate).toBeGreaterThan(-1);
+    expect(activate).toBeLessThan(ready);
+    expect(handoffInstructions).toContain(
+      "receiver-owned preview continuation capture is authoritative",
+    );
+    expect(handoffInstructions).toContain(
+      "Generic CLI diff/source-bundle finalizers intentionally do not follow",
+    );
   });
 
   it("hands off only after every service has a ready sync endpoint", () => {

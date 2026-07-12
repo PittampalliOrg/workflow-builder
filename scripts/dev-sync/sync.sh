@@ -2,8 +2,9 @@
 # dev-sync client — push edited source to a per-run dev preview and, on a
 # dependency-manifest change, trigger an in-pod reinstall. Committed to the repo
 # (not heredoc'd into the workflow fixture) so it is shellcheck- and unit-testable;
-# the microservice-dev-session workflow clones the repo and copies this into
-# /sandbox/work/sync.sh, then writes the per-service config it reads.
+# the microservice-dev-session workflow copies this into /sandbox/work/sync.sh
+# beside its per-service config. The interactive pod activates the archived
+# checkout on local storage and exposes it through /sandbox/work/repo.
 #
 # Config is read from (whichever exists, in order):
 #   $DEV_SYNC_ENV_DIR/*   — one file per service (multi-service fan-out), or
