@@ -1471,108 +1471,107 @@ async function persistedReadyDevPreviewBatch(
       candidate,
     ]),
   );
-  return Promise.all(
-    params.services.map(async (service): Promise<DevPreviewServiceResult> => {
-      const candidate = byService.get(service);
-      if (!candidate) {
-        throw new RetryableDevPreviewActivationError(
-          `persisted dev-preview batch is missing ${service}`,
-        );
-      }
-      const { row, details } = candidate;
-      const descriptor = resolveDevPreviewDescriptor(service, {
-        ...process.env,
-        ...env,
-      });
-      const sandboxName = devPreviewSandboxName(params.executionId, service);
-      let image: string | null = null;
-      if (typeof details.image === "string") {
-        try {
-          image = assertDevPreviewImage(descriptor, details.image);
-        } catch (cause) {
-          throw new DevPreviewActivationRejectedError(
-            `persisted dev-preview image is invalid for ${service}: ${message(cause)}`,
-          );
-        }
-      }
-      const podIP =
-        typeof details.podIP === "string" ? details.podIP.trim() : "";
-      const port =
-        typeof details.port === "number" && Number.isInteger(details.port)
-          ? details.port
-          : null;
-      const syncPort =
-        typeof details.syncPort === "number" &&
-        Number.isInteger(details.syncPort)
-          ? details.syncPort
-          : null;
-      const syncUrl =
-        typeof details.syncUrl === "string" ? details.syncUrl : null;
-      const expectedBrowseUrl =
-        params.origin ?? devPreviewBrowseUrl(descriptor);
-      const browseUrl =
-        typeof details.browseUrl === "string"
-          ? details.browseUrl
-          : details.browseUrl === null
-            ? null
-            : expectedBrowseUrl;
-      const expectedDaprAppId =
-        descriptor.capabilities.previewNative?.daprAppId ?? null;
-      const daprAppId =
-        typeof details.daprAppId === "string" ? details.daprAppId : null;
-      if (
-        row.workspaceRef !== sandboxName ||
-        details.sandboxName !== sandboxName ||
-        details.service !== service ||
-        details.executionId !== params.executionId ||
-        details.catalogDigest !== DEV_PREVIEW_CATALOG_DIGEST ||
-        details.ready !== true ||
-        !image ||
-        !podIP ||
-        port !== descriptor.port ||
-        syncPort !== descriptor.syncPort ||
-        syncUrl !== `http://${podIP}:${syncPort}/__sync` ||
-        (typeof details.url === "string" &&
-          details.url !== `http://${podIP}:${port}`) ||
-        browseUrl !== expectedBrowseUrl ||
-        details.needsDapr !== Boolean(descriptor.needsDapr) ||
-        daprAppId !== expectedDaprAppId ||
-        (params.image != null && params.image !== image)
-      ) {
+  const results: DevPreviewServiceResult[] = [];
+  for (const service of params.services) {
+    const candidate = byService.get(service);
+    if (!candidate) {
+      throw new RetryableDevPreviewActivationError(
+        `persisted dev-preview batch is missing ${service}`,
+      );
+    }
+    const { row, details } = candidate;
+    const descriptor = resolveDevPreviewDescriptor(service, {
+      ...process.env,
+      ...env,
+    });
+    const sandboxName = devPreviewSandboxName(params.executionId, service);
+    let image: string | null = null;
+    if (typeof details.image === "string") {
+      try {
+        image = assertDevPreviewImage(descriptor, details.image);
+      } catch (cause) {
         throw new DevPreviewActivationRejectedError(
-          `persisted dev-preview identity is invalid for ${service}`,
+          `persisted dev-preview image is invalid for ${service}: ${message(cause)}`,
         );
       }
-      const { agentActionToken: syncCapability } =
-        await resolveDevSyncCredentials(
-          { executionId: params.executionId, service },
-          credentialOptions,
-        );
-      const info: DevPreviewInfo = {
-        sandboxName,
-        executionId: params.executionId,
-        service,
-        image,
-        podIP,
-        port,
-        syncPort,
-        url: typeof details.url === "string" ? details.url : null,
-        syncUrl,
-        syncCapability,
-        browseUrl,
-        repoUrl: descriptor.repoUrl,
-        repoSubdir: descriptor.repoSubdir,
-        syncPaths: devPreviewSyncPaths(descriptor),
-        extraSync: descriptor.extraSync ?? [],
-        captureOnly: devPreviewCaptureOnly(descriptor),
-        ready: true,
-        status: typeof details.status === "string" ? details.status : "running",
-        needsDapr: Boolean(descriptor.needsDapr),
-        daprAppId,
-      };
-      return { service, ok: true, info };
-    }),
-  );
+    }
+    const podIP = typeof details.podIP === "string" ? details.podIP.trim() : "";
+    const port =
+      typeof details.port === "number" && Number.isInteger(details.port)
+        ? details.port
+        : null;
+    const syncPort =
+      typeof details.syncPort === "number" && Number.isInteger(details.syncPort)
+        ? details.syncPort
+        : null;
+    const syncUrl =
+      typeof details.syncUrl === "string" ? details.syncUrl : null;
+    const expectedBrowseUrl = params.origin ?? devPreviewBrowseUrl(descriptor);
+    const browseUrl =
+      typeof details.browseUrl === "string"
+        ? details.browseUrl
+        : details.browseUrl === null
+          ? null
+          : expectedBrowseUrl;
+    const expectedDaprAppId =
+      descriptor.capabilities.previewNative?.daprAppId ?? null;
+    const daprAppId =
+      typeof details.daprAppId === "string" ? details.daprAppId : null;
+    if (
+      row.workspaceRef !== sandboxName ||
+      details.sandboxName !== sandboxName ||
+      details.service !== service ||
+      details.executionId !== params.executionId ||
+      details.catalogDigest !== DEV_PREVIEW_CATALOG_DIGEST ||
+      details.ready !== true ||
+      !image ||
+      !podIP ||
+      port !== descriptor.port ||
+      syncPort !== descriptor.syncPort ||
+      syncUrl !== `http://${podIP}:${syncPort}/__sync` ||
+      (typeof details.url === "string" &&
+        details.url !== `http://${podIP}:${port}`) ||
+      browseUrl !== expectedBrowseUrl ||
+      details.needsDapr !== Boolean(descriptor.needsDapr) ||
+      daprAppId !== expectedDaprAppId ||
+      (params.image != null && params.image !== image)
+    ) {
+      throw new DevPreviewActivationRejectedError(
+        `persisted dev-preview identity is invalid for ${service}`,
+      );
+    }
+    // Replay can restore all services at once. Keep broker-backed credential
+    // validation sequential so one receipt poll cannot overload its authority.
+    const { agentActionToken: syncCapability } =
+      await resolveDevSyncCredentials(
+        { executionId: params.executionId, service },
+        credentialOptions,
+      );
+    const info: DevPreviewInfo = {
+      sandboxName,
+      executionId: params.executionId,
+      service,
+      image,
+      podIP,
+      port,
+      syncPort,
+      url: typeof details.url === "string" ? details.url : null,
+      syncUrl,
+      syncCapability,
+      browseUrl,
+      repoUrl: descriptor.repoUrl,
+      repoSubdir: descriptor.repoSubdir,
+      syncPaths: devPreviewSyncPaths(descriptor),
+      extraSync: descriptor.extraSync ?? [],
+      captureOnly: devPreviewCaptureOnly(descriptor),
+      ready: true,
+      status: typeof details.status === "string" ? details.status : "running",
+      needsDapr: Boolean(descriptor.needsDapr),
+      daprAppId,
+    };
+    results.push({ service, ok: true, info });
+  }
+  return results;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	HmacPreviewDevSyncLeafIssuerAdapter,
 	HttpPreviewDevSyncCredentialBrokerAdapter
@@ -15,6 +15,8 @@ const request = {
 };
 
 describe('preview dev-sync credential adapters', () => {
+	afterEach(() => vi.restoreAllMocks());
+
 	it('mints deterministic, purpose-separated, tuple-scoped leaves', () => {
 		const issuer = new HmacPreviewDevSyncLeafIssuerAdapter(() => '1'.repeat(64));
 		const pair = issuer.issue(request);
@@ -28,6 +30,7 @@ describe('preview dev-sync credential adapters', () => {
 	});
 
 	it('calls only the mint endpoint with the mint-only bearer', async () => {
+		const timeout = vi.spyOn(AbortSignal, 'timeout');
 		const fetch = vi.fn(async () =>
 			Response.json({ receiverToken: 'd'.repeat(64), agentActionToken: 'e'.repeat(64) })
 		);
@@ -50,6 +53,7 @@ describe('preview dev-sync credential adapters', () => {
 				body: JSON.stringify(request)
 			})
 		);
+		expect(timeout).toHaveBeenCalledWith(45_000);
 	});
 
 	it('rejects malformed broker leaves', async () => {

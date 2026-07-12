@@ -8,7 +8,9 @@ import type {
 
 const ROOT = /^[a-f0-9]{64}$/;
 const TOKEN = /^[a-f0-9]{64}$/;
-const DEFAULT_TIMEOUT_MS = 10_000;
+// The broker's authoritative environment inspection can use a 30 second
+// downstream budget. Leave headroom for that proof and response transport.
+const DEFAULT_TIMEOUT_MS = 45_000;
 
 function issue(
 	root: string,
