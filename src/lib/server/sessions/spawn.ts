@@ -16,7 +16,10 @@ import {
 	maybeProvisionAgentWorkflowHost,
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
-import { resolveSessionRuntimeTarget } from "$lib/server/sessions/runtime-target";
+import {
+	resolveSessionRuntimeTarget,
+	runtimeUsesSharedWorkspace,
+} from "$lib/server/sessions/runtime-target";
 import { buildCliSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
@@ -80,6 +83,12 @@ export interface SpawnSessionWorkflowOptions {
 	 * follow-up messages are expected after the parent workflow completes.
 	 */
 	persistentHost?: boolean;
+	/**
+	 * Fail if the per-session host cannot be provisioned. Preview dev handoffs
+	 * require their exact JuiceFS execution class and must not fall back to a
+	 * configured shared pool or dedicated runtime app id.
+	 */
+	requireWorkflowHost?: boolean;
 }
 
 export async function spawnSessionWorkflow(
@@ -481,37 +490,45 @@ export async function spawnSessionWorkflow(
 	//      pool emitted at agent publish; we patch `spec.replicas: 1` on demand
 	//      via `wakeAgentRuntime` and the upstream agent-sandbox controller
 	//      manages the pod.
-	const sessionHost = await maybeProvisionAgentWorkflowHost({
-		sessionId,
-		agentConfig: agentConfigForDispatch,
-		workflowExecutionId: session.workflowExecutionId ?? null,
-		// Interactive-cli dev-session handoff (P3): a session row carrying a
-		// workflowExecutionId mounts the SAME per-execution /sandbox/work the
-		// workflow used (the agent sees the cloned repo). The orchestrator keys that
-		// workspace on the run's dapr_instance_id, so resolve it (NOT the canonical
-		// workflowExecutionId) to mount the same JuiceFS subPath. Direct UI sessions
-		// have workflowExecutionId=null → no shared mount (unchanged).
-		sharedWorkspaceKey:
-			swapTarget?.capabilities?.interactiveTerminal &&
-			session.workflowExecutionId
-				? await resolveRunWorkspaceKey(session.workflowExecutionId)
-				: null,
-		benchmarkRunId: null,
-		benchmarkInstanceId: null,
-		timeoutMinutes: null,
-		persistentHost: options.persistentHost === true,
-		sessionSecretEnv,
-		// Resume: the sandbox host keys the per-session transcript CSI subPath on
-		// this id, so the resumed pod re-mounts the original conversation's
-		// Postgres-backed subtree (paired with continueSession above).
-		resumeFromSessionId: session.resumedFromSessionId ?? null,
-	}).catch((err) => {
+	let sessionHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>>;
+	try {
+		sessionHost = await maybeProvisionAgentWorkflowHost({
+			sessionId,
+			agentConfig: agentConfigForDispatch,
+			workflowExecutionId: session.workflowExecutionId ?? null,
+			// Shared-workspace dev-session handoff (P3): a session row carrying a
+			// workflowExecutionId mounts the SAME per-execution /sandbox/work the
+			// workflow used (the agent sees the cloned repo). The orchestrator keys that
+			// workspace on the run's dapr_instance_id, so resolve it (NOT the canonical
+			// workflowExecutionId) to mount the same JuiceFS subPath. This applies to
+			// interactive terminals and JuiceFS-local Dapr agents. Direct UI sessions
+			// have workflowExecutionId=null -> no shared mount (unchanged).
+			sharedWorkspaceKey:
+				runtimeUsesSharedWorkspace(swapTarget?.capabilities) &&
+				session.workflowExecutionId
+					? await resolveRunWorkspaceKey(session.workflowExecutionId)
+					: null,
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+			persistentHost: options.persistentHost === true,
+			sessionSecretEnv,
+			// Resume: the sandbox host keys the per-session transcript CSI subPath on
+			// this id, so the resumed pod re-mounts the original conversation's
+			// Postgres-backed subtree (paired with continueSession above).
+			resumeFromSessionId: session.resumedFromSessionId ?? null,
+		});
+	} catch (err) {
+		if (options.requireWorkflowHost) throw err;
 		console.warn(
 			`[session-spawn] sandbox provision failed, falling back to warm-pool wake:`,
 			err instanceof Error ? err.message : err,
 		);
-		return null;
-	});
+		sessionHost = null;
+	}
+	if (options.requireWorkflowHost && !sessionHost) {
+		throw new Error("required per-session workflow host was not provisioned");
+	}
 	const targetAppId = sessionHost?.agentAppId ?? runtimeRoute.appId;
 	if (!sessionHost) {
 		try {

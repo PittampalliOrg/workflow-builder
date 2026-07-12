@@ -160,6 +160,32 @@ describe("agent workflow host provisioning", () => {
 		expect(body.executionClass).toBe("interactive-agent");
 	});
 
+	it("provisions the persistent JuiceFS dev handoff on the exact shared workspace", async () => {
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-workflow-juicefs-1",
+			agentConfig: {
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: "deepseek-v4-pro",
+				mcpServers: [],
+			} as never,
+			workflowExecutionId: "exec-1",
+			sharedWorkspaceKey: "sw-workflow-exec-exact",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+			persistentHost: true,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body).not.toHaveProperty("timeoutSeconds");
+		expect(body.executionClass).toBe("dapr-agent-py-juicefs");
+		expect(body.sharedWorkspaceKey).toBe("sw-workflow-exec-exact");
+	});
+
 	it("honors explicit host timeouts", async () => {
 		await maybeProvisionAgentWorkflowHost({
 			sessionId: "session-direct-2",

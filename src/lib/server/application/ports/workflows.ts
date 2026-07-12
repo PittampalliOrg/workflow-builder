@@ -1454,13 +1454,18 @@ export interface WorkflowDataService {
 	}): Promise<SessionDetail | null>;
 	createWorkflowDevSession(input: {
 		executionId: string;
-		agentSlug: string;
+		agentPolicy: {
+			slug: string;
+			runtime: string;
+			modelSpec: string;
+		};
 		instructions: string;
 		title?: string | null;
 	}): Promise<
 		| { status: "created"; sessionId: string; agentSlug: string }
 		| { status: "execution_not_found" }
 		| { status: "agent_not_found"; agentSlug: string }
+		| { status: "agent_policy_mismatch"; agentSlug: string }
 	>;
 	getSessionGoalFlow(input: {
 		sessionId: string;

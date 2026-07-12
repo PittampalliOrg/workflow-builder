@@ -26,7 +26,7 @@ describe("spawnDevSession", () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValue({
 			status: "created",
 			sessionId: "session-1",
-			agentSlug: "cli-dev-agent",
+			agentSlug: "dapr-juicefs-dev-agent",
 		});
 		spawnSessionWorkflowMock.mockResolvedValue({
 			instanceId: "session-1",
@@ -58,17 +58,22 @@ describe("spawnDevSession", () => {
 		).resolves.toEqual({
 			sessionId: "session-1",
 			url: "/sessions/session-1",
-			agentSlug: "cli-dev-agent",
+			agentSlug: "dapr-juicefs-dev-agent",
 		});
 
 		expect(workflowDataMock.createWorkflowDevSession).toHaveBeenCalledWith({
 			executionId: "exec-1",
-			agentSlug: "cli-dev-agent",
+			agentPolicy: {
+				slug: "dapr-juicefs-dev-agent",
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: "deepseek-v4-pro",
+			},
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
 		});
 		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
 			persistentHost: true,
+			requireWorkflowHost: true,
 		});
 	});
 
@@ -81,6 +86,7 @@ describe("spawnDevSession", () => {
 
 		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
 			persistentHost: false,
+			requireWorkflowHost: true,
 		});
 	});
 
@@ -108,9 +114,23 @@ describe("spawnDevSession", () => {
 			spawnDevSession({
 				executionId: "exec-1",
 				instructions: "start",
-				agentSlug: "missing-agent",
 			}),
-		).rejects.toThrow('dev-session agent "missing-agent" not found');
+		).rejects.toThrow('dev-session agent "dapr-juicefs-dev-agent" not found');
+		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects a seeded agent that drifts from the preview runtime policy", async () => {
+		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
+			status: "agent_policy_mismatch",
+			agentSlug: "dapr-juicefs-dev-agent",
+		});
+
+		await expect(
+			spawnDevSession({
+				executionId: "exec-1",
+				instructions: "start",
+			}),
+		).rejects.toThrow("does not match the required preview runtime policy");
 		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
 	});
 });

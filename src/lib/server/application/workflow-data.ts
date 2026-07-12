@@ -5246,13 +5246,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	async createWorkflowDevSession(input: {
 		executionId: string;
-		agentSlug: string;
+		agentPolicy: {
+			slug: string;
+			runtime: string;
+			modelSpec: string;
+		};
 		instructions: string;
 		title?: string | null;
 	}): Promise<
 		| { status: "created"; sessionId: string; agentSlug: string }
 		| { status: "execution_not_found" }
 		| { status: "agent_not_found"; agentSlug: string }
+		| { status: "agent_policy_mismatch"; agentSlug: string }
 	> {
 		const executionOwner =
 			await this.getWorkflowExecutionSessionOwnerContext(input.executionId);
@@ -5260,7 +5265,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { status: "execution_not_found" };
 		}
 
-		const agentSlug = input.agentSlug.trim();
+		const agentSlug = input.agentPolicy.slug.trim();
 		const agentId =
 			await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(agentSlug);
 		const agent = agentId
@@ -5268,6 +5273,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			: null;
 		if (!agent) {
 			return { status: "agent_not_found", agentSlug };
+		}
+		const configRuntime = agent.config.runtime?.trim();
+		const modelSpec = agent.config.modelSpec?.trim();
+		if (
+			agent.slug !== agentSlug ||
+			agent.runtime !== input.agentPolicy.runtime ||
+			configRuntime !== input.agentPolicy.runtime ||
+			modelSpec !== input.agentPolicy.modelSpec
+		) {
+			return { status: "agent_policy_mismatch", agentSlug };
 		}
 
 		const session = await this.requireSessions().createSession({

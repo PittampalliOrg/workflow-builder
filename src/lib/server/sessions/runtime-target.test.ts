@@ -18,8 +18,25 @@ import {
 	resolveSessionRuntimeDebugTarget,
 	resolveSessionRuntimeTarget,
 	runtimeHasNativeGoalHarness,
+	runtimeUsesSharedWorkspace,
 	stripNativeGoalPrefix,
 } from "./runtime-target";
+
+describe("runtimeUsesSharedWorkspace", () => {
+	it("includes interactive terminals and JuiceFS-local durable agents", () => {
+		expect(runtimeUsesSharedWorkspace({ interactiveTerminal: true })).toBe(true);
+		expect(
+			runtimeUsesSharedWorkspace({ workspaceBackend: "juicefs-shared" }),
+		).toBe(true);
+	});
+
+	it("excludes runtimes backed by an external workspace", () => {
+		expect(
+			runtimeUsesSharedWorkspace({ workspaceBackend: "openshell-shared" }),
+		).toBe(false);
+		expect(runtimeUsesSharedWorkspace(undefined)).toBe(false);
+	});
+});
 
 describe("runtimeHasNativeGoalHarness", () => {
 	it("is true only for claude/codex CLI adapters, false for agy + non-CLI", () => {

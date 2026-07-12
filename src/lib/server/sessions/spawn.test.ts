@@ -11,6 +11,10 @@ describe("session spawn wiring", () => {
 		expect(source).toContain("workflowData.attachSessionRuntime");
 		expect(source).toContain("workflowData.listSessionEvents");
 		expect(source).toContain("workflowData.appendSessionEvent");
+		expect(source).toContain("workflowData.getWorkflowExecutionWorkspaceKey");
+		expect(source).toContain("runtimeUsesSharedWorkspace");
+		expect(source).toContain("if (options.requireWorkflowHost) throw err");
+		expect(source).toContain("options.requireWorkflowHost && !sessionHost");
 		expect(source).toContain("environments.resolveRuntimeByRef");
 		expect(source).toContain("sessionCommands.materializeSessionRepositoriesViaHost");
 		expect(source).not.toContain("$lib/server/agents/registry");
