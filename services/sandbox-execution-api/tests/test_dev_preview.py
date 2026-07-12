@@ -937,6 +937,14 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
         {"name": "DAPR_CONFIG_STORE", "value": "configstore"},
         {"name": "PREVIEW_CONTROL_BROKER_URL", "value": "http://broker:3000"},
         {
+            "name": "WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX",
+            "value": "wbpreview-app-live-five",
+        },
+        {
+            "name": "WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS",
+            "value": "true",
+        },
+        {
             "name": "PREVIEW_CONTROL_CAPABILITY_TOKEN",
             "valueFrom": {
                 "secretKeyRef": {
@@ -981,6 +989,16 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
                 }
             },
         },
+        {
+            "name": "INTERNAL_API_TOKEN",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "workflow-builder-secrets",
+                    "key": "INTERNAL_API_TOKEN",
+                    "optional": True,
+                }
+            },
+        },
         {"name": "WFB_DEV_SYNC_TOKEN", "value": "fleet-root"},
         {"name": "DEV_SYNC_AGENT_TOKEN", "value": "raw-agent-leaf"},
         {"name": "PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN", "value": "control-root"},
@@ -1015,17 +1033,63 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
         "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE",
         "CODEX_CLI_APP_ID",
         "DAPR_CONFIG_STORE",
+        "INTERNAL_API_TOKEN",
         "PREVIEW_ACTION_INTERNAL_TOKEN",
         "PREVIEW_CONTROL_BROKER_URL",
         "PREVIEW_CONTROL_CAPABILITY_TOKEN",
         "PREVIEW_DEV_SYNC_MINT_TOKEN",
         "PREVIEW_ENVIRONMENT_NAME",
         "SANDBOX_EXECUTION_API_TOKEN",
+        "WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS",
+        "WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX",
     }
     assert (
         by_name["PREVIEW_DEV_SYNC_MINT_TOKEN"]["valueFrom"]["secretKeyRef"]["key"]
         == "sync-token"
     )
+    assert (
+        by_name["WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX"]["value"]
+        == "wbpreview-app-live-five"
+    )
+    assert by_name["WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS"]["value"] == "true"
+
+
+def test_adopted_internal_token_requires_exact_secret_reference() -> None:
+    valid = {
+        "name": "INTERNAL_API_TOKEN",
+        "valueFrom": {
+            "secretKeyRef": {
+                "name": "workflow-builder-secrets",
+                "key": "INTERNAL_API_TOKEN",
+                "optional": True,
+            }
+        },
+    }
+    filtered = app_module._filter_adopted_container_env(
+        [
+            valid,
+            {"name": "INTERNAL_API_TOKEN", "value": "literal-token"},
+            {
+                "name": "INTERNAL_API_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "unrelated-secret",
+                        "key": "INTERNAL_API_TOKEN",
+                    }
+                },
+            },
+            {
+                "name": "INTERNAL_API_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "workflow-builder-secrets",
+                        "key": "OTHER_KEY",
+                    }
+                },
+            },
+        ]
+    )
+    assert filtered == [valid]
 
 
 def test_adopted_dev_manifest_overrides_inherited_sync_root_with_receiver_leaf() -> (

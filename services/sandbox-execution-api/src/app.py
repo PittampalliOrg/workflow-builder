@@ -935,6 +935,8 @@ _ADOPT_ENV_LITERAL_NAMES = frozenset(
         "SANDBOX_TEMPLATE_IMAGES_JSON",
         "WORKFLOW_BUILDER_DEV_IMAGE",
         "WORKFLOW_BUILDER_IMAGE_PINS_FILE",
+        "WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS",
+        "WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX",
         "WORKFLOW_ORCHESTRATOR_DEV_IMAGE",
         "WORKSPACE_RUNTIME_URL",
     }
@@ -954,6 +956,9 @@ _ADOPT_ENV_SECRET_NAMES = frozenset(
         "SANDBOX_EXECUTION_API_TOKEN",
     }
 )
+_ADOPT_ENV_EXACT_SECRET_REFS = {
+    "INTERNAL_API_TOKEN": ("workflow-builder-secrets", "INTERNAL_API_TOKEN"),
+}
 _ADOPT_ENV_IDENTITY_NAMES = frozenset(
     {
         "PREVIEW_ENVIRONMENT_CATALOG_DIGEST",
@@ -991,7 +996,7 @@ def _adopt_env_key_ref(value: Any, field: str) -> dict[str, Any] | None:
 def _filter_adopted_container_env(
     entries: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]] | None:
-    """Retain the adopted BFF's operational config and four scoped leaves only.
+    """Retain the adopted workload's operational config and scoped leaves only.
 
     Mutable preview code must never inherit a dev-sync derivation root, raw agent
     bearer, GitHub/write credential, or unrelated production capability through
@@ -1018,6 +1023,13 @@ def _filter_adopted_container_env(
         value_from = entry.get("valueFrom")
         if name in _ADOPT_ENV_SECRET_NAMES:
             safe_ref = _adopt_env_key_ref(value_from, "secretKeyRef")
+        elif name in _ADOPT_ENV_EXACT_SECRET_REFS:
+            safe_ref = _adopt_env_key_ref(value_from, "secretKeyRef")
+            expected_name, expected_key = _ADOPT_ENV_EXACT_SECRET_REFS[name]
+            if safe_ref is not None:
+                ref = safe_ref["secretKeyRef"]
+                if ref["name"] != expected_name or ref["key"] != expected_key:
+                    safe_ref = None
         elif name in _ADOPT_ENV_IDENTITY_NAMES:
             safe_ref = _adopt_env_key_ref(value_from, "configMapKeyRef")
         else:

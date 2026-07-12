@@ -233,6 +233,10 @@ export async function provisionDevPreview(
       devPreviewCaptureMappings(descriptor).map((mapping) => mapping.from),
     ),
   ].sort();
+  const envFrom = [
+    ...(descriptor.envFrom ?? []),
+    ...(previewNative ? (descriptor.previewNativeEnvFrom ?? []) : []),
+  ];
   const requestBody: Record<string, unknown> = {
     executionId: params.executionId,
     executionClass: params.executionClass ?? "dev-preview",
@@ -277,7 +281,7 @@ export async function provisionDevPreview(
             : {}),
         }
       : {}),
-    ...(descriptor.envFrom ? { envFrom: descriptor.envFrom } : {}),
+    ...(envFrom.length ? { envFrom } : {}),
     ...(Object.keys(serviceSecretEnv).length ? { serviceSecretEnv } : {}),
     ...(Object.keys(previewEnv).length ? { env: previewEnv } : {}),
     syncToken: receiverToken,

@@ -130,6 +130,25 @@ describe("dev-preview registry", () => {
     });
     expect(orch.syncMode).toBe("sidecar");
     expect(orch.syncPort).toBe(8001);
+    expect(orch.previewNativeEnvFrom).toEqual([
+      { configMapRef: { name: "workflow-orchestrator-config" } },
+      { configMapRef: { name: "workflow-orchestrator-otel-config" } },
+      { configMapRef: { name: "workflow-orchestrator-dapr-config" } },
+      {
+        secretRef: {
+          name: "workflow-orchestrator-secrets",
+          optional: true,
+        },
+      },
+    ]);
+
+    expect(
+      DEV_PREVIEW_SERVICES["function-router"].previewNativeEnvFrom,
+    ).toEqual([
+      { configMapRef: { name: "function-router-config" } },
+      { configMapRef: { name: "function-router-dapr-config" } },
+      { secretRef: { name: "function-router-secrets", optional: true } },
+    ]);
   });
 
   it("declares the mcp-gateway preview adoption and live-sync contract", () => {
@@ -161,6 +180,9 @@ describe("dev-preview registry", () => {
       deployment: "workflow-mcp-server",
       service: "workflow-mcp-server",
     });
+    expect(wf.previewNativeEnvFrom).toEqual([
+      { secretRef: { name: "workflow-builder-secrets" } },
+    ]);
   });
 
   it("wires the B4 contract paths on both sides of the boundary", () => {
