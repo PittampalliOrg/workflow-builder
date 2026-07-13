@@ -51,8 +51,8 @@ the dedicated section below before declaring the POC complete.
 - Pass the exact source SHA to the workflow. Do not let the agent begin from a
   moving default branch.
 - Do not supply an agent slug. The handoff is fixed to
-  `dapr-juicefs-dev-agent` on `dapr-agent-py-juicefs` with model
-  `deepseek-v4-pro`; caller-selected agents are outside this POC contract.
+  `glm-juicefs-builder-agent` on `dapr-agent-py-juicefs` with model
+  `zai/glm-5.2`; caller-selected agents are outside this POC contract.
 
 Current preview-native services:
 

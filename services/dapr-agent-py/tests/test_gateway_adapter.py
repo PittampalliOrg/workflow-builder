@@ -28,6 +28,53 @@ class _Response:
         return json.dumps(self.payload).encode()
 
 
+def test_glm_52_route_requires_zai_feature_flag(monkeypatch) -> None:
+    monkeypatch.setenv("MLFLOW_AI_GATEWAY_BASE_URL", "http://gateway.test")
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ADAPTER_ENABLED", "true")
+    monkeypatch.delenv("DAPR_AGENT_PY_GATEWAY_ZAI", raising=False)
+
+    assert adapter._route_for_component("llm-glm-5.2") is None
+
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ZAI", "true")
+    assert adapter._provider_for_component("llm-glm-5.2") == "zai"
+    assert adapter._route_for_component("llm-glm-5.2") == "glm-5.2"
+
+
+def test_glm_52_gateway_disables_thinking_for_tool_calls(monkeypatch) -> None:
+    bodies: list[dict] = []
+    monkeypatch.setenv("MLFLOW_AI_GATEWAY_BASE_URL", "http://gateway.test")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data))
+        return _Response({
+            "id": "chatcmpl_test",
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    result = adapter._call_gateway_chat(
+        "llm-glm-5.2",
+        "glm-5.2",
+        [{"role": "user", "content": "edit the file"}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write a file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+
+    assert result["content"] == "ok"
+    assert bodies[0]["model"] == "glm-5.2"
+    assert bodies[0]["thinking"] == {"type": "disabled"}
+
+
 def test_gateway_chat_retries_transient_503_with_backoff(monkeypatch) -> None:
     calls = 0
     sleeps: list[float] = []

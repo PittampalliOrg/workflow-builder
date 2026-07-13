@@ -1,7 +1,7 @@
 """MLflow AI Gateway adapter (Phase 2c v2).
 
-Routes all six OpenAI-protocol providers (DeepSeek, NVIDIA, Foundry, Kimi,
-Alibaba, Together) through a single Gateway endpoint instead of direct
+Routes OpenAI-protocol providers (DeepSeek, NVIDIA, Foundry, Kimi, Alibaba,
+Together, Z.AI) through a single Gateway endpoint instead of direct
 provider HTTP calls. Replaces ~3,622 lines of near-duplicate per-provider
 HTTP plumbing with one route-by-name shim.
 
@@ -20,7 +20,7 @@ Feature flagging:
   - `DAPR_AGENT_PY_GATEWAY_ADAPTER_ENABLED=true` (default false) — master switch.
   - `DAPR_AGENT_PY_GATEWAY_<PROVIDER>=true` (default false) — per-provider
     rollout knob. PROVIDER is one of DEEPSEEK, NVIDIA, FOUNDRY, KIMI, ALIBABA,
-    TOGETHER. Each falls through to its legacy adapter when disabled.
+    TOGETHER, ZAI. Each falls through to its legacy adapter when disabled.
 
 Observability:
   - `mlflow.litellm.autolog()` (enabled in providers.py) auto-emits
@@ -85,6 +85,8 @@ _DEFAULT_ROUTE_MAP: dict[str, str] = {
     "llm-together-deepseek-v4-pro": "together-deepseek-v4-pro",
     "llm-together-qwen3-coder-480b": "together-qwen3-coder-480b",
     "llm-together-glm-51": "together-glm-51",
+    # Z.AI
+    "llm-glm-5.2": "glm-5.2",
     # OpenAI (2 routes)
     "llm-openai-gpt5": "gpt-5.5",
     "llm-openai-o3": "o3",
@@ -105,6 +107,7 @@ _PROVIDER_FLAGS: dict[str, str] = {
     "kimi": "DAPR_AGENT_PY_GATEWAY_KIMI",
     "alibaba": "DAPR_AGENT_PY_GATEWAY_ALIBABA",
     "together": "DAPR_AGENT_PY_GATEWAY_TOGETHER",
+    "zai": "DAPR_AGENT_PY_GATEWAY_ZAI",
 }
 
 
@@ -169,6 +172,8 @@ def _provider_for_component(component: str) -> str | None:
         return "alibaba"
     if "together" in text:
         return "together"
+    if text.startswith("llm-glm-") or "zai" in text:
+        return "zai"
     return None
 
 
@@ -504,6 +509,8 @@ def _call_gateway_chat(
     # tools would keep thinking enabled but the workflow agent path always
     # passes tools, so disable universally for deepseek routes.
     if route.startswith("deepseek-") or route.startswith("foundry-deepseek-"):
+        body["thinking"] = {"type": "disabled"}
+    if route == "glm-5.2" and (converted_tools or response_format is not None):
         body["thinking"] = {"type": "disabled"}
 
     logger.info(
