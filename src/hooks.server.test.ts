@@ -52,6 +52,17 @@ describe("preview-control broker edge", () => {
       "POST",
       "/api/internal/preview-control/environment",
     ]);
+    expect(PREVIEW_CONTROL_BROKER_ROUTES).toContainEqual([
+      "POST",
+      "/api/internal/preview-control/environment/observe",
+    ]);
+    expect(
+      previewControlBrokerModeResponse(
+        "/api/internal/preview-control/environment/observe",
+        "GET",
+        true,
+      )?.status,
+    ).toBe(404);
     for (const route of [
       "/api/internal/preview-control/dev-sync-credentials",
       "/api/internal/preview-control/accepted-images/reuse",
