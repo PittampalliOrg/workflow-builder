@@ -4259,6 +4259,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "workflow-orchestrator",
+        "previewLiveSync": "490e",
     }
 
 
