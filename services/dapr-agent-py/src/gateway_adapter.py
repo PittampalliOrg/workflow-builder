@@ -1,18 +1,18 @@
-"""MLflow AI Gateway adapter (Phase 2c v2).
+"""OpenAI-compatible gateway adapter.
 
 Routes OpenAI-protocol providers (DeepSeek, NVIDIA, Foundry, Kimi, Alibaba,
-Together, Z.AI) through a single Gateway endpoint instead of direct
+Together, Z.AI) through a single gateway endpoint instead of direct
 provider HTTP calls. Replaces ~3,622 lines of near-duplicate per-provider
-HTTP plumbing with one route-by-name shim.
+HTTP plumbing with one model-by-component shim.
 
 Architecture:
 
-  dapr-agent-py → MLflow AI Gateway (LiteLLM) → upstream provider
+  dapr-agent-py → fixed OpenAI-compatible gateway → upstream provider
 
-The Gateway exposes an OpenAI-compatible `/v1/chat/completions` shim, so the
+The gateway exposes an OpenAI-compatible `/v1/chat/completions` endpoint, so the
 request/response shape is identical to what each per-provider adapter
 already builds. The component name (`llm-deepseek-v4-pro`) maps to a Gateway
-route name (`deepseek-v4-pro`) via the `DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON`
+model ID (`deepseek-v4-pro`) via the `DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON`
 env var; if no mapping exists for a component, this adapter doesn't patch
 and the legacy per-provider adapter handles the call.
 
@@ -23,11 +23,8 @@ Feature flagging:
     TOGETHER, ZAI. Each falls through to its legacy adapter when disabled.
 
 Observability:
-  - `mlflow.litellm.autolog()` (enabled in providers.py) auto-emits
-    `LiteLLM.completion` spans on the Gateway side with full
-    `gen_ai.input.messages` / `gen_ai.output.messages` / `gen_ai.usage.*`.
-    No manual `claude_code.llm_request` span needed here.
   - `record_tokens()` still fires for Prometheus dashboards.
+  - GenAI semantic-convention attributes are stamped on the active Dapr span.
 """
 
 from __future__ import annotations
@@ -51,21 +48,20 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Route resolution
+# Model resolution
 # ---------------------------------------------------------------------------
 
 
-# Built-in fallback map. Component name in Dapr → Gateway route name in
-# `packages/components/hub-management/manifests/mlflow/ConfigMap-mlflow-ai-gateway-config.yaml`.
-# Overridable via `DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON` env. Keep this map
-# 1:1 with the Component-llm-*.yaml file slugs we ship; if you add a new
-# LLM Component, add a matching Gateway route AND an entry here.
-_DEFAULT_ROUTE_MAP: dict[str, str] = {
+# Built-in fallback map. Component name in Dapr → OpenAI-compatible model ID.
+# Overridable via `DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON` env. Keep this map 1:1
+# with the Component-llm-*.yaml file slugs we ship; if you add a new LLM
+# Component, add its upstream model ID here.
+_DEFAULT_MODEL_MAP: dict[str, str] = {
     # DeepSeek
-    "llm-deepseek": "deepseek-v4-pro",                   # default DeepSeek route
+    "llm-deepseek": "deepseek-v4-pro",                   # default DeepSeek model
     "llm-deepseek-v4-pro": "deepseek-v4-pro",
     "llm-deepseek-v4-flash": "deepseek-v4-flash",
-    # NVIDIA NIM (6 routes)
+    # NVIDIA NIM (6 models)
     "llm-nvidia-llama31-8b": "nvidia-llama31-8b",
     "llm-nvidia-glm47": "nvidia-glm47",
     "llm-nvidia-kimi-k2-0905": "nvidia-kimi-k2-thinking",
@@ -73,24 +69,24 @@ _DEFAULT_ROUTE_MAP: dict[str, str] = {
     "llm-nvidia-devstral-2-123b": "nvidia-devstral-2-123b",
     "llm-nvidia-mistral-medium-35-128b": "nvidia-mistral-medium-35-128b",
     "llm-nvidia-qwen3-coder-480b": "nvidia-qwen3-coder-480b",
-    # Azure AI Foundry — 2 routes
+    # Azure AI Foundry — 2 models
     "llm-foundry-kimi-k26": "foundry-kimi-k26",
     "llm-foundry-deepseek-v4-flash": "foundry-deepseek-v4-flash",
     # Moonshot Kimi
     "llm-kimi-k25": "kimi-k25",
-    "llm-kimi-k26": "kimi-k25",                          # fall back to k25 — no k26 Gateway route
+    "llm-kimi-k26": "kimi-k25",                          # fall back to k25
     # Alibaba DashScope
     "llm-alibaba-qwen3-coder-plus": "alibaba-qwen3-coder-plus",
-    # Together (3 routes)
+    # Together (3 models)
     "llm-together-deepseek-v4-pro": "together-deepseek-v4-pro",
     "llm-together-qwen3-coder-480b": "together-qwen3-coder-480b",
     "llm-together-glm-51": "together-glm-51",
     # Z.AI
     "llm-glm-5.2": "glm-5.2",
-    # OpenAI (2 routes)
+    # OpenAI (2 models)
     "llm-openai-gpt5": "gpt-5.5",
     "llm-openai-o3": "o3",
-    # Anthropic (3 routes)
+    # Anthropic (3 models)
     "llm-anthropic-opus": "anthropic-opus",
     "llm-anthropic-sonnet": "anthropic-sonnet",
     "llm-anthropic-haiku": "anthropic-haiku",
@@ -123,41 +119,40 @@ def _gateway_enabled() -> bool:
 
 def _gateway_base_url() -> str:
     return (
-        os.environ.get("MLFLOW_AI_GATEWAY_BASE_URL", "").strip().rstrip("/")
+        os.environ.get("LLM_GATEWAY_OPENAI_BASE_URL", "").strip().rstrip("/")
     )
 
 
-def _load_route_map() -> dict[str, str]:
-    """Merge `DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON` over the default map.
-    Allows operators to add/override routes via stacks ConfigMap without
-    a code change. JSON env should be a `{"component": "route"}` object.
+def _load_model_map() -> dict[str, str]:
+    """Merge `DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON` over the default map.
+    Allows operators to add or override model IDs without a code change. JSON
+    should be a `{"component": "model"}` object.
     """
-    override_raw = os.environ.get("DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON")
+    override_raw = os.environ.get("DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON")
     if not override_raw:
-        return dict(_DEFAULT_ROUTE_MAP)
+        return dict(_DEFAULT_MODEL_MAP)
     try:
         parsed = json.loads(override_raw)
         if not isinstance(parsed, dict):
             logger.warning(
-                "[gateway-adapter] DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON is not an object; ignoring"
+                "[gateway-adapter] DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON is not an object; ignoring"
             )
-            return dict(_DEFAULT_ROUTE_MAP)
-        merged = dict(_DEFAULT_ROUTE_MAP)
+            return dict(_DEFAULT_MODEL_MAP)
+        merged = dict(_DEFAULT_MODEL_MAP)
         for k, v in parsed.items():
             if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip():
                 merged[k.strip()] = v.strip()
         return merged
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "[gateway-adapter] failed to parse DAPR_AGENT_PY_GATEWAY_ROUTE_MAP_JSON: %s", exc
+            "[gateway-adapter] failed to parse DAPR_AGENT_PY_GATEWAY_MODEL_MAP_JSON: %s", exc
         )
-        return dict(_DEFAULT_ROUTE_MAP)
+        return dict(_DEFAULT_MODEL_MAP)
 
 
 def _provider_for_component(component: str) -> str | None:
     """Return the provider key (used for the feature-flag lookup) for the
-    given component, or None if the component isn't one we route through
-    Gateway."""
+    given component, or None if the component isn't handled by this adapter."""
     text = (component or "").lower()
     if "deepseek" in text:
         return "deepseek"
@@ -177,14 +172,13 @@ def _provider_for_component(component: str) -> str | None:
     return None
 
 
-def _route_for_component(component: str) -> str | None:
-    """Return the Gateway route name for `component`, or None if no route
-    is configured (or the provider's feature flag is disabled)."""
+def _model_for_component(component: str) -> str | None:
+    """Return the gateway model ID for `component`, or None when unavailable."""
     if not _gateway_enabled() or not _gateway_base_url():
         return None
-    route_map = _load_route_map()
-    route = route_map.get((component or "").strip())
-    if not route:
+    model_map = _load_model_map()
+    model = model_map.get((component or "").strip())
+    if not model:
         return None
     provider = _provider_for_component(component)
     if provider is None:
@@ -192,7 +186,7 @@ def _route_for_component(component: str) -> str | None:
     flag = _PROVIDER_FLAGS.get(provider)
     if flag and not _is_truthy(os.environ.get(flag)):
         return None
-    return route
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +455,7 @@ def _transient_backoff_seconds(exc: HTTPError, attempt: int) -> float:
 
 def _call_gateway_chat(
     component: str,
-    route: str,
+    gateway_model: str,
     messages: list[dict[str, Any]],
     *,
     tools: list[Any] | None = None,
@@ -469,19 +463,19 @@ def _call_gateway_chat(
     response_format: Any = None,
     tool_choice: Any = None,
 ) -> dict[str, Any]:
-    """Issue a single chat-completions request to the MLflow AI Gateway."""
+    """Issue a single request to the configured OpenAI-compatible gateway."""
 
     base = _gateway_base_url()
     if not base:
-        raise RuntimeError("MLFLOW_AI_GATEWAY_BASE_URL is not set")
+        raise RuntimeError("LLM_GATEWAY_OPENAI_BASE_URL is not set")
 
-    url = f"{base}/v1/chat/completions"
+    url = f"{base}/chat/completions"
     converted_tools = _convert_tools(tools)
     output_cap = max_tokens or int(os.environ.get("DAPR_AGENT_PY_GATEWAY_MAX_TOKENS", "4096"))
     timeout = int(os.environ.get("DAPR_AGENT_PY_GATEWAY_TIMEOUT_SECONDS", "300"))
 
     body: dict[str, Any] = {
-        "model": route,
+        "model": gateway_model,
         "messages": messages,
         "max_tokens": output_cap,
         "stream": False,
@@ -500,23 +494,18 @@ def _call_gateway_chat(
 
     # DeepSeek-specific: thinking mode is enabled by default on V4 Pro/Flash
     # (https://api-docs.deepseek.com/guides/thinking_mode). When tools or
-    # structured output are involved, DeepSeek's thinking-mode response shape
-    # is not parseable by MLflow Gateway's `application/json`-only content-type
-    # check (`mlflow/gateway/providers/utils.py:60-69`) — it returns
-    # `application/octet-stream`, Gateway 502s. Mirrors the legacy
-    # `deepseek_adapter.py:_apply_deepseek_output_mode` logic that ALSO disables
-    # thinking when tools or structured output are present. Plain chat without
-    # tools would keep thinking enabled but the workflow agent path always
-    # passes tools, so disable universally for deepseek routes.
-    if route.startswith("deepseek-") or route.startswith("foundry-deepseek-"):
+    # structured output are involved, some compatible gateways cannot parse
+    # DeepSeek's chunked thinking response. This mirrors the direct-provider
+    # adapter, which also disables thinking for tools or structured output.
+    if gateway_model.startswith("deepseek-") or gateway_model.startswith("foundry-deepseek-"):
         body["thinking"] = {"type": "disabled"}
-    if route == "glm-5.2" and (converted_tools or response_format is not None):
+    if gateway_model == "glm-5.2" and (converted_tools or response_format is not None):
         body["thinking"] = {"type": "disabled"}
 
     logger.info(
-        "[gateway-adapter] %s → route=%s msgs=%d tools=%d",
+        "[gateway-adapter] %s → model=%s msgs=%d tools=%d",
         component,
-        route,
+        gateway_model,
         len(messages),
         len(converted_tools or []),
     )
@@ -543,8 +532,8 @@ def _call_gateway_chat(
                     delay = _env_float("DAPR_AGENT_PY_GATEWAY_RATE_LIMIT_BACKOFF_SECONDS", 1.0)
                 rate_attempt += 1
                 logger.warning(
-                    "[gateway-adapter] 429 from route=%s; retry in %.1fs (attempt %d/%d): %s",
-                    route,
+                    "[gateway-adapter] 429 from model=%s; retry in %.1fs (attempt %d/%d): %s",
+                    gateway_model,
                     delay,
                     rate_attempt,
                     rate_limit_retries,
@@ -556,10 +545,10 @@ def _call_gateway_chat(
                 transient_attempt += 1
                 delay = _transient_backoff_seconds(exc, transient_attempt)
                 logger.warning(
-                    "[gateway-adapter] transient HTTP %d from route=%s; retry in %.1fs "
+                    "[gateway-adapter] transient HTTP %d from model=%s; retry in %.1fs "
                     "(attempt %d/%d): %s",
                     exc.code,
-                    route,
+                    gateway_model,
                     delay,
                     transient_attempt,
                     transient_retries,
@@ -568,7 +557,8 @@ def _call_gateway_chat(
                 time.sleep(delay)
                 continue
             raise RuntimeError(
-                f"MLflow AI Gateway returned HTTP {exc.code} for route={route}: {detail[:500]}"
+                f"OpenAI-compatible gateway returned HTTP {exc.code} "
+                f"for model={gateway_model}: {detail[:500]}"
             ) from exc
 
     content, tool_calls, _finish = _extract_response(data)
@@ -577,7 +567,8 @@ def _call_gateway_chat(
 
     if response_format is not None and not content.strip():
         raise RuntimeError(
-            f"MLflow AI Gateway route={route} returned empty content for structured response_format"
+            f"OpenAI-compatible gateway model={gateway_model} returned empty content "
+            "for structured response_format"
         )
 
     # Prometheus token metrics — autolog handles the per-call span content,
@@ -588,12 +579,12 @@ def _call_gateway_chat(
         record_tokens(
             type_="input",
             count=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            model=route,
+            model=gateway_model,
         )
         record_tokens(
             type_="output",
             count=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-            model=route,
+            model=gateway_model,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("[gateway-adapter] token metric emit failed: %s", exc)
@@ -611,8 +602,8 @@ def _call_gateway_chat(
         )
 
         set_genai_request_attrs(
-            system=f"gateway:{route.split('-', 1)[0]}",
-            request_model=route,
+            system=f"gateway:{gateway_model.split('-', 1)[0]}",
+            request_model=gateway_model,
             max_tokens=max_tokens,
             tools_count=len(converted_tools) if converted_tools else None,
             response_format=("json_object" if response_format is not None else None),
@@ -620,10 +611,13 @@ def _call_gateway_chat(
                 tool_choice if isinstance(tool_choice, str) else None
             ),
             streaming=False,
-            extra={"gen_ai.gateway.route": route, "gen_ai.gateway.component": component},
+            extra={
+                "gen_ai.gateway.model": gateway_model,
+                "gen_ai.gateway.component": component,
+            },
         )
         set_genai_response_attrs(
-            response_model=route,
+            response_model=gateway_model,
             finish_reason=_finish,
             usage=usage,
             duration_ms=duration_ms,
@@ -637,7 +631,7 @@ def _call_gateway_chat(
         "content": content,
         "tool_calls": tool_calls,
         "metadata": {
-            "route": route,
+            "model": gateway_model,
             "component": component,
             "usage": usage,
             "duration_ms": duration_ms,
@@ -663,7 +657,7 @@ def _schema_for_response_format(response_format: Any) -> dict[str, Any]:
 
 
 def _response_format_tool_name(response_format: Any) -> str:
-    """Derive a stable, route-friendly tool name from the response_format
+    """Derive a stable, provider-friendly tool name from the response_format
     class name. e.g. `ConversationSummary` → `emit_conversation_summary`."""
     raw = getattr(response_format, "__name__", "response")
     import re as _re
@@ -674,7 +668,7 @@ def _response_format_tool_name(response_format: Any) -> str:
 
 def _call_via_tool_emit(
     component: str,
-    route: str,
+    gateway_model: str,
     response_format: Any,
     *,
     prompt: Any,
@@ -685,10 +679,9 @@ def _call_via_tool_emit(
 
     DeepSeek's `response_format: json_object` mode has a known
     intermittent-empty-response bug (per DeepSeek's own docs:
-    https://api-docs.deepseek.com/guides/json_mode). And MLflow Gateway
-    can't parse DeepSeek's structured-output chunked octet-stream response
-    in the first place. Tool-calling is significantly more reliable across
-    providers AND MLflow Gateway handles it cleanly.
+    https://api-docs.deepseek.com/guides/json_mode). Tool-calling is
+    significantly more reliable across OpenAI-compatible providers and
+    gateways.
 
     Strategy: when the caller asks for a structured Pydantic
     `response_format`, transform the request into a forced tool-call where
@@ -714,11 +707,9 @@ def _call_via_tool_emit(
     ]
 
     # NOTE: tool_choice MUST be "auto", not a forced {type:function, name:...}
-    # object. Verified 2026-05-11 from a dev pod via direct curl: DeepSeek +
-    # Gateway returns HTTP 502 octet-stream for forced tool_choice but works
-    # cleanly with "auto" when the user message instructs the model to call
-    # the tool. Forced tool_choice triggers DeepSeek to stream the response,
-    # which MLflow Gateway's `application/json`-only check rejects.
+    # object. Verified 2026-05-11 from a dev pod via direct curl: DeepSeek
+    # returns a chunked response for forced tool_choice but works cleanly with
+    # "auto" when the user message instructs the model to call the tool.
     messages = _normalize_messages(
         prompt,
         raw_messages if isinstance(raw_messages, list) else None,
@@ -751,7 +742,7 @@ def _call_via_tool_emit(
     )
     result = _call_gateway_chat(
         component,
-        route,
+        gateway_model,
         messages,
         tools=emit_tool,
         max_tokens=max_tokens,
@@ -774,8 +765,8 @@ def _call_via_tool_emit(
 
 def patch_for_gateway(llm_client: Any) -> None:
     """Patch DaprChatClient.generate to route OpenAI-protocol components
-    through the MLflow AI Gateway. No-op when the master switch is off or
-    no route is configured for the active component."""
+    through the configured gateway. No-op when the master switch is off or
+    no model is configured for the active component."""
 
     if not _gateway_enabled() or not _gateway_base_url():
         logger.info(
@@ -794,15 +785,15 @@ def patch_for_gateway(llm_client: Any) -> None:
 
     def patched_generate(self: Any, *args: Any, **kwargs: Any) -> Any:
         component = getattr(self, "_llm_component", None)
-        route = _route_for_component(str(component or ""))
-        if route is None:
+        gateway_model = _model_for_component(str(component or ""))
+        if gateway_model is None:
             return original_generate(self, *args, **kwargs)
 
         response_format = kwargs.get("response_format")
 
         # Structured output via forced tool-call (Phase 2c v2 reliability fix).
         # DeepSeek's `response_format: json_object` mode is unreliable on V4:
-        #   (a) MLflow Gateway can't parse its octet-stream chunked response
+        #   (a) compatible gateways may reject its chunked response
         #   (b) DeepSeek's own docs warn of intermittent empty content
         #       (https://api-docs.deepseek.com/guides/json_mode)
         # Tool-calling is significantly more reliable. Transform the
@@ -812,7 +803,8 @@ def patch_for_gateway(llm_client: Any) -> None:
         # Plain chat + tool-chat calls (no response_format) take the regular
         # Gateway path below unchanged.
         if response_format is not None and (
-            route.startswith("deepseek-") or route.startswith("foundry-deepseek-")
+            gateway_model.startswith("deepseek-")
+            or gateway_model.startswith("foundry-deepseek-")
         ):
             prompt = args[0] if args else kwargs.get("prompt", "")
             raw_messages = kwargs.get("messages")
@@ -820,7 +812,7 @@ def patch_for_gateway(llm_client: Any) -> None:
             try:
                 return _call_via_tool_emit(
                     str(component),
-                    route,
+                    gateway_model,
                     response_format,
                     prompt=prompt,
                     raw_messages=raw_messages,
@@ -850,7 +842,7 @@ def patch_for_gateway(llm_client: Any) -> None:
         )
         result = _call_gateway_chat(
             str(component),
-            route,
+            gateway_model,
             messages,
             tools=tools,
             max_tokens=max_tokens,
@@ -870,7 +862,7 @@ def patch_for_gateway(llm_client: Any) -> None:
     DaprChatClient.generate = patched_generate
     DaprChatClient._gateway_patched = True
     logger.info(
-        "[gateway-adapter] DaprChatClient.generate patched (routes=%d, base=%s)",
-        len(_load_route_map()),
+        "[gateway-adapter] DaprChatClient.generate patched (models=%d, base=%s)",
+        len(_load_model_map()),
         _gateway_base_url(),
     )

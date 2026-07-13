@@ -42,36 +42,44 @@ describe("preview runtime capability adapter", () => {
 });
 
 describe("preview runtime HTTP adapter", () => {
-  it("uses the fixed path and injects only central credentials", async () => {
+  it("uses the exact trusted URL and injects only central credentials", async () => {
     const fetchImpl = vi.fn(
       async (_url: string | URL | Request, _init?: RequestInit) =>
         new Response('{"id":"completion-1"}', {
           status: 200,
           headers: {
             "content-type": "application/json",
-            "x-request-id": "gateway-1",
+            "x-request-id": "zai-1",
           },
         }),
     );
     const adapter = new HttpPreviewRuntimeUpstreamAdapter({
-      baseUrl: () => "http://gateway.example:7000/v1",
+      url: () =>
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
       token: () => "provider-token",
       fetchImpl: fetchImpl as typeof fetch,
     });
     const result = await adapter.complete({
       identity,
       payload: {
-        model: "deepseek-v4-pro",
+        model: "glm-5.2",
         messages: [{ role: "user", content: "hello" }],
+        url: "https://attacker.example/v1/chat/completions",
       },
     });
     expect(result).toMatchObject({
       status: 200,
       contentType: "application/json",
-      requestId: "gateway-1",
+      requestId: "zai-1",
     });
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe("http://gateway.example:7000/v1/chat/completions");
+    expect(url).toBe(
+      "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    );
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: "glm-5.2",
+      url: "https://attacker.example/v1/chat/completions",
+    });
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe("Bearer provider-token");
     expect(headers.get("cookie")).toBeNull();
@@ -79,9 +87,15 @@ describe("preview runtime HTTP adapter", () => {
     expect(headers.get("x-preview-environment-request-id")).toBe("request-1");
   });
 
-  it("rejects caller-like URL authority outside the configured /v1 base", async () => {
+  it.each([
+    "ftp://gateway.example/v1/chat/completions",
+    "https://user:pass@gateway.example/v1/chat/completions",
+    "https://gateway.example/v1/chat/completions?target=attacker",
+    "https://gateway.example/v1/chat/completions#fragment",
+    "https://gateway.example/v1",
+  ])("rejects an unsafe or non-completion upstream URL: %s", async (url) => {
     const adapter = new HttpPreviewRuntimeUpstreamAdapter({
-      baseUrl: () => "https://user:pass@gateway.example/other?target=attacker",
+      url: () => url,
       token: () => "provider-token",
     });
     await expect(

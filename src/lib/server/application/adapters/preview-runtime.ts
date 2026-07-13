@@ -49,13 +49,13 @@ export class HmacPreviewRuntimeCapabilityAdapter implements PreviewRuntimeCapabi
 }
 
 export type HttpPreviewRuntimeUpstreamOptions = Readonly<{
-  baseUrl?: () => string;
+  url?: () => string;
   token?: () => string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }>;
 
-/** Fixed credential-injecting adapter for the central OpenAI-compatible gateway. */
+/** Fixed credential-injecting adapter for the trusted OpenAI-compatible upstream. */
 export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstreamPort {
   constructor(
     private readonly options: HttpPreviewRuntimeUpstreamOptions = {},
@@ -131,14 +131,14 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
 
   private targetUrl(): string {
     const raw = (
-      this.options.baseUrl?.() ??
+      this.options.url?.() ??
       env.PREVIEW_RUNTIME_UPSTREAM_URL ??
       process.env.PREVIEW_RUNTIME_UPSTREAM_URL ??
       ""
     ).trim();
-    let base: URL;
+    let target: URL;
     try {
-      base = new URL(raw);
+      target = new URL(raw);
     } catch {
       throw new PreviewRuntimeUpstreamError(
         "configuration",
@@ -146,19 +146,18 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
       );
     }
     if (
-      !["http:", "https:"].includes(base.protocol) ||
-      base.username ||
-      base.password ||
-      base.search ||
-      base.hash ||
-      base.pathname.replace(/\/+$/, "") !== "/v1"
+      !["http:", "https:"].includes(target.protocol) ||
+      target.username ||
+      target.password ||
+      target.search ||
+      target.hash ||
+      !target.pathname.endsWith("/chat/completions")
     ) {
       throw new PreviewRuntimeUpstreamError(
         "configuration",
-        "preview runtime upstream must be a fixed HTTP(S) /v1 base URL",
+        "preview runtime upstream must be a fixed HTTP(S) chat-completions URL",
       );
     }
-    base.pathname = "/v1/chat/completions";
-    return base.toString();
+    return target.toString();
   }
 }
