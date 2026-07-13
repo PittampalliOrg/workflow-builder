@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 
 /**
@@ -15,26 +16,28 @@ import { PreviewAccessDeniedError } from "$lib/server/application/preview-access
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
+  const adapters = getApplicationAdapters();
+  if (!adapters.previewDeploymentScope.isControlPlane()) {
+    return error(403, "Preview fleet reads are unavailable from a preview deployment");
+  }
   if (!getApplicationAdapterConfig().previewReadProxyEnabled) {
     return error(404, "Not found");
   }
+  const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+  let readModel;
   try {
-    await getApplicationAdapters().previewAccess.authorize({
+    readModel = await adapters.previewReadProxy.listPreviewExecutions({
       name: params.name,
       actorUserId: locals.session.userId,
+      limit: Number.isNaN(limitRaw) ? undefined : limitRaw,
+      status: url.searchParams.get("status"),
     });
   } catch (cause) {
     if (cause instanceof PreviewAccessDeniedError)
       return error(403, cause.message);
+    if (cause instanceof PreviewRuntimeIdentityChangedError)
+      return error(409, cause.message);
     throw cause;
   }
-  const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
-  const readModel =
-    await getApplicationAdapters().previewReadProxy.listPreviewExecutions({
-      name: params.name,
-      limit: Number.isNaN(limitRaw) ? undefined : limitRaw,
-      status: url.searchParams.get("status"),
-    });
-  if (!readModel) return error(404, "Unknown preview");
   return json(readModel);
 };

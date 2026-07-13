@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.content_tracing import set_current_span_io
 from src.preview_runner_identity import (
@@ -8565,6 +8565,26 @@ class PreviewEnvironmentOriginRequest(BaseModel):
     reference: str | None = None
 
 
+class VclusterPreviewRuntimeIdentityGuard(BaseModel):
+    """Immutable preview identity supplied by an authorized internal caller."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    previewName: str = Field(
+        min_length=1,
+        max_length=40,
+        pattern=r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+    )
+    environmentRequestId: str = Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+    )
+    environmentPlatformRevision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    environmentSourceRevision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    catalogDigest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class PreviewCapabilityBundleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -11427,16 +11447,108 @@ def _preview_runtime_services(
     return observations
 
 
+_PREVIEW_RUNTIME_IDENTITY_HEADER = "x-preview-runtime-identity"
+
+
+def _preview_runtime_identity_guard(
+    request: Request,
+) -> dict[str, str] | None:
+    raw = request.headers.get(_PREVIEW_RUNTIME_IDENTITY_HEADER)
+    if raw is None:
+        return None
+    if len(raw) > 2048:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="preview runtime identity guard is invalid",
+        )
+    try:
+        parsed = VclusterPreviewRuntimeIdentityGuard.model_validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="preview runtime identity guard is invalid",
+        ) from exc
+    return {
+        "previewName": parsed.previewName,
+        "environmentRequestId": parsed.environmentRequestId,
+        "environmentPlatformRevision": parsed.environmentPlatformRevision,
+        "environmentSourceRevision": parsed.environmentSourceRevision,
+        "catalogDigest": parsed.catalogDigest,
+    }
+
+
+def _preview_member_runtime_identity(
+    member: PreviewMember, requested_name: str
+) -> dict[str, str] | None:
+    provenance = member.provenance
+    request_id = provenance.get("requestId") if provenance is not None else None
+    request_id = request_id.strip() if isinstance(request_id, str) else ""
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", member.platform_revision or "")
+        or not re.fullmatch(r"[0-9a-f]{40}", member.source_revision or "")
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", member.catalog_digest or "")
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", request_id)
+    ):
+        return None
+    return {
+        "previewName": _safe_resource_name(requested_name, max_length=40),
+        "environmentRequestId": request_id,
+        "environmentPlatformRevision": member.platform_revision or "",
+        "environmentSourceRevision": member.source_revision or "",
+        "catalogDigest": member.catalog_digest or "",
+    }
+
+
+def _preview_member_namespace_uid(member: PreviewMember) -> str | None:
+    uid = member.namespace_uid
+    if not isinstance(uid, str) or not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        uid,
+    ):
+        return None
+    return uid
+
+
+def _preview_runtime_identity_fingerprint(
+    member: PreviewMember, requested_name: str
+) -> tuple[Any, ...]:
+    provenance = member.provenance
+    request_id = provenance.get("requestId") if provenance is not None else None
+    return (
+        _safe_resource_name(requested_name, max_length=40),
+        member.real_name,
+        member.ns_name,
+        _preview_member_namespace_uid(member),
+        member.platform_revision,
+        member.source_revision,
+        member.catalog_digest,
+        request_id.strip() if isinstance(request_id, str) else request_id,
+    )
+
+
+def _preview_runtime_identity_changed() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="preview identity changed during runtime observation",
+    )
+
+
 @app.get("/internal/vcluster-preview/{name}/runtime")
 def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     """Read actual selected-service pod images from the host Kubernetes API."""
     _require_internal(request)
     safe_name = _safe_resource_name(name, max_length=40)
+    guard = _preview_runtime_identity_guard(request)
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }:
+        if guard is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="preview runtime identity is unavailable in dry-run mode",
+            )
         up_job_name = _vcluster_preview_job_name(safe_name, "up")
         return {
             "name": name,
@@ -11453,6 +11565,16 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
         }
     batch, core = _load_k8s_clients()
     member = _read_preview_member(core, safe_name)
+    namespace_uid = _preview_member_namespace_uid(member)
+    if namespace_uid is None:
+        raise _preview_runtime_identity_changed()
+    identity = _preview_member_runtime_identity(member, safe_name)
+    if guard is not None and guard != identity:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="preview runtime identity guard does not match the resolved preview",
+        )
+    initial_fingerprint = _preview_runtime_identity_fingerprint(member, safe_name)
     pods = core.list_namespaced_pod(
         namespace=member.ns_name,
         _request_timeout=_VCLUSTER_PREVIEW_PROBE_TIMEOUT,
@@ -11474,6 +11596,19 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             raise
+    try:
+        confirmed_member = _read_preview_member(core, safe_name)
+    except HTTPException as exc:
+        if exc.status_code in {status.HTTP_404_NOT_FOUND, status.HTTP_409_CONFLICT}:
+            raise _preview_runtime_identity_changed() from exc
+        raise
+    if (
+        _preview_member_namespace_uid(confirmed_member) != namespace_uid
+        or _preview_runtime_identity_fingerprint(confirmed_member, safe_name)
+        != initial_fingerprint
+    ):
+        raise _preview_runtime_identity_changed()
+    confirmed_identity = _preview_member_runtime_identity(confirmed_member, safe_name)
     result = {
         "name": name,
         "resourceName": member.real_name,
@@ -11495,6 +11630,9 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
         },
         "services": _preview_runtime_services(pods, member.services or ()),
     }
+    if confirmed_identity is not None:
+        result["identity"] = confirmed_identity
+        result["namespaceUid"] = namespace_uid
     set_current_span_io("output", result)
     return result
 
@@ -13085,6 +13223,7 @@ class PreviewMember:
 
     real_name: str
     ns_name: str
+    namespace_uid: str | None = None
     pool_state: str | None = None  # free | claimed | recycling | None (non-pool)
     alias: str | None = None
     slept: bool = False
@@ -13201,6 +13340,7 @@ def _preview_member_from_ns(ns) -> PreviewMember:
     return PreviewMember(
         real_name=_preview_realname_from_ns(ns),
         ns_name=getattr(meta, "name", None) or "",
+        namespace_uid=getattr(meta, "uid", None),
         pool_state=labels.get(_VCLUSTER_PREVIEW_POOL_LABEL),
         alias=labels.get(_VCLUSTER_PREVIEW_ALIAS_LABEL),
         slept=labels.get(_VCLUSTER_PREVIEW_STATE_LABEL) == "slept",

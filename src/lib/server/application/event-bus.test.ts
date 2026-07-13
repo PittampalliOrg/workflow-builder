@@ -33,6 +33,7 @@ describe("getEventBusAdapter", () => {
 				workflowBrowserArtifactsStoreAdapter: "postgres",
 				sessionEventsStoreAdapter: "postgres",
 				workflowDefinitionsStoreAdapter: "postgres",
+				previewDeployment: null,
 				workflowSchedulerAdapter: "dapr-workflow",
 				previewProvisionerAdapter: "sandbox-execution-api",
 				previewRunFeedEnabled: false,

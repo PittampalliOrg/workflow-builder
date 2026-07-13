@@ -13,10 +13,12 @@ function harness(ownerId = "owner-1") {
     ),
   };
   const admins = { isPlatformAdmin: vi.fn(async () => false) };
+  const scope = { allowsPreviewName: vi.fn(() => true) };
   return {
     previews,
     admins,
-    service: new ApplicationPreviewAccessService({ previews, admins }),
+    scope,
+    service: new ApplicationPreviewAccessService({ previews, admins, scope }),
   };
 }
 
@@ -53,5 +55,15 @@ describe("preview owner/admin access policy", () => {
         actorUserId: "user-2",
       }),
     ).rejects.toThrow("authoritative owner");
+  });
+
+  it("rejects cross-preview access before reading physical state", async () => {
+    const h = harness();
+    h.scope.allowsPreviewName.mockReturnValueOnce(false);
+
+    await expect(
+      h.service.authorize({ name: "feature-two", actorUserId: "owner-1" }),
+    ).rejects.toThrow("cross-preview access");
+    expect(h.previews.get).not.toHaveBeenCalled();
   });
 });

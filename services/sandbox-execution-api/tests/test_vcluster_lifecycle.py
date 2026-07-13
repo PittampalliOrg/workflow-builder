@@ -38,6 +38,7 @@ class _ApiExc(Exception):
 def _ns(
     real_name: str,
     *,
+    uid: str = "00000000-0000-0000-0000-000000000001",
     pool: str | None = None,
     alias: str | None = None,
     state: str | None = None,
@@ -128,6 +129,7 @@ def _ns(
         annotations["preview.stacks.io/provenance"] = json.dumps(provenance)
     meta = SimpleNamespace(
         name=f"vcluster-{real_name}",
+        uid=uid,
         labels=labels,
         annotations=annotations,
         resource_version=rv,
@@ -3188,6 +3190,152 @@ def _runtime_pod(service: str, image: str, *, ready: bool = True):
             ],
         ),
     )
+
+
+def _runtime_identity() -> dict[str, str]:
+    return {
+        "previewName": "acceptance",
+        "environmentRequestId": "request-1",
+        "environmentPlatformRevision": "a" * 40,
+        "environmentSourceRevision": "b" * 40,
+        "catalogDigest": f"sha256:{'c' * 64}",
+    }
+
+
+def _runtime_identity_namespace(
+    *,
+    uid: str = "00000000-0000-0000-0000-000000000101",
+    request_id: str = "request-1",
+):
+    identity = _runtime_identity()
+    return _ns(
+        "acceptance",
+        uid=uid,
+        owner_contract={"kind": "user", "id": "user-1"},
+        platform_revision=identity["environmentPlatformRevision"],
+        source_revision=identity["environmentSourceRevision"],
+        catalog_digest=identity["catalogDigest"],
+        provenance={"requestId": request_id},
+    )
+
+
+def _runtime_request(identity: dict[str, str] | None = None):
+    request = _no_auth_request()
+    if identity is not None:
+        request.headers["x-preview-runtime-identity"] = json.dumps(identity)
+    return request
+
+
+@pytest.mark.parametrize("guarded", [False, True])
+def test_runtime_endpoint_validates_guard_and_returns_physical_identity(
+    monkeypatch, guarded: bool
+) -> None:
+    namespace = _runtime_identity_namespace()
+    core = _FakeCore([namespace])
+    core.list_namespaced_pod = lambda **_kwargs: SimpleNamespace(items=[])
+
+    def missing_up_job(**_kwargs):
+        raise _ApiExc(404)
+
+    batch = SimpleNamespace(read_namespaced_job_status=missing_up_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_runtime(
+        _runtime_request(_runtime_identity() if guarded else None), "acceptance"
+    )
+
+    assert result["identity"] == _runtime_identity()
+    assert result["namespaceUid"] == namespace.metadata.uid
+
+
+def test_runtime_endpoint_rejects_guard_mismatch_before_observation(
+    monkeypatch,
+) -> None:
+    namespace = _runtime_identity_namespace()
+    core = _FakeCore([namespace])
+    observed = False
+
+    def list_pods(**_kwargs):
+        nonlocal observed
+        observed = True
+        return SimpleNamespace(items=[])
+
+    core.list_namespaced_pod = list_pods
+    batch = SimpleNamespace()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    guard = {**_runtime_identity(), "environmentRequestId": "another-request"}
+
+    with pytest.raises(app_module.HTTPException) as raised:
+        app_module.get_vcluster_preview_runtime(_runtime_request(guard), "acceptance")
+
+    assert raised.value.status_code == 409
+    assert "does not match" in raised.value.detail
+    assert observed is False
+
+
+def test_runtime_endpoint_rejects_partial_identity_guard(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_clients",
+        lambda: pytest.fail("invalid guard must fail before Kubernetes access"),
+    )
+    guard = _runtime_identity()
+    del guard["catalogDigest"]
+
+    with pytest.raises(app_module.HTTPException) as raised:
+        app_module.get_vcluster_preview_runtime(_runtime_request(guard), "acceptance")
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "preview runtime identity guard is invalid"
+
+
+@pytest.mark.parametrize("replacement_kind", ["uid", "identity"])
+def test_runtime_endpoint_rejects_namespace_replacement_after_observation(
+    monkeypatch, replacement_kind: str
+) -> None:
+    initial = _runtime_identity_namespace()
+    replacement = _runtime_identity_namespace(
+        uid=(
+            "00000000-0000-0000-0000-000000000102"
+            if replacement_kind == "uid"
+            else initial.metadata.uid
+        ),
+        request_id=("request-2" if replacement_kind == "identity" else "request-1"),
+    )
+    events: list[str] = []
+
+    class ReplacingCore(_FakeCore):
+        def __init__(self) -> None:
+            super().__init__([initial])
+            self.namespace_reads = 0
+
+        def read_namespace(self, name):
+            events.append("namespace")
+            self.namespace_reads += 1
+            return initial if self.namespace_reads == 1 else replacement
+
+    core = ReplacingCore()
+
+    def list_pods(**_kwargs):
+        events.append("pods")
+        return SimpleNamespace(items=[])
+
+    def missing_up_job(**_kwargs):
+        events.append("job")
+        raise _ApiExc(404)
+
+    core.list_namespaced_pod = list_pods
+    batch = SimpleNamespace(read_namespaced_job_status=missing_up_job)
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    with pytest.raises(app_module.HTTPException) as raised:
+        app_module.get_vcluster_preview_runtime(
+            _runtime_request(_runtime_identity()), "acceptance"
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "preview identity changed during runtime observation"
+    assert events == ["namespace", "pods", "job", "namespace"]
 
 
 def test_runtime_endpoint_reads_exact_selected_service_containers(monkeypatch) -> None:

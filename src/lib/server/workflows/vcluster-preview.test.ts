@@ -441,6 +441,75 @@ describe("vcluster-preview A3 claim-first client", () => {
     ]);
   });
 
+  it("binds runtime observation to one canonical preview identity", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const identity = {
+      previewName: "feature-x",
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: "a".repeat(40),
+      environmentSourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}` as const,
+    };
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      jsonResponse({
+        name: "feature-x",
+        resourceName: "feature-x",
+        identity,
+        reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-feature-x",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getVclusterPreviewRuntime("feature-x", identity),
+    ).resolves.toMatchObject({ identity });
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(JSON.parse(headers.get("X-Preview-Runtime-Identity") ?? "null")).toEqual(
+      identity,
+    );
+    expect(headers.get("X-Preview-Runtime-Request-Id")).toBeNull();
+  });
+
+  it("rejects a missing tuple receipt for a guarded runtime observation", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          name: "feature-x",
+          resourceName: "feature-x",
+          reconciliationSucceeded: true,
+          upJob: {
+            name: "vcpreview-up-feature-x",
+            found: true,
+            active: false,
+            succeeded: true,
+            failed: false,
+          },
+          services: [],
+        }),
+      ),
+    );
+
+    await expect(
+      getVclusterPreviewRuntime("feature-x", {
+        previewName: "feature-x",
+        environmentRequestId: "request-1",
+        environmentPlatformRevision: "a".repeat(40),
+        environmentSourceRevision: "b".repeat(40),
+        catalogDigest: `sha256:${"c".repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
   it.each([
     [
       "missing name",

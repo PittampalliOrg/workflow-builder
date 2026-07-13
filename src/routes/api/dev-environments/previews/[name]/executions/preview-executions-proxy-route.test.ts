@@ -16,6 +16,8 @@ describe("preview executions proxy route (E2)", () => {
 
 	it("goes through the application service, not adapters or raw fetch", () => {
 		expect(source).toContain("previewReadProxy.listPreviewExecutions");
+		expect(source).toContain("cause instanceof PreviewRuntimeIdentityChangedError");
+		expect(source).toContain("error(409, cause.message)");
 		expect(source).not.toContain("$lib/server/application/adapters");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("fetch(");

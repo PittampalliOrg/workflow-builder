@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
+import {
+  ApplicationVclusterPreviewService,
+  PreviewRuntimeIdentityChangedError,
+} from "$lib/server/application/vcluster-previews";
 import { validatePreviewEnvironmentLaunchSpec } from "$lib/server/application/preview-environments";
 import type {
+  PreviewAccessPolicyPort,
+  PreviewDeploymentScopePort,
   VclusterPreviewGatewayPort,
   VclusterPreviewSleepOutcome,
   VclusterPreviewTouchResult,
@@ -85,6 +90,20 @@ function gateway(
       },
       services: [],
     })),
+    runtimeForIdentity: vi.fn(async (identity) => ({
+      name: identity.previewName,
+      resourceName: identity.previewName,
+      identity,
+      reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${identity.previewName}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [],
+    })),
     cleanup: vi.fn(async (name: string) => ({
       name,
       resourceName: name,
@@ -125,14 +144,66 @@ function gateway(
   };
 }
 
-const service = (gw: VclusterPreviewGatewayPort) =>
+const service = (
+  gw: VclusterPreviewGatewayPort,
+  access: PreviewAccessPolicyPort = {
+    authorize: vi.fn(async ({ name, actorUserId }) => ({
+      preview: await gw.get(name),
+      ownerId: actorUserId,
+      actorIsOwner: true,
+      actorIsPlatformAdmin: false,
+    })),
+  },
+  scope: Pick<
+    PreviewDeploymentScopePort,
+    "isControlPlane" | "allowsPreviewName"
+  > = {
+    isControlPlane: () => true,
+    allowsPreviewName: (_name: string) => true,
+  },
+) =>
   new ApplicationVclusterPreviewService({
     gateway: gw,
+    access,
+    scope,
     previewRepo: "PittampalliOrg/workflow-builder",
     maxPreviews: 6,
   });
 
 describe("ApplicationVclusterPreviewService", () => {
+  it("keeps fleet operations inside the application control-plane policy", async () => {
+    const gw = gateway();
+    const scope = {
+      isControlPlane: vi.fn(() => false),
+      allowsPreviewName: vi.fn((name: string) => name === "feat-x"),
+    };
+    const svc = service(gw, undefined, scope);
+
+    await expect(svc.list()).rejects.toThrow("unavailable from a preview deployment");
+    await expect(svc.launch({ name: "feat-x" })).rejects.toThrow(
+      "unavailable from a preview deployment",
+    );
+    await expect(svc.sleep("feat-x")).rejects.toThrow(
+      "unavailable from a preview deployment",
+    );
+    expect(gw.listWithCounts).not.toHaveBeenCalled();
+    expect(gw.sleep).not.toHaveBeenCalled();
+  });
+
+  it("keeps exact-name reads inside the application deployment scope", async () => {
+    const gw = gateway();
+    const scope = {
+      isControlPlane: vi.fn(() => false),
+      allowsPreviewName: vi.fn((name: string) => name === "feat-x"),
+    };
+    const svc = service(gw, undefined, scope);
+
+    await expect(svc.get("another-preview")).rejects.toThrow(
+      "cross-preview access",
+    );
+    expect(gw.get).not.toHaveBeenCalled();
+  });
+
   it("presents aggregate launches through the existing Dev-hub DTO", () => {
     const command = validatePreviewEnvironmentLaunchSpec(
       {
@@ -215,6 +286,88 @@ describe("ApplicationVclusterPreviewService", () => {
     expect(previews[1].prUrl).toBeNull();
   });
 
+  it("delegates runtime and cleanup observations through the gateway port", async () => {
+    const authorized = record({
+      name: "feature-x",
+      owner: { kind: "user", id: "user-1" },
+      platformRevision: "a".repeat(40),
+      sourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+      provenance: { requestId: "request-1" },
+    });
+    const gw = gateway({ get: vi.fn(async () => authorized) });
+    const access: PreviewAccessPolicyPort = {
+      authorize: vi.fn(async () => ({
+        preview: authorized,
+        ownerId: "user-1",
+        actorIsOwner: true,
+        actorIsPlatformAdmin: false,
+      })),
+    };
+    const svc = service(gw, access);
+
+    await expect(
+      svc.observeRuntime({ name: "feature-x", actorUserId: "user-1" }),
+    ).resolves.toEqual({
+      name: "feature-x",
+      reconciliationSucceeded: true,
+      provision: {
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [],
+    });
+    await expect(svc.cleanup("Feature_X")).resolves.toMatchObject({
+      name: "feature-x",
+      phase: "pending",
+    });
+    expect(access.authorize).toHaveBeenCalledWith({
+      name: "feature-x",
+      actorUserId: "user-1",
+    });
+    expect(gw.runtimeForIdentity).toHaveBeenCalledWith({
+      previewName: "feature-x",
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: "a".repeat(40),
+      environmentSourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+    });
+    expect(gw.cleanup).toHaveBeenCalledWith("feature-x");
+  });
+
+  it("rejects a runtime observation when the authorized preview identity changed", async () => {
+    const authorized = record({
+      owner: { kind: "user", id: "user-1" },
+      platformRevision: "a".repeat(40),
+      sourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+      provenance: { requestId: "request-1" },
+    });
+    const replacement = record({
+      ...authorized,
+      owner: { kind: "user", id: "user-2" },
+      provenance: { requestId: "request-2" },
+    });
+    const gw = gateway({ get: vi.fn(async () => replacement) });
+    const access: PreviewAccessPolicyPort = {
+      authorize: vi.fn(async () => ({
+        preview: authorized,
+        ownerId: "user-1",
+        actorIsOwner: true,
+        actorIsPlatformAdmin: false,
+      })),
+    };
+
+    await expect(
+      service(gw, access).observeRuntime({
+        name: "feat-x",
+        actorUserId: "user-1",
+      }),
+    ).rejects.toBeInstanceOf(PreviewRuntimeIdentityChangedError);
+  });
+
   it("cold-provisions when there is headroom", async () => {
     const gw = gateway({
       listWithCounts: vi.fn(async () => ({
@@ -272,6 +425,18 @@ describe("ApplicationVclusterPreviewService", () => {
     // config max = 6, 3 awake (previews.length) < 6 → provisions
     const svc = new ApplicationVclusterPreviewService({
       gateway: gw,
+      access: {
+        authorize: vi.fn(async ({ name, actorUserId }) => ({
+          preview: await gw.get(name),
+          ownerId: actorUserId,
+          actorIsOwner: true,
+          actorIsPlatformAdmin: false,
+        })),
+      },
+      scope: {
+        isControlPlane: () => true,
+        allowsPreviewName: () => true,
+      },
       previewRepo: "o/r",
       maxPreviews: 6,
     });
@@ -280,6 +445,18 @@ describe("ApplicationVclusterPreviewService", () => {
     // Same list at cap=3 → refused.
     const capped = new ApplicationVclusterPreviewService({
       gateway: gw,
+      access: {
+        authorize: vi.fn(async ({ name, actorUserId }) => ({
+          preview: await gw.get(name),
+          ownerId: actorUserId,
+          actorIsOwner: true,
+          actorIsPlatformAdmin: false,
+        })),
+      },
+      scope: {
+        isControlPlane: () => true,
+        allowsPreviewName: () => true,
+      },
       previewRepo: "o/r",
       maxPreviews: 3,
     });

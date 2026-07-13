@@ -16,9 +16,12 @@ import { requirePlatformAdmin } from "$lib/server/platform-admin";
 /** List Tier-2 (vcluster full-isolation) previews + A3/A4 capacity counts. */
 export const GET: RequestHandler = async ({ locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
+  const adapters = getApplicationAdapters();
+  if (!adapters.previewDeploymentScope.isControlPlane()) {
+    return error(403, "Preview fleet operations are unavailable from a preview deployment");
+  }
   await requirePlatformAdmin(locals);
-  const { previews, counts } =
-    await getApplicationAdapters().vclusterPreviews.list();
+  const { previews, counts } = await adapters.vclusterPreviews.list();
   return json({ previews, counts });
 };
 
@@ -29,6 +32,10 @@ export const GET: RequestHandler = async ({ locals }) => {
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
+  const adapters = getApplicationAdapters();
+  if (!adapters.previewDeploymentScope.isControlPlane()) {
+    return error(403, "Preview fleet operations are unavailable from a preview deployment");
+  }
   await requirePlatformAdmin(locals);
   const body = (await request
     .json()
@@ -37,7 +44,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
   if (!name || name === "preview")
     return error(400, "A preview name is required");
 
-  const adapters = getApplicationAdapters();
   let result;
   try {
     const infrastructureProfile =

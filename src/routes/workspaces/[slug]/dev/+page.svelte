@@ -1,8 +1,11 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { untrack } from 'svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -13,7 +16,8 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Container, Plus, Radio } from '@lucide/svelte';
+	import { Activity, Boxes, Container, GitPullRequest, Plus, Radio, Workflow } from '@lucide/svelte';
+	import DevContextHeader from '$lib/components/dev/dev-context-header.svelte';
 	import DevEnvironmentCard, {
 		type DevEnvironmentSummary
 	} from '$lib/components/dev/dev-environment-card.svelte';
@@ -22,35 +26,64 @@
 	import PrPreviewsPanel from '$lib/components/dev/pr-previews-panel.svelte';
 	import PreviewRunFeedPanel from '$lib/components/dev/preview-run-feed-panel.svelte';
 	import { teardownDevEnvironmentUntilComplete } from '$lib/dev-environment-teardown';
-	import { getDevEnvironmentGroups, getPrPreviews, getVclusterPreviews } from './data.remote';
+	import {
+		getDevEnvironmentGroups,
+		getPrPreviews,
+		getVclusterPreview,
+		getVclusterPreviews
+	} from './data.remote';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
 	const slug = $derived((page.params.slug as string) ?? 'default');
+	const previewEnvironmentId = untrack(() => data.previewEnvironment?.id ?? null);
+	const controlPlane = previewEnvironmentId === null;
 
 	// One query per surface (dev grid, vcluster previews + counts, PR previews),
 	// driven by a single visibility-gated 5s tick — replaces the old 4s blanket poll.
 	const groupsQuery = getDevEnvironmentGroups();
-	const vclusterQuery = getVclusterPreviews();
-	const prPreviewsQuery = getPrPreviews();
+	const vclusterQuery = previewEnvironmentId
+		? getVclusterPreview(previewEnvironmentId)
+		: getVclusterPreviews();
+	const prPreviewsQuery = controlPlane ? getPrPreviews() : null;
 
 	const groups = $derived(groupsQuery.current ?? []);
 	const firstLoad = $derived(groupsQuery.current === undefined);
 	const vcluster = $derived(vclusterQuery.current);
-	const prPreviews = $derived(prPreviewsQuery.current);
+	const prPreviews = $derived(prPreviewsQuery?.current);
+	const visiblePreviews = $derived(
+		(vcluster?.previews ?? []).filter(
+			(preview) => controlPlane || preview.name === previewEnvironmentId
+		)
+	);
+	const visibleCounts = $derived(controlPlane ? (vcluster?.counts ?? null) : null);
 
 	let launchOpen = $state(false);
+	let activeTab = $state<'environments' | 'activity' | 'pull-requests'>('environments');
 	let toTeardown = $state<DevEnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
 	let errorMessage = $state<string | null>(null);
+	let refreshErrorMessage = $state<string | null>(null);
+	let refreshing = $state(false);
+	let lastRefreshedAt = $state<number | null>(null);
+	const surfaceError = $derived(errorMessage ?? refreshErrorMessage);
 
 	async function tick() {
-		await Promise.all([
-			groupsQuery.refresh(),
-			vclusterQuery.refresh(),
-			prPreviewsQuery.refresh()
-		]);
+		if (refreshing) return;
+		refreshing = true;
+		try {
+			const refreshes: Promise<unknown>[] = [groupsQuery.refresh(), vclusterQuery.refresh()];
+			if (prPreviewsQuery) refreshes.push(prPreviewsQuery.refresh());
+			await Promise.all(refreshes);
+			lastRefreshedAt = Date.now();
+			refreshErrorMessage = null;
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			refreshErrorMessage = `Lifecycle refresh failed: ${detail}. Showing the last successful snapshot.`;
+		} finally {
+			refreshing = false;
+		}
 	}
 
 	$effect(() => {
@@ -67,13 +100,13 @@
 		};
 		const onVisibility = () => {
 			if (document.visibilityState === 'visible') {
-				void tick();
+				untrack(() => void tick());
 				start();
 			} else {
 				stop();
 			}
 		};
-		onVisibility();
+		untrack(onVisibility);
 		document.addEventListener('visibilitychange', onVisibility);
 		return () => {
 			stop();
@@ -106,84 +139,135 @@
 	}
 </script>
 
-<div class="h-full overflow-y-auto p-6 space-y-5 max-w-6xl mx-auto w-full">
-	<header class="flex items-start justify-between gap-4 flex-wrap">
-		<div>
-			<h1 class="text-2xl font-semibold">Dev environments</h1>
-			<p class="text-sm text-muted-foreground mt-1">
-				Spin up a live, hot-reloading dev server for a microservice and drive it from an interactive
-				coding-agent session — Dapr-coupled services run in an isolated shadow.
-			</p>
-		</div>
-		<Button onclick={() => (launchOpen = true)}>
-			<Plus class="size-4" /> Launch
-		</Button>
-	</header>
+<svelte:head>
+	<title>Development · Workflow Builder</title>
+</svelte:head>
 
-	{#if errorMessage}
-		<Alert variant="destructive">
-			<AlertDescription>{errorMessage}</AlertDescription>
-		</Alert>
-	{/if}
-
-	<VclusterPreviewPanel
-		previews={vcluster?.previews ?? []}
-		counts={vcluster?.counts ?? null}
-		previewNativeServices={data.previewNativeServices}
-		readProxyEnabled={data.previewReadProxyEnabled}
+<div class="flex h-full min-h-0 flex-col overflow-hidden">
+	<DevContextHeader
+		previews={visiblePreviews}
+		{groups}
+		counts={visibleCounts}
+		previewEnvironment={data.previewEnvironment}
+		previewRunFeedEnabled={controlPlane && data.previewRunFeedEnabled}
 		{slug}
-		onchanged={() => void vclusterQuery.refresh()}
+		{lastRefreshedAt}
+		{refreshing}
+		onrefresh={() => void tick()}
+		onlaunch={() => (launchOpen = true)}
 	/>
 
-	<PrPreviewsPanel enabled={prPreviews?.enabled ?? false} items={prPreviews?.items ?? []} />
-
-	{#if data.previewRunFeedEnabled}
-		<PreviewRunFeedPanel />
-	{:else}
-		<section class="rounded-xl border border-dashed bg-card p-4">
-			<div class="flex items-center gap-2 text-sm text-muted-foreground">
-				<Radio class="size-4" />
-				Cross-preview live run feed is off. Set
-				<code class="text-xs">PREVIEW_RUN_FEED_ENABLED=1</code> to stream every preview's workflow runs
-				here.
-			</div>
-		</section>
+	{#if surfaceError}
+		<div class="px-5 pt-3 lg:px-6">
+			<Alert variant="destructive">
+				<AlertDescription>{surfaceError}</AlertDescription>
+			</Alert>
+		</div>
 	{/if}
 
-	{#if firstLoad}
-		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-			{#each Array(3) as _, i (i)}
-				<div class="h-40 rounded-xl border bg-muted/30 animate-pulse"></div>
-			{/each}
+	<Tabs bind:value={activeTab} class="flex min-h-0 flex-1 flex-col gap-0">
+		<div class="overflow-x-auto border-b px-5 py-2 lg:px-6">
+			<TabsList class="h-9 min-w-max">
+				<TabsTrigger value="environments" class="gap-1.5 text-xs">
+				<Boxes class="size-3.5" /> Environments
+				<Badge variant="secondary" class="ml-1 h-4 px-1 text-[10px]">{visiblePreviews.length + groups.length}</Badge>
+			</TabsTrigger>
+			{#if controlPlane}
+				<TabsTrigger value="activity" class="gap-1.5 text-xs">
+					<Activity class="size-3.5" /> Activity
+					{#if data.previewRunFeedEnabled}<span class="size-1.5 rounded-full bg-emerald-500"></span>{/if}
+				</TabsTrigger>
+				<TabsTrigger value="pull-requests" class="gap-1.5 text-xs">
+					<GitPullRequest class="size-3.5" /> Pull requests
+					{#if (prPreviews?.items.length ?? 0) > 0}<Badge variant="secondary" class="ml-1 h-4 px-1 text-[10px]">{prPreviews?.items.length}</Badge>{/if}
+				</TabsTrigger>
+			{/if}
+			</TabsList>
 		</div>
-	{:else if groups.length === 0}
-		<div class="flex flex-col items-center justify-center py-16 space-y-3">
-			<div class="size-14 rounded-full bg-primary/10 flex items-center justify-center">
-				<Container class="size-6 text-primary" />
-			</div>
-			<h2 class="text-base font-semibold">No dev environments running</h2>
-			<p class="text-muted-foreground text-sm max-w-md text-center">
-				Launch one to get a live preview pod (vite / uvicorn / tsx watch) plus a coding agent that
-				edits the code and hot-reloads it in seconds.
-			</p>
-			<Button onclick={() => (launchOpen = true)}>
-				<Plus class="size-4" /> Launch dev environment
-			</Button>
-		</div>
-	{:else}
-		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-			{#each groups as group (group.executionId)}
-				<DevEnvironmentCard
-					environment={group.primary}
-					services={group.services}
+
+		<TabsContent value="environments" class="mt-0 min-h-0 flex-1 overflow-y-auto">
+			<div class="mx-auto w-full max-w-[1400px] space-y-8 px-5 py-5 pb-10 lg:px-6">
+				<VclusterPreviewPanel
+					previews={visiblePreviews}
+					counts={visibleCounts}
+					previewNativeServices={data.previewNativeServices}
+					readProxyEnabled={data.previewReadProxyEnabled}
+					{controlPlane}
 					{slug}
-					busy={busyId === group.executionId}
-					onopen={openEnv}
-					onteardown={(e) => (toTeardown = e)}
+					onchanged={() => void tick()}
 				/>
-			{/each}
-		</div>
-	{/if}
+
+				<section class="space-y-3" aria-labelledby="live-sessions-heading">
+					<div class="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+						<div>
+							<div class="flex items-center gap-2">
+								<Workflow class="size-4 text-violet-500" />
+								<h2 id="live-sessions-heading" class="text-sm font-semibold">Hot-reload sessions</h2>
+							</div>
+							<p class="mt-1 text-xs text-muted-foreground">Workflow-owned workspaces and their interactive agent sessions.</p>
+						</div>
+						<Button size="sm" variant="outline" onclick={() => (launchOpen = true)}>
+							<Plus class="size-4" /> Start session
+						</Button>
+					</div>
+
+					{#if firstLoad}
+						<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+							{#each Array(3) as _, i (i)}
+								<div class="h-40 rounded-md border bg-muted/30 motion-safe:animate-pulse"></div>
+							{/each}
+						</div>
+					{:else if groups.length === 0}
+						<div class="flex min-h-44 flex-col items-center justify-center gap-3 border border-dashed px-5 py-8 text-center">
+							<Container class="size-6 text-muted-foreground" />
+							<div>
+								<h3 class="text-sm font-medium">No active coding sessions</h3>
+								<p class="mt-1 text-xs text-muted-foreground">Start a workflow-backed session to create a live workspace.</p>
+							</div>
+							<Button size="sm" onclick={() => (launchOpen = true)}><Plus class="size-4" /> Start coding session</Button>
+						</div>
+					{:else}
+						<div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+							{#each groups as group (group.executionId)}
+								<DevEnvironmentCard
+									environment={group.primary}
+									services={group.services}
+									{slug}
+									busy={busyId === group.executionId}
+									onopen={openEnv}
+									onteardown={(e) => (toTeardown = e)}
+								/>
+							{/each}
+						</div>
+					{/if}
+				</section>
+			</div>
+		</TabsContent>
+
+		{#if controlPlane}
+			<TabsContent value="activity" class="mt-0 min-h-0 flex-1 overflow-y-auto">
+				<div class="mx-auto w-full max-w-[1400px] px-5 py-5 pb-10 lg:px-6">
+					{#if data.previewRunFeedEnabled}
+						<PreviewRunFeedPanel />
+					{:else}
+						<section class="flex min-h-64 flex-col items-center justify-center gap-3 border border-dashed text-center">
+							<Radio class="size-6 text-muted-foreground" />
+							<div>
+								<h2 class="text-sm font-medium">Live workflow activity is unavailable</h2>
+								<p class="mt-1 text-xs text-muted-foreground">Lifecycle snapshots continue to refresh on the Environments tab.</p>
+							</div>
+						</section>
+					{/if}
+				</div>
+			</TabsContent>
+
+			<TabsContent value="pull-requests" class="mt-0 min-h-0 flex-1 overflow-y-auto">
+				<div class="mx-auto w-full max-w-[1400px] px-5 py-5 pb-10 lg:px-6">
+					<PrPreviewsPanel enabled={prPreviews?.enabled ?? false} items={prPreviews?.items ?? []} />
+				</div>
+			</TabsContent>
+		{/if}
+	</Tabs>
 </div>
 
 <DevLaunchDialog

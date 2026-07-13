@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { NativeSelect, NativeSelectOption } from '$lib/components/ui/native-select';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -21,17 +22,21 @@
 		ChevronDown,
 		ChevronRight,
 		ExternalLink,
+		GitBranch,
 		GitPullRequest,
 		Loader2,
 		Moon,
 		MoreHorizontal,
+		PanelRightOpen,
 		Plus,
 		ShieldCheck,
+		TimerReset,
 		Trash2,
 		Zap
 	} from '@lucide/svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import PoolCapacityMeter from '$lib/components/dev/pool-capacity-meter.svelte';
+	import PreviewEnvironmentInspector from '$lib/components/dev/preview-environment-inspector.svelte';
 	import PreviewRunsPanel from '$lib/components/dev/preview-runs-panel.svelte';
 	import { teardownConfirmMessage } from '$lib/components/dev/vcluster-preview-teardown-confirm';
 	import {
@@ -40,6 +45,12 @@
 		relativeTime,
 		sleepDisabledReason
 	} from '$lib/components/dev/preview-lifecycle';
+	import {
+		formatBootElapsed,
+		previewDeliveryLabel,
+		previewGitOpsHref,
+		previewProfileLabel
+	} from '$lib/dev/dev-operations-view';
 	import type { VclusterPreviewCounts, VclusterPreviewSummary } from '$lib/types/dev-previews';
 	import {
 		launchPreview,
@@ -56,6 +67,7 @@
 		counts = null,
 		previewNativeServices = [],
 		readProxyEnabled = false,
+		controlPlane = true,
 		slug,
 		onchanged
 	}: {
@@ -63,6 +75,7 @@
 		counts?: VclusterPreviewCounts | null;
 		previewNativeServices?: readonly string[];
 		readProxyEnabled?: boolean;
+		controlPlane?: boolean;
 		slug: string;
 		onchanged?: () => void;
 	} = $props();
@@ -83,6 +96,11 @@
 	let expandedRuns = $state<Record<string, boolean>>({});
 	let toTeardown = $state<VclusterPreviewSummary | null>(null);
 	let toForceTeardown = $state<VclusterPreviewSummary | null>(null);
+	let inspectedName = $state<string | null>(null);
+
+	const inspectedPreview = $derived(
+		inspectedName ? (previews.find((preview) => preview.name === inspectedName) ?? null) : null
+	);
 
 	const selectedPreviewServices = $derived(
 		previewNativeServices.filter((service) => selectedServices[service] !== false)
@@ -296,122 +314,142 @@
 	}
 </script>
 
-<section class="space-y-3 border-y py-4">
-	<div class="flex items-start gap-3">
-		<div class="size-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-			<Boxes class="size-5 text-primary" />
-		</div>
-		<div class="min-w-0">
-			<h2 class="text-base font-semibold">Full environments (vCluster)</h2>
+<section class="space-y-4" aria-labelledby="isolated-previews-heading">
+	<div class="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+		<div class="flex items-start gap-3">
+			<div class="flex size-9 shrink-0 items-center justify-center rounded-md border bg-cyan-500/5">
+				<Boxes class="size-5 text-cyan-600 dark:text-cyan-400" />
+			</div>
+			<div class="min-w-0">
+				<div class="flex items-center gap-2">
+					<h2 id="isolated-previews-heading" class="text-sm font-semibold">
+						{controlPlane ? 'Isolated previews' : 'Current isolated preview'}
+					</h2>
+					<Badge variant="secondary" class="h-5 px-1.5 text-[10px]">{previews.length}</Badge>
+				</div>
+				<p class="mt-1 text-xs text-muted-foreground">
+					{controlPlane
+						? 'Application live-sync and Git-reconciled infrastructure candidates.'
+						: 'Runtime, workflow, and delivery state for this preview environment.'}
+				</p>
+			</div>
 		</div>
 	</div>
 
-	<PoolCapacityMeter {counts} />
+	{#if controlPlane}
+		<PoolCapacityMeter {counts} />
 
-	<div class="grid gap-3 rounded-md border bg-muted/20 p-3 lg:grid-cols-[minmax(10rem,1fr)_12rem_7rem_auto]">
-		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-			Name
-			<input
-				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				placeholder="feat-x"
-				bind:value={name}
-				onkeydown={(e) => e.key === 'Enter' && launch()}
-				disabled={launching}
-			/>
-		</label>
-		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-			Profile
-			<NativeSelect bind:value={profile} class="w-full" disabled={launching}>
-				<NativeSelectOption value="app-live">App live</NativeSelectOption>
-				<NativeSelectOption value="manifest-candidate">Infrastructure PR</NativeSelectOption>
-			</NativeSelect>
-		</label>
-		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
-			TTL (hours)
-			<input
-				type="number"
-				min="1"
-				max="168"
-				step="1"
-				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm tabular-nums text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				bind:value={ttlHours}
-				disabled={launching}
-			/>
-		</label>
-		<div class="flex items-end gap-2">
-			<Button
-				size="sm"
-				onclick={launch}
-				disabled={launching || !name.trim() || !Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168 || (profile === 'app-live' && selectedPreviewServices.length === 0)}
-			>
-				{#if launching}<Loader2 class="size-4 animate-spin" />{:else}<Plus class="size-4" />{/if}
-				Launch
-			</Button>
-		</div>
-		{#if profile === 'manifest-candidate'}
-			<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-4">
-				Stacks PR
-				<input
-					class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-					inputmode="numeric"
-					placeholder="123"
-					bind:value={pullRequestNumber}
-					disabled={launching}
-				/>
-			</label>
-		{:else}
-		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
-			Stacks revision
-			<input
-				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				placeholder="main or full commit SHA"
-				bind:value={platformRevision}
-				disabled={launching}
-			/>
-		</label>
-		<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
-			Source revision
-			<input
-				class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				placeholder="main or full commit SHA"
-				bind:value={sourceRevision}
-				disabled={launching}
-			/>
-		</label>
-		{/if}
-		{#if profile === 'app-live'}
-			<fieldset class="flex min-w-0 flex-wrap gap-x-4 gap-y-2 lg:col-span-4">
-				<legend class="mb-1 text-xs font-medium text-muted-foreground">Live services</legend>
-				{#each previewNativeServices as service (service)}
-					<label class="inline-flex items-center gap-2 text-xs text-foreground">
+		<div class="space-y-3 rounded-md border bg-muted/20 p-3">
+			<div class="flex items-center justify-between gap-3">
+				<h3 class="text-xs font-semibold uppercase text-muted-foreground">New preview</h3>
+				<span class="text-[11px] text-muted-foreground">Cold isolated allocation</span>
+			</div>
+			<div class="grid gap-3 lg:grid-cols-[minmax(10rem,1fr)_12rem_7rem_auto]">
+				<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+					Name
+					<input
+						class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						placeholder="feat-x"
+						bind:value={name}
+						onkeydown={(e) => e.key === 'Enter' && launch()}
+						disabled={launching}
+					/>
+				</label>
+				<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+					Profile
+					<NativeSelect bind:value={profile} class="w-full" disabled={launching}>
+						<NativeSelectOption value="app-live">Application development</NativeSelectOption>
+						<NativeSelectOption value="manifest-candidate">Infrastructure candidate</NativeSelectOption>
+					</NativeSelect>
+				</label>
+				<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+					TTL (hours)
+					<input
+						type="number"
+						min="1"
+						max="168"
+						step="1"
+						class="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm tabular-nums text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						bind:value={ttlHours}
+						disabled={launching}
+					/>
+				</label>
+				<div class="flex items-end gap-2">
+					<Button
+						size="sm"
+						onclick={launch}
+						disabled={launching || !name.trim() || !Number.isInteger(ttlHours) || ttlHours < 1 || ttlHours > 168 || (profile === 'app-live' && selectedPreviewServices.length === 0)}
+					>
+						{#if launching}<Loader2 class="size-4 motion-safe:animate-spin" />{:else}<Plus class="size-4" />{/if}
+						Create preview
+					</Button>
+				</div>
+				{#if profile === 'manifest-candidate'}
+					<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-4">
+						Stacks PR
 						<input
-							type="checkbox"
-							class="size-4 rounded border-input accent-primary"
-							checked={selectedServices[service] !== false}
-							onchange={(event) =>
-								(selectedServices = {
-									...selectedServices,
-									[service]: event.currentTarget.checked
-								})}
+							class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							inputmode="numeric"
+							placeholder="123"
+							bind:value={pullRequestNumber}
 							disabled={launching}
 						/>
-						{service}
 					</label>
-				{/each}
-			</fieldset>
+				{:else}
+					<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
+						Stacks revision
+						<input
+							class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							placeholder="main or full commit SHA"
+							bind:value={platformRevision}
+							disabled={launching}
+						/>
+					</label>
+					<label class="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground lg:col-span-2">
+						Source revision
+						<input
+							class="h-9 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							placeholder="main or full commit SHA"
+							bind:value={sourceRevision}
+							disabled={launching}
+						/>
+					</label>
+				{/if}
+				{#if profile === 'app-live'}
+					<fieldset class="flex min-w-0 flex-wrap gap-x-4 gap-y-2 lg:col-span-4">
+						<legend class="mb-1 text-xs font-medium text-muted-foreground">Live services</legend>
+						{#each previewNativeServices as service (service)}
+							<label class="inline-flex items-center gap-2 text-xs text-foreground">
+								<input
+									type="checkbox"
+									class="size-4 rounded border-input accent-primary"
+									checked={selectedServices[service] !== false}
+									onchange={(event) =>
+										(selectedServices = {
+											...selectedServices,
+											[service]: event.currentTarget.checked
+										})}
+									disabled={launching}
+								/>
+								{service}
+							</label>
+						{/each}
+					</fieldset>
+				{/if}
+			</div>
+		</div>
+
+		{#if errorMessage}
+			<p class="text-sm text-destructive">{errorMessage}</p>
 		{/if}
-	</div>
 
-	{#if errorMessage}
-		<p class="text-sm text-destructive">{errorMessage}</p>
-	{/if}
-
-	{#if capacityAlert}
-		<Alert variant="destructive">
-			<AlertDescription>
-				{capacityAlert} — see the capacity meter above; sleep or tear down a preview to free a slot.
-			</AlertDescription>
-		</Alert>
+		{#if capacityAlert}
+			<Alert variant="destructive">
+				<AlertDescription>
+					{capacityAlert} — see the capacity meter above; sleep or tear down a preview to free a slot.
+				</AlertDescription>
+			</Alert>
+		{/if}
 	{/if}
 
 	{#if previews.length > 0}
@@ -420,7 +458,9 @@
 				{@const sleepReason = sleepDisabledReason(p)}
 				{@const expiry = expiresIn(p.expiresAt)}
 				{@const lastActive = relativeTime(p.lastActive)}
-				<li class="px-3 py-2 space-y-1">
+				{@const bootElapsed = formatBootElapsed(p.bootSeconds)}
+				{@const gitOpsHref = previewGitOpsHref(p)}
+				<li class="space-y-2 px-3 py-3">
 					<div class="flex items-center justify-between gap-3">
 						<div class="flex items-center gap-2 min-w-0 flex-wrap">
 							{#if readProxyEnabled && p.ready}
@@ -430,13 +470,21 @@
 									onclick={() =>
 										(expandedRuns = { ...expandedRuns, [p.name]: !expandedRuns[p.name] })}
 									title="Recent runs"
+									aria-expanded={expandedRuns[p.name] ?? false}
+									aria-controls={`preview-runs-${p.name}`}
 								>
 									{#if expandedRuns[p.name]}<ChevronDown class="size-4" />{:else}<ChevronRight
 											class="size-4"
 										/>{/if}
 								</button>
 							{/if}
-							<span class="font-medium truncate">{p.name}</span>
+							<button
+								type="button"
+								class="truncate text-left font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								onclick={() => (inspectedName = p.name)}
+							>
+								{p.name}
+							</button>
 
 							{#if resuming[p.name]}
 								<StatusPill status="resuming" label="Resuming…" />
@@ -444,11 +492,12 @@
 								<StatusPill status={effectivePreviewStatus(p)} />
 							{/if}
 							{#if p.state === 'slept'}<Moon class="size-3.5 text-amber-500" />{/if}
+							<Badge variant="outline" class="h-5 text-[10px]">{previewProfileLabel(p.profile)}</Badge>
 
 							{#if p.protected}
 								<TooltipProvider>
 									<Tooltip>
-										<TooltipTrigger>
+										<TooltipTrigger aria-label={`${p.name} is protected`}>
 											<ShieldCheck class="size-3.5 text-emerald-500" />
 										</TooltipTrigger>
 										<TooltipContent>
@@ -478,6 +527,16 @@
 						</div>
 
 						<div class="flex items-center gap-1 shrink-0">
+							{#if gitOpsHref}
+								<a
+									href={gitOpsHref}
+									class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+									aria-label={`Open ${p.name} delivery in GitOps`}
+									title="Open delivery"
+								>
+									<GitBranch class="size-4" />
+								</a>
+							{/if}
 							{#if p.ready && p.url}
 								<a
 									href={p.url}
@@ -492,13 +551,18 @@
 								<DropdownMenu.Trigger
 									class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
 									disabled={!!busy[p.name]}
-									aria-label="Preview actions"
+									aria-label={`Actions for ${p.name}`}
 								>
-									{#if busy[p.name]}<Loader2 class="size-4 animate-spin" />{:else}<MoreHorizontal
+									{#if busy[p.name]}<Loader2 class="size-4 motion-safe:animate-spin" />{:else}<MoreHorizontal
 											class="size-4"
 										/>{/if}
 								</DropdownMenu.Trigger>
 								<DropdownMenu.Content align="end">
+								<DropdownMenu.Item onclick={() => (inspectedName = p.name)}>
+									<PanelRightOpen class="size-4" /> Inspect
+								</DropdownMenu.Item>
+								{#if controlPlane}
+									<DropdownMenu.Separator />
 									{#if p.state === 'slept'}
 										<DropdownMenu.Item onclick={() => doWake(p)}>
 											<Zap class="size-4" /> Wake
@@ -515,6 +579,7 @@
 											<p class="px-2 pb-1 text-[10px] text-muted-foreground max-w-[200px]">{sleepReason}</p>
 										{/if}
 									{/if}
+								{/if}
 									{#if readProxyEnabled && p.ready}
 										<DropdownMenu.Item
 											onclick={() =>
@@ -523,6 +588,7 @@
 											<ChevronDown class="size-4" /> Recent runs
 										</DropdownMenu.Item>
 									{/if}
+								{#if controlPlane}
 									<DropdownMenu.Separator />
 									<DropdownMenu.Item
 										class="text-destructive focus:text-destructive"
@@ -530,10 +596,31 @@
 									>
 										<Trash2 class="size-4" /> Tear down
 									</DropdownMenu.Item>
+								{/if}
 								</DropdownMenu.Content>
 							</DropdownMenu.Root>
 						</div>
 					</div>
+
+					{#if !p.ready && p.state !== 'slept' && !['failed', 'error'].includes(p.phase)}
+						<div class="rounded-md bg-amber-500/5 px-2.5 py-2">
+							<div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+								<span
+									class="inline-flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-300"
+									role="status"
+									aria-live="polite"
+									aria-atomic="true"
+								>
+									<TimerReset class="size-3.5 motion-safe:animate-pulse" />
+									{p.phase === 'unknown' ? 'Waiting for lifecycle state' : p.phase.replaceAll('_', ' ')}
+								</span>
+								{#if bootElapsed}<span class="tabular-nums text-muted-foreground" aria-hidden="true">elapsed {bootElapsed}</span>{/if}
+							</div>
+							<div class="mt-2 h-1 overflow-hidden rounded-full bg-amber-500/15" aria-hidden="true">
+								<span class="block h-full w-1/3 rounded-full bg-amber-500 motion-safe:animate-pulse"></span>
+							</div>
+						</div>
+					{/if}
 
 					<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-muted-foreground pl-0.5">
 						{#if lastActive}<span>active {lastActive}</span>{/if}
@@ -544,7 +631,7 @@
 					</div>
 
 					<div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 pl-0.5 text-[11px] text-muted-foreground">
-						{#if p.profile}<span>{p.profile}</span>{/if}
+						<span>{previewDeliveryLabel(p)}</span>
 						{#if p.lane || p.mode}<span>{[p.lane, p.mode].filter(Boolean).join(' / ')}</span>{/if}
 						{#if shortRevision(p.platformRevision)}
 							<span title={p.platformRevision ?? undefined}>platform <code class="font-mono">{shortRevision(p.platformRevision)}</code></span>
@@ -573,15 +660,30 @@
 					</div>
 
 					{#if readProxyEnabled && p.ready && expandedRuns[p.name]}
-						<div class="mt-1">
+						<div class="mt-1" id={`preview-runs-${p.name}`}>
 							<PreviewRunsPanel name={p.name} url={p.url} />
 						</div>
 					{/if}
 				</li>
 			{/each}
 		</ul>
+	{:else if !controlPlane}
+		<div class="flex min-h-32 items-center justify-center border border-dashed px-5 text-center">
+			<p class="max-w-md text-xs text-muted-foreground">
+				The current preview lifecycle record is not visible yet. Workflow sessions remain available while the control-plane snapshot refreshes.
+			</p>
+		</div>
 	{/if}
 </section>
+
+<PreviewEnvironmentInspector
+	preview={inspectedPreview}
+	open={inspectedName !== null && inspectedPreview !== null}
+	{readProxyEnabled}
+	onOpenChange={(open) => {
+		if (!open) inspectedName = null;
+	}}
+/>
 
 <AlertDialog open={toTeardown !== null} onOpenChange={(open) => !open && (toTeardown = null)}>
 	<AlertDialogContent>

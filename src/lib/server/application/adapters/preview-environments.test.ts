@@ -244,6 +244,20 @@ function gateway(
       },
       services: [],
     })),
+    runtimeForIdentity: vi.fn(async (identity) => ({
+      name: identity.previewName,
+      resourceName: identity.previewName,
+      identity,
+      reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${identity.previewName}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [],
+    })),
     cleanup: vi.fn(async (name) => ({
       name,
       resourceName: name,

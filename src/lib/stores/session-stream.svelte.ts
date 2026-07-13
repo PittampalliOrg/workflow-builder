@@ -3,6 +3,7 @@ import type {
 	SessionDetail,
 	SessionEventEnvelope,
 } from "$lib/types/sessions";
+import { SESSION_PROVISIONING_EVENT_TYPES } from "$lib/stores/session-stream-events";
 
 /** Kind of in-flight partial assistant content — mirrors the agent-side
  * delta event type without the `agent.` prefix. */
@@ -279,6 +280,7 @@ function createRawSessionStream(sessionId: string): SessionStreamStore {
 			"session.turn_started",
 			"session.instructions_applied",
 			"session.config_updated",
+			...SESSION_PROVISIONING_EVENT_TYPES,
 			"span.model_request_start",
 			"span.model_request_end",
 			"user.message",
