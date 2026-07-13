@@ -206,6 +206,10 @@ export interface AgentWorkflowHostResult {
 	agentAppId: string;
 	sandboxName: string | null;
 	status: string | null;
+	/** SEA-owned ready endpoint. Present only when SEA observed the pod Ready. */
+	baseUrl?: string;
+	podIP?: string;
+	podName?: string;
 }
 
 export type AgentWorkflowHostAppReadyResult = {
@@ -506,13 +510,47 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			: typeof body.jobName === "string" && body.jobName.trim()
 				? body.jobName.trim()
 				: null;
+	const returnedStatus =
+		typeof body.status === "string" && body.status.trim()
+			? body.status.trim()
+			: null;
+	const readyTarget = (() => {
+		if (returnedStatus !== "ready") return null;
+		const targetBaseUrl =
+			typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
+		const podIP = typeof body.podIP === "string" ? body.podIP.trim() : "";
+		if (!targetBaseUrl || !podIP) return null;
+		try {
+			const parsed = new URL(targetBaseUrl);
+			const expectedHostname = podIP.includes(":") ? `[${podIP}]` : podIP;
+			if (
+				parsed.protocol !== "http:" ||
+				parsed.hostname !== expectedHostname ||
+				parsed.port !== "8002" ||
+				parsed.username ||
+				parsed.password ||
+				parsed.pathname !== "/" ||
+				parsed.search ||
+				parsed.hash
+			) {
+				return null;
+			}
+		} catch {
+			return null;
+		}
+		return {
+			baseUrl: targetBaseUrl.replace(/\/$/, ""),
+			podIP,
+			...(typeof body.podName === "string" && body.podName.trim()
+				? { podName: body.podName.trim() }
+				: {}),
+		};
+	})();
 	return {
 		agentAppId: returnedAppId,
 		sandboxName,
-		status:
-			typeof body.status === "string" && body.status.trim()
-				? body.status.trim()
-				: null,
+		status: returnedStatus,
+		...(readyTarget ?? {}),
 	};
 }
 

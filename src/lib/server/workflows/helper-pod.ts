@@ -13,11 +13,7 @@
 
 import http from "node:http";
 import https from "node:https";
-import {
-  maybeProvisionAgentWorkflowHost,
-  waitForAgentWorkflowHostAppReady,
-  sessionHostAppId,
-} from "$lib/server/sessions/agent-workflow-host";
+import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
@@ -47,21 +43,11 @@ export async function provisionWorkspaceHelperPod(
   githubToken: string | null;
 } | null> {
   const helperSessionId = `${executionId}__${suffix}`;
-  const helperAppId = sessionHostAppId(helperSessionId);
   const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
   const githubToken =
     opts?.githubToken?.trim() ||
     (opts?.withGithubToken ? await resolveWorkflowGithubToken() : null);
 
-  // Fast path: already up.
-  try {
-    const ready = await waitForAgentWorkflowHostAppReady({
-      agentAppId: helperAppId,
-    });
-    if (ready?.baseUrl) return { baseUrl: ready.baseUrl, token, githubToken };
-  } catch {
-    /* provision below */
-  }
   try {
     const prov = await maybeProvisionAgentWorkflowHost({
       sessionId: helperSessionId,
@@ -74,9 +60,9 @@ export async function provisionWorkspaceHelperPod(
       sharedWorkspaceKey:
         opts?.sharedWorkspaceKey ?? `${executionId}__${suffix}`,
     });
-    const appId = prov?.agentAppId ?? helperAppId;
-    const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: appId });
-    if (ready?.baseUrl) return { baseUrl: ready.baseUrl, token, githubToken };
+    if (prov?.status === "ready" && prov.baseUrl) {
+      return { baseUrl: prov.baseUrl, token, githubToken };
+    }
   } catch (err) {
     console.warn(
       `[helper-pod] provision failed for ${executionId}/${suffix}:`,

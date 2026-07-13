@@ -3837,6 +3837,13 @@ def _agent_host_provisioning_phase(
     return phase
 
 
+@dataclass(frozen=True)
+class AgentHostReadiness:
+    status: str
+    pod_name: str | None = None
+    pod_ip: str | None = None
+
+
 def _wait_for_agent_host_ready(
     core: Any,
     *,
@@ -3844,7 +3851,7 @@ def _wait_for_agent_host_ready(
     agent_app_id: str,
     wait_seconds: int,
     failure_probe: Any | None = None,
-) -> str:
+) -> AgentHostReadiness:
     """Poll the per-app pod selector until ready or `wait_seconds` elapses.
 
     `failure_probe`, if provided, is called each tick with no args and must
@@ -3852,7 +3859,7 @@ def _wait_for_agent_host_ready(
     when it returns a string we surface a 503 and stop polling.
     """
     if wait_seconds <= 0:
-        return "queued"
+        return AgentHostReadiness(status="queued")
     selector = f"app=agent-workflow-host,agent-app-id={_safe_name(agent_app_id, max_length=63)}"
     deadline = time.monotonic() + wait_seconds
     last_phase = "pending"
@@ -3881,7 +3888,18 @@ def _wait_for_agent_host_ready(
                     )
                 continue
             if _pod_is_ready(pod):
-                return "ready"
+                pod_status = getattr(pod, "status", None)
+                pod_ip = getattr(pod_status, "pod_ip", None)
+                if not isinstance(pod_ip, str) or not pod_ip:
+                    last_failure = "ready pod has no pod IP"
+                    continue
+                pod_metadata = getattr(pod, "metadata", None)
+                pod_name = getattr(pod_metadata, "name", None)
+                return AgentHostReadiness(
+                    status="ready",
+                    pod_name=(pod_name if isinstance(pod_name, str) else None),
+                    pod_ip=pod_ip,
+                )
             phase = getattr(getattr(pod, "status", None), "phase", None)
             if phase:
                 last_phase = phase
@@ -3898,7 +3916,12 @@ def _wait_for_agent_host_ready(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"agent workflow host {agent_app_id} failed before readiness: {last_failure}",
         )
-    return "queued"
+    return AgentHostReadiness(status="queued")
+
+
+def _agent_host_base_url(pod_ip: str) -> str:
+    host = f"[{pod_ip}]" if ":" in pod_ip else pod_ip
+    return f"http://{host}:8002"
 
 
 @app.get("/healthz")
@@ -5167,7 +5190,7 @@ def submit_agent_workflow_host(
                 sandbox_name=sandbox_name,
                 sandbox=created_sandbox,
             )
-        readiness_status = _wait_for_agent_host_ready(
+        readiness = _wait_for_agent_host_ready(
             core,
             namespace=namespace,
             agent_app_id=body.agentAppId,
@@ -5176,6 +5199,7 @@ def submit_agent_workflow_host(
                 custom, namespace=namespace, sandbox_name=sandbox_name
             ),
         )
+        readiness_status = readiness.status
         provisioning_phase = (
             "ready"
             if readiness_status == "ready"
@@ -5184,7 +5208,8 @@ def submit_agent_workflow_host(
             )
         )
     else:
-        readiness_status = "queued"
+        readiness = AgentHostReadiness(status="queued")
+        readiness_status = readiness.status
         provisioning_phase = "queued"
     response = {
         "agentAppId": body.agentAppId,
@@ -5201,6 +5226,14 @@ def submit_agent_workflow_host(
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,
     }
+    if readiness.status == "ready" and readiness.pod_ip:
+        response.update(
+            {
+                "podName": readiness.pod_name,
+                "podIP": readiness.pod_ip,
+                "baseUrl": _agent_host_base_url(readiness.pod_ip),
+            }
+        )
     set_current_span_io("output", response)
     return response
 

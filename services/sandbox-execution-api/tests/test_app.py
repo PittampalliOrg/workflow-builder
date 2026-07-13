@@ -723,7 +723,12 @@ def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
         app_module,
         "_wait_for_agent_host_ready",
         lambda _core, *, namespace, agent_app_id, **_kwargs: (
-            readiness_checks.append((namespace, agent_app_id)) or "ready"
+            readiness_checks.append((namespace, agent_app_id))
+            or app_module.AgentHostReadiness(
+                status="ready",
+                pod_name="agent-host-agent-session-abc123",
+                pod_ip="10.244.1.20",
+            )
         ),
     )
 
@@ -740,6 +745,9 @@ def test_submit_agent_workflow_host_defaults_to_workflow_builder_namespace(
     )
 
     assert response["status"] == "ready"
+    assert response["podName"] == "agent-host-agent-session-abc123"
+    assert response["podIP"] == "10.244.1.20"
+    assert response["baseUrl"] == "http://10.244.1.20:8002"
     assert response["sandboxName"]
     assert response["sandboxName"] == response["jobName"]
     assert len(fake_custom.creates) == 1
@@ -779,7 +787,7 @@ def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> No
     monkeypatch.setattr(
         app_module,
         "_wait_for_agent_host_ready",
-        lambda *_args, **_kwargs: "queued",
+        lambda *_args, **_kwargs: app_module.AgentHostReadiness(status="queued"),
     )
 
     response = app_module.submit_agent_workflow_host(
@@ -795,6 +803,8 @@ def test_submit_agent_workflow_host_allows_explicit_namespace(monkeypatch) -> No
     )
 
     assert response["status"] == "queued"
+    assert "baseUrl" not in response
+    assert "podIP" not in response
     assert len(fake_custom.creates) == 1
     assert fake_custom.creates[0][2] == "workflow-builder-canary"
 
@@ -868,11 +878,13 @@ def test_component_scope_patch_leaves_unscoped_component_unmodified(
 
 def test_wait_for_agent_host_ready_requires_pod_ready_condition() -> None:
     ready_pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="agent-host-agent-session-abc123"),
         status=SimpleNamespace(
             phase="Running",
+            pod_ip="10.244.1.20",
             conditions=[SimpleNamespace(type="Ready", status="True")],
             container_statuses=[],
-        )
+        ),
     )
     core = SimpleNamespace(
         list_namespaced_pod=lambda **_kwargs: SimpleNamespace(items=[ready_pod])
@@ -885,7 +897,11 @@ def test_wait_for_agent_host_ready_requires_pod_ready_condition() -> None:
         wait_seconds=1,
     )
 
-    assert status == "ready"
+    assert status == app_module.AgentHostReadiness(
+        status="ready",
+        pod_name="agent-host-agent-session-abc123",
+        pod_ip="10.244.1.20",
+    )
 
 
 def test_wait_for_agent_host_ready_returns_queued_when_kueue_delays_pod() -> None:
@@ -907,7 +923,7 @@ def test_wait_for_agent_host_ready_returns_queued_when_kueue_delays_pod() -> Non
         wait_seconds=1,
     )
 
-    assert status == "queued"
+    assert status == app_module.AgentHostReadiness(status="queued")
 
 
 def test_wait_for_agent_host_ready_allows_sandbox_retry_after_pod_startup_error(
@@ -931,11 +947,13 @@ def test_wait_for_agent_host_ready_allows_sandbox_retry_after_pod_startup_error(
         )
     )
     ready_pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="agent-host-agent-session-abc123"),
         status=SimpleNamespace(
             phase="Running",
+            pod_ip="10.244.1.20",
             conditions=[SimpleNamespace(type="Ready", status="True")],
             container_statuses=[],
-        )
+        ),
     )
     pod_lists = [[failed_pod], [ready_pod]]
 
@@ -955,7 +973,11 @@ def test_wait_for_agent_host_ready_allows_sandbox_retry_after_pod_startup_error(
         failure_probe=lambda: None,
     )
 
-    assert status == "ready"
+    assert status == app_module.AgentHostReadiness(
+        status="ready",
+        pod_name="agent-host-agent-session-abc123",
+        pod_ip="10.244.1.20",
+    )
 
 
 def test_wait_for_agent_host_ready_fails_on_terminal_pod_failure() -> None:
