@@ -1746,6 +1746,9 @@ export function getApplicationAdapters(
   const getPreviewTeardown = () =>
     (previewTeardown ??= new ApplicationPreviewTeardownService({
       access: getPreviewAccess(),
+      admins: {
+        isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+      },
       archive: getPreviewArchive(),
       previews: getVclusterPreviewGateway(),
       scope: previewDeploymentScope,

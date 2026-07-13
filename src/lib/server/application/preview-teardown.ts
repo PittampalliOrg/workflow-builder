@@ -2,10 +2,12 @@ import type {
   PreviewAccessPolicyPort,
   PreviewArchivePort,
   PreviewArchiveResult,
+  PreviewControlAdminAuthorizationPort,
   PreviewDeploymentScopePort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -54,6 +56,7 @@ export type PreviewTeardownResult = Readonly<{
 
 type PreviewTeardownDeps = Readonly<{
   access: PreviewAccessPolicyPort;
+  admins: PreviewControlAdminAuthorizationPort;
   archive: PreviewArchivePort;
   previews: VclusterPreviewGatewayPort;
   scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
@@ -83,11 +86,20 @@ export class ApplicationPreviewTeardownService {
       name: input.name,
       actorUserId: input.actorUserId,
     });
+    const actorUserId = input.actorUserId.trim();
     const guard = this.ownedGuard(access.preview);
     if (!guard) {
       throw new PreviewTeardownRefusedError(
         "ownership-incomplete",
         "Preview teardown ownership tuple is incomplete",
+      );
+    }
+    if (
+      input.discardUnarchived === true &&
+      !(await this.deps.admins.isPlatformAdmin(actorUserId))
+    ) {
+      throw new PreviewAccessDeniedError(
+        "explicit unarchived preview discard requires a platform administrator",
       );
     }
 
@@ -132,6 +144,7 @@ export class ApplicationPreviewTeardownService {
           ),
           forcedAt: discardedAt,
           disposition: "admin-discard",
+          authorizedByUserId: actorUserId,
           persistenceFailureCode: "discard-quarantine-persistence-failed",
           persistenceFailureSubject: "Admin-discard quarantine",
         });
@@ -228,6 +241,7 @@ export class ApplicationPreviewTeardownService {
       reason: string;
       forcedAt: string;
       disposition: "forced-quarantine" | "admin-discard";
+      authorizedByUserId?: string;
       persistenceFailureCode:
         | "failed-quarantine-persistence-failed"
         | "discard-quarantine-persistence-failed";
@@ -249,6 +263,9 @@ export class ApplicationPreviewTeardownService {
         forcedAt: input.forcedAt,
         graceExpiredAt: input.forcedAt,
         disposition: input.disposition,
+        ...(input.authorizedByUserId
+          ? { authorizedByUserId: input.authorizedByUserId }
+          : {}),
         attemptedArchive: input.attemptedArchive,
       });
     } catch (cause) {

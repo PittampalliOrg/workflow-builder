@@ -376,6 +376,10 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 		if (!name) throw new Error('preview quarantine requires a name');
 		const attempted = input.attemptedArchive;
 		const disposition = input.disposition ?? 'forced-quarantine';
+		const authorizedByUserId = input.authorizedByUserId?.trim() ?? '';
+		if (disposition === 'admin-discard' && !authorizedByUserId) {
+			throw new Error('admin-discard quarantine requires an acting administrator');
+		}
 		const dispositionNote =
 			disposition === 'admin-discard'
 				? `explicit platform-admin discard after incomplete archive: ${input.reason}`
@@ -405,6 +409,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			],
 			teardownDisposition: {
 				mode: disposition,
+				...(disposition === 'admin-discard' ? { authorizedByUserId } : {}),
 				forcedAt: input.forcedAt,
 				graceExpiredAt: input.graceExpiredAt,
 				previewExpiredAt: input.preview.expiresAt,

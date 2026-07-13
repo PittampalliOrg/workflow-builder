@@ -371,6 +371,7 @@ describe('ApplicationPreviewArchiveService', () => {
 			forcedAt: '2026-07-04T11:00:00.000Z',
 			graceExpiredAt: '2026-07-04T11:00:00.000Z',
 			disposition: 'admin-discard',
+			authorizedByUserId: 'admin-1',
 			attemptedArchive: {
 				archived: false,
 				preview: 'myfeature',
@@ -390,6 +391,7 @@ describe('ApplicationPreviewArchiveService', () => {
 			archiveComplete: false,
 			teardownDisposition: {
 				mode: 'admin-discard',
+				authorizedByUserId: 'admin-1',
 				forcedAt: '2026-07-04T11:00:00.000Z',
 				priorSummaryFileId: 'partial-summary'
 			}
@@ -397,6 +399,32 @@ describe('ApplicationPreviewArchiveService', () => {
 		expect(summary.notes).toContain(
 			'explicit platform-admin discard after incomplete archive: archive incomplete; explicit platform-admin discard: incomplete:artifact-listing'
 		);
+	});
+
+	it('refuses an admin-discard summary without acting-administrator attribution', async () => {
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy(),
+			listPreviews,
+			files: fakeFiles()
+		});
+
+		await expect(
+			service.quarantinePreview({
+				preview: {
+					name: 'myfeature',
+					pool: null,
+					url: 'https://wfb-myfeature.ts',
+					expiresAt: '2026-07-04T09:00:00.000Z'
+				},
+				userId: 'user-1',
+				projectId: null,
+				reason: 'incomplete archive',
+				forcedAt: '2026-07-04T11:00:00.000Z',
+				graceExpiredAt: '2026-07-04T11:00:00.000Z',
+				disposition: 'admin-discard',
+				attemptedArchive: null
+			})
+		).rejects.toThrow('requires an acting administrator');
 	});
 
 	it('does not confirm an archive while an active session may have a newer live generation', async () => {

@@ -68,6 +68,7 @@ function harness(
   const authoritative = overrides.preview ?? record();
   const events: string[] = [];
   const scope = { isControlPlane: vi.fn(() => true) };
+  const admins = { isPlatformAdmin: vi.fn(async () => true) };
   const access: PreviewAccessPolicyPort = {
     authorize: vi.fn(async () => ({
       preview: authoritative,
@@ -145,8 +146,10 @@ function harness(
     previews,
     events,
     scope,
+    admins,
     service: new ApplicationPreviewTeardownService({
       access,
+      admins,
       archive,
       previews,
       scope,
@@ -267,6 +270,7 @@ describe("ApplicationPreviewTeardownService", () => {
       forcedAt: NOW,
       graceExpiredAt: NOW,
       disposition: "admin-discard",
+      authorizedByUserId: "admin-1",
       attemptedArchive: expect.objectContaining({
         archived: false,
         summaryFileId: "summary-incomplete",
@@ -285,6 +289,29 @@ describe("ApplicationPreviewTeardownService", () => {
         summaryFileId: "summary-quarantine",
       },
     });
+  });
+
+  it("enforces platform-admin authorization inside the teardown application service", async () => {
+    const h = harness({
+      preview: record({ phase: "ready", ready: true }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "incomplete:artifact-listing",
+      },
+    });
+    h.admins.isPlatformAdmin.mockResolvedValueOnce(false);
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        discardUnarchived: true,
+      }),
+    ).rejects.toMatchObject({ name: "PreviewAccessDeniedError" });
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
   });
 
   it("refuses admin discard when durable quarantine persistence fails", async () => {

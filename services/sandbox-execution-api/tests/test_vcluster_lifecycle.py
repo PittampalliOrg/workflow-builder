@@ -2966,7 +2966,7 @@ def test_lifecycle_disabled_without_host_runtime_authority(monkeypatch) -> None:
     assert app_module._lifecycle_enabled() is False
 
 
-def test_identity_cleanup_controller_skips_without_host_runtime_authority(
+def test_candidate_cleanup_controller_starts_without_host_runtime_authority(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("PREVIEW_HOST_RUNTIMES_DISABLED", "true")
@@ -2984,8 +2984,8 @@ def test_identity_cleanup_controller_skips_without_host_runtime_authority(
 
     app_module._start_preview_identity_cleanup_controller()
 
-    assert started == []
-    assert app_module._preview_identity_cleanup_started is False
+    assert started == ["vcluster-preview-identity-cleanup", "started"]
+    assert app_module._preview_identity_cleanup_started is True
 
 
 # ---- list endpoint: counts + lifecycle fields -----------------------------------

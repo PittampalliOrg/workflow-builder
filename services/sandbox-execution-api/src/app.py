@@ -12432,6 +12432,8 @@ def _preview_periodic_cleanup_once() -> dict[str, Any]:
     Adopted Deployment restoration must not be starved by an unrelated runner
     identity failure: host Sandbox GC can remove the only claim without calling
     explicit dev-preview teardown, leaving the production Deployment at zero.
+    Preview deployments retain this candidate-local recovery pass while the
+    physical vCluster identity reconcilers remain control-plane-only.
     """
     result: dict[str, Any] = {
         "identity": None,
@@ -12439,42 +12441,43 @@ def _preview_periodic_cleanup_once() -> dict[str, Any]:
         "adoptOrphans": None,
         "failures": [],
     }
-    try:
-        batch, core = _load_k8s_clients()
-    except Exception as exc:
-        result["failures"].append("runner-client-load")
-        logger.warning("preview-identity-cleanup: client load failed: %s", exc)
-    else:
+    if not _env_flag_enabled("PREVIEW_HOST_RUNTIMES_DISABLED"):
         try:
-            stats = _preview_identity_cleanup_once(
-                batch,
-                core,
-                _load_k8s_rbac_client(),
-                _load_k8s_coordination_client(),
-                namespace=_vcluster_preview_control_namespace(),
-            )
-            result["identity"] = stats
-            if stats["failed"]:
-                logger.warning("preview-identity-cleanup: stats=%s", stats)
+            batch, core = _load_k8s_clients()
         except Exception as exc:
-            result["failures"].append("identity")
-            logger.warning("preview-identity-cleanup: pass failed: %s", exc)
-        try:
-            orphan_stats = _preview_identity_orphan_cleanup_once(
-                batch,
-                core,
-                _load_k8s_rbac_client(),
-                _load_k8s_coordination_client(),
-                namespace=_vcluster_preview_control_namespace(),
-            )
-            result["runnerOrphans"] = orphan_stats
-            if orphan_stats["failed"]:
-                logger.warning(
-                    "preview-identity-cleanup: orphan stats=%s", orphan_stats
+            result["failures"].append("runner-client-load")
+            logger.warning("preview-identity-cleanup: client load failed: %s", exc)
+        else:
+            try:
+                stats = _preview_identity_cleanup_once(
+                    batch,
+                    core,
+                    _load_k8s_rbac_client(),
+                    _load_k8s_coordination_client(),
+                    namespace=_vcluster_preview_control_namespace(),
                 )
-        except Exception as exc:
-            result["failures"].append("runner-orphans")
-            logger.warning("preview-identity-cleanup: orphan pass failed: %s", exc)
+                result["identity"] = stats
+                if stats["failed"]:
+                    logger.warning("preview-identity-cleanup: stats=%s", stats)
+            except Exception as exc:
+                result["failures"].append("identity")
+                logger.warning("preview-identity-cleanup: pass failed: %s", exc)
+            try:
+                orphan_stats = _preview_identity_orphan_cleanup_once(
+                    batch,
+                    core,
+                    _load_k8s_rbac_client(),
+                    _load_k8s_coordination_client(),
+                    namespace=_vcluster_preview_control_namespace(),
+                )
+                result["runnerOrphans"] = orphan_stats
+                if orphan_stats["failed"]:
+                    logger.warning(
+                        "preview-identity-cleanup: orphan stats=%s", orphan_stats
+                    )
+            except Exception as exc:
+                result["failures"].append("runner-orphans")
+                logger.warning("preview-identity-cleanup: orphan pass failed: %s", exc)
 
     try:
         result["adoptOrphans"] = _adopt_restore_orphans(
@@ -12504,8 +12507,6 @@ def _preview_identity_cleanup_loop() -> None:
 
 
 def _start_preview_identity_cleanup_controller() -> None:
-    if _env_flag_enabled("PREVIEW_HOST_RUNTIMES_DISABLED"):
-        return
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
