@@ -1,5 +1,6 @@
 import type {
   VclusterPreviewGatewayPort,
+  PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentCleanupReceiptPort,
   VclusterPreviewLaunchInput,
   VclusterPreviewSleepOutcome,
@@ -21,6 +22,7 @@ import {
   getVclusterPreviewCleanup,
   getVclusterPreviewRuntime,
   getVclusterPreview,
+  getVclusterPreviewForIdentity,
   listVclusterPreviewsWithCounts,
   listVclusterPreviewCleanupReceipts,
   provisionVclusterPreview,
@@ -90,7 +92,9 @@ function capabilityBundle(name: string, input: VclusterPreviewLaunchInput) {
 }
 
 /** Wraps the privileged SEA vcluster-preview client. */
-export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort {
+export class LegacyVclusterPreviewGateway
+  implements VclusterPreviewGatewayPort, PreviewEnvironmentObservationReaderPort
+{
   async listWithCounts() {
     const { previews, counts } = await listVclusterPreviewsWithCounts();
     return { previews: previews.map(toRecord), counts };
@@ -98,6 +102,23 @@ export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort 
 
   async get(name: string): Promise<VclusterPreviewRecord> {
     return toRecord(await getVclusterPreview(name));
+  }
+
+  async inspect(
+    identity: Parameters<PreviewEnvironmentObservationReaderPort["inspect"]>[0],
+  ) {
+    try {
+      const observed = await getVclusterPreviewForIdentity(identity);
+      return {
+        preview: toRecord(observed.preview),
+        identity: observed.identity,
+      };
+    } catch (cause) {
+      if (cause instanceof VclusterPreviewHttpError && cause.status === 409) {
+        throw new PreviewRuntimeIdentityChangedError(cause.message);
+      }
+      throw cause;
+    }
   }
 
   async provision(
@@ -144,6 +165,23 @@ export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort 
       }
       throw cause;
     }
+  }
+
+  async observeRuntime(
+    identity: Parameters<PreviewEnvironmentObservationReaderPort["observeRuntime"]>[0],
+  ) {
+    const observed = await this.runtimeForIdentity(identity);
+    if (!observed.preview) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "SEA omitted the tuple-bound preview record",
+      );
+    }
+    const { preview, ...runtime } = observed;
+    return {
+      preview: toRecord(preview),
+      runtime,
+      identity: observed.identity,
+    };
   }
 
   async cleanup(name: string) {

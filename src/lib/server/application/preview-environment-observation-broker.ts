@@ -2,18 +2,16 @@ import { validatePreviewControlIdentity } from "$lib/server/application/preview-
 import {
   PreviewRuntimeIdentityChangedError,
   type PreviewControlIdentity,
-  type PreviewControlSourceAuthorityPort,
+  type PreviewControlEnvironmentRecord,
   type PreviewEnvironmentObservationBrokerPort,
-  type VclusterPreviewGatewayPort,
+  type PreviewEnvironmentObservationReaderPort,
+  type PreviewObservedSourceAuthorityPort,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 
 type PreviewEnvironmentObservationBrokerDeps = Readonly<{
-  previews: Pick<VclusterPreviewGatewayPort, "get" | "runtimeForIdentity">;
-  authority: Pick<
-    PreviewControlSourceAuthorityPort,
-    "authorizeRuntimeTuple"
-  >;
+  observations: PreviewEnvironmentObservationReaderPort;
+  authority: PreviewObservedSourceAuthorityPort;
 }>;
 
 function sameIdentity(
@@ -42,6 +40,43 @@ function recordIdentity(record: VclusterPreviewRecord): PreviewControlIdentity {
   });
 }
 
+function environmentRecord(
+  preview: VclusterPreviewRecord,
+): PreviewControlEnvironmentRecord {
+  const provenance = preview.provenance;
+  const parsedProvenance =
+    provenance &&
+    typeof provenance.requestId === "string" &&
+    typeof provenance.requestedAt === "string" &&
+    typeof provenance.platformRepository === "string" &&
+    typeof provenance.sourceRepository === "string"
+      ? {
+          requestId: provenance.requestId,
+          requestedAt: provenance.requestedAt,
+          platformRepository: provenance.platformRepository,
+          sourceRepository: provenance.sourceRepository,
+          ...(typeof provenance.parentEnvironmentId === "string" ||
+          provenance.parentEnvironmentId === null
+            ? { parentEnvironmentId: provenance.parentEnvironmentId }
+            : {}),
+        }
+      : null;
+  return Object.freeze({
+    name: preview.name,
+    exists: preview.phase !== "absent",
+    ready: preview.ready,
+    owner: preview.owner?.id ?? null,
+    profile: preview.profile,
+    mode: preview.mode,
+    trustedCode: preview.trustedCode === true,
+    platformRevision: preview.platformRevision,
+    sourceRevision: preview.sourceRevision,
+    catalogDigest: preview.catalogDigest,
+    services: Object.freeze([...(preview.services ?? [])]),
+    provenance: parsedProvenance,
+  });
+}
+
 /**
  * Physical control-plane use case for candidate self-observation. Transport
  * authentication is owned by the driving HTTP route; this service owns the
@@ -58,8 +93,13 @@ export class ApplicationPreviewEnvironmentObservationBrokerService
     identity: PreviewControlIdentity,
   ): Promise<VclusterPreviewRecord> {
     const expected = validatePreviewControlIdentity(identity);
-    await this.deps.authority.authorizeRuntimeTuple(expected);
-    const preview = await this.deps.previews.get(expected.previewName);
+    const observation = await this.deps.observations.inspect(expected);
+    if (!sameIdentity(observation.identity, expected)) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "physical preview observation identity did not match the requested generation",
+      );
+    }
+    const preview = observation.preview;
     let observed: PreviewControlIdentity;
     try {
       observed = recordIdentity(preview);
@@ -73,15 +113,19 @@ export class ApplicationPreviewEnvironmentObservationBrokerService
         "physical preview generation changed",
       );
     }
-    await this.deps.authority.authorizeRuntimeTuple(expected);
+    await this.deps.authority.authorizeObservedRuntimeTuple(
+      expected,
+      environmentRecord(preview),
+    );
     return preview;
   }
 
   async observeRuntime(identity: PreviewControlIdentity) {
     const expected = validatePreviewControlIdentity(identity);
-    await this.deps.authority.authorizeRuntimeTuple(expected);
-    const runtime = await this.deps.previews.runtimeForIdentity(expected);
+    const observation = await this.deps.observations.observeRuntime(expected);
+    const runtime = observation.runtime;
     if (
+      !sameIdentity(observation.identity, expected) ||
       runtime.name !== expected.previewName ||
       !sameIdentity(runtime.identity, expected)
     ) {
@@ -89,7 +133,23 @@ export class ApplicationPreviewEnvironmentObservationBrokerService
         "physical preview runtime receipt did not match the requested generation",
       );
     }
-    await this.deps.authority.authorizeRuntimeTuple(expected);
-    return runtime;
+    let observed: PreviewControlIdentity;
+    try {
+      observed = recordIdentity(observation.preview);
+    } catch {
+      throw new PreviewRuntimeIdentityChangedError(
+        "physical preview runtime receipt returned an incomplete record identity",
+      );
+    }
+    if (!sameIdentity(observed, expected)) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "physical preview runtime record did not match the requested generation",
+      );
+    }
+    await this.deps.authority.authorizeObservedRuntimeTuple(
+      expected,
+      environmentRecord(observation.preview),
+    );
+    return observation;
   }
 }

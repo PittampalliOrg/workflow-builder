@@ -15,6 +15,7 @@ import type {
   PreviewAccessPolicyPort,
   PreviewControlIdentity,
   PreviewDeploymentScopePort,
+  PreviewEnvironmentObservationReaderPort,
   VclusterPreviewCleanupSnapshot,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
@@ -74,7 +75,7 @@ function sameRuntimeControlIdentity(
 }
 
 export type VclusterPreviewServiceDeps = {
-  gateway: VclusterPreviewGatewayPort;
+  gateway: VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort;
   access: PreviewAccessPolicyPort;
   scope: Pick<
     PreviewDeploymentScopePort,
@@ -196,17 +197,21 @@ export class ApplicationVclusterPreviewService {
     const expectedIdentity = authorizedRuntimeIdentity(authorizedPreview);
     const expectedControlIdentity = runtimeControlIdentity(authorizedPreview);
     const name = safePreviewName(authorizedPreview.name);
-    const observed = await this.deps.gateway.runtimeForIdentity(
+    const observation = await this.deps.gateway.observeRuntime(
       expectedControlIdentity,
     );
-    const confirmed = await this.deps.gateway.get(name);
+    const observed = observation.runtime;
     if (
+      !sameRuntimeControlIdentity(
+        observation.identity,
+        expectedControlIdentity,
+      ) ||
       observed.name !== name ||
       !sameRuntimeControlIdentity(
         observed.identity,
         expectedControlIdentity,
       ) ||
-      authorizedRuntimeIdentity(confirmed) !== expectedIdentity
+      authorizedRuntimeIdentity(observation.preview) !== expectedIdentity
     ) {
       throw new PreviewRuntimeIdentityChangedError();
     }

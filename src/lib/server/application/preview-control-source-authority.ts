@@ -3,6 +3,8 @@ import type {
   PreviewControlEnvironmentInspectionPort,
   PreviewControlSourceAuthorityInput,
   PreviewControlSourceAuthorityPort,
+  PreviewControlEnvironmentRecord,
+  PreviewControlIdentity,
   PreviewEnvironmentAcceptanceCatalogPort,
   PreviewEnvironmentVersionedServiceCatalogPort,
 } from "$lib/server/application/ports";
@@ -103,6 +105,69 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
     environmentSourceRevision: string;
     catalogDigest: `sha256:${string}`;
   }) {
+    this.assertRuntimeTuple(input);
+    return this.authorizeEnvironment({
+      previewName: input.previewName,
+      expectedRequestId: input.environmentRequestId,
+      expectedPlatformRevision: input.environmentPlatformRevision,
+      expectedSourceRevision: input.environmentSourceRevision,
+      allowedModes: ["live", "reconciled"],
+    });
+  }
+
+  /**
+   * Read-only telemetry authority. Unlike runtime egress, an exact preview
+   * generation remains observable while provisioning or after a failed
+   * reconcile, and manifest candidates are valid trace producers.
+   */
+  async authorizeTraceTuple(input: PreviewControlIdentity) {
+    if (
+      !FULL_SHA.test(input.environmentPlatformRevision) ||
+      !FULL_SHA.test(input.environmentSourceRevision)
+    ) {
+      throw new PreviewControlSourceAuthorityError(
+        "contract-mismatch",
+        "preview trace authority requires full baseline Git SHAs",
+      );
+    }
+    return this.authorizeEnvironment({
+      previewName: input.previewName,
+      expectedRequestId: input.environmentRequestId,
+      expectedPlatformRevision: input.environmentPlatformRevision,
+      expectedSourceRevision: input.environmentSourceRevision,
+      expectedCatalogDigest: input.catalogDigest,
+      allowedModes: ["live", "reconciled"],
+      allowedProfiles: ["app-live", "manifest-candidate"],
+      requireReady: false,
+      requireTrustedCode: false,
+      validateServices: false,
+    });
+  }
+
+  /**
+   * Apply the same source policy to a record that a physical adapter already
+   * fenced to the exact namespace UID and immutable tuple. This method performs
+   * no environment read, so callers cannot accidentally turn one observation
+   * into a serial pre/read/post sequence.
+   */
+  async authorizeObservedRuntimeTuple(
+    input: PreviewControlIdentity,
+    environment: PreviewControlEnvironmentRecord,
+  ) {
+    this.assertRuntimeTuple(input);
+    return this.authorizeEnvironmentRecord(
+      {
+        previewName: input.previewName,
+        expectedRequestId: input.environmentRequestId,
+        expectedPlatformRevision: input.environmentPlatformRevision,
+        expectedSourceRevision: input.environmentSourceRevision,
+        allowedModes: ["live", "reconciled"],
+      },
+      environment,
+    );
+  }
+
+  private assertRuntimeTuple(input: PreviewControlIdentity): void {
     if (
       !FULL_SHA.test(input.environmentPlatformRevision) ||
       !FULL_SHA.test(input.environmentSourceRevision) ||
@@ -113,13 +178,6 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
         "preview runtime authority requires the current exact source tuple",
       );
     }
-    return this.authorizeEnvironment({
-      previewName: input.previewName,
-      expectedRequestId: input.environmentRequestId,
-      expectedPlatformRevision: input.environmentPlatformRevision,
-      expectedSourceRevision: input.environmentSourceRevision,
-      allowedModes: ["live", "reconciled"],
-    });
   }
 
   private async authorizeEnvironment(input: {
@@ -128,9 +186,35 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
     expectedPlatformRevision?: string;
     expectedSourceRevision?: string;
     expectedRequestId?: string;
+    expectedCatalogDigest?: `sha256:${string}`;
     allowedModes?: readonly ("live" | "reconciled")[];
+    allowedProfiles?: readonly ("app-live" | "manifest-candidate")[];
+    requireReady?: boolean;
+    requireTrustedCode?: boolean;
+    validateServices?: boolean;
     acceptanceReplay?: boolean;
   }) {
+    const environment = await this.deps.environments.inspect(input.previewName);
+    return this.authorizeEnvironmentRecord(input, environment);
+  }
+
+  private async authorizeEnvironmentRecord(
+    input: {
+      previewName: string;
+      requiredServices?: readonly string[];
+      expectedPlatformRevision?: string;
+      expectedSourceRevision?: string;
+      expectedRequestId?: string;
+      expectedCatalogDigest?: `sha256:${string}`;
+      allowedModes?: readonly ("live" | "reconciled")[];
+      allowedProfiles?: readonly ("app-live" | "manifest-candidate")[];
+      requireReady?: boolean;
+      requireTrustedCode?: boolean;
+      validateServices?: boolean;
+      acceptanceReplay?: boolean;
+    },
+    environment: PreviewControlEnvironmentRecord,
+  ) {
     const requiredServices = input.requiredServices
       ? input.acceptanceReplay
         ? this.deps.catalog.assertAcceptanceReplayServices(
@@ -149,40 +233,51 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
         })
       : requiredServices;
     const currentCatalogDigest = this.deps.catalog.currentDigest();
-    const environment = await this.deps.environments.inspect(input.previewName);
     if (!environment.exists || environment.name !== input.previewName) {
       throw new PreviewControlSourceAuthorityError(
         "not-found",
         "preview environment was not found on physical dev",
       );
     }
-    if (!environment.ready) {
+    if (input.requireReady !== false && !environment.ready) {
       throw new PreviewControlSourceAuthorityError(
         "not-ready",
         "preview environment is not Ready on physical dev",
       );
     }
-    let environmentServices: readonly string[];
-    try {
-      environmentServices =
-        environment.mode === "reconciled"
-          ? this.deps.catalog.assertAcceptanceReplayServices(
-              environment.services,
-            )
-          : this.deps.catalog.assertPreviewNativeServices(environment.services);
-    } catch {
-      throw new PreviewControlSourceAuthorityError(
-        "contract-mismatch",
-        "physical preview contract mismatch: services",
-      );
+    let environmentServices: readonly string[] = environment.services;
+    if (input.validateServices !== false) {
+      try {
+        environmentServices =
+          environment.mode === "reconciled"
+            ? this.deps.catalog.assertAcceptanceReplayServices(
+                environment.services,
+              )
+            : this.deps.catalog.assertPreviewNativeServices(
+                environment.services,
+              );
+      } catch {
+        throw new PreviewControlSourceAuthorityError(
+          "contract-mismatch",
+          "physical preview contract mismatch: services",
+        );
+      }
     }
     const allowedModes = input.allowedModes ?? ["live"];
+    const allowedProfiles = input.allowedProfiles ?? ["app-live"];
+    const expectedCatalogDigest =
+      input.expectedCatalogDigest ?? currentCatalogDigest;
     const mismatches = [
-      environment.profile === "app-live" ? null : "profile",
+      environment.profile &&
+      allowedProfiles.some((profile) => profile === environment.profile)
+        ? null
+        : "profile",
       environment.mode && allowedModes.includes(environment.mode)
         ? null
         : "mode",
-      environment.trustedCode ? null : "trustedCode",
+      input.requireTrustedCode === false || environment.trustedCode
+        ? null
+        : "trustedCode",
       FULL_SHA.test(environment.platformRevision ?? "")
         ? null
         : "platformRevision",
@@ -195,7 +290,7 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
       environment.sourceRevision === input.expectedSourceRevision
         ? null
         : "sourceRevision",
-      environment.catalogDigest === currentCatalogDigest
+      environment.catalogDigest === expectedCatalogDigest
         ? null
         : "catalogDigest",
       environment.provenance?.platformRepository ===
@@ -237,7 +332,7 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
       owner,
       platformRevision: environment.platformRevision as never,
       sourceRevision: environment.sourceRevision as never,
-      catalogDigest: currentCatalogDigest,
+      catalogDigest: expectedCatalogDigest,
       services: Object.freeze(requiredServices ?? environmentServices),
     });
   }

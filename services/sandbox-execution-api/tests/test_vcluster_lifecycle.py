@@ -3226,6 +3226,73 @@ def _runtime_request(identity: dict[str, str] | None = None):
     return request
 
 
+def test_record_endpoint_fences_and_returns_exact_identity(monkeypatch) -> None:
+    namespace = _runtime_identity_namespace()
+    core = _FakeCore([namespace])
+    batch = SimpleNamespace()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module,
+        "_vcluster_preview_phase",
+        lambda *_args: ("ready", 0, 1, 0),
+    )
+    monkeypatch.setattr(app_module, "_vcluster_preview_boot_seconds", lambda *_: 7)
+
+    result = app_module.get_vcluster_preview(
+        _runtime_request(_runtime_identity()), "acceptance"
+    )
+
+    assert result["identity"] == _runtime_identity()
+    assert result["namespaceUid"] == namespace.metadata.uid
+    assert result["name"] == "acceptance"
+    assert result["phase"] == "ready"
+    assert result["bootSeconds"] == 7
+
+
+@pytest.mark.parametrize("replacement_kind", ["uid", "identity"])
+def test_record_endpoint_rejects_namespace_replacement(
+    monkeypatch, replacement_kind: str
+) -> None:
+    initial = _runtime_identity_namespace()
+    replacement = _runtime_identity_namespace(
+        uid=(
+            "00000000-0000-0000-0000-000000000102"
+            if replacement_kind == "uid"
+            else initial.metadata.uid
+        ),
+        request_id=("request-2" if replacement_kind == "identity" else "request-1"),
+    )
+
+    class ReplacingCore(_FakeCore):
+        def __init__(self) -> None:
+            super().__init__([initial])
+            self.namespace_reads = 0
+
+        def read_namespace(self, name):
+            self.namespace_reads += 1
+            return initial if self.namespace_reads == 1 else replacement
+
+    core = ReplacingCore()
+    monkeypatch.setattr(
+        app_module, "_load_k8s_clients", lambda: (SimpleNamespace(), core)
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_vcluster_preview_phase",
+        lambda *_args: ("ready", 0, 1, 0),
+    )
+    monkeypatch.setattr(app_module, "_vcluster_preview_boot_seconds", lambda *_: 7)
+
+    with pytest.raises(app_module.HTTPException) as raised:
+        app_module.get_vcluster_preview(
+            _runtime_request(_runtime_identity()), "acceptance"
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "preview identity changed during runtime observation"
+    assert core.namespace_reads == 2
+
+
 @pytest.mark.parametrize("guarded", [False, True])
 def test_runtime_endpoint_validates_guard_and_returns_physical_identity(
     monkeypatch, guarded: bool
@@ -3246,6 +3313,11 @@ def test_runtime_endpoint_validates_guard_and_returns_physical_identity(
 
     assert result["identity"] == _runtime_identity()
     assert result["namespaceUid"] == namespace.metadata.uid
+    assert result["preview"]["name"] == "acceptance"
+    assert result["preview"]["platformRevision"] == "a" * 40
+    assert result["preview"]["sourceRevision"] == "b" * 40
+    assert result["preview"]["catalogDigest"] == f"sha256:{'c' * 64}"
+    assert result["preview"]["provenance"]["requestId"] == "request-1"
 
 
 def test_runtime_endpoint_rejects_guard_mismatch_before_observation(

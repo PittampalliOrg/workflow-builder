@@ -30,6 +30,7 @@ export * from "./ports/preview-runtime";
 export * from "./ports/preview-read-broker";
 export * from "./ports/preview-session-continuation";
 export * from "./ports/preview-source-promotion";
+export * from "./ports/preview-traces";
 export * from "./ports/pr-previews";
 export * from "./ports/sandboxes";
 export * from "./ports/sessions";

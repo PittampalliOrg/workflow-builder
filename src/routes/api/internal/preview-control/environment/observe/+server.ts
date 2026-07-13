@@ -78,20 +78,24 @@ export const POST: RequestHandler = async ({ request }) => {
   requirePreviewControlCapability(request, identity);
 
   try {
-    const observation =
-      body.view === "record"
-        ? {
-            preview:
-              await getApplicationAdapters().previewEnvironmentObservationBroker.inspect(
-                identity,
-              ),
-          }
-        : {
-            runtime:
-              await getApplicationAdapters().previewEnvironmentObservationBroker.observeRuntime(
-                identity,
-              ),
-          };
+    let observation: Record<string, unknown>;
+    if (body.view === "record") {
+      observation = {
+        preview:
+          await getApplicationAdapters().previewEnvironmentObservationBroker.inspect(
+            identity,
+          ),
+      };
+    } else {
+      const runtimeObservation =
+        await getApplicationAdapters().previewEnvironmentObservationBroker.observeRuntime(
+          identity,
+        );
+      observation = {
+        preview: runtimeObservation.preview,
+        runtime: runtimeObservation.runtime,
+      };
+    }
     return json({ ok: true, view: body.view, identity, ...observation }, {
       headers: { "cache-control": "no-store" },
     });

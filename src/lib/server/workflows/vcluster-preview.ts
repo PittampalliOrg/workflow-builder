@@ -593,10 +593,39 @@ export async function getVclusterPreview(
   return toPreview(data);
 }
 
+export async function getVclusterPreviewForIdentity(
+  identity: PreviewControlIdentity,
+): Promise<{
+  preview: VclusterPreview;
+  identity: PreviewControlIdentity;
+}> {
+  const data = await call(
+    "GET",
+    `/internal/vcluster-preview/${encodeURIComponent(safePreviewName(identity.previewName))}`,
+    undefined,
+    previewRuntimeIdentityHeaders(identity),
+  );
+  const observedIdentity = previewControlIdentityValue(data.identity);
+  if (
+    !observedIdentity ||
+    !samePreviewControlIdentity(observedIdentity, identity)
+  ) {
+    throw new VclusterPreviewHttpError(
+      "preview identity changed during record observation",
+      409,
+    );
+  }
+  return {
+    preview: toPreview(data),
+    identity: observedIdentity,
+  };
+}
+
 export interface VclusterPreviewRuntimeObservation {
   name: string;
   resourceName: string;
   identity: PreviewControlIdentity | null;
+  preview: VclusterPreview | null;
   reconciliationSucceeded: boolean;
   upJob: {
     name: string;
@@ -684,9 +713,18 @@ export async function getVclusterPreviewRuntime(
     };
   });
   const identity = previewControlIdentityValue(data.identity);
+  const previewValue = objectValue(data.preview);
+  const preview = previewValue ? toPreview(previewValue) : null;
   if (
     expectedIdentity &&
-    (!identity || !samePreviewControlIdentity(identity, expectedIdentity))
+    (!identity ||
+      !samePreviewControlIdentity(identity, expectedIdentity) ||
+      !preview ||
+      preview.name !== expectedIdentity.previewName ||
+      preview.platformRevision !== expectedIdentity.environmentPlatformRevision ||
+      preview.sourceRevision !== expectedIdentity.environmentSourceRevision ||
+      preview.catalogDigest !== expectedIdentity.catalogDigest ||
+      preview.provenance?.requestId !== expectedIdentity.environmentRequestId)
   ) {
     throw new VclusterPreviewHttpError(
       "preview identity changed during runtime observation",
@@ -697,6 +735,7 @@ export async function getVclusterPreviewRuntime(
     name: nameValue,
     resourceName: resourceNameValue,
     identity,
+    preview,
     reconciliationSucceeded: data.reconciliationSucceeded,
     upJob: {
       name: upJob.name,

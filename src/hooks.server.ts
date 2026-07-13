@@ -41,6 +41,7 @@ export const PREVIEW_CONTROL_BROKER_ROUTES = Object.freeze([
   ["POST", "/api/internal/preview-control/development-build"],
   ["POST", "/api/internal/preview-control/environment"],
   ["POST", "/api/internal/preview-control/environment/observe"],
+  ["POST", "/api/internal/preview-control/environment/traces"],
   ["POST", "/api/internal/preview-control/deletion-intents/reconcile"],
   ["POST", "/api/internal/preview-control/infrastructure-candidate"],
   ["POST", "/api/internal/preview-control/pr-preview"],

@@ -19,6 +19,7 @@ import type {
   PreviewEnvironmentDesiredStateSnapshot,
   PreviewEnvironmentVersionedServiceCatalogPort,
   PreviewControlIdentity,
+  PreviewEnvironmentObservationReaderPort,
   TupleBoundVclusterPreviewRuntimeSnapshot,
   ValidatedPreviewEnvironmentLaunchSpec,
   VclusterPreviewGatewayPort,
@@ -48,6 +49,9 @@ const KUBERNETES_UID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const RUNNER_GENERATION = /^op:[0-9a-f]{32}$/;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+const DEFAULT_OBSERVATION_TIMEOUT_MS = 30_000;
+const MIN_OBSERVATION_TIMEOUT_MS = 5_000;
+const MAX_OBSERVATION_TIMEOUT_MS = 60_000;
 const PHASES = new Set([
   "Failed",
   "Blocked",
@@ -70,6 +74,16 @@ const CLEANUP_CHECK_NAMES = [
   "storageScopeAbsent",
   "runnerIdentityAbsent",
 ] as const;
+
+export function boundedObservationTimeoutMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return DEFAULT_OBSERVATION_TIMEOUT_MS;
+  }
+  return Math.max(
+    MIN_OBSERVATION_TIMEOUT_MS,
+    Math.min(MAX_OBSERVATION_TIMEOUT_MS, Math.trunc(value)),
+  );
+}
 
 type KubeFetch = (
   path: string,
@@ -1036,7 +1050,7 @@ function commandFromGatewayInput(
 }
 
 export type DesiredStateVclusterPreviewGatewayOptions = Readonly<{
-  gateway: VclusterPreviewGatewayPort;
+  gateway: VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort;
   desiredState: PreviewEnvironmentDesiredStatePort;
   catalog: PreviewEnvironmentVersionedServiceCatalogPort;
   compensationTimeoutMs?: number;
@@ -1050,7 +1064,9 @@ export type DesiredStateVclusterPreviewGatewayOptions = Readonly<{
  * then does the hub controller release resources/finalizers. A runner therefore
  * never needs a hub kubeconfig or cross-preview RBAC.
  */
-export class DesiredStateVclusterPreviewGateway implements VclusterPreviewGatewayPort {
+export class DesiredStateVclusterPreviewGateway
+  implements VclusterPreviewGatewayPort, PreviewEnvironmentObservationReaderPort
+{
   constructor(
     private readonly options: DesiredStateVclusterPreviewGatewayOptions,
   ) {}
@@ -1061,6 +1077,12 @@ export class DesiredStateVclusterPreviewGateway implements VclusterPreviewGatewa
 
   get(name: string) {
     return this.options.gateway.get(name);
+  }
+
+  inspect(
+    identity: Parameters<PreviewEnvironmentObservationReaderPort["inspect"]>[0],
+  ) {
+    return this.options.gateway.inspect(identity);
   }
 
   async provision(
@@ -1159,6 +1181,12 @@ export class DesiredStateVclusterPreviewGateway implements VclusterPreviewGatewa
     return this.options.gateway.runtimeForIdentity(identity);
   }
 
+  observeRuntime(
+    identity: Parameters<PreviewEnvironmentObservationReaderPort["observeRuntime"]>[0],
+  ) {
+    return this.options.gateway.observeRuntime(identity);
+  }
+
   async cleanup(name: string) {
     const cleanup = await this.options.gateway.cleanup(name);
     const desiredStateAbsent = await this.options.desiredState.absent(name);
@@ -1206,7 +1234,7 @@ export class DesiredStateVclusterPreviewGateway implements VclusterPreviewGatewa
 }
 
 export type BrokeredVclusterPreviewGatewayOptions = Readonly<{
-  gateway: VclusterPreviewGatewayPort;
+  gateway: VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort;
   baseUrl?: () => string | null;
   token?: () => string | null;
   observationMode?: "local" | "tuple-leaf";
@@ -1218,6 +1246,7 @@ export type BrokeredVclusterPreviewGatewayOptions = Readonly<{
   }>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  observationTimeoutMs?: number;
 }>;
 
 /**
@@ -1225,11 +1254,22 @@ export type BrokeredVclusterPreviewGatewayOptions = Readonly<{
  * selects tuple-leaf observation for a preview-deployed BFF. Destructive
  * commands continue to cross the authenticated physical-broker boundary.
  */
-export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPort {
+export class BrokeredVclusterPreviewGateway
+  implements VclusterPreviewGatewayPort, PreviewEnvironmentObservationReaderPort
+{
   private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly observationTimeoutMs: number;
 
   constructor(private readonly options: BrokeredVclusterPreviewGatewayOptions) {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.observationTimeoutMs = boundedObservationTimeoutMs(
+      options.observationTimeoutMs ??
+        Number(
+          env.PREVIEW_OBSERVATION_TIMEOUT_MS ??
+            process.env.PREVIEW_OBSERVATION_TIMEOUT_MS ??
+            "",
+        ),
+    );
   }
 
   listWithCounts() {
@@ -1241,8 +1281,20 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
       return this.options.gateway.get(name);
     }
     const credential = this.observationCredential(name);
-    const body = await this.requestObservation("record", credential);
-    return normalizePreviewRecord(body.preview, credential.identity);
+    return (await this.recordObservation(credential)).preview;
+  }
+
+  async inspect(identity: PreviewControlIdentity) {
+    if (this.options.observationMode !== "tuple-leaf") {
+      return this.options.gateway.inspect(identity);
+    }
+    const credential = this.observationCredential(identity.previewName);
+    if (!samePreviewIdentity(credential.identity, identity)) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "local preview identity does not match the requested record generation",
+      );
+    }
+    return this.recordObservation(credential);
   }
 
   provision(): Promise<VclusterPreviewRecord> {
@@ -1334,7 +1386,7 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
       return this.options.gateway.runtime(name);
     }
     const credential = this.observationCredential(name);
-    return this.runtimeObservation(credential);
+    return (await this.runtimeObservation(credential)).runtime;
   }
 
   async runtimeForIdentity(
@@ -1342,6 +1394,19 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
   ) {
     if (this.options.observationMode !== "tuple-leaf") {
       return this.options.gateway.runtimeForIdentity(identity);
+    }
+    const credential = this.observationCredential(identity.previewName);
+    if (!samePreviewIdentity(credential.identity, identity)) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "local preview identity does not match the requested runtime generation",
+      );
+    }
+    return (await this.runtimeObservation(credential)).runtime;
+  }
+
+  async observeRuntime(identity: PreviewControlIdentity) {
+    if (this.options.observationMode !== "tuple-leaf") {
+      return this.options.gateway.observeRuntime(identity);
     }
     const credential = this.observationCredential(identity.previewName);
     if (!samePreviewIdentity(credential.identity, identity)) {
@@ -1368,14 +1433,31 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
     };
   }
 
+  private async recordObservation(
+    credential: Readonly<{
+      identity: PreviewControlIdentity;
+      capability: string;
+    }>,
+  ) {
+    const body = await this.requestObservation("record", credential);
+    return {
+      preview: normalizePreviewRecord(body.preview, credential.identity),
+      identity: credential.identity,
+    };
+  }
+
   private async runtimeObservation(
     credential: Readonly<{
       identity: PreviewControlIdentity;
       capability: string;
     }>,
-  ): Promise<TupleBoundVclusterPreviewRuntimeSnapshot> {
+  ) {
     const body = await this.requestObservation("runtime", credential);
-    return normalizeRuntimeObservation(body.runtime, credential.identity);
+    return {
+      preview: normalizePreviewRecord(body.preview, credential.identity),
+      runtime: normalizeRuntimeObservation(body.runtime, credential.identity),
+      identity: credential.identity,
+    };
   }
 
   private async requestObservation(
@@ -1407,7 +1489,7 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
           "X-Preview-Control-Capability": credential.capability,
         },
         body: JSON.stringify({ identity: credential.identity, view }),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 15_000),
+        signal: AbortSignal.timeout(this.observationTimeoutMs),
       },
     );
     const body = record(await response.json().catch(() => null));
@@ -1425,7 +1507,10 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
           : `physical preview observation failed (HTTP ${response.status})`,
       );
     }
-    const expectedKeys = ["identity", "ok", view === "record" ? "preview" : "runtime", "view"];
+    const expectedKeys =
+      view === "record"
+        ? ["identity", "ok", "preview", "view"]
+        : ["identity", "ok", "preview", "runtime", "view"];
     if (
       !body ||
       body.ok !== true ||

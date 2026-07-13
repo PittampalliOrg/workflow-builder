@@ -109,6 +109,28 @@ export type VclusterPreviewRuntimeView = {
   }>;
 };
 
+/** Bounded trace controls supported by the preview observability broker. */
+export type PreviewTraceRange = "15m" | "1h" | "6h" | "24h";
+export type PreviewTraceStatus = "all" | "ok" | "error";
+
+/** Client-safe trace summary. Raw spans and telemetry-store credentials stay physical. */
+export type PreviewTraceSummary = {
+  traceId: string;
+  rootOperation: string;
+  rootService: string;
+  services: string[];
+  startTime: string;
+  durationMs: number;
+  spanCount: number;
+  status: "ok" | "error";
+};
+
+export type PreviewTraceQueryView = {
+  traces: PreviewTraceSummary[];
+  services: string[];
+  observedAt: string;
+};
+
 /**
  * A3/A4 capacity accounting from the SEA list. `awake` counts HOT members
  * (claimed + free-hot + regular) and is what gates cold provisions; `baking`
@@ -155,12 +177,9 @@ export type VclusterLaunchResult =
  */
 export type PreviewEnvironmentLaunchRequest = {
   name: string;
-  profile?:
-    | "app-live"
-    | "manifest-candidate"
-    | "host-candidate";
-	lane?: "application" | "management";
-	pullRequest?: { number: number };
+  profile?: "app-live" | "manifest-candidate" | "host-candidate";
+  lane?: "application" | "management";
+  pullRequest?: { number: number };
   capabilities?: Array<
     | "service-live-sync"
     | "immutable-image-replay"

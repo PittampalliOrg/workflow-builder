@@ -1711,13 +1711,45 @@ def _log_workflow_data_fallback(operation: str, exc: Exception) -> None:
 def _assert_execution_read_model_columns() -> None:
     """Fail startup unless the execution read-model cutover migration is applied."""
     if _use_workflow_data_api():
-        try:
-            workflow_data_client.assert_execution_read_model_ready()
-            return
-        except Exception as exc:
-            if _strict_workflow_data_api():
-                raise
-            _log_workflow_data_fallback("read-model readiness check", exc)
+        if _strict_workflow_data_api():
+            timeout_seconds = max(
+                0.0,
+                _env_float("WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS", 30.0),
+            )
+            retry_interval_seconds = max(
+                0.1,
+                _env_float(
+                    "WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS",
+                    1.0,
+                ),
+            )
+            deadline = time.monotonic() + timeout_seconds
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    workflow_data_client.assert_execution_read_model_ready()
+                    return
+                except Exception as exc:
+                    remaining_seconds = deadline - time.monotonic()
+                    if remaining_seconds <= 0:
+                        raise
+                    sleep_seconds = min(retry_interval_seconds, remaining_seconds)
+                    logger.warning(
+                        "[Workflow Data] read-model readiness check failed on startup "
+                        "attempt %d; retrying in %.1fs (%.1fs remaining): %s",
+                        attempt,
+                        sleep_seconds,
+                        remaining_seconds,
+                        exc,
+                    )
+                    time.sleep(sleep_seconds)
+        else:
+            try:
+                workflow_data_client.assert_execution_read_model_ready()
+                return
+            except Exception as exc:
+                _log_workflow_data_fallback("read-model readiness check", exc)
 
     workflow_data_postgres_rollback.assert_execution_read_model_columns()
 

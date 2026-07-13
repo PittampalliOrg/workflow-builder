@@ -6,7 +6,9 @@ import {
 import { validatePreviewEnvironmentLaunchSpec } from "$lib/server/application/preview-environments";
 import type {
   PreviewAccessPolicyPort,
+  PreviewControlIdentity,
   PreviewDeploymentScopePort,
+  PreviewEnvironmentObservationReaderPort,
   VclusterPreviewGatewayPort,
   VclusterPreviewSleepOutcome,
   VclusterPreviewTouchResult,
@@ -69,9 +71,23 @@ function counts(
   };
 }
 
-function gateway(
-  over: Partial<VclusterPreviewGatewayPort> = {},
-): VclusterPreviewGatewayPort {
+type TestPreviewGateway = VclusterPreviewGatewayPort &
+  PreviewEnvironmentObservationReaderPort;
+
+function observedRecord(
+  identity: Parameters<PreviewEnvironmentObservationReaderPort["inspect"]>[0],
+) {
+  return record({
+    name: identity.previewName,
+    owner: { kind: "user", id: "user-1" },
+    platformRevision: identity.environmentPlatformRevision,
+    sourceRevision: identity.environmentSourceRevision,
+    catalogDigest: identity.catalogDigest,
+    provenance: { requestId: identity.environmentRequestId },
+  });
+}
+
+function gateway(over: Partial<TestPreviewGateway> = {}): TestPreviewGateway {
   return {
     listWithCounts: vi.fn(async () => ({ previews: [], counts: counts() })),
     get: vi.fn(async (name: string) => record({ name })),
@@ -103,6 +119,28 @@ function gateway(
         failed: false,
       },
       services: [],
+    })),
+    inspect: vi.fn(async (identity) => ({
+      preview: observedRecord(identity),
+      identity,
+    })),
+    observeRuntime: vi.fn(async (identity) => ({
+      preview: observedRecord(identity),
+      identity,
+      runtime: {
+        name: identity.previewName,
+        resourceName: identity.previewName,
+        identity,
+        reconciliationSucceeded: true,
+        upJob: {
+          name: `vcpreview-up-${identity.previewName}`,
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [],
+      },
     })),
     cleanup: vi.fn(async (name: string) => ({
       name,
@@ -145,7 +183,7 @@ function gateway(
 }
 
 const service = (
-  gw: VclusterPreviewGatewayPort,
+  gw: TestPreviewGateway,
   access: PreviewAccessPolicyPort = {
     authorize: vi.fn(async ({ name, actorUserId }) => ({
       preview: await gw.get(name),
@@ -327,13 +365,14 @@ describe("ApplicationVclusterPreviewService", () => {
       name: "feature-x",
       actorUserId: "user-1",
     });
-    expect(gw.runtimeForIdentity).toHaveBeenCalledWith({
+    expect(gw.observeRuntime).toHaveBeenCalledWith({
       previewName: "feature-x",
       environmentRequestId: "request-1",
       environmentPlatformRevision: "a".repeat(40),
       environmentSourceRevision: "b".repeat(40),
       catalogDigest: `sha256:${"c".repeat(64)}`,
     });
+    expect(gw.get).not.toHaveBeenCalled();
     expect(gw.cleanup).toHaveBeenCalledWith("feature-x");
   });
 
@@ -350,7 +389,20 @@ describe("ApplicationVclusterPreviewService", () => {
       owner: { kind: "user", id: "user-2" },
       provenance: { requestId: "request-2" },
     });
-    const gw = gateway({ get: vi.fn(async () => replacement) });
+    const gw = gateway();
+    const controlIdentity: PreviewControlIdentity = {
+      previewName: authorized.name,
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: "a".repeat(40),
+      environmentSourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+    };
+    const baseline = await gw.observeRuntime(controlIdentity);
+    vi.mocked(gw.observeRuntime).mockClear();
+    vi.mocked(gw.observeRuntime).mockResolvedValueOnce({
+      ...baseline,
+      preview: replacement,
+    });
     const access: PreviewAccessPolicyPort = {
       authorize: vi.fn(async () => ({
         preview: authorized,
