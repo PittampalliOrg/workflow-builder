@@ -220,6 +220,100 @@ describe("ApplicationPreviewTeardownService", () => {
     expect(h.previews.teardown).not.toHaveBeenCalled();
   });
 
+  it("persists explicit admin-discard loss accounting before guarded teardown", async () => {
+    const h = harness({
+      preview: record({
+        phase: "ready",
+        ready: true,
+        url: "https://wfb-preview-one.test",
+      }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "incomplete:artifact-listing",
+        summaryFileId: "summary-incomplete",
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "admin-1",
+        projectId: "project-1",
+        discardUnarchived: true,
+      }),
+    ).resolves.toMatchObject({
+      archive: {
+        archived: false,
+        quarantined: true,
+        summaryFileId: "summary-quarantine",
+      },
+      preview: { phase: "terminating" },
+    });
+
+    expect(h.events).toEqual(["archive", "quarantine", "teardown"]);
+    expect(h.previews.runtime).not.toHaveBeenCalled();
+    expect(h.archive.quarantinePreview).toHaveBeenCalledWith({
+      preview: {
+        name: "failed-five",
+        pool: null,
+        url: "https://wfb-preview-one.test",
+        expiresAt: "2026-07-11T15:51:11+00:00",
+      },
+      userId: "owner-1",
+      projectId: "project-1",
+      reason:
+        "archive incomplete; explicit platform-admin discard: incomplete:artifact-listing",
+      forcedAt: NOW,
+      graceExpiredAt: NOW,
+      disposition: "admin-discard",
+      attemptedArchive: expect.objectContaining({
+        archived: false,
+        summaryFileId: "summary-incomplete",
+      }),
+    });
+    expect(h.previews.teardown).toHaveBeenCalledWith("failed-five", {
+      mode: "owned",
+      requestId: "request-exact",
+      sourceRevision: SOURCE_REVISION,
+      archiveConfirmed: true,
+      archiveQuarantine: {
+        forcedAt: NOW,
+        graceExpiredAt: NOW,
+        reason:
+          "archive incomplete; explicit platform-admin discard: incomplete:artifact-listing",
+        summaryFileId: "summary-quarantine",
+      },
+    });
+  });
+
+  it("refuses admin discard when durable quarantine persistence fails", async () => {
+    const h = harness({
+      preview: record({ phase: "ready", ready: true }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        reason: "incomplete:artifact-listing",
+      },
+    });
+    vi.mocked(h.archive.quarantinePreview).mockRejectedValueOnce(
+      new Error("files unavailable"),
+    );
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "admin-1",
+        discardUnarchived: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "discard-quarantine-persistence-failed",
+      status: 409,
+    });
+    expect(h.previews.runtime).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
   it("persists explicit failed-launch loss accounting before forced teardown", async () => {
     const h = harness({
       archiveResult: {

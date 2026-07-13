@@ -4,6 +4,7 @@ import { getApplicationAdapters } from '$lib/server/application';
 import { PreviewRuntimeIdentityChangedError } from '$lib/server/application/ports';
 import { PreviewAccessDeniedError } from '$lib/server/application/preview-access';
 import { PreviewTeardownRefusedError } from '$lib/server/application/preview-teardown';
+import { requirePlatformAdmin } from '$lib/server/platform-admin';
 
 /** Status of one Tier-2 preview (Job phase == environment readiness). */
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -32,11 +33,17 @@ export const DELETE: RequestHandler = async ({ params, locals, url }) => {
 		if (!adapters.previewDeploymentScope.isControlPlane()) {
 			return error(403, 'Preview fleet operations are unavailable from a preview deployment');
 		}
+		const discardUnarchived = url.searchParams.get('discardUnarchived') === 'true';
+		if (discardUnarchived) await requirePlatformAdmin(locals);
 		const result = await adapters.previewTeardown.teardown({
 			name: params.name,
 			actorUserId: locals.session.userId,
 			projectId: locals.session.projectId ?? null,
-			...(url.searchParams.get('forceFailed') === 'true' ? { forceFailed: true } : {})
+			...(discardUnarchived
+				? { discardUnarchived: true }
+				: url.searchParams.get('forceFailed') === 'true'
+					? { forceFailed: true }
+					: {})
 		});
 		return json({
 			preview: adapters.vclusterPreviews.present(result.preview),

@@ -22,7 +22,8 @@ export type PreviewTeardownRefusalCode =
   | "failed-quarantine-ineligible"
   | "failed-quarantine-runtime-unavailable"
   | "failed-quarantine-runtime-mismatch"
-  | "failed-quarantine-persistence-failed";
+  | "failed-quarantine-persistence-failed"
+  | "discard-quarantine-persistence-failed";
 
 /** A fail-closed destructive-operation refusal. HTTP adapters map this to 409. */
 export class PreviewTeardownRefusedError extends Error {
@@ -43,6 +44,7 @@ export type PreviewTeardownInput = Readonly<{
   actorUserId: string;
   projectId?: string | null;
   forceFailed?: boolean;
+  discardUnarchived?: boolean;
 }>;
 
 export type PreviewTeardownResult = Readonly<{
@@ -117,6 +119,23 @@ export class ApplicationPreviewTeardownService {
     }
 
     if (archiveRequired && archive?.archived !== true) {
+      if (input.discardUnarchived === true) {
+        const discardedAt = (this.deps.now?.() ?? new Date()).toISOString();
+        return this.persistQuarantineAndTeardown({
+          preview: access.preview,
+          ownerId: access.ownerId,
+          projectId: access.actorIsOwner ? (input.projectId ?? null) : null,
+          guard,
+          attemptedArchive: archive,
+          reason: this.boundReason(
+            `archive incomplete; explicit platform-admin discard: ${archiveFailure || "archive-incomplete"}`,
+          ),
+          forcedAt: discardedAt,
+          disposition: "admin-discard",
+          persistenceFailureCode: "discard-quarantine-persistence-failed",
+          persistenceFailureSubject: "Admin-discard quarantine",
+        });
+      }
       if (input.forceFailed !== true) {
         throw new PreviewTeardownRefusedError(
           "archive-required",
@@ -185,6 +204,36 @@ export class ApplicationPreviewTeardownService {
     const reason = this.boundReason(
       `archive incomplete; forced ${cleanupScope}: ${input.archiveFailure}`,
     );
+    return this.persistQuarantineAndTeardown({
+      preview: input.preview,
+      ownerId: input.ownerId,
+      projectId: input.projectId,
+      guard: input.guard,
+      attemptedArchive: input.attemptedArchive,
+      reason,
+      forcedAt,
+      disposition: "forced-quarantine",
+      persistenceFailureCode: "failed-quarantine-persistence-failed",
+      persistenceFailureSubject: "Failed-preview quarantine",
+    });
+  }
+
+  private async persistQuarantineAndTeardown(
+    input: Readonly<{
+      preview: VclusterPreviewRecord;
+      ownerId: string;
+      projectId: string | null;
+      guard: OwnedGuard;
+      attemptedArchive: PreviewArchiveResult | null;
+      reason: string;
+      forcedAt: string;
+      disposition: "forced-quarantine" | "admin-discard";
+      persistenceFailureCode:
+        | "failed-quarantine-persistence-failed"
+        | "discard-quarantine-persistence-failed";
+      persistenceFailureSubject: string;
+    }>,
+  ): Promise<PreviewTeardownResult> {
     let quarantine: PreviewArchiveResult;
     try {
       quarantine = await this.deps.archive.quarantinePreview({
@@ -196,15 +245,16 @@ export class ApplicationPreviewTeardownService {
         },
         userId: input.ownerId,
         projectId: input.projectId,
-        reason,
-        forcedAt,
-        graceExpiredAt: forcedAt,
+        reason: input.reason,
+        forcedAt: input.forcedAt,
+        graceExpiredAt: input.forcedAt,
+        disposition: input.disposition,
         attemptedArchive: input.attemptedArchive,
       });
     } catch (cause) {
       throw new PreviewTeardownRefusedError(
-        "failed-quarantine-persistence-failed",
-        "Failed-preview quarantine could not be persisted; teardown refused",
+        input.persistenceFailureCode,
+        `${input.persistenceFailureSubject} could not be persisted; teardown refused`,
         { cause },
       );
     }
@@ -214,8 +264,8 @@ export class ApplicationPreviewTeardownService {
       !quarantine.summaryFileId?.trim()
     ) {
       throw new PreviewTeardownRefusedError(
-        "failed-quarantine-persistence-failed",
-        "Failed-preview quarantine did not return durable loss-accounting proof; teardown refused",
+        input.persistenceFailureCode,
+        `${input.persistenceFailureSubject} did not return durable loss-accounting proof; teardown refused`,
       );
     }
 
@@ -223,9 +273,9 @@ export class ApplicationPreviewTeardownService {
       ...input.guard,
       archiveConfirmed: true,
       archiveQuarantine: {
-        forcedAt,
-        graceExpiredAt: forcedAt,
-        reason,
+        forcedAt: input.forcedAt,
+        graceExpiredAt: input.forcedAt,
+        reason: input.reason,
         summaryFileId: quarantine.summaryFileId,
       },
     });
