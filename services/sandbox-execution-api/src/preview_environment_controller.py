@@ -42,6 +42,12 @@ from src.preview_agent_registration import (
     registration_annotations,
     registration_labels,
 )
+from src.preview_dashboard_cleanup import (
+    DASHBOARD_REGISTRATION_FINALIZER,
+    KubernetesPreviewDashboardCleanupAdapter,
+    PreviewDashboardCleanupOwnershipError,
+    PreviewDashboardCleanupPort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1801,6 +1807,7 @@ class PreviewEnvironmentController:
         custom_api: Any,
         catalog: PreviewServiceCatalog,
         registration_adapter: PreviewAgentRegistrationAdapter | None = None,
+        dashboard_cleanup_adapter: PreviewDashboardCleanupPort | None = None,
         candidate_surface: ManifestCandidateSurface | None = None,
         now: Callable[[], datetime] | None = None,
         watch_factory: Callable[[], Any] = watch.Watch,
@@ -1811,6 +1818,7 @@ class PreviewEnvironmentController:
         self.custom_api = custom_api
         self.catalog = catalog
         self.registration_adapter = registration_adapter
+        self.dashboard_cleanup_adapter = dashboard_cleanup_adapter
         self.candidate_surface = candidate_surface
         self.now = now or (lambda: datetime.now(UTC))
         self.watch_factory = watch_factory
@@ -1845,6 +1853,8 @@ class PreviewEnvironmentController:
         required = [FINALIZER]
         if self.registration_adapter is not None:
             required.append(REGISTRATION_FINALIZER)
+        if self.dashboard_cleanup_adapter is not None:
+            required.append(DASHBOARD_REGISTRATION_FINALIZER)
         missing = [value for value in required if value not in finalizers]
         if not missing:
             return False
@@ -1887,6 +1897,27 @@ class PreviewEnvironmentController:
             value
             for value in list(metadata.get("finalizers") or [])
             if value != REGISTRATION_FINALIZER
+        ]
+        patch_metadata: dict[str, Any] = {"finalizers": finalizers}
+        if isinstance(metadata.get("resourceVersion"), str):
+            patch_metadata["resourceVersion"] = metadata["resourceVersion"]
+        self.custom_api.patch_namespaced_custom_object(
+            group=API_GROUP,
+            version=API_VERSION,
+            namespace=CONTROL_NAMESPACE,
+            plural=API_PLURAL,
+            name=metadata["name"],
+            body={"metadata": patch_metadata},
+        )
+
+    def _remove_dashboard_registration_finalizer(
+        self, resource: Mapping[str, Any]
+    ) -> None:
+        metadata = _mapping(resource.get("metadata")) or {}
+        finalizers = [
+            value
+            for value in list(metadata.get("finalizers") or [])
+            if value != DASHBOARD_REGISTRATION_FINALIZER
         ]
         patch_metadata: dict[str, Any] = {"finalizers": finalizers}
         if isinstance(metadata.get("resourceVersion"), str):
@@ -2098,27 +2129,53 @@ class PreviewEnvironmentController:
         ):
             raise OwnershipConflict("cannot derive a safe cleanup identity")
         if FINALIZER not in finalizers:
-            if REGISTRATION_FINALIZER not in finalizers:
+            if DASHBOARD_REGISTRATION_FINALIZER in finalizers:
+                if self.dashboard_cleanup_adapter is None:
+                    raise OwnershipConflict(
+                        "Headlamp registration finalizer has no configured adapter"
+                    )
+                complete = self.dashboard_cleanup_adapter.cleanup(
+                    preview_id=preview_id,
+                    environment_uid=uid,
+                )
+                if complete:
+                    self._remove_dashboard_registration_finalizer(resource)
+                else:
+                    self._patch_status(
+                        resource,
+                        phase="Terminating",
+                        valid=True,
+                        ready=False,
+                        reason="DeletingHeadlampRegistration",
+                        message=(
+                            "Waiting for preview Headlamp registration resources "
+                            "to disappear"
+                        ),
+                    )
                 return
-            if self.registration_adapter is None:
-                raise OwnershipConflict(
-                    "agent registration finalizer has no configured adapter"
+            if REGISTRATION_FINALIZER in finalizers:
+                if self.registration_adapter is None:
+                    raise OwnershipConflict(
+                        "agent registration finalizer has no configured adapter"
+                    )
+                complete = self.registration_adapter.cleanup(
+                    preview_id=preview_id,
+                    environment_uid=uid,
                 )
-            complete = self.registration_adapter.cleanup(
-                preview_id=preview_id,
-                environment_uid=uid,
-            )
-            if complete:
-                self._remove_registration_finalizer(resource)
-            else:
-                self._patch_status(
-                    resource,
-                    phase="Terminating",
-                    valid=True,
-                    ready=False,
-                    reason="DeletingAgentRegistration",
-                    message="Waiting for preview agent registration resources to disappear",
-                )
+                if complete:
+                    self._remove_registration_finalizer(resource)
+                else:
+                    self._patch_status(
+                        resource,
+                        phase="Terminating",
+                        valid=True,
+                        ready=False,
+                        reason="DeletingAgentRegistration",
+                        message=(
+                            "Waiting for preview agent registration resources "
+                            "to disappear"
+                        ),
+                    )
             return
 
         intent = build_deletion_intent(resource)
@@ -2206,6 +2263,31 @@ class PreviewEnvironmentController:
             )
             return
 
+        if DASHBOARD_REGISTRATION_FINALIZER in finalizers:
+            if self.dashboard_cleanup_adapter is None:
+                raise OwnershipConflict(
+                    "Headlamp registration finalizer has no configured adapter"
+                )
+            complete = self.dashboard_cleanup_adapter.cleanup(
+                preview_id=preview_id,
+                environment_uid=uid,
+            )
+            if not complete:
+                self._patch_status(
+                    resource,
+                    phase="Terminating",
+                    valid=True,
+                    ready=False,
+                    reason="DeletingHeadlampRegistration",
+                    message=(
+                        "Waiting for preview Headlamp registration resources "
+                        "to disappear"
+                    ),
+                )
+                return
+            self._remove_dashboard_registration_finalizer(resource)
+            return
+
         if REGISTRATION_FINALIZER in finalizers:
             if self.registration_adapter is None:
                 raise OwnershipConflict(
@@ -2239,7 +2321,11 @@ class PreviewEnvironmentController:
         if metadata.get("deletionTimestamp"):
             try:
                 self._reconcile_deletion(resource)
-            except (OwnershipConflict, PreviewAgentRegistrationOwnershipError) as exc:
+            except (
+                OwnershipConflict,
+                PreviewAgentRegistrationOwnershipError,
+                PreviewDashboardCleanupOwnershipError,
+            ) as exc:
                 self._patch_status(
                     resource,
                     phase="Blocked",
@@ -2459,6 +2545,9 @@ def create_controller() -> PreviewEnvironmentController:
         registration_adapter=PreviewAgentRegistrationAdapter(
             core_api=core_api,
             custom_api=custom_api,
+        ),
+        dashboard_cleanup_adapter=KubernetesPreviewDashboardCleanupAdapter(
+            core_api=core_api,
         ),
     )
 
