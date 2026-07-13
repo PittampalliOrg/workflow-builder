@@ -16,6 +16,10 @@ from src.preview_agent_registration import (
     PreviewAgentRegistrationOwnershipError,
     PreviewAgentRegistrationStatus,
 )
+from src.preview_dashboard_cleanup import (
+    DASHBOARD_REGISTRATION_FINALIZER,
+    PreviewDashboardCleanupOwnershipError,
+)
 from src.preview_environment_controller import (
     ALLOCATION_LABEL,
     API_GROUP,
@@ -1034,6 +1038,7 @@ def controller_pair(
     *,
     now: datetime = NOW,
     registration_adapter: Any | None = None,
+    dashboard_cleanup_adapter: Any | None = None,
 ) -> tuple[PreviewEnvironmentController, FakeCoreApi, FakeCustomApi]:
     core = FakeCoreApi()
     custom = FakeCustomApi(resource)
@@ -1042,6 +1047,7 @@ def controller_pair(
         custom_api=custom,
         catalog=TEST_CATALOG,
         registration_adapter=registration_adapter,
+        dashboard_cleanup_adapter=dashboard_cleanup_adapter,
         now=lambda: now,
         full_resync_seconds=10,
     )
@@ -1066,6 +1072,19 @@ class FakeRegistrationAdapter:
         if self.ensure_error is not None:
             raise self.ensure_error
         return self.status
+
+    def cleanup(self, *, preview_id: str, environment_uid: str) -> bool:
+        self.cleanup_calls.append((preview_id, environment_uid))
+        if self.cleanup_error is not None:
+            raise self.cleanup_error
+        return self.cleanup_result
+
+
+class FakeDashboardCleanupAdapter:
+    def __init__(self) -> None:
+        self.cleanup_calls: list[tuple[str, str]] = []
+        self.cleanup_result = False
+        self.cleanup_error: Exception | None = None
 
     def cleanup(self, *, preview_id: str, environment_uid: str) -> bool:
         self.cleanup_calls.append((preview_id, environment_uid))
@@ -1176,6 +1195,26 @@ def test_registration_finalizer_blocks_workload_until_agent_mapping_is_ready() -
     assert custom.application is not None
     assert custom.resource["status"]["agentRegistration"]["ready"] is True
     assert custom.resource["status"]["agentRegistration"]["transport"] == "one-shot"
+
+
+def test_dashboard_finalizer_is_persisted_before_child_resources_are_created() -> None:
+    dashboard = FakeDashboardCleanupAdapter()
+    controller, core, custom = controller_pair(
+        preview_resource(), dashboard_cleanup_adapter=dashboard
+    )
+
+    controller.reconcile(custom.resource)
+
+    assert custom.resource["metadata"]["finalizers"] == [
+        FINALIZER,
+        DASHBOARD_REGISTRATION_FINALIZER,
+    ]
+    assert core.namespace is None
+    assert custom.application is None
+
+    controller.reconcile(custom.resource)
+    assert core.namespace is not None
+    assert custom.application is not None
 
 
 def test_registration_ownership_conflict_blocks_without_creating_workload() -> None:
@@ -1331,6 +1370,101 @@ def test_agent_registration_cleanup_runs_after_application_and_namespace() -> No
 
     controller.reconcile(custom.resource)
     assert FINALIZER not in custom.resource["metadata"]["finalizers"]
+
+
+def test_dashboard_and_agent_cleanup_finalizers_are_released_independently() -> None:
+    dashboard = FakeDashboardCleanupAdapter()
+    registration = FakeRegistrationAdapter()
+    resource = preview_resource(
+        metadata={
+            "finalizers": [
+                FINALIZER,
+                REGISTRATION_FINALIZER,
+                DASHBOARD_REGISTRATION_FINALIZER,
+            ],
+            "deletionTimestamp": "2026-07-09T12:00:00Z",
+        }
+    )
+    acknowledge_physical_cleanup(resource)
+    controller, _core, custom = controller_pair(
+        resource,
+        registration_adapter=registration,
+        dashboard_cleanup_adapter=dashboard,
+    )
+
+    controller.reconcile(custom.resource)
+    assert dashboard.cleanup_calls == [
+        ("feature-x", "12345678-1234-1234-1234-123456789abc")
+    ]
+    assert registration.cleanup_calls == []
+    assert custom.resource["status"]["conditions"][1]["reason"] == (
+        "DeletingHeadlampRegistration"
+    )
+    assert DASHBOARD_REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
+
+    dashboard.cleanup_result = True
+    controller.reconcile(custom.resource)
+    assert (
+        DASHBOARD_REGISTRATION_FINALIZER
+        not in custom.resource["metadata"]["finalizers"]
+    )
+    assert REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
+    assert registration.cleanup_calls == []
+
+    controller.reconcile(custom.resource)
+    assert registration.cleanup_calls == [
+        ("feature-x", "12345678-1234-1234-1234-123456789abc")
+    ]
+    assert REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
+
+    registration.cleanup_result = True
+    controller.reconcile(custom.resource)
+    assert REGISTRATION_FINALIZER not in custom.resource["metadata"]["finalizers"]
+    assert FINALIZER in custom.resource["metadata"]["finalizers"]
+
+    controller.reconcile(custom.resource)
+    assert FINALIZER not in custom.resource["metadata"]["finalizers"]
+
+
+def test_dashboard_cleanup_ownership_error_blocks_and_retains_finalizer() -> None:
+    dashboard = FakeDashboardCleanupAdapter()
+    dashboard.cleanup_error = PreviewDashboardCleanupOwnershipError(
+        "dashboard resource belongs to another PreviewEnvironment"
+    )
+    resource = preview_resource(
+        metadata={
+            "finalizers": [DASHBOARD_REGISTRATION_FINALIZER],
+            "deletionTimestamp": "2026-07-09T12:00:00Z",
+        }
+    )
+    controller, _core, custom = controller_pair(
+        resource, dashboard_cleanup_adapter=dashboard
+    )
+
+    controller.reconcile(custom.resource)
+
+    assert custom.resource["status"]["phase"] == "Blocked"
+    assert custom.resource["status"]["conditions"][1]["reason"] == ("OwnershipConflict")
+    assert DASHBOARD_REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
+
+
+def test_dashboard_cleanup_api_failure_propagates_and_retains_finalizer() -> None:
+    dashboard = FakeDashboardCleanupAdapter()
+    dashboard.cleanup_error = ApiException(status=500, reason="query failed")
+    resource = preview_resource(
+        metadata={
+            "finalizers": [DASHBOARD_REGISTRATION_FINALIZER],
+            "deletionTimestamp": "2026-07-09T12:00:00Z",
+        }
+    )
+    controller, _core, custom = controller_pair(
+        resource, dashboard_cleanup_adapter=dashboard
+    )
+
+    with pytest.raises(ApiException):
+        controller.reconcile(custom.resource)
+
+    assert DASHBOARD_REGISTRATION_FINALIZER in custom.resource["metadata"]["finalizers"]
 
 
 def test_agent_registration_query_error_keeps_finalizer() -> None:

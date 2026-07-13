@@ -21,6 +21,7 @@ export * from "./ports/preview-activation-build";
 export * from "./ports/preview-acceptance-trust";
 export * from "./ports/preview-environments";
 export * from "./ports/preview-environment-observation";
+export * from "./ports/preview-headlamp-registration";
 export * from "./ports/preview-lifecycle";
 export * from "./ports/preview-development-build";
 export * from "./ports/preview-deployment-scope";
