@@ -351,6 +351,82 @@ describe('ApplicationPreviewArchiveService', () => {
 		});
 	});
 
+	it('records explicit admin discard as a distinct durable teardown disposition', async () => {
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy(),
+			listPreviews,
+			files
+		});
+		const result = await service.quarantinePreview({
+			preview: {
+				name: 'myfeature',
+				pool: null,
+				url: 'https://wfb-myfeature.ts',
+				expiresAt: '2026-07-04T09:00:00.000Z'
+			},
+			userId: 'user-1',
+			projectId: null,
+			reason: 'archive incomplete; explicit platform-admin discard: incomplete:artifact-listing',
+			forcedAt: '2026-07-04T11:00:00.000Z',
+			graceExpiredAt: '2026-07-04T11:00:00.000Z',
+			disposition: 'admin-discard',
+			authorizedByUserId: 'admin-1',
+			attemptedArchive: {
+				archived: false,
+				preview: 'myfeature',
+				reason: 'incomplete:artifact-listing',
+				summaryFileId: 'partial-summary'
+			}
+		});
+
+		expect(result).toMatchObject({
+			archived: false,
+			quarantined: true,
+			reason: 'admin-discard:archive incomplete; explicit platform-admin discard: incomplete:artifact-listing',
+			summaryFileId: 'host-file-1'
+		});
+		const summary = JSON.parse(files.createFile.mock.calls[0][0].bytes.toString());
+		expect(summary).toMatchObject({
+			archiveComplete: false,
+			teardownDisposition: {
+				mode: 'admin-discard',
+				authorizedByUserId: 'admin-1',
+				forcedAt: '2026-07-04T11:00:00.000Z',
+				priorSummaryFileId: 'partial-summary'
+			}
+		});
+		expect(summary.notes).toContain(
+			'explicit platform-admin discard after incomplete archive: archive incomplete; explicit platform-admin discard: incomplete:artifact-listing'
+		);
+	});
+
+	it('refuses an admin-discard summary without acting-administrator attribution', async () => {
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy(),
+			listPreviews,
+			files: fakeFiles()
+		});
+
+		await expect(
+			service.quarantinePreview({
+				preview: {
+					name: 'myfeature',
+					pool: null,
+					url: 'https://wfb-myfeature.ts',
+					expiresAt: '2026-07-04T09:00:00.000Z'
+				},
+				userId: 'user-1',
+				projectId: null,
+				reason: 'incomplete archive',
+				forcedAt: '2026-07-04T11:00:00.000Z',
+				graceExpiredAt: '2026-07-04T11:00:00.000Z',
+				disposition: 'admin-discard',
+				attemptedArchive: null
+			})
+		).rejects.toThrow('requires an acting administrator');
+	});
+
 	it('does not confirm an archive while an active session may have a newer live generation', async () => {
 		const active = {
 			...executionRows[1],

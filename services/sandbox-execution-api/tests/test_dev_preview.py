@@ -3088,6 +3088,42 @@ def test_periodic_cleanup_restores_adopt_orphans_when_identity_cleanup_fails(
     assert calls == [(apps, custom, "preview-workflow-builder")]
 
 
+def test_periodic_cleanup_in_candidate_skips_host_identity_and_restores_adoptions(
+    monkeypatch,
+) -> None:
+    apps = object()
+    custom = object()
+    restored = {"restored": ["workflow-builder"]}
+    monkeypatch.setenv("PREVIEW_HOST_RUNTIMES_DISABLED", "true")
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_clients",
+        lambda: (_ for _ in ()).throw(AssertionError("host clients must not load")),
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_apps_client", lambda: apps)
+    monkeypatch.setattr(app_module, "_load_k8s_custom_objects_client", lambda: custom)
+    monkeypatch.setattr(app_module, "_load_k8s_coordination_client", object)
+    monkeypatch.setattr(
+        app_module,
+        "_agent_workflow_host_namespace",
+        lambda: "preview-workflow-builder",
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_adopt_restore_orphans",
+        lambda received_apps, received_custom, *, namespace, coordination: restored,
+    )
+
+    result = app_module._preview_periodic_cleanup_once()
+
+    assert result == {
+        "identity": None,
+        "runnerOrphans": None,
+        "adoptOrphans": restored,
+        "failures": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # 409 recreate-on-mismatch (preview image freshness Phase 0): a create-409 adopts
 # the existing dev-preview CR only when its `dev` container image matches the

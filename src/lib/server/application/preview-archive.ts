@@ -367,14 +367,23 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 	}
 
 	/**
-	 * Persist an explicit loss-accounting marker once the bounded archive retry
-	 * grace has elapsed. This does not claim the archive is complete; it makes the
-	 * forced teardown disposition durable in the host data plane.
+	 * Persist an explicit loss-accounting marker before an authorized teardown.
+	 * This does not claim the archive is complete; it makes the destructive
+	 * disposition durable in the host data plane.
 	 */
 	async quarantinePreview(input: PreviewArchiveQuarantineInput): Promise<PreviewArchiveResult> {
 		const name = input.preview.name.trim();
 		if (!name) throw new Error('preview quarantine requires a name');
 		const attempted = input.attemptedArchive;
+		const disposition = input.disposition ?? 'forced-quarantine';
+		const authorizedByUserId = input.authorizedByUserId?.trim() ?? '';
+		if (disposition === 'admin-discard' && !authorizedByUserId) {
+			throw new Error('admin-discard quarantine requires an acting administrator');
+		}
+		const dispositionNote =
+			disposition === 'admin-discard'
+				? `explicit platform-admin discard after incomplete archive: ${input.reason}`
+				: `forced quarantine teardown after archive retry grace: ${input.reason}`;
 		const summary = {
 			schema: PREVIEW_ARCHIVE_SCHEMA,
 			preview: {
@@ -393,13 +402,14 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			archiveComplete: false,
 			incompleteReasons: [input.reason],
 			notes: [
-				`forced quarantine teardown after archive retry grace: ${input.reason}`,
+				dispositionNote,
 				...(attempted?.summaryFileId
 					? [`prior incomplete summary: ${attempted.summaryFileId}`]
 					: [])
 			],
 			teardownDisposition: {
-				mode: 'forced-quarantine',
+				mode: disposition,
+				...(disposition === 'admin-discard' ? { authorizedByUserId } : {}),
 				forcedAt: input.forcedAt,
 				graceExpiredAt: input.graceExpiredAt,
 				previewExpiredAt: input.preview.expiresAt,
@@ -420,7 +430,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			archived: false,
 			quarantined: true,
 			preview: name,
-			reason: `forced-quarantine:${input.reason}`,
+			reason: `${disposition}:${input.reason}`,
 			summaryFileId: stored.file.id,
 			executionCount: attempted?.executionCount,
 			bundleCount: attempted?.bundleCount,

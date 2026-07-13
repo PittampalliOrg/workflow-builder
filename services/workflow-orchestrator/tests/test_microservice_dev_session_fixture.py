@@ -41,13 +41,19 @@ HEREDOC_END = "\nPY_PREVIEW_METADATA\n"
 
 def preview_services() -> list[dict[str, object]]:
     catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    sources = {entry["service"]: entry["source"] for entry in catalog["services"]}
+    descriptors = {entry["service"]: entry for entry in catalog["services"]}
     result = []
     for service in SERVICES:
-        info = copy.deepcopy(sources[service])
+        descriptor = descriptors[service]
+        info = copy.deepcopy(descriptor["source"])
         info.update(
             {
                 "ready": True,
+                "url": (
+                    f"https://{service}.example.test:"
+                    f"{descriptor['development']['port']}"
+                ),
+                "healthPath": descriptor["development"]["healthPath"],
                 "syncUrl": f"https://{service}.example.test/__sync",
                 "syncCapability": f"capability {service}'s",
             }
@@ -191,6 +197,7 @@ def create_restricted_tool_path(root: Path, origin: Path) -> Path:
         "rm",
         "sed",
         "sha256sum",
+        "sleep",
         "sort",
         "tar",
         "tr",
@@ -219,20 +226,36 @@ def create_restricted_tool_path(root: Path, origin: Path) -> Path:
     fake_curl = tool_dir / "curl"
     fake_curl.write_text(
         f"#!{sys.executable}\n"
+        "import json\n"
         "import os\n"
         "import subprocess\n"
         "import sys\n"
         "from pathlib import Path\n"
+        "from urllib.parse import urlsplit\n"
         "args = sys.argv[1:]\n"
         "archive = None\n"
         "output = None\n"
+        "headers = {}\n"
         "for index, value in enumerate(args):\n"
         "    if value == '--data-binary' and index + 1 < len(args): archive = args[index + 1].removeprefix('@')\n"
         "    if value == '-o' and index + 1 < len(args): output = args[index + 1]\n"
-        "if output: Path(output).write_text('{}', encoding='utf-8')\n"
+        "    if value == '-H' and index + 1 < len(args):\n"
+        "        name, separator, content = args[index + 1].partition(':')\n"
+        "        if separator: headers[name.strip().lower()] = content.strip()\n"
+        "url = next((value for value in reversed(args) if value.startswith(('http://', 'https://'))), '')\n"
+        "hostname = urlsplit(url).hostname or ''\n"
+        "service = headers.get('x-sync-service') or hostname.partition('.')[0]\n"
+        "status_dir = Path(os.environ['SYNC_STATUS_DIR'])\n"
+        "status_dir.mkdir(parents=True, exist_ok=True)\n"
+        "status_path = status_dir / f'{service}.json'\n"
         "if archive:\n"
         "    listed = subprocess.run(['tar', '-tzf', archive], capture_output=True, text=True, check=False)\n"
         "    with open(os.environ['SYNC_CAPTURE'], 'a', encoding='utf-8') as handle: handle.write(listed.stdout)\n"
+        "    status_path.write_text(json.dumps({'ok': True, 'generation': headers.get('x-sync-generation'), 'syncService': service}), encoding='utf-8')\n"
+        "if output and url.endswith('/__status'):\n"
+        "    Path(output).write_text(status_path.read_text(encoding='utf-8'), encoding='utf-8')\n"
+        "elif output and output != '/dev/null':\n"
+        "    Path(output).write_text('{\"ok\":true}', encoding='utf-8')\n"
         "sys.stdout.write('200')\n",
         encoding="utf-8",
     )
@@ -295,6 +318,7 @@ def test_clone_command_materializes_catalog_metadata_without_jq(tmp_path: Path) 
             "SUBDIR": info["repoSubdir"],
             "PATHS": " ".join(info["syncPaths"]),
             "SYNCURL": info["syncUrl"],
+            "HEALTHURL": info["url"].rstrip("/") + info["healthPath"],
             "SYNC_TOKEN": info["syncCapability"],
             "EXTRASYNC": " ".join(
                 f"{mapping['from']}:{mapping['to']}" for mapping in combined
@@ -361,6 +385,7 @@ def test_evaluated_archive_handoff_activates_locally_and_preserves_hot_edits(
     session_root.mkdir()
     tool_path = create_restricted_tool_path(tmp_path, origin)
     sync_capture = tmp_path / "sync-capture.txt"
+    sync_status_dir = tmp_path / "sync-status"
     secret = "fixture-github-token-must-not-persist"
     env = {
         **os.environ,
@@ -368,6 +393,7 @@ def test_evaluated_archive_handoff_activates_locally_and_preserves_hot_edits(
         "GITHUB_TOKEN": secret,
         "SMOKE_ORIGIN": origin.resolve().as_uri(),
         "SYNC_CAPTURE": str(sync_capture),
+        "SYNC_STATUS_DIR": str(sync_status_dir),
     }
 
     command = evaluated_clone_command(previews, revision)
@@ -463,6 +489,10 @@ def test_evaluated_archive_handoff_activates_locally_and_preserves_hot_edits(
         **env,
         "DEV_SYNC_WORK": str(helper_workspace),
         "SYNC_CAPTURE": str(sync_capture),
+        "DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS": "5",
+        "DEV_SYNC_CONVERGENCE_SETTLE_SECONDS": "0",
+        "DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS": "0",
+        "DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS": "1",
     }
     synced = run_process([str(sync_script)], cwd=session_root, env=sync_env, timeout=30)
     assert synced.returncode == 0, f"{synced.stdout}\n{synced.stderr}"

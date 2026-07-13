@@ -14,6 +14,8 @@ export interface DevPreviewInfo {
   port: number;
   syncPort: number;
   url: string | null;
+  /** Catalog-owned application health route, relative to `url`. */
+  healthPath: string;
   syncUrl: string | null;
   syncCapability: string;
   browseUrl: string | null;

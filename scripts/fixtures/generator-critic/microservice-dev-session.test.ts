@@ -278,6 +278,14 @@ describe("microservice dev session source checkout", () => {
     expect(commandText).toContain('entry.get("ok") is not True');
     expect(commandText).toContain('info.get("ready") is not True');
     expect(commandText).toContain('sync_url = safe_text(info.get("syncUrl")');
+    expect(commandText).toContain('service_url = safe_text(info.get("url")');
+    expect(commandText).toContain('health_path = safe_text(info.get("healthPath")');
+    expect(commandText).toContain("parsed_url = urllib.parse.urlsplit(service_url)");
+    expect(commandText).toContain('parsed_url.path not in ("", "/")');
+    expect(commandText).toContain(
+      'health_url = service_url.rstrip("/") + health_path',
+    );
+    expect(commandText).toContain('"HEALTHURL": health_url');
     expect(commandText).toContain("failed to materialize trusted preview service metadata");
   });
 

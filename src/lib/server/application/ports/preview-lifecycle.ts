@@ -28,6 +28,9 @@ export type PreviewArchiveQuarantineInput = Readonly<{
   reason: string;
   forcedAt: string;
   graceExpiredAt: string;
+  disposition?: "forced-quarantine" | "admin-discard";
+  /** Acting administrator for an explicit admin-discard disposition. */
+  authorizedByUserId?: string;
   attemptedArchive: PreviewArchiveResult | null;
 }>;
 

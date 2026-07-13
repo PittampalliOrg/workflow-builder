@@ -288,6 +288,10 @@ describe("dev-preview portability boundary", () => {
     const body = JSON.parse(String(request.body));
     expect(body.previewNative).toBe(true);
     expect(body.applyDaprShadowDefaults).toBe(false);
+    expect(body.env).toEqual({
+      WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS: "300",
+      WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS: "1",
+    });
     expect(body.envFrom).toEqual([
       { configMapRef: { name: "workflow-orchestrator-config" } },
       { configMapRef: { name: "workflow-orchestrator-otel-config" } },
@@ -353,6 +357,48 @@ describe("dev-preview portability boundary", () => {
     );
 
     expect(calls).toContain(
+      "http://sandbox-api/internal/vcluster-preview/myprev/touch",
+    );
+  });
+
+  it("skips the physical preview touch when host runtimes are disabled", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.stubEnv("PREVIEW_HOST_RUNTIMES_DISABLED", "true");
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      calls.push(url);
+      return new Response(
+        JSON.stringify({
+          sandboxName: "wfb-dev-preview-workflow-orchestrator-exec-1",
+          podIP: "10.0.0.13",
+          port: 8080,
+          syncPort: 8001,
+          syncUrl: "http://10.0.0.5:8001/__sync",
+          ready: true,
+          status: "running",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    });
+    stubDevPreviewFetch(fetchMock);
+
+    const result = await provisionDevPreviews(
+      {
+        executionId: "exec-1",
+        services: ["workflow-orchestrator"],
+        mode: "preview-native",
+        adopt: false,
+        origin: "https://wfb-myprev.tail286401.ts.net",
+      },
+      fakePersistence(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls).toContain("http://sandbox-api/internal/dev-preview");
+    expect(calls).not.toContain(
       "http://sandbox-api/internal/vcluster-preview/myprev/touch",
     );
   });
