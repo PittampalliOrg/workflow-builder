@@ -635,6 +635,7 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
         Math.min(15_000, deadline - Date.now()),
       );
       const health = await this.fetchImpl(`${baseUrl}/api/health`, {
+        redirect: "error",
         signal: AbortSignal.timeout(requestTimeoutMs),
       }).catch(() => null);
       if (health?.ok) return { name: "bff-health", ok: true };
@@ -663,11 +664,12 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
         },
+        redirect: "error",
         body: JSON.stringify({ source: "preview-acceptance" }),
         signal: AbortSignal.timeout(30_000),
       },
     ).catch(() => null);
-    const body = (await started?.json().catch(() => ({}))) as Record<
+    const body = ((await started?.json().catch(() => ({}))) ?? {}) as Record<
       string,
       unknown
     >;
@@ -687,13 +689,12 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
         `${baseUrl}/api/internal/agent/workflows/executions/${encodeURIComponent(executionId)}/status`,
         {
           headers: { "X-Preview-Control-Capability": capability },
+          redirect: "error",
           signal: AbortSignal.timeout(15_000),
         },
       ).catch(() => null);
-      const statusBody = (await response?.json().catch(() => ({}))) as Record<
-        string,
-        unknown
-      >;
+      const statusBody = ((await response?.json().catch(() => ({}))) ??
+        {}) as Record<string, unknown>;
       const status =
         typeof statusBody.status === "string" ? statusBody.status : "";
       if (status === "success") return { name: workflowId, ok: true };

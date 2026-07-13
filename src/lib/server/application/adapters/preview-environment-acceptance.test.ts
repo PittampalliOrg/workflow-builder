@@ -758,16 +758,20 @@ describe("preview acceptance infrastructure adapters", () => {
       ["data-exec", "success"],
       ["agent-exec", "success"],
     ]);
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
-      const path = String(url);
-      if (path.endsWith("/api/health")) return response({ ok: true });
-      if (path.includes("preview-data-plane-smoke/webhook"))
-        return response({ executionId: "data-exec" });
-      if (path.includes("preview-agent-smoke/webhook"))
-        return response({ executionId: "agent-exec" });
-      const execution = path.includes("data-exec") ? "data-exec" : "agent-exec";
-      return response({ status: states.get(execution) });
-    });
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (path.endsWith("/api/health")) return response({ ok: true });
+        if (path.includes("preview-data-plane-smoke/webhook"))
+          return response({ executionId: "data-exec" });
+        if (path.includes("preview-agent-smoke/webhook"))
+          return response({ executionId: "agent-exec" });
+        const execution = path.includes("data-exec")
+          ? "data-exec"
+          : "agent-exec";
+        return response({ status: states.get(execution) });
+      },
+    );
     const mintControl = vi.fn(() => "d".repeat(64));
     const verifier = new HttpPreviewEnvironmentVerifier({
       fetch: fetchMock as typeof fetch,
@@ -794,6 +798,9 @@ describe("preview acceptance infrastructure adapters", () => {
         headers: { "X-Preview-Control-Capability": "d".repeat(64) },
       }),
     );
+    expect(
+      fetchMock.mock.calls.every(([, init]) => init?.redirect === "error"),
+    ).toBe(true);
     expect(mintControl).toHaveBeenCalledWith({
       previewName: "acceptance-one",
       environmentRequestId: "request-1",
@@ -802,6 +809,83 @@ describe("preview acceptance infrastructure adapters", () => {
       catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
     });
   });
+
+  it.each([
+    [
+      "health",
+      [{ name: "bff-health", ok: false, detail: "HTTP unreachable" }],
+    ],
+    [
+      "start",
+      [
+        { name: "bff-health", ok: true },
+        {
+          name: "preview-data-plane-smoke",
+          ok: false,
+          detail: "start HTTP unreachable",
+        },
+      ],
+    ],
+    [
+      "status",
+      [
+        { name: "bff-health", ok: true },
+        {
+          name: "preview-data-plane-smoke",
+          ok: false,
+          detail: "timed out",
+        },
+      ],
+    ],
+  ] as const)(
+    "fails closed when fetch rejects a candidate %s redirect",
+    async (stage, expectedChecks) => {
+      let now = 1_000;
+      const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const sleep = vi.fn(async (milliseconds: number) => {
+        now += Math.max(1, milliseconds);
+      });
+      const fetchMock = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          expect(init?.redirect).toBe("error");
+          const path = String(url);
+          if (
+            (stage === "health" && path.endsWith("/api/health")) ||
+            (stage === "start" && path.includes("/webhook")) ||
+            (stage === "status" && path.includes("/status"))
+          ) {
+            throw new TypeError("redirect rejected");
+          }
+          if (path.endsWith("/api/health")) return response({ ok: true });
+          if (path.includes("/webhook"))
+            return response({ executionId: "data-exec" });
+          return response({ status: "success" });
+        },
+      );
+      const verifier = new HttpPreviewEnvironmentVerifier({
+        fetch: fetchMock as typeof fetch,
+        capabilities: { mintControl: vi.fn(() => "d".repeat(64)) },
+        sleep,
+        pollMs: 1,
+        timeoutMs: 3,
+        runAgentSmoke: false,
+      });
+
+      try {
+        await expect(
+          verifier.verify({
+            environment: environment("https://acceptance.example.test"),
+            images: [],
+          }),
+        ).resolves.toEqual({ ok: false, checks: expectedChecks });
+      } finally {
+        dateNow.mockRestore();
+      }
+      expect(
+        fetchMock.mock.calls.every(([, init]) => init?.redirect === "error"),
+      ).toBe(true);
+    },
+  );
 
   it("waits for transient BFF unavailability before starting workflow checks", async () => {
     let healthAttempts = 0;
