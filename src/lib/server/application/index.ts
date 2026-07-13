@@ -432,8 +432,14 @@ import {
   KubernetesPreviewEnvironmentDesiredStateAdapter,
   previewEnvironmentHubKubeFetch,
 } from "$lib/server/application/adapters/preview-environment-desired-state";
+import {
+  KubernetesPreviewHeadlampRegistrationAdapter,
+} from "$lib/server/application/adapters/preview-headlamp-registration";
 import { ApplicationPreviewEnvironmentLifecycleBrokerService } from "$lib/server/application/preview-environment-lifecycle-broker";
 import { ApplicationPreviewEnvironmentObservationBrokerService } from "$lib/server/application/preview-environment-observation-broker";
+import {
+  ApplicationPreviewHeadlampRegistrationService,
+} from "$lib/server/application/preview-headlamp-registration";
 import { ApplicationPreviewEnvironmentDeletionReconcilerService } from "$lib/server/application/preview-environment-deletion-reconciler";
 import { ManifestCandidatePathPolicyAdapter } from "$lib/server/application/adapters/preview-candidate-paths";
 import { ApplicationPreviewEnvironmentService } from "$lib/server/application/preview-environments";
@@ -833,6 +839,9 @@ export function getApplicationAdapters(
     | undefined;
   let previewEnvironmentObservationBroker:
     | ApplicationPreviewEnvironmentObservationBrokerService
+    | undefined;
+  let previewHeadlampRegistration:
+    | ApplicationPreviewHeadlampRegistrationService
     | undefined;
   let previewEnvironmentDeletionReconciler:
     | ApplicationPreviewEnvironmentDeletionReconcilerService
@@ -1951,6 +1960,19 @@ export function getApplicationAdapters(
         authority: getPreviewControlSourceAuthority(),
       }));
   };
+  const getPreviewHeadlampRegistration = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error(
+        "preview Headlamp registration is available only in broker mode",
+      );
+    }
+    return (previewHeadlampRegistration ??=
+      new ApplicationPreviewHeadlampRegistrationService(
+        new KubernetesPreviewHeadlampRegistrationAdapter({
+          fetch: previewEnvironmentHubKubeFetch(),
+        }),
+      ));
+  };
   const getPreviewTraceBroker = () => {
     if (!isPreviewControlBroker()) {
       throw new Error(
@@ -2832,6 +2854,9 @@ export function getApplicationAdapters(
     },
     get previewEnvironmentObservationBroker() {
       return getPreviewEnvironmentObservationBroker();
+    },
+    get previewHeadlampRegistration() {
+      return getPreviewHeadlampRegistration();
     },
     get previewEnvironmentDeletionReconciler() {
       return getPreviewEnvironmentDeletionReconciler();
