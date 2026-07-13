@@ -13,9 +13,10 @@
 #   SUBDIR     repo subdir whose source maps onto the dev pod workdir ("." = root)
 #   PATHS      space-separated syncPaths (relative to SUBDIR) to tar + push
 #   SYNCURL    the pod's /__sync URL (…:<syncPort>/__sync)
+#   HEALTHURL  the catalog-derived application health URL (url + healthPath)
 #   EXTRASYNC  optional: space-separated  from:to  pairs (from rel to SUBDIR, to rel
 #              to the tar root/pod workdir) staged into the tar before it is built
-#   SYNC_TOKEN optional: x-sync-token shared secret
+#   SYNC_TOKEN x-sync-token capability used for uploads and status proof
 #
 # On each run, per service: stage extraSync → tar existing paths → POST /__sync →
 # if a dep manifest changed since the last run, POST /__run?cmd=deps (the sidecar
@@ -42,6 +43,9 @@ if [ -z "$SYNC_GENERATION_VALUE" ]; then
 fi
 
 rc=0
+CONVERGENCE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dev-sync-convergence.XXXXXX") || exit 1
+chmod 700 "$CONVERGENCE_DIR"
+trap 'rm -rf "$CONVERGENCE_DIR"' 0
 
 # sha256 of the concatenated existing manifests in the CWD (empty if none).
 manifest_hash() {
@@ -96,6 +100,7 @@ sync_one() {
 	: "${SUBDIR:=.}"
 	: "${PATHS:=src}"
 	: "${SYNCURL:=}"
+	: "${HEALTHURL:=}"
 	: "${EXTRASYNC:=}"
 	: "${SYNC_TOKEN:=}"
 	: "${SERVICE:=}"
@@ -110,6 +115,11 @@ sync_one() {
 	fi
 	if [ -z "$SYNCURL" ]; then
 		echo "skip: no SYNCURL for $SUBDIR"
+		rc=1
+		return
+	fi
+	if [ -z "$HEALTHURL" ]; then
+		echo "skip: no HEALTHURL for $SUBDIR"
 		rc=1
 		return
 	fi
@@ -204,13 +214,13 @@ if [ -d "$ENV_DIR" ] && [ -n "$(ls -A "$ENV_DIR" 2>/dev/null)" ]; then
 	for cfg in "$ENV_DIR"/*; do
 		[ -f "$cfg" ] || continue
 		# Reset per-service so a value from a prior file never leaks forward.
-		SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
+		SUBDIR="" PATHS="" SYNCURL="" HEALTHURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
 		# shellcheck disable=SC1090
 		. "$cfg"
 		sync_one "$(basename "$cfg")"
 	done
 elif [ -f "$ENV_FILE" ]; then
-	SUBDIR="" PATHS="" SYNCURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
+	SUBDIR="" PATHS="" SYNCURL="" HEALTHURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
 	# shellcheck disable=SC1090
 	. "$ENV_FILE"
 	sync_one ""
@@ -219,4 +229,213 @@ else
 	rc=1
 fi
 
+# Check one service's receiver generation and application health concurrently.
+# The caller launches this function once per service, so a slow service cannot
+# serialize the rest of the round.
+convergence_check_one() {
+	_cfg=$1
+	_default_service=$2
+	_diag=$3
+	SUBDIR="" SYNCURL="" HEALTHURL="" SYNC_TOKEN="" SERVICE=""
+	# shellcheck disable=SC1090
+	. "$_cfg"
+	_check_service=$SERVICE
+	[ -n "$_check_service" ] || _check_service=$_default_service
+	if [ -z "$_check_service" ]; then
+		if [ "${SUBDIR:-.}" = "." ]; then
+			_check_service=workflow-builder
+		else
+			_check_service=${SUBDIR##*/}
+		fi
+	fi
+	case "$SYNCURL" in
+		*/__sync) _status_url=${SYNCURL%/__sync}/__status ;;
+		*)
+			printf '%s: status=invalid SYNCURL; health=not checked\n' "$_check_service" >"$_diag"
+			return 1
+			;;
+	esac
+	case "$HEALTHURL" in
+		http://*|https://*) ;;
+		*)
+			printf '%s: status=not checked; health=invalid HEALTHURL\n' "$_check_service" >"$_diag"
+			return 1
+			;;
+	esac
+	if [ -z "$SYNC_TOKEN" ]; then
+		printf '%s: status=missing sync capability; health=not checked\n' "$_check_service" >"$_diag"
+		return 1
+	fi
+
+	(
+		_status_code=$(curl -sS -o "$_diag.status.json" -w '%{http_code}' \
+			--connect-timeout "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" \
+			--max-time "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" \
+			-H "x-sync-token: $SYNC_TOKEN" "$_status_url" 2>"$_diag.status.err")
+		_status_exit=$?
+		printf '%s\n' "$_status_code" >"$_diag.status.code"
+		printf '%s\n' "$_status_exit" >"$_diag.status.exit"
+	) &
+	_status_pid=$!
+	(
+		_health_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+			--connect-timeout "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" \
+			--max-time "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" \
+			"$HEALTHURL" 2>"$_diag.health.err")
+		_health_exit=$?
+		printf '%s\n' "$_health_code" >"$_diag.health.code"
+		printf '%s\n' "$_health_exit" >"$_diag.health.exit"
+	) &
+	_health_pid=$!
+	wait "$_status_pid"
+	wait "$_health_pid"
+
+	IFS= read -r _status_code <"$_diag.status.code"
+	IFS= read -r _status_exit <"$_diag.status.exit"
+	IFS= read -r _health_code <"$_diag.health.code"
+	IFS= read -r _health_exit <"$_diag.health.exit"
+
+	_status_ok=1
+	if [ "$_status_exit" -eq 0 ]; then
+		_status_detail=$(python3 - "$_diag.status.json" "$SYNC_GENERATION_VALUE" "$_check_service" "$_status_code" <<'PY_STATUS'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    payload = None
+generation = payload.get("generation") if isinstance(payload, dict) else None
+service = payload.get("syncService") if isinstance(payload, dict) else None
+ok = (
+    sys.argv[4] == "200"
+    and isinstance(payload, dict)
+    and payload.get("ok") is True
+    and generation == sys.argv[2]
+    and service == sys.argv[3]
+)
+print(f"http={sys.argv[4]} generation={generation!r} syncService={service!r}")
+raise SystemExit(0 if ok else 1)
+PY_STATUS
+		)
+		_status_ok=$?
+	else
+		_status_detail="curl-exit=$_status_exit http=$_status_code"
+	fi
+
+	_health_ok=1
+	case "$_health_exit:$_health_code" in
+		0:2??|0:3??) _health_detail="http=$_health_code" ;;
+		0:*)
+			_health_ok=0
+			_health_detail="http=$_health_code"
+			;;
+		*)
+			_health_ok=0
+			_health_detail="curl-exit=$_health_exit http=$_health_code"
+			;;
+	esac
+	printf '%s: status=%s; health=%s\n' \
+		"$_check_service" "$_status_detail" "$_health_detail" >"$_diag"
+	[ "$_status_ok" -eq 0 ] && [ "$_health_ok" -eq 1 ]
+}
+
+# Only a complete upload/dependency fanout is eligible to converge. This is an
+# observation barrier, not rollback or transaction coordination.
+if [ "$rc" -eq 0 ]; then
+	CONVERGENCE_TIMEOUT=${DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS:-300}
+	CONVERGENCE_SETTLE=${DEV_SYNC_CONVERGENCE_SETTLE_SECONDS:-1}
+	CONVERGENCE_INTERVAL=${DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS:-1}
+	CONVERGENCE_REQUEST_TIMEOUT=${DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS:-5}
+	CONVERGENCE_SUCCESS_ROUNDS=${DEV_SYNC_CONVERGENCE_SUCCESS_ROUNDS:-2}
+	for _value in "$CONVERGENCE_TIMEOUT" "$CONVERGENCE_SETTLE" \
+		"$CONVERGENCE_INTERVAL" "$CONVERGENCE_REQUEST_TIMEOUT" \
+		"$CONVERGENCE_SUCCESS_ROUNDS"; do
+		case "$_value" in
+			""|*[!0-9]*)
+				echo "convergence configuration must use whole seconds/counts" >&2
+				rc=1
+				break
+				;;
+		esac
+	done
+	if [ "$rc" -eq 0 ] && {
+		[ "$CONVERGENCE_TIMEOUT" -lt 1 ] ||
+			[ "$CONVERGENCE_REQUEST_TIMEOUT" -lt 1 ] ||
+			[ "$CONVERGENCE_SETTLE" -ge "$CONVERGENCE_TIMEOUT" ] ||
+			[ "$CONVERGENCE_SUCCESS_ROUNDS" -lt 2 ];
+	}; then
+		echo "convergence requires timeout>=1, settle<timeout, request-timeout>=1, successes>=2" >&2
+		rc=1
+	fi
+
+	CONVERGENCE_CONFIGS=""
+	if [ "$rc" -eq 0 ] && [ -d "$ENV_DIR" ] && [ -n "$(ls -A "$ENV_DIR" 2>/dev/null)" ]; then
+		for _cfg in "$ENV_DIR"/*; do
+			[ -f "$_cfg" ] && CONVERGENCE_CONFIGS="$CONVERGENCE_CONFIGS $_cfg"
+		done
+	elif [ "$rc" -eq 0 ] && [ -f "$ENV_FILE" ]; then
+		CONVERGENCE_CONFIGS=" $ENV_FILE"
+	fi
+	if [ "$rc" -eq 0 ] && [ -z "$CONVERGENCE_CONFIGS" ]; then
+		echo "convergence has no service configs" >&2
+		rc=1
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		_deadline=$(($(date +%s) + CONVERGENCE_TIMEOUT))
+		[ "$CONVERGENCE_SETTLE" -eq 0 ] || sleep "$CONVERGENCE_SETTLE"
+		_consecutive=0
+		_round=0
+		_target_count=0
+		for _cfg in $CONVERGENCE_CONFIGS; do _target_count=$((_target_count + 1)); done
+
+		while [ "$(date +%s)" -lt "$_deadline" ]; do
+			_round=$((_round + 1))
+			_remaining=$((_deadline - $(date +%s)))
+			CONVERGENCE_REQUEST_TIMEOUT_CURRENT=$CONVERGENCE_REQUEST_TIMEOUT
+			if [ "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" -gt "$_remaining" ]; then
+				CONVERGENCE_REQUEST_TIMEOUT_CURRENT=$_remaining
+			fi
+			[ "$CONVERGENCE_REQUEST_TIMEOUT_CURRENT" -gt 0 ] || break
+
+			_pids=""
+			_index=0
+			for _cfg in $CONVERGENCE_CONFIGS; do
+				_default_service=$(basename "$_cfg")
+				[ "$_cfg" = "$ENV_FILE" ] && _default_service=""
+				_diag="$CONVERGENCE_DIR/$_index.diag"
+				convergence_check_one "$_cfg" "$_default_service" "$_diag" &
+				_pids="$_pids $!"
+				_index=$((_index + 1))
+			done
+			_all_healthy=1
+			for _pid in $_pids; do
+				wait "$_pid" || _all_healthy=0
+			done
+			if [ "$_all_healthy" -eq 1 ]; then
+				_consecutive=$((_consecutive + 1))
+				echo "convergence: generation=$SYNC_GENERATION_VALUE round=$_round all=$_target_count healthy ($_consecutive/$CONVERGENCE_SUCCESS_ROUNDS)"
+				if [ "$_consecutive" -ge "$CONVERGENCE_SUCCESS_ROUNDS" ]; then
+					break
+				fi
+			else
+				_consecutive=0
+			fi
+			[ "$(date +%s)" -lt "$_deadline" ] || break
+			[ "$CONVERGENCE_INTERVAL" -eq 0 ] || sleep "$CONVERGENCE_INTERVAL"
+		done
+
+		if [ "$_consecutive" -lt "$CONVERGENCE_SUCCESS_ROUNDS" ]; then
+			echo "convergence failed: generation=$SYNC_GENERATION_VALUE did not stabilize across $_target_count service(s) within ${CONVERGENCE_TIMEOUT}s" >&2
+			for _diag in "$CONVERGENCE_DIR"/*.diag; do
+				[ -f "$_diag" ] && sed 's/^/  /' "$_diag" >&2
+			done
+			rc=1
+		fi
+	fi
+else
+	echo "convergence skipped: source/dependency fanout did not complete" >&2
+fi
 exit $rc

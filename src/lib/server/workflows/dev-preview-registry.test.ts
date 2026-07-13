@@ -187,6 +187,12 @@ describe("dev-preview registry", () => {
       OTEL_SDK_DISABLED: "true",
     });
 
+    const orchestrator = resolveDevPreviewDescriptor("workflow-orchestrator");
+    expect(orchestrator.extraEnv).toEqual({
+      WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS: "300",
+      WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS: "1",
+    });
+
     const wf = DEV_PREVIEW_SERVICES["workflow-mcp-server"];
     expect(wf.syncMode).toBe("sidecar");
     expect(wf.port).toBe(3200);

@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:d3da1060e818849faa04b68df115ac9a9a2cd42afcf5ec7d5a225a7fc7cdc329",
+  "catalogDigest": "sha256:22877c5349ccf8ffce018c1df99954cfbbb472ab17bb6fd18434c6e8d78e619d",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -821,7 +821,10 @@
           "image": "ghcr.io/pittampalliorg/workflow-orchestrator-dev"
         },
         "depsCommand": "pip install -r requirements.txt && touch /app/app.py",
-        "env": {},
+        "env": {
+          "WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS": "1",
+          "WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS": "300"
+        },
         "envFrom": [],
         "functional": false,
         "healthPath": "/healthz",

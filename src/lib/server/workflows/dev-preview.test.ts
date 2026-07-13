@@ -288,6 +288,10 @@ describe("dev-preview portability boundary", () => {
     const body = JSON.parse(String(request.body));
     expect(body.previewNative).toBe(true);
     expect(body.applyDaprShadowDefaults).toBe(false);
+    expect(body.env).toEqual({
+      WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS: "300",
+      WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS: "1",
+    });
     expect(body.envFrom).toEqual([
       { configMapRef: { name: "workflow-orchestrator-config" } },
       { configMapRef: { name: "workflow-orchestrator-otel-config" } },

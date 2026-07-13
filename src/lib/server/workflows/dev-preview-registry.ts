@@ -478,6 +478,15 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
         },
       },
     ],
+    // The first exact-SHA fan-out establishes dependency baselines for every
+    // selected service. workflow-builder can therefore be absent from Dapr for
+    // longer than the production startup default while its dev server reloads.
+    // Keep the strict read-model check, but let this dev-only process outlive
+    // that bounded dependency/HMR window and recover without replacing the pod.
+    extraEnv: {
+      WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS: "300",
+      WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS: "1",
+    },
   },
   "swebench-coordinator": {
     service: "swebench-coordinator",

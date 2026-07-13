@@ -404,6 +404,7 @@ async function provisionDevPreviewInternal(
       syncPort:
         typeof body.syncPort === "number" ? body.syncPort : descriptor.syncPort,
       url: typeof body.url === "string" ? body.url : null,
+      healthPath: descriptor.healthPath,
       syncUrl: typeof body.syncUrl === "string" ? body.syncUrl : null,
       syncCapability,
       browseUrl,
@@ -1536,6 +1537,7 @@ async function persistedReadyDevPreviewBatch(
       syncUrl !== `http://${podIP}:${syncPort}/__sync` ||
       (typeof details.url === "string" &&
         details.url !== `http://${podIP}:${port}`) ||
+      details.healthPath !== descriptor.healthPath ||
       browseUrl !== expectedBrowseUrl ||
       details.needsDapr !== Boolean(descriptor.needsDapr) ||
       daprAppId !== expectedDaprAppId ||
@@ -1561,6 +1563,7 @@ async function persistedReadyDevPreviewBatch(
       port,
       syncPort,
       url: typeof details.url === "string" ? details.url : null,
+      healthPath: descriptor.healthPath,
       syncUrl,
       syncCapability,
       browseUrl,
@@ -1633,6 +1636,7 @@ async function persistDevPreviewSession(
     port: info.port,
     syncPort: info.syncPort,
     url: info.url,
+    healthPath: info.healthPath,
     syncUrl: info.syncUrl,
     browseUrl: info.browseUrl,
     needsDapr: info.needsDapr,

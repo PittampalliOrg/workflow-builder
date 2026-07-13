@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,11 +32,13 @@ const REQUIRED_SYNC_TOOLS = [
 	'gzip',
 	'ls',
 	'mkdir',
+	'mktemp',
 	'python3',
 	'rm',
 	'sed',
 	'sh',
 	'sha256sum',
+	'sleep',
 	'tar',
 	'tr'
 ];
@@ -86,6 +89,7 @@ async function startSidecar(dest, commandsJson, allowedRoots = ['src']) {
 			DEV_SYNC_PORT: String(port),
 			DEV_SYNC_DEST: dest,
 			DEV_SYNC_TOKEN: TOKEN,
+			DEV_SYNC_ALLOW_LOCAL_RUN: 'true',
 			DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(allowedRoots),
 			...(commandsJson ? { DEV_SYNC_COMMANDS_JSON: commandsJson } : {})
 		},
@@ -115,11 +119,98 @@ function runSync(work, extraEnv = {}) {
 			...process.env,
 			DEV_SYNC_WORK: work,
 			DEV_SYNC_REPO: path.join(work, 'repo'),
+			DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS: '2',
+			DEV_SYNC_CONVERGENCE_SETTLE_SECONDS: '0',
+			DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS: '0',
+			DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS: '1',
 			PATH: syncToolPath(work),
 			...extraEnv
 		},
 		encoding: 'utf8'
 	});
+}
+
+function runSyncAsync(work, extraEnv = {}) {
+	return new Promise((resolve, reject) => {
+		const child = spawn('sh', [path.join(work, 'sync.sh')], {
+			env: {
+				...process.env,
+				DEV_SYNC_WORK: work,
+				DEV_SYNC_REPO: path.join(work, 'repo'),
+				DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS: '1',
+				DEV_SYNC_CONVERGENCE_SETTLE_SECONDS: '0',
+				DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS: '0',
+				DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS: '1',
+				PATH: syncToolPath(work),
+				...extraEnv
+			},
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
+		let stdout = '';
+		let stderr = '';
+		child.stdout.on('data', (value) => (stdout += String(value)));
+		child.stderr.on('data', (value) => (stderr += String(value)));
+		child.once('error', reject);
+		child.once('close', (status, signal) =>
+			resolve({ status, signal, stdout, stderr })
+		);
+	});
+}
+
+async function startConvergenceStub({
+	healthCodes = [200],
+	staleGeneration = null
+} = {}) {
+	let generation = null;
+	let syncService = null;
+	let statusCalls = 0;
+	let healthCalls = 0;
+	const server = http.createServer((req, res) => {
+		if (req.method === 'POST' && req.url === '/__sync') {
+			generation = req.headers['x-sync-generation'] ?? null;
+			syncService = req.headers['x-sync-service'] ?? null;
+			req.resume();
+			req.once('end', () => {
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end('{"ok":true}');
+			});
+			return;
+		}
+		if (req.method === 'GET' && req.url === '/__status') {
+			statusCalls += 1;
+			if (req.headers['x-sync-token'] !== TOKEN) {
+				res.writeHead(401).end();
+				return;
+			}
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(
+				JSON.stringify({
+					ok: true,
+					generation: staleGeneration ?? generation,
+					syncService
+				})
+			);
+			return;
+		}
+		if (req.method === 'GET' && req.url === '/app-health') {
+			const code = healthCodes[Math.min(healthCalls, healthCodes.length - 1)];
+			healthCalls += 1;
+			res.writeHead(code).end();
+			return;
+		}
+		res.writeHead(404).end();
+	});
+	await new Promise((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', resolve);
+	});
+	const { port } = server.address();
+	return {
+		base: `http://127.0.0.1:${port}`,
+		statusCalls: () => statusCalls,
+		healthCalls: () => healthCalls,
+		stop: () => new Promise((resolve) => server.close(resolve))
+	};
 }
 
 test('sync.sh uses Python 3 stdlib and has no jq runtime dependency', () => {
@@ -160,6 +251,7 @@ test('sync.sh syncs source, stages extraSync, and proves dependency state before
 			'SUBDIR=services/svc',
 			'PATHS="src"',
 			`SYNCURL=${sc.base}/__sync`,
+			`HEALTHURL=${sc.base}/healthz`,
 			'EXTRASYNC="../shared/contract:.contract-fixtures Dockerfile:.preview-capture/production.Dockerfile"',
 			`SYNC_TOKEN=${TOKEN}`,
 			''
@@ -240,6 +332,7 @@ test('sync.sh fans out over .syncenv.d and tolerates a service with no deps comm
 			`SUBDIR=services/one`,
 			`PATHS="src"`,
 			`SYNCURL=${sc.base}/__sync`,
+			`HEALTHURL=${sc.base}/healthz`,
 			`SYNC_TOKEN=${TOKEN}`,
 			''
 		].join('\n')
@@ -278,6 +371,7 @@ test('sync.sh uses one generated generation for every service in a fanout', asyn
 			`SUBDIR=services/one`,
 			`PATHS="src"`,
 			`SYNCURL=${one.base}/__sync`,
+			`HEALTHURL=${one.base}/healthz`,
 			`SYNC_TOKEN=${TOKEN}`,
 			''
 		].join('\n')
@@ -288,6 +382,7 @@ test('sync.sh uses one generated generation for every service in a fanout', asyn
 			`SUBDIR=services/two`,
 			`PATHS="src"`,
 			`SYNCURL=${two.base}/__sync`,
+			`HEALTHURL=${two.base}/healthz`,
 			`SYNC_TOKEN=${TOKEN}`,
 			''
 		].join('\n')
@@ -303,6 +398,7 @@ test('sync.sh uses one generated generation for every service in a fanout', asyn
 	assert.equal(oneStatus.generation, twoStatus.generation);
 	assert.equal(oneStatus.syncService, 'one');
 	assert.equal(twoStatus.syncService, 'two');
+	assert.match(result.stdout, /all=2 healthy \(2\/2\)/);
 });
 
 test('sync.sh never runs dependency actions after a failed source upload', (t) => {
@@ -320,7 +416,13 @@ test('sync.sh never runs dependency actions after a failed source upload', (t) =
 	write(path.join(work, '.depshash-services_svc'), 'previous-hash');
 	write(
 		path.join(work, '.syncenv'),
-		['SUBDIR=services/svc', 'PATHS="src"', 'SYNCURL=http://preview.invalid/__sync', ''].join('\n')
+		[
+			'SUBDIR=services/svc',
+			'PATHS="src"',
+			'SYNCURL=http://preview.invalid/__sync',
+			'HEALTHURL=http://preview.invalid/healthz',
+			''
+		].join('\n')
 	);
 	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
 
@@ -353,6 +455,7 @@ test('sync.sh retries a dependency change until the in-pod action succeeds', asy
 			'SUBDIR=services/svc',
 			'PATHS="src"',
 			`SYNCURL=${sidecar.base}/__sync`,
+			`HEALTHURL=${sidecar.base}/healthz`,
 			`SYNC_TOKEN=${TOKEN}`,
 			''
 		].join('\n')
@@ -366,4 +469,103 @@ test('sync.sh retries a dependency change until the in-pod action succeeds', asy
 		assert.match(result.stdout, /POST .*\/__run\?cmd=deps/);
 		assert.match(result.stderr, /leaving the prior manifest baseline for retry/);
 	}
+});
+
+test('sync.sh waits for delayed app health and requires two consecutive healthy rounds', async (t) => {
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
+	const stub = await startConvergenceStub({ healthCodes: [503, 302, 302] });
+	t.after(async () => {
+		await stub.stop();
+		fs.rmSync(work, { recursive: true, force: true });
+	});
+
+	write(path.join(work, 'repo/services/svc/src/index.ts'), 'source');
+	write(
+		path.join(work, '.syncenv'),
+		[
+			'SERVICE=svc',
+			'SUBDIR=services/svc',
+			'PATHS="src"',
+			`SYNCURL=${stub.base}/__sync`,
+			`HEALTHURL=${stub.base}/app-health`,
+			`SYNC_TOKEN=${TOKEN}`,
+			''
+		].join('\n')
+	);
+	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
+
+	const result = await runSyncAsync(work, {
+		DEV_SYNC_GENERATION: 'shared-delayed-generation'
+	});
+	assert.equal(result.status, 0, result.stderr + result.stdout);
+	assert.ok(stub.healthCalls() >= 3, 'one failure plus two consecutive healthy rounds');
+	assert.ok(stub.statusCalls() >= 3, 'status is re-proven in every health round');
+	assert.match(result.stdout, /shared-delayed-generation/);
+	assert.match(result.stdout, /healthy \(2\/2\)/);
+});
+
+test('sync.sh fails with per-service diagnostics while app health remains unhealthy', async (t) => {
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
+	const stub = await startConvergenceStub({ healthCodes: [503] });
+	t.after(async () => {
+		await stub.stop();
+		fs.rmSync(work, { recursive: true, force: true });
+	});
+
+	write(path.join(work, 'repo/services/svc/src/index.ts'), 'source');
+	write(
+		path.join(work, '.syncenv'),
+		[
+			'SERVICE=svc',
+			'SUBDIR=services/svc',
+			'PATHS="src"',
+			`SYNCURL=${stub.base}/__sync`,
+			`HEALTHURL=${stub.base}/app-health`,
+			`SYNC_TOKEN=${TOKEN}`,
+			''
+		].join('\n')
+	);
+	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
+
+	const result = await runSyncAsync(work, {
+		DEV_SYNC_GENERATION: 'unhealthy-generation'
+	});
+	assert.notEqual(result.status, 0, result.stderr + result.stdout);
+	assert.match(result.stderr, /convergence failed: generation=unhealthy-generation/);
+	assert.match(result.stderr, /svc: status=http=200 .*; health=http=503/);
+});
+
+test('sync.sh rejects a stale sidecar generation even when app health is ready', async (t) => {
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
+	const stub = await startConvergenceStub({
+		healthCodes: [204],
+		staleGeneration: 'previous-generation'
+	});
+	t.after(async () => {
+		await stub.stop();
+		fs.rmSync(work, { recursive: true, force: true });
+	});
+
+	write(path.join(work, 'repo/services/svc/src/index.ts'), 'source');
+	write(
+		path.join(work, '.syncenv'),
+		[
+			'SERVICE=svc',
+			'SUBDIR=services/svc',
+			'PATHS="src"',
+			`SYNCURL=${stub.base}/__sync`,
+			`HEALTHURL=${stub.base}/app-health`,
+			`SYNC_TOKEN=${TOKEN}`,
+			''
+		].join('\n')
+	);
+	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
+
+	const result = await runSyncAsync(work, {
+		DEV_SYNC_GENERATION: 'current-generation'
+	});
+	assert.notEqual(result.status, 0, result.stderr + result.stdout);
+	assert.match(result.stderr, /convergence failed: generation=current-generation/);
+	assert.match(result.stderr, /generation='previous-generation'/);
+	assert.match(result.stderr, /health=http=204/);
 });
