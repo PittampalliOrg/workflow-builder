@@ -64,16 +64,16 @@ describe("microservice dev session source checkout", () => {
     }
   });
 
-  it("seeds the credential-free default agent on the shared JuiceFS runtime", () => {
-    for (const source of [seedWorkflowsSource, seedWorkflowsBundle]) {
-      const start = source.indexOf('slug: "dapr-juicefs-dev-agent"');
-      const agent = source.slice(start, start + 900);
-      expect(start).toBeGreaterThan(-1);
-      expect(agent).toContain('runtime: "dapr-agent-py-juicefs"');
-      expect(agent).toContain('modelSpec: "deepseek-v4-pro"');
-      expect(agent).not.toContain("SEED_SHOWCASE_AGENT_MODEL");
-    }
-  });
+	it("seeds the brokered GLM agent on the shared JuiceFS runtime", () => {
+		for (const source of [seedWorkflowsSource, seedWorkflowsBundle]) {
+			const start = source.indexOf('slug: "glm-juicefs-builder-agent"');
+			const agent = source.slice(start, start + 900);
+			expect(start).toBeGreaterThan(-1);
+			expect(agent).toContain('runtime: "dapr-agent-py-juicefs"');
+			expect(agent).toContain('"zai/glm-5.2"');
+			expect(agent).not.toContain("SEED_SHOWCASE_AGENT_MODEL");
+		}
+	});
 
   it("leaves preview execution authority to the trusted workflow context", () => {
     expect(provision.with).not.toHaveProperty("executionId");

@@ -26,7 +26,7 @@ describe("spawnDevSession", () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValue({
 			status: "created",
 			sessionId: "session-1",
-			agentSlug: "dapr-juicefs-dev-agent",
+			agentSlug: "glm-juicefs-builder-agent",
 		});
 		spawnSessionWorkflowMock.mockResolvedValue({
 			instanceId: "session-1",
@@ -58,15 +58,15 @@ describe("spawnDevSession", () => {
 		).resolves.toEqual({
 			sessionId: "session-1",
 			url: "/sessions/session-1",
-			agentSlug: "dapr-juicefs-dev-agent",
+			agentSlug: "glm-juicefs-builder-agent",
 		});
 
 		expect(workflowDataMock.createWorkflowDevSession).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			agentPolicy: {
-				slug: "dapr-juicefs-dev-agent",
+				slug: "glm-juicefs-builder-agent",
 				runtime: "dapr-agent-py-juicefs",
-				modelSpec: "deepseek-v4-pro",
+				modelSpec: "zai/glm-5.2",
 			},
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
@@ -115,14 +115,14 @@ describe("spawnDevSession", () => {
 				executionId: "exec-1",
 				instructions: "start",
 			}),
-		).rejects.toThrow('dev-session agent "dapr-juicefs-dev-agent" not found');
+		).rejects.toThrow('dev-session agent "glm-juicefs-builder-agent" not found');
 		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects a seeded agent that drifts from the preview runtime policy", async () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
 			status: "agent_policy_mismatch",
-			agentSlug: "dapr-juicefs-dev-agent",
+			agentSlug: "glm-juicefs-builder-agent",
 		});
 
 		await expect(
