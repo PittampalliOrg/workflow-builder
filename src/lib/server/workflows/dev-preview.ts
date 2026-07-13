@@ -68,6 +68,14 @@ const DEV_PREVIEW_RESPONSE_PATH_SERVICES = new Set([
   "function-router",
 ]);
 
+function previewHostRuntimesDisabled(): boolean {
+  const value =
+    env.PREVIEW_HOST_RUNTIMES_DISABLED ??
+    process.env.PREVIEW_HOST_RUNTIMES_DISABLED ??
+    "";
+  return value.trim().toLowerCase() === "true";
+}
+
 type DevPreviewPersistSourceBundleInput = {
   executionId: string;
   userId: string;
@@ -439,12 +447,9 @@ async function provisionDevPreviewInternal(
     }
     throw cause;
   }
-  // A4: provisioning a dev pod INSIDE a vcluster preview is activity on that preview —
-  // ping its last-active clock (and wake it if slept) so the lifecycle reaper never
-  // sleeps a preview under an active dev session. The vcluster identity travels as the
-  // canonical origin (https://wfb-<name>.<tailnet>); best-effort — a touch failure
-  // never fails the provision.
-  if (previewNative) {
+  // A4: the physical host authority tracks preview activity. Candidate runtimes do
+  // not have cluster-scoped lifecycle authority and must not call that local path.
+  if (previewNative && !previewHostRuntimesDisabled()) {
     const alias = /^https:\/\/wfb-([a-z0-9][a-z0-9-]*)\./.exec(
       params.origin ?? "",
     )?.[1];

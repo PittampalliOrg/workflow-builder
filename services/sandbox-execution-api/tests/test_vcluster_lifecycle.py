@@ -551,6 +551,8 @@ def _clean_env(monkeypatch):
         "VCLUSTER_PREVIEW_ACTIVE_MINUTES",
         "VCLUSTER_PREVIEW_POOL_SIZE",
         "VCLUSTER_PREVIEW_MAX",
+        "VCLUSTER_PREVIEW_OBSERVABILITY",
+        "PREVIEW_HOST_RUNTIMES_DISABLED",
         "SANDBOX_EXECUTION_DRY_RUN",
         "SANDBOX_EXECUTION_API_TOKEN",
         "INTERNAL_API_TOKEN",
@@ -1993,10 +1995,68 @@ def test_profiled_preview_manifest_carries_immutable_contract() -> None:
     assert env["SANDBOX_EXECUTION_API_TOKEN"] == "4" * 64
     assert env["PREVIEW_RUNTIME_CAPABILITY_TOKEN"] == "5" * 64
     assert env["PREVIEW_STORAGE_CAPABILITY_TOKEN"] == "6" * 64
+    assert env["PREVIEW_OBSERVABILITY"] == "async"
     assert env["PREVIEW_SERVICES"] == ('["workflow-builder","workflow-orchestrator"]')
     assert json.loads(env["PREVIEW_PROVENANCE"]) == request.provenance
     assert env["TRUSTED_CODE"] == "true"
     assert env["EXPIRES_AT"] == "2026-07-10T12:00:00Z"
+
+
+@pytest.mark.parametrize("configured", ["async", "disabled"])
+def test_profiled_preview_observability_is_platform_controlled(
+    monkeypatch, configured: str
+) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_OBSERVABILITY", configured)
+    request = VclusterPreviewRequest(
+        name="obs-rollback",
+        profile="app-live",
+        platformRevision="a" * 40,
+    )
+
+    env = _job_env(
+        app_module._vcluster_preview_job_manifest(request, namespace="workflow-builder")
+    )
+
+    assert env["PREVIEW_OBSERVABILITY"] == configured
+
+
+@pytest.mark.parametrize("configured", ["sync", ""])
+def test_profiled_preview_observability_rejects_invalid_platform_mode(
+    monkeypatch, configured: str
+) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_OBSERVABILITY", configured)
+    request = VclusterPreviewRequest(
+        name="obs-invalid",
+        profile="app-live",
+        platformRevision="a" * 40,
+    )
+
+    with pytest.raises(ValueError, match="must be async or disabled"):
+        app_module._vcluster_preview_job_manifest(
+            request, namespace="workflow-builder"
+        )
+
+
+def test_unprofiled_preview_observability_keeps_legacy_behavior() -> None:
+    default_env = _job_env(
+        app_module._vcluster_preview_job_manifest(
+            VclusterPreviewRequest(name="legacy-default", action="down"),
+            namespace="workflow-builder",
+        )
+    )
+    explicit_env = _job_env(
+        app_module._vcluster_preview_job_manifest(
+            VclusterPreviewRequest(
+                name="legacy-async",
+                action="down",
+                previewObservability="async",
+            ),
+            namespace="workflow-builder",
+        )
+    )
+
+    assert default_env["PREVIEW_OBSERVABILITY"] == "disabled"
+    assert explicit_env["PREVIEW_OBSERVABILITY"] == "async"
 
 
 def test_profiled_live_preview_allows_only_user_or_pull_request_automation_owner() -> None:
@@ -2221,6 +2281,8 @@ def test_reconciled_app_live_requires_cold_immutable_images() -> None:
         ({"previewDb": "host-shared"}, 400, "cannot select a shared"),
         ({"previewDbMode": "shared"}, 400, "previewDbMode=cnpg"),
         ({"previewDbBootstrap": "template"}, 400, "previewDbBootstrap=migrate"),
+        ({"previewObservability": "disabled"}, 400, "platform-controlled"),
+        ({"previewObservability": "async"}, 400, "platform-controlled"),
     ],
 )
 def test_profiled_preview_rejects_unsafe_contracts(
@@ -2895,6 +2957,35 @@ def test_lifecycle_enabled_gating(monkeypatch) -> None:
     monkeypatch.delenv("VCLUSTER_PREVIEW_TTL_HOURS")
     monkeypatch.setenv("VCLUSTER_PREVIEW_TOTAL_MAX", "8")
     assert app_module._lifecycle_enabled() is True
+
+
+def test_lifecycle_disabled_without_host_runtime_authority(monkeypatch) -> None:
+    monkeypatch.setenv("VCLUSTER_PREVIEW_TOTAL_MAX", "8")
+    monkeypatch.setenv("PREVIEW_HOST_RUNTIMES_DISABLED", "true")
+
+    assert app_module._lifecycle_enabled() is False
+
+
+def test_identity_cleanup_controller_skips_without_host_runtime_authority(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PREVIEW_HOST_RUNTIMES_DISABLED", "true")
+    monkeypatch.setattr(app_module, "_preview_identity_cleanup_started", False)
+    started: list[str] = []
+
+    class _Thread:
+        def __init__(self, **kwargs) -> None:
+            started.append(kwargs["name"])
+
+        def start(self) -> None:
+            started.append("started")
+
+    monkeypatch.setattr(app_module.threading, "Thread", _Thread)
+
+    app_module._start_preview_identity_cleanup_controller()
+
+    assert started == []
+    assert app_module._preview_identity_cleanup_started is False
 
 
 # ---- list endpoint: counts + lifecycle fields -----------------------------------

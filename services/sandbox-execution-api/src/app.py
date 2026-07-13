@@ -8659,10 +8659,8 @@ class VclusterPreviewRequest(BaseModel):
     # vcluster (no shared host-Postgres connection ceiling). Defaults from env so it
     # can be flipped cluster-wide without an API change. cnpg | shared
     previewDbMode: str | None = None
-    # PREVIEW_OBSERVABILITY=disabled|async → disabled (default) keeps previews behavior-
-    # identical to today (OTEL SDK off); async re-enables async OTLP export to the host
-    # otel-collector replicated into the vcluster. Defaults from env so it can be flipped
-    # cluster-wide without an API change.
+    # Legacy unprofiled callers may select disabled|async. Profiled previews derive this
+    # from platform policy so a candidate cannot suppress its own telemetry.
     previewObservability: str | None = None
     # PREVIEW_PARALLEL_BRINGUP=true → runner backgrounds the independent infra installs
     # (Dapr/CNPG-operator/agent-sandbox/NATS) behind a hard barrier. Default false = serial.
@@ -9174,15 +9172,20 @@ def _vcluster_preview_job_manifest(
         else req.previewDbMode or os.environ.get("VCLUSTER_PREVIEW_DB_MODE", "shared")
     )
     env.append({"name": "PREVIEW_DB_MODE", "value": preview_db_mode})
-    # Preview observability mode (disabled = OTEL off, behavior-identical to today; async =
-    # re-enable async OTLP export to the replicated host otel-collector). Env-defaulted for a
-    # cluster-wide flip. The runner stages a preview-observability ConfigMap from this value.
-    preview_observability = (
-        "disabled"
-        if req.profile
-        else req.previewObservability
-        or os.environ.get("VCLUSTER_PREVIEW_OBSERVABILITY", "disabled")
-    )
+    # Profiled previews default to bounded async OTLP through their tuple-injecting physical
+    # gateway. The platform environment retains a disabled rollback; callers cannot choose it.
+    if req.profile:
+        preview_observability = os.environ.get(
+            "VCLUSTER_PREVIEW_OBSERVABILITY", "async"
+        )
+        if preview_observability not in {"async", "disabled"}:
+            raise ValueError(
+                "VCLUSTER_PREVIEW_OBSERVABILITY must be async or disabled"
+            )
+    else:
+        preview_observability = req.previewObservability or os.environ.get(
+            "VCLUSTER_PREVIEW_OBSERVABILITY", "disabled"
+        )
     env.append({"name": "PREVIEW_OBSERVABILITY", "value": preview_observability})
     # A2 cold-boot flags (default-off; env-defaulted for a cluster-wide flip). Parallel
     # bringup backgrounds the runner's independent infra installs; db-bootstrap=template
@@ -10602,10 +10605,10 @@ def _validate_profiled_preview_request(body: VclusterPreviewRequest) -> None:
             status_code=400,
             detail="profiled previews require previewDbBootstrap=migrate",
         )
-    if body.previewObservability not in {None, "disabled"}:
+    if body.previewObservability is not None:
         raise HTTPException(
             status_code=400,
-            detail="profiled previews require previewObservability=disabled",
+            detail="profiled preview observability is platform-controlled",
         )
     _validate_candidate_paths(body)
     if body.mode not in {"live", "reconciled"}:
@@ -12501,6 +12504,8 @@ def _preview_identity_cleanup_loop() -> None:
 
 
 def _start_preview_identity_cleanup_controller() -> None:
+    if _env_flag_enabled("PREVIEW_HOST_RUNTIMES_DISABLED"):
+        return
     if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
         "1",
         "true",
@@ -15118,6 +15123,8 @@ _lifecycle_reaper_lock = threading.Lock()
 
 
 def _lifecycle_enabled() -> bool:
+    if _env_flag_enabled("PREVIEW_HOST_RUNTIMES_DISABLED"):
+        return False
     return (
         _vcluster_preview_sleep_after_minutes() > 0
         or _vcluster_preview_ttl_hours() > 0
