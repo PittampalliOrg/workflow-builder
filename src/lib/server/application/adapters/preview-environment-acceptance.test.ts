@@ -22,6 +22,8 @@ const EXPECTED_PROVENANCE = Object.freeze({
   sourceRepository: "PittampalliOrg/workflow-builder",
 });
 const EXPECTED_IMAGE = `ghcr.io/pittampalliorg/workflow-builder@sha256:${"c".repeat(64)}`;
+const ACCEPTANCE_API_BASE =
+  "http://workflow-builder-x-workflow-builder-x-acceptance-one.vcluster-acceptance-one.svc.cluster.local:3000";
 
 function readinessInput() {
   return {
@@ -756,16 +758,20 @@ describe("preview acceptance infrastructure adapters", () => {
       ["data-exec", "success"],
       ["agent-exec", "success"],
     ]);
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
-      const path = String(url);
-      if (path.endsWith("/api/health")) return response({ ok: true });
-      if (path.includes("preview-data-plane-smoke/webhook"))
-        return response({ executionId: "data-exec" });
-      if (path.includes("preview-agent-smoke/webhook"))
-        return response({ executionId: "agent-exec" });
-      const execution = path.includes("data-exec") ? "data-exec" : "agent-exec";
-      return response({ status: states.get(execution) });
-    });
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const path = String(url);
+        if (path.endsWith("/api/health")) return response({ ok: true });
+        if (path.includes("preview-data-plane-smoke/webhook"))
+          return response({ executionId: "data-exec" });
+        if (path.includes("preview-agent-smoke/webhook"))
+          return response({ executionId: "agent-exec" });
+        const execution = path.includes("data-exec")
+          ? "data-exec"
+          : "agent-exec";
+        return response({ status: states.get(execution) });
+      },
+    );
     const mintControl = vi.fn(() => "d".repeat(64));
     const verifier = new HttpPreviewEnvironmentVerifier({
       fetch: fetchMock as typeof fetch,
@@ -792,6 +798,9 @@ describe("preview acceptance infrastructure adapters", () => {
         headers: { "X-Preview-Control-Capability": "d".repeat(64) },
       }),
     );
+    expect(
+      fetchMock.mock.calls.every(([, init]) => init?.redirect === "error"),
+    ).toBe(true);
     expect(mintControl).toHaveBeenCalledWith({
       previewName: "acceptance-one",
       environmentRequestId: "request-1",
@@ -801,24 +810,194 @@ describe("preview acceptance infrastructure adapters", () => {
     });
   });
 
-  it("fails before workflow checks when the URL or BFF health is unavailable", async () => {
-    const fetchMock = vi.fn(async () => response({}, 503));
+  it.each([
+    [
+      "health",
+      [{ name: "bff-health", ok: false, detail: "HTTP unreachable" }],
+    ],
+    [
+      "start",
+      [
+        { name: "bff-health", ok: true },
+        {
+          name: "preview-data-plane-smoke",
+          ok: false,
+          detail: "start HTTP unreachable",
+        },
+      ],
+    ],
+    [
+      "status",
+      [
+        { name: "bff-health", ok: true },
+        {
+          name: "preview-data-plane-smoke",
+          ok: false,
+          detail: "timed out",
+        },
+      ],
+    ],
+  ] as const)(
+    "fails closed when fetch rejects a candidate %s redirect",
+    async (stage, expectedChecks) => {
+      let now = 1_000;
+      const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const sleep = vi.fn(async (milliseconds: number) => {
+        now += Math.max(1, milliseconds);
+      });
+      const fetchMock = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          expect(init?.redirect).toBe("error");
+          const path = String(url);
+          if (
+            (stage === "health" && path.endsWith("/api/health")) ||
+            (stage === "start" && path.includes("/webhook")) ||
+            (stage === "status" && path.includes("/status"))
+          ) {
+            throw new TypeError("redirect rejected");
+          }
+          if (path.endsWith("/api/health")) return response({ ok: true });
+          if (path.includes("/webhook"))
+            return response({ executionId: "data-exec" });
+          return response({ status: "success" });
+        },
+      );
+      const verifier = new HttpPreviewEnvironmentVerifier({
+        fetch: fetchMock as typeof fetch,
+        capabilities: { mintControl: vi.fn(() => "d".repeat(64)) },
+        sleep,
+        pollMs: 1,
+        timeoutMs: 3,
+        runAgentSmoke: false,
+      });
+
+      try {
+        await expect(
+          verifier.verify({
+            environment: environment("https://acceptance.example.test"),
+            images: [],
+          }),
+        ).resolves.toEqual({ ok: false, checks: expectedChecks });
+      } finally {
+        dateNow.mockRestore();
+      }
+      expect(
+        fetchMock.mock.calls.every(([, init]) => init?.redirect === "error"),
+      ).toBe(true);
+    },
+  );
+
+  it("waits for transient BFF unavailability before starting workflow checks", async () => {
+    let healthAttempts = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const path = String(url);
+      if (path.endsWith("/api/health")) {
+        healthAttempts += 1;
+        if (healthAttempts === 1) throw new TypeError("connection refused");
+        return response({ ok: true });
+      }
+      if (path.includes("preview-data-plane-smoke/webhook"))
+        return response({ executionId: "data-exec" });
+      return response({ status: "success" });
+    });
+    const sleep = vi.fn(async () => undefined);
+    const mintControl = vi.fn(() => "d".repeat(64));
     const verifier = new HttpPreviewEnvironmentVerifier({
       fetch: fetchMock as typeof fetch,
-      capabilities: { mintControl: vi.fn(() => "d".repeat(64)) },
+      capabilities: { mintControl },
+      sleep,
+      pollMs: 1,
+      timeoutMs: 100,
+      runAgentSmoke: false,
     });
-    await expect(
-      verifier.verify({ environment: environment(null), images: [] }),
-    ).resolves.toMatchObject({ ok: false, checks: [{ name: "bff-health" }] });
+
     await expect(
       verifier.verify({
         environment: environment("https://acceptance.example.test"),
         images: [],
       }),
-    ).resolves.toMatchObject({
-      ok: false,
-      checks: [{ name: "bff-health", ok: false }],
+    ).resolves.toEqual({
+      ok: true,
+      checks: [
+        { name: "bff-health", ok: true },
+        { name: "preview-data-plane-smoke", ok: true },
+      ],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(1);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      `${ACCEPTANCE_API_BASE}/api/health`,
+      `${ACCEPTANCE_API_BASE}/api/health`,
+      `${ACCEPTANCE_API_BASE}/api/workflows/preview-data-plane-smoke/webhook`,
+      `${ACCEPTANCE_API_BASE}/api/internal/agent/workflows/executions/data-exec/status`,
+    ]);
+    expect(mintControl).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds failed BFF readiness and does not start workflow checks", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request) =>
+      response({}, 503),
+    );
+    let now = 1_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const sleep = vi.fn(async (milliseconds: number) => {
+      now += milliseconds;
+    });
+    const mintControl = vi.fn(() => "d".repeat(64));
+    const verifier = new HttpPreviewEnvironmentVerifier({
+      fetch: fetchMock as typeof fetch,
+      capabilities: { mintControl },
+      sleep,
+      pollMs: 10,
+      timeoutMs: 25,
+    });
+
+    try {
+      await expect(
+        verifier.verify({
+          environment: environment("https://acceptance.example.test"),
+          images: [],
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        checks: [{ name: "bff-health", ok: false, detail: "HTTP 503" }],
+      });
+    } finally {
+      dateNow.mockRestore();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[10], [10], [5]]);
+    expect(mintControl).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.every(
+        ([url]) => String(url) === `${ACCEPTANCE_API_BASE}/api/health`,
+      ),
+    ).toBe(true);
+  });
+
+  it("fails before workflow checks when no preview endpoint is resolvable", async () => {
+    const fetchMock = vi.fn();
+    const verifier = new HttpPreviewEnvironmentVerifier({
+      fetch: fetchMock as typeof fetch,
+      capabilities: { mintControl: vi.fn(() => "d".repeat(64)) },
+    });
+    const unresolved = {
+      ...environment(null),
+      name: "a".repeat(40),
+    } as PreviewEnvironment;
+
+    await expect(
+      verifier.verify({ environment: unresolved, images: [] }),
+    ).resolves.toEqual({
+      ok: false,
+      checks: [
+        {
+          name: "bff-health",
+          ok: false,
+          detail: "preview URL is not resolvable",
+        },
+      ],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

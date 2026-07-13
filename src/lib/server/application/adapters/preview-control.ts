@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { Agent as UndiciAgent, Pool } from "undici";
 import { env } from "$env/dynamic/private";
 import type {
   PreviewControlEnvironmentInspectionPort,
@@ -1258,12 +1259,27 @@ export class HttpPreviewInfrastructureCandidateBrokerAdapter implements PreviewI
   }
 }
 
+const previewAcceptanceDispatcher = new UndiciAgent({
+  factory: (origin, options) =>
+    new Pool(origin, {
+      ...options,
+      headersTimeout: 0,
+      bodyTimeout: 0,
+    }),
+});
+
+const previewAcceptanceFetch: typeof globalThis.fetch = (input, init) =>
+  globalThis.fetch(input, {
+    ...init,
+    dispatcher: previewAcceptanceDispatcher,
+  } as RequestInit);
+
 /** Preview-local acceptance client; all build, GitHub, and cluster authority stays physical. */
 export class HttpPreviewAcceptanceBrokerAdapter implements PreviewAcceptanceBrokerPort {
   private readonly fetchImpl: typeof globalThis.fetch;
 
   constructor(private readonly options: HttpPreviewAcceptanceBrokerOptions) {
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.fetchImpl = options.fetch ?? previewAcceptanceFetch;
   }
 
   async replay(

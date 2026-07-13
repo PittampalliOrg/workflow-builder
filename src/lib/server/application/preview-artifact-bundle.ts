@@ -9,6 +9,7 @@ import type { StrictPreviewCapture } from "$lib/server/application/preview-accep
 
 const MAX_MANIFEST_BYTES = 128 * 1024 * 1024;
 const MAX_OVERLAY_BYTES = 25 * 1024 * 1024;
+const MAX_OVERLAY_BASE64_LENGTH = Math.ceil(MAX_OVERLAY_BYTES / 3) * 4;
 const MAX_OVERLAY_EXPANDED_BYTES = 128 * 1024 * 1024;
 const MAX_TAR_MEMBERS = 20_000;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
@@ -100,9 +101,41 @@ function canonicalMappings(
 	);
 }
 
+function hasStandardBase64Syntax(encoded: string): boolean {
+	// Repeated-group regexes can exhaust V8's stack on multi-megabyte captures.
+	if (
+		encoded.length < 4 ||
+		encoded.length > MAX_OVERLAY_BASE64_LENGTH ||
+		encoded.length % 4 !== 0
+	) {
+		return false;
+	}
+	let padding = 0;
+	if (encoded.charCodeAt(encoded.length - 1) === 0x3d) padding += 1;
+	if (encoded.charCodeAt(encoded.length - 2) === 0x3d) padding += 1;
+	const contentLength = encoded.length - padding;
+	for (let index = 0; index < contentLength; index += 1) {
+		const character = encoded.charCodeAt(index);
+		if (
+			(character >= 0x41 && character <= 0x5a) ||
+			(character >= 0x61 && character <= 0x7a) ||
+			(character >= 0x30 && character <= 0x39) ||
+			character === 0x2b ||
+			character === 0x2f
+		) {
+			continue;
+		}
+		return false;
+	}
+	for (let index = contentLength; index < encoded.length; index += 1) {
+		if (encoded.charCodeAt(index) !== 0x3d) return false;
+	}
+	return true;
+}
+
 function decodeBase64(value: unknown): Buffer {
 	const encoded = exactString(value, "tarGzipBase64");
-	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+	if (!hasStandardBase64Syntax(encoded)) {
 		throw new PreviewArtifactBundleError("overlay tarGzipBase64 is invalid");
 	}
 	const bytes = Buffer.from(encoded, "base64");

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  PreviewEnvironmentDeletionIntent,
+} from "$lib/server/application/ports/preview-environments";
 import {
   claimVclusterPreview,
   getVclusterPreviewCleanup,
@@ -245,6 +248,42 @@ describe("vcluster-preview A3 claim-first client", () => {
         "x-preview-archive-teardown-token",
       ),
     ).toBe("archive-proof-token");
+  });
+
+  it("threads the complete controller deletion intent to SEA", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ name: "failed-cold", status: "terminating" }, 202),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const deletionIntent = {
+      id: `sha256:${"d".repeat(64)}`,
+      name: "failed-cold",
+      environmentUid: "12345678-1234-1234-1234-123456789abc",
+      requestId: "request-failed-cold",
+      platformRevision: "a".repeat(40),
+      sourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+      deletionTimestamp: "2026-07-12T12:00:00.000Z",
+    } as PreviewEnvironmentDeletionIntent;
+
+    await teardownVclusterPreview(deletionIntent.name, {
+      mode: "owned",
+      requestId: deletionIntent.requestId,
+      sourceRevision: deletionIntent.sourceRevision,
+      archiveConfirmed: true,
+      deletionIntent,
+    });
+
+    expect(bodyOf(fetchMock.mock.calls[0]?.[1])).toEqual({
+      expectedRequestId: deletionIntent.requestId,
+      expectedSourceRevision: deletionIntent.sourceRevision,
+      environmentUid: deletionIntent.environmentUid,
+      deletionIntentId: deletionIntent.id,
+      platformRevision: deletionIntent.platformRevision,
+      catalogDigest: deletionIntent.catalogDigest,
+      deletionTimestamp: deletionIntent.deletionTimestamp,
+    });
   });
 
   it("does not send archive proof before the application confirms durability", async () => {

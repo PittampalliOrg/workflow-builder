@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getGlobalDispatcher } from "undici";
 import {
   GithubPreviewControlSourceAdapter,
   GithubPreviewControlPullRequestAdapter,
@@ -657,6 +658,47 @@ function acceptanceAdapter(proof: unknown, status = 200) {
 }
 
 describe("HttpPreviewAcceptanceBrokerAdapter", () => {
+  it("uses a local long-running dispatcher without changing the global dispatcher", async () => {
+    const globalDispatcher = getGlobalDispatcher();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json(acceptanceProof()));
+    try {
+      const adapter = new HttpPreviewAcceptanceBrokerAdapter({
+        baseUrl: () => "http://preview-control-broker:3000",
+        token: () => "c".repeat(64),
+        identity: () => ({
+          previewName: "preview1",
+          environmentRequestId: "environment-request-1",
+          environmentPlatformRevision: "9".repeat(40),
+          environmentSourceRevision: BASE_SHA,
+          catalogDigest: ACCEPTANCE_DIGEST,
+        }),
+        catalog: {
+          listPreviewNativeServices: () => ["workflow-builder"],
+          assertPreviewNativeServices: (services) => services,
+          assertAcceptanceReplayServices: (services) => services,
+          acceptanceImageRepository: (service) =>
+            `ghcr.io/pittampalliorg/${service}`,
+        },
+      });
+
+      await expect(adapter.replay(acceptanceInput())).resolves.toMatchObject({
+        ok: true,
+      });
+
+      const init = fetchSpy.mock.calls[0]?.[1] as
+        | (RequestInit & { dispatcher?: unknown })
+        | undefined;
+      expect(init?.dispatcher).toBeDefined();
+      expect(init?.dispatcher).not.toBe(globalDispatcher);
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(getGlobalDispatcher()).toBe(globalDispatcher);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("mints the local tuple into the command and validates complete success proof", async () => {
     const adapter = acceptanceAdapter(acceptanceProof());
 

@@ -582,7 +582,7 @@ def test_submit_with_session_secret_env_creates_secret_before_sandbox(
     monkeypatch.setattr(
         app_module,
         "_wait_for_agent_host_ready",
-        lambda *_args, **_kwargs: "queued",
+        lambda *_args, **_kwargs: app_module.AgentHostReadiness(status="queued"),
     )
     monkeypatch.setattr(
         app_module,

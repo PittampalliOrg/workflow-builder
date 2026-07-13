@@ -408,7 +408,6 @@ import { ApplicationPreviewSessionContinuationService } from "$lib/server/applic
 import {
   LegacyVclusterPreviewGateway,
   LegacyDevPreviewSidecarGateway,
-  LegacyPreviewEnvironmentCleanupReceiptAdapter,
 } from "$lib/server/application/adapters/dev-previews";
 import { LegacyDevPreviewSourceCaptureAdapter } from "$lib/server/application/adapters/dev-preview-source-capture";
 import {
@@ -1789,7 +1788,9 @@ export function getApplicationAdapters(
       new ApplicationPreviewEnvironmentDeletionReconcilerService({
         outbox: getPreviewEnvironmentDesiredState(),
         gateway: getLocalVclusterPreviewGateway(),
-        receipts: new LegacyPreviewEnvironmentCleanupReceiptAdapter(),
+        // POC: retain the exact down Job until a same-name teardown replaces it.
+        // Eager post-finalization pruning can race the acceptance caller before
+        // it durably stores the immutable-image receipt.
         runtimeBudgets: getPreviewRuntimeBudgetCleanup(),
         runtimeBudgetRetentionHours: boundedPreviewRuntimeInteger(
           env.PREVIEW_RUNTIME_BUDGET_TOMBSTONE_HOURS ??

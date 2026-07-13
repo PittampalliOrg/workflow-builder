@@ -31,6 +31,7 @@ import {
   resolvePreviewAcceptanceBuild,
   resolveRequestedPreviewAcceptanceServiceSet,
 } from "$lib/server/workflows/dev-preview-registry";
+import { previewApiBaseUrl } from "$lib/server/application/adapters/preview-read-proxy";
 
 type Sleep = (milliseconds: number) => Promise<void>;
 
@@ -565,22 +566,18 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
   async verify(
     input: Parameters<PreviewEnvironmentVerificationPort["verify"]>[0],
   ) {
-    const baseUrl = input.environment.runtime.url?.replace(/\/+$/, "");
+    const baseUrl = previewApiBaseUrl({
+      name: input.environment.name,
+      url: input.environment.runtime.url,
+      pool: null,
+    });
     if (!baseUrl) {
-      return failure("bff-health", "preview URL is absent");
+      return failure("bff-health", "preview URL is not resolvable");
     }
     const checks: Array<{ name: string; ok: boolean; detail?: string }> = [];
-    const health = await this.fetchImpl(`${baseUrl}/api/health`, {
-      signal: AbortSignal.timeout(15_000),
-    }).catch(() => null);
-    checks.push({
-      name: "bff-health",
-      ok: health?.ok === true,
-      ...(health?.ok
-        ? {}
-        : { detail: `HTTP ${health?.status ?? "unreachable"}` }),
-    });
-    if (!health?.ok) return { ok: false, checks };
+    const health = await this.waitForBffHealth(baseUrl);
+    checks.push(health);
+    if (!health.ok) return { ok: false, checks };
 
     let capability: string;
     try {
@@ -626,6 +623,31 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
     return { ok: checks.every((check) => check.ok), checks };
   }
 
+  private async waitForBffHealth(
+    baseUrl: string,
+  ): Promise<{ name: string; ok: boolean; detail?: string }> {
+    const deadline = Date.now() + this.timeoutMs;
+    let detail = "HTTP unreachable";
+
+    do {
+      const requestTimeoutMs = Math.max(
+        1,
+        Math.min(15_000, deadline - Date.now()),
+      );
+      const health = await this.fetchImpl(`${baseUrl}/api/health`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      }).catch(() => null);
+      if (health?.ok) return { name: "bff-health", ok: true };
+
+      detail = `HTTP ${health?.status ?? "unreachable"}`;
+      if (Date.now() >= deadline) break;
+      await this.sleep(Math.min(this.pollMs, deadline - Date.now()));
+    } while (Date.now() < deadline);
+
+    return { name: "bff-health", ok: false, detail };
+  }
+
   private async runWorkflowSmoke(
     baseUrl: string,
     environmentId: string,
@@ -642,11 +664,12 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
         },
+        redirect: "error",
         body: JSON.stringify({ source: "preview-acceptance" }),
         signal: AbortSignal.timeout(30_000),
       },
     ).catch(() => null);
-    const body = (await started?.json().catch(() => ({}))) as Record<
+    const body = ((await started?.json().catch(() => ({}))) ?? {}) as Record<
       string,
       unknown
     >;
@@ -666,13 +689,12 @@ export class HttpPreviewEnvironmentVerifier implements PreviewEnvironmentVerific
         `${baseUrl}/api/internal/agent/workflows/executions/${encodeURIComponent(executionId)}/status`,
         {
           headers: { "X-Preview-Control-Capability": capability },
+          redirect: "error",
           signal: AbortSignal.timeout(15_000),
         },
       ).catch(() => null);
-      const statusBody = (await response?.json().catch(() => ({}))) as Record<
-        string,
-        unknown
-      >;
+      const statusBody = ((await response?.json().catch(() => ({}))) ??
+        {}) as Record<string, unknown>;
       const status =
         typeof statusBody.status === "string" ? statusBody.status : "";
       if (status === "success") return { name: workflowId, ok: true };

@@ -212,6 +212,7 @@ class PreviewRunnerIdentityReservation:
     namespace_ready_before: bool
     target_namespace_present: bool
     runner_generation: str
+    namespace_runner_generation: str
 
 
 class PreviewRunnerIdentityAdapter:
@@ -229,12 +230,23 @@ class PreviewRunnerIdentityAdapter:
         lifecycle: str | None,
         runner_generation: str,
         allow_absent_down_bootstrap: bool = False,
+        expected_existing_runner_generation: str | None = None,
     ) -> PreviewRunnerIdentityReservation:
         if not _RUNNER_GENERATION_RE.fullmatch(runner_generation):
             raise PreviewRunnerIdentityError("runner generation is invalid")
         if allow_absent_down_bootstrap and action != "down":
             raise PreviewRunnerIdentityError(
                 "absent identity bootstrap is allowed only for down"
+            )
+        if expected_existing_runner_generation is not None and (
+            action != "down"
+            or not _RUNNER_GENERATION_RE.fullmatch(
+                expected_existing_runner_generation
+            )
+            or expected_existing_runner_generation == runner_generation
+        ):
+            raise PreviewRunnerIdentityError(
+                "preserved namespace generation requires a distinct exact down proof"
             )
         contract = PreviewRunnerIdentityContract(preview_name, lifecycle)
         namespace = self._read_optional(
@@ -280,7 +292,16 @@ class PreviewRunnerIdentityAdapter:
                     contract,
                     namespace,
                     require_admitted=action != "up",
+                    runner_generation=expected_existing_runner_generation,
                 )
+
+            if expected_existing_runner_generation is not None and not target_required:
+                raise PreviewRunnerIdentityError(
+                    "preserved namespace generation requires an existing namespace"
+                )
+            namespace_runner_generation = (
+                expected_existing_runner_generation or runner_generation
+            )
 
             if target_required:
                 self._ensure_service_account(contract, created)
@@ -345,7 +366,9 @@ class PreviewRunnerIdentityAdapter:
                                 "preview.stacks.io/identity-ready": "true",
                             },
                             "annotations": {
-                                RUNNER_GENERATION_ANNOTATION: runner_generation
+                                RUNNER_GENERATION_ANNOTATION: (
+                                    namespace_runner_generation
+                                )
                             },
                         }
                     },
@@ -357,7 +380,7 @@ class PreviewRunnerIdentityAdapter:
                     contract,
                     ready_namespace,
                     require_ready=True,
-                    runner_generation=runner_generation,
+                    runner_generation=namespace_runner_generation,
                 )
             return PreviewRunnerIdentityReservation(
                 identity_name=contract.identity_name,
@@ -367,6 +390,7 @@ class PreviewRunnerIdentityAdapter:
                 namespace_ready_before=namespace_ready_before,
                 target_namespace_present=target_required,
                 runner_generation=runner_generation,
+                namespace_runner_generation=namespace_runner_generation,
             )
         except Exception as exc:
             try:
@@ -416,7 +440,7 @@ class PreviewRunnerIdentityAdapter:
                 contract,
                 namespace,
                 require_ready=True,
-                runner_generation=reservation.runner_generation,
+                runner_generation=reservation.namespace_runner_generation,
             )
             self._core.patch_namespace(
                 name=contract.target_namespace,
@@ -432,7 +456,7 @@ class PreviewRunnerIdentityAdapter:
                 namespace,
                 require_ready=True,
                 require_admitted=True,
-                runner_generation=reservation.runner_generation,
+                runner_generation=reservation.namespace_runner_generation,
             )
         except Exception as exc:
             if isinstance(exc, PreviewRunnerIdentityError):

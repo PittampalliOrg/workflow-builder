@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { gzipSync } from "node:zlib";
+import { createHash, randomBytes } from "node:crypto";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { pack } from "tar-stream";
 import { describe, expect, it, vi } from "vitest";
 import { DevPreviewServiceCatalogAdapter } from "$lib/server/application/adapters/dev-preview-service-catalog";
@@ -22,7 +22,7 @@ function sha256(bytes: Buffer): `sha256:${string}` {
 	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-async function tarGzip(entries: Record<string, string>): Promise<Buffer> {
+async function tarGzip(entries: Record<string, string | Buffer>): Promise<Buffer> {
 	const archive = pack();
 	const chunks: Buffer[] = [];
 	const completed = new Promise<Buffer>((resolve, reject) => {
@@ -38,7 +38,7 @@ async function tarGzip(entries: Record<string, string>): Promise<Buffer> {
 }
 
 async function strictEnvelope(
-	entries: Record<string, string>,
+	entries: Record<string, string | Buffer>,
 ): Promise<{ envelope: PreviewArtifactTransferEnvelope; bytes: Buffer }> {
 	const contract = catalog.captureContract("workflow-builder");
 	if (!contract) throw new Error("workflow-builder capture contract missing");
@@ -112,6 +112,21 @@ async function strictEnvelope(
 	};
 }
 
+function rewriteOverlayEncoding(
+	input: { envelope: PreviewArtifactTransferEnvelope; bytes: Buffer },
+	rewrite: (encoded: string) => string,
+): { envelope: PreviewArtifactTransferEnvelope; bytes: Buffer } {
+	const manifest = JSON.parse(gunzipSync(input.bytes).toString("utf8")) as {
+		services: Array<{ tarGzipBase64: string }>;
+	};
+	manifest.services[0].tarGzipBase64 = rewrite(manifest.services[0].tarGzipBase64);
+	const bytes = gzipSync(Buffer.from(JSON.stringify(manifest), "utf8"));
+	return {
+		bytes,
+		envelope: { ...input.envelope, fileDigest: sha256(bytes) },
+	};
+}
+
 function harness() {
 	const authority: PreviewControlSourceAuthorityPort = {
 		authorize: vi.fn(async (input) => ({
@@ -171,6 +186,40 @@ describe("ApplicationPreviewArtifactIngressService", () => {
 			importIdentity: { services: ["workflow-builder"] },
 		});
 		expect(h.store.put).toHaveBeenCalledOnce();
+	});
+
+	it("accepts a multi-megabyte canonical base64 overlay without recursive regex validation", async () => {
+		const h = harness();
+		const input = await strictEnvelope({
+			"src/large-overlay.bin": randomBytes(4 * 1024 * 1024),
+		});
+		const manifest = JSON.parse(gunzipSync(input.bytes).toString("utf8")) as {
+			services: Array<{ tarGzipBase64: string }>;
+		};
+		expect(manifest.services[0].tarGzipBase64.length).toBeGreaterThan(5 * 1024 * 1024);
+
+		await expect(h.service.ingest(input.envelope, input.bytes)).resolves.toMatchObject({
+			id: "central-artifact-1",
+		});
+		expect(h.store.put).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		["invalid character", (encoded: string) => `!${encoded.slice(1)}`],
+		["invalid padding", (encoded: string) => `${encoded.slice(0, -4)}A===`],
+		["invalid length", (encoded: string) => encoded.slice(0, -1)],
+	])("rejects %s in standard base64 overlays", async (_scenario, rewrite) => {
+		const h = harness();
+		const valid = await strictEnvelope({ "src/index.ts": "export const ok = true;" });
+		const input = rewriteOverlayEncoding(valid, rewrite);
+
+		await expect(h.service.ingest(input.envelope, input.bytes)).rejects.toMatchObject({
+			name: PreviewArtifactIngressError.name,
+			statusCode: 409,
+			message: "overlay tarGzipBase64 is invalid",
+		});
+		expect(h.authority.authorize).not.toHaveBeenCalled();
+		expect(h.store.put).not.toHaveBeenCalled();
 	});
 
 	it("rejects an otherwise valid bundle containing a non-catalog GitHub workflow", async () => {

@@ -8,6 +8,7 @@ import type {
   VclusterPreviewRecord,
 } from "$lib/types/dev-previews";
 import type {
+  PreviewEnvironmentDeletionIntent,
   PreviewEnvironmentLifecycle,
   PreviewEnvironmentLane,
   PreviewEnvironmentOrigin,
@@ -163,10 +164,7 @@ export interface VclusterPreviewGatewayPort {
           /** Durable post-grace loss-accounting marker for bounded forced teardown. */
           archiveQuarantine?: PreviewArchiveQuarantineGuard;
           /** Broker-only identity that binds the SEA receipt to one deleting CR UID. */
-          deletionIntent?: Readonly<{
-            id: `sha256:${string}`;
-            environmentUid: string;
-          }>;
+          deletionIntent?: PreviewEnvironmentDeletionIntent;
         }>
       | Readonly<{ mode: "superseded"; protectedRequestId: string }>,
   ): Promise<VclusterPreviewRecord>;

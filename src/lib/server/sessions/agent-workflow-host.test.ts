@@ -94,11 +94,61 @@ describe("agent workflow host provisioning", () => {
 						agentAppId: "agent-session-returned",
 						sandboxName: "agent-host-agent-session-returned",
 						status: "ready",
+						baseUrl: "http://10.244.1.20:8002",
+						podIP: "10.244.1.20",
+						podName: "agent-host-agent-session-returned-pod",
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				);
 			}) as unknown as typeof fetch,
 		);
+	});
+
+	it("carries SEA's ready pod endpoint without a Kubernetes lookup", async () => {
+		vi.mocked(getAgentWorkflowHostPod).mockClear();
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-helper-1",
+			agentConfig: { runtime: "claude-code-cli", mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: 15,
+		});
+
+		expect(result).toMatchObject({
+			status: "ready",
+			baseUrl: "http://10.244.1.20:8002",
+			podIP: "10.244.1.20",
+			podName: "agent-host-agent-session-returned-pod",
+		});
+		expect(getAgentWorkflowHostPod).not.toHaveBeenCalled();
+	});
+
+	it("rejects a ready endpoint that does not match SEA's pod IP", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					agentAppId: "agent-session-returned",
+					sandboxName: "agent-host-agent-session-returned",
+					status: "ready",
+					baseUrl: "http://10.244.1.99:8002",
+					podIP: "10.244.1.20",
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		);
+
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-helper-2",
+			agentConfig: { runtime: "claude-code-cli", mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: 15,
+		});
+
+		expect(result).not.toHaveProperty("baseUrl");
+		expect(result).not.toHaveProperty("podIP");
 	});
 
 	it("omits timeoutSeconds for direct interactive session hosts", async () => {
@@ -292,6 +342,9 @@ describe("agent workflow host provisioning", () => {
 			agentAppId: "agent-session-returned",
 			sandboxName: "agent-host-agent-session-returned",
 			status: "ready",
+			baseUrl: "http://10.244.1.20:8002",
+			podIP: "10.244.1.20",
+			podName: "agent-host-agent-session-returned-pod",
 		});
 		expect(fetch).toHaveBeenCalledTimes(1);
 		const call = vi.mocked(fetch).mock.calls[0];
