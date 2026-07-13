@@ -29,6 +29,11 @@ service, adversarial fork testing, exhaustive failure injection, a split broker
 process, strict GitHub branch protection, or long-duration soak testing. Those
 are post-POC hardening and should not delay a usable inner loop.
 
+This guide distinguishes implemented contracts from wet evidence. Commands and
+expected results below describe the current implementation; they do not prove a
+particular PreviewEnvironment run passed. Record the bounded replay evidence in
+the dedicated section below before declaring the POC complete.
+
 ## Preconditions
 
 - Launch an `app-live` PreviewEnvironment on the dev spoke from Workflow
@@ -39,9 +44,15 @@ are post-POC hardening and should not delay a usable inner loop.
 - Select only services with `capabilities.previewNative: true` in
   `services/shared/dev-preview-service-catalog.json`.
 - Use `mode: preview-native` and the preview's HTTPS origin when starting the
-  `microservice-dev-session` workflow.
+  `microservice-dev-session` workflow. From the preview UI, derive that value
+  from the current browser's `window.location.origin`; do not prefer a persisted
+  or configured environment origin. The configured value is only a non-browser
+  fallback.
 - Pass the exact source SHA to the workflow. Do not let the agent begin from a
   moving default branch.
+- Do not supply an agent slug. The handoff is fixed to
+  `dapr-juicefs-dev-agent` on `dapr-agent-py-juicefs` with model
+  `deepseek-v4-pro`; caller-selected agents are outside this POC contract.
 
 Current preview-native services:
 
@@ -55,6 +66,26 @@ The catalog check proves that the executable TypeScript registry, canonical JSON
 artifact, and generated stacks mirrors have not diverged. `swebench-coordinator`
 remains explicitly host-throwaway only; it is not silently dropped from a
 preview-native request.
+
+When this path changes, run only its focused POC regressions before the bounded
+wet replay:
+
+```bash
+pnpm exec vitest run \
+  scripts/fixtures/generator-critic/microservice-dev-session.test.ts \
+  src/lib/server/application/workflow-data.test.ts \
+  src/lib/server/sessions/agent-workflow-host.test.ts \
+  src/lib/server/sessions/dev-session-handoff.test.ts \
+  src/lib/server/sessions/runtime-target.test.ts \
+  src/lib/server/sessions/spawn.test.ts \
+  src/lib/server/workflows/dev-preview.test.ts \
+  src/lib/components/dev/dev-launch-origin.test.ts \
+  'src/routes/api/internal/workflows/executions/[executionId]/interactive-session/interactive-session-route.test.ts' &&
+(
+  cd services/workflow-orchestrator
+  uv run pytest tests/test_microservice_dev_session_fixture.py
+)
+```
 
 ## Start The Session
 
@@ -72,20 +103,57 @@ Launch `microservice-dev-session` with an input shaped like:
   "mode": "preview-native",
   "sourceRevision": "<exact-workflow-builder-sha>",
   "previewOrigin": "https://wfb-<preview>.<tailnet-suffix>",
-  "keepPreview": "true",
-  "agentSlug": "cli-dev-agent"
+  "keepPreview": "true"
 }
 ```
 
-The workflow provisions one dev pod per selected service, then creates exactly
-one checkout at `/sandbox/work/repo`. It writes:
+For an in-preview browser launch, `previewOrigin` must equal the current page's
+origin. A stale persistent-dev or other-environment origin would route sync and
+lifecycle calls outside the isolated environment and is a failed launch input.
+
+The workflow provisions one dev pod per selected service. A trusted helper
+checks out the exact sparse source revision on its local disk, publishes one
+mode-`0600` archive plus digest into the execution's JuiceFS workspace, and
+writes a mode-`0700` activator. It does not copy its GitHub credential into the
+interactive agent host. The shared workspace contains:
 
 ```text
-/sandbox/work/repo/                 one detached monorepo checkout
 /sandbox/work/.preview-services.json provision results
 /sandbox/work/.syncenv.d/<service>  service-to-pod mappings
+/sandbox/work/repo.tar              exact sparse source archive
+/sandbox/work/repo.tar.sha256       expected archive digest
+/sandbox/work/activate-repo.sh      fail-closed local activation
 /sandbox/work/sync.sh               catalog-driven fan-out client
 ```
+
+The handoff does not accept an agent override. Before creating a session or its
+initial event, the application verifies the exact slug, agent-row runtime,
+published-config runtime, and model. It then requires a new per-session workflow
+host using the `dapr-agent-py-juicefs` execution class. Provisioning errors and a
+null host fail the handoff; it never falls back to a warm pool, persisted runtime
+app ID, or caller-selected route.
+
+The Dapr JuiceFS agent uses only the tuple-bound preview runtime egress for model
+calls. Provider credentials remain at the physical broker; the preview receives
+a purpose-specific runtime capability and inert provider placeholders. No host
+CLI subscription credential, GitHub credential, or checkpoint Gitea credential
+is delivered to the agent host.
+
+At the start of the persistent agent session, activate the checkout once before
+reporting ready:
+
+```bash
+/sandbox/work/activate-repo.sh
+cd /sandbox/work/repo
+git rev-parse HEAD
+```
+
+Activation copies the archive once to a private pod-local temporary file,
+verifies its digest and exact Git revision, extracts it atomically to
+`/tmp/wfb-dev-repo`, and points `/sandbox/work/repo` at that directory. A repeat
+activation in the same pod returns `REUSED` and preserves dirty edits. The
+archive, digest, activator, generated mappings, and symlink are excluded from
+Git status and promotion inputs.
 
 Preview-native multi-service adoption is a staged transaction. SEA first creates
 the exact Lease and Sandbox for every selected service. Each staged pod carries
@@ -99,6 +167,10 @@ identity and `scheduled` phase on the anchor Sandbox before returning HTTP
 `202`. The durable workflow repeats the identical request through the router and
 BFF, binds every receipt to the exact requested service set and stable batch ID,
 and accepts only HTTP `200` with phase `active` before its bounded deadline.
+On replay, the BFF reconstructs the complete exact batch from persisted session
+records before any SEA write and sends only the same activation request. A
+pending retry must not stage or delete a service again. Partial persistence is
+retryable; contradictory persistence fails closed.
 After the response-path grace, SEA locks and revalidates the whole set, scales
 every old Deployment to zero, proves every old primary and Dapr routing surface
 empty, releases every selector gate, and requires each active surface to contain
@@ -112,7 +184,8 @@ shortcut; it must use the same batch contract. Do not replace this handshake
 with independent per-service timers.
 
 Do not clone the same monorepo once per service. Cross-service edits and shared
-contract fixtures must come from one filesystem and one source revision.
+contract fixtures must come from the one activated pod-local checkout and one
+source revision.
 
 The interactive agent is instructed not to commit or push. Its authority is to
 edit the checkout, run the bounded sync/test adapters, and inspect the isolated
@@ -123,8 +196,8 @@ application. GitHub writes happen later through the promotion adapter.
 Edit any selected service under the one checkout, then run one fan-out:
 
 ```bash
-cd /sandbox/work
-./sync.sh
+cd /sandbox/work/repo
+/sandbox/work/sync.sh
 ```
 
 One invocation creates one logical generation and sends it to every selected
@@ -153,7 +226,10 @@ done
 ```
 
 The sidecar status must show the expected service and generation before strict
-capture.
+capture. For the bounded POC, also record the UI and backend dev pod UIDs and
+restart counts before sync. Observe the UI edit and backend response after sync
+with those UIDs and restart counts unchanged; a rollout or replacement does not
+prove HMR or process reload.
 
 ## Dependencies
 
@@ -176,8 +252,8 @@ SERVICE=workflow-orchestrator
 ```
 
 Dependency installs run in the app container's pod-local workdir, not in the
-shared JuiceFS checkout. The `/__run` API accepts only names from the catalog; it
-does not execute caller-provided shell commands.
+agent's pod-local checkout or the shared JuiceFS bridge. The `/__run` API accepts
+only names from the catalog; it does not execute caller-provided shell commands.
 
 After syncing a new file under `drizzle/`, apply it to the isolated preview
 database explicitly. Hot sync updates the filesystem but does not rerun the
@@ -233,6 +309,49 @@ and exercise the actual cross-service behavior. Inspect UI state, the affected
 API path, Dapr workflow completion, and any agent path changed by the feature.
 The persistent dev application is not a valid substitute for this isolated
 system check.
+
+## Bounded Wet Proof Record
+
+This sanitized record captures the completed dev replay. It records public
+commit and image identities plus bounded outcomes, but no tokens, cookies,
+kubeconfigs, archive contents, private receipt payloads, or other credentials.
+
+```text
+overall POC status: passed
+app-live preview name / request ID: app-live-490e-0713a / 6b620de7-f8f2-4d2e-8c93-6a650b201b5e
+platform SHA / source SHA / catalog digest: 5e14cb3b1adbc5fbf713cd29c1914f8e89fcb3d0 / 490e4177ffb892885e62d01bcd1d009ff447be25 / sha256:d3da1060e818849faa04b68df115ac9a9a2cd42afcf5ec7d5a225a7fc7cdc329
+five selected services: function-router, mcp-gateway, workflow-builder, workflow-mcp-server, workflow-orchestrator
+execution / session: bZGjoJ8ghABCWyWc-fQO3 / ahFmtkl4GUP7AnlPyv4mb
+agent-host pod / vCluster pod UID / host mirror UID: agent-host-agent-session-7575fa13e5f91a910084 / 44d3455e-5b97-4708-97d0-6d00f9e5b204 / 4a3def59-fb20-48ff-a57d-a39ed2b37110
+agent slug / runtime / model: dapr-juicefs-dev-agent / dapr-agent-py-juicefs / deepseek-v4-pro
+activation result and exact checkout SHA: ACTIVATED, then REUSED in the same session / 490e4177ffb892885e62d01bcd1d009ff447be25
+UI pod UID + restarts before/after / observed HMR result: b78863c1-2c18-439e-9884-39fb19580b81 / 0 -> 0 / authenticated preview page showed "Preview live-sync 490e"
+backend pod UID + restarts before/after / observed reload result: a0abbe9b-a24f-4e7a-8971-5a9357608594 / 0 -> 0 / workflow-orchestrator /healthz returned previewLiveSync="490e" after in-process reload
+one shared sync generation across all five services: 57836a11-fefa-4608-8467-4f37a2b8861b; every receiver reported the same generation
+allowlisted tests: workflow-builder contract exit 0 (23/23 corresponding exact-source tests); workflow-orchestrator contract exit 0 (42/42 corresponding exact-source tests)
+strict capture artifact / capture ID / coherence: 36b35db77d93e80b9a7d200b / d2ff0f29-eb44-48dd-98cb-97fa784b5bc4 / atomic-generation-v2, acceptanceEligible=true, five services at generation 57836a11-fefa-4608-8467-4f37a2b8861b
+authoritative promotion: workflow-builder PR 546; base 490e4177ffb892885e62d01bcd1d009ff447be25; head 798927e9e39109d514adce4d5987f65f3e529b94; affected services workflow-builder and workflow-orchestrator
+non-authoritative promotion drafts: workflow-builder PRs 544 and 545 remained open drafts and supplied no acceptance authority
+immutable acceptance receipt digest: sha256:e9d7d084174a430577ccd3f145152db950ba72ca9ad835be6ff45b2150e2b461
+immutable production images: workflow-builder@sha256:dd57f63a09ee4a08b5a046e20e08b60ec6274652df6f29ecfc8f293e65a6cea8; workflow-orchestrator@sha256:79136ef5edaf595b7bad14b6b2bf70023cd6e2cf779fdf4d8a51b1fedd390a6b
+immutable acceptance preview: accept-pr546-798927e9e391 passed BFF health, data-plane workflow, and agent workflow smoke paths; typed cleanup passed all 12 absence checks
+manifest candidate: stacks draft PR 4009 at b04d86d443ce1e99a7a71143e8f9bd6134ab46db changed only packages/components/workloads/function-router/manifests/Deployment-function-router.yaml
+manifest candidate reconciliation: manifest-candidate-overlay was Synced/Healthy and the isolated function-router carried preview.stacks.io/manifest-candidate-proof=function-router-20260711; persistent dev had no candidate annotation and remained unchanged
+manifest candidate disposition: typed teardown completed and PR 4009 remained draft and unmerged
+app-live archive and teardown: archive completed; typed teardown left the PreviewEnvironment CR, physical namespace, hub namespace and Application, mapping, certificate, storage scope, and operation Lease absent
+teardown receipt retention: the controller's down Job remains as a bounded receipt; it is not an active preview and holds no operation Lease
+DELETE retry observation: the first client timed out after initiating teardown; a later retry returned 403 after physical cleanup removed the authoritative owner, so terminal absence proof was required
+post-POC DELETE hardening: retain a terminal outcome lookup so an idempotent retry can return the completed result after owner removal instead of 403
+legacy phase 2: completed on attempt 4 with 3 prior attempt-history records, 5 logical-subpath absence proofs, temporaryResourcesAbsent=true, and verified receipt/checksum manifests
+final gate: the zero-preview live validator passed; persistent dev remained Synced/Healthy and its authenticated route returned the expected HTTP 302 reachability response
+```
+
+The bounded run met the acceptance contract: unchanged UI and backend pod
+identities proved the live loop, one coherent generation supplied selective
+build inputs, a fresh environment replayed immutable production digests without
+`/__sync` state, and typed teardown proved both test environments absent. The
+DELETE timeout and post-cleanup `403` are a retry-observability defect to address
+after the POC; they do not replace the required terminal absence scan.
 
 ## Rebuild Development Images
 
@@ -350,7 +469,8 @@ root. Teardown is not complete until `storage-scope-absent` is proven.
 ## Strict Atomic Capture
 
 After all selected services report one generation and their tests pass, invoke
-the workflow action `dev/preview-snapshot`:
+the workflow action `dev/preview-snapshot`. The bounded POC captures all five
+canonical services, even when the edit changes only two:
 
 ```yaml
 call: dev/preview-snapshot
@@ -360,6 +480,9 @@ with:
   services:
     - workflow-builder
     - workflow-orchestrator
+    - function-router
+    - mcp-gateway
+    - workflow-mcp-server
 ```
 
 The caller supplies the expected service set, not trust metadata. Function-router
@@ -401,6 +524,9 @@ with:
   services:
     - workflow-builder
     - workflow-orchestrator
+    - function-router
+    - mcp-gateway
+    - workflow-mcp-server
   draft: true
   title: Cross-service preview feature
 ```
@@ -411,7 +537,9 @@ current preview generation, applies the captured mappings into one GitHub
 checkout, verifies the exact branch ancestry, and opens a PR. Repository, base,
 branch prefix, and GitHub credentials are broker-owned and are not accepted from
 the workflow. The response includes the PR URL, branch, exact `commitSha`, and
-affected service set.
+affected service set. Capture coherence covers all five services, but the broker
+derives that affected set from the actual changed paths. Only those changed
+production services proceed to acceptance builds.
 
 Promotion requires the execution owner to be a platform admin. Never install a
 Gitea instance in the preview, point Argo CD at mutable session Git, or push from
@@ -439,11 +567,11 @@ set, image, or retention policy.
 The application service then:
 
 1. submits one bounded hub `preview-acceptance-build` PipelineRun for each
-   requested service;
+   catalog-derived affected service;
 2. builds the exact source SHA and records the returned GHCR digest;
 3. rejects missing, duplicate, extra, cross-revision, or non-immutable images;
 4. cold-provisions a fresh `app-live/reconciled` vCluster at the exact stacks
-   SHA with one digest pin per service;
+   SHA with the full system baseline and one digest pin per affected service;
 5. waits for the controller-owned Argo Application to become ready;
 6. verifies `/api/health`, `preview-data-plane-smoke`, and
    `preview-agent-smoke` through product HTTP APIs;
@@ -520,6 +648,12 @@ Source Hydrator and GitOps Promoter.
 
 - User-facing PreviewEnvironment launch/list operations require a platform
   admin. Internal workflow actions require the internal token.
+- The dev-session handoff fixes and verifies one agent slug, row runtime,
+  published-config runtime, and model before session side effects. It requires a
+  per-session JuiceFS host and does not take the generic runtime fallback.
+- Model traffic leaves the vCluster only through tuple-bound runtime egress.
+  Provider, CLI subscription, GitHub, and checkpoint Gitea credentials are not
+  delivered to the interactive agent host.
 - Promotion and acceptance additionally verify that the execution owner is a
   platform admin.
 - Repositories, owner identity, request provenance, trust, timestamps, and
@@ -540,6 +674,10 @@ Source Hydrator and GitOps Promoter.
   a Dapr-enabled staged pod still registers its production app ID with Placement.
   A per-batch Dapr identity or delayed sidecar registration is post-POC isolation
   hardening. Keep the POC to one isolated, idle vCluster during cutover.
+- Repository activation is prompt-driven when the persistent host starts.
+  Automatic activation after a pod reschedule and generic CLI finalizers that
+  follow the pod-local repo symlink are post-POC work; receiver-owned strict
+  capture remains authoritative in this iteration.
 - GitHub is the handoff between ephemeral source and durable review. GitOps is
   the handoff between reviewed source and shared environments.
 
