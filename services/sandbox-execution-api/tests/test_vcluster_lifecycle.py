@@ -3,6 +3,7 @@ eviction + the D1 origin/prNumber/ttlHours contract. Fake k8s clients mirror the
 test_vcluster_pool.py pattern (which mirrors test_app.py)."""
 
 import json
+from copy import deepcopy
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -348,6 +349,132 @@ def _created_actions(batch) -> list[tuple[str, str]]:
 
 def _no_auth_request():
     return SimpleNamespace(headers={"authorization": "Bearer test-token"})
+
+
+def _as_object(value):
+    if isinstance(value, dict):
+        if any("." in key or "-" in key for key in value):
+            return {key: _as_object(item) for key, item in value.items()}
+        python_names = {
+            "serviceAccountName": "service_account_name",
+            "ownerReferences": "owner_references",
+        }
+        return SimpleNamespace(
+            **{
+                python_names.get(key, key): _as_object(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, list):
+        return [_as_object(item) for item in value]
+    return value
+
+
+def _failed_preinitialized_fixture():
+    name = "failed-cold"
+    generation = f"op:{'a' * 32}"
+    namespace_uid = "12345678-1234-1234-1234-123456789abc"
+    job_uid = "87654321-4321-4321-4321-cba987654321"
+    payload = {
+        "name": name,
+        "environmentUid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "requestId": "request-failed-cold",
+        "platformRevision": "1" * 40,
+        "sourceRevision": "2" * 40,
+        "catalogDigest": f"sha256:{'3' * 64}",
+        "deletionTimestamp": "2026-07-12T12:00:00.000Z",
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    intent = {
+        "id": f"sha256:{app_module.sha256(canonical.encode()).hexdigest()}",
+        **payload,
+    }
+    namespace = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"vcluster-{name}",
+            uid=namespace_uid,
+            labels={
+                "app": "vcluster-preview",
+                "vcluster-preview-name": name,
+                "vcluster-preview-lifecycle": "ephemeral",
+                "preview.stacks.io/managed": "true",
+                "preview.stacks.io/preview-name": name,
+                "preview.stacks.io/identity-ready": "true",
+                "preview.stacks.io/runner-admitted": "true",
+            },
+            annotations={app_module.RUNNER_GENERATION_ANNOTATION: generation},
+            creation_timestamp=NOW,
+        ),
+        status=SimpleNamespace(phase="Terminating"),
+    )
+    up_manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(
+            name=name,
+            action="up",
+            enrollMode="agent",
+            profile="app-live",
+            platformRevision=intent["platformRevision"],
+            sourceRevision=intent["sourceRevision"],
+            catalogDigest=intent["catalogDigest"],
+            provenance={"requestId": intent["requestId"]},
+        ),
+        namespace="preview-control-system",
+        operation_holder=generation,
+    )
+    up_manifest["metadata"]["uid"] = job_uid
+    up_manifest["status"] = {
+        "active": 0,
+        "succeeded": 0,
+        "failed": 1,
+        "conditions": [{"type": "Failed", "status": "True"}],
+    }
+    job = _as_object(up_manifest)
+    pod = _as_object(
+        {
+            "metadata": {
+                "name": f"{up_manifest['metadata']['name']}-pod",
+                "labels": {
+                    **up_manifest["spec"]["template"]["metadata"]["labels"],
+                    "job-name": up_manifest["metadata"]["name"],
+                },
+                "annotations": up_manifest["spec"]["template"]["metadata"][
+                    "annotations"
+                ],
+                "ownerReferences": [
+                    {
+                        "kind": "Job",
+                        "name": up_manifest["metadata"]["name"],
+                        "uid": job_uid,
+                        "controller": True,
+                    }
+                ],
+            },
+            "spec": deepcopy(up_manifest["spec"]["template"]["spec"]),
+            "status": {"phase": "Failed"},
+        }
+    )
+
+    class ProofCore(_FakeCore):
+        def __init__(self):
+            super().__init__([namespace])
+            self.pods = [pod]
+
+        def list_namespaced_pod(self, namespace, label_selector=None):
+            return SimpleNamespace(items=self.pods)
+
+    class ProofBatch(_FakeBatch):
+        def __init__(self):
+            super().__init__()
+            self.up_job = job
+            self.status_reads = 0
+
+        def read_namespaced_job_status(self, name, namespace):
+            self.status_reads += 1
+            if name != up_manifest["metadata"]["name"]:
+                raise _ApiExc(404)
+            return self.up_job
+
+    return ProofBatch(), ProofCore(), intent
 
 
 @pytest.fixture(autouse=True)
@@ -832,6 +959,236 @@ def test_down_job_receipt_is_bound_to_controller_intent_and_cr_uid() -> None:
     assert annotations["preview.stacks.io/teardown-intent-id"] == intent_id
     assert pod_annotations == annotations
     assert "ttlSecondsAfterFinished" not in manifest["spec"]
+
+
+def test_failed_preinitialized_proof_is_server_generated_and_stamped() -> None:
+    batch, core, intent = _failed_preinitialized_fixture()
+
+    proof = app_module._prove_failed_preinitialized_teardown(batch, core, intent=intent)
+    request = VclusterPreviewRequest(
+        name=intent["name"],
+        action="down",
+        teardownExpectedRequestId=intent["requestId"],
+        teardownExpectedSourceRevision=intent["sourceRevision"],
+        teardownExpectedPlatformRevision=intent["platformRevision"],
+        teardownExpectedCatalogDigest=intent["catalogDigest"],
+        teardownDeletionTimestamp=intent["deletionTimestamp"],
+        teardownEnvironmentUid=intent["environmentUid"],
+        teardownIntentId=intent["id"],
+    )
+    manifest = app_module._vcluster_preview_job_manifest(
+        request,
+        namespace="preview-control-system",
+        operation_holder=f"op:{'f' * 32}",
+        failed_preinitialized_proof=proof,
+    )
+
+    annotations = manifest["metadata"]["annotations"]
+    env = _job_env(manifest)
+    assert annotations["preview.stacks.io/teardown-physical-namespace-uid"] == (
+        proof.physical_namespace_uid
+    )
+    assert annotations["preview.stacks.io/teardown-failed-up-job-uid"] == (
+        proof.failed_up_job_uid
+    )
+    assert (
+        annotations["preview.stacks.io/teardown-failed-up-runner-generation"]
+        == proof.failed_up_runner_generation
+    )
+    assert env["TEARDOWN_ENVIRONMENT_UID"] == intent["environmentUid"]
+    assert env["TEARDOWN_INTENT_ID"] == intent["id"]
+    assert env["TEARDOWN_EXPECTED_PLATFORM_REVISION"] == intent["platformRevision"]
+    assert env["TEARDOWN_EXPECTED_CATALOG_DIGEST"] == intent["catalogDigest"]
+    assert env["TEARDOWN_DELETION_TIMESTAMP"] == intent["deletionTimestamp"]
+    assert env["TEARDOWN_PHYSICAL_NAMESPACE_UID"] == proof.physical_namespace_uid
+
+    with pytest.raises(ValueError, match="generations must differ"):
+        app_module._vcluster_preview_job_manifest(
+            request,
+            namespace="preview-control-system",
+            operation_holder=proof.failed_up_runner_generation,
+            failed_preinitialized_proof=proof,
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "namespace-label",
+        "namespace-uid",
+        "namespace-generation",
+        "ordinary-provenance",
+        "ordinary-source",
+        "reconciliation-marker",
+        "job-uid",
+        "job-generation",
+        "job-active",
+        "job-nonterminal",
+        "job-succeeded",
+        "job-request",
+        "job-platform",
+        "job-source",
+        "job-catalog",
+        "job-holder",
+        "pod-owner",
+        "pod-generation",
+        "pod-phase",
+        "pod-holder",
+    ],
+)
+def test_failed_preinitialized_proof_rejects_every_authority_mismatch(tamper) -> None:
+    batch, core, intent = _failed_preinitialized_fixture()
+    namespace = core._ns[f"vcluster-{intent['name']}"]
+    job = batch.up_job
+    pod = core.pods[0]
+    job_env = {item.name: item for item in job.spec.template.spec.containers[0].env}
+    pod_env = {item.name: item for item in pod.spec.containers[0].env}
+
+    if tamper == "namespace-label":
+        namespace.metadata.labels["preview.stacks.io/runner-admitted"] = "false"
+    elif tamper == "namespace-uid":
+        namespace.metadata.uid = "not-a-uid"
+    elif tamper == "namespace-generation":
+        namespace.metadata.annotations[app_module.RUNNER_GENERATION_ANNOTATION] = (
+            f"op:{'b' * 32}"
+        )
+    elif tamper == "ordinary-provenance":
+        namespace.metadata.annotations["preview.stacks.io/provenance"] = "{}"
+    elif tamper == "ordinary-source":
+        namespace.metadata.annotations["preview.stacks.io/source-revision"] = "2" * 40
+    elif tamper == "reconciliation-marker":
+        namespace.metadata.annotations[
+            "preview.stacks.io/reconciliation-succeeded-at"
+        ] = "malformed-is-still-authority"
+    elif tamper == "job-uid":
+        job.metadata.uid = "not-a-uid"
+    elif tamper == "job-generation":
+        job.metadata.annotations[app_module.RUNNER_GENERATION_ANNOTATION] = (
+            f"op:{'b' * 32}"
+        )
+    elif tamper == "job-active":
+        job.status.active = 1
+    elif tamper == "job-nonterminal":
+        job.status.conditions = []
+    elif tamper == "job-succeeded":
+        job.status.succeeded = 1
+    elif tamper == "job-request":
+        job_env["PREVIEW_PROVENANCE"].value = json.dumps({"requestId": "other"})
+    elif tamper == "job-platform":
+        job_env["TARGET_REVISION"].value = "4" * 40
+    elif tamper == "job-source":
+        job_env["SOURCE_REVISION"].value = "4" * 40
+    elif tamper == "job-catalog":
+        job_env["PREVIEW_CATALOG_DIGEST"].value = f"sha256:{'4' * 64}"
+    elif tamper == "job-holder":
+        job_env["PREVIEW_OPERATION_HOLDER"].value = f"op:{'b' * 32}"
+    elif tamper == "pod-owner":
+        pod.metadata.owner_references[0].uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    elif tamper == "pod-generation":
+        pod.metadata.annotations[app_module.RUNNER_GENERATION_ANNOTATION] = (
+            f"op:{'b' * 32}"
+        )
+    elif tamper == "pod-phase":
+        pod.status.phase = "Running"
+    elif tamper == "pod-holder":
+        pod_env["PREVIEW_OPERATION_HOLDER"].value = f"op:{'b' * 32}"
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._prove_failed_preinitialized_teardown(batch, core, intent=intent)
+
+    assert caught.value.status_code == 409
+
+
+def test_controller_deletion_intent_rejects_partial_or_forged_extension() -> None:
+    _batch, _core, intent = _failed_preinitialized_fixture()
+    kwargs = {
+        "name": intent["name"],
+        "request_id": intent["requestId"],
+        "platform_revision": intent["platformRevision"],
+        "source_revision": intent["sourceRevision"],
+        "catalog_digest": intent["catalogDigest"],
+        "deletion_timestamp": intent["deletionTimestamp"],
+        "environment_uid": intent["environmentUid"],
+        "intent_id": intent["id"],
+    }
+    assert app_module._controller_deletion_intent(**kwargs) == intent
+
+    with pytest.raises(app_module.HTTPException) as partial:
+        app_module._controller_deletion_intent(**{**kwargs, "catalog_digest": None})
+    assert partial.value.status_code == 400
+
+    with pytest.raises(app_module.HTTPException) as forged:
+        app_module._controller_deletion_intent(
+            **{**kwargs, "platform_revision": "4" * 40}
+        )
+    assert forged.value.status_code == 409
+
+
+def test_failed_preinitialized_delete_reproves_under_operation_lease(
+    monkeypatch,
+) -> None:
+    batch, core, intent = _failed_preinitialized_fixture()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.teardown_vcluster_preview(
+        _no_auth_request(),
+        intent["name"],
+        app_module.VclusterPreviewTeardownRequest(
+            expectedRequestId=intent["requestId"],
+            expectedSourceRevision=intent["sourceRevision"],
+            platformRevision=intent["platformRevision"],
+            catalogDigest=intent["catalogDigest"],
+            deletionTimestamp=intent["deletionTimestamp"],
+            environmentUid=intent["environmentUid"],
+            deletionIntentId=intent["id"],
+        ),
+    )
+
+    assert result["status"] == "terminating"
+    assert batch.status_reads == 2
+    assert _created_actions(batch) == [(intent["name"], "down")]
+    annotations = batch.created[0]["metadata"]["annotations"]
+    assert annotations["preview.stacks.io/teardown-failed-up-job-uid"] == (
+        "87654321-4321-4321-4321-cba987654321"
+    )
+
+
+def test_failed_preinitialized_delete_rejects_replacement_before_lease_proof(
+    monkeypatch,
+) -> None:
+    batch, core, intent = _failed_preinitialized_fixture()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    original_acquire = app_module._acquire_preview_operation_lease
+
+    def replace_before_lease(*args, **kwargs):
+        namespace = core._ns[f"vcluster-{intent['name']}"]
+        namespace.metadata.uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        namespace.metadata.annotations[app_module.RUNNER_GENERATION_ANNOTATION] = (
+            f"op:{'b' * 32}"
+        )
+        return original_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(
+        app_module, "_acquire_preview_operation_lease", replace_before_lease
+    )
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module.teardown_vcluster_preview(
+            _no_auth_request(),
+            intent["name"],
+            app_module.VclusterPreviewTeardownRequest(
+                expectedRequestId=intent["requestId"],
+                expectedSourceRevision=intent["sourceRevision"],
+                platformRevision=intent["platformRevision"],
+                catalogDigest=intent["catalogDigest"],
+                deletionTimestamp=intent["deletionTimestamp"],
+                environmentUid=intent["environmentUid"],
+                deletionIntentId=intent["id"],
+            ),
+        )
+
+    assert caught.value.status_code == 409
+    assert batch.created == []
 
 
 def test_down_request_rejects_caller_controlled_database(monkeypatch) -> None:

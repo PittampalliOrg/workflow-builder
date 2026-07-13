@@ -117,10 +117,7 @@ export class ApplicationPreviewEnvironmentDeletionReconcilerService {
         // A Kubernetes deletion intent is the platform-authoritative destructive
         // command. The archive token never crosses into the runner.
         archiveConfirmed: true,
-        deletionIntent: {
-          id: intent.id,
-          environmentUid: intent.environmentUid,
-        },
+        deletionIntent: intent,
       });
       cleanup = await this.options.gateway.cleanup(intent.name);
     }

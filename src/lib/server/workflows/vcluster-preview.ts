@@ -9,6 +9,7 @@ import {
   type VclusterPreviewProfile,
 } from "$lib/types/dev-previews";
 import type {
+  PreviewEnvironmentDeletionIntent,
   PreviewEnvironmentLifecycle,
   PreviewEnvironmentOrigin,
   PreviewEnvironmentOwner,
@@ -851,10 +852,7 @@ export async function teardownVclusterPreview(
         sourceRevision: string;
         archiveConfirmed?: true;
         archiveQuarantine?: PreviewArchiveQuarantineGuard;
-        deletionIntent?: Readonly<{
-          id: `sha256:${string}`;
-          environmentUid: string;
-        }>;
+        deletionIntent?: PreviewEnvironmentDeletionIntent;
       }>
     | Readonly<{ mode: "superseded"; protectedRequestId: string }>,
 ): Promise<VclusterPreview> {
@@ -870,6 +868,9 @@ export async function teardownVclusterPreview(
               ? {
                   environmentUid: guard.deletionIntent.environmentUid,
                   deletionIntentId: guard.deletionIntent.id,
+                  platformRevision: guard.deletionIntent.platformRevision,
+                  catalogDigest: guard.deletionIntent.catalogDigest,
+                  deletionTimestamp: guard.deletionIntent.deletionTimestamp,
                 }
               : {}),
           }

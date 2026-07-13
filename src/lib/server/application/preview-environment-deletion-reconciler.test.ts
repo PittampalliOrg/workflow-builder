@@ -103,7 +103,7 @@ describe("ApplicationPreviewEnvironmentDeletionReconcilerService", () => {
       requestId: intent.requestId,
       sourceRevision: intent.sourceRevision,
       archiveConfirmed: true,
-      deletionIntent: { id: intent.id, environmentUid: intent.environmentUid },
+      deletionIntent: intent,
     });
     expect(store.acknowledge).toHaveBeenCalledWith(
       intent,

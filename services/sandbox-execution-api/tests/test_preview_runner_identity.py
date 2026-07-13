@@ -699,6 +699,89 @@ def test_failed_job_rollback_reports_orphan_and_is_retryable(monkeypatch) -> Non
     _assert_identity_absent(core, rbac, "orphaned")
 
 
+def test_failed_preinitialized_down_preserves_namespace_generation_across_retry(
+    monkeypatch,
+) -> None:
+    name = "failed-cold-retry"
+    failed_up_generation = f"op:{'a' * 32}"
+    down_generation = f"op:{'b' * 32}"
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    _seed_identity(core, rbac, name)
+    contract = PreviewRunnerIdentityContract(name, "ephemeral")
+    namespace = core.namespaces[contract.target_namespace]
+    namespace["metadata"]["labels"]["preview.stacks.io/identity-ready"] = "true"
+    namespace["metadata"].setdefault("annotations", {})[
+        RUNNER_GENERATION_ANNOTATION
+    ] = failed_up_generation
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
+    proof = app_module.FailedPreinitializedTeardownProof(
+        physical_namespace_uid="12345678-1234-1234-1234-123456789abc",
+        failed_up_job_uid="87654321-4321-4321-4321-cba987654321",
+        failed_up_runner_generation=failed_up_generation,
+    )
+    request = VclusterPreviewRequest(
+        name=name,
+        action="down",
+        teardownExpectedRequestId="request-failed-cold-retry",
+        teardownExpectedSourceRevision="2" * 40,
+        teardownExpectedPlatformRevision="1" * 40,
+        teardownExpectedCatalogDigest=f"sha256:{'3' * 64}",
+        teardownDeletionTimestamp="2026-07-12T12:00:00.000Z",
+        teardownEnvironmentUid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        teardownIntentId=f"sha256:{'4' * 64}",
+    )
+    manifest = app_module._vcluster_preview_job_manifest(
+        request,
+        namespace=CONTROL_NAMESPACE,
+        operation_holder=down_generation,
+        failed_preinitialized_proof=proof,
+    )
+
+    with pytest.raises(
+        PreviewRunnerIdentityError, match="exact failed-up proof"
+    ):
+        app_module._submit_preview_job(
+            FakeBatch(),
+            core,
+            namespace=CONTROL_NAMESPACE,
+            manifest=manifest,
+            lifecycle="ephemeral",
+        )
+
+    with pytest.raises(ApiError):
+        app_module._submit_preview_job(
+            FakeBatch(create_status=409),
+            core,
+            namespace=CONTROL_NAMESPACE,
+            manifest=manifest,
+            lifecycle="ephemeral",
+            create_only=True,
+            expected_existing_runner_generation=failed_up_generation,
+        )
+    assert core.namespaces[contract.target_namespace]["metadata"]["annotations"][
+        RUNNER_GENERATION_ANNOTATION
+    ] == failed_up_generation
+
+    retry_batch = FakeBatch()
+    assert app_module._submit_preview_job(
+        retry_batch,
+        core,
+        namespace=CONTROL_NAMESPACE,
+        manifest=manifest,
+        lifecycle="ephemeral",
+        create_only=True,
+        expected_existing_runner_generation=failed_up_generation,
+    )
+    assert len(retry_batch.jobs) == 1
+    assert core.namespaces[contract.target_namespace]["metadata"]["annotations"][
+        RUNNER_GENERATION_ANNOTATION
+    ] == failed_up_generation
+    assert core.namespaces[contract.target_namespace]["metadata"]["labels"][
+        "preview.stacks.io/runner-admitted"
+    ] == "true"
+
+
 def test_failed_post_patch_proof_clears_ready_marker_and_created_identity() -> None:
     core = FakeCore()
     rbac = FakeRbac(core)

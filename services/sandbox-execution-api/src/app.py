@@ -8587,6 +8587,15 @@ class VclusterPreviewRequest(BaseModel):
     # validating the live PreviewEnvironment identity; the runner rechecks them.
     teardownExpectedRequestId: str | None = None
     teardownExpectedSourceRevision: str | None = None
+    teardownExpectedPlatformRevision: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
+    teardownExpectedCatalogDigest: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    teardownDeletionTimestamp: str | None = Field(
+        default=None, min_length=1, max_length=64
+    )
     teardownProtectedRequestId: str | None = None
     teardownEnvironmentUid: str | None = Field(
         default=None,
@@ -8664,12 +8673,72 @@ class VclusterPreviewTeardownRequest(BaseModel):
 
     expectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
     expectedSourceRevision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    platformRevision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    catalogDigest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    deletionTimestamp: str | None = Field(default=None, min_length=1, max_length=64)
     protectedRequestId: str | None = Field(default=None, min_length=1, max_length=256)
     environmentUid: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     )
     deletionIntentId: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class FailedPreinitializedTeardownProof:
+    """Server-generated evidence for the one controller-only teardown exception."""
+
+    physical_namespace_uid: str
+    failed_up_job_uid: str
+    failed_up_runner_generation: str
+
+
+def _controller_deletion_intent(
+    *,
+    name: str,
+    request_id: str | None,
+    platform_revision: str | None,
+    source_revision: str | None,
+    catalog_digest: str | None,
+    deletion_timestamp: str | None,
+    environment_uid: str | None,
+    intent_id: str | None,
+) -> dict[str, str] | None:
+    """Validate and independently recompute the hub controller's exact command."""
+
+    extension_values = (platform_revision, catalog_digest, deletion_timestamp)
+    if not any(extension_values):
+        return None
+    if not all(
+        (
+            *extension_values,
+            environment_uid,
+            intent_id,
+            request_id,
+            source_revision,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="controller deletion intent fields must be supplied together",
+        )
+    payload = {
+        "name": name,
+        "environmentUid": environment_uid,
+        "requestId": request_id,
+        "platformRevision": platform_revision,
+        "sourceRevision": source_revision,
+        "catalogDigest": catalog_digest,
+        "deletionTimestamp": deletion_timestamp,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    expected_id = f"sha256:{sha256(canonical.encode('utf-8')).hexdigest()}"
+    if intent_id != expected_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="controller deletion intent id does not match its immutable fields",
+        )
+    return {"id": expected_id, **payload}
 
 
 class VclusterPreviewCleanupReceiptReleaseRequest(BaseModel):
@@ -8734,6 +8803,7 @@ def _vcluster_preview_job_manifest(
     *,
     namespace: str,
     operation_holder: str | None = None,
+    failed_preinitialized_proof: FailedPreinitializedTeardownProof | None = None,
 ) -> dict[str, Any]:
     job_name = _vcluster_preview_job_name(req.name, req.action)
     preview_name = _safe_resource_name(req.name, max_length=40)
@@ -8776,6 +8846,51 @@ def _vcluster_preview_job_manifest(
                         req.teardownEnvironmentUid
                     ),
                     "preview.stacks.io/teardown-intent-id": req.teardownIntentId,
+                }
+            )
+        if failed_preinitialized_proof is not None:
+            if not all(
+                (
+                    req.teardownExpectedRequestId,
+                    req.teardownExpectedSourceRevision,
+                    req.teardownExpectedPlatformRevision,
+                    req.teardownExpectedCatalogDigest,
+                    req.teardownDeletionTimestamp,
+                    req.teardownEnvironmentUid,
+                    req.teardownIntentId,
+                )
+            ):
+                raise ValueError(
+                    "failed preinitialized proof requires a complete controller intent"
+                )
+            if (
+                operation_holder is not None
+                and failed_preinitialized_proof.failed_up_runner_generation
+                == operation_holder
+            ):
+                raise ValueError(
+                    "failed up and current down runner generations must differ"
+                )
+            runner_annotations.update(
+                {
+                    "preview.stacks.io/teardown-platform-revision": (
+                        req.teardownExpectedPlatformRevision
+                    ),
+                    "preview.stacks.io/teardown-catalog-digest": (
+                        req.teardownExpectedCatalogDigest
+                    ),
+                    "preview.stacks.io/teardown-deletion-timestamp": (
+                        req.teardownDeletionTimestamp
+                    ),
+                    "preview.stacks.io/teardown-physical-namespace-uid": (
+                        failed_preinitialized_proof.physical_namespace_uid
+                    ),
+                    "preview.stacks.io/teardown-failed-up-job-uid": (
+                        failed_preinitialized_proof.failed_up_job_uid
+                    ),
+                    "preview.stacks.io/teardown-failed-up-runner-generation": (
+                        failed_preinitialized_proof.failed_up_runner_generation
+                    ),
                 }
             )
     image = os.environ.get("VCLUSTER_PREVIEW_RUNNER_IMAGE", "alpine/k8s:1.31.0")
@@ -8873,6 +8988,45 @@ def _vcluster_preview_job_manifest(
                     "name": "TEARDOWN_PROTECTED_REQUEST_ID",
                     "value": req.teardownProtectedRequestId,
                 }
+            )
+        if failed_preinitialized_proof is not None:
+            env.extend(
+                [
+                    {
+                        "name": "TEARDOWN_EXPECTED_PLATFORM_REVISION",
+                        "value": req.teardownExpectedPlatformRevision,
+                    },
+                    {
+                        "name": "TEARDOWN_EXPECTED_CATALOG_DIGEST",
+                        "value": req.teardownExpectedCatalogDigest,
+                    },
+                    {
+                        "name": "TEARDOWN_DELETION_TIMESTAMP",
+                        "value": req.teardownDeletionTimestamp,
+                    },
+                    {
+                        "name": "TEARDOWN_ENVIRONMENT_UID",
+                        "value": req.teardownEnvironmentUid,
+                    },
+                    {
+                        "name": "TEARDOWN_INTENT_ID",
+                        "value": req.teardownIntentId,
+                    },
+                    {
+                        "name": "TEARDOWN_PHYSICAL_NAMESPACE_UID",
+                        "value": failed_preinitialized_proof.physical_namespace_uid,
+                    },
+                    {
+                        "name": "TEARDOWN_FAILED_UP_JOB_UID",
+                        "value": failed_preinitialized_proof.failed_up_job_uid,
+                    },
+                    {
+                        "name": "TEARDOWN_FAILED_UP_RUNNER_GENERATION",
+                        "value": (
+                            failed_preinitialized_proof.failed_up_runner_generation
+                        ),
+                    },
+                ]
             )
     if req.imageOverrides:
         env.append(
@@ -9317,6 +9471,7 @@ def _submit_preview_job(
     lifecycle: str | None = None,
     create_only: bool = False,
     allow_absent_down_bootstrap: bool = False,
+    expected_existing_runner_generation: str | None = None,
 ) -> bool:
     """Establish the exact per-preview identity before handing work to Kubernetes."""
     metadata = manifest.get("metadata") or {}
@@ -9409,6 +9564,27 @@ def _submit_preview_job(
         raise PreviewRunnerIdentityError(
             "preview Job generation does not match its operation Lease holder"
         )
+    failed_up_generation = next(
+        (
+            item.get("value")
+            for item in manifest["spec"]["template"]["spec"]["containers"][0].get(
+                "env", []
+            )
+            if item.get("name") == "TEARDOWN_FAILED_UP_RUNNER_GENERATION"
+        ),
+        None,
+    )
+    if bool(expected_existing_runner_generation) != bool(failed_up_generation) or (
+        expected_existing_runner_generation is not None
+        and (
+            action != "down"
+            or failed_up_generation != expected_existing_runner_generation
+            or failed_up_generation == job_generation
+        )
+    ):
+        raise PreviewRunnerIdentityError(
+            "preserved namespace generation requires the exact failed-up proof"
+        )
 
     identity = PreviewRunnerIdentityAdapter(core, _load_k8s_rbac_client())
     reservation = identity.ensure_for_job(
@@ -9417,6 +9593,7 @@ def _submit_preview_job(
         lifecycle=lifecycle,
         runner_generation=job_generation,
         allow_absent_down_bootstrap=allow_absent_down_bootstrap,
+        expected_existing_runner_generation=expected_existing_runner_generation,
     )
     if reservation.identity_name != actual_service_account:
         identity.rollback_before_job(reservation)
@@ -10584,6 +10761,9 @@ def provision_vcluster_preview(
     if body.action != "down" and (
         body.teardownExpectedRequestId
         or body.teardownExpectedSourceRevision
+        or body.teardownExpectedPlatformRevision
+        or body.teardownExpectedCatalogDigest
+        or body.teardownDeletionTimestamp
         or body.teardownProtectedRequestId
         or body.teardownEnvironmentUid
         or body.teardownIntentId
@@ -10607,6 +10787,20 @@ def provision_vcluster_preview(
             status_code=400,
             detail="controller deletion intent requires exact owned teardown guards",
         )
+    controller_intent = (
+        _controller_deletion_intent(
+            name=body.name,
+            request_id=body.teardownExpectedRequestId,
+            platform_revision=body.teardownExpectedPlatformRevision,
+            source_revision=body.teardownExpectedSourceRevision,
+            catalog_digest=body.teardownExpectedCatalogDigest,
+            deletion_timestamp=body.teardownDeletionTimestamp,
+            environment_uid=body.teardownEnvironmentUid,
+            intent_id=body.teardownIntentId,
+        )
+        if body.action == "down"
+        else None
+    )
     _validate_profiled_preview_request(body)
     namespace = _vcluster_preview_control_namespace()
     manifest = _vcluster_preview_job_manifest(body, namespace=namespace)
@@ -10728,6 +10922,7 @@ def provision_vcluster_preview(
                     and body.teardownExpectedSourceRevision
                 )
                 superseded_guard = bool(body.teardownProtectedRequestId)
+                failed_preinitialized_proof = None
                 try:
                     member = _read_preview_member(
                         core,
@@ -10782,9 +10977,17 @@ def provision_vcluster_preview(
                         observed_request_id != body.teardownExpectedRequestId
                         or member.source_revision != body.teardownExpectedSourceRevision
                     ):
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail="preview teardown ownership no longer matches",
+                        if controller_intent is None:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail="preview teardown ownership no longer matches",
+                            )
+                        failed_preinitialized_proof = (
+                            _prove_failed_preinitialized_teardown(
+                                batch,
+                                core,
+                                intent=controller_intent,
+                            )
                         )
                     if (
                         body.teardownProtectedRequestId
@@ -10795,6 +10998,12 @@ def provision_vcluster_preview(
                             detail="refusing to teardown the protected preview generation",
                         )
                 if not receipt_succeeded:
+                    manifest = _vcluster_preview_job_manifest(
+                        body,
+                        namespace=namespace,
+                        operation_holder=operation_holder,
+                        failed_preinitialized_proof=failed_preinitialized_proof,
+                    )
                     _submit_preview_job(
                         batch,
                         core,
@@ -10802,6 +11011,11 @@ def provision_vcluster_preview(
                         manifest=manifest,
                         lifecycle=member.lifecycle if member is not None else None,
                         allow_absent_down_bootstrap=allow_absent_down_bootstrap,
+                        expected_existing_runner_generation=(
+                            failed_preinitialized_proof.failed_up_runner_generation
+                            if failed_preinitialized_proof is not None
+                            else None
+                        ),
                     )
                     handed_to_runner = True
             if body.action == "up":
@@ -11286,6 +11500,199 @@ def _runner_job_generation(job: Any) -> str | None:
     ):
         return None
     return generation
+
+
+def _runner_container_env(resource: Any) -> dict[str, str] | None:
+    """Return the single runner container's literal environment, fail closed."""
+
+    spec = _kube_field(resource, "spec")
+    template = _kube_field(spec, "template")
+    if template is not None:
+        spec = _kube_field(template, "spec")
+    containers = _kube_field(spec, "containers") or []
+    if len(containers) != 1:
+        return None
+    values: dict[str, str] = {}
+    for item in _kube_field(containers[0], "env") or []:
+        name = _kube_field(item, "name")
+        value = _kube_field(item, "value")
+        if not isinstance(name, str) or not isinstance(value, str) or name in values:
+            return None
+        values[name] = value
+    return values
+
+
+def _failed_preinitialized_conflict(reason: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"failed preinitialized preview proof failed: {reason}",
+    )
+
+
+def _prove_failed_preinitialized_teardown(
+    batch: Any,
+    core: Any,
+    *,
+    intent: dict[str, str],
+) -> FailedPreinitializedTeardownProof:
+    """Prove an admitted cold launch failed before ordinary authority was stamped."""
+
+    name = intent["name"]
+    namespace_name = f"vcluster-{name}"
+    try:
+        namespace = core.read_namespace(name=namespace_name)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            raise _failed_preinitialized_conflict(
+                "physical namespace is absent"
+            ) from exc
+        raise
+    metadata = _kube_field(namespace, "metadata")
+    labels = _kube_field(metadata, "labels") or {}
+    annotations = _kube_field(metadata, "annotations") or {}
+    required_labels = {
+        "app": "vcluster-preview",
+        "vcluster-preview-name": name,
+        "vcluster-preview-lifecycle": "ephemeral",
+        "preview.stacks.io/managed": "true",
+        "preview.stacks.io/preview-name": name,
+        "preview.stacks.io/identity-ready": "true",
+        "preview.stacks.io/runner-admitted": "true",
+    }
+    if any(labels.get(key) != value for key, value in required_labels.items()):
+        raise _failed_preinitialized_conflict(
+            "physical namespace is not the exact admitted ephemeral identity"
+        )
+    namespace_uid = _kube_field(metadata, "uid")
+    if not isinstance(namespace_uid, str) or not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        namespace_uid,
+    ):
+        raise _failed_preinitialized_conflict("physical namespace UID is invalid")
+    namespace_generation = annotations.get(RUNNER_GENERATION_ANNOTATION)
+    if not isinstance(namespace_generation, str) or not re.fullmatch(
+        r"op:[0-9a-f]{32}", namespace_generation
+    ):
+        raise _failed_preinitialized_conflict(
+            "physical namespace runner generation is invalid"
+        )
+    ordinary_authority = {
+        _VCLUSTER_PREVIEW_PROVENANCE_ANNOTATION,
+        _VCLUSTER_PREVIEW_PLATFORM_REVISION_ANNOTATION,
+        _VCLUSTER_PREVIEW_SOURCE_REVISION_ANNOTATION,
+        _VCLUSTER_PREVIEW_CATALOG_DIGEST_ANNOTATION,
+    }
+    if any(key in annotations for key in ordinary_authority):
+        raise _failed_preinitialized_conflict(
+            "ordinary namespace ownership authority is present or partial"
+        )
+    reconciliation_authority = {
+        _VCLUSTER_PREVIEW_RECONCILIATION_SUCCEEDED_AT_ANNOTATION,
+        _VCLUSTER_PREVIEW_RECONCILIATION_PLATFORM_REVISION_ANNOTATION,
+        _VCLUSTER_PREVIEW_RECONCILIATION_SOURCE_REVISION_ANNOTATION,
+    }
+    if any(key in annotations for key in reconciliation_authority):
+        raise _failed_preinitialized_conflict(
+            "namespace carries reconciliation success authority"
+        )
+
+    job_name = _vcluster_preview_job_name(name, "up")
+    control_namespace = _vcluster_preview_control_namespace()
+    try:
+        job = batch.read_namespaced_job_status(
+            name=job_name, namespace=control_namespace
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            raise _failed_preinitialized_conflict("failed up Job is absent") from exc
+        raise
+    if _runner_job_identity(job) != (name, "up"):
+        raise _failed_preinitialized_conflict("up Job identity is malformed")
+    job_generation = _runner_job_generation(job)
+    if job_generation != namespace_generation:
+        raise _failed_preinitialized_conflict(
+            "up Job generation does not match the physical namespace"
+        )
+    job_metadata = _kube_field(job, "metadata")
+    job_uid = _kube_field(job_metadata, "uid")
+    if not isinstance(job_uid, str) or not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        job_uid,
+    ):
+        raise _failed_preinitialized_conflict("up Job UID is invalid")
+    succeeded, failed, _ = _preview_job_state(job)
+    job_status = _kube_field(job, "status")
+    terminal_failed = any(
+        str(_kube_field(condition, "status") or "").lower() == "true"
+        and _kube_field(condition, "type") == "Failed"
+        for condition in (_kube_field(job_status, "conditions") or [])
+    )
+    if (
+        not failed
+        or not terminal_failed
+        or succeeded
+        or int(_kube_field(job_status, "active") or 0) != 0
+        or int(_kube_field(job_status, "succeeded") or 0) != 0
+    ):
+        raise _failed_preinitialized_conflict("up Job is not terminally failed")
+    env = _runner_container_env(job)
+    if env is None or env.get("PREVIEW_OPERATION_HOLDER") != job_generation:
+        raise _failed_preinitialized_conflict("up Job operation holder is invalid")
+    provenance = _safe_json_annotation(env.get("PREVIEW_PROVENANCE"), dict)
+    if provenance is None or provenance.get("requestId") != intent["requestId"]:
+        raise _failed_preinitialized_conflict("up Job request identity does not match")
+    immutable_env = {
+        "TARGET_REVISION": intent["platformRevision"],
+        "SOURCE_REVISION": intent["sourceRevision"],
+        "PREVIEW_CATALOG_DIGEST": intent["catalogDigest"],
+    }
+    if any(env.get(key) != value for key, value in immutable_env.items()):
+        raise _failed_preinitialized_conflict(
+            "up Job immutable revision tuple does not match"
+        )
+
+    pods = core.list_namespaced_pod(
+        namespace=control_namespace, label_selector=f"job-name={job_name}"
+    )
+    pod_items = list(_kube_field(pods, "items") or [])
+    if len(pod_items) != 1:
+        raise _failed_preinitialized_conflict("up Job must have one exact failed pod")
+    pod = pod_items[0]
+    pod_metadata = _kube_field(pod, "metadata")
+    pod_labels = _kube_field(pod_metadata, "labels") or {}
+    pod_annotations = _kube_field(pod_metadata, "annotations") or {}
+    owner_references = (
+        _kube_field(pod_metadata, "owner_references", "ownerReferences") or []
+    )
+    owned_by_job = any(
+        _kube_field(owner, "kind") == "Job"
+        and _kube_field(owner, "name") == job_name
+        and _kube_field(owner, "uid") == job_uid
+        and _kube_field(owner, "controller") is True
+        for owner in owner_references
+    )
+    pod_spec = _kube_field(pod, "spec")
+    pod_status = _kube_field(pod, "status")
+    pod_env = _runner_container_env(pod)
+    if (
+        not owned_by_job
+        or pod_labels.get("job-name") != job_name
+        or pod_labels.get("vcluster-preview-name") != name
+        or pod_labels.get("vcluster-preview-action") != "up"
+        or pod_annotations.get(RUNNER_GENERATION_ANNOTATION) != job_generation
+        or _kube_field(pod_spec, "service_account_name", "serviceAccountName")
+        != preview_runner_identity_name(name)
+        or _kube_field(pod_status, "phase") != "Failed"
+        or pod_env is None
+        or pod_env.get("PREVIEW_OPERATION_HOLDER") != job_generation
+    ):
+        raise _failed_preinitialized_conflict("failed up pod identity is malformed")
+
+    return FailedPreinitializedTeardownProof(
+        physical_namespace_uid=namespace_uid,
+        failed_up_job_uid=job_uid,
+        failed_up_runner_generation=job_generation,
+    )
 
 
 def _preview_identity_cleanup_once(
@@ -12099,7 +12506,7 @@ def teardown_vcluster_preview(
         "true",
         "yes",
     }:
-        _, core = _load_k8s_clients()
+        batch, core = _load_k8s_clients()
         if body is not None:
             if bool(body.expectedRequestId) == bool(body.protectedRequestId):
                 raise HTTPException(
@@ -12129,6 +12536,20 @@ def teardown_vcluster_preview(
             if member is not None
             else _safe_resource_name(name, max_length=40)
         )
+        controller_intent = (
+            _controller_deletion_intent(
+                name=real_name,
+                request_id=body.expectedRequestId,
+                platform_revision=body.platformRevision,
+                source_revision=body.expectedSourceRevision,
+                catalog_digest=body.catalogDigest,
+                deletion_timestamp=body.deletionTimestamp,
+                environment_uid=body.environmentUid,
+                intent_id=body.deletionIntentId,
+            )
+            if body is not None
+            else None
+        )
         if member is not None and _preview_member_is_controller_owned(member):
             if body is None or bool(body.expectedRequestId) == bool(
                 body.protectedRequestId
@@ -12150,9 +12571,18 @@ def teardown_vcluster_preview(
                 observed_request_id != body.expectedRequestId
                 or member.source_revision != body.expectedSourceRevision
             ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="preview teardown ownership no longer matches",
+                if controller_intent is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="preview teardown ownership no longer matches",
+                    )
+                # Preliminary proof prevents the public DELETE seam from becoming
+                # a generic missing-annotation bypass. provision_vcluster_preview
+                # repeats the complete proof under the operation Lease.
+                _prove_failed_preinitialized_teardown(
+                    batch,
+                    core,
+                    intent=controller_intent,
                 )
             if (
                 body.protectedRequestId
@@ -12167,6 +12597,9 @@ def teardown_vcluster_preview(
         action="down",
         teardownExpectedRequestId=(body.expectedRequestId if body else None),
         teardownExpectedSourceRevision=(body.expectedSourceRevision if body else None),
+        teardownExpectedPlatformRevision=(body.platformRevision if body else None),
+        teardownExpectedCatalogDigest=(body.catalogDigest if body else None),
+        teardownDeletionTimestamp=(body.deletionTimestamp if body else None),
         teardownProtectedRequestId=(body.protectedRequestId if body else None),
         teardownEnvironmentUid=(body.environmentUid if body else None),
         teardownIntentId=(body.deletionIntentId if body else None),
