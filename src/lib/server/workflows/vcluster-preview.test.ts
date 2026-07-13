@@ -5,6 +5,7 @@ import type {
 import {
   claimVclusterPreview,
   getVclusterPreviewCleanup,
+  getVclusterPreviewForIdentity,
   getVclusterPreviewRuntime,
   launchVclusterPreview,
   listVclusterPreviewsWithCounts,
@@ -455,6 +456,15 @@ describe("vcluster-preview A3 claim-first client", () => {
         name: "feature-x",
         resourceName: "feature-x",
         identity,
+        preview: {
+          name: "feature-x",
+          phase: "ready",
+          ready: true,
+          platformRevision: identity.environmentPlatformRevision,
+          sourceRevision: identity.environmentSourceRevision,
+          catalogDigest: identity.catalogDigest,
+          provenance: { requestId: identity.environmentRequestId },
+        },
         reconciliationSucceeded: true,
         upJob: {
           name: "vcpreview-up-feature-x",
@@ -476,6 +486,39 @@ describe("vcluster-preview A3 claim-first client", () => {
       identity,
     );
     expect(headers.get("X-Preview-Runtime-Request-Id")).toBeNull();
+  });
+
+  it("binds record observation to one canonical preview identity", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    const identity = {
+      previewName: "feature-x",
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: "a".repeat(40),
+      environmentSourceRevision: "b".repeat(40),
+      catalogDigest: `sha256:${"c".repeat(64)}` as const,
+    };
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({
+        name: "feature-x",
+        phase: "ready",
+        ready: true,
+        platformRevision: identity.environmentPlatformRevision,
+        sourceRevision: identity.environmentSourceRevision,
+        catalogDigest: identity.catalogDigest,
+        provenance: { requestId: identity.environmentRequestId },
+        identity,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getVclusterPreviewForIdentity(identity)).resolves.toMatchObject({
+      identity,
+      preview: { name: "feature-x", phase: "ready" },
+    });
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(JSON.parse(headers.get("X-Preview-Runtime-Identity") ?? "null")).toEqual(
+      identity,
+    );
   });
 
   it("rejects a missing tuple receipt for a guarded runtime observation", async () => {

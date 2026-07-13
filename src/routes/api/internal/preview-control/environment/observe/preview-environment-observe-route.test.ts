@@ -8,13 +8,23 @@ const mocks = vi.hoisted(() => ({
   requirePreviewControlCapability: vi.fn(),
   inspect: vi.fn(async () => ({ name: "feature-one", phase: "ready" })),
   observeRuntime: vi.fn(async () => ({
-    name: "feature-one",
+    preview: { name: "feature-one", phase: "ready" },
     identity: {
       previewName: "feature-one",
       environmentRequestId: "request-1",
       environmentPlatformRevision: "a".repeat(40),
       environmentSourceRevision: "b".repeat(40),
       catalogDigest: `sha256:${"d".repeat(64)}`,
+    },
+    runtime: {
+      name: "feature-one",
+      identity: {
+        previewName: "feature-one",
+        environmentRequestId: "request-1",
+        environmentPlatformRevision: "a".repeat(40),
+        environmentSourceRevision: "b".repeat(40),
+        catalogDigest: `sha256:${"d".repeat(64)}`,
+      },
     },
   })),
 }));
@@ -90,6 +100,13 @@ describe("physical preview environment observation route", () => {
     expect(response.status).toBe(200);
     expect(mocks.observeRuntime).toHaveBeenCalledWith(identity);
     expect(mocks.inspect).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      view: "runtime",
+      identity,
+      preview: { name: "feature-one", phase: "ready" },
+      runtime: { name: "feature-one", identity },
+    });
   });
 
   it("rejects extra fields before capability or application work", async () => {

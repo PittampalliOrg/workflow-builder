@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   buildPreviewEnvironmentDesiredStateManifest,
+  boundedObservationTimeoutMs,
   BrokeredVclusterPreviewGateway,
   DesiredStateVclusterPreviewGateway,
   KubernetesPreviewEnvironmentDesiredStateAdapter,
@@ -15,6 +16,7 @@ import type {
   PreviewEnvironmentDesiredStatePort,
   PreviewEnvironmentDeletionAcknowledgement,
   PreviewEnvironmentDeletionIntent,
+  PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentVersionedServiceCatalogPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
@@ -181,7 +183,10 @@ function previewRecord(): VclusterPreviewRecord {
   };
 }
 
-function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
+type TestPreviewGateway = VclusterPreviewGatewayPort &
+  PreviewEnvironmentObservationReaderPort;
+
+function gateway(overrides: Partial<TestPreviewGateway> = {}) {
   return {
     listWithCounts: vi.fn(async () => ({ previews: [], counts: null })),
     get: vi.fn(async () => previewRecord()),
@@ -213,6 +218,28 @@ function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
         failed: false,
       },
       services: [],
+    })),
+    inspect: vi.fn(async (identity) => ({
+      preview: previewRecord(),
+      identity,
+    })),
+    observeRuntime: vi.fn(async (identity) => ({
+      preview: previewRecord(),
+      identity,
+      runtime: {
+        name: identity.previewName,
+        resourceName: identity.previewName,
+        identity,
+        reconciliationSucceeded: true,
+        upJob: {
+          name: `vcpreview-up-${identity.previewName}`,
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [],
+      },
     })),
     cleanup: vi.fn(async () => ({
       name: command.name,
@@ -247,7 +274,7 @@ function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
       alreadySlept: false,
     })),
     ...overrides,
-  } satisfies VclusterPreviewGatewayPort;
+  } satisfies TestPreviewGateway;
 }
 
 function launchInput() {
@@ -835,6 +862,13 @@ describe("DesiredStateVclusterPreviewGateway", () => {
 });
 
 describe("BrokeredVclusterPreviewGateway", () => {
+  it("bounds the injected observation timeout", () => {
+    expect(boundedObservationTimeoutMs(Number.NaN)).toBe(30_000);
+    expect(boundedObservationTimeoutMs(1_000)).toBe(5_000);
+    expect(boundedObservationTimeoutMs(45_000)).toBe(45_000);
+    expect(boundedObservationTimeoutMs(90_000)).toBe(60_000);
+  });
+
   it("constructs and serves reads without hub desired-state credentials", async () => {
     const local = gateway();
     const brokerFetch = vi.fn();
@@ -933,6 +967,7 @@ describe("BrokeredVclusterPreviewGateway", () => {
         ok: true,
         view: "runtime",
         identity: observationIdentity,
+        preview: previewRecord(),
         runtime,
       }),
     );
@@ -947,30 +982,35 @@ describe("BrokeredVclusterPreviewGateway", () => {
       baseUrl: () => "http://preview-control-broker:3000",
     });
 
-    const observed = await adapter.runtimeForIdentity(observationIdentity);
+    const observed = await adapter.observeRuntime(observationIdentity);
 
     expect(observed).toMatchObject({
-      name: command.name,
       identity: observationIdentity,
-      services: [
-        {
-          service: "workflow-builder",
-          containers: [
-            {
-              pod: "workflow-builder-0",
-              image: "ghcr.io/example/workflow-builder:test",
-              imageId: "sha256:image",
-              ready: true,
-            },
-          ],
-        },
-      ],
+      preview: previewRecord(),
+      runtime: {
+        name: command.name,
+        identity: observationIdentity,
+        services: [
+          {
+            service: "workflow-builder",
+            containers: [
+              {
+                pod: "workflow-builder-0",
+                image: "ghcr.io/example/workflow-builder:test",
+                imageId: "sha256:image",
+                ready: true,
+              },
+            ],
+          },
+        ],
+      },
     });
-    expect(observed).not.toHaveProperty("namespaceUid");
-    expect(observed.services[0]?.containers[0]).not.toHaveProperty(
+    expect(observed.runtime).not.toHaveProperty("namespaceUid");
+    expect(observed.runtime.services[0]?.containers[0]).not.toHaveProperty(
       "namespaceUid",
     );
-    expect(local.runtimeForIdentity).not.toHaveBeenCalled();
+    expect(local.observeRuntime).not.toHaveBeenCalled();
+    expect(brokerFetch).toHaveBeenCalledOnce();
   });
 
   it("rejects a cross-name or cross-generation candidate read before transport", async () => {

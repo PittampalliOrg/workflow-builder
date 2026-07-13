@@ -35,6 +35,8 @@
 		previewRuntimePollInterval
 	} from '$lib/dev/dev-operations-view';
 	import type {
+		PreviewTraceQueryView,
+		PreviewTraceSummary,
 		VclusterPreviewRuntimeContainerView,
 		VclusterPreviewRuntimeView,
 		VclusterPreviewSummary
@@ -62,8 +64,15 @@
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let controller: AbortController | null = null;
 	let activePollingName: string | null = null;
+	let traceValue = $state<PreviewTraceQueryView | null>(null);
+	let traceName = $state<string | null>(null);
+	let traceLoading = $state(false);
+	let traceError = $state<string | null>(null);
+	let traceTimer: ReturnType<typeof setTimeout> | null = null;
+	let traceController: AbortController | null = null;
 
 	const runtime = $derived(runtimeName === preview?.name ? runtimeValue : null);
+	const traceSnapshot = $derived(traceName === preview?.name ? traceValue : null);
 	const status = $derived(preview ? effectivePreviewStatus(preview) : 'unknown');
 	const expiry = $derived(preview ? expiresIn(preview.expiresAt) : null);
 	const bootElapsed = $derived(preview ? formatBootElapsed(preview.bootSeconds) : null);
@@ -110,6 +119,11 @@
 		controller = null;
 		loading = false;
 		refreshing = false;
+		if (traceTimer) clearTimeout(traceTimer);
+		traceTimer = null;
+		traceController?.abort();
+		traceController = null;
+		traceLoading = false;
 	}
 
 	function canPoll(): boolean {
@@ -120,6 +134,12 @@
 		if (!canPoll()) return;
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => void readRuntime(), pollInterval);
+	}
+
+	function scheduleTraceNext() {
+		if (!canPoll()) return;
+		if (traceTimer) clearTimeout(traceTimer);
+		traceTimer = setTimeout(() => void readTraces(), 10_000);
 	}
 
 	async function readRuntime() {
@@ -165,9 +185,48 @@
 		}
 	}
 
+	async function readTraces() {
+		const current = preview;
+		if (!current || !canPoll()) return;
+		const requestController = new AbortController();
+		traceController?.abort();
+		traceController = requestController;
+		if (traceName !== current.name) {
+			traceValue = null;
+			traceName = current.name;
+			traceError = null;
+		}
+		traceLoading = true;
+		try {
+			const response = await fetch(
+				`/api/dev-environments/vcluster/${encodeURIComponent(current.name)}/traces?range=15m&limit=12`,
+				{ signal: requestController.signal }
+			);
+			if (!response.ok) throw new Error(`Trace query unavailable (${response.status})`);
+			const body = (await response.json()) as PreviewTraceQueryView;
+			if (preview?.name !== current.name || requestController.signal.aborted) return;
+			traceValue = body;
+			traceName = current.name;
+			traceError = null;
+		} catch (error) {
+			if (!requestController.signal.aborted) {
+				traceError = error instanceof Error ? error.message : 'Trace query failed';
+			}
+		} finally {
+			if (traceController === requestController) traceController = null;
+			if (!requestController.signal.aborted) {
+				traceLoading = false;
+				scheduleTraceNext();
+			}
+		}
+	}
+
 	function restartPolling() {
 		stopPolling();
-		if (canPoll()) void readRuntime();
+		if (canPoll()) {
+			void readRuntime();
+			void readTraces();
+		}
 	}
 
 	function handleVisibilityChange() {
@@ -245,6 +304,16 @@
 	function compactImage(image: string): string {
 		return image.replace(/^ghcr\.io\/pittampalliorg\//, '');
 	}
+
+	function compactTraceId(traceId: string): string {
+		return traceId.length > 20 ? `${traceId.slice(0, 10)}...${traceId.slice(-8)}` : traceId;
+	}
+
+	function traceDuration(trace: PreviewTraceSummary): string {
+		return trace.durationMs >= 1000
+			? `${(trace.durationMs / 1000).toFixed(trace.durationMs >= 10_000 ? 0 : 1)}s`
+			: `${trace.durationMs}ms`;
+	}
 </script>
 
 <Sheet.Root {open} onOpenChange={onOpenChange}>
@@ -289,11 +358,11 @@
 					variant="ghost"
 					class="ml-auto"
 					onclick={restartPolling}
-					disabled={loading || refreshing}
+					disabled={loading || refreshing || traceLoading}
 					title="Refresh runtime observation"
 					aria-label="Refresh runtime observation"
 				>
-					{#if loading || refreshing}<Loader2 class="size-3.5 motion-safe:animate-spin" />{:else}<RefreshCw class="size-3.5" />{/if}
+					{#if loading || refreshing || traceLoading}<Loader2 class="size-3.5 motion-safe:animate-spin" />{:else}<RefreshCw class="size-3.5" />{/if}
 				</Button>
 				<span class="text-[10px] text-muted-foreground">auto-refresh {pollLabel}</span>
 			</div>
@@ -430,9 +499,60 @@
 							</div>
 						{/if}
 					</div>
-				</section>
+					</section>
 
-				<section class="px-5 py-4" aria-labelledby="preview-workflows-heading">
+					<section class="border-b px-5 py-4" aria-labelledby="preview-traces-heading">
+						<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+							<div>
+								<h3 id="preview-traces-heading" class="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+									<Activity class="size-3.5" /> Traces
+								</h3>
+								<p class="mt-1 text-[11px] text-muted-foreground">Exact-generation telemetry from the last 15 minutes.</p>
+							</div>
+							{#if traceSnapshot}
+								<span class="text-[10px] text-muted-foreground">observed {new Date(traceSnapshot.observedAt).toLocaleTimeString()}</span>
+							{:else if traceLoading}
+								<span class="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 class="size-3.5 motion-safe:animate-spin" /> Querying</span>
+							{/if}
+						</div>
+
+						{#if traceError}
+							<div class="mb-3 flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" role="status">
+								<CircleAlert class="mt-0.5 size-3.5 shrink-0" />
+								<span>{traceError}{traceSnapshot ? ' Showing the last successful query.' : ''}</span>
+							</div>
+						{/if}
+
+						{#if traceLoading && !traceSnapshot}
+							<div class="border border-dashed px-3 py-5 text-center text-xs text-muted-foreground">Waiting for the first tuple-scoped query.</div>
+						{:else if !traceSnapshot || traceSnapshot.traces.length === 0}
+							<div class="border border-dashed px-3 py-5 text-center text-xs text-muted-foreground">No {preview.ready ? '' : 'provisioning '}traces have arrived for this preview generation in the selected window.</div>
+						{:else}
+							<div class="divide-y rounded-md border">
+								{#each traceSnapshot.traces as trace (trace.traceId)}
+									<div class="grid gap-2 px-3 py-2.5 text-[11px] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+										<div class="min-w-0">
+											<div class="flex min-w-0 items-center gap-2">
+												<span class="size-2 shrink-0 rounded-full {trace.status === 'error' ? 'bg-red-500' : 'bg-emerald-500'}" aria-hidden="true"></span>
+												<span class="truncate font-medium" title={trace.rootOperation}>{trace.rootOperation}</span>
+											</div>
+											<div class="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+												<code title={trace.traceId}>{compactTraceId(trace.traceId)}</code>
+												<span class="truncate">{trace.rootService}</span>
+												<span>{new Date(trace.startTime).toLocaleTimeString()}</span>
+											</div>
+										</div>
+										<div class="flex items-center gap-3 font-mono tabular-nums text-muted-foreground">
+											<span>{traceDuration(trace)}</span>
+											<span>{trace.spanCount} spans</span>
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</section>
+
+					<section class="px-5 py-4" aria-labelledby="preview-workflows-heading">
 					<div class="mb-3">
 						<h3 id="preview-workflows-heading" class="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
 							<Workflow class="size-3.5" /> Workflows

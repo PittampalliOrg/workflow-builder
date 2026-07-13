@@ -872,6 +872,94 @@ def test_app_start_control_strict_http_uses_workflow_data_client(monkeypatch):
     ]
 
 
+def test_strict_http_read_model_startup_retries_until_ready(monkeypatch):
+    attempts = []
+    sleeps = []
+    clock = [100.0]
+
+    class EventuallyReadyWorkflowDataClient:
+        def assert_execution_read_model_ready(self):
+            attempts.append(clock[0])
+            if len(attempts) < 3:
+                raise RuntimeError("workflow-builder is reloading")
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setenv("WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv(
+        "WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS", "1"
+    )
+    monkeypatch.setattr(APP, "workflow_data_client", EventuallyReadyWorkflowDataClient())
+    monkeypatch.setattr(APP.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(APP.time, "sleep", sleep)
+
+    APP._assert_execution_read_model_columns()
+
+    assert attempts == [100.0, 101.0, 102.0]
+    assert sleeps == [1.0, 1.0]
+
+
+def test_strict_http_read_model_startup_rethrows_at_deadline(monkeypatch):
+    attempts = []
+    sleeps = []
+    clock = [50.0]
+
+    class UnavailableWorkflowDataClient:
+        def assert_execution_read_model_ready(self):
+            error = RuntimeError(f"unavailable attempt {len(attempts) + 1}")
+            attempts.append(error)
+            raise error
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http")
+    monkeypatch.setenv("WORKFLOW_DATA_READ_MODEL_STARTUP_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv(
+        "WORKFLOW_DATA_READ_MODEL_STARTUP_RETRY_INTERVAL_SECONDS", "1"
+    )
+    monkeypatch.setattr(APP, "workflow_data_client", UnavailableWorkflowDataClient())
+    monkeypatch.setattr(APP.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(APP.time, "sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="unavailable attempt 4") as caught:
+        APP._assert_execution_read_model_columns()
+
+    assert caught.value is attempts[-1]
+    assert sleeps == [1.0, 1.0, 0.5]
+    assert clock[0] == 52.5
+
+
+def test_read_model_fallback_mode_does_not_wait_for_http(monkeypatch):
+    calls = []
+
+    class UnavailableWorkflowDataClient:
+        def assert_execution_read_model_ready(self):
+            calls.append("http")
+            raise RuntimeError("workflow-data unavailable")
+
+    monkeypatch.setenv("WORKFLOW_DATA_API_MODE", "http-fallback-db")
+    monkeypatch.setattr(APP, "workflow_data_client", UnavailableWorkflowDataClient())
+    monkeypatch.setattr(
+        APP.workflow_data_postgres_rollback,
+        "assert_execution_read_model_columns",
+        lambda: calls.append("postgres"),
+    )
+    monkeypatch.setattr(
+        APP.time,
+        "sleep",
+        lambda _seconds: pytest.fail("fallback mode must not retry the HTTP adapter"),
+    )
+
+    APP._assert_execution_read_model_columns()
+
+    assert calls == ["http", "postgres"]
+
+
 def test_app_strict_http_status_lookup_failure_does_not_fallback_to_db(monkeypatch):
     class FailingWorkflowDataClient:
         def get_execution_by_instance(self, _instance_id):

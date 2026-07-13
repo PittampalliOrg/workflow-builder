@@ -11324,6 +11324,66 @@ def _resolve_preview_realname_strict(core: Any, name: str) -> str:
 @app.get("/internal/vcluster-preview/{name}")
 def get_vcluster_preview(request: Request, name: str) -> dict[str, Any]:
     _require_internal(request)
+    guard = _preview_runtime_identity_guard(request)
+    dry_run = os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if guard is not None and dry_run:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="preview runtime identity is unavailable in dry-run mode",
+        )
+    if guard is not None:
+        safe_name = _safe_resource_name(name, max_length=40)
+        batch, core = _load_k8s_clients()
+        member = _read_preview_member(core, safe_name)
+        namespace_uid = _preview_member_namespace_uid(member)
+        identity = _preview_member_runtime_identity(member, safe_name)
+        if namespace_uid is None or identity != guard:
+            raise _preview_runtime_identity_changed()
+        initial_fingerprint = _preview_runtime_identity_fingerprint(member, safe_name)
+        if member.slept:
+            phase, active, succeeded, failed = "slept", 0, 0, 0
+        else:
+            phase, active, succeeded, failed = _vcluster_preview_phase(
+                batch, core, member.real_name
+            )
+        boot_seconds = _vcluster_preview_boot_seconds(core, member.real_name)
+        try:
+            confirmed_member = _read_preview_member(core, safe_name)
+        except HTTPException as exc:
+            if exc.status_code in {
+                status.HTTP_404_NOT_FOUND,
+                status.HTTP_409_CONFLICT,
+            }:
+                raise _preview_runtime_identity_changed() from exc
+            raise
+        if (
+            _preview_member_namespace_uid(confirmed_member) != namespace_uid
+            or _preview_runtime_identity_fingerprint(confirmed_member, safe_name)
+            != initial_fingerprint
+        ):
+            raise _preview_runtime_identity_changed()
+        confirmed_identity = _preview_member_runtime_identity(
+            confirmed_member, safe_name
+        )
+        if confirmed_identity != guard:
+            raise _preview_runtime_identity_changed()
+        result = _vcluster_preview_record_value(
+            requested_name=safe_name,
+            member=confirmed_member,
+            phase=phase,
+            active=active,
+            succeeded=succeeded,
+            failed=failed,
+            boot_seconds=boot_seconds,
+        )
+        result["identity"] = confirmed_identity
+        result["namespaceUid"] = namespace_uid
+        set_current_span_io("output", result)
+        return result
     # `name` may be a user's alias for a claimed pool member — probe its backing member id but
     # report the user's requested name + its wfb-<name> host.
     tailnet_host = f"wfb-{name}"
@@ -11533,6 +11593,79 @@ def _preview_runtime_identity_changed() -> HTTPException:
     )
 
 
+def _vcluster_preview_record_value(
+    *,
+    requested_name: str,
+    member: PreviewMember,
+    phase: str,
+    active: int,
+    succeeded: int,
+    failed: int,
+    boot_seconds: int | None,
+) -> dict[str, Any]:
+    tailnet_host = f"wfb-{requested_name}"
+    result = {
+        "name": requested_name,
+        "job": _vcluster_preview_job_name(member.real_name, "up"),
+        "phase": phase,
+        "ready": phase == "ready",
+        "active": active,
+        "succeeded": succeeded,
+        "failed": failed,
+        "tailnetHost": tailnet_host,
+        "url": f"https://{tailnet_host}.{_VCLUSTER_PREVIEW_TAILNET_SUFFIX}",
+        "bootSeconds": boot_seconds,
+        **_preview_lifecycle_fields(member),
+    }
+    if member.real_name != requested_name:
+        result["pool"] = member.real_name
+    return result
+
+
+def _vcluster_preview_phase_from_runtime(
+    member: PreviewMember,
+    pods: Any,
+    *,
+    up_job_found: bool,
+    up_job_active: bool,
+    up_job_succeeded: bool,
+    up_job_failed: bool,
+) -> str:
+    if member.slept:
+        return "slept"
+    profiled = member.profile is not None
+    reconciliation_succeeded = bool(
+        member.reconciliation_succeeded_at
+        and member.reconciliation_platform_revision == member.platform_revision
+        and member.reconciliation_source_revision == member.source_revision
+    )
+    bff_ready = any(
+        _preview_pod_matches_service(pod, "workflow-builder")
+        and _preview_pod_is_ready(pod)
+        for pod in (getattr(pods, "items", None) or [])
+    )
+    if profiled and up_job_failed:
+        return "failed"
+    if profiled and up_job_active:
+        return "provisioning"
+    if (
+        profiled
+        and bff_ready
+        and reconciliation_succeeded
+        and (up_job_succeeded or not up_job_found)
+    ):
+        return "ready"
+    if profiled:
+        return "provisioning"
+    if bff_ready:
+        return "ready"
+    if up_job_active:
+        return "provisioning"
+    if up_job_failed:
+        return "failed"
+    return "provisioning"
+
+
 @app.get("/internal/vcluster-preview/{name}/runtime")
 def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     """Read actual selected-service pod images from the host Kubernetes API."""
@@ -11609,6 +11742,14 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     ):
         raise _preview_runtime_identity_changed()
     confirmed_identity = _preview_member_runtime_identity(confirmed_member, safe_name)
+    phase = _vcluster_preview_phase_from_runtime(
+        confirmed_member,
+        pods,
+        up_job_found=up_job_found,
+        up_job_active=up_job_active,
+        up_job_succeeded=up_job_succeeded,
+        up_job_failed=up_job_failed,
+    )
     result = {
         "name": name,
         "resourceName": member.real_name,
@@ -11633,6 +11774,15 @@ def get_vcluster_preview_runtime(request: Request, name: str) -> dict[str, Any]:
     if confirmed_identity is not None:
         result["identity"] = confirmed_identity
         result["namespaceUid"] = namespace_uid
+        result["preview"] = _vcluster_preview_record_value(
+            requested_name=safe_name,
+            member=confirmed_member,
+            phase=phase,
+            active=int(up_job_active),
+            succeeded=int(up_job_succeeded),
+            failed=int(up_job_failed),
+            boot_seconds=None,
+        )
     set_current_span_io("output", result)
     return result
 

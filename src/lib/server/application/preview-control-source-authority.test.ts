@@ -162,11 +162,80 @@ describe("ApplicationPreviewControlSourceAuthorityService", () => {
     });
   });
 
+  it("applies runtime source policy to an observed record without another read", async () => {
+    const h = harness({ mode: "reconciled" });
+    const observed = await h.environments.inspect(input.previewName);
+    vi.mocked(h.environments.inspect).mockClear();
+
+    await expect(
+      h.service.authorizeObservedRuntimeTuple(
+        {
+          previewName: input.previewName,
+          environmentRequestId: input.environmentRequestId,
+          environmentPlatformRevision: input.environmentPlatformRevision,
+          environmentSourceRevision: input.environmentSourceRevision,
+          catalogDigest: input.catalogDigest,
+        },
+        observed,
+      ),
+    ).resolves.toMatchObject({
+      previewName: input.previewName,
+      requestId: input.environmentRequestId,
+      services: ["function-router", "workflow-builder"],
+    });
+    expect(h.environments.inspect).not.toHaveBeenCalled();
+  });
+
   it("does not authorize a reconciled non-app-live runtime", async () => {
     const h = harness({ mode: "reconciled", profile: "manifest-candidate" });
     await expect(h.service.authorizeRuntime(input)).rejects.toMatchObject({
       code: "contract-mismatch",
     });
+  });
+
+  it("authorizes exact manifest-candidate traces before readiness without requiring the current catalog", async () => {
+    const historicalDigest = `sha256:${"d".repeat(64)}` as const;
+    const h = harness({
+      ready: false,
+      profile: "manifest-candidate",
+      mode: "reconciled",
+      trustedCode: false,
+      catalogDigest: historicalDigest,
+      services: ["candidate-only-service"],
+    });
+
+    await expect(
+      h.service.authorizeTraceTuple({
+        previewName: input.previewName,
+        environmentRequestId: input.environmentRequestId,
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: historicalDigest,
+      }),
+    ).resolves.toMatchObject({
+      previewName: input.previewName,
+      catalogDigest: historicalDigest,
+      services: ["candidate-only-service"],
+    });
+  });
+
+  it("rejects a trace request for a different immutable generation", async () => {
+    const h = harness({
+      ready: false,
+      profile: "manifest-candidate",
+      mode: "reconciled",
+      trustedCode: false,
+    });
+
+    await expect(
+      h.service.authorizeTraceTuple({
+        previewName: input.previewName,
+        environmentRequestId: "another-launch",
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: input.catalogDigest,
+      }),
+    ).rejects.toMatchObject({ code: "contract-mismatch" });
   });
 
   it("authorizes a one-service runtime tuple without requiring the full catalog", async () => {

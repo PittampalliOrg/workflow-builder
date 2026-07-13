@@ -57,10 +57,11 @@ Current preview lifecycle truth is the latest physical snapshot exposed through
 the vCluster preview application service and `VclusterPreviewGatewayPort`
 (`listWithCounts`, `get`, `runtimeForIdentity`, and `cleanup`). The application
 service constructs the immutable `PreviewControlIdentity`, authorizes the actor,
-and calls `runtimeForIdentity`; the SEA adapter validates that tuple before and
-after its Kubernetes reads and returns the same tuple as a receipt. The legacy
-name-only `runtime` method remains an adapter-compatibility path and is not used
-by the browser route. Durable workflow executions, session provisioning marks,
+and calls the tuple-bound observation port; the SEA adapter validates that tuple
+before and after its Kubernetes reads, embeds the authoritative preview record,
+and returns the same tuple as a receipt. The legacy name-only `runtime` method
+remains an adapter-compatibility path and is not used by the browser route.
+Durable workflow executions, session provisioning marks,
 and sequence-ordered session events are the truth for workflow and agent
 progress. SSE notifications may wake the browser and trigger a fresh read, but
 they do not replace lifecycle snapshots or the durable event log. Tier-1 service
@@ -74,13 +75,12 @@ tuple-leaf `BrokeredVclusterPreviewGateway` observation adapter for `get` and
 `runtimeForIdentity`. That adapter sends the preview's derived control leaf and
 five-field immutable identity to the physical broker, never the shared broker
 token. The broker route authenticates the leaf, calls the physical observation
-use case through `PreviewEnvironmentObservationBrokerPort`, authorizes the tuple
-before and after the read, and returns a strict receipt. That application use
-case depends only on `PreviewControlSourceAuthorityPort` and
-`VclusterPreviewGatewayPort`; HTTP capability checks and physical SEA access
-remain adapters. The outbound adapter selects and validates every domain field before
-returning through `VclusterPreviewGatewayPort`; raw Kubernetes fields cannot
-cross into the application or browser.
+use case through `PreviewEnvironmentObservationBrokerPort`, applies source
+authority policy to the already tuple-fenced record, and returns a strict
+receipt. This is one SEA operation rather than several serial status reads. HTTP
+capability checks and physical SEA access remain adapters. The outbound adapter
+selects and validates every domain field before returning through the port; raw
+Kubernetes fields cannot cross into the application or browser.
 
 The inbound SvelteKit routes obtain use cases through
 `getApplicationAdapters()`; they must not construct concrete adapters. The
@@ -103,30 +103,42 @@ manifest-candidate PR, or a promoted source bundle that has become a GitHub PR
 and then entered the build, image-pin, Source Hydrator, and GitOps Promoter
 lanes. Preview readiness must never be presented as a promoted deployment.
 
-Raw OpenTelemetry traces, container logs, and metrics are intentionally not a
-POC read surface. Preview vClusters disable OTEL exporters and Dapr trace
-sampling, and they receive no host observability endpoint or query credential.
-The POC must use normalized lifecycle, runtime, workflow, session, and sidecar
-read models; it must not enable raw telemetry access to improve the UI.
+Preview traces use a bounded east-west adapter rather than exposing the host
+observability stack. The physical `vcluster-<name>` namespace owns one small
+OTLP gateway. vCluster replicates only that gateway Service into the tenant;
+Ingress and IngressClass synchronization remain disabled. The gateway overwrites
+the complete immutable preview tuple on every resource and exports to the
+dedicated physical preview ingest pipeline. That pipeline accepts only gateway
+traffic, applies memory and batch limits, and writes traces to ClickHouse through
+the existing dev-to-hub Tailscale transport. It has no MLflow receiver, exporter,
+secret, or experiment configuration. Tempo is deliberately deferred for this POC
+because dev has no local Tempo and no existing bounded hub transport for it.
 
-A later `PreviewObservabilityQueryPort` may add bounded observability reads, but
-it must be implemented by a physical adapter outside candidate code. Every read
-must authorize the preview owner or a platform admin, bind and filter on the
-complete immutable preview tuple, enforce limits and redaction server-side, and
-return normalized application DTOs only. It must not expose backend query
-languages, collector URLs, Kubernetes log access, or observability credentials
-to the browser or vCluster. Implementing this future port is explicitly outside
-the development POC.
+The tenant receives an OTLP endpoint, not an observability credential. It never
+receives ClickHouse or Tempo network access. Browser reads go through
+`ApplicationPreviewTraceService` and `PreviewTraceQueryPort`; preview deployments
+use the tuple-authenticated HTTP broker adapter, while the physical broker owns
+the ClickHouse adapter. Every query authorizes the preview owner or a platform
+admin, binds all five tuple attributes, accepts only bounded time/service/status/
+search filters, and returns compact trace summaries. Raw SQL, spans, collector
+configuration, Kubernetes access, and backend credentials never cross the
+application port.
 
-| Concern | Source of truth | Authorized read path | POC verification |
-| --- | --- | --- | --- |
-| Lifecycle and capacity | Physical PreviewEnvironment/SEA snapshot | vCluster preview application service -> `VclusterPreviewGatewayPort` | Phase, allocation counts, boot time, up-Job state, reconciliation, and service container readiness agree |
-| Dev services and HMR | Active workflow workspace rows plus brokered sidecar status | Workflow-data/dev-environment read port -> `DevPreviewSidecarPort` | Every selected service is ready; last sync generation advances while pod UID and restart count stay stable |
-| Workflow and agent progress | Durable execution/session records and ordered session events | Authorized `WorkflowDataService` reads and scoped status/SSE routes | Execution state, provisioning marks, session snapshot, and monotonic event replay agree |
-| Preview identity and access | Persisted PreviewEnvironment contract | Owner/admin policy -> tuple-bound physical broker | Name, request ID, owner, platform/source SHAs, and catalog digest match exactly |
-| Teardown | Physical cleanup convergence proof | Preview lifecycle service -> `cleanup` snapshot | Terminal result proves all required application, database, stream, namespace, storage, and identity resources absent |
-| GitOps delivery | GitHub commit/PR, immutable image pins, Source Hydrator, Promoter, and live inventory | Existing GitOps application ports -> Change Journey | PR/head SHA, image digest, hydrated revision, promotion health, and live deployment correlate without copying preview state |
-| Raw traces, logs, and metrics | No POC authority; export is disabled | None | Preview configuration remains fail-closed; no raw telemetry endpoint or credential enters the vCluster |
+This is intentionally a trace-only POC. Preview log export, arbitrary trace
+detail queries, tenant-created collectors, and north-south observability routes
+remain out of scope. Ingress syncing would expand the host admission and cleanup
+surface without helping OTLP delivery, so it is not a prerequisite for tracing.
+
+| Concern                                      | Source of truth                                                                       | Authorized read path                                                     | POC verification                                                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle and capacity                       | Physical PreviewEnvironment/SEA snapshot                                              | vCluster preview application service -> `VclusterPreviewGatewayPort`     | Phase, allocation counts, boot time, up-Job state, reconciliation, and service container readiness agree                                       |
+| Dev services and HMR                         | Active workflow workspace rows plus brokered sidecar status                           | Workflow-data/dev-environment read port -> `DevPreviewSidecarPort`       | Every selected service is ready; last sync generation advances while pod UID and restart count stay stable                                     |
+| Workflow and agent progress                  | Durable execution/session records and ordered session events                          | Authorized `WorkflowDataService` reads and scoped status/SSE routes      | Execution state, provisioning marks, session snapshot, and monotonic event replay agree                                                        |
+| Preview identity and access                  | Persisted PreviewEnvironment contract                                                 | Owner/admin policy -> tuple-bound physical broker                        | Name, request ID, owner, platform/source SHAs, and catalog digest match exactly                                                                |
+| Teardown                                     | Physical cleanup convergence proof                                                    | Preview lifecycle service -> `cleanup` snapshot                          | Terminal result proves all required application, database, stream, namespace, storage, and identity resources absent                           |
+| GitOps delivery                              | GitHub commit/PR, immutable image pins, Source Hydrator, Promoter, and live inventory | Existing GitOps application ports -> Change Journey                      | PR/head SHA, image digest, hydrated revision, promotion health, and live deployment correlate without copying preview state                    |
+| Preview traces                               | Tuple-stamping physical gateway -> dedicated ingest -> ClickHouse                     | Owner/admin policy -> `PreviewTraceQueryPort` -> physical broker adapter | A generated trace is returned only for the exact name, request ID, platform SHA, source SHA, and catalog digest; another tuple returns no rows |
+| Preview logs and arbitrary telemetry queries | No POC authority                                                                      | None                                                                     | No backend credential, raw query language, or ingress sync enters the vCluster                                                                 |
 
 ## Preconditions
 

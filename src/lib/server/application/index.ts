@@ -398,6 +398,14 @@ import { ApplicationPreviewTeardownService } from "$lib/server/application/previ
 import { ApplicationPreviewLifecycleReaperService } from "$lib/server/application/preview-lifecycle-reaper";
 import { ApplicationPreviewReadBrokerService } from "$lib/server/application/preview-read-broker";
 import {
+  ApplicationPreviewTraceBrokerService,
+  ApplicationPreviewTraceService,
+} from "$lib/server/application/preview-traces";
+import {
+  ClickHousePreviewTraceQueryAdapter,
+  HttpPreviewTraceQueryAdapter,
+} from "$lib/server/application/adapters/preview-traces";
+import {
   HmacPreviewControlCapabilityMintAdapter,
   HttpPreviewCapabilityReadTransportAdapter,
   HttpPreviewReadBrokerAdapter,
@@ -499,6 +507,7 @@ import type {
   PreviewAcceptanceBrokerPort,
   PreviewEnvironmentDesiredStatePort,
   PreviewEnvironmentDeletionOutboxPort,
+  PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentUserLaunchPort,
   PreviewInfrastructureCandidateBrokerPort,
   PreviewActivationDispatchPort,
@@ -793,6 +802,8 @@ export function getApplicationAdapters(
   let prPreviewCommands: PrPreviewCommandPort | undefined;
   let previewReadProxy: ApplicationPreviewReadProxyService | undefined;
   let previewReadBroker: ApplicationPreviewReadBrokerService | undefined;
+  let previewTraces: ApplicationPreviewTraceService | undefined;
+  let previewTraceBroker: ApplicationPreviewTraceBrokerService | undefined;
   let previewArchive: ApplicationPreviewArchiveService | undefined;
   let previewAccess: ApplicationPreviewAccessService | undefined;
   let previewTeardown: ApplicationPreviewTeardownService | undefined;
@@ -804,9 +815,15 @@ export function getApplicationAdapters(
     | (PreviewEnvironmentDesiredStatePort &
         PreviewEnvironmentDeletionOutboxPort)
     | undefined;
-  let localVclusterPreviewGateway: VclusterPreviewGatewayPort | undefined;
-  let physicalVclusterPreviewGateway: VclusterPreviewGatewayPort | undefined;
-  let vclusterPreviewGateway: VclusterPreviewGatewayPort | undefined;
+  let localVclusterPreviewGateway:
+    | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
+    | undefined;
+  let physicalVclusterPreviewGateway:
+    | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
+    | undefined;
+  let vclusterPreviewGateway:
+    | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
+    | undefined;
   let previewEnvironments: PreviewEnvironmentUserLaunchPort | undefined;
   let previewEnvironmentLaunchBroker:
     | ApplicationPreviewEnvironmentLaunchBrokerService
@@ -1715,6 +1732,17 @@ export function getApplicationAdapters(
       },
       scope: previewDeploymentScope,
     }));
+  const getPreviewTraces = () => {
+    if (isPreviewControlBroker()) {
+      throw new Error(
+        "user-facing preview trace queries are unavailable in broker mode",
+      );
+    }
+    return (previewTraces ??= new ApplicationPreviewTraceService({
+      access: getPreviewAccess(),
+      traces: new HttpPreviewTraceQueryAdapter(),
+    }));
+  };
   const getPreviewTeardown = () =>
     (previewTeardown ??= new ApplicationPreviewTeardownService({
       access: getPreviewAccess(),
@@ -1916,9 +1944,20 @@ export function getApplicationAdapters(
     }
     return (previewEnvironmentObservationBroker ??=
       new ApplicationPreviewEnvironmentObservationBrokerService({
-        previews: getPhysicalVclusterPreviewGateway(),
+        observations: getPhysicalVclusterPreviewGateway(),
         authority: getPreviewControlSourceAuthority(),
       }));
+  };
+  const getPreviewTraceBroker = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error(
+        "physical preview trace queries are available only in broker mode",
+      );
+    }
+    return (previewTraceBroker ??= new ApplicationPreviewTraceBrokerService({
+      authority: getPreviewControlSourceAuthority(),
+      traces: new ClickHousePreviewTraceQueryAdapter(),
+    }));
   };
   const getPreviewDevSyncCredentialMint = () => {
     if (!isPreviewControlBroker()) {
@@ -2161,11 +2200,12 @@ export function getApplicationAdapters(
       }));
   };
   const getPreviewActivationDispatch = () =>
-    (previewActivationDispatch ??= new ApplicationPreviewActivationDispatchService({
-      broker: new HttpPreviewActivationBrokerAdapter(),
-      catalog: new DevPreviewServiceCatalogAdapter(),
-      sourceRepository: config.previewSourceRepository,
-    }));
+    (previewActivationDispatch ??=
+      new ApplicationPreviewActivationDispatchService({
+        broker: new HttpPreviewActivationBrokerAdapter(),
+        catalog: new DevPreviewServiceCatalogAdapter(),
+        sourceRepository: config.previewSourceRepository,
+      }));
   const getPreviewDevelopmentBuildBroker = () =>
     (previewDevelopmentBuildBroker ??=
       new ApplicationPreviewDevelopmentBuildBrokerService({
@@ -2753,6 +2793,12 @@ export function getApplicationAdapters(
     },
     get previewReadBroker() {
       return getPreviewReadBroker();
+    },
+    get previewTraces() {
+      return getPreviewTraces();
+    },
+    get previewTraceBroker() {
+      return getPreviewTraceBroker();
     },
     get previewArchive() {
       return getPreviewArchive();

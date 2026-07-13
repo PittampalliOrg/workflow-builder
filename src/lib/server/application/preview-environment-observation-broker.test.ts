@@ -62,111 +62,133 @@ const authorizedSource: AuthorizedPreviewControlSource = {
 };
 
 function harness() {
-  const authorizeRuntimeTuple = vi.fn(
-    async (_input: PreviewControlIdentity): Promise<AuthorizedPreviewControlSource> =>
-      authorizedSource,
+  const authorizeObservedRuntimeTuple = vi.fn(
+    async (
+      _input: PreviewControlIdentity,
+    ): Promise<AuthorizedPreviewControlSource> => authorizedSource,
   );
-  const get = vi.fn(async () => preview);
-  const runtimeForIdentity = vi.fn(async (_input: typeof identity) => ({
-    name: identity.previewName,
-    resourceName: "feature-one",
-    reconciliationSucceeded: true,
-    upJob: {
-      name: "vcluster-feature-one-up",
-      found: true,
-      active: false,
-      succeeded: true,
-      failed: false,
-    },
-    services: [
-      {
-        service: "workflow-builder",
-        containers: [
-          {
-            pod: "workflow-builder-0",
-            image: "ghcr.io/example/workflow-builder:test",
-            imageId: "sha256:image",
-            ready: true,
-          },
-        ],
-      },
-    ],
+  const inspect = vi.fn(async (_input: typeof identity) => ({
+    preview,
     identity,
   }));
+  const observeRuntime = vi.fn(async (_input: typeof identity) => ({
+    preview,
+    identity,
+    runtime: {
+      name: identity.previewName,
+      resourceName: "feature-one",
+      reconciliationSucceeded: true,
+      upJob: {
+        name: "vcluster-feature-one-up",
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [
+        {
+          service: "workflow-builder",
+          containers: [
+            {
+              pod: "workflow-builder-0",
+              image: "ghcr.io/example/workflow-builder:test",
+              imageId: "sha256:image",
+              ready: true,
+            },
+          ],
+        },
+      ],
+      identity,
+    },
+  }));
   return {
-    authorizeRuntimeTuple,
-    get,
-    runtimeForIdentity,
+    authorizeObservedRuntimeTuple,
+    inspect,
+    observeRuntime,
     service: new ApplicationPreviewEnvironmentObservationBrokerService({
-      authority: { authorizeRuntimeTuple },
-      previews: { get, runtimeForIdentity },
+      authority: { authorizeObservedRuntimeTuple },
+      observations: { inspect, observeRuntime },
     }),
   };
 }
 
 describe("ApplicationPreviewEnvironmentObservationBrokerService", () => {
-  it("fences a record read with physical tuple authority before and after", async () => {
+  it("performs one tuple-fenced record operation and pure source policy", async () => {
     const h = harness();
 
     await expect(h.service.inspect(identity)).resolves.toEqual(preview);
 
-    expect(h.authorizeRuntimeTuple).toHaveBeenCalledTimes(2);
-    expect(h.get).toHaveBeenCalledWith(identity.previewName);
-    expect(h.authorizeRuntimeTuple.mock.invocationCallOrder[0]).toBeLessThan(
-      h.get.mock.invocationCallOrder[0],
-    );
-    expect(h.get.mock.invocationCallOrder[0]).toBeLessThan(
-      h.authorizeRuntimeTuple.mock.invocationCallOrder[1],
+    expect(h.inspect).toHaveBeenCalledOnce();
+    expect(h.inspect).toHaveBeenCalledWith(identity);
+    expect(h.authorizeObservedRuntimeTuple).toHaveBeenCalledOnce();
+    expect(h.inspect.mock.invocationCallOrder[0]).toBeLessThan(
+      h.authorizeObservedRuntimeTuple.mock.invocationCallOrder[0],
     );
   });
 
   it("rejects a record from another immutable generation", async () => {
     const h = harness();
-    h.get.mockResolvedValueOnce({ ...preview, sourceRevision: "c".repeat(40) });
+    h.inspect.mockResolvedValueOnce({
+      preview: { ...preview, sourceRevision: "c".repeat(40) },
+      identity,
+    });
 
     await expect(h.service.inspect(identity)).rejects.toBeInstanceOf(
       PreviewRuntimeIdentityChangedError,
     );
-    expect(h.authorizeRuntimeTuple).toHaveBeenCalledOnce();
+    expect(h.inspect).toHaveBeenCalledOnce();
+    expect(h.authorizeObservedRuntimeTuple).not.toHaveBeenCalled();
   });
 
-  it("fences a tuple-bound runtime read before and after", async () => {
+  it("performs one tuple-fenced runtime operation with its authoritative record", async () => {
     const h = harness();
 
     await expect(h.service.observeRuntime(identity)).resolves.toMatchObject({
-      name: identity.previewName,
+      preview,
       identity,
+      runtime: { name: identity.previewName, identity },
     });
 
-    expect(h.authorizeRuntimeTuple).toHaveBeenCalledTimes(2);
-    expect(h.runtimeForIdentity).toHaveBeenCalledWith(identity);
-    expect(h.authorizeRuntimeTuple.mock.invocationCallOrder[0]).toBeLessThan(
-      h.runtimeForIdentity.mock.invocationCallOrder[0],
-    );
-    expect(h.runtimeForIdentity.mock.invocationCallOrder[0]).toBeLessThan(
-      h.authorizeRuntimeTuple.mock.invocationCallOrder[1],
+    expect(h.observeRuntime).toHaveBeenCalledOnce();
+    expect(h.observeRuntime).toHaveBeenCalledWith(identity);
+    expect(h.authorizeObservedRuntimeTuple).toHaveBeenCalledOnce();
+    expect(h.observeRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      h.authorizeObservedRuntimeTuple.mock.invocationCallOrder[0],
     );
   });
 
   it("rejects a mismatched runtime receipt", async () => {
     const h = harness();
-    h.runtimeForIdentity.mockResolvedValueOnce({
-      ...(await h.runtimeForIdentity(identity)),
-      identity: { ...identity, environmentRequestId: "request-2" },
+    const baseline = await h.observeRuntime(identity);
+    h.observeRuntime.mockResolvedValueOnce({
+      ...baseline,
+      runtime: {
+        ...baseline.runtime,
+        identity: { ...identity, environmentRequestId: "request-2" },
+      },
     });
-    h.runtimeForIdentity.mockClear();
+    h.observeRuntime.mockClear();
 
     await expect(h.service.observeRuntime(identity)).rejects.toBeInstanceOf(
       PreviewRuntimeIdentityChangedError,
     );
-    expect(h.authorizeRuntimeTuple).toHaveBeenCalledOnce();
+    expect(h.observeRuntime).toHaveBeenCalledOnce();
+    expect(h.authorizeObservedRuntimeTuple).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the post-read authority check observes replacement", async () => {
+  it("rejects a runtime receipt whose embedded record was replaced", async () => {
     const h = harness();
-    h.authorizeRuntimeTuple.mockResolvedValueOnce(authorizedSource);
-    h.authorizeRuntimeTuple.mockRejectedValueOnce(new Error("generation replaced"));
+    const baseline = await h.observeRuntime(identity);
+    h.observeRuntime.mockResolvedValueOnce({
+      ...baseline,
+      preview: { ...preview, provenance: { ...preview.provenance!, requestId: "request-2" } },
+    });
+    h.observeRuntime.mockClear();
 
-    await expect(h.service.inspect(identity)).rejects.toThrow("generation replaced");
+    await expect(h.service.observeRuntime(identity)).rejects.toBeInstanceOf(
+      PreviewRuntimeIdentityChangedError,
+    );
+    expect(h.observeRuntime).toHaveBeenCalledOnce();
+    expect(h.authorizeObservedRuntimeTuple).not.toHaveBeenCalled();
   });
 });
