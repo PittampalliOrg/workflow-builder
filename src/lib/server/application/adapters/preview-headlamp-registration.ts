@@ -18,8 +18,11 @@ export type KubernetesPreviewHeadlampRegistrationOptions = Readonly<{
   fetch: KubeFetch;
 }>;
 
-const PREVIEW_NAMESPACE = "preview-system";
+const CONTROL_NAMESPACE = "preview-system";
+const HEADLAMP_NAMESPACE = "preview-headlamp";
 const TAILSCALE_NAMESPACE = "tailscale";
+const HEADLAMP_REGISTRATION_FINALIZER =
+  "preview.stacks.io/headlamp-registration";
 const ENVIRONMENT_UID_ANNOTATION =
   "preview.stacks.io/preview-environment-uid";
 const MANAGED_LABEL = "preview.stacks.io/managed";
@@ -62,11 +65,11 @@ function serviceName(name: string): string {
 }
 
 function previewEnvironmentPath(name: string): string {
-  return `/apis/preview.stacks.io/v1alpha1/namespaces/${PREVIEW_NAMESPACE}/previewenvironments/${encodeURIComponent(name)}`;
+  return `/apis/preview.stacks.io/v1alpha1/namespaces/${CONTROL_NAMESPACE}/previewenvironments/${encodeURIComponent(name)}`;
 }
 
 function secretCollectionPath(): string {
-  return `/api/v1/namespaces/${PREVIEW_NAMESPACE}/secrets`;
+  return `/api/v1/namespaces/${HEADLAMP_NAMESPACE}/secrets`;
 }
 
 function secretPath(name: string): string {
@@ -89,13 +92,17 @@ function tupleMatches(
   const annotations = stringMap(metadata?.annotations);
   const spec = record(resource.spec);
   const provenance = record(spec?.provenance);
+  const finalizers = Array.isArray(metadata?.finalizers)
+    ? metadata.finalizers
+    : [];
   const uid = metadata?.uid;
   if (
     metadata?.name !== identity.previewName ||
-    metadata.namespace !== PREVIEW_NAMESPACE ||
+    metadata.namespace !== CONTROL_NAMESPACE ||
     typeof uid !== "string" ||
     !KUBERNETES_UID.test(uid) ||
     metadata.deletionTimestamp !== undefined ||
+    !finalizers.includes(HEADLAMP_REGISTRATION_FINALIZER) ||
     spec?.id !== identity.previewName ||
     provenance?.requestId !== identity.environmentRequestId ||
     spec.platformRevision !== identity.environmentPlatformRevision ||
@@ -190,7 +197,7 @@ export function buildPreviewHeadlampSecret(
     kind: "Secret",
     metadata: {
       name: secretName(name),
-      namespace: PREVIEW_NAMESPACE,
+      namespace: HEADLAMP_NAMESPACE,
       labels: ownedLabels(name),
       annotations: { [ENVIRONMENT_UID_ANNOTATION]: environmentUid },
     },
@@ -265,7 +272,7 @@ export class KubernetesPreviewHeadlampRegistrationAdapter
       desired: buildPreviewHeadlampSecret(command, environmentUid),
       ownership: {
         kind: "Secret",
-        namespace: PREVIEW_NAMESPACE,
+        namespace: HEADLAMP_NAMESPACE,
         resourceName: secretName(name),
         previewName: name,
         environmentUid,

@@ -33,6 +33,7 @@ const environment = {
     namespace: "preview-system",
     uid: UID,
     resourceVersion: "10",
+    finalizers: ["preview.stacks.io/headlamp-registration"],
     annotations: {
       "preview.stacks.io/request-id": "request-1",
       "preview.stacks.io/platform-revision": "a".repeat(40),
@@ -86,7 +87,7 @@ describe("KubernetesPreviewHeadlampRegistrationAdapter", () => {
     expect(writes[0]?.[1]).toEqual(
       buildPreviewHeadlampEgressService(command, UID),
     );
-    expect(writes[1]?.[0]).toBe("/api/v1/namespaces/preview-system/secrets");
+    expect(writes[1]?.[0]).toBe("/api/v1/namespaces/preview-headlamp/secrets");
     expect(writes[1]?.[1]).toEqual(buildPreviewHeadlampSecret(command, UID));
 
     const secret = writes[1]?.[1] as ReturnType<
@@ -183,6 +184,23 @@ describe("KubernetesPreviewHeadlampRegistrationAdapter", () => {
       response({
         ...environment,
         spec: { ...environment.spec, sourceRevision: "d".repeat(40) },
+      }),
+    );
+    const adapter = new KubernetesPreviewHeadlampRegistrationAdapter({
+      fetch: fetchImpl,
+    });
+
+    await expect(adapter.register(command)).rejects.toMatchObject({
+      code: "generation-mismatch",
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("requires the cleanup finalizer before writing either resource", async () => {
+    const fetchImpl = vi.fn(async () =>
+      response({
+        ...environment,
+        metadata: { ...environment.metadata, finalizers: [] },
       }),
     );
     const adapter = new KubernetesPreviewHeadlampRegistrationAdapter({

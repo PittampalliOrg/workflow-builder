@@ -15,7 +15,7 @@ from kubernetes.client.exceptions import ApiException
 
 
 DASHBOARD_REGISTRATION_FINALIZER = "preview.stacks.io/headlamp-registration"
-HEADLAMP_SECRET_NAMESPACE = "preview-system"
+HEADLAMP_SECRET_NAMESPACE = "preview-headlamp"
 TAILSCALE_NAMESPACE = "tailscale"
 
 MANAGED_LABEL = "preview.stacks.io/managed"

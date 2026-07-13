@@ -22,6 +22,10 @@ PREVIEW_ID = "feature-x"
 ENVIRONMENT_UID = "12345678-1234-1234-1234-123456789abc"
 
 
+def test_headlamp_secret_uses_its_dedicated_namespace() -> None:
+    assert HEADLAMP_SECRET_NAMESPACE == "preview-headlamp"
+
+
 def _not_found() -> ApiException:
     return ApiException(status=404, reason="Not Found")
 
