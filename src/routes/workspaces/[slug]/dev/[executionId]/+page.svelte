@@ -132,6 +132,7 @@
 			<ArrowLeft class="size-4" /> Dev
 		</Button>
 		<h1 class="font-semibold truncate">{environment.service}</h1>
+		<span class="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">Preview live-sync 490e</span>
 		{#if sessionId}
 			<SessionGoalBadge {sessionId} />
 		{/if}
