@@ -716,6 +716,7 @@ def test_failed_preinitialized_down_preserves_namespace_generation_across_retry(
     ] = failed_up_generation
     monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
     proof = app_module.FailedPreinitializedTeardownProof(
+        preinitialization_evidence="failed-up-job-v1",
         physical_namespace_uid="12345678-1234-1234-1234-123456789abc",
         failed_up_job_uid="87654321-4321-4321-4321-cba987654321",
         failed_up_runner_generation=failed_up_generation,

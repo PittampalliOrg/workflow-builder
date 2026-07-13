@@ -8688,8 +8688,9 @@ class VclusterPreviewTeardownRequest(BaseModel):
 class FailedPreinitializedTeardownProof:
     """Server-generated evidence for the one controller-only teardown exception."""
 
+    preinitialization_evidence: str
     physical_namespace_uid: str
-    failed_up_job_uid: str
+    failed_up_job_uid: str | None
     failed_up_runner_generation: str
 
 
@@ -8871,6 +8872,12 @@ def _vcluster_preview_job_manifest(
                 raise ValueError(
                     "failed up and current down runner generations must differ"
                 )
+            evidence = failed_preinitialized_proof.preinitialization_evidence
+            if evidence not in {"failed-up-job-v1", "expired-reservation-v1"} or (
+                (evidence == "failed-up-job-v1")
+                != bool(failed_preinitialized_proof.failed_up_job_uid)
+            ):
+                raise ValueError("failed preinitialization evidence is invalid")
             runner_annotations.update(
                 {
                     "preview.stacks.io/teardown-platform-revision": (
@@ -8882,14 +8889,21 @@ def _vcluster_preview_job_manifest(
                     "preview.stacks.io/teardown-deletion-timestamp": (
                         req.teardownDeletionTimestamp
                     ),
+                    "preview.stacks.io/teardown-preinit-evidence": evidence,
                     "preview.stacks.io/teardown-physical-namespace-uid": (
                         failed_preinitialized_proof.physical_namespace_uid
                     ),
-                    "preview.stacks.io/teardown-failed-up-job-uid": (
-                        failed_preinitialized_proof.failed_up_job_uid
-                    ),
                     "preview.stacks.io/teardown-failed-up-runner-generation": (
                         failed_preinitialized_proof.failed_up_runner_generation
+                    ),
+                    **(
+                        {
+                            "preview.stacks.io/teardown-failed-up-job-uid": (
+                                failed_preinitialized_proof.failed_up_job_uid
+                            )
+                        }
+                        if failed_preinitialized_proof.failed_up_job_uid
+                        else {}
                     ),
                 }
             )
@@ -9013,12 +9027,14 @@ def _vcluster_preview_job_manifest(
                         "value": req.teardownIntentId,
                     },
                     {
-                        "name": "TEARDOWN_PHYSICAL_NAMESPACE_UID",
-                        "value": failed_preinitialized_proof.physical_namespace_uid,
+                        "name": "TEARDOWN_PREINIT_EVIDENCE",
+                        "value": (
+                            failed_preinitialized_proof.preinitialization_evidence
+                        ),
                     },
                     {
-                        "name": "TEARDOWN_FAILED_UP_JOB_UID",
-                        "value": failed_preinitialized_proof.failed_up_job_uid,
+                        "name": "TEARDOWN_PHYSICAL_NAMESPACE_UID",
+                        "value": failed_preinitialized_proof.physical_namespace_uid,
                     },
                     {
                         "name": "TEARDOWN_FAILED_UP_RUNNER_GENERATION",
@@ -9026,6 +9042,16 @@ def _vcluster_preview_job_manifest(
                             failed_preinitialized_proof.failed_up_runner_generation
                         ),
                     },
+                    *(
+                        [
+                            {
+                                "name": "TEARDOWN_FAILED_UP_JOB_UID",
+                                "value": failed_preinitialized_proof.failed_up_job_uid,
+                            }
+                        ]
+                        if failed_preinitialized_proof.failed_up_job_uid
+                        else []
+                    ),
                 ]
             )
     if req.imageOverrides:
@@ -9200,7 +9226,16 @@ def _vcluster_preview_job_manifest(
             # A successful down Job is the durable cleanup receipt used by an
             # idempotent repeated teardown after namespace and identity deletion.
             # The next down replaces it. Non-destructive Jobs remain TTL-bounded.
-            **({} if req.action == "down" else {"ttlSecondsAfterFinished": 1800}),
+            **(
+                {}
+                if req.action == "down"
+                else {
+                    # Profiled up Jobs are immutable preinitialization evidence.
+                    # Keep them for one day; the bounded expired-reservation path
+                    # exists only for evidence already removed by the old 30m TTL.
+                    "ttlSecondsAfterFinished": 86400 if req.profile else 1800
+                }
+            ),
             # Teardown must reclaim its slot promptly, so a wedged down-Job gets a much shorter
             # deadline than a provision (task #25 — a hung teardown was silently holding a
             # preview slot for the full 30 min). runner.sh ACTION=down now bounds each hang-prone
@@ -10986,7 +11021,9 @@ def provision_vcluster_preview(
                             _prove_failed_preinitialized_teardown(
                                 batch,
                                 core,
+                                coordination,
                                 intent=controller_intent,
+                                expected_lease_holder=operation_holder,
                             )
                         )
                     if (
@@ -11529,11 +11566,119 @@ def _failed_preinitialized_conflict(reason: str) -> HTTPException:
     )
 
 
+def _prove_expired_preinitialization_reservation(
+    core: Any,
+    coordination: Any,
+    *,
+    intent: dict[str, str],
+    namespace: Any,
+    namespace_uid: str,
+    namespace_generation: str,
+    expected_lease_holder: str | None,
+) -> FailedPreinitializedTeardownProof:
+    """Bounded POC recovery when Kubernetes TTL removed the failed up evidence."""
+
+    metadata = _kube_field(namespace, "metadata")
+    namespace_created = _lease_timestamp(_kube_field(metadata, "creation_timestamp"))
+    deletion_timestamp = _parse_rfc3339(intent["deletionTimestamp"])
+    now = datetime.now(UTC)
+    evidence_ttl = 1800
+    if (
+        namespace_created is None
+        or deletion_timestamp is None
+        or deletion_timestamp < namespace_created
+        or deletion_timestamp > now
+        or deletion_timestamp > namespace_created + timedelta(seconds=evidence_ttl)
+        or now < namespace_created + timedelta(seconds=evidence_ttl)
+    ):
+        raise _failed_preinitialized_conflict(
+            "expired reservation is outside the bounded evidence window"
+        )
+
+    control_namespace = _vcluster_preview_control_namespace()
+    job_name = _vcluster_preview_job_name(intent["name"], "up")
+    control_pods = core.list_namespaced_pod(
+        namespace=control_namespace, label_selector=f"job-name={job_name}"
+    )
+    target_pods = core.list_namespaced_pod(
+        namespace=f"vcluster-{intent['name']}"
+    )
+    if (_kube_field(control_pods, "items") or []) or (
+        _kube_field(target_pods, "items") or []
+    ):
+        raise _failed_preinitialized_conflict(
+            "expired reservation still has a runner or target pod"
+        )
+
+    lease_name = _preview_operation_lease_name(intent["name"])
+    try:
+        lease = coordination.read_namespaced_lease(
+            name=lease_name, namespace=control_namespace
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            raise _failed_preinitialized_conflict(
+                "expired reservation operation Lease is absent"
+            ) from exc
+        raise
+    lease_metadata = _kube_field(lease, "metadata")
+    lease_uid = _kube_field(lease_metadata, "uid")
+    lease_created = _lease_timestamp(
+        _kube_field(lease_metadata, "creation_timestamp")
+    )
+    if (
+        _kube_field(lease_metadata, "name") != lease_name
+        or _kube_field(lease_metadata, "namespace") != control_namespace
+        or not isinstance(lease_uid, str)
+        or not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lease_uid,
+        )
+        or lease_created is None
+        or abs((lease_created - namespace_created).total_seconds()) > 30
+    ):
+        raise _failed_preinitialized_conflict(
+            "expired reservation operation Lease identity is malformed"
+        )
+    holder, duration, renewed, transitions = _preview_operation_lease_fields(lease)
+    lease_expired = (
+        not holder
+        or renewed is None
+        or now >= renewed + timedelta(seconds=duration)
+    )
+    if duration != _PREVIEW_OPERATION_LEASE_SECONDS or not (0 <= transitions <= 8):
+        raise _failed_preinitialized_conflict(
+            "expired reservation operation Lease contract is malformed"
+        )
+    if expected_lease_holder is None:
+        if not lease_expired:
+            raise _failed_preinitialized_conflict(
+                "expired reservation operation Lease is still active"
+            )
+    elif (
+        holder != expected_lease_holder
+        or renewed is None
+        or now >= renewed + timedelta(seconds=duration)
+    ):
+        raise _failed_preinitialized_conflict(
+            "expired reservation operation Lease holder does not match"
+        )
+
+    return FailedPreinitializedTeardownProof(
+        preinitialization_evidence="expired-reservation-v1",
+        physical_namespace_uid=namespace_uid,
+        failed_up_job_uid=None,
+        failed_up_runner_generation=namespace_generation,
+    )
+
+
 def _prove_failed_preinitialized_teardown(
     batch: Any,
     core: Any,
+    coordination: Any,
     *,
     intent: dict[str, str],
+    expected_lease_holder: str | None = None,
 ) -> FailedPreinitializedTeardownProof:
     """Prove an admitted cold launch failed before ordinary authority was stamped."""
 
@@ -11604,7 +11749,15 @@ def _prove_failed_preinitialized_teardown(
         )
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
-            raise _failed_preinitialized_conflict("failed up Job is absent") from exc
+            return _prove_expired_preinitialization_reservation(
+                core,
+                coordination,
+                intent=intent,
+                namespace=namespace,
+                namespace_uid=namespace_uid,
+                namespace_generation=namespace_generation,
+                expected_lease_holder=expected_lease_holder,
+            )
         raise
     if _runner_job_identity(job) != (name, "up"):
         raise _failed_preinitialized_conflict("up Job identity is malformed")
@@ -11689,6 +11842,7 @@ def _prove_failed_preinitialized_teardown(
         raise _failed_preinitialized_conflict("failed up pod identity is malformed")
 
     return FailedPreinitializedTeardownProof(
+        preinitialization_evidence="failed-up-job-v1",
         physical_namespace_uid=namespace_uid,
         failed_up_job_uid=job_uid,
         failed_up_runner_generation=job_generation,
@@ -12582,6 +12736,7 @@ def teardown_vcluster_preview(
                 _prove_failed_preinitialized_teardown(
                     batch,
                     core,
+                    _load_k8s_coordination_client(),
                     intent=controller_intent,
                 )
             if (

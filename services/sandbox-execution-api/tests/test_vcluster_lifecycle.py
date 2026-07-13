@@ -457,24 +457,87 @@ def _failed_preinitialized_fixture():
     class ProofCore(_FakeCore):
         def __init__(self):
             super().__init__([namespace])
-            self.pods = [pod]
+            self.control_pods = [pod]
+            self.target_pods = []
 
         def list_namespaced_pod(self, namespace, label_selector=None):
-            return SimpleNamespace(items=self.pods)
+            return SimpleNamespace(
+                items=(
+                    self.control_pods
+                    if namespace == "preview-control-system"
+                    else self.target_pods
+                )
+            )
 
     class ProofBatch(_FakeBatch):
         def __init__(self):
             super().__init__()
             self.up_job = job
+            self.job_absent = False
             self.status_reads = 0
 
         def read_namespaced_job_status(self, name, namespace):
             self.status_reads += 1
-            if name != up_manifest["metadata"]["name"]:
+            if self.job_absent or name != up_manifest["metadata"]["name"]:
                 raise _ApiExc(404)
             return self.up_job
 
     return ProofBatch(), ProofCore(), intent
+
+
+def _expired_preinitialization_fixture():
+    batch, core, intent = _failed_preinitialized_fixture()
+    batch.job_absent = True
+    core.control_pods = []
+    created = datetime.now(UTC) - timedelta(seconds=3600)
+    namespace = core._ns[f"vcluster-{intent['name']}"]
+    namespace.metadata.creation_timestamp = created
+    deletion_timestamp = created + timedelta(seconds=378)
+    intent["deletionTimestamp"] = deletion_timestamp.isoformat().replace(
+        "+00:00", "Z"
+    )
+    payload = {key: value for key, value in intent.items() if key != "id"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    intent["id"] = f"sha256:{app_module.sha256(canonical.encode()).hexdigest()}"
+    lease = SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"vcpreview-op-{intent['name']}",
+            namespace="preview-control-system",
+            uid="11111111-2222-3333-4444-555555555555",
+            creation_timestamp=created + timedelta(milliseconds=100),
+            resource_version="1",
+        ),
+        spec=SimpleNamespace(
+            holder_identity="",
+            lease_duration_seconds=90,
+            acquire_time=created,
+            renew_time=created + timedelta(seconds=11),
+            lease_transitions=0,
+        ),
+    )
+
+    class ExpiredCoordination:
+        def read_namespaced_lease(self, name, namespace):
+            if name != lease.metadata.name or namespace != lease.metadata.namespace:
+                raise _ApiExc(404)
+            return lease
+
+        def replace_namespaced_lease(self, name, namespace, body):
+            self.read_namespaced_lease(name, namespace)
+            if body["metadata"].get("resourceVersion") != lease.metadata.resource_version:
+                raise _ApiExc(409)
+            lease.metadata.resource_version = str(
+                int(lease.metadata.resource_version) + 1
+            )
+            spec = body["spec"]
+            lease.spec.holder_identity = spec["holderIdentity"]
+            lease.spec.lease_duration_seconds = spec["leaseDurationSeconds"]
+            lease.spec.acquire_time = app_module._lease_timestamp(spec["acquireTime"])
+            lease.spec.renew_time = app_module._lease_timestamp(spec["renewTime"])
+            lease.spec.lease_transitions = spec["leaseTransitions"]
+            return lease
+
+    return batch, core, ExpiredCoordination(), lease, intent
 
 
 @pytest.fixture(autouse=True)
@@ -908,6 +971,23 @@ def test_up_job_manifest_stamps_d1_env() -> None:
     assert timedelta(hours=23) < delta < timedelta(hours=25)
 
 
+def test_profiled_up_job_retains_preinitialization_evidence_for_one_day() -> None:
+    manifest = app_module._vcluster_preview_job_manifest(
+        VclusterPreviewRequest(
+            name="prv",
+            action="up",
+            origin="pr",
+            prNumber=341,
+            profile="app-live",
+            platformRevision="a" * 40,
+        ),
+        namespace="preview-control-system",
+        operation_holder=f"op:{'a' * 32}",
+    )
+
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 86400
+
+
 def test_job_manifest_carries_exact_operation_lease_holder() -> None:
     holder = f"op:{'a' * 32}"
     manifest = app_module._vcluster_preview_job_manifest(
@@ -964,7 +1044,9 @@ def test_down_job_receipt_is_bound_to_controller_intent_and_cr_uid() -> None:
 def test_failed_preinitialized_proof_is_server_generated_and_stamped() -> None:
     batch, core, intent = _failed_preinitialized_fixture()
 
-    proof = app_module._prove_failed_preinitialized_teardown(batch, core, intent=intent)
+    proof = app_module._prove_failed_preinitialized_teardown(
+        batch, core, SimpleNamespace(), intent=intent
+    )
     request = VclusterPreviewRequest(
         name=intent["name"],
         action="down",
@@ -1001,6 +1083,7 @@ def test_failed_preinitialized_proof_is_server_generated_and_stamped() -> None:
     assert env["TEARDOWN_EXPECTED_CATALOG_DIGEST"] == intent["catalogDigest"]
     assert env["TEARDOWN_DELETION_TIMESTAMP"] == intent["deletionTimestamp"]
     assert env["TEARDOWN_PHYSICAL_NAMESPACE_UID"] == proof.physical_namespace_uid
+    assert env["TEARDOWN_PREINIT_EVIDENCE"] == "failed-up-job-v1"
 
     with pytest.raises(ValueError, match="generations must differ"):
         app_module._vcluster_preview_job_manifest(
@@ -1009,6 +1092,101 @@ def test_failed_preinitialized_proof_is_server_generated_and_stamped() -> None:
             operation_holder=proof.failed_up_runner_generation,
             failed_preinitialized_proof=proof,
         )
+
+
+def test_expired_preinitialization_reservation_is_typed_and_lease_fenced() -> None:
+    batch, core, coordination, lease, intent = _expired_preinitialization_fixture()
+
+    proof = app_module._prove_failed_preinitialized_teardown(
+        batch, core, coordination, intent=intent
+    )
+    assert proof.preinitialization_evidence == "expired-reservation-v1"
+    assert proof.failed_up_job_uid is None
+
+    current_holder = f"op:{'f' * 32}"
+    lease.spec.holder_identity = current_holder
+    lease.spec.acquire_time = datetime.now(UTC)
+    lease.spec.renew_time = datetime.now(UTC)
+    under_lease = app_module._prove_failed_preinitialized_teardown(
+        batch,
+        core,
+        coordination,
+        intent=intent,
+        expected_lease_holder=current_holder,
+    )
+    assert under_lease == proof
+
+    request = VclusterPreviewRequest(
+        name=intent["name"],
+        action="down",
+        teardownExpectedRequestId=intent["requestId"],
+        teardownExpectedSourceRevision=intent["sourceRevision"],
+        teardownExpectedPlatformRevision=intent["platformRevision"],
+        teardownExpectedCatalogDigest=intent["catalogDigest"],
+        teardownDeletionTimestamp=intent["deletionTimestamp"],
+        teardownEnvironmentUid=intent["environmentUid"],
+        teardownIntentId=intent["id"],
+    )
+    manifest = app_module._vcluster_preview_job_manifest(
+        request,
+        namespace="preview-control-system",
+        operation_holder=current_holder,
+        failed_preinitialized_proof=proof,
+    )
+    annotations = manifest["metadata"]["annotations"]
+    env = _job_env(manifest)
+    assert annotations["preview.stacks.io/teardown-preinit-evidence"] == (
+        "expired-reservation-v1"
+    )
+    assert env["TEARDOWN_PREINIT_EVIDENCE"] == "expired-reservation-v1"
+    assert "preview.stacks.io/teardown-failed-up-job-uid" not in annotations
+    assert "TEARDOWN_FAILED_UP_JOB_UID" not in env
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "deletion-outside-window",
+        "namespace-too-young",
+        "control-pod",
+        "target-pod",
+        "lease-active",
+        "lease-uid",
+        "lease-created-late",
+        "lease-transitions",
+    ],
+)
+def test_expired_preinitialization_reservation_rejects_mismatch(tamper) -> None:
+    batch, core, coordination, lease, intent = _expired_preinitialization_fixture()
+    namespace = core._ns[f"vcluster-{intent['name']}"]
+    if tamper == "deletion-outside-window":
+        intent["deletionTimestamp"] = (
+            namespace.metadata.creation_timestamp + timedelta(seconds=1801)
+        ).isoformat().replace("+00:00", "Z")
+    elif tamper == "namespace-too-young":
+        namespace.metadata.creation_timestamp = datetime.now(UTC) - timedelta(
+            seconds=100
+        )
+    elif tamper == "control-pod":
+        core.control_pods = [SimpleNamespace()]
+    elif tamper == "target-pod":
+        core.target_pods = [SimpleNamespace()]
+    elif tamper == "lease-active":
+        lease.spec.holder_identity = f"op:{'e' * 32}"
+        lease.spec.renew_time = datetime.now(UTC)
+    elif tamper == "lease-uid":
+        lease.metadata.uid = "not-a-uid"
+    elif tamper == "lease-created-late":
+        lease.metadata.creation_timestamp += timedelta(seconds=31)
+    elif tamper == "lease-transitions":
+        lease.spec.lease_transitions = 9
+
+    with pytest.raises(app_module.HTTPException) as caught:
+        app_module._prove_failed_preinitialized_teardown(
+            batch, core, coordination, intent=intent
+        )
+
+    assert caught.value.status_code == 409
 
 
 @pytest.mark.parametrize(
@@ -1040,7 +1218,7 @@ def test_failed_preinitialized_proof_rejects_every_authority_mismatch(tamper) ->
     batch, core, intent = _failed_preinitialized_fixture()
     namespace = core._ns[f"vcluster-{intent['name']}"]
     job = batch.up_job
-    pod = core.pods[0]
+    pod = core.control_pods[0]
     job_env = {item.name: item for item in job.spec.template.spec.containers[0].env}
     pod_env = {item.name: item for item in pod.spec.containers[0].env}
 
@@ -1094,7 +1272,9 @@ def test_failed_preinitialized_proof_rejects_every_authority_mismatch(tamper) ->
         pod_env["PREVIEW_OPERATION_HOLDER"].value = f"op:{'b' * 32}"
 
     with pytest.raises(app_module.HTTPException) as caught:
-        app_module._prove_failed_preinitialized_teardown(batch, core, intent=intent)
+        app_module._prove_failed_preinitialized_teardown(
+            batch, core, SimpleNamespace(), intent=intent
+        )
 
     assert caught.value.status_code == 409
 
@@ -1151,6 +1331,39 @@ def test_failed_preinitialized_delete_reproves_under_operation_lease(
     assert annotations["preview.stacks.io/teardown-failed-up-job-uid"] == (
         "87654321-4321-4321-4321-cba987654321"
     )
+
+
+def test_expired_preinitialization_delete_reproves_under_operation_lease(
+    monkeypatch,
+) -> None:
+    batch, core, coordination, _lease, intent = _expired_preinitialization_fixture()
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module, "_load_k8s_coordination_client", lambda: coordination
+    )
+
+    result = app_module.teardown_vcluster_preview(
+        _no_auth_request(),
+        intent["name"],
+        app_module.VclusterPreviewTeardownRequest(
+            expectedRequestId=intent["requestId"],
+            expectedSourceRevision=intent["sourceRevision"],
+            platformRevision=intent["platformRevision"],
+            catalogDigest=intent["catalogDigest"],
+            deletionTimestamp=intent["deletionTimestamp"],
+            environmentUid=intent["environmentUid"],
+            deletionIntentId=intent["id"],
+        ),
+    )
+
+    assert result["status"] == "terminating"
+    assert batch.status_reads == 2
+    assert _created_actions(batch) == [(intent["name"], "down")]
+    annotations = batch.created[0]["metadata"]["annotations"]
+    assert annotations["preview.stacks.io/teardown-preinit-evidence"] == (
+        "expired-reservation-v1"
+    )
+    assert "preview.stacks.io/teardown-failed-up-job-uid" not in annotations
 
 
 def test_failed_preinitialized_delete_rejects_replacement_before_lease_proof(
