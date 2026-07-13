@@ -312,13 +312,12 @@ system check.
 
 ## Bounded Wet Proof Record
 
-Keep this record as `pending` until one real dev replay supplies every field.
-Expected behavior, unit tests, rendered manifests, and prior environments are
-not substitutes. Do not record tokens, cookies, kubeconfigs, archive contents,
-or other credentials.
+This sanitized record captures the completed dev replay. It records public
+commit and image identities plus bounded outcomes, but no tokens, cookies,
+kubeconfigs, archive contents, private receipt payloads, or other credentials.
 
 ```text
-overall POC status: pending; bounded app-live evidence below is passed
+overall POC status: passed
 app-live preview name / request ID: app-live-490e-0713a / 6b620de7-f8f2-4d2e-8c93-6a650b201b5e
 platform SHA / source SHA / catalog digest: 5e14cb3b1adbc5fbf713cd29c1914f8e89fcb3d0 / 490e4177ffb892885e62d01bcd1d009ff447be25 / sha256:d3da1060e818849faa04b68df115ac9a9a2cd42afcf5ec7d5a225a7fc7cdc329
 five selected services: function-router, mcp-gateway, workflow-builder, workflow-mcp-server, workflow-orchestrator
@@ -331,19 +330,28 @@ backend pod UID + restarts before/after / observed reload result: a0abbe9b-a24f-
 one shared sync generation across all five services: 57836a11-fefa-4608-8467-4f37a2b8861b; every receiver reported the same generation
 allowlisted tests: workflow-builder contract exit 0 (23/23 corresponding exact-source tests); workflow-orchestrator contract exit 0 (42/42 corresponding exact-source tests)
 strict capture artifact / capture ID / coherence: 36b35db77d93e80b9a7d200b / d2ff0f29-eb44-48dd-98cb-97fa784b5bc4 / atomic-generation-v2, acceptanceEligible=true, five services at generation 57836a11-fefa-4608-8467-4f37a2b8861b
-promotion PR tuple / catalog-derived affected services: pending
-immutable acceptance preview / image digests / BFF-service-workflow smoke: pending
-manifest-candidate exact-SHA Synced/Healthy proof: pending
-acceptance teardown result: pending
-app-live typed teardown and orphan-scan result: pending
-legacy estate final absence gate: pending in this proof record
+authoritative promotion: workflow-builder PR 546; base 490e4177ffb892885e62d01bcd1d009ff447be25; head 798927e9e39109d514adce4d5987f65f3e529b94; affected services workflow-builder and workflow-orchestrator
+non-authoritative promotion drafts: workflow-builder PRs 544 and 545 remained open drafts and supplied no acceptance authority
+immutable acceptance receipt digest: sha256:e9d7d084174a430577ccd3f145152db950ba72ca9ad835be6ff45b2150e2b461
+immutable production images: workflow-builder@sha256:dd57f63a09ee4a08b5a046e20e08b60ec6274652df6f29ecfc8f293e65a6cea8; workflow-orchestrator@sha256:79136ef5edaf595b7bad14b6b2bf70023cd6e2cf779fdf4d8a51b1fedd390a6b
+immutable acceptance preview: accept-pr546-798927e9e391 passed BFF health, data-plane workflow, and agent workflow smoke paths; typed cleanup passed all 12 absence checks
+manifest candidate: stacks draft PR 4009 at b04d86d443ce1e99a7a71143e8f9bd6134ab46db changed only packages/components/workloads/function-router/manifests/Deployment-function-router.yaml
+manifest candidate reconciliation: manifest-candidate-overlay was Synced/Healthy and the isolated function-router carried preview.stacks.io/manifest-candidate-proof=function-router-20260711; persistent dev had no candidate annotation and remained unchanged
+manifest candidate disposition: typed teardown completed and PR 4009 remained draft and unmerged
+app-live archive and teardown: archive completed; typed teardown left the PreviewEnvironment CR, physical namespace, hub namespace and Application, mapping, certificate, storage scope, and operation Lease absent
+teardown receipt retention: the controller's down Job remains as a bounded receipt; it is not an active preview and holds no operation Lease
+DELETE retry observation: the first client timed out after initiating teardown; a later retry returned 403 after physical cleanup removed the authoritative owner, so terminal absence proof was required
+post-POC DELETE hardening: retain a terminal outcome lookup so an idempotent retry can return the completed result after owner removal instead of 403
+legacy phase 2: completed on attempt 4 with 3 prior attempt-history records, 5 logical-subpath absence proofs, temporaryResourcesAbsent=true, and verified receipt/checksum manifests
+final gate: the zero-preview live validator passed; persistent dev remained Synced/Healthy and its authenticated route returned the expected HTTP 302 reachability response
 ```
 
-The record becomes passed only when the UI and backend observations use unchanged
-pod UIDs and restart counts, capture reports all five canonical services at one
-generation, selective builds match the actual changed paths, the fresh acceptance
-environment uses immutable production digests with no `/__sync` state, and both
-test environments are absent after typed teardown.
+The bounded run met the acceptance contract: unchanged UI and backend pod
+identities proved the live loop, one coherent generation supplied selective
+build inputs, a fresh environment replayed immutable production digests without
+`/__sync` state, and typed teardown proved both test environments absent. The
+DELETE timeout and post-cleanup `403` are a retry-observability defect to address
+after the POC; they do not replace the required terminal absence scan.
 
 ## Rebuild Development Images
 
