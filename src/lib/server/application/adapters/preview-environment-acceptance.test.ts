@@ -851,7 +851,9 @@ describe("preview acceptance infrastructure adapters", () => {
   });
 
   it("bounds failed BFF readiness and does not start workflow checks", async () => {
-    const fetchMock = vi.fn(async () => response({}, 503));
+    const fetchMock = vi.fn(async (_url: string | URL | Request) =>
+      response({}, 503),
+    );
     let now = 1_000;
     const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
     const sleep = vi.fn(async (milliseconds: number) => {
