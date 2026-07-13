@@ -7,7 +7,9 @@ import type {
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+// Workflow and file IDs use Nanoid's URL-safe alphabet; existing workflow IDs
+// may additionally contain dots or colons. Slashes and whitespace stay barred.
+const SAFE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_FILTER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
