@@ -133,6 +133,46 @@ describe("central preview read broker", () => {
     expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
   });
 
+  it("accepts URL-safe Nanoid file identifiers", async () => {
+    const h = harness();
+    await h.service.execute({
+      previewName: "feature-one",
+      identity,
+      command: {
+        kind: "fetch-file",
+        fileId: "_j7QsZ9X9t_SyDKScjVFK",
+        maxBytes: 25 * 1024 * 1024,
+      },
+    });
+    expect(h.transport.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "fetch-file",
+          fileId: "_j7QsZ9X9t_SyDKScjVFK",
+        }),
+      }),
+    );
+  });
+
+  it.each(["", "../file", "file/id", "file id", "a".repeat(257)])(
+    "rejects unsafe file identifier %j before cluster inspection",
+    async (fileId) => {
+      const h = harness();
+      await expect(
+        h.service.execute({
+          previewName: "feature-one",
+          identity,
+          command: {
+            kind: "fetch-file",
+            fileId,
+            maxBytes: 25 * 1024 * 1024,
+          },
+        }),
+      ).rejects.toMatchObject({ code: "invalid-request" });
+      expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects a stale generation before minting or transport", async () => {
     const h = harness();
     await expect(
