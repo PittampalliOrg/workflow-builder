@@ -9698,7 +9698,18 @@ def _submit_preview_job(
     return created
 
 
-def _preview_down_receipt_succeeded(
+@dataclass(frozen=True)
+class _PreviewDownReceiptState:
+    exact: bool = False
+    succeeded: bool = False
+    failed: bool = False
+
+    @property
+    def in_flight(self) -> bool:
+        return self.exact and not self.succeeded and not self.failed
+
+
+def _preview_down_receipt_state(
     batch: Any,
     *,
     namespace: str,
@@ -9708,7 +9719,7 @@ def _preview_down_receipt_succeeded(
     protected_request_id: str | None,
     environment_uid: str | None,
     deletion_intent_id: str | None,
-) -> bool:
+) -> _PreviewDownReceiptState:
     try:
         job = batch.read_namespaced_job_status(
             name=_vcluster_preview_job_name(preview_name, "down"),
@@ -9717,10 +9728,10 @@ def _preview_down_receipt_succeeded(
         )
     except Exception as exc:
         if getattr(exc, "status", None) == 404:
-            return False
+            return _PreviewDownReceiptState()
         raise
     if _down_job_identity(job) != preview_name:
-        return False
+        return _PreviewDownReceiptState()
     annotations = getattr(getattr(job, "metadata", None), "annotations", None) or {}
     expected_annotations: dict[str, str] = {}
     if expected_request_id and expected_source_revision:
@@ -9749,9 +9760,13 @@ def _preview_down_receipt_succeeded(
     if {key: annotations.get(key) for key in guard_keys if key in annotations} != (
         expected_annotations
     ):
-        return False
+        return _PreviewDownReceiptState()
     succeeded, failed, _ = _preview_job_state(job)
-    return succeeded and not failed
+    return _PreviewDownReceiptState(
+        exact=True,
+        succeeded=succeeded and not failed,
+        failed=failed,
+    )
 
 
 def _capacity_lease_name() -> str:
@@ -10891,8 +10906,8 @@ def provision_vcluster_preview(
         batch, core = _load_k8s_clients()
         safe_name = _safe_resource_name(body.name, max_length=40)
 
-        def exact_down_receipt_succeeded() -> bool:
-            return _preview_down_receipt_succeeded(
+        def exact_down_receipt_state() -> _PreviewDownReceiptState:
+            return _preview_down_receipt_state(
                 batch,
                 namespace=namespace,
                 preview_name=safe_name,
@@ -10905,7 +10920,14 @@ def provision_vcluster_preview(
 
         allow_absent_down_bootstrap = False
         if body.action == "down" and not _namespace_exists(core, safe_name):
-            receipt_succeeded = exact_down_receipt_succeeded()
+            receipt_state = exact_down_receipt_state()
+            if receipt_state.in_flight:
+                # The runner can release its operation Lease just before Kubernetes
+                # records Job completion. Preserve that exact immutable Job while
+                # its terminal status catches up instead of replacing its receipt.
+                set_current_span_io("output", response)
+                return response
+            receipt_succeeded = receipt_state.succeeded
             try:
                 identity_absent = PreviewRunnerIdentityAdapter(
                     core, _load_k8s_rbac_client()
@@ -11010,7 +11032,7 @@ def provision_vcluster_preview(
                                 "or superseded ownership guard"
                             ),
                         )
-                    receipt_succeeded = exact_down_receipt_succeeded()
+                    receipt_succeeded = exact_down_receipt_state().succeeded
                 else:
                     receipt_succeeded = False
                     observed_request_id = (

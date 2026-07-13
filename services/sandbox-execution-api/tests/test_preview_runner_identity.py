@@ -229,8 +229,10 @@ def _down_job(
     name: str,
     *,
     succeeded: bool = True,
+    active: bool = False,
     service_account: str | None = None,
     generation: str = RUNNER_GENERATION,
+    uid: str | None = None,
 ) -> SimpleNamespace:
     contract = PreviewRunnerIdentityContract(name)
     labels = {
@@ -243,6 +245,7 @@ def _down_job(
     return SimpleNamespace(
         metadata=SimpleNamespace(
             name=f"vcpreview-down-{name}",
+            uid=uid,
             labels=dict(labels),
             annotations={RUNNER_GENERATION_ANNOTATION: generation},
         ),
@@ -259,7 +262,8 @@ def _down_job(
         ),
         status=SimpleNamespace(
             succeeded=1 if succeeded else 0,
-            failed=0 if succeeded else 1,
+            failed=0 if succeeded or active else 1,
+            active=1 if active else 0,
             conditions=[],
         ),
     )
@@ -975,14 +979,15 @@ def test_repeat_delete_preserves_receipt_while_identity_cleanup_is_pending(
     assert contract.identity_name in rbac.cluster_role_bindings
 
 
-def test_fenced_repeat_delete_preserves_receipt_that_just_succeeded(
+def test_repeat_delete_preserves_exact_in_flight_receipt_without_reacquiring(
     monkeypatch,
 ) -> None:
-    name = "just-completed"
+    name = "still-completing"
     request_id = "request-two"
     source_revision = "b" * 40
     environment_uid = "87654321-4321-4321-4321-cba987654321"
     deletion_intent_id = f"sha256:{'e' * 64}"
+    job_uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     annotations = {
         "preview.stacks.io/teardown-request-id": request_id,
         "preview.stacks.io/teardown-source-revision": source_revision,
@@ -990,17 +995,83 @@ def test_fenced_repeat_delete_preserves_receipt_that_just_succeeded(
         "preview.stacks.io/teardown-intent-id": deletion_intent_id,
     }
 
-    class CompletingBatch(FakeBatch):
+    class InFlightBatch(FakeBatch):
         def __init__(self) -> None:
             super().__init__()
             self.status_reads = 0
+            self.job = _down_job(
+                name,
+                succeeded=False,
+                active=True,
+                uid=job_uid,
+            )
+            self.job.metadata.annotations.update(annotations)
 
         def read_namespaced_job_status(self, *, name: str, **_kwargs):
             self.status_reads += 1
-            preview_name = name.removeprefix("vcpreview-down-")
-            job = _down_job(preview_name, succeeded=self.status_reads > 1)
-            if self.status_reads == 1:
-                job.status.failed = 0
+            assert name == self.job.metadata.name
+            return deepcopy(self.job)
+
+        def create_namespaced_job(self, **_kwargs):
+            pytest.fail("an exact in-flight receipt must not be replaced")
+
+        def delete_namespaced_job(self, **_kwargs):
+            pytest.fail("an exact in-flight receipt must not be replaced")
+
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    _seed_identity(core, rbac, name)
+    contract = PreviewRunnerIdentityContract(name, "ephemeral")
+    del core.namespaces[contract.target_namespace]
+    del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
+    batch = InFlightBatch()
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_rbac_client",
+        lambda: pytest.fail("an exact in-flight receipt must not inspect identity"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_load_k8s_coordination_client",
+        lambda: pytest.fail("an exact in-flight receipt must not reacquire authority"),
+    )
+
+    request = SimpleNamespace(headers={"authorization": "Bearer test-token"})
+    teardown = app_module.VclusterPreviewTeardownRequest(
+        expectedRequestId=request_id,
+        expectedSourceRevision=source_revision,
+        environmentUid=environment_uid,
+        deletionIntentId=deletion_intent_id,
+    )
+    first = app_module.teardown_vcluster_preview(request, name, teardown)
+    second = app_module.teardown_vcluster_preview(request, name, teardown)
+
+    assert first == second
+    assert first["status"] == "terminating"
+    assert "complete" not in first
+    assert batch.status_reads == 2
+    assert batch.job.metadata.uid == job_uid
+    assert batch.job.metadata.annotations[RUNNER_GENERATION_ANNOTATION] == (
+        RUNNER_GENERATION
+    )
+    assert (CONTROL_NAMESPACE, contract.identity_name) in core.service_accounts
+    assert contract.identity_name in rbac.cluster_role_bindings
+
+
+def test_failed_exact_receipt_remains_replaceable(monkeypatch) -> None:
+    name = "failed-retry"
+    request_id = "request-failed"
+    source_revision = "c" * 40
+    annotations = {
+        "preview.stacks.io/teardown-request-id": request_id,
+        "preview.stacks.io/teardown-source-revision": source_revision,
+    }
+
+    class FailedBatch(FakeBatch):
+        def read_namespaced_job_status(self, *, name: str, **_kwargs):
+            job = _down_job(name.removeprefix("vcpreview-down-"), succeeded=False)
             job.metadata.annotations.update(annotations)
             return job
 
@@ -1010,30 +1081,27 @@ def test_fenced_repeat_delete_preserves_receipt_that_just_succeeded(
     contract = PreviewRunnerIdentityContract(name, "ephemeral")
     del core.namespaces[contract.target_namespace]
     del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
-    batch = CompletingBatch()
-    coordination = SimpleNamespace()
-    operation_holder = f"op:{'f' * 32}"
-    releases: list[dict] = []
+    batch = FailedBatch()
+    acquired: list[str] = []
+    submitted: list[dict] = []
+    holder = f"op:{'f' * 32}"
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
     monkeypatch.setattr(
-        app_module, "_load_k8s_coordination_client", lambda: coordination
+        app_module, "_load_k8s_coordination_client", lambda: SimpleNamespace()
     )
-    monkeypatch.setattr(
-        app_module,
-        "_acquire_preview_operation_lease",
-        lambda *_args, **_kwargs: operation_holder,
-    )
-    monkeypatch.setattr(
-        app_module,
-        "_release_preview_operation_lease",
-        lambda *_args, **kwargs: releases.append(kwargs),
-    )
+
+    def acquire(_coordination, *, namespace, real_name):
+        assert namespace == CONTROL_NAMESPACE
+        acquired.append(real_name)
+        return holder
+
+    monkeypatch.setattr(app_module, "_acquire_preview_operation_lease", acquire)
     monkeypatch.setattr(
         app_module,
         "_submit_preview_job",
-        lambda *_args, **_kwargs: pytest.fail("completed receipt must not be replaced"),
+        lambda *_args, **kwargs: submitted.append(kwargs),
     )
 
     result = app_module.teardown_vcluster_preview(
@@ -1042,36 +1110,50 @@ def test_fenced_repeat_delete_preserves_receipt_that_just_succeeded(
         app_module.VclusterPreviewTeardownRequest(
             expectedRequestId=request_id,
             expectedSourceRevision=source_revision,
-            environmentUid=environment_uid,
-            deletionIntentId=deletion_intent_id,
         ),
     )
 
     assert result["status"] == "terminating"
-    assert "complete" not in result
-    assert batch.status_reads == 2
-    assert batch.jobs == []
-    assert releases == [
-        {
-            "namespace": CONTROL_NAMESPACE,
-            "real_name": name,
-            "holder": operation_holder,
-        }
-    ]
+    assert acquired == [name]
+    assert len(submitted) == 1
+    assert submitted[0]["manifest"]["metadata"]["annotations"][
+        RUNNER_GENERATION_ANNOTATION
+    ] == holder
 
 
-def test_repeat_delete_rejects_a_success_receipt_from_an_older_generation(
-    monkeypatch,
+@pytest.mark.parametrize("mismatch", ["guard", "generation"])
+def test_repeat_delete_never_adopts_mismatched_in_flight_job(
+    monkeypatch, mismatch: str
 ) -> None:
     core = FakeCore()
     rbac = FakeRbac(core)
-    batch = FakeBatch(
-        down_succeeded=True,
-        down_annotations={
-            "preview.stacks.io/teardown-request-id": "older-request",
-            "preview.stacks.io/teardown-source-revision": "b" * 40,
-        },
-    )
+    expected_annotations = {
+        "preview.stacks.io/teardown-request-id": "new-request",
+        "preview.stacks.io/teardown-source-revision": "c" * 40,
+    }
+
+    class MismatchedBatch(FakeBatch):
+        def read_namespaced_job_status(self, *, name: str, **_kwargs):
+            job = _down_job(
+                name.removeprefix("vcpreview-down-"),
+                succeeded=False,
+                active=True,
+            )
+            job.metadata.annotations.update(expected_annotations)
+            if mismatch == "guard":
+                job.metadata.annotations.update(
+                    {
+                        "preview.stacks.io/teardown-request-id": "older-request",
+                        "preview.stacks.io/teardown-source-revision": "b" * 40,
+                    }
+                )
+            else:
+                job.spec.template.metadata.annotations[
+                    RUNNER_GENERATION_ANNOTATION
+                ] = "op:" + "b" * 32
+            return job
+
+    batch = MismatchedBatch()
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)

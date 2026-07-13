@@ -1689,7 +1689,9 @@ def test_absent_preview_without_receipt_still_rejects_ordinary_owned_down(
     core = _FakeCore([])
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(
-        app_module, "_preview_down_receipt_succeeded", lambda *_args, **_kwargs: False
+        app_module,
+        "_preview_down_receipt_state",
+        lambda *_args, **_kwargs: app_module._PreviewDownReceiptState(),
     )
 
     with pytest.raises(app_module.HTTPException) as caught:
@@ -1716,7 +1718,9 @@ def test_controller_intent_bootstraps_absent_down_job_for_failed_cold_launch(
     submitted: dict[str, object] = {}
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
     monkeypatch.setattr(
-        app_module, "_preview_down_receipt_succeeded", lambda *_args, **_kwargs: False
+        app_module,
+        "_preview_down_receipt_state",
+        lambda *_args, **_kwargs: app_module._PreviewDownReceiptState(),
     )
 
     def submit(batch_arg, _core, *, namespace, manifest, **kwargs):
