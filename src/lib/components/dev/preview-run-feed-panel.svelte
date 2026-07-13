@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Activity, ExternalLink } from '@lucide/svelte';
+	import { Activity, CheckCircle2, CircleDotDashed, ExternalLink, XCircle } from '@lucide/svelte';
 	import { previewRunEvents } from '$lib/stores/preview-run-events.svelte';
 
 	type RunEvent = {
@@ -56,6 +56,10 @@
 		return 'default' as const;
 	}
 
+	function eventLabel(eventType: string): string {
+		return eventType.replace(/^workflow\./, '').replaceAll('_', ' ');
+	}
+
 	/** Deep link into the preview's own UI for this run (E2 adds the read-proxy). */
 	function runLink(group: { url: string | null }, run: RunEvent): string | null {
 		if (!group.url) return null;
@@ -64,7 +68,10 @@
 
 	onMount(() => {
 		source = new EventSource('/api/dev-environments/preview-run-feed');
-		source.addEventListener('open', () => (connected = true));
+		source.addEventListener('open', () => {
+			connected = true;
+			error = null;
+		});
 		source.addEventListener('error', () => (connected = false));
 		source.addEventListener('previews', (e) => {
 			try {
@@ -100,17 +107,25 @@
 	onDestroy(() => source?.close());
 </script>
 
-<section class="rounded-lg border bg-card p-4">
-	<header class="flex items-center justify-between gap-2">
-		<div class="flex items-center gap-2">
-			<Activity class="h-4 w-4 text-muted-foreground" />
-			<h2 class="text-sm font-semibold">Runs across environments</h2>
-			<span
-				class="h-2 w-2 rounded-full {connected ? 'bg-green-500' : 'bg-muted-foreground/40'}"
-				title={connected ? 'Live' : 'Connecting…'}
-			></span>
+<section aria-labelledby="preview-activity-heading">
+	<header class="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+		<div class="flex items-start gap-3">
+			<div class="flex size-9 shrink-0 items-center justify-center rounded-md border bg-emerald-500/5">
+				<Activity class="size-5 text-emerald-600 dark:text-emerald-400" />
+			</div>
+			<div>
+				<h2 id="preview-activity-heading" class="text-sm font-semibold">Workflow activity</h2>
+				<p class="mt-1 text-xs text-muted-foreground">Durable workflow events reported by isolated environments.</p>
+			</div>
 		</div>
-		<span class="text-xs text-muted-foreground">{groups.length} preview{groups.length === 1 ? '' : 's'}</span>
+		<div class="flex items-center gap-2 text-xs" aria-live="polite">
+			<span class="relative flex size-2" aria-hidden="true">
+				{#if connected}<span class="absolute inline-flex size-full rounded-full bg-emerald-400 opacity-60 motion-safe:animate-ping"></span>{/if}
+				<span class="relative inline-flex size-2 rounded-full {connected ? 'bg-emerald-500' : 'bg-muted-foreground/40'}"></span>
+			</span>
+			<span class={connected ? 'text-foreground' : 'text-muted-foreground'}>{connected ? 'Live feed connected' : 'Connecting to feed'}</span>
+			<span class="text-muted-foreground">· {groups.length} preview{groups.length === 1 ? '' : 's'}</span>
+		</div>
 	</header>
 
 	{#if error}
@@ -118,29 +133,45 @@
 	{/if}
 
 	{#if groups.length === 0}
-		<p class="mt-3 text-center text-xs text-muted-foreground">No active previews.</p>
+		<div class="flex min-h-48 flex-col items-center justify-center gap-2 border border-dashed px-5 text-center">
+			<CircleDotDashed class="size-5 text-muted-foreground" />
+			<p class="text-sm font-medium">No active preview activity</p>
+			<p class="text-xs text-muted-foreground">Provision an environment or start a workflow to populate this feed.</p>
+		</div>
 	{:else}
-		<div class="mt-3 grid gap-3 sm:grid-cols-2">
+		<div class="mt-4 grid gap-3 lg:grid-cols-2">
 			{#each groups as group (group.name)}
-				<div class="rounded-md border p-2">
-					<div class="flex items-center justify-between gap-2">
-						<span class="truncate font-mono text-xs font-medium">{group.name}</span>
+				<article class="min-w-0 rounded-md border bg-card">
+					<header class="flex min-h-11 items-center justify-between gap-2 border-b px-3">
+						<div class="flex min-w-0 items-center gap-2">
+							<span class="size-1.5 shrink-0 rounded-full {group.runs.some((run) => run.status === 'running') ? 'bg-emerald-500' : 'bg-muted-foreground/40'}"></span>
+							<span class="truncate font-mono text-xs font-medium">{group.name}</span>
+						</div>
 						{#if group.url}
 							<a
 								href={group.url}
 								target="_blank"
 								rel="noreferrer"
-								class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+								class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								aria-label={`Open ${group.name} preview`}
+								title="Open preview"
 							>
-								open <ExternalLink class="h-3 w-3" />
+								<ExternalLink class="size-3.5" />
 							</a>
 						{/if}
-					</div>
-					<ul class="mt-2 space-y-1 text-xs">
+					</header>
+					<ul class="divide-y text-xs">
 						{#each group.runs as run (run.executionId + run.at + run.eventType)}
 							{@const link = runLink(group, run)}
-							<li class="flex items-center gap-2">
-								<Badge variant={statusVariant(run.status)} class="shrink-0 text-[10px]">{run.status}</Badge>
+							<li class="flex min-h-11 items-center gap-2 px-3 py-2">
+								{#if run.status === 'completed'}
+									<CheckCircle2 class="size-3.5 shrink-0 text-emerald-500" aria-hidden="true" />
+								{:else if run.status === 'failed'}
+									<XCircle class="size-3.5 shrink-0 text-destructive" aria-hidden="true" />
+								{:else}
+									<CircleDotDashed class="size-3.5 shrink-0 text-cyan-500 {run.status === 'running' ? 'motion-safe:animate-pulse' : ''}" aria-hidden="true" />
+								{/if}
+								<span class="sr-only">{run.status}</span>
 								<svelte:element
 									this={link ? 'a' : 'span'}
 									href={link ?? undefined}
@@ -148,20 +179,21 @@
 									rel={link ? 'noreferrer' : undefined}
 									class="min-w-0 flex-1 truncate {link ? 'hover:underline' : ''}"
 								>
-									{run.workflowName ?? run.workflowId ?? run.executionId ?? 'run'}
-									<span class="text-muted-foreground">· {run.eventType.replace('workflow.', '')}</span>
+									<span class="font-medium">{run.workflowName ?? run.workflowId ?? run.executionId ?? 'run'}</span>
+									<span class="text-muted-foreground"> · {eventLabel(run.eventType)}</span>
 									{#if run.phase}<span class="text-muted-foreground"> · {run.phase}</span>{/if}
 									{#if run.progress != null}<span class="text-muted-foreground"> · {run.progress}%</span>{/if}
 								</svelte:element>
-								<time class="shrink-0 text-muted-foreground" datetime={run.at}>
+								<Badge variant={statusVariant(run.status)} class="hidden shrink-0 text-[10px] sm:inline-flex">{run.status}</Badge>
+								<time class="w-20 shrink-0 text-right tabular-nums text-muted-foreground" datetime={run.at}>
 									{new Date(run.at).toLocaleTimeString()}
 								</time>
 							</li>
 						{:else}
-							<li class="text-muted-foreground">Waiting for runs…</li>
+							<li class="flex min-h-20 items-center justify-center px-3 text-muted-foreground">Waiting for workflow events…</li>
 						{/each}
 					</ul>
-				</div>
+				</article>
 			{/each}
 		</div>
 	{/if}

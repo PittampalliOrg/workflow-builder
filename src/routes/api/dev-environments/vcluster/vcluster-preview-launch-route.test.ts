@@ -23,11 +23,13 @@ const mocks = vi.hoisted(() => ({
     preview: { name: "feature-x", phase: "provisioning" },
   })),
   list: vi.fn(async () => ({ previews: [], counts: null })),
+  isControlPlane: vi.fn(() => true),
   requirePlatformAdmin: vi.fn(async () => undefined),
 }));
 
 vi.mock("$lib/server/application", () => ({
   getApplicationAdapters: () => ({
+    previewDeploymentScope: { isControlPlane: mocks.isControlPlane },
     previewEnvironments: { launchForUser: mocks.launchForUser },
     previewInfrastructureCandidates: { launch: mocks.launchInfrastructure },
     vclusterPreviews: {
@@ -177,6 +179,15 @@ describe("vcluster PreviewEnvironment launch route", () => {
     );
     expect(mocks.launchForUser).not.toHaveBeenCalled();
     expect(mocks.requirePlatformAdmin).not.toHaveBeenCalled();
+  });
+
+  it("rejects launch from a preview deployment even for an admin", async () => {
+    mocks.isControlPlane.mockReturnValueOnce(false);
+
+    await expectStatus(POST(request({ name: "feature-x" }) as never), 403);
+
+    expect(mocks.requirePlatformAdmin).not.toHaveBeenCalled();
+    expect(mocks.launchForUser).not.toHaveBeenCalled();
   });
 
   it("rejects non-admin callers before revision resolution or launch", async () => {

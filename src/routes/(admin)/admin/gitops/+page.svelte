@@ -2,6 +2,7 @@
 	import { onDestroy, onMount, untrack } from "svelte";
 	import {
 		AlertTriangle,
+		Container,
 		GitBranch,
 		Inbox as InboxIcon,
 		History,
@@ -93,6 +94,37 @@
 			noScroll: true,
 			keepFocus: true,
 		});
+	}
+
+	function tabButtonId(id: TabId): string {
+		return `gitops-tab-${id}`;
+	}
+
+	function tabPanelId(id: TabId): string {
+		return `gitops-panel-${id}`;
+	}
+
+	function handleTabListKey(event: KeyboardEvent) {
+		if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+
+		const target = event.target as HTMLElement | null;
+		const currentId = target?.closest<HTMLButtonElement>("[role='tab']")?.dataset.tab as
+			| TabId
+			| undefined;
+		const currentIndex = currentId ? TAB_IDS.indexOf(currentId) : TAB_IDS.indexOf(tab);
+		let nextIndex = currentIndex;
+
+		if (event.key === "Home") nextIndex = 0;
+		else if (event.key === "End") nextIndex = TAB_IDS.length - 1;
+		else if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % TAB_IDS.length;
+		else nextIndex = (currentIndex - 1 + TAB_IDS.length) % TAB_IDS.length;
+
+		event.preventDefault();
+		const next = TAB_IDS[nextIndex]!;
+		setTab(next);
+		(event.currentTarget as HTMLElement)
+			.querySelector<HTMLButtonElement>(`#${tabButtonId(next)}`)
+			?.focus();
 	}
 
 	async function refresh(options: { fresh?: boolean } = {}) {
@@ -225,8 +257,8 @@
 
 <div class="flex h-full flex-col overflow-hidden">
 	<header class="border-b px-5 py-3">
-		<div class="flex items-center justify-between gap-3">
-			<div class="flex items-center gap-2">
+		<div class="flex flex-wrap items-center justify-between gap-3">
+			<div class="flex min-w-0 flex-wrap items-center gap-2">
 				<GitBranch class="size-5 text-muted-foreground" />
 				<h1 class="text-lg font-semibold">GitOps</h1>
 				<Badge variant="outline" class="h-5 px-1.5 text-[0.65rem]">{envLabel}</Badge>
@@ -247,7 +279,17 @@
 					</Badge>
 				{/if}
 			</div>
-			<div class="flex items-center gap-2">
+			<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+				<Button
+					variant="ghost"
+					size="sm"
+					href="/workspaces/default/dev"
+					class="h-7 gap-1.5 px-2 text-xs"
+					aria-label="Dev environments"
+				>
+					<Container class="size-3.5" />
+					<span class="hidden sm:inline">Dev environments</span>
+				</Button>
 				{#if stacksUrl}
 					<a
 						class="flex items-center gap-1 text-[0.7rem] text-muted-foreground hover:text-foreground"
@@ -270,7 +312,7 @@
 					class="h-7"
 				>
 					{#if loading}
-						<RefreshCw class="size-3.5 animate-spin" />
+						<RefreshCw class="size-3.5 motion-safe:animate-spin" />
 					{:else}
 						<RefreshCw class="size-3.5" />
 					{/if}
@@ -286,12 +328,22 @@
 		</div>
 	{/if}
 
-	<div class="border-b px-5 py-2">
-		<div role="tablist" class="inline-flex w-fit items-center gap-1 rounded-lg bg-muted p-[3px] text-muted-foreground">
+	<div class="overflow-x-auto border-b px-5 py-2">
+		<div
+			role="tablist"
+			aria-label="GitOps views"
+			tabindex="-1"
+			onkeydown={handleTabListKey}
+			class="inline-flex min-w-max items-center gap-1 rounded-lg bg-muted p-[3px] text-muted-foreground"
+		>
 			<button
+				id={tabButtonId("overview")}
+				data-tab="overview"
 				type="button"
 				role="tab"
 				aria-selected={tab === "overview"}
+				aria-controls={tabPanelId("overview")}
+				tabindex={tab === "overview" ? 0 : -1}
 				onclick={() => setTab("overview")}
 				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'overview' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
@@ -299,9 +351,13 @@
 				Overview
 			</button>
 			<button
+				id={tabButtonId("promotions")}
+				data-tab="promotions"
 				type="button"
 				role="tab"
 				aria-selected={tab === "promotions"}
+				aria-controls={tabPanelId("promotions")}
+				tabindex={tab === "promotions" ? 0 : -1}
 				onclick={() => setTab("promotions")}
 				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'promotions' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
@@ -318,9 +374,13 @@
 				{/if}
 			</button>
 			<button
+				id={tabButtonId("inbox")}
+				data-tab="inbox"
 				type="button"
 				role="tab"
 				aria-selected={tab === "inbox"}
+				aria-controls={tabPanelId("inbox")}
+				tabindex={tab === "inbox" ? 0 : -1}
 				onclick={() => setTab("inbox")}
 				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'inbox' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
@@ -333,9 +393,13 @@
 				{/if}
 			</button>
 			<button
+				id={tabButtonId("timeline")}
+				data-tab="timeline"
 				type="button"
 				role="tab"
 				aria-selected={tab === "timeline"}
+				aria-controls={tabPanelId("timeline")}
+				tabindex={tab === "timeline" ? 0 : -1}
 				onclick={() => setTab("timeline")}
 				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'timeline' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
@@ -343,9 +407,13 @@
 				Timeline
 			</button>
 			<button
+				id={tabButtonId("services")}
+				data-tab="services"
 				type="button"
 				role="tab"
 				aria-selected={tab === "services"}
+				aria-controls={tabPanelId("services")}
+				tabindex={tab === "services" ? 0 : -1}
 				onclick={() => setTab("services")}
 				class="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors {tab === 'services' ? 'bg-background text-foreground shadow-sm' : 'hover:text-foreground'}"
 			>
@@ -355,12 +423,27 @@
 		</div>
 	</div>
 
-	{#if tab === "overview"}
-		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+	<div
+		id={tabPanelId("overview")}
+		role="tabpanel"
+		aria-labelledby={tabButtonId("overview")}
+		tabindex="0"
+		hidden={tab !== "overview"}
+		class={tab === "overview" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+	>
+		{#if tab === "overview"}
 			<OverviewTab data={overviewData} />
-		</div>
-	{:else if tab === "promotions"}
-		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+		{/if}
+	</div>
+	<div
+		id={tabPanelId("promotions")}
+		role="tabpanel"
+		aria-labelledby={tabButtonId("promotions")}
+		tabindex="0"
+		hidden={tab !== "promotions"}
+		class={tab === "promotions" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+	>
+		{#if tab === "promotions"}
 			<PipelineView
 				{promotions}
 				{links}
@@ -372,10 +455,18 @@
 					else url.searchParams.delete("strategy");
 					goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
 				}}
-			/>
-		</div>
-	{:else if tab === "inbox"}
-		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+				/>
+		{/if}
+	</div>
+	<div
+		id={tabPanelId("inbox")}
+		role="tabpanel"
+		aria-labelledby={tabButtonId("inbox")}
+		tabindex="0"
+		hidden={tab !== "inbox"}
+		class={tab === "inbox" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+	>
+		{#if tab === "inbox"}
 			<InboxView
 				{promotions}
 				{links}
@@ -385,10 +476,18 @@
 					goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
 					setTab("promotions");
 				}}
-			/>
-		</div>
-	{:else if tab === "timeline"}
-		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+				/>
+		{/if}
+	</div>
+	<div
+		id={tabPanelId("timeline")}
+		role="tabpanel"
+		aria-labelledby={tabButtonId("timeline")}
+		tabindex="0"
+		hidden={tab !== "timeline"}
+		class={tab === "timeline" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+	>
+		{#if tab === "timeline"}
 			<TimelineView
 				{promotions}
 				{links}
@@ -399,11 +498,19 @@
 					else url.searchParams.delete("strategy");
 					goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
 				}}
-			/>
-		</div>
-	{:else if tab === "services"}
-		<div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+				/>
+		{/if}
+	</div>
+	<div
+		id={tabPanelId("services")}
+		role="tabpanel"
+		aria-labelledby={tabButtonId("services")}
+		tabindex="0"
+		hidden={tab !== "services"}
+		class={tab === "services" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+	>
+		{#if tab === "services"}
 			<ServicesTab {metadata} {tektonBase} {links} {now} />
-		</div>
-	{/if}
+		{/if}
+	</div>
 </div>

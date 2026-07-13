@@ -1,9 +1,11 @@
 import type {
 	PreviewArchivePort,
 	PreviewArchiveResult,
+	PreviewDeploymentScopePort,
 	VclusterPreviewGatewayPort
 } from '$lib/server/application/ports';
 import type { VclusterPreviewRecord } from '$lib/types/dev-previews';
+import { PreviewDeploymentScopeDeniedError } from '$lib/server/application/preview-deployment-scope';
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_ARCHIVE_RETRY_GRACE_MS = 60 * 60_000;
@@ -40,6 +42,7 @@ export type PreviewLifecycleReapResult = Readonly<{
 type PreviewLifecycleReaperDeps = Readonly<{
 	previews: Pick<VclusterPreviewGatewayPort, 'listWithCounts' | 'get' | 'touch' | 'teardown'>;
 	archive: Pick<PreviewArchivePort, 'archivePreview' | 'quarantinePreview'>;
+	scope: Pick<PreviewDeploymentScopePort, 'isControlPlane'>;
 	now?: () => Date;
 	sleep?: (milliseconds: number) => Promise<void>;
 	batchSize?: number;
@@ -67,6 +70,11 @@ export class ApplicationPreviewLifecycleReaperService {
 	constructor(private readonly deps: PreviewLifecycleReaperDeps) {}
 
 	async reapExpired(): Promise<PreviewLifecycleReapResult> {
+		if (!this.deps.scope.isControlPlane()) {
+			throw new PreviewDeploymentScopeDeniedError(
+				'preview lifecycle reaping is unavailable from a preview deployment'
+			);
+		}
 		const nowDate = this.deps.now?.() ?? new Date();
 		const now = nowDate.getTime();
 		const { previews } = await this.deps.previews.listWithCounts();

@@ -53,6 +53,14 @@ export type ApplicationAdapterConfig = {
 	workflowBrowserArtifactsStoreAdapter: ProductDataStoreAdapter;
 	sessionEventsStoreAdapter: ProductDataStoreAdapter;
 	workflowDefinitionsStoreAdapter: ProductDataStoreAdapter;
+	/** Server-authoritative identity when this BFF runs inside one preview. */
+	previewDeployment: {
+		name: string;
+		profile: string;
+		platformRevision: string | null;
+		sourceRevision: string | null;
+		origin: string | null;
+	} | null;
 	/** E1: the Dev-hub live preview run feed. Off by default. */
 	previewRunFeedEnabled: boolean;
 	/** D1: label-gated per-PR previews (`/api/internal/pr-previews`). Off by default. */
@@ -142,6 +150,10 @@ export function getApplicationAdapterConfig(
 		appProfile === "lite" ? "lite-stub" : "dapr-workflow";
 	const prPreviewRepo =
 		source.PR_PREVIEW_REPO?.trim() || "PittampalliOrg/workflow-builder";
+	const previewEnvironmentId =
+		source.PREVIEW_ENVIRONMENT_ID?.trim() ||
+		source.PREVIEW_ENVIRONMENT_NAME?.trim() ||
+		null;
 	return {
 		appProfile,
 		persistenceAdapter: readAdapter(
@@ -216,6 +228,21 @@ export function getApplicationAdapterConfig(
 			"postgres",
 			PRODUCT_DATA_STORE_ADAPTERS,
 		),
+		previewDeployment: previewEnvironmentId
+			? {
+					name: previewEnvironmentId,
+					profile: source.PREVIEW_ENVIRONMENT_PROFILE?.trim() || "app-live",
+					platformRevision:
+						source.PREVIEW_PLATFORM_REVISION?.trim() ||
+						source.PREVIEW_ENVIRONMENT_PLATFORM_REVISION?.trim() ||
+						null,
+					sourceRevision:
+						source.PREVIEW_SOURCE_REVISION?.trim() ||
+						source.PREVIEW_ENVIRONMENT_SOURCE_REVISION?.trim() ||
+						null,
+					origin: source.ORIGIN?.trim() || null,
+				}
+			: null,
 		previewRunFeedEnabled: readFlag(source, "PREVIEW_RUN_FEED_ENABLED"),
 		prPreviewsEnabled: readFlag(source, "PR_PREVIEWS_ENABLED"),
 		prPreviewRepo,

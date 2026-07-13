@@ -75,12 +75,15 @@ function harness(
 			})
 		)
 	};
+	const scope = { isControlPlane: vi.fn(() => true) };
 	return {
 		previews,
 		archive,
+		scope,
 		service: new ApplicationPreviewLifecycleReaperService({
 			previews: previews as never,
 			archive,
+			scope,
 			now: options.now ?? (() => new Date('2026-07-09T21:00:00.000Z')),
 			batchSize: options.batchSize ?? 3,
 			wakeTimeoutMs: options.wakeTimeoutMs ?? 1,
@@ -93,6 +96,16 @@ function harness(
 }
 
 describe('preview lifecycle archive reaper', () => {
+	it('rejects preview-deployment reaping before fleet reads', async () => {
+		const h = harness();
+		h.scope.isControlPlane.mockReturnValueOnce(false);
+
+		await expect(h.service.reapExpired()).rejects.toThrow(
+			'unavailable from a preview deployment'
+		);
+		expect(h.previews.listWithCounts).not.toHaveBeenCalled();
+	});
+
 	it('archives under the authoritative owner before guarded teardown', async () => {
 		const h = harness();
 		await expect(h.service.reapExpired()).resolves.toMatchObject({

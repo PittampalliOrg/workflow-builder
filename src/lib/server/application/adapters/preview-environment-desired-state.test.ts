@@ -10,6 +10,7 @@ import {
   previewEnvironmentHubKubeFetch,
 } from "$lib/server/application/adapters/preview-environment-desired-state";
 import { validatePreviewEnvironmentLaunchSpec } from "$lib/server/application/preview-environments";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 import type {
   PreviewEnvironmentDesiredStatePort,
   PreviewEnvironmentDeletionAcknowledgement,
@@ -57,6 +58,13 @@ const command = validatePreviewEnvironmentLaunchSpec(
   },
   CATALOG,
 );
+const observationIdentity = {
+  previewName: command.name,
+  environmentRequestId: command.provenance.requestId,
+  environmentPlatformRevision: command.platformRevision,
+  environmentSourceRevision: command.sourceRevision,
+  catalogDigest: command.catalogDigest,
+};
 
 function resource(
   overrides: Record<string, unknown> = {},
@@ -185,6 +193,20 @@ function gateway(overrides: Partial<VclusterPreviewGatewayPort> = {}) {
       reconciliationSucceeded: true,
       upJob: {
         name: `vcpreview-up-${command.name}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [],
+    })),
+    runtimeForIdentity: vi.fn(async (identity) => ({
+      name: identity.previewName,
+      resourceName: identity.previewName,
+      identity,
+      reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${identity.previewName}`,
         found: true,
         active: false,
         succeeded: true,
@@ -828,6 +850,194 @@ describe("BrokeredVclusterPreviewGateway", () => {
     });
     expect(local.listWithCounts).toHaveBeenCalledOnce();
     expect(brokerFetch).not.toHaveBeenCalled();
+  });
+
+  it("reads the exact candidate record through its tuple capability", async () => {
+    const local = gateway();
+    const brokerFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        json({
+          ok: true,
+          view: "record",
+          identity: observationIdentity,
+          preview: { ...previewRecord(), rawNamespaceUid: "must-not-cross" },
+        }),
+    );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: local,
+      observationMode: "tuple-leaf",
+      observationCredential: () => ({
+        identity: observationIdentity,
+        capability: "leaf-capability",
+      }),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000/",
+    });
+
+    const observed = await adapter.get(command.name);
+
+    expect(observed).toEqual(previewRecord());
+    expect(observed).not.toHaveProperty("rawNamespaceUid");
+    expect(local.get).not.toHaveBeenCalled();
+    expect(brokerFetch).toHaveBeenCalledWith(
+      "http://preview-control-broker:3000/api/internal/preview-control/environment/observe",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Control-Capability": "leaf-capability",
+        },
+        body: JSON.stringify({
+          identity: observationIdentity,
+          view: "record",
+        }),
+      }),
+    );
+    expect(brokerFetch.mock.calls[0]?.[1]?.headers).not.toHaveProperty(
+      "X-Preview-Control-Broker-Token",
+    );
+  });
+
+  it("reads and normalizes tuple-bound runtime through the physical broker", async () => {
+    const local = gateway();
+    const runtime = {
+      name: command.name,
+      resourceName: command.name,
+      reconciliationSucceeded: true,
+      upJob: {
+        name: `vcpreview-up-${command.name}`,
+        found: true,
+        active: false,
+        succeeded: true,
+        failed: false,
+      },
+      services: [
+        {
+          service: "workflow-builder",
+          containers: [
+            {
+              pod: "workflow-builder-0",
+              image: "ghcr.io/example/workflow-builder:test",
+              imageId: "sha256:image",
+              ready: true,
+              namespaceUid: "must-not-cross",
+            },
+          ],
+        },
+      ],
+      identity: observationIdentity,
+      namespaceUid: "must-not-cross",
+    };
+    const brokerFetch = vi.fn(async () =>
+      json({
+        ok: true,
+        view: "runtime",
+        identity: observationIdentity,
+        runtime,
+      }),
+    );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: local,
+      observationMode: "tuple-leaf",
+      observationCredential: () => ({
+        identity: observationIdentity,
+        capability: "leaf-capability",
+      }),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+    });
+
+    const observed = await adapter.runtimeForIdentity(observationIdentity);
+
+    expect(observed).toMatchObject({
+      name: command.name,
+      identity: observationIdentity,
+      services: [
+        {
+          service: "workflow-builder",
+          containers: [
+            {
+              pod: "workflow-builder-0",
+              image: "ghcr.io/example/workflow-builder:test",
+              imageId: "sha256:image",
+              ready: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(observed).not.toHaveProperty("namespaceUid");
+    expect(observed.services[0]?.containers[0]).not.toHaveProperty(
+      "namespaceUid",
+    );
+    expect(local.runtimeForIdentity).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cross-name or cross-generation candidate read before transport", async () => {
+    const brokerFetch = vi.fn();
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      observationMode: "tuple-leaf",
+      observationCredential: () => ({
+        identity: observationIdentity,
+        capability: "leaf-capability",
+      }),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+    });
+
+    await expect(adapter.get("another-preview")).rejects.toBeInstanceOf(
+      PreviewRuntimeIdentityChangedError,
+    );
+    await expect(
+      adapter.runtimeForIdentity({
+        ...observationIdentity,
+        environmentRequestId: "another-request",
+      }),
+    ).rejects.toBeInstanceOf(PreviewRuntimeIdentityChangedError);
+    expect(brokerFetch).not.toHaveBeenCalled();
+  });
+
+  it("translates physical observation conflicts into the application identity error", async () => {
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      observationMode: "tuple-leaf",
+      observationCredential: () => ({
+        identity: observationIdentity,
+        capability: "leaf-capability",
+      }),
+      fetch: vi.fn(async () => json({ error: "generation replaced" }, 409)),
+      baseUrl: () => "http://preview-control-broker:3000",
+    });
+
+    await expect(adapter.get(command.name)).rejects.toBeInstanceOf(
+      PreviewRuntimeIdentityChangedError,
+    );
+  });
+
+  it("rejects an extended or mismatched physical observation envelope", async () => {
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      observationMode: "tuple-leaf",
+      observationCredential: () => ({
+        identity: observationIdentity,
+        capability: "leaf-capability",
+      }),
+      fetch: vi.fn(async () =>
+        json({
+          ok: true,
+          view: "record",
+          identity: observationIdentity,
+          preview: previewRecord(),
+          namespaceUid: "must-not-cross",
+        }),
+      ),
+      baseUrl: () => "http://preview-control-broker:3000",
+    });
+
+    await expect(adapter.get(command.name)).rejects.toBeInstanceOf(
+      PreviewRuntimeIdentityChangedError,
+    );
   });
 
   it("sends guarded teardown only to the authenticated physical broker", async () => {

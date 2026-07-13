@@ -13,6 +13,8 @@ describe("preview execution detail proxy route (E2)", () => {
 		expect(source).toContain("locals.session?.userId");
 		expect(source).toContain("previewReadProxyEnabled");
 		expect(source).toContain("previewReadProxy.getPreviewExecution");
+		expect(source).toContain("cause instanceof PreviewRuntimeIdentityChangedError");
+		expect(source).toContain("error(409, cause.message)");
 		expect(source).not.toContain("$lib/server/application/adapters");
 		expect(source).not.toContain("$lib/server/db");
 	});

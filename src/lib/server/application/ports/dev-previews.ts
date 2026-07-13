@@ -17,6 +17,7 @@ import type {
   PreviewEnvironmentProvenance,
 } from "./preview-environments";
 import type { PreviewCapabilityBundle } from "./preview-control";
+import type { PreviewControlIdentity } from "./preview-control";
 
 /** A4 activity/wake outcome: whether a resume Job was started for a slept preview. */
 export type VclusterPreviewTouchResult = {
@@ -81,6 +82,7 @@ export type VclusterPreviewRuntimeContainer = {
   ready: boolean;
 };
 
+/** Privileged adapter observation. Presentation services must normalize it. */
 export type VclusterPreviewRuntimeSnapshot = {
   name: string;
   resourceName: string;
@@ -97,6 +99,18 @@ export type VclusterPreviewRuntimeSnapshot = {
     containers: VclusterPreviewRuntimeContainer[];
   }>;
 };
+
+export type TupleBoundVclusterPreviewRuntimeSnapshot =
+  VclusterPreviewRuntimeSnapshot &
+    Readonly<{ identity: PreviewControlIdentity }>;
+
+/** Stable application error for a replaced or mismatched preview generation. */
+export class PreviewRuntimeIdentityChangedError extends Error {
+  constructor(message = "preview identity changed during runtime observation") {
+    super(message);
+    this.name = "PreviewRuntimeIdentityChangedError";
+  }
+}
 
 export type VclusterPreviewCleanupSnapshot = {
   name: string;
@@ -170,6 +184,10 @@ export interface VclusterPreviewGatewayPort {
   ): Promise<VclusterPreviewRecord>;
   /** Actual Ready pod image observations from the host Kubernetes API. */
   runtime(name: string): Promise<VclusterPreviewRuntimeSnapshot>;
+  /** Same observation, fenced to one immutable PreviewEnvironment generation. */
+  runtimeForIdentity(
+    identity: PreviewControlIdentity,
+  ): Promise<TupleBoundVclusterPreviewRuntimeSnapshot>;
   /** Down-runner convergence proof. Runner success asserts every hub cleanup check. */
   cleanup(name: string): Promise<VclusterPreviewCleanupSnapshot>;
   /** A4 activity ping + wake: stamps last-active, resumes a slept preview. */

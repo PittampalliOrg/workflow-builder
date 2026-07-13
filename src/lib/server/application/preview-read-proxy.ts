@@ -1,14 +1,21 @@
 import type {
+	PreviewAccessPolicyPort,
+	PreviewControlIdentity,
+	PreviewDeploymentScopePort,
 	PreviewExecutionSummary,
 	PreviewReadProxyPort,
 	PreviewReadResult,
 	PreviewRunTarget,
 } from "$lib/server/application/ports";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
+import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
+import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
+import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 
 export type PreviewReadProxyDeps = {
 	proxy: PreviewReadProxyPort;
-	/** Lists active Tier-2 previews (name + url + backing pool member). */
-	listPreviews: () => Promise<PreviewRunTarget[]>;
+	access: PreviewAccessPolicyPort;
+	scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
 };
 
 export type PreviewExecutionsReadModel = {
@@ -25,31 +32,62 @@ export type PreviewExecutionDetailReadModel = {
 };
 
 /**
- * E2: read-only proxy service from the Dev hub to a preview BFF's run history.
- * Preview names are ALWAYS resolved against the SEA-provided preview list —
- * never used to build URLs directly — so a request can only ever reach a
- * known, active preview (no caller-controlled URL construction). Unknown
- * previews resolve to null (the route 404s); reachable-preview failures
- * degrade to a typed failure the UI renders as "preview unreachable".
+ * E2: read-only proxy service from the Dev control plane to a preview BFF's run
+ * history. The application access policy returns the authoritative preview
+ * record for the actor; this service derives the immutable target tuple from
+ * that same record, so authorization and transport cannot observe different
+ * generations. Adapter failures degrade to a typed result for presentation.
  */
 export class ApplicationPreviewReadProxyService {
 	constructor(private readonly deps: PreviewReadProxyDeps) {}
 
-	private async resolveTarget(name: string): Promise<PreviewRunTarget | null> {
-		const wanted = name.trim().toLowerCase();
-		if (!wanted) return null;
-		const previews = await this.deps.listPreviews();
-		return previews.find((p) => p.name.toLowerCase() === wanted) ?? null;
+	private targetFromAuthorizedRecord(record: VclusterPreviewRecord): PreviewRunTarget {
+		let identity: PreviewControlIdentity;
+		try {
+			identity = validatePreviewControlIdentity({
+				previewName: record.name,
+				environmentRequestId:
+					typeof record.provenance?.requestId === "string"
+						? record.provenance.requestId
+						: "",
+				environmentPlatformRevision: record.platformRevision ?? "",
+				environmentSourceRevision: record.sourceRevision ?? "",
+				catalogDigest: (record.catalogDigest ?? "") as `sha256:${string}`,
+			});
+		} catch {
+			throw new PreviewRuntimeIdentityChangedError(
+				"preview execution reads require a complete immutable identity",
+			);
+		}
+		return {
+			name: record.name,
+			url: record.url,
+			pool: record.pool,
+			identity,
+		};
 	}
 
-	/** Recent executions inside one preview. Null = unknown preview (404). */
+	private async authorizeTarget(input: { name: string; actorUserId: string }) {
+		if (!this.deps.scope.isControlPlane()) {
+			throw new PreviewDeploymentScopeDeniedError(
+				"preview execution proxy reads are unavailable from a preview deployment",
+			);
+		}
+		const access = await this.deps.access.authorize({
+			name: input.name,
+			actorUserId: input.actorUserId,
+		});
+		return this.targetFromAuthorizedRecord(access.preview);
+	}
+
+	/** Recent executions inside one authorized preview generation. */
 	async listPreviewExecutions(input: {
 		name: string;
+		actorUserId: string;
 		limit?: number;
 		status?: string | null;
-	}): Promise<PreviewExecutionsReadModel | null> {
-		const target = await this.resolveTarget(input.name);
-		if (!target) return null;
+	}): Promise<PreviewExecutionsReadModel> {
+		const target = await this.authorizeTarget(input);
 		const result = await this.deps.proxy.listExecutions({
 			target,
 			limit: input.limit,
@@ -58,13 +96,13 @@ export class ApplicationPreviewReadProxyService {
 		return { preview: { name: target.name, url: target.url }, result };
 	}
 
-	/** One execution's detail inside one preview. Null = unknown preview (404). */
+	/** One execution's detail inside one authorized preview generation. */
 	async getPreviewExecution(input: {
 		name: string;
+		actorUserId: string;
 		executionId: string;
-	}): Promise<PreviewExecutionDetailReadModel | null> {
-		const target = await this.resolveTarget(input.name);
-		if (!target) return null;
+	}): Promise<PreviewExecutionDetailReadModel> {
+		const target = await this.authorizeTarget(input);
 		const result = await this.deps.proxy.getExecution({
 			target,
 			executionId: input.executionId,

@@ -109,15 +109,15 @@
 		/>
 	</div>
 
-	<div class="grid flex-1 grid-cols-1 overflow-hidden md:grid-cols-[20rem_1fr] lg:grid-cols-[22rem_1fr]">
-		<aside class="border-r bg-background md:border-b-0">
+	<div class="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto md:grid-cols-[20rem_1fr] md:grid-rows-1 md:overflow-hidden lg:grid-cols-[22rem_1fr]">
+		<aside class="h-64 overflow-hidden border-b bg-background md:h-auto md:min-h-0 md:border-b-0 md:border-r">
 			<ServiceTable
 				rows={filteredRows}
 				{selectedService}
 				onSelect={selectService}
 			/>
 		</aside>
-		<main class="overflow-y-auto bg-muted/10">
+		<main class="min-h-[20rem] bg-muted/10 md:min-h-0 md:overflow-y-auto">
 			{#if selectedRow}
 				<ServiceDetail
 					row={selectedRow}

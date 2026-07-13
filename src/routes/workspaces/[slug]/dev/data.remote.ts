@@ -39,6 +39,20 @@ async function requireAdminSession() {
 	return session;
 }
 
+function requireControlPlaneDeployment() {
+	if (!getApplicationAdapters().previewDeploymentScope.isControlPlane()) {
+		error(403, 'Preview fleet operations are unavailable from a preview deployment');
+	}
+}
+
+function requireDeploymentPreviewName(inputName: string): string {
+	const scope = getApplicationAdapters().previewDeploymentScope;
+	if (!scope.allowsPreviewName(inputName)) {
+		error(403, 'Cross-preview access is unavailable from a preview deployment');
+	}
+	return safePreviewName(inputName);
+}
+
 function toPrPreviewListItem(s: PrPreviewStatus, repo: string): PrPreviewListItem {
 	return {
 		prNumber: s.prNumber,
@@ -74,8 +88,41 @@ export const getVclusterPreviews = query(
 		previews: VclusterPreviewSummary[];
 		counts: VclusterPreviewCounts | null;
 	}> => {
+		requireControlPlaneDeployment();
 		await requireAdminSession();
 		return getApplicationAdapters().vclusterPreviews.list();
+	}
+);
+
+/**
+ * Preview-local read. It returns the same view shape as the control-plane list
+ * without placing any other preview or fleet-capacity record in candidate
+ * browser state.
+ */
+export const getVclusterPreview = query(
+	'unchecked',
+	async (
+		inputName: string
+	): Promise<{
+		previews: VclusterPreviewSummary[];
+		counts: VclusterPreviewCounts | null;
+	}> => {
+		const session = requireSession();
+		const name = requireDeploymentPreviewName(inputName);
+		const adapters = getApplicationAdapters();
+		try {
+			const access = await adapters.previewAccess.authorize({
+				name,
+				actorUserId: session.userId
+			});
+			return {
+				previews: [adapters.vclusterPreviews.present(access.preview)],
+				counts: null
+			};
+		} catch (cause) {
+			if (cause instanceof PreviewAccessDeniedError) error(403, cause.message);
+			throw cause;
+		}
 	}
 );
 
@@ -86,6 +133,7 @@ export const getVclusterPreviews = query(
  */
 export const getPrPreviews = query(
 	async (): Promise<{ enabled: boolean; items: PrPreviewListItem[] }> => {
+		requireControlPlaneDeployment();
 		await requireAdminSession();
 		const config = getApplicationAdapterConfig();
 		if (!config.prPreviewsEnabled) return { enabled: false, items: [] };
@@ -101,6 +149,7 @@ export const getPrPreviews = query(
 export const launchPreview = command(
 	'unchecked',
 	async (input: PreviewEnvironmentLaunchRequest): Promise<VclusterLaunchResult> => {
+		requireControlPlaneDeployment();
 		const session = await requireAdminSession();
 		const name = safePreviewName(input?.name ?? '');
 		if (!name || name === 'preview') error(400, 'A preview name is required');
@@ -173,6 +222,7 @@ export const launchPreview = command(
 export const sleepPreview = command(
 	'unchecked',
 	async (input: { name: string }): Promise<PreviewSleepResult> => {
+		requireControlPlaneDeployment();
 		await requireAdminSession();
 		return getApplicationAdapters().vclusterPreviews.sleep(input.name);
 	}
@@ -182,6 +232,7 @@ export const sleepPreview = command(
 export const wakePreview = command(
 	'unchecked',
 	async (input: { name: string }): Promise<PreviewWakeResult> => {
+		requireControlPlaneDeployment();
 		await requireAdminSession();
 		return getApplicationAdapters().vclusterPreviews.wake(input.name);
 	}
@@ -201,6 +252,7 @@ export const teardownPreview = command(
 		archive: PreviewArchiveResult | null;
 		preview: VclusterPreviewSummary;
 	}> => {
+		requireControlPlaneDeployment();
 		const session = await requireAdminSession();
 		try {
 			const adapters = getApplicationAdapters();

@@ -393,6 +393,7 @@ import { DrizzlePrPreviewRecordStore } from "$lib/server/application/adapters/pr
 import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
 import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
 import { ApplicationPreviewAccessService } from "$lib/server/application/preview-access";
+import { ApplicationPreviewDeploymentScopeService } from "$lib/server/application/preview-deployment-scope";
 import { ApplicationPreviewTeardownService } from "$lib/server/application/preview-teardown";
 import { ApplicationPreviewLifecycleReaperService } from "$lib/server/application/preview-lifecycle-reaper";
 import { ApplicationPreviewReadBrokerService } from "$lib/server/application/preview-read-broker";
@@ -424,6 +425,7 @@ import {
   previewEnvironmentHubKubeFetch,
 } from "$lib/server/application/adapters/preview-environment-desired-state";
 import { ApplicationPreviewEnvironmentLifecycleBrokerService } from "$lib/server/application/preview-environment-lifecycle-broker";
+import { ApplicationPreviewEnvironmentObservationBrokerService } from "$lib/server/application/preview-environment-observation-broker";
 import { ApplicationPreviewEnvironmentDeletionReconcilerService } from "$lib/server/application/preview-environment-deletion-reconciler";
 import { ManifestCandidatePathPolicyAdapter } from "$lib/server/application/adapters/preview-candidate-paths";
 import { ApplicationPreviewEnvironmentService } from "$lib/server/application/preview-environments";
@@ -811,6 +813,9 @@ export function getApplicationAdapters(
     | undefined;
   let previewEnvironmentLifecycleBroker:
     | ApplicationPreviewEnvironmentLifecycleBrokerService
+    | undefined;
+  let previewEnvironmentObservationBroker:
+    | ApplicationPreviewEnvironmentObservationBrokerService
     | undefined;
   let previewEnvironmentDeletionReconciler:
     | ApplicationPreviewEnvironmentDeletionReconcilerService
@@ -1593,6 +1598,7 @@ export function getApplicationAdapters(
       ? getPhysicalVclusterPreviewGateway()
       : new BrokeredVclusterPreviewGateway({
           gateway: getLocalVclusterPreviewGateway(),
+          observationMode: config.previewDeployment ? "tuple-leaf" : "local",
         }));
   const getPrPreviewCommands = () => {
     if (prPreviewCommands) return prPreviewCommands;
@@ -1678,7 +1684,8 @@ export function getApplicationAdapters(
   const getPreviewReadProxy = () =>
     (previewReadProxy ??= new ApplicationPreviewReadProxyService({
       proxy: new HttpPreviewReadBrokerAdapter(),
-      listPreviews: listPreviewReadTargets,
+      access: getPreviewAccess(),
+      scope: previewDeploymentScope,
     }));
   const getPreviewArchive = () => {
     if (isPreviewControlBroker()) {
@@ -1697,18 +1704,23 @@ export function getApplicationAdapters(
       },
     }));
   };
+  const previewDeploymentScope = new ApplicationPreviewDeploymentScopeService(
+    config.previewDeployment,
+  );
   const getPreviewAccess = () =>
     (previewAccess ??= new ApplicationPreviewAccessService({
       previews: getVclusterPreviewGateway(),
       admins: {
         isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
       },
+      scope: previewDeploymentScope,
     }));
   const getPreviewTeardown = () =>
     (previewTeardown ??= new ApplicationPreviewTeardownService({
       access: getPreviewAccess(),
       archive: getPreviewArchive(),
       previews: getVclusterPreviewGateway(),
+      scope: previewDeploymentScope,
       archiveOnTeardownEnabled: config.previewArchiveOnTeardownEnabled,
       now: () => new Date(),
     }));
@@ -1722,6 +1734,7 @@ export function getApplicationAdapters(
       new ApplicationPreviewLifecycleReaperService({
         previews: getVclusterPreviewGateway(),
         archive: getPreviewArchive(),
+        scope: previewDeploymentScope,
         batchSize: 3,
         wakeTimeoutMs: 120_000,
         archiveRetryGraceMs: config.previewTtlArchiveGraceMinutes * 60_000,
@@ -1731,6 +1744,8 @@ export function getApplicationAdapters(
   const getVclusterPreviews = () =>
     (vclusterPreviews ??= new ApplicationVclusterPreviewService({
       gateway: getVclusterPreviewGateway(),
+      access: getPreviewAccess(),
+      scope: previewDeploymentScope,
       previewRepo: config.prPreviewRepo,
       maxPreviews: config.vclusterPreviewMax,
     }));
@@ -1893,6 +1908,18 @@ export function getApplicationAdapters(
         expectedPlatformRepository: config.previewPlatformRepository,
         expectedSourceRepository: config.previewSourceRepository,
       }));
+  const getPreviewEnvironmentObservationBroker = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error(
+        "physical preview observation is available only in broker mode",
+      );
+    }
+    return (previewEnvironmentObservationBroker ??=
+      new ApplicationPreviewEnvironmentObservationBrokerService({
+        previews: getPhysicalVclusterPreviewGateway(),
+        authority: getPreviewControlSourceAuthority(),
+      }));
+  };
   const getPreviewDevSyncCredentialMint = () => {
     if (!isPreviewControlBroker()) {
       throw new Error(
@@ -2733,6 +2760,9 @@ export function getApplicationAdapters(
     get previewAccess() {
       return getPreviewAccess();
     },
+    get previewDeploymentScope() {
+      return previewDeploymentScope;
+    },
     get previewTeardown() {
       return getPreviewTeardown();
     },
@@ -2750,6 +2780,9 @@ export function getApplicationAdapters(
     },
     get previewEnvironmentLifecycleBroker() {
       return getPreviewEnvironmentLifecycleBroker();
+    },
+    get previewEnvironmentObservationBroker() {
+      return getPreviewEnvironmentObservationBroker();
     },
     get previewEnvironmentDeletionReconciler() {
       return getPreviewEnvironmentDeletionReconciler();

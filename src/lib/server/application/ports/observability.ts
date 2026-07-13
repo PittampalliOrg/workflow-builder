@@ -115,13 +115,11 @@ export interface PreviewRunFeedPort {
 /**
  * Preview read proxy (E2): read-only HTTP access from the HOST BFF to a preview
  * BFF's internal read APIs (executions list/detail, artifacts, file blobs).
- * Previews run the same app, and the host `workflow-builder-secrets` Secret —
- * including INTERNAL_API_TOKEN — is copied verbatim into every preview vcluster
- * at provision time (runner.sh), so the host's own internal token authenticates
- * against every preview's `/api/internal/*` guard. The adapter reaches the
- * preview over its vcluster-synced in-cluster Service (preferred) or the
- * tailnet URL (fallback). Everything here is read-only and failure-tolerant:
- * an unreachable preview degrades to a typed failure, never a thrown 500.
+ * The physical broker mints a purpose-limited capability for one immutable
+ * preview tuple; broad product or cluster credentials never enter this port.
+ * The transport reaches the preview over its bounded service path. Everything
+ * here is read-only and failure-tolerant: an unreachable preview degrades to a
+ * typed failure, never a thrown 500.
  */
 
 /** Typed failure for preview reads — callers render "preview unreachable", never 500. */

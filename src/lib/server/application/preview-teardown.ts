@@ -2,9 +2,11 @@ import type {
   PreviewAccessPolicyPort,
   PreviewArchivePort,
   PreviewArchiveResult,
+  PreviewDeploymentScopePort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const CANONICAL_REQUESTED_AT =
@@ -52,6 +54,7 @@ type PreviewTeardownDeps = Readonly<{
   access: PreviewAccessPolicyPort;
   archive: PreviewArchivePort;
   previews: VclusterPreviewGatewayPort;
+  scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
   archiveOnTeardownEnabled: boolean;
   now?: () => Date;
 }>;
@@ -69,6 +72,11 @@ export class ApplicationPreviewTeardownService {
   constructor(private readonly deps: PreviewTeardownDeps) {}
 
   async teardown(input: PreviewTeardownInput): Promise<PreviewTeardownResult> {
+    if (!this.deps.scope.isControlPlane()) {
+      throw new PreviewDeploymentScopeDeniedError(
+        "preview teardown is unavailable from a preview deployment",
+      );
+    }
     const access = await this.deps.access.authorize({
       name: input.name,
       actorUserId: input.actorUserId,

@@ -4,16 +4,82 @@ import type {
   VclusterLaunchResult,
   VclusterPreviewCounts,
   VclusterPreviewRecord,
+  VclusterPreviewRuntimeView,
   VclusterPreviewSummary,
 } from "$lib/types/dev-previews";
 import { safePreviewName } from "$lib/types/dev-previews";
+import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 import type {
   PreviewEnvironmentLaunchOutcome,
+  PreviewAccessPolicyPort,
+  PreviewControlIdentity,
+  PreviewDeploymentScopePort,
+  VclusterPreviewCleanupSnapshot,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
+import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
+
+export { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
+
+function runtimeControlIdentity(
+  record: VclusterPreviewRecord,
+): PreviewControlIdentity {
+  const requestId = record.provenance?.requestId;
+  if (
+    !record.platformRevision ||
+    !record.sourceRevision ||
+    !record.catalogDigest ||
+    typeof requestId !== "string" ||
+    !requestId.trim()
+  ) {
+    throw new PreviewRuntimeIdentityChangedError(
+      "preview runtime observation requires a complete immutable identity",
+    );
+  }
+  return validatePreviewControlIdentity({
+    previewName: safePreviewName(record.name),
+    environmentRequestId: requestId.trim(),
+    environmentPlatformRevision: record.platformRevision,
+    environmentSourceRevision: record.sourceRevision,
+    catalogDigest: record.catalogDigest as `sha256:${string}`,
+  });
+}
+
+function authorizedRuntimeIdentity(record: VclusterPreviewRecord): string {
+  const ownerId = record.owner?.id?.trim();
+  if (!ownerId || !record.owner?.kind) {
+    throw new PreviewRuntimeIdentityChangedError(
+      "preview runtime observation requires an authoritative owner",
+    );
+  }
+  return JSON.stringify({
+    ...runtimeControlIdentity(record),
+    ownerKind: record.owner.kind,
+    ownerId,
+  });
+}
+
+function sameRuntimeControlIdentity(
+  left: PreviewControlIdentity,
+  right: PreviewControlIdentity,
+): boolean {
+  return (
+    left.previewName === right.previewName &&
+    left.environmentRequestId === right.environmentRequestId &&
+    left.environmentPlatformRevision === right.environmentPlatformRevision &&
+    left.environmentSourceRevision === right.environmentSourceRevision &&
+    left.catalogDigest === right.catalogDigest
+  );
+}
 
 export type VclusterPreviewServiceDeps = {
   gateway: VclusterPreviewGatewayPort;
+  access: PreviewAccessPolicyPort;
+  scope: Pick<
+    PreviewDeploymentScopePort,
+    "isControlPlane" | "allowsPreviewName"
+  >;
   /** Repo slug (`owner/name`) for building `prUrl` (config `prPreviewRepo`). */
   previewRepo: string;
   /** Awake-preview cap fallback when the SEA omits `counts.max` (config
@@ -106,13 +172,67 @@ export class ApplicationVclusterPreviewService {
     previews: VclusterPreviewSummary[];
     counts: VclusterPreviewCounts | null;
   }> {
+    this.requireControlPlane("preview fleet reads");
     const { previews, counts } = await this.deps.gateway.listWithCounts();
     return { previews: previews.map((p) => this.decorate(p)), counts };
   }
 
   /** Status of one preview (accepts a claimed alias). */
   async get(name: string): Promise<VclusterPreviewSummary> {
+    this.requirePreviewName(name);
     return this.decorate(await this.deps.gateway.get(name));
+  }
+
+  /**
+   * Observe runtime state for the exact record returned by the access policy.
+   * The post-read identity fence prevents a teardown/recreate of the same name
+   * from returning another owner's runtime state.
+   */
+  async observeRuntime(
+    input: Readonly<{ name: string; actorUserId: string }>,
+  ): Promise<VclusterPreviewRuntimeView> {
+    const access = await this.deps.access.authorize(input);
+    const authorizedPreview = access.preview;
+    const expectedIdentity = authorizedRuntimeIdentity(authorizedPreview);
+    const expectedControlIdentity = runtimeControlIdentity(authorizedPreview);
+    const name = safePreviewName(authorizedPreview.name);
+    const observed = await this.deps.gateway.runtimeForIdentity(
+      expectedControlIdentity,
+    );
+    const confirmed = await this.deps.gateway.get(name);
+    if (
+      observed.name !== name ||
+      !sameRuntimeControlIdentity(
+        observed.identity,
+        expectedControlIdentity,
+      ) ||
+      authorizedRuntimeIdentity(confirmed) !== expectedIdentity
+    ) {
+      throw new PreviewRuntimeIdentityChangedError();
+    }
+    return {
+      name,
+      reconciliationSucceeded: observed.reconciliationSucceeded,
+      provision: {
+        found: observed.upJob.found,
+        active: observed.upJob.active,
+        succeeded: observed.upJob.succeeded,
+        failed: observed.upJob.failed,
+      },
+      services: observed.services.map((service) => ({
+        service: service.service,
+        containers: service.containers.map((container) => ({
+          image: container.image,
+          ready: container.ready,
+        })),
+      })),
+    };
+  }
+
+  /** Guarded teardown convergence proof for a terminating preview. */
+  cleanup(name: string): Promise<VclusterPreviewCleanupSnapshot> {
+    this.requirePreviewName(name);
+    return this.deps.gateway.cleanup(safePreviewName(name));
   }
 
   /**
@@ -124,6 +244,7 @@ export class ApplicationVclusterPreviewService {
     name: string;
     user?: string;
   }): Promise<VclusterLaunchResult> {
+    this.requireControlPlane("preview launch");
     const name = safePreviewName(input.name);
     const { previews, counts } = await this.deps.gateway.listWithCounts();
     const cap =
@@ -149,6 +270,7 @@ export class ApplicationVclusterPreviewService {
    * slot that stays claim-ready). Any other failure throws.
    */
   async sleep(name: string): Promise<PreviewSleepResult> {
+    this.requireControlPlane("preview sleep");
     const outcome = await this.deps.gateway.sleep(name);
     if (outcome.ok) {
       return {
@@ -170,6 +292,7 @@ export class ApplicationVclusterPreviewService {
   /** Wake (resume) a slept preview by touching it — stamps last-active and, for
    * a slept preview, starts a resume Job (`resuming: true`). */
   async wake(name: string): Promise<PreviewWakeResult> {
+    this.requireControlPlane("preview wake");
     const touched = await this.deps.gateway.touch(name);
     return {
       name: touched.name,
@@ -183,7 +306,24 @@ export class ApplicationVclusterPreviewService {
     name: string,
     guard: Parameters<VclusterPreviewGatewayPort["teardown"]>[1],
   ): Promise<VclusterPreviewSummary> {
+    this.requireControlPlane("preview teardown");
     if (!guard) throw new Error("preview teardown requires an ownership guard");
     return this.decorate(await this.deps.gateway.teardown(name, guard));
+  }
+
+  private requirePreviewName(name: string): void {
+    if (!this.deps.scope.allowsPreviewName(name)) {
+      throw new PreviewDeploymentScopeDeniedError(
+        "cross-preview access is unavailable from a preview deployment",
+      );
+    }
+  }
+
+  private requireControlPlane(operation: string): void {
+    if (!this.deps.scope.isControlPlane()) {
+      throw new PreviewDeploymentScopeDeniedError(
+        `${operation} is unavailable from a preview deployment`,
+      );
+    }
   }
 }

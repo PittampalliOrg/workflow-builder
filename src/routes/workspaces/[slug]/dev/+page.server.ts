@@ -1,6 +1,5 @@
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
-import { env } from "$env/dynamic/private";
 import type { PageServerLoad } from "./$types";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
@@ -16,20 +15,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 		projectId: locals.session?.projectId ?? null,
 	});
 	const config = getApplicationAdapterConfig();
+	const deploymentScope = adapters.previewDeploymentScope.current();
 	return {
 		...hub,
 		previewNativeServices:
 			adapters.previewEnvironments.previewNativeServices(),
-		previewEnvironment: env.PREVIEW_ENVIRONMENT_ID
-			? {
-					id: env.PREVIEW_ENVIRONMENT_ID,
-					profile: env.PREVIEW_ENVIRONMENT_PROFILE ?? "app-live",
-					platformRevision: env.PREVIEW_PLATFORM_REVISION ?? null,
-					sourceRevision: env.PREVIEW_SOURCE_REVISION ?? null,
-					origin: env.ORIGIN ?? null,
-				}
+		previewEnvironment: deploymentScope.kind === "preview"
+			? { id: deploymentScope.preview.name, ...deploymentScope.preview }
 			: null,
-		previewRunFeedEnabled: config.previewRunFeedEnabled,
-		previewReadProxyEnabled: config.previewReadProxyEnabled,
+		previewRunFeedEnabled:
+			deploymentScope.kind === "control-plane" && config.previewRunFeedEnabled,
+		previewReadProxyEnabled:
+			deploymentScope.kind === "control-plane" && config.previewReadProxyEnabled,
 	};
 };

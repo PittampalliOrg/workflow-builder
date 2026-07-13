@@ -7,6 +7,10 @@ const source = readFileSync(
 	join(dirname(fileURLToPath(import.meta.url)), "data.remote.ts"),
 	"utf8",
 );
+const pageSource = readFileSync(
+	join(dirname(fileURLToPath(import.meta.url)), "+page.svelte"),
+	"utf8",
+);
 
 describe("dev hub data remote", () => {
 	it("delegates reads/mutations to the application services (never the DB/legacy)", () => {
@@ -42,6 +46,20 @@ describe("dev hub data remote", () => {
 		// belong to the machine route, not this UI read.
 		expect(source).not.toContain("prPreviews.status(");
 		expect(source).not.toContain("prPreviews.peek(");
+	});
+
+	it("uses an owner-authorized single-preview read inside a preview", () => {
+		expect(source).toContain("export const getVclusterPreview");
+		expect(source).toContain("adapters.previewAccess.authorize");
+		expect(source).toContain("vclusterPreviews.present(access.preview)");
+		expect(pageSource).toContain("? getVclusterPreview(previewEnvironmentId)");
+		expect(pageSource).toContain("controlPlane ? getPrPreviews() : null");
+	});
+
+	it("starts the visibility poll outside reactive dependency tracking", () => {
+		expect(pageSource).toContain("untrack(onVisibility)");
+		expect(pageSource).toContain("untrack(() => void tick())");
+		expect(pageSource).not.toContain("\n\t\tonVisibility();");
 	});
 
 	it("guards every query/command and maps application teardown refusals", () => {

@@ -2,6 +2,7 @@ import { error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
 /**
  * SSE feed of live workflow runs across all active Tier-2 previews (E1).
@@ -12,11 +13,16 @@ import { getApplicationAdapterConfig } from "$lib/server/application/config";
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
+	const adapters = getApplicationAdapters();
+	if (!adapters.previewDeploymentScope.isControlPlane()) {
+		return error(403, "Cross-preview activity is unavailable from a preview deployment");
+	}
+	await requirePlatformAdmin(locals);
 	if (!getApplicationAdapterConfig().previewRunFeedEnabled) {
 		return error(404, "Preview run feed is disabled");
 	}
 
-	const stream = getApplicationAdapters().previewRunFeed.createEventStream();
+	const stream = adapters.previewRunFeed.createEventStream();
 
 	return new Response(stream, {
 		headers: {

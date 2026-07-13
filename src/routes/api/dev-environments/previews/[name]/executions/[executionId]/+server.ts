@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 
 /**
@@ -12,24 +13,26 @@ import { PreviewAccessDeniedError } from "$lib/server/application/preview-access
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
   if (!locals.session?.userId) return error(401, "Authentication required");
+  const adapters = getApplicationAdapters();
+  if (!adapters.previewDeploymentScope.isControlPlane()) {
+    return error(403, "Preview fleet reads are unavailable from a preview deployment");
+  }
   if (!getApplicationAdapterConfig().previewReadProxyEnabled) {
     return error(404, "Not found");
   }
+  let readModel;
   try {
-    await getApplicationAdapters().previewAccess.authorize({
+    readModel = await adapters.previewReadProxy.getPreviewExecution({
       name: params.name,
       actorUserId: locals.session.userId,
+      executionId: params.executionId,
     });
   } catch (cause) {
     if (cause instanceof PreviewAccessDeniedError)
       return error(403, cause.message);
+    if (cause instanceof PreviewRuntimeIdentityChangedError)
+      return error(409, cause.message);
     throw cause;
   }
-  const readModel =
-    await getApplicationAdapters().previewReadProxy.getPreviewExecution({
-      name: params.name,
-      executionId: params.executionId,
-    });
-  if (!readModel) return error(404, "Unknown preview");
   return json(readModel);
 };

@@ -34,6 +34,100 @@ expected results below describe the current implementation; they do not prove a
 particular PreviewEnvironment run passed. Record the bounded replay evidence in
 the dedicated section below before declaring the POC complete.
 
+## Dev Operations Read Model And Observability
+
+The Dev environments UI is a presentation of existing authoritative state, not
+a new control-plane database. Preserve the hexagonal read path:
+
+```text
+browser presentation
+  -> authorized application read services and ports
+  -> physical, tuple-bound adapters
+  -> PreviewEnvironment, SEA, workflow-data, and GitOps authorities
+```
+
+The browser receives serialized read models only. It must not import server
+adapters, query Kubernetes directly, or hold credentials for SEA, Argo CD,
+telemetry backends, or preview sidecars. The application boundary applies the
+appropriate project, owner, or platform-admin authorization before calling a
+port. Physical preview adapters additionally bind each operation to the exact
+environment name, request ID, platform SHA, source SHA, and catalog digest.
+
+Current preview lifecycle truth is the latest physical snapshot exposed through
+the vCluster preview application service and `VclusterPreviewGatewayPort`
+(`listWithCounts`, `get`, `runtimeForIdentity`, and `cleanup`). The application
+service constructs the immutable `PreviewControlIdentity`, authorizes the actor,
+and calls `runtimeForIdentity`; the SEA adapter validates that tuple before and
+after its Kubernetes reads and returns the same tuple as a receipt. The legacy
+name-only `runtime` method remains an adapter-compatibility path and is not used
+by the browser route. Durable workflow executions, session provisioning marks,
+and sequence-ordered session events are the truth for workflow and agent
+progress. SSE notifications may wake the browser and trigger a fresh read, but
+they do not replace lifecycle snapshots or the durable event log. Tier-1 service
+readiness and HMR evidence remain behind
+`DevEnvironmentReadRepository` and the exact execution/service-scoped
+`DevPreviewSidecarPort`.
+
+The persistent dev BFF reads physical SEA directly. A preview-deployed BFF
+cannot see host `vcluster-*` namespaces, so composition selects the
+tuple-leaf `BrokeredVclusterPreviewGateway` observation adapter for `get` and
+`runtimeForIdentity`. That adapter sends the preview's derived control leaf and
+five-field immutable identity to the physical broker, never the shared broker
+token. The broker route authenticates the leaf, calls the physical observation
+use case through `PreviewEnvironmentObservationBrokerPort`, authorizes the tuple
+before and after the read, and returns a strict receipt. That application use
+case depends only on `PreviewControlSourceAuthorityPort` and
+`VclusterPreviewGatewayPort`; HTTP capability checks and physical SEA access
+remain adapters. The outbound adapter selects and validates every domain field before
+returning through `VclusterPreviewGatewayPort`; raw Kubernetes fields cannot
+cross into the application or browser.
+
+The inbound SvelteKit routes obtain use cases through
+`getApplicationAdapters()`; they must not construct concrete adapters. The
+application composition root injects the access policy, deployment-scope
+policy, and outbound gateways. A BFF without a preview deployment identity is
+the canonical control plane. Preview deployments receive that identity through
+`PREVIEW_ENVIRONMENT_ID` on the reconciled path or the runner-staged canonical
+`PREVIEW_ENVIRONMENT_NAME` contract. Either form server-scopes the BFF to its
+exact preview name: it may read that preview and access its own product data
+through ordinary application use cases, but fleet execution proxying,
+pull-request inspection, cross-preview feeds, launch, sleep, wake, and teardown
+operations fail closed regardless of the browser user's admin role. This is an
+application policy enforced before any physical adapter call, not a UI hiding
+rule.
+
+An `app-live` preview, its live-sync mutations, and its captured source bundles
+are development evidence, not deployed GitOps state. GitOps Change Journey
+begins only when delivery is Git-backed or reconciled: for example, a pinned
+manifest-candidate PR, or a promoted source bundle that has become a GitHub PR
+and then entered the build, image-pin, Source Hydrator, and GitOps Promoter
+lanes. Preview readiness must never be presented as a promoted deployment.
+
+Raw OpenTelemetry traces, container logs, and metrics are intentionally not a
+POC read surface. Preview vClusters disable OTEL exporters and Dapr trace
+sampling, and they receive no host observability endpoint or query credential.
+The POC must use normalized lifecycle, runtime, workflow, session, and sidecar
+read models; it must not enable raw telemetry access to improve the UI.
+
+A later `PreviewObservabilityQueryPort` may add bounded observability reads, but
+it must be implemented by a physical adapter outside candidate code. Every read
+must authorize the preview owner or a platform admin, bind and filter on the
+complete immutable preview tuple, enforce limits and redaction server-side, and
+return normalized application DTOs only. It must not expose backend query
+languages, collector URLs, Kubernetes log access, or observability credentials
+to the browser or vCluster. Implementing this future port is explicitly outside
+the development POC.
+
+| Concern | Source of truth | Authorized read path | POC verification |
+| --- | --- | --- | --- |
+| Lifecycle and capacity | Physical PreviewEnvironment/SEA snapshot | vCluster preview application service -> `VclusterPreviewGatewayPort` | Phase, allocation counts, boot time, up-Job state, reconciliation, and service container readiness agree |
+| Dev services and HMR | Active workflow workspace rows plus brokered sidecar status | Workflow-data/dev-environment read port -> `DevPreviewSidecarPort` | Every selected service is ready; last sync generation advances while pod UID and restart count stay stable |
+| Workflow and agent progress | Durable execution/session records and ordered session events | Authorized `WorkflowDataService` reads and scoped status/SSE routes | Execution state, provisioning marks, session snapshot, and monotonic event replay agree |
+| Preview identity and access | Persisted PreviewEnvironment contract | Owner/admin policy -> tuple-bound physical broker | Name, request ID, owner, platform/source SHAs, and catalog digest match exactly |
+| Teardown | Physical cleanup convergence proof | Preview lifecycle service -> `cleanup` snapshot | Terminal result proves all required application, database, stream, namespace, storage, and identity resources absent |
+| GitOps delivery | GitHub commit/PR, immutable image pins, Source Hydrator, Promoter, and live inventory | Existing GitOps application ports -> Change Journey | PR/head SHA, image digest, hydrated revision, promotion health, and live deployment correlate without copying preview state |
+| Raw traces, logs, and metrics | No POC authority; export is disabled | None | Preview configuration remains fail-closed; no raw telemetry endpoint or credential enters the vCluster |
+
 ## Preconditions
 
 - Launch an `app-live` PreviewEnvironment on the dev spoke from Workflow

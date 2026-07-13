@@ -88,6 +88,27 @@ export interface VclusterPreviewSummary extends VclusterPreviewRecord {
   prUrl: string | null;
 }
 
+/** Client-safe runtime observation returned after tuple-bound authorization. */
+export type VclusterPreviewRuntimeContainerView = {
+  image: string;
+  ready: boolean;
+};
+
+export type VclusterPreviewRuntimeView = {
+  name: string;
+  reconciliationSucceeded: boolean;
+  provision: {
+    found: boolean;
+    active: boolean;
+    succeeded: boolean;
+    failed: boolean;
+  };
+  services: Array<{
+    service: string;
+    containers: VclusterPreviewRuntimeContainerView[];
+  }>;
+};
+
 /**
  * A3/A4 capacity accounting from the SEA list. `awake` counts HOT members
  * (claimed + free-hot + regular) and is what gates cold provisions; `baking`

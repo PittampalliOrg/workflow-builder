@@ -67,6 +67,7 @@ function harness(
 ) {
   const authoritative = overrides.preview ?? record();
   const events: string[] = [];
+  const scope = { isControlPlane: vi.fn(() => true) };
   const access: PreviewAccessPolicyPort = {
     authorize: vi.fn(async () => ({
       preview: authoritative,
@@ -143,10 +144,12 @@ function harness(
     archive,
     previews,
     events,
+    scope,
     service: new ApplicationPreviewTeardownService({
       access,
       archive,
       previews,
+      scope,
       archiveOnTeardownEnabled: overrides.archiveOnTeardownEnabled ?? false,
       now: () => new Date(NOW),
     }),
@@ -154,6 +157,18 @@ function harness(
 }
 
 describe("ApplicationPreviewTeardownService", () => {
+  it("rejects preview-deployment teardown before access or archive work", async () => {
+    const h = harness();
+    h.scope.isControlPlane.mockReturnValueOnce(false);
+
+    await expect(
+      h.service.teardown({ name: "failed-five", actorUserId: "owner-1" }),
+    ).rejects.toThrow("unavailable from a preview deployment");
+    expect(h.access.authorize).not.toHaveBeenCalled();
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
   it("archives a normal mutable preview before exact guarded teardown", async () => {
     const h = harness({
       preview: record({ phase: "ready", ready: true, url: "https://preview" }),

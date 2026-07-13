@@ -17,6 +17,7 @@ describe("application adapter config", () => {
 			workflowBrowserArtifactsStoreAdapter: "postgres",
 			sessionEventsStoreAdapter: "postgres",
 			workflowDefinitionsStoreAdapter: "postgres",
+			previewDeployment: null,
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -138,6 +139,7 @@ describe("application adapter config", () => {
 			workflowBrowserArtifactsStoreAdapter: "postgres",
 			sessionEventsStoreAdapter: "postgres",
 			workflowDefinitionsStoreAdapter: "postgres",
+			previewDeployment: null,
 			previewRunFeedEnabled: false,
 			prPreviewsEnabled: false,
 			prPreviewRepo: "PittampalliOrg/workflow-builder",
@@ -167,6 +169,56 @@ describe("application adapter config", () => {
 		expect(config.previewPlatformRef).toBe("refs/pull/7/merge");
 		expect(config.previewSourceRepository).toBe("Example/app");
 		expect(config.previewSourceRef).toBe("feature/x");
+	});
+
+	it("captures the server-only preview deployment descriptor", () => {
+		expect(
+			getApplicationAdapterConfig({
+				PREVIEW_ENVIRONMENT_ID: "feature-one",
+				PREVIEW_ENVIRONMENT_PROFILE: "app-live",
+				PREVIEW_PLATFORM_REVISION: "a".repeat(40),
+				PREVIEW_SOURCE_REVISION: "b".repeat(40),
+				ORIGIN: "interactive-session",
+			}).previewDeployment,
+		).toEqual({
+			name: "feature-one",
+			profile: "app-live",
+			platformRevision: "a".repeat(40),
+			sourceRevision: "b".repeat(40),
+			origin: "interactive-session",
+		});
+	});
+
+	it("accepts the runner-staged canonical preview identity variables", () => {
+		expect(
+			getApplicationAdapterConfig({
+				PREVIEW_ENVIRONMENT_NAME: "runner-preview",
+				PREVIEW_ENVIRONMENT_PLATFORM_REVISION: "c".repeat(40),
+				PREVIEW_ENVIRONMENT_SOURCE_REVISION: "d".repeat(40),
+			}).previewDeployment,
+		).toEqual({
+			name: "runner-preview",
+			profile: "app-live",
+			platformRevision: "c".repeat(40),
+			sourceRevision: "d".repeat(40),
+			origin: null,
+		});
+	});
+
+	it("prefers the reconciler deployment identity over canonical fallbacks", () => {
+		const config = getApplicationAdapterConfig({
+			PREVIEW_ENVIRONMENT_ID: "reconciled-preview",
+			PREVIEW_ENVIRONMENT_NAME: "runner-preview",
+			PREVIEW_PLATFORM_REVISION: "a".repeat(40),
+			PREVIEW_ENVIRONMENT_PLATFORM_REVISION: "c".repeat(40),
+			PREVIEW_SOURCE_REVISION: "b".repeat(40),
+			PREVIEW_ENVIRONMENT_SOURCE_REVISION: "d".repeat(40),
+		});
+		expect(config.previewDeployment).toMatchObject({
+			name: "reconciled-preview",
+			platformRevision: "a".repeat(40),
+			sourceRevision: "b".repeat(40),
+		});
 	});
 
 	it("requires an explicit POC mode to omit acceptance status reporting", () => {

@@ -14,6 +14,7 @@ import type {
   PreviewEnvironmentOrigin,
   PreviewEnvironmentOwner,
 } from "$lib/server/application/ports/preview-environments";
+import type { PreviewControlIdentity } from "$lib/server/application/ports/preview-control";
 import type { PreviewCapabilityBundle } from "$lib/server/preview-control-capability";
 import type { PreviewArchiveQuarantineGuard } from "$lib/server/application/ports/dev-previews";
 
@@ -247,6 +248,66 @@ function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function previewControlIdentityValue(
+  value: unknown,
+): PreviewControlIdentity | null {
+  const identity = objectValue(value);
+  if (
+    !identity ||
+    Object.keys(identity).length !== 5 ||
+    typeof identity.previewName !== "string" ||
+    typeof identity.environmentRequestId !== "string" ||
+    typeof identity.environmentPlatformRevision !== "string" ||
+    typeof identity.environmentSourceRevision !== "string" ||
+    typeof identity.catalogDigest !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(
+      identity.previewName,
+    ) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(
+      identity.environmentRequestId,
+    ) ||
+    !/^[0-9a-f]{40}$/.test(identity.environmentPlatformRevision) ||
+    !/^[0-9a-f]{40}$/.test(identity.environmentSourceRevision) ||
+    !/^sha256:[0-9a-f]{64}$/.test(identity.catalogDigest)
+  ) {
+    return null;
+  }
+  return {
+    previewName: identity.previewName,
+    environmentRequestId: identity.environmentRequestId,
+    environmentPlatformRevision: identity.environmentPlatformRevision,
+    environmentSourceRevision: identity.environmentSourceRevision,
+    catalogDigest: identity.catalogDigest as `sha256:${string}`,
+  };
+}
+
+function previewRuntimeIdentityHeaders(
+  identity: PreviewControlIdentity,
+): Record<string, string> {
+  return {
+    "X-Preview-Runtime-Identity": JSON.stringify({
+      previewName: identity.previewName,
+      environmentRequestId: identity.environmentRequestId,
+      environmentPlatformRevision: identity.environmentPlatformRevision,
+      environmentSourceRevision: identity.environmentSourceRevision,
+      catalogDigest: identity.catalogDigest,
+    }),
+  };
+}
+
+function samePreviewControlIdentity(
+  left: PreviewControlIdentity,
+  right: PreviewControlIdentity,
+): boolean {
+  return (
+    left.previewName === right.previewName &&
+    left.environmentRequestId === right.environmentRequestId &&
+    left.environmentPlatformRevision === right.environmentPlatformRevision &&
+    left.environmentSourceRevision === right.environmentSourceRevision &&
+    left.catalogDigest === right.catalogDigest
+  );
 }
 
 function previewOwner(value: unknown): VclusterPreviewOwner | null {
@@ -535,6 +596,7 @@ export async function getVclusterPreview(
 export interface VclusterPreviewRuntimeObservation {
   name: string;
   resourceName: string;
+  identity: PreviewControlIdentity | null;
   reconciliationSucceeded: boolean;
   upJob: {
     name: string;
@@ -557,10 +619,13 @@ export interface VclusterPreviewRuntimeObservation {
 /** Actual pod/container observations from SEA's host Kubernetes client. */
 export async function getVclusterPreviewRuntime(
   name: string,
+  expectedIdentity?: PreviewControlIdentity,
 ): Promise<VclusterPreviewRuntimeObservation> {
   const data = await call(
     "GET",
     `/internal/vcluster-preview/${encodeURIComponent(safePreviewName(name))}/runtime`,
+    undefined,
+    expectedIdentity ? previewRuntimeIdentityHeaders(expectedIdentity) : {},
   );
   const nameValue = data.name;
   const resourceNameValue = data.resourceName;
@@ -618,9 +683,20 @@ export async function getVclusterPreviewRuntime(
       }),
     };
   });
+  const identity = previewControlIdentityValue(data.identity);
+  if (
+    expectedIdentity &&
+    (!identity || !samePreviewControlIdentity(identity, expectedIdentity))
+  ) {
+    throw new VclusterPreviewHttpError(
+      "preview identity changed during runtime observation",
+      409,
+    );
+  }
   return {
     name: nameValue,
     resourceName: resourceNameValue,
+    identity,
     reconciliationSucceeded: data.reconciliationSucceeded,
     upJob: {
       name: upJob.name,

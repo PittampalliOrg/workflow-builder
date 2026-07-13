@@ -1,79 +1,185 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApplicationPreviewReadProxyService } from "$lib/server/application/preview-read-proxy";
-import type { PreviewReadProxyPort } from "$lib/server/application/ports";
+import type {
+  PreviewAccessPolicyPort,
+  PreviewReadProxyPort,
+} from "$lib/server/application/ports";
+import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 
 function fakeProxy(): PreviewReadProxyPort {
-	return {
-		listExecutions: vi.fn(async () => ({
-			ok: true as const,
-			data: { executions: [], total: 0 },
-		})),
-		getExecution: vi.fn(async () => ({ ok: true as const, data: { id: "e1" } })),
-		listExecutionArtifacts: vi.fn(async () => ({ ok: true as const, data: [] })),
-		fetchFileContent: vi.fn(async () => ({
-			ok: true as const,
-			data: { bytes: Buffer.alloc(0), contentType: null },
-		})),
-	};
+  return {
+    listExecutions: vi.fn(async () => ({
+      ok: true as const,
+      data: { executions: [], total: 0 },
+    })),
+    getExecution: vi.fn(async () => ({
+      ok: true as const,
+      data: { id: "e1" },
+    })),
+    listExecutionArtifacts: vi.fn(async () => ({
+      ok: true as const,
+      data: [],
+    })),
+    fetchFileContent: vi.fn(async () => ({
+      ok: true as const,
+      data: { bytes: Buffer.alloc(0), contentType: null },
+    })),
+  };
 }
 
-const previews = [
-	{ name: "gan-claude", url: "https://wfb-gan-claude.ts.example", pool: null },
-	{ name: "alice-dev", url: null, pool: "pool-1" },
-];
+function preview(
+  overrides: Partial<VclusterPreviewRecord> = {},
+): VclusterPreviewRecord {
+  return {
+    name: "alice-dev",
+    phase: "ready",
+    ready: true,
+    url: "https://alice-dev.example.test",
+    targetCluster: "dev",
+    pool: null,
+    state: "hot",
+    lifecycle: "ephemeral",
+    origin: { kind: "user" },
+    legacyOrigin: "user",
+    prNumber: null,
+    expiresAt: null,
+    lastActive: null,
+    protected: false,
+    bootSeconds: null,
+    platformRevision: "a".repeat(40),
+    sourceRevision: "b".repeat(40),
+    profile: "app-live",
+    lane: "application",
+    mode: "live",
+    owner: { kind: "user", id: "owner-1" },
+    services: ["workflow-builder"],
+    provenance: { requestId: "request-1" },
+    trustedCode: true,
+    allocation: { kind: "cold" },
+    images: {},
+    catalogDigest: `sha256:${"d".repeat(64)}`,
+    ...overrides,
+  };
+}
+
+function harness(record = preview()) {
+  const proxy = fakeProxy();
+  const access: PreviewAccessPolicyPort = {
+    authorize: vi.fn(async ({ actorUserId }) => ({
+      preview: record,
+      ownerId: record.owner?.id ?? "",
+      actorIsOwner: actorUserId === record.owner?.id,
+      actorIsPlatformAdmin: actorUserId !== record.owner?.id,
+    })),
+  };
+  const scope = { isControlPlane: vi.fn(() => true) };
+  return {
+    proxy,
+    access,
+    scope,
+    service: new ApplicationPreviewReadProxyService({ proxy, access, scope }),
+  };
+}
 
 describe("ApplicationPreviewReadProxyService", () => {
-	it("resolves preview names against the SEA list only (unknown → null)", async () => {
-		const proxy = fakeProxy();
-		const service = new ApplicationPreviewReadProxyService({
-			proxy,
-			listPreviews: async () => previews,
-		});
-		expect(await service.listPreviewExecutions({ name: "nope" })).toBeNull();
-		expect(proxy.listExecutions).not.toHaveBeenCalled();
-	});
+  it("builds the read target from the exact record authorized for the actor", async () => {
+    const h = harness(preview({ pool: "pool-1" }));
 
-	it("passes the resolved target (with pool) to the port", async () => {
-		const proxy = fakeProxy();
-		const service = new ApplicationPreviewReadProxyService({
-			proxy,
-			listPreviews: async () => previews,
-		});
-		const result = await service.listPreviewExecutions({ name: "Alice-Dev", limit: 5 });
-		expect(result).not.toBeNull();
-		expect(result?.preview).toEqual({ name: "alice-dev", url: null });
-		expect(proxy.listExecutions).toHaveBeenCalledWith({
-			target: previews[1],
-			limit: 5,
-			status: null,
-		});
-	});
+    const result = await h.service.listPreviewExecutions({
+      name: "alice-dev",
+      actorUserId: "owner-1",
+      limit: 5,
+    });
 
-	it("returns the degraded result untouched (route renders it, never 500s)", async () => {
-		const proxy = fakeProxy();
-		proxy.listExecutions = vi.fn(async () => ({
-			ok: false as const,
-			reason: "unreachable" as const,
-			message: "timeout",
-		}));
-		const service = new ApplicationPreviewReadProxyService({
-			proxy,
-			listPreviews: async () => previews,
-		});
-		const result = await service.listPreviewExecutions({ name: "gan-claude" });
-		expect(result?.result).toEqual({ ok: false, reason: "unreachable", message: "timeout" });
-	});
+    expect(h.access.authorize).toHaveBeenCalledWith({
+      name: "alice-dev",
+      actorUserId: "owner-1",
+    });
+    expect(result?.preview).toEqual({
+      name: "alice-dev",
+      url: "https://alice-dev.example.test",
+    });
+    expect(h.proxy.listExecutions).toHaveBeenCalledWith({
+      target: {
+        name: "alice-dev",
+        url: "https://alice-dev.example.test",
+        pool: "pool-1",
+        identity: {
+          previewName: "alice-dev",
+          environmentRequestId: "request-1",
+          environmentPlatformRevision: "a".repeat(40),
+          environmentSourceRevision: "b".repeat(40),
+          catalogDigest: `sha256:${"d".repeat(64)}`,
+        },
+      },
+      limit: 5,
+      status: null,
+    });
+  });
 
-	it("proxies execution detail", async () => {
-		const proxy = fakeProxy();
-		const service = new ApplicationPreviewReadProxyService({
-			proxy,
-			listPreviews: async () => previews,
-		});
-		const result = await service.getPreviewExecution({
-			name: "gan-claude",
-			executionId: "e1",
-		});
-		expect(result?.result).toEqual({ ok: true, data: { id: "e1" } });
-	});
+  it("returns a degraded adapter result untouched", async () => {
+    const h = harness();
+    h.proxy.listExecutions = vi.fn(async () => ({
+      ok: false as const,
+      reason: "unreachable" as const,
+      message: "timeout",
+    }));
+
+    const result = await h.service.listPreviewExecutions({
+      name: "alice-dev",
+      actorUserId: "admin-1",
+    });
+
+    expect(result?.result).toEqual({
+      ok: false,
+      reason: "unreachable",
+      message: "timeout",
+    });
+  });
+
+  it("proxies execution detail with the authorized generation", async () => {
+    const h = harness();
+
+    const result = await h.service.getPreviewExecution({
+      name: "alice-dev",
+      actorUserId: "owner-1",
+      executionId: "e1",
+    });
+
+    expect(result?.result).toEqual({ ok: true, data: { id: "e1" } });
+    expect(h.proxy.getExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: "e1",
+        target: expect.objectContaining({
+          identity: expect.objectContaining({ environmentRequestId: "request-1" }),
+        }),
+      }),
+    );
+  });
+
+  it("rejects incomplete identities before the outbound adapter", async () => {
+    const h = harness(preview({ provenance: null }));
+
+    await expect(
+      h.service.listPreviewExecutions({
+        name: "alice-dev",
+        actorUserId: "owner-1",
+      }),
+    ).rejects.toThrow("complete immutable identity");
+    expect(h.proxy.listExecutions).not.toHaveBeenCalled();
+  });
+
+  it("rejects preview-deployment use before authorization or transport", async () => {
+    const h = harness();
+    h.scope.isControlPlane.mockReturnValueOnce(false);
+
+    await expect(
+      h.service.listPreviewExecutions({
+        name: "alice-dev",
+        actorUserId: "owner-1",
+      }),
+    ).rejects.toThrow("unavailable from a preview deployment");
+    expect(h.access.authorize).not.toHaveBeenCalled();
+    expect(h.proxy.listExecutions).not.toHaveBeenCalled();
+  });
 });

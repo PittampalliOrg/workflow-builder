@@ -6,6 +6,7 @@ import {
   PreviewEnvironmentDesiredStateConflictError,
   PreviewEnvironmentDesiredStateError,
   PreviewEnvironmentDesiredStateOwnershipError,
+  PreviewRuntimeIdentityChangedError,
   PREVIEW_ENVIRONMENT_PHYSICAL_CLEANUP_CHECKS,
 } from "$lib/server/application/ports";
 import type {
@@ -17,11 +18,17 @@ import type {
   PreviewEnvironmentDesiredStatePort,
   PreviewEnvironmentDesiredStateSnapshot,
   PreviewEnvironmentVersionedServiceCatalogPort,
+  PreviewControlIdentity,
+  TupleBoundVclusterPreviewRuntimeSnapshot,
   ValidatedPreviewEnvironmentLaunchSpec,
   VclusterPreviewGatewayPort,
   VclusterPreviewLaunchInput,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import {
+  localPreviewControlCapability,
+  localPreviewControlIdentity,
+} from "$lib/server/preview-control-capability";
 
 export {
   PreviewEnvironmentDesiredStateConflictError,
@@ -137,6 +144,226 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function samePreviewIdentity(
+  left: PreviewControlIdentity,
+  right: PreviewControlIdentity,
+): boolean {
+  return canonical(left) === canonical(right);
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function normalizePreviewRecord(
+  value: unknown,
+  identity: PreviewControlIdentity,
+): VclusterPreviewRecord {
+  const input = record(value);
+  const provenance = record(input?.provenance);
+  const owner = record(input?.owner);
+  const origin = record(input?.origin);
+  const allocation = record(input?.allocation);
+  const images = record(input?.images);
+  const state = input?.state;
+  const lifecycle = input?.lifecycle;
+  const legacyOrigin = input?.legacyOrigin;
+  const profile = input?.profile;
+  const lane = input?.lane;
+  const mode = input?.mode;
+  if (
+    !input ||
+    input.name !== identity.previewName ||
+    typeof input.phase !== "string" ||
+    typeof input.ready !== "boolean" ||
+    !nullableString(input.url) ||
+    typeof input.targetCluster !== "string" ||
+    !nullableString(input.pool) ||
+    (state !== null && state !== "hot" && state !== "slept") ||
+    (lifecycle !== null && lifecycle !== "ephemeral" && lifecycle !== "retained") ||
+    !nullableString(input.expiresAt) ||
+    !nullableString(input.lastActive) ||
+    typeof input.protected !== "boolean" ||
+    (input.bootSeconds !== null && typeof input.bootSeconds !== "number") ||
+    input.platformRevision !== identity.environmentPlatformRevision ||
+    input.sourceRevision !== identity.environmentSourceRevision ||
+    (profile !== null &&
+      profile !== "app-live" &&
+      profile !== "manifest-candidate" &&
+      profile !== "host-candidate") ||
+    (lane !== null && lane !== "application" && lane !== "management") ||
+    (mode !== null && mode !== "live" && mode !== "reconciled") ||
+    (legacyOrigin !== null && legacyOrigin !== "user" && legacyOrigin !== "pr") ||
+    (input.prNumber !== null && typeof input.prNumber !== "number") ||
+    input.catalogDigest !== identity.catalogDigest ||
+    !provenance ||
+    provenance.requestId !== identity.environmentRequestId ||
+    (input.trustedCode !== null && typeof input.trustedCode !== "boolean") ||
+    (input.services !== null &&
+      (!Array.isArray(input.services) ||
+        input.services.some((service) => typeof service !== "string"))) ||
+    (owner !== null &&
+      (!owner ||
+        !["user", "workflow", "session", "automation"].includes(
+          String(owner.kind),
+        ) ||
+        typeof owner.id !== "string")) ||
+    (origin !== null &&
+      (!origin ||
+        ![
+          "user",
+          "pull-request",
+          "workflow",
+          "interactive-session",
+          "automation",
+        ].includes(String(origin.kind)) ||
+        (origin.reference !== undefined &&
+          typeof origin.reference !== "string"))) ||
+    (allocation !== null && (!allocation || allocation.kind !== "cold")) ||
+    (images !== null &&
+      (!images || Object.values(images).some((image) => typeof image !== "string")))
+  ) {
+    throw new PreviewRuntimeIdentityChangedError(
+      "physical preview observation returned an invalid record",
+    );
+  }
+
+  const normalizedProvenance: Record<string, unknown> = {
+    requestId: provenance.requestId,
+  };
+  for (const key of [
+    "requestedAt",
+    "platformRepository",
+    "sourceRepository",
+    "parentEnvironmentId",
+  ] as const) {
+    const candidate = provenance[key];
+    if (candidate === null || typeof candidate === "string") {
+      normalizedProvenance[key] = candidate;
+    }
+  }
+  return {
+    name: input.name as string,
+    phase: input.phase,
+    ready: input.ready,
+    url: input.url,
+    targetCluster: input.targetCluster,
+    pool: input.pool,
+    state: state as VclusterPreviewRecord["state"],
+    lifecycle: lifecycle as VclusterPreviewRecord["lifecycle"],
+    origin: origin
+      ? {
+          kind: origin.kind as NonNullable<VclusterPreviewRecord["origin"]>["kind"],
+          ...(typeof origin.reference === "string"
+            ? { reference: origin.reference }
+            : {}),
+        }
+      : null,
+    legacyOrigin: legacyOrigin as VclusterPreviewRecord["legacyOrigin"],
+    prNumber: input.prNumber as number | null,
+    expiresAt: input.expiresAt,
+    lastActive: input.lastActive,
+    protected: input.protected,
+    bootSeconds: input.bootSeconds as number | null,
+    platformRevision: input.platformRevision,
+    sourceRevision: input.sourceRevision,
+    profile: profile as VclusterPreviewRecord["profile"],
+    lane: lane as VclusterPreviewRecord["lane"],
+    mode: mode as VclusterPreviewRecord["mode"],
+    owner: owner
+      ? {
+          kind: owner.kind as NonNullable<VclusterPreviewRecord["owner"]>["kind"],
+          id: owner.id as string,
+        }
+      : null,
+    services: input.services as string[] | null,
+    provenance: normalizedProvenance,
+    trustedCode: input.trustedCode as boolean | null,
+    allocation: allocation ? { kind: "cold" } : null,
+    images: images ? (images as Record<string, string>) : null,
+    catalogDigest: input.catalogDigest,
+  };
+}
+
+function normalizeRuntimeObservation(
+  value: unknown,
+  identity: PreviewControlIdentity,
+): TupleBoundVclusterPreviewRuntimeSnapshot {
+  const input = record(value);
+  const observedIdentity = record(input?.identity);
+  const upJob = record(input?.upJob);
+  if (
+    !input ||
+    input.name !== identity.previewName ||
+    typeof input.resourceName !== "string" ||
+    typeof input.reconciliationSucceeded !== "boolean" ||
+    !observedIdentity ||
+    !samePreviewIdentity(
+      observedIdentity as unknown as PreviewControlIdentity,
+      identity,
+    ) ||
+    !upJob ||
+    typeof upJob.name !== "string" ||
+    ["found", "active", "succeeded", "failed"].some(
+      (key) => typeof upJob[key] !== "boolean",
+    ) ||
+    !Array.isArray(input.services)
+  ) {
+    throw new PreviewRuntimeIdentityChangedError(
+      "physical preview observation returned an invalid runtime receipt",
+    );
+  }
+  const services = input.services.map((rawService) => {
+    const service = record(rawService);
+    if (
+      !service ||
+      typeof service.service !== "string" ||
+      !Array.isArray(service.containers)
+    ) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "physical preview observation returned invalid runtime services",
+      );
+    }
+    return {
+      service: service.service,
+      containers: service.containers.map((rawContainer) => {
+        const container = record(rawContainer);
+        if (
+          !container ||
+          typeof container.pod !== "string" ||
+          typeof container.image !== "string" ||
+          !nullableString(container.imageId) ||
+          typeof container.ready !== "boolean"
+        ) {
+          throw new PreviewRuntimeIdentityChangedError(
+            "physical preview observation returned invalid runtime containers",
+          );
+        }
+        return {
+          pod: container.pod,
+          image: container.image,
+          imageId: container.imageId,
+          ready: container.ready,
+        };
+      }),
+    };
+  });
+  return {
+    name: input.name,
+    resourceName: input.resourceName,
+    reconciliationSucceeded: input.reconciliationSucceeded,
+    upJob: {
+      name: upJob.name,
+      found: upJob.found as boolean,
+      active: upJob.active as boolean,
+      succeeded: upJob.succeeded as boolean,
+      failed: upJob.failed as boolean,
+    },
+    services,
+    identity: { ...identity },
+  };
 }
 
 function resourcePath(name: string): string {
@@ -926,6 +1153,12 @@ export class DesiredStateVclusterPreviewGateway implements VclusterPreviewGatewa
     return this.options.gateway.runtime(name);
   }
 
+  runtimeForIdentity(
+    identity: Parameters<VclusterPreviewGatewayPort["runtimeForIdentity"]>[0],
+  ) {
+    return this.options.gateway.runtimeForIdentity(identity);
+  }
+
   async cleanup(name: string) {
     const cleanup = await this.options.gateway.cleanup(name);
     const desiredStateAbsent = await this.options.desiredState.absent(name);
@@ -976,13 +1209,21 @@ export type BrokeredVclusterPreviewGatewayOptions = Readonly<{
   gateway: VclusterPreviewGatewayPort;
   baseUrl?: () => string | null;
   token?: () => string | null;
+  observationMode?: "local" | "tuple-leaf";
+  observationCredential?: (
+    name: string,
+  ) => Readonly<{
+    identity: PreviewControlIdentity;
+    capability: string;
+  }>;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
 }>;
 
 /**
- * Persistent-BFF gateway: reads and sleep/wake remain on SEA, while destructive
- * commands cross the authenticated physical-broker boundary.
+ * Non-broker gateway. Persistent dev keeps physical SEA reads; composition
+ * selects tuple-leaf observation for a preview-deployed BFF. Destructive
+ * commands continue to cross the authenticated physical-broker boundary.
  */
 export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPort {
   private readonly fetchImpl: typeof globalThis.fetch;
@@ -995,8 +1236,13 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
     return this.options.gateway.listWithCounts();
   }
 
-  get(name: string) {
-    return this.options.gateway.get(name);
+  async get(name: string) {
+    if (this.options.observationMode !== "tuple-leaf") {
+      return this.options.gateway.get(name);
+    }
+    const credential = this.observationCredential(name);
+    const body = await this.requestObservation("record", credential);
+    return normalizePreviewRecord(body.preview, credential.identity);
   }
 
   provision(): Promise<VclusterPreviewRecord> {
@@ -1083,8 +1329,115 @@ export class BrokeredVclusterPreviewGateway implements VclusterPreviewGatewayPor
     return preview as unknown as VclusterPreviewRecord;
   }
 
-  runtime(name: string) {
-    return this.options.gateway.runtime(name);
+  async runtime(name: string) {
+    if (this.options.observationMode !== "tuple-leaf") {
+      return this.options.gateway.runtime(name);
+    }
+    const credential = this.observationCredential(name);
+    return this.runtimeObservation(credential);
+  }
+
+  async runtimeForIdentity(
+    identity: Parameters<VclusterPreviewGatewayPort["runtimeForIdentity"]>[0],
+  ) {
+    if (this.options.observationMode !== "tuple-leaf") {
+      return this.options.gateway.runtimeForIdentity(identity);
+    }
+    const credential = this.observationCredential(identity.previewName);
+    if (!samePreviewIdentity(credential.identity, identity)) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "local preview identity does not match the requested runtime generation",
+      );
+    }
+    return this.runtimeObservation(credential);
+  }
+
+  private observationCredential(name: string) {
+    if (this.options.observationCredential) {
+      const credential = this.options.observationCredential(name);
+      if (credential.identity.previewName !== name) {
+        throw new PreviewRuntimeIdentityChangedError(
+          "local preview identity does not match the requested preview",
+        );
+      }
+      return credential;
+    }
+    return {
+      identity: localPreviewControlIdentity(name),
+      capability: localPreviewControlCapability(),
+    };
+  }
+
+  private async runtimeObservation(
+    credential: Readonly<{
+      identity: PreviewControlIdentity;
+      capability: string;
+    }>,
+  ): Promise<TupleBoundVclusterPreviewRuntimeSnapshot> {
+    const body = await this.requestObservation("runtime", credential);
+    return normalizeRuntimeObservation(body.runtime, credential.identity);
+  }
+
+  private async requestObservation(
+    view: "record" | "runtime",
+    credential: Readonly<{
+      identity: PreviewControlIdentity;
+      capability: string;
+    }>,
+  ): Promise<Record<string, unknown>> {
+    const baseUrl = (
+      this.options.baseUrl?.() ??
+      env.PREVIEW_CONTROL_BROKER_URL ??
+      process.env.PREVIEW_CONTROL_BROKER_URL ??
+      ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    if (!baseUrl) {
+      throw new PreviewEnvironmentDesiredStateError(
+        "physical preview observation broker is not configured",
+      );
+    }
+    const response = await this.fetchImpl(
+      `${baseUrl}/api/internal/preview-control/environment/observe`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Control-Capability": credential.capability,
+        },
+        body: JSON.stringify({ identity: credential.identity, view }),
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 15_000),
+      },
+    );
+    const body = record(await response.json().catch(() => null));
+    if (response.status === 409) {
+      throw new PreviewRuntimeIdentityChangedError(
+        typeof body?.error === "string"
+          ? body.error
+          : "physical preview generation changed",
+      );
+    }
+    if (!response.ok) {
+      throw new PreviewEnvironmentDesiredStateError(
+        typeof body?.error === "string"
+          ? body.error
+          : `physical preview observation failed (HTTP ${response.status})`,
+      );
+    }
+    const expectedKeys = ["identity", "ok", view === "record" ? "preview" : "runtime", "view"];
+    if (
+      !body ||
+      body.ok !== true ||
+      body.view !== view ||
+      canonical(record(body.identity)) !== canonical(credential.identity) ||
+      canonical(Object.keys(body).sort()) !== canonical(expectedKeys.sort())
+    ) {
+      throw new PreviewRuntimeIdentityChangedError(
+        "physical preview observation returned an invalid receipt",
+      );
+    }
+    return body;
   }
 
   async cleanup(name: string) {

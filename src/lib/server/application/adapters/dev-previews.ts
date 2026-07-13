@@ -10,6 +10,7 @@ import type {
   DevPreviewSidecarStatus,
   DevPreviewSidecarSyncOutput,
 } from "$lib/server/application/ports";
+import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 import type { PreviewDevSyncCredentialBrokerPort } from "$lib/server/application/ports";
 import { HttpPreviewDevSyncCredentialBrokerAdapter } from "$lib/server/application/adapters/preview-dev-sync-credentials";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
@@ -120,6 +121,29 @@ export class LegacyVclusterPreviewGateway implements VclusterPreviewGatewayPort 
 
   async runtime(name: string) {
     return getVclusterPreviewRuntime(name);
+  }
+
+  async runtimeForIdentity(
+    identity: Parameters<VclusterPreviewGatewayPort["runtimeForIdentity"]>[0],
+  ) {
+    try {
+      const observed = await getVclusterPreviewRuntime(
+        identity.previewName,
+        identity,
+      );
+      if (!observed.identity) {
+        throw new PreviewRuntimeIdentityChangedError(
+          "SEA omitted tuple-bound preview runtime identity",
+        );
+      }
+      return { ...observed, identity: observed.identity };
+    } catch (cause) {
+      if (cause instanceof PreviewRuntimeIdentityChangedError) throw cause;
+      if (cause instanceof VclusterPreviewHttpError && cause.status === 409) {
+        throw new PreviewRuntimeIdentityChangedError(cause.message);
+      }
+      throw cause;
+    }
   }
 
   async cleanup(name: string) {
