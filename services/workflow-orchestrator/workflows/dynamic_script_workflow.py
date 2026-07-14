@@ -441,6 +441,11 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     "eventOpts": (
                         task.get("eventOpts") if isinstance(task.get("eventOpts"), dict) else None
                     ),
+                    # Advisory call-site (contract 1.2.0 tasks[].position) — the
+                    # canvas overlay's join key; never part of callId identity.
+                    "position": (
+                        task.get("position") if isinstance(task.get("position"), dict) else None
+                    ),
                 }
             )
             # workflow() child args: VERBATIM any-JSON value; key-absence means
@@ -1209,6 +1214,7 @@ def _spec_for_journal(spec: dict[str, Any]) -> dict[str, Any]:
         "actionOpts": spec.get("actionOpts"),
         "seconds": spec.get("seconds"),
         "eventName": spec.get("eventName"),
+        "callSite": spec.get("position"),
     }
 
 

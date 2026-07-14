@@ -53,6 +53,21 @@
 
 	const visibleProps = $derived(schemaProps.slice(0, 3));
 	const extraProps = $derived(Math.max(0, schemaProps.length - visibleProps.length));
+
+	// Live overlay (cutover P2b): per-line journal aggregation joined by the
+	// evaluator-captured call_site.line. Present only on the run page.
+	type CallLineState = {
+		total: number;
+		running: number;
+		done: number;
+		error: number;
+		skipped: number;
+		runningSessionIds: string[];
+		runningCallIds: string[];
+	};
+	const callState = $derived(data.callState as CallLineState | undefined);
+	const onKillSession = $derived(data.onKillSession as ((sessionId: string) => void) | undefined);
+	const onSkipCall = $derived(data.onSkipCall as ((callId: string) => void) | undefined);
 </script>
 
 <div class="relative" style="width: {width}px">
@@ -161,6 +176,44 @@
 						{:else}
 							<span class="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80">
 								<CornerDownRight class="size-2.5" /> structured object
+							</span>
+						{/if}
+					</div>
+				{/if}
+
+				{#if callState}
+					<div class="mt-1.5 flex items-center gap-1.5 border-t border-border/40 pt-1.5 text-[10px]">
+						{#if callState.running > 0}
+							<span class="inline-flex items-center gap-1 rounded bg-sky-500/15 px-1.5 py-0.5 font-medium text-sky-200">
+								<span class="size-1.5 animate-pulse rounded-full bg-sky-300"></span>
+								{callState.running} running
+							</span>
+						{/if}
+						{#if callState.done > 0}
+							<span class="rounded bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-200">{callState.done} done</span>
+						{/if}
+						{#if callState.error > 0}
+							<span class="rounded bg-red-500/15 px-1.5 py-0.5 font-medium text-red-300">{callState.error} error</span>
+						{/if}
+						{#if callState.skipped > 0}
+							<span class="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{callState.skipped} skipped</span>
+						{/if}
+						{#if callState.running > 0 && (onKillSession || onSkipCall)}
+							<span class="ml-auto inline-flex items-center gap-1">
+								{#if onSkipCall && callState.runningCallIds[0]}
+									<button
+										class="rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+										title="Skip this call (script sees null)"
+										onclick={(e) => { e.stopPropagation(); onSkipCall(callState.runningCallIds[0]); }}
+									>skip</button>
+								{/if}
+								{#if onKillSession && callState.runningSessionIds[0]}
+									<button
+										class="rounded border border-red-400/40 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-red-500/10"
+										title="Kill the running session"
+										onclick={(e) => { e.stopPropagation(); onKillSession(callState.runningSessionIds[0]); }}
+									>kill</button>
+								{/if}
 							</span>
 						{/if}
 					</div>

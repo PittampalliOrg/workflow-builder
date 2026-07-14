@@ -948,3 +948,59 @@ describe("named-agent opts.agent (contract 1.2.0)", () => {
 		expect(res.tasks[0].opts.agent).toBe("code-reviewer");
 	});
 });
+
+describe("call-site position capture (contract 1.2.0 tasks[].position)", () => {
+	it("positions are in ORIGINAL source coordinates (meta padded, wrapper offset subtracted)", async () => {
+		const script = [
+			"export const meta = { name: 'pos', description: 'd', phases: [] }",
+			"// filler line 2",
+			"const a = await agent('first')",
+			"return { a }",
+		].join("\n");
+		const res = await evaluateScript(req(script));
+		expect(res.status).toBe("need");
+		expect(res.tasks[0].position?.line).toBe(3);
+		expect(typeof res.tasks[0].position?.column).toBe("number");
+	});
+
+	it("duplicate calls (same callId baseHash) get DISTINCT positions by line", async () => {
+		const script = [
+			"export const meta = { name: 'dup-pos', description: 'd', phases: [] }",
+			"const a = agent('same')",
+			"const b = agent('same')",
+			"const r = await Promise.all([a, b])",
+			"return { r }",
+		].join("\n");
+		const res = await evaluateScript(req(script));
+		expect(res.status).toBe("need");
+		const byOcc = Object.fromEntries(res.tasks.map((t) => [t.occurrence, t.position?.line]));
+		expect(byOcc[0]).toBe(2);
+		expect(byOcc[1]).toBe(3);
+	});
+
+	it("positions are byte-stable across re-execution rounds", async () => {
+		const script =
+			"export const meta = { name: 'stable-pos', description: 'd', phases: [] }\n" +
+			"const a = await agent('go')\nreturn { a }";
+		const r1 = await evaluateScript(req(script));
+		const r2 = await evaluateScript(req(script));
+		expect(r1.tasks[0].position).toEqual(r2.tasks[0].position);
+	});
+
+	it("action/sleep/event tasks carry positions too", async () => {
+		const script = [
+			"export const meta = { name: 'kinds-pos', description: 'd', phases: [] }",
+			"const c = action('svc/op', { x: 1 })",
+			"const s = sleep(5)",
+			"const g = approve()",
+			"await Promise.all([c, s, g])",
+			"return {}",
+		].join("\n");
+		const res = await evaluateScript(req(script, FEAT));
+		expect(res.status).toBe("need");
+		const byKind = Object.fromEntries(res.tasks.map((t) => [t.kind, t.position?.line]));
+		expect(byKind.action).toBe(2);
+		expect(byKind.sleep).toBe(3);
+		expect(byKind.event).toBe(4);
+	});
+});

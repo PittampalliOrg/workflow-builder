@@ -150,3 +150,16 @@ def test_user_skip_still_wins_for_action_kind(captured):
     res = _record({"kind": "action", "actionSlug": "svc/op"}, {"skipped": True})
     assert res["status"] == "skipped"
     assert captured[-1]["status"] == "skipped"
+
+
+def test_call_site_lands_on_journal_rows(captured):
+    spec = {"kind": "agent", "callSite": {"line": 3, "column": 11}}
+    res = _record(spec, {"success": True, "content": "hi"})
+    assert res["status"] == "done"
+    assert captured[-1]["callSite"] == {"line": 3, "column": 11}
+    # Dispatch rows carry it too.
+    jc.record_script_call_dispatch(
+        None,
+        {"executionId": "exec1", "callId": "c2", "seq": 1, "spec": spec},
+    )
+    assert captured[-1]["callSite"] == {"line": 3, "column": 11}

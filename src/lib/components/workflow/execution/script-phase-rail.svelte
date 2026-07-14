@@ -10,6 +10,8 @@
 		tokensUsed: number;
 		errorCode: string | null;
 		retries: number;
+		/** Advisory call-site (P2): the static-graph join key from the journal. */
+		callSite?: { line: number; column: number } | null;
 	};
 
 	export function scriptCallLabel(call: ScriptCall): string {
