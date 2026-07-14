@@ -13,6 +13,7 @@
  * orchestrator stamps the Dapr instance id as `sw-<name>-exec-<executionId>`, the
  * instance id is deterministic too, so Dapr also dedups the start.
  */
+import { env } from '$env/dynamic/private';
 import { getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
@@ -179,6 +180,19 @@ export async function startWorkflowRun(
 			: {};
 	let spec = workflow.spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
+		// P4 freeze (cutover item 18): the last stop before the interpreter is
+		// retired. SHIPPED OFF — flip SW_START_DISABLED=true only when every
+		// system producer has flipped to a script (docs/code-first-cutover.md).
+		const swStartDisabled = (env.SW_START_DISABLED ?? '').trim().toLowerCase();
+		if (['1', 'true', 'yes', 'on'].includes(swStartDisabled)) {
+			return {
+				ok: false,
+				status: 410,
+				error:
+					'SW 1.0 execution is disabled on this deployment — convert this workflow ' +
+					'to a dynamic-script (docs/code-first-cutover.md).'
+			};
+		}
 		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
 		if (removedAgentCallsError) return { ok: false, status: 400, error: removedAgentCallsError };
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
