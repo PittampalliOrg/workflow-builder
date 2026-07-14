@@ -98,6 +98,10 @@ export interface StartWorkflowOptions {
 	journalImportFromExecutionId?: string;
 	/** Dynamic-script token budget for the run; overrides spec.defaults.budgetTotal. */
 	budgetTotal?: number | null;
+	/** Presentation surface that supplied environment-bound launch context. */
+	launchSurface?: string;
+	/** Origin candidate supplied by a presentation adapter for policy validation. */
+	launchOrigin?: string | null;
 }
 
 export async function startWorkflowRun(
@@ -131,6 +135,13 @@ export async function startWorkflowRun(
 		workflowName: opts.workflowName
 	});
 	if (!workflow) return { ok: false, status: 404, error: 'Workflow not found' };
+	const launch = app.workflowLaunchPolicy.prepare({
+		workflow,
+		triggerData: opts.triggerData,
+		launchSurface: opts.launchSurface,
+		launchOrigin: opts.launchOrigin
+	});
+	if (!launch.ok) return launch;
 
 	// Idempotency: a deterministic id that already exists → return it (no-op).
 	if (opts.executionId && opts.idempotent) {
@@ -152,13 +163,18 @@ export async function startWorkflowRun(
 	// agent-ref resolution, no trigger-field validation, no SW spec gate. The JS
 	// script runs in the orchestrator's re-execution pump against the evaluator.
 	if (workflow.engineType === "dynamic-script") {
-		return startDynamicScriptRun(app, workflow, opts);
+		return startDynamicScriptRun(app, workflow, {
+			...opts,
+			triggerData: launch.triggerData
+		});
 	}
 
 	// SW 1.0 trigger inputs are field-keyed objects; coerce non-objects to {}.
 	let triggerData: Record<string, unknown> =
-		opts.triggerData && typeof opts.triggerData === 'object' && !Array.isArray(opts.triggerData)
-			? (opts.triggerData as Record<string, unknown>)
+		launch.triggerData &&
+		typeof launch.triggerData === 'object' &&
+		!Array.isArray(launch.triggerData)
+			? (launch.triggerData as Record<string, unknown>)
 			: {};
 	let spec = workflow.spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {

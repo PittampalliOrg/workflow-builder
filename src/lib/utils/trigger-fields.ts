@@ -10,8 +10,35 @@ function hasPresentValue(record: Record<string, unknown>, key: string): boolean 
 	return true;
 }
 
+function workflowInputSchema(spec: Record<string, unknown>): Record<string, unknown> | null {
+	const input = isRecord(spec.input) ? spec.input : null;
+	const schema = input && isRecord(input.schema) ? input.schema : null;
+	const schemaDocument = schema && isRecord(schema.document) ? schema.document : null;
+	if (schemaDocument) return schemaDocument;
+
+	const document = isRecord(spec.document) ? spec.document : null;
+	const workflowBuilder =
+		document && isRecord(document['x-workflow-builder']) ? document['x-workflow-builder'] : null;
+	const workflowBuilderInput = workflowBuilder && isRecord(workflowBuilder.input) ? workflowBuilder.input : null;
+	return workflowBuilderInput && isRecord(workflowBuilderInput.schema)
+		? workflowBuilderInput.schema
+		: null;
+}
+
 export function collectRequiredTriggerFields(spec: unknown): string[] {
 	if (!isRecord(spec)) return [];
+	const inputSchema = workflowInputSchema(spec);
+	if (inputSchema) {
+		return Array.isArray(inputSchema.required)
+			? [
+					...new Set(
+						inputSchema.required.filter(
+							(field): field is string => typeof field === 'string' && field.trim().length > 0
+						)
+					)
+				].sort()
+			: [];
+	}
 	const serialized = JSON.stringify(spec);
 	const fields = new Set<string>();
 

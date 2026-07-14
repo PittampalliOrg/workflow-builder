@@ -63,6 +63,16 @@
 	let activeTab = $state<'environments' | 'activity' | 'pull-requests'>('environments');
 	let toTeardown = $state<DevEnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
+
+	$effect(() => {
+		if (!page.url.searchParams.has('launch')) return;
+		launchOpen = true;
+		if (typeof window !== 'undefined') {
+			const next = new URL(window.location.href);
+			next.searchParams.delete('launch');
+			window.history.replaceState(window.history.state, '', next.pathname + next.search);
+		}
+	});
 	let errorMessage = $state<string | null>(null);
 	let refreshErrorMessage = $state<string | null>(null);
 	let refreshing = $state(false);

@@ -25,6 +25,10 @@ export type WorkflowExecutionStartInput = {
 	body?: Record<string, unknown>;
 };
 
+export type DevWorkflowExecutionStartInput = WorkflowExecutionStartInput & {
+	requestOrigin: string | null;
+};
+
 export type WorkflowWebhookStartInput = {
 	workflowId: string;
 	authorizationHeader: string | null;
@@ -75,6 +79,7 @@ export class ApplicationWorkflowExecutionControlService {
 				| "getScopedExecutionById"
 				| "getWorkflowByRef"
 				| "getRunningWorkflowExecution"
+				| "isPlatformAdmin"
 				| "validateApiKeyForUser"
 			>;
 			approvalEvents: WorkflowApprovalEventPort;
@@ -88,6 +93,25 @@ export class ApplicationWorkflowExecutionControlService {
 
 	async executeWorkflow(
 		input: WorkflowExecutionStartInput,
+	): Promise<WorkflowExecutionControlResult> {
+		return this.startWorkflow(input);
+	}
+
+	async executeDevWorkflow(
+		input: DevWorkflowExecutionStartInput,
+	): Promise<WorkflowExecutionControlResult> {
+		if (!(await this.deps.workflowData.isPlatformAdmin(input.userId))) {
+			return workflowControlError(403, "Admin access required");
+		}
+		return this.startWorkflow(input, {
+			surface: "dev-environment",
+			origin: input.requestOrigin,
+		});
+	}
+
+	private async startWorkflow(
+		input: WorkflowExecutionStartInput,
+		launch?: { surface: "dev-environment"; origin: string | null },
 	): Promise<WorkflowExecutionControlResult> {
 		const workflow = await this.deps.workflowData.getWorkflowByRef({
 			workflowId: input.workflowId,
@@ -109,6 +133,9 @@ export class ApplicationWorkflowExecutionControlService {
 			triggerData: input.body?.input,
 			userId: input.userId,
 			...(budgetTotal !== undefined ? { budgetTotal } : {}),
+			...(launch
+				? { launchSurface: launch.surface, launchOrigin: launch.origin }
+				: {}),
 		});
 		if (!result.ok) {
 			return workflowControlError(result.status, result.error);

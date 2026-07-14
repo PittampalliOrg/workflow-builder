@@ -358,6 +358,7 @@ import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/app
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
 import { ApplicationScriptCallsService } from "$lib/server/application/script-calls";
 import { ApplicationWorkflowExecutionControlService } from "$lib/server/application/workflow-execution-control";
+import { ApplicationWorkflowLaunchPolicyService } from "$lib/server/application/workflow-launch-policy";
 import { ApplicationTriggeredWorkflowStartService } from "$lib/server/application/triggered-workflow-start";
 import { ApplicationWorkflowExecutionFilesService } from "$lib/server/application/workflow-execution-files";
 import { ApplicationWorkflowExecutionLineageService } from "$lib/server/application/workflow-execution-lineage";
@@ -1741,6 +1742,9 @@ export function getApplicationAdapters(
   const previewDeploymentScope = new ApplicationPreviewDeploymentScopeService(
     config.previewDeployment,
   );
+  const workflowLaunchPolicy = new ApplicationWorkflowLaunchPolicyService(
+    previewDeploymentScope,
+  );
   const getPreviewAccess = () =>
     (previewAccess ??= new ApplicationPreviewAccessService({
       previews: getVclusterPreviewGateway(),
@@ -2779,6 +2783,9 @@ export function getApplicationAdapters(
     },
     get workflowExecutionControl() {
       return getWorkflowExecutionControl();
+    },
+    get workflowLaunchPolicy() {
+      return workflowLaunchPolicy;
     },
     get triggeredWorkflowStart() {
       return getTriggeredWorkflowStart();

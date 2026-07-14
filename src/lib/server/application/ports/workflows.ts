@@ -649,6 +649,10 @@ export type WorkflowRunStartInput = {
 	journalImportFromExecutionId?: string;
 	/** Dynamic-script token budget for the run. */
 	budgetTotal?: number | null;
+	/** Presentation surface that supplied environment-bound launch context. */
+	launchSurface?: string;
+	/** Origin candidate supplied by a presentation adapter for policy validation. */
+	launchOrigin?: string | null;
 };
 
 export type WorkflowRunStartResult =
@@ -666,6 +670,19 @@ export interface WorkflowRunStarterPort {
 	startWorkflowRun(
 		input: WorkflowRunStartInput,
 	): Promise<WorkflowRunStartResult>;
+}
+
+export type WorkflowLaunchPolicyResult =
+	| { ok: true; triggerData: unknown }
+	| { ok: false; status: number; error: string };
+
+export interface WorkflowLaunchPolicyPort {
+	prepare(input: {
+		workflow: Pick<WorkflowDefinition, "name" | "spec">;
+		triggerData: unknown;
+		launchSurface?: string;
+		launchOrigin?: string | null;
+	}): WorkflowLaunchPolicyResult;
 }
 
 export interface WorkflowSpecValidatorPort {

@@ -14,7 +14,6 @@
 		DialogTitle
 	} from '$lib/components/ui/dialog';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
-	import { resolvePreviewLaunchOrigin } from '$lib/components/dev/dev-launch-origin';
 	import { ShieldCheck, Rocket } from '@lucide/svelte';
 
 	export interface ServiceCatalogEntry {
@@ -94,20 +93,10 @@
 			const input: Record<string, unknown> = {
 				service: requestedServices[0],
 				services: requestedServices,
-				mode: insideAppPreview ? 'preview-native' : 'host-throwaway',
 				keepPreview: keepAlive ? 'true' : 'false'
 			};
-			if (insideAppPreview && previewEnvironment) {
-				const previewOrigin = resolvePreviewLaunchOrigin(
-					previewEnvironment.origin,
-					typeof window === 'undefined' ? null : window.location.origin
-				);
-				if (previewOrigin) input.previewOrigin = previewOrigin;
-				if (previewEnvironment.sourceRevision)
-					input.sourceRevision = previewEnvironment.sourceRevision;
-			}
 			if (repoUrl.trim()) input.repoUrl = repoUrl.trim();
-			const res = await fetch(`/api/workflows/${devWorkflowId}/execute`, {
+			const res = await fetch(`/api/dev-environments/workflows/${devWorkflowId}/execute`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ input })
