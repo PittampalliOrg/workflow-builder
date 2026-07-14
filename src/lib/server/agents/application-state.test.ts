@@ -94,8 +94,10 @@ describe("compileAgentApplicationState", () => {
 
 		expect(first.stateDigest).toMatch(/^[a-f0-9]{64}$/);
 		expect(second.stateDigest).toBe(first.stateDigest);
+		// Concurrency plan P3: dapr-agent-py's registry hostMode is "shared-pool",
+		// so the compiled application state carries the class pool app-id.
 		expect(first.manifest.dapr.metadata.agent.appid).toBe(
-			"agent-runtime-code-agent",
+			"agent-runtime-pool-coding",
 		);
 		expect(first.manifest.prompts.presetManifest?.[0]?.mlflowUri).toBe(
 			"prompts:/coding/3",

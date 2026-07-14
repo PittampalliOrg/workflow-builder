@@ -195,7 +195,9 @@ describe("resolveSpecAgentRefs", () => {
 		);
 		expect(body.agentId).toBe("a1");
 		expect(body.agentVersion).toBe(3);
-		expect(body.agentAppId).toBe("agent-runtime-code-agent");
+		// Concurrency plan P3: dapr-agent-py carries registry hostMode
+		// "shared-pool", so the resolver stamps the class pool app-id.
+		expect(body.agentAppId).toBe("agent-runtime-pool-coding");
 		expect(body.agentSlug).toBe("code-agent");
 		expect(body.prompt).toBe("hello");
 		expect(withBlock.agentRef).toBeUndefined();
@@ -204,7 +206,7 @@ describe("resolveSpecAgentRefs", () => {
 		expect(withBlock.agentRuntime).toBe("dapr-agent-py");
 		expect(withBlock.agentId).toBe("a1");
 		expect(withBlock.agentVersion).toBe(3);
-		expect(withBlock.agentAppId).toBe("agent-runtime-code-agent");
+		expect(withBlock.agentAppId).toBe("agent-runtime-pool-coding");
 		expect(withBlock.agentSlug).toBe("code-agent");
 	});
 

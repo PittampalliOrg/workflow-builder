@@ -258,11 +258,79 @@ from dapr_agents.types import AgentError, DaprWorkflowStatus, ToolMessage
 from dapr_agents.workflow.decorators import message_router, workflow_entry
 from dapr_agents.workflow.runners import AgentRunner
 
+# Concurrency plan P3: every log line carries the current session id so one
+# session's timeline is reconstructable across shared-pool replicas (pool pods
+# host many session_workflow instances). Dapr workflow/activity gRPC worker
+# threads start with an EMPTY contextvars Context (see telemetry/
+# session_tracing.py), so the var must be re-seeded at each entry point
+# (session_workflow entry re-executes on every replay step; the spawn /
+# raise-event endpoints seed their request paths).
+import contextvars
+
+_SESSION_ID_LOG_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "session_id_log", default="-"
+)
+
+
+class _SessionIdLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.session_id = _SESSION_ID_LOG_CONTEXT.get()
+        return True
+
+
+def set_session_id_log_context(session_id: object) -> None:
+    if isinstance(session_id, str) and session_id.strip():
+        _SESSION_ID_LOG_CONTEXT.set(session_id.strip())
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - [session=%(session_id)s] %(message)s",
 )
+for _root_handler in logging.getLogger().handlers:
+    _root_handler.addFilter(_SessionIdLogFilter())
 logger = logging.getLogger(__name__)
+
+
+def _int_env_min1(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(1, default)
+
+
+def _build_tuned_workflow_runtime():
+    """Concurrency plan P3: build the WorkflowRuntime from the DAPR_WORKFLOW_MAX_*
+    env already stamped on the pods (previously dead config — DurableAgent built a
+    bare runtime, leaving durabletask defaults: 100*cpu work items but only cpu+4
+    thread-pool workers, the real per-pod serialization point). Mirrors the proven
+    pattern in workflow-orchestrator sw_workflow._new_workflow_runtime. The BFF's
+    slot math (AGENT_RUNTIME_DAPR_WORKFLOW_LIMIT_PER_SIDECAR / slotsPerReplica)
+    assumes these limits are real.
+    """
+    import dapr.ext.workflow as _wf
+
+    orchestrations = _int_env_min1("DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS", 32)
+    activities = _int_env_min1("DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES", 96)
+    threads = _int_env_min1("DAPR_WORKFLOW_MAX_THREAD_POOL_WORKERS", 32)
+    try:
+        runtime = _wf.WorkflowRuntime(
+            maximum_concurrent_orchestration_work_items=orchestrations,
+            maximum_concurrent_activity_work_items=activities,
+            maximum_thread_pool_workers=threads,
+        )
+        logger.info(
+            "[workflow-runtime] concurrency configured: orchestrations=%d activities=%d thread_pool_workers=%d",
+            orchestrations,
+            activities,
+            threads,
+        )
+    except TypeError:
+        runtime = _wf.WorkflowRuntime()
+        logger.warning(
+            "[workflow-runtime] SDK rejected concurrency kwargs; using library defaults"
+        )
+    return runtime
 
 DEFAULT_MAX_ITERATIONS = int(os.environ.get("DAPR_AGENT_PY_MAX_ITERATIONS", "120"))
 # When true, the Stop hook drives an in-process goal evaluation at each real
@@ -5784,6 +5852,9 @@ class OpenShellDurableAgent(DurableAgent):
         session_id = str(message.get("sessionId") or "")
         if not session_id:
             raise RuntimeError("session_workflow requires sessionId")
+        # Re-seed on every replay step: workflow threads are shared across
+        # instances, so the log-context var cannot outlive this invocation.
+        set_session_id_log_context(session_id)
 
         agent_cfg = _coerce_agent_config(message.get("agentConfig")) or {}
         env_cfg = message.get("environmentConfig") or {}
@@ -6638,6 +6709,9 @@ for _skills_dir in _SKILL_SEARCH_DIRS:
             logger.info("[skills] Loaded %d disk skill(s) from %s", len(_disk_skills), _abs_dir)
 
 agent = OpenShellDurableAgent(
+    # Concurrency plan P3: inject the env-tuned WorkflowRuntime (DurableAgent
+    # otherwise constructs a bare one at dapr_agents/agents/durable.py:342).
+    runtime=_build_tuned_workflow_runtime(),
     name=AGENT_SERVICE_NAME,
     role="OpenShell Durable Coding Agent",
     goal="Help users inspect, modify, and execute code safely inside an OpenShell sandbox",
@@ -8244,6 +8318,7 @@ def spawn_session_endpoint(request: dict) -> dict:
     instance_id = str(request.get("instanceId") or "").strip()
     if not instance_id:
         raise HTTPException(status_code=400, detail="instanceId is required")
+    set_session_id_log_context(instance_id)
     payload = request.get("payload") or {}
 
     create_request = pb.CreateInstanceRequest(
@@ -8278,6 +8353,7 @@ def raise_session_event_endpoint(request: dict) -> dict:
     payload = request.get("payload") or {}
     if not instance_id or not event_name:
         raise HTTPException(status_code=400, detail="instanceId + eventName required")
+    set_session_id_log_context(instance_id)
     if event_name in TERMINAL_CONTROL_EVENT_TYPES:
         try:
             _save_session_cancellation_request(instance_id, event_name, payload)

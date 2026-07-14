@@ -28,10 +28,11 @@ describe("resolveAgentRuntimeRoute", () => {
 		delete process.env.AGENT_RUNTIME_POOL_MIN_REPLICAS;
 	});
 
-	it("defaults to a dedicated per-agent runtime", () => {
+	it("defaults to a dedicated per-agent runtime (per-session-pod hostMode)", () => {
+		// adk-agent-py has no registry hostMode, so the pre-P3 default applies.
 		const route = resolveAgentRuntimeRoute({
 			agentSlug: "code-agent",
-			config: config(),
+			config: config({ runtime: "adk-agent-py" }),
 		});
 
 		expect(route).toMatchObject({
@@ -39,6 +40,37 @@ describe("resolveAgentRuntimeRoute", () => {
 			slug: "code-agent",
 			runtimeClass: "coding",
 			isolation: "dedicated",
+		});
+	});
+
+	it("routes shared-pool hostMode runtimes to the class pool with the rollout flag OFF (concurrency plan P3)", () => {
+		// dapr-agent-py carries hostMode="shared-pool" in the runtime registry;
+		// the pool route must not depend on AGENT_RUNTIME_SHARED_POOLS_ENABLED
+		// (the per-session-host skip keyed on hostMode is flag-independent too).
+		const route = resolveAgentRuntimeRoute({
+			agentSlug: "code-agent",
+			config: config(),
+		});
+
+		expect(route).toMatchObject({
+			appId: "agent-runtime-pool-coding",
+			slug: "pool-coding",
+			runtimeClass: "coding",
+			isolation: "shared",
+			reason: "dapr-agent-py registry hostMode is shared-pool",
+		});
+	});
+
+	it("lets explicit dedicated isolation override shared-pool hostMode", () => {
+		const route = resolveAgentRuntimeRoute({
+			agentSlug: "code-agent",
+			config: config({ runtimeIsolation: "dedicated" }),
+		});
+
+		expect(route).toMatchObject({
+			appId: "agent-runtime-code-agent",
+			isolation: "dedicated",
+			reason: "agent requested dedicated runtime isolation",
 		});
 	});
 
