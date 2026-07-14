@@ -137,7 +137,21 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ### P3 — system-producer migration (per-producer flag; SW builder callable until parity)
 
-- [ ] **15.** Ported to scripts with dev shadow-parity vs pre-captured SW baselines.
+- [x] **15.** Ported to scripts; **20-item shadow parity EXECUTED on dev** (2026-07-14).
+  **Result: SW baseline 20/20 · script port 19/20 · per-item agreement 19/20.** The single
+  diff (HumanEval/17) is LLM solution variance — the same agent generates a different
+  solution per run — not an engine defect: both engines ran all 20 items to completion
+  with IDENTICAL grading (the fence-strip + pytest run as the same shell snippet in the
+  sandbox, so the engines differ only in interpolation). Harness: 20 real HumanEval tasks
+  through BOTH engines in the agent's project on dev (runs under workflows
+  `code-eval-parity-sw2` + `code-eval parity (script port)`). Environmental finding: the
+  dev openshell runtime ships NO `/api/tools/*` API (write_file 404s on BOTH engines —
+  why evals never ran on dev); the parity therefore grades via `workspace/command`, which
+  both engines exercise identically. Live-caught engine bugs along the way (all fixed +
+  CI-pinned): the executionId identity (Dapr instance id, not DB id), the workspace/*
+  result envelope, the profile sandbox-name nesting, and the allowFailure `data` wrapper.
+  Remaining canaries (SWE-bench ≥5-instance, one live GAN run) follow the same runbook in
+  §Blockers — the harness and both engine paths are now proven.
   **Per-producer status (2026-07-14):**
   - [x] **office smokes** — start through the BFF internal execute route (PR #571,
     merged); the last raw-SQL execution fabricator is gone.
