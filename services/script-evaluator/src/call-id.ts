@@ -55,6 +55,34 @@ export function workflowSemanticOpts(args: unknown): Record<string, unknown> {
 	return omitNullish({ args }, ["args"]);
 }
 
+// ── Contract 1.2.0 additive kinds (action / sleep / event) ──────────────────
+// Derivations (additive; the agent/workflow/team derivations above are FROZEN):
+//   action:  promptSub = "action:" + slug;  semanticOpts = { args: input, connection }
+//   sleep:   promptSub = "sleep";           semanticOpts = { seconds }
+//   event:   promptSub = "event:" + name;   semanticOpts = {}
+// Execution knobs (label/timeoutMs/allowFailure/idempotent/timeoutMinutes) are
+// deliberately NOT hashed: tuning them must never re-execute a completed side
+// effect on resume. Disambiguation of identical calls comes from `args`
+// (action) or occurrence (all kinds).
+
+/** Build the semanticOpts object for an action() call. */
+export function actionSemanticOpts(
+	input: unknown,
+	connection: unknown,
+): Record<string, unknown> {
+	return omitNullish({ args: input, connection }, ["args", "connection"]);
+}
+
+/** Build the semanticOpts object for a sleep() call. */
+export function sleepSemanticOpts(seconds: number): Record<string, unknown> {
+	return { seconds };
+}
+
+/** Build the semanticOpts object for an approve()/waitForEvent() call. */
+export function eventSemanticOpts(): Record<string, unknown> {
+	return {};
+}
+
 export function computeBaseHash(
 	prompt: string,
 	semanticOpts: Record<string, unknown>,

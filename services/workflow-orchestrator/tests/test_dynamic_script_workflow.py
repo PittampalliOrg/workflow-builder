@@ -888,7 +888,9 @@ def test_can_consume_callid_vector_task_specs():
         for task in entry.get("expectedTasks", []):
             call_id = task.get("callId")
             assert isinstance(call_id, str) and call_id
-            assert task.get("kind") in {"agent", "workflow"}
+            # agent/workflow/team are the FROZEN 1.1.0 kinds; action/sleep/event
+            # are the contract-1.2.0 additive kinds (evaluator 1.3.0).
+            assert task.get("kind") in {"agent", "workflow", "team", "action", "sleep", "event"}
             # The pump must derive a routable child instance id from every callId
             # (charset-sanitized, lifecycle-regex compatible).
             iid = script_child_instance_id(ctx.instance_id, call_id, 0)

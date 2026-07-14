@@ -740,3 +740,187 @@ describe("team.* primitives", () => {
 		expect(res.error?.message).toContain("await");
 	});
 });
+
+// ── Deterministic-side primitives: action / sleep / approve / waitForEvent ──
+// (contract 1.2.0; installed only when the request carries features.actions.)
+
+import {
+	actionSemanticOpts,
+	eventSemanticOpts,
+	sleepSemanticOpts,
+} from "./call-id.js";
+
+const FEAT = { features: { actions: true } };
+
+/** callId of an action() call, occurrence 0. */
+function dcid(slug: string, input?: unknown, connection?: unknown, occ = 0): string {
+	return deriveCallId(
+		computeBaseHash("action:" + slug, actionSemanticOpts(input, connection)),
+		occ,
+	);
+}
+/** callId of a sleep() call, occurrence 0. */
+function scid(seconds: number, occ = 0): string {
+	return deriveCallId(computeBaseHash("sleep", sleepSemanticOpts(seconds)), occ);
+}
+/** callId of an approve()/waitForEvent() call, occurrence 0. */
+function ecid(name: string, occ = 0): string {
+	return deriveCallId(computeBaseHash("event:" + name, eventSemanticOpts()), occ);
+}
+
+describe("action()/sleep()/approve() feature gating", () => {
+	it("flag OFF: action() is not defined -> clear script_error", async () => {
+		const res = await evaluateScript(
+			req(META + "const r = await action('code/run', {}); return { r }"),
+		);
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toMatch(/action is not defined/);
+	});
+
+	it("flag ON: action() emits a kind=action task with slug/args/actionOpts", async () => {
+		const res = await evaluateScript(
+			req(
+				META +
+					"const r = await action('sheets/append_row', { row: 1 }, { label: 'log it', timeoutMs: 5000 }); return { r }",
+				FEAT,
+			),
+		);
+		expect(res.status).toBe("need");
+		const t = res.tasks[0];
+		expect(t.kind).toBe("action");
+		expect(t.actionSlug).toBe("sheets/append_row");
+		expect(t.args).toEqual({ row: 1 });
+		expect(t.opts.label).toBe("log it");
+		expect(t.actionOpts).toEqual({
+			connection: null,
+			timeoutMs: 5000,
+			allowFailure: false,
+			idempotent: true,
+		});
+		expect(t.callId).toBe(dcid("sheets/append_row", { row: 1 }));
+	});
+});
+
+describe("action() identity + journal semantics", () => {
+	it("input IS hashed; label/timeoutMs/allowFailure are NOT", async () => {
+		const a = dcid("svc/op", { x: 1 });
+		const b = dcid("svc/op", { x: 2 });
+		expect(a).not.toBe(b);
+		// Only execution knobs differ -> same baseHash, occurrences disambiguate.
+		const res = await evaluateScript(
+			req(
+				META +
+					"await Promise.all([action('svc/op', { x: 1 }, { label: 'a', timeoutMs: 1 }), action('svc/op', { x: 1 }, { label: 'b', allowFailure: true })]); return {}",
+				FEAT,
+			),
+		);
+		expect(res.status).toBe("need");
+		const ids = res.tasks.map((t) => t.callId).sort();
+		expect(ids).toEqual([dcid("svc/op", { x: 1 }, undefined, 0), dcid("svc/op", { x: 1 }, undefined, 1)].sort());
+	});
+
+	it("connection IS hashed", () => {
+		expect(dcid("svc/op", { x: 1 }, "conn_a")).not.toBe(dcid("svc/op", { x: 1 }, "conn_b"));
+	});
+
+	it("done resolves the value; error THROWS (catchable); skipped resolves null", async () => {
+		const id = dcid("svc/op", { x: 1 });
+		const done = await evaluateScript(
+			req(META + "const r = await action('svc/op', { x: 1 }); return { r }", {
+				...FEAT,
+				completedResults: { [id]: { status: "done", value: { rows: 3 } } },
+				knownCallIds: [id],
+			}),
+		);
+		expect(done.status).toBe("done");
+		expect(done.returnValue).toEqual({ r: { rows: 3 } });
+
+		const caught = await evaluateScript(
+			req(
+				META +
+					"let msg = 'no'; try { await action('svc/op', { x: 1 }) } catch (e) { msg = e.message } return { msg }",
+				{
+					...FEAT,
+					completedResults: {
+						[id]: { status: "error", value: { message: "piece exploded" }, errorCode: "action_error" },
+					},
+					knownCallIds: [id],
+				},
+			),
+		);
+		expect(caught.status).toBe("done");
+		expect(caught.returnValue).toEqual({ msg: "piece exploded" });
+
+		const skipped = await evaluateScript(
+			req(META + "const r = await action('svc/op', { x: 1 }); return { r }", {
+				...FEAT,
+				completedResults: { [id]: { status: "skipped" } },
+				knownCallIds: [id],
+			}),
+		);
+		expect(skipped.status).toBe("done");
+		expect(skipped.returnValue).toEqual({ r: null });
+	});
+
+	it("slug must look like '<service>/<action>'", async () => {
+		const res = await evaluateScript(req(META + "await action('nope', {}); return {}", FEAT));
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toMatch(/slug/);
+	});
+});
+
+describe("sleep() and approve()/waitForEvent()", () => {
+	it("sleep emits kind=sleep with seconds; seconds is hashed", async () => {
+		const res = await evaluateScript(req(META + "await sleep(30); return {}", FEAT));
+		expect(res.status).toBe("need");
+		expect(res.tasks[0].kind).toBe("sleep");
+		expect(res.tasks[0].seconds).toBe(30);
+		expect(res.tasks[0].callId).toBe(scid(30));
+		expect(scid(30)).not.toBe(scid(31));
+	});
+
+	it("journaled sleep resolves (done AND error both resolve — never throws)", async () => {
+		for (const status of ["done", "error"]) {
+			const id = scid(5);
+			const res = await evaluateScript(
+				req(META + "const r = await sleep(5); return { ok: true }", {
+					...FEAT,
+					completedResults: { [id]: { status, value: status === "done" ? { slept: 5 } : null } },
+					knownCallIds: [id],
+				}),
+			);
+			expect(res.status).toBe("done");
+			expect(res.returnValue).toEqual({ ok: true });
+		}
+	});
+
+	it("approve() is waitForEvent('approval'): kind=event, shared identity, occurrences", async () => {
+		const res = await evaluateScript(
+			req(META + "await Promise.all([approve({ message: 'ship it?' }), approve()]); return {}", FEAT),
+		);
+		expect(res.status).toBe("need");
+		expect(res.tasks.map((t) => t.kind)).toEqual(["event", "event"]);
+		expect(res.tasks.map((t) => t.eventName)).toEqual(["approval", "approval"]);
+		expect(res.tasks.map((t) => t.callId).sort()).toEqual([ecid("approval", 0), ecid("approval", 1)].sort());
+		expect(res.tasks[0].eventOpts).toEqual({ timeoutMinutes: null, message: "ship it?" });
+	});
+
+	it("journaled approval resolves its payload (timeout resolves, never throws)", async () => {
+		const id = ecid("approval");
+		const res = await evaluateScript(
+			req(META + "const g = await approve(); return { g }", {
+				...FEAT,
+				completedResults: { [id]: { status: "done", value: { approved: false, timedOut: true } } },
+				knownCallIds: [id],
+			}),
+		);
+		expect(res.status).toBe("done");
+		expect(res.returnValue).toEqual({ g: { approved: false, timedOut: true } });
+	});
+
+	it("waitForEvent requires a non-empty name", async () => {
+		const res = await evaluateScript(req(META + "await waitForEvent(''); return {}", FEAT));
+		expect(res.status).toBe("script_error");
+		expect(res.error?.message).toMatch(/name/);
+	});
+});
