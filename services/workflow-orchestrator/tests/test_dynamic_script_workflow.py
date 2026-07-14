@@ -931,6 +931,27 @@ def test_duplicate_prompt_occurrences_get_distinct_child_ids():
     assert script_child_instance_id("dsw-x-exec-e1", base + "_0", 1) != iid0
 
 
+def test_unknown_task_kind_journals_dispatch_error_not_phantom_agent():
+    """Contract-1.2.0 version-skew guard: a newer evaluator may emit reserved
+    kinds (action/sleep/event) before this orchestrator implements them. The
+    pump must journal a dispatch error and resolve the call — the pre-guard
+    behavior defaulted unknown kinds to 'agent' and dispatched a phantom
+    empty-prompt session."""
+    cid = "e" * 40 + "_0"
+    future = agent_task(cid, prompt="")
+    future["kind"] = "action"  # reserved by contract 1.2.0, not yet implemented
+    ctx = FakeCtx(evaluator=make_evaluator([future], {"ok": True}))
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [])
+    assert result["success"] is True
+    # No child workflow was dispatched for the unknown kind.
+    assert [a for a in ctx.action_log if a[0] == "child"] == []
+    # The call was journaled with the skew reason.
+    assert [inp["callId"] for inp in ctx.record_inputs] == [cid]
+    raw = ctx.record_inputs[0]["raw"]
+    assert raw["success"] is False and "unknown task kind" in raw["error"]
+
+
 def test_duplicate_prompt_agent_calls_dispatch_distinct_children():
     """End-to-end through the pump: two identical un-labeled agent() calls
     (same baseHash, occurrences 0/1) dispatch TWO distinct children, each

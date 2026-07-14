@@ -68,6 +68,13 @@ CONTROL_EVENT_NAME = "script.call.control"
 DISPATCH_MODE_SERIAL_V1 = "serial-v1"
 DISPATCH_MODE_BATCH_V2 = "batch-v2"
 
+#: Task kinds this orchestrator implements. Contract 1.2.0 RESERVES
+#: action/sleep/event — a newer evaluator may emit them before this pump
+#: implements dispatch; they must journal a dispatch error, never fall through
+#: to the kind-default "agent" (a phantom empty-prompt session). Extend this
+#: set as each P1 primitive lands (docs/code-first-cutover.md item 11).
+KNOWN_TASK_KINDS = {"agent", "workflow", "team"}
+
 # Politeness caps (above Kueue admission). Input limits are clamped by env.
 DEFAULT_MAX_CONCURRENCY = int(os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENCY", "5") or "5")
 DEFAULT_MAX_AGENT_CALLS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_AGENT_CALLS", "50") or "50")
@@ -233,6 +240,10 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             last_status_json = encoded
 
     while True:
+        # Unknown-kind guard resolutions this round (counts as progress at the
+        # no-dispatchable-work check, like resolved_at_dispatch).
+        skew_resolved_this_round = 0
+
         # 1. Budget (skip aggregation when unbounded).
         if budget_total is not None:
             usage = yield ctx.call_activity(
@@ -408,6 +419,37 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             spec["maxStructuredRetries"] = limits["maxStructuredRetries"]
             spec.setdefault("retries", 0)
             task_specs[cid] = spec
+            if str(spec.get("kind") or "agent") not in KNOWN_TASK_KINDS:
+                # Version-skew guard: journal a dispatch error and resolve —
+                # never enqueue an unknown kind (it would dispatch as a phantom
+                # agent session). Deploy orchestrator >= evaluator.
+                spec["seq"] = seq_counter
+                seq_counter += 1
+                yield ctx.call_activity(
+                    record_script_call_result,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec["seq"],
+                            "spec": _spec_for_journal(spec),
+                            "raw": {
+                                "success": False,
+                                "error": (
+                                    f"unknown task kind {spec.get('kind')!r}: this "
+                                    "orchestrator does not implement it (contract 1.2.0 "
+                                    "reserves action/sleep/event; deploy orchestrator >= "
+                                    "evaluator)"
+                                ),
+                            },
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                resolved.add(cid)
+                skew_resolved_this_round += 1
+                continue
             queue.append(cid)
 
         # 4. Dispatch under caps.
@@ -773,7 +815,12 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         # an unknown ref whose throw the script catches), or a genuine
         # no-progress stall.
         if not outstanding:
-            if lifetime_exceeded or dispatched_this_round or resolved_at_dispatch:
+            if (
+                lifetime_exceeded
+                or dispatched_this_round
+                or resolved_at_dispatch
+                or skew_resolved_this_round
+            ):
                 continue
             yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
