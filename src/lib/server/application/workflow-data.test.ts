@@ -7418,11 +7418,17 @@ describe("ApplicationWorkflowDataService", () => {
 				{
 					id: "wf-idle",
 					name: "Idle workflow",
+					description: "An idle workflow for testing",
+					engineType: "dapr" as const,
+					createdAt: new Date("2025-12-01T00:00:00.000Z"),
 					updatedAt: new Date("2026-01-02T00:00:00.000Z"),
 				},
 				{
 					id: "wf-running",
 					name: "Running workflow",
+					description: null,
+					engineType: "dynamic-script" as const,
+					createdAt: new Date("2025-12-15T00:00:00.000Z"),
 					updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 				},
 			]),
@@ -7430,6 +7436,10 @@ describe("ApplicationWorkflowDataService", () => {
 		const workflowExecutions = {
 			countForksByWorkflowIds: vi.fn(async () => [
 				{ workflowId: "wf-running", count: 2 },
+			]),
+			countRunsByWorkflowIds: vi.fn(async () => [
+				{ workflowId: "wf-idle", count: 5 },
+				{ workflowId: "wf-running", count: 3 },
 			]),
 			listRecentRunsByWorkflowIds: vi.fn(async () => [
 				{
@@ -7482,12 +7492,18 @@ describe("ApplicationWorkflowDataService", () => {
 				id: "wf-running",
 				running: true,
 				forkCount: 2,
+				totalRunCount: 3,
+				description: null,
+				engineType: "dynamic-script",
 				latestExecution: expect.objectContaining({ id: "exec-running" }),
 			}),
 			expect.objectContaining({
 				id: "wf-idle",
 				running: false,
 				forkCount: 0,
+				totalRunCount: 5,
+				description: "An idle workflow for testing",
+				engineType: "dapr",
 				latestExecution: expect.objectContaining({ id: "exec-idle" }),
 			}),
 		]);
@@ -7497,6 +7513,10 @@ describe("ApplicationWorkflowDataService", () => {
 			projectId: "project-1",
 		});
 		expect(workflowExecutions.countForksByWorkflowIds).toHaveBeenCalledWith([
+			"wf-idle",
+			"wf-running",
+		]);
+		expect(workflowExecutions.countRunsByWorkflowIds).toHaveBeenCalledWith([
 			"wf-idle",
 			"wf-running",
 		]);

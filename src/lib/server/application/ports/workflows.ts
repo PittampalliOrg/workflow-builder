@@ -214,7 +214,7 @@ export type WorkflowDefinitionListItem = Pick<
 
 export type WorkspaceWorkflowDefinitionSummary = Pick<
 	WorkflowDefinition,
-	"id" | "name" | "updatedAt"
+	"id" | "name" | "description" | "engineType" | "createdAt" | "updatedAt"
 >;
 
 export type WorkspaceWorkflowRunSummary = {
@@ -227,12 +227,16 @@ export type WorkspaceWorkflowRunSummary = {
 export type WorkspaceWorkflowListItem = {
 	id: string;
 	name: string;
+	description: string | null;
+	engineType: WorkflowEngineType | null;
+	createdAt: string;
 	updatedAt: string;
 	latestExecution: WorkspaceWorkflowRunSummary | null;
 	recentRuns: WorkspaceWorkflowRunSummary[];
 	running: boolean;
 	lastActivityAt: string;
 	forkCount: number;
+	totalRunCount: number;
 };
 
 export type ServiceGraphWorkflowOption = {

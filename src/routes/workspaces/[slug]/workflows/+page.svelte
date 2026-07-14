@@ -2,7 +2,17 @@
 	import StatusPill from "$lib/components/shared/status-pill.svelte";
 	import type { PageData } from "./$types";
 	import { page } from "$app/state";
-	import { Workflow, Search, GitFork } from "@lucide/svelte";
+	import {
+		Workflow,
+		Search,
+		GitFork,
+		ArrowUpDown,
+		ArrowUp,
+		ArrowDown,
+		Code2,
+		Boxes,
+		Cpu,
+	} from "@lucide/svelte";
 
 	let { data }: { data: PageData } = $props();
 	const slug = $derived(page.params.slug as string);
@@ -10,18 +20,61 @@
 	let query = $state("");
 	let runningOnly = $state(false);
 
+	type SortKey = "name" | "lastActivityAt" | "totalRunCount" | "status" | "createdAt";
+	let sortKey = $state<SortKey>("lastActivityAt");
+	let sortDir = $state<"asc" | "desc">("desc");
+
+	function toggleSort(key: SortKey) {
+		if (sortKey === key) {
+			sortDir = sortDir === "asc" ? "desc" : "asc";
+		} else {
+			sortKey = key;
+			sortDir = key === "name" ? "asc" : "desc";
+		}
+	}
+
 	const runningCount = $derived(data.workflows.filter((w) => w.running).length);
+
 	const filtered = $derived(
 		data.workflows.filter((w) => {
 			if (runningOnly && !w.running) return false;
 			const q = query.trim().toLowerCase();
 			if (!q) return true;
 			return (
-				(w.name ?? "").toLowerCase().includes(q) || w.id.toLowerCase().includes(q)
+				(w.name ?? "").toLowerCase().includes(q) ||
+				w.id.toLowerCase().includes(q) ||
+				(w.description ?? "").toLowerCase().includes(q)
 			);
 		}),
 	);
 
+	const sorted = $derived(
+		[...filtered].sort((a, b) => {
+			let cmp = 0;
+			switch (sortKey) {
+				case "name":
+					cmp = (a.name || a.id).localeCompare(b.name || b.id);
+					break;
+				case "lastActivityAt":
+					cmp = a.lastActivityAt.localeCompare(b.lastActivityAt);
+					break;
+				case "totalRunCount":
+					cmp = a.totalRunCount - b.totalRunCount;
+					break;
+				case "createdAt":
+					cmp = a.createdAt.localeCompare(b.createdAt);
+					break;
+				case "status": {
+					// Running workflows first, then by latest execution status
+					const aStatus = a.latestExecution?.status ?? "zzz";
+					const bStatus = b.latestExecution?.status ?? "zzz";
+					cmp = aStatus.localeCompare(bStatus);
+					break;
+				}
+			}
+			return sortDir === "asc" ? cmp : -cmp;
+		}),
+	);
 
 	function formatRelative(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
@@ -30,6 +83,26 @@
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
 		return `${Math.floor(diff / 86_400_000)}d ago`;
 	}
+
+	function formatDate(iso: string): string {
+		return new Date(iso).toLocaleDateString(undefined, {
+			year: "numeric",
+			month: "short",
+			day: "numeric",
+		});
+	}
+
+	const engineLabel: Record<string, string> = {
+		dapr: "Dapr",
+		vercel: "Vercel",
+		"dynamic-script": "Script",
+	};
+
+	const engineIcon: Record<string, typeof Cpu> = {
+		dapr: Boxes,
+		vercel: Code2,
+		"dynamic-script": Code2,
+	};
 </script>
 
 <svelte:head>
@@ -55,7 +128,7 @@
 						{runningCount} running
 					</button>
 				{/if}
-				Sorted by recent activity.
+				Click a column header to sort.
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
@@ -91,21 +164,67 @@
 			<table class="w-full text-sm">
 				<thead class="bg-muted/50 text-xs font-medium text-muted-foreground">
 					<tr>
-						<th class="text-left px-4 py-2">Name</th>
-						<th class="text-left px-4 py-2">Last active</th>
+						<th class="text-left px-4 py-2 cursor-pointer select-none hover:text-foreground transition-colors" onclick={() => toggleSort("name")}>
+							<span class="inline-flex items-center gap-1">
+								Name
+								{#if sortKey === "name"}
+									{#if sortDir === "asc"}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+								{:else}
+									<ArrowUpDown class="size-3 opacity-40" />
+								{/if}
+							</span>
+						</th>
+						<th class="text-left px-4 py-2 cursor-pointer select-none hover:text-foreground transition-colors" onclick={() => toggleSort("createdAt")}>
+							<span class="inline-flex items-center gap-1">
+								Created
+								{#if sortKey === "createdAt"}
+									{#if sortDir === "asc"}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+								{:else}
+									<ArrowUpDown class="size-3 opacity-40" />
+								{/if}
+							</span>
+						</th>
+						<th class="text-left px-4 py-2 cursor-pointer select-none hover:text-foreground transition-colors" onclick={() => toggleSort("lastActivityAt")}>
+							<span class="inline-flex items-center gap-1">
+								Last active
+								{#if sortKey === "lastActivityAt"}
+									{#if sortDir === "asc"}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+								{:else}
+									<ArrowUpDown class="size-3 opacity-40" />
+								{/if}
+							</span>
+						</th>
 						<th class="text-left px-4 py-2">Recent activity</th>
-						<th class="text-left px-4 py-2">Latest run</th>
-						<th class="text-left px-4 py-2">Status</th>
+						<th class="text-left px-4 py-2 cursor-pointer select-none hover:text-foreground transition-colors" onclick={() => toggleSort("totalRunCount")}>
+							<span class="inline-flex items-center gap-1">
+								Runs
+								{#if sortKey === "totalRunCount"}
+									{#if sortDir === "asc"}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+								{:else}
+									<ArrowUpDown class="size-3 opacity-40" />
+								{/if}
+							</span>
+						</th>
+						<th class="text-left px-4 py-2 cursor-pointer select-none hover:text-foreground transition-colors" onclick={() => toggleSort("status")}>
+							<span class="inline-flex items-center gap-1">
+								Status
+								{#if sortKey === "status"}
+									{#if sortDir === "asc"}<ArrowUp class="size-3" />{:else}<ArrowDown class="size-3" />{/if}
+								{:else}
+									<ArrowUpDown class="size-3 opacity-40" />
+								{/if}
+							</span>
+						</th>
 						<th></th>
 					</tr>
 				</thead>
 				<tbody>
-					{#if filtered.length === 0}
-						<tr><td colspan="6" class="px-4 py-8 text-center text-xs text-muted-foreground">
-							No workflows match{runningOnly ? ' (running only)' : ''}{query ? ` “${query}”` : ''}.
+					{#if sorted.length === 0}
+						<tr><td colspan="7" class="px-4 py-8 text-center text-xs text-muted-foreground">
+							No workflows match{runningOnly ? ' (running only)' : ''}{query ? ` "${query}"` : ''}.
 						</td></tr>
 					{/if}
-					{#each filtered as wf}
+					{#each sorted as wf (wf.id)}
 						<tr class="border-t hover:bg-muted/40">
 							<td class="px-4 py-3">
 								<a
@@ -117,8 +236,22 @@
 									{/if}
 									{wf.name || wf.id}
 								</a>
-								<div class="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+								{#if wf.description}
+									<div class="text-xs text-muted-foreground mt-0.5 max-w-md truncate" title={wf.description}>
+										{wf.description}
+									</div>
+								{/if}
+								<div class="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
 									<span class="font-mono">{wf.id}</span>
+									{#if wf.engineType}
+										{@const EngineIcon = engineIcon[wf.engineType] ?? Cpu}
+										<span
+											class="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+											title="Engine: {engineLabel[wf.engineType] ?? wf.engineType}"
+										>
+											<EngineIcon class="size-2.5" />{engineLabel[wf.engineType] ?? wf.engineType}
+										</span>
+									{/if}
 									{#if wf.forkCount > 0}
 										<span
 											class="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
@@ -128,6 +261,9 @@
 										</span>
 									{/if}
 								</div>
+							</td>
+							<td class="px-4 py-3 text-xs text-muted-foreground" title={formatDate(wf.createdAt)}>
+								{formatDate(wf.createdAt)}
 							</td>
 							<td class="px-4 py-3 text-xs text-muted-foreground" title={wf.lastActivityAt}>
 								{formatRelative(wf.lastActivityAt)}
@@ -170,6 +306,9 @@
 								{:else}
 									<span class="text-xs text-muted-foreground">—</span>
 								{/if}
+								<div class="text-[10px] text-muted-foreground mt-0.5">
+									{wf.totalRunCount} total run{wf.totalRunCount === 1 ? "" : "s"}
+								</div>
 							</td>
 							<td class="px-4 py-3">
 								{#if wf.latestExecution}
