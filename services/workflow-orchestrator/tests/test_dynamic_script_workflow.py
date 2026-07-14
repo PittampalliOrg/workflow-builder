@@ -121,6 +121,54 @@ def workflow_task(call_id, workflow_ref, args=None):
     }
 
 
+def action_task(call_id, slug, args=None, *, label=None, action_opts=None):
+    return {
+        "callId": call_id,
+        "kind": "action",
+        "prompt": "",
+        "opts": {
+            "label": label,
+            "phase": None,
+            "schema": None,
+            "model": None,
+            "effort": None,
+            "isolation": None,
+            "agentType": None,
+        },
+        "baseHash": call_id.split("_")[0] if "_" in call_id else call_id,
+        "occurrence": 0,
+        "actionSlug": slug,
+        "actionOpts": action_opts
+        or {"connection": None, "timeoutMs": None, "allowFailure": False, "idempotent": False},
+        **({} if args is None else {"args": args}),
+    }
+
+
+def sleep_task(call_id, seconds):
+    return {
+        "callId": call_id,
+        "kind": "sleep",
+        "prompt": "",
+        "opts": {"label": None, "phase": None, "schema": None},
+        "baseHash": call_id.split("_")[0] if "_" in call_id else call_id,
+        "occurrence": 0,
+        "seconds": seconds,
+    }
+
+
+def event_task(call_id, name="approval"):
+    return {
+        "callId": call_id,
+        "kind": "event",
+        "prompt": "",
+        "opts": {"label": None, "phase": None, "schema": None},
+        "baseHash": call_id.split("_")[0] if "_" in call_id else call_id,
+        "occurrence": 0,
+        "eventName": name,
+        "eventOpts": {"timeoutMinutes": None, "message": None},
+    }
+
+
 def make_evaluator(
     tasks,
     return_value,
@@ -213,6 +261,8 @@ class FakeCtx:
         self.dispatch_inputs: list[dict] = []
         self.prepare_inputs: list[dict] = []
         self.stop_inputs: list[dict] = []
+        self.execute_action_inputs: list[dict] = []
+        self.execute_action_result: dict = {"success": True, "data": {"ok": 1}}
 
     # -- deterministic side effects captured for assertions ----------------
     @property
@@ -276,6 +326,9 @@ class FakeCtx:
         if name == "prepare_script_call":
             self.prepare_inputs.append(inp)
             return self._prepare_result(inp)
+        if name == "execute_action":
+            self.execute_action_inputs.append(inp)
+            return self.execute_action_result
         if name == "request_session_stop":
             self.stop_inputs.append(inp)
             return {"ok": True, "state": "stopping"}
@@ -888,7 +941,9 @@ def test_can_consume_callid_vector_task_specs():
         for task in entry.get("expectedTasks", []):
             call_id = task.get("callId")
             assert isinstance(call_id, str) and call_id
-            assert task.get("kind") in {"agent", "workflow"}
+            # agent/workflow/team are the FROZEN 1.1.0 kinds; action/sleep/event
+            # are the contract-1.2.0 additive kinds (evaluator 1.3.0).
+            assert task.get("kind") in {"agent", "workflow", "team", "action", "sleep", "event"}
             # The pump must derive a routable child instance id from every callId
             # (charset-sanitized, lifecycle-regex compatible).
             iid = script_child_instance_id(ctx.instance_id, call_id, 0)
@@ -1482,3 +1537,110 @@ def test_dispatch_journal_omits_session_id_for_workflow_calls():
     assert [d["callId"] for d in ctx.dispatch_inputs] == [cid]
     assert ctx.dispatch_inputs[0]["sessionId"] is None
     assert ctx.dispatch_inputs[0]["spec"]["kind"] == "workflow"
+
+
+# ---------------------------------------------------------------------------
+# Contract-1.2.0 action-class dispatch (P1b): action/sleep/event kinds run
+# OUTSIDE the agent slots under their own caps, behind input features.actions.
+# ---------------------------------------------------------------------------
+FEAT_INPUT = {"features": {"actions": True}}
+
+
+def test_sleep_dispatches_timer_and_journals_done():
+    cid = "a1" * 20 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([sleep_task(cid, 5)], {"ok": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    # A durable timer was created for the sleep (FakeCtx logs + completes it).
+    assert any(a[0] == "timer" for a in ctx.action_log)
+    # The drain synthesized the sleep envelope for the journal.
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert raws == [{"success": True, "sleptSeconds": 5}]
+
+
+def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
+    cid = "b2" * 20 + "_0"
+    task = action_task(cid, "workspace/command", {"command": "ls"}, label="list")
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    assert len(ctx.execute_action_inputs) == 1
+    inp = ctx.execute_action_inputs[0]
+    assert inp["node"]["config"]["actionType"] == "workspace/command"
+    assert inp["node"]["config"]["command"] == "ls"
+    assert inp["idempotencyKey"] == f"wf1:e1:{cid}"
+    assert "skipIdempotencyGate" not in inp  # idempotent defaults to False
+    # The activity envelope reached the journal verbatim.
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert raws == [{"success": True, "data": {"ok": 1}}]
+
+
+def test_action_ap_slug_journals_dispatch_error_until_p1c():
+    cid = "c3" * 20 + "_0"
+    task = action_task(cid, "google-sheets/append_row", {"row": 1})
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    assert ctx.execute_action_inputs == []  # never dispatched
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert len(raws) == 1 and raws[0]["success"] is False
+    assert "P1c" in raws[0]["error"]
+
+
+def test_event_kind_journals_dispatch_error_until_p1d():
+    cid = "d4" * 20 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([event_task(cid)], {"ok": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert len(raws) == 1 and raws[0]["success"] is False
+    assert "P1d" in raws[0]["error"]
+
+
+def test_action_kinds_without_features_flag_hit_skew_guard():
+    """No input features.actions -> action-class kinds are outside allowed_kinds
+    and must journal the unknown-kind dispatch error (never dispatch)."""
+    cid = "e5" * 20 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([sleep_task(cid, 5)], {"ok": True}))
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [])
+    assert result["success"] is True
+    assert not any(a[0] == "timer" for a in ctx.action_log if "usage" not in str(a))
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert len(raws) == 1 and raws[0]["success"] is False
+    assert "unknown task kind" in raws[0]["error"]
+
+
+def test_actions_do_not_consume_agent_concurrency_slots():
+    """5 agents saturate maxConcurrentAgents; an action + a sleep must still
+    dispatch in the SAME round (separate maxConcurrentActions pool)."""
+    agents = [agent_task(f"{c * 40}_0", label=c) for c in ("a", "b", "c", "d", "e")]
+    act = action_task("f6" * 20 + "_0", "workspace/command", {"command": "true"})
+    slp = sleep_task("a7" * 20 + "_0", 1)
+    ctx = FakeCtx(evaluator=make_evaluator([*agents, act, slp], {"ok": True}))
+
+    def complete_agents(c: FakeCtx):
+        for a in ("a", "b", "c", "d", "e"):
+            c.complete_child(f"{a * 40}_0", {"success": True, "content": a})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_agents]
+    )
+    assert result["success"] is True
+    # The action activity ran, and all 5 agents were dispatched as children —
+    # neither pool starved the other.
+    assert len(ctx.execute_action_inputs) == 1
+    assert len([a for a in ctx.action_log if a[0] == "child"]) == 5
+
+
+def test_action_lifetime_cap_journals_dispatch_error():
+    t1 = sleep_task("a8" * 20 + "_0", 1)
+    t2 = sleep_task("b9" * 20 + "_0", 2)
+    ctx = FakeCtx(evaluator=make_evaluator([t1, t2], {"ok": True}))
+    inp = base_input(**FEAT_INPUT)
+    inp["limits"] = {**inp["limits"], "maxLifetimeActions": 1}
+    result = drive(dynamic_script_workflow(ctx, inp), ctx, [])
+    assert result["success"] is True
+    raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
+    outcomes = sorted(str(r.get("error") or "ok") for r in raws.values())
+    assert any("lifetime cap" in o for o in outcomes)
+    assert any(o == "ok" or "sleptSeconds" in str(raws) for o in outcomes)

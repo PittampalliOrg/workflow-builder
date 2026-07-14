@@ -76,3 +76,77 @@ def test_skip(captured):
     res = _record({"kind": "agent"}, {"skipped": True})
     assert res["status"] == "skipped"
     assert captured[-1]["status"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Contract-1.2.0 action-class kinds (P1b): action/sleep/event normalization.
+# ---------------------------------------------------------------------------
+def test_action_success_resolves_to_data(captured):
+    raw = {"success": True, "data": {"rows": 3}, "duration_ms": 42}
+    res = _record({"kind": "action", "actionSlug": "svc/op"}, raw)
+    assert res["status"] == "done"
+    assert captured[-1]["result"] == {"rows": 3}
+    assert captured[-1]["kind"] == "action"
+
+
+def test_action_failure_journals_error_so_action_throws(captured):
+    res = _record({"kind": "action", "actionSlug": "svc/op"}, {"success": False, "error": "router 502"})
+    assert res["status"] == "error"
+    assert res["errorCode"] == "action_error"
+    assert captured[-1]["result"] == {"message": "router 502"}
+
+
+def test_action_allow_failure_journals_done_with_envelope(captured):
+    spec = {
+        "kind": "action",
+        "actionSlug": "svc/op",
+        "actionOpts": {"allowFailure": True},
+    }
+    res = _record(spec, {"success": False, "error": "boom", "data": {"partial": 1}})
+    assert res["status"] == "done"
+    assert captured[-1]["result"] == {"success": False, "error": "boom", "data": {"partial": 1}}
+
+
+def test_action_oversized_data_is_truncated(captured):
+    big = {"blob": "x" * (jc._MAX_RESULT_BYTES + 1024)}
+    res = _record({"kind": "action", "actionSlug": "svc/op"}, {"success": True, "data": big})
+    assert res["status"] == "done"
+    result = captured[-1]["result"]
+    assert result["truncated"] is True and result["bytes"] > jc._MAX_RESULT_BYTES
+    assert len(result["preview"]) <= 4 * 1024
+
+
+def test_sleep_resolves_done_with_seconds(captured):
+    res = _record({"kind": "sleep", "seconds": 30}, {"success": True, "sleptSeconds": 30})
+    assert res["status"] == "done"
+    assert captured[-1]["result"] == {"sleptSeconds": 30}
+
+
+def test_sleep_dispatch_error_journals_error_row(captured):
+    res = _record({"kind": "sleep", "seconds": -1}, {"success": False, "error": "sleep(): seconds must be >= 0"})
+    assert res["status"] == "error"
+    assert res["errorCode"] == "sleep_error"
+
+
+def test_event_resolves_gate_payload_and_timeout(captured):
+    res = _record({"kind": "event", "eventName": "approval"}, {"approved": True, "by": "user1"})
+    assert res["status"] == "done"
+    assert captured[-1]["result"] == {"approved": True, "by": "user1"}
+    res2 = _record({"kind": "event", "eventName": "approval"}, {"timedOut": True})
+    assert res2["status"] == "done"
+    assert captured[-1]["result"] == {"timedOut": True}
+
+
+def test_event_dispatch_error_journals_error_row(captured):
+    res = _record(
+        {"kind": "event", "eventName": "approval"},
+        {"success": False, "error": "gates land in P1d"},
+    )
+    assert res["status"] == "error"
+    assert res["errorCode"] == "event_dispatch_error"
+
+
+def test_user_skip_still_wins_for_action_kind(captured):
+    res = _record({"kind": "action", "actionSlug": "svc/op"}, {"skipped": True})
+    assert res["status"] == "skipped"
+    assert captured[-1]["status"] == "skipped"

@@ -24,13 +24,16 @@
  */
 import vm from "node:vm";
 import {
+	actionSemanticOpts,
 	agentSemanticOpts,
 	computeBaseHash,
 	deriveCallId,
+	eventSemanticOpts,
+	sleepSemanticOpts,
 	workflowSemanticOpts,
 } from "./call-id.js";
 
-export const EVALUATOR_VERSION = "1.2.1"; // 1.2.1: team.task assignMode (reserved claims); 1.2.0: team.* namespace
+export const EVALUATOR_VERSION = "1.3.0"; // 1.3.0: action/sleep/approve/waitForEvent (contract 1.2.0, features.actions-gated); 1.2.1: team.task assignMode; 1.2.0: team.* namespace
 
 /** Response cap: no /evaluate response may carry more than this many tasks. */
 export const MAX_TASKS_PER_RESPONSE = 4096;
@@ -61,6 +64,11 @@ export interface EvaluateRequest {
 	knownCallIds?: string[];
 	seenLogCount?: number;
 	limits?: { maxItemsPerCall?: number };
+	/** Deployment capabilities (contract 1.2.0). `actions: true` installs the
+	 * action()/sleep()/approve()/waitForEvent() globals — the pump sends it
+	 * only when DYNAMIC_SCRIPT_ACTIONS_ENABLED, so a flag-off deployment fails
+	 * scripts that reference them with a clear ReferenceError. */
+	features?: { actions?: boolean };
 }
 
 export interface TaskOpts {
@@ -75,7 +83,7 @@ export interface TaskOpts {
 
 export interface EvaluateTask {
 	callId: string;
-	kind: "agent" | "workflow" | "team";
+	kind: "agent" | "workflow" | "team" | "action" | "sleep" | "event";
 	prompt: string;
 	opts: TaskOpts;
 	baseHash: string;
@@ -84,6 +92,16 @@ export interface EvaluateTask {
 	/** team-kind only: which op (spawn|task|send|broadcast|status|join|shutdown). */
 	teamOp?: string;
 	args?: unknown;
+	/** action-kind only: the '<service>/<action>' slug (input rides `args`). */
+	actionSlug?: string;
+	/** action-kind only: execution knobs (NOT hashed): connection/timeoutMs/allowFailure/idempotent. */
+	actionOpts?: Record<string, unknown>;
+	/** sleep-kind only: duration in seconds. */
+	seconds?: number;
+	/** event-kind only: the gate name ('approval' for approve()). */
+	eventName?: string;
+	/** event-kind only: execution knobs (NOT hashed): timeoutMinutes/message. */
+	eventOpts?: Record<string, unknown>;
 }
 
 export interface EvaluateResponse {
@@ -513,11 +531,27 @@ function teamOpErrorMessage(op: string, cr: CompletedResult): string {
 	return `team.${op}() failed`;
 }
 
+/** Message thrown into the script for a failed action() — same result.message
+ * ride-along the workflow()/team contract uses (errorCode 'action_error'). */
+function actionErrorMessage(slug: string, cr: CompletedResult): string {
+	const value = cr.value as { message?: unknown } | null | undefined;
+	if (
+		value &&
+		typeof value === "object" &&
+		typeof value.message === "string" &&
+		value.message.length > 0
+	) {
+		return value.message;
+	}
+	if (cr.errorCode) return String(cr.errorCode);
+	return `action('${slug}') failed`;
+}
+
 // ── The evaluator ────────────────────────────────────────────────────────────
 
 interface Pending {
 	callId: string;
-	kind: "agent" | "workflow" | "team";
+	kind: "agent" | "workflow" | "team" | "action" | "sleep" | "event";
 	prompt: string;
 	optsRaw?: Record<string, unknown>;
 	phaseAtCall: string | null;
@@ -526,6 +560,9 @@ interface Pending {
 	workflowRef?: unknown;
 	teamOp?: string;
 	args?: unknown;
+	actionSlug?: string;
+	seconds?: number;
+	eventName?: string;
 }
 
 export async function evaluateScript(
@@ -808,6 +845,122 @@ export async function evaluateScript(
 		},
 	});
 
+	// ── Deterministic-side primitives (contract 1.2.0, features.actions-gated) ──
+	// Failure-semantics rule: action() sits on the deterministic side with
+	// workflow()/team.* — journaled errors THROW (catchable), user-skip resolves
+	// null, allowFailure journals `done` with the {success:false} envelope so no
+	// evaluator branch is needed. sleep()/approve()/waitForEvent() are time/gate
+	// primitives: they RESOLVE (timeout resolves {timedOut:true}) — never throw
+	// for time. Only action() throws on budget exhaustion (stops runaway loops);
+	// the agent lifetime cap does NOT gate these kinds (pump enforces a separate
+	// action cap).
+	function action(slug: unknown, input?: unknown, opts?: unknown): Promise<unknown> {
+		state.totalCallsSeen++;
+		if (typeof slug !== "string" || !slug.trim() || !slug.includes("/")) {
+			throw new TypeError(
+				"action(slug, input, opts): slug must be a '<service>/<action>' string",
+			);
+		}
+		if (opts !== undefined && (typeof opts !== "object" || opts === null)) {
+			throw new TypeError("action(slug, input, opts): opts must be an object");
+		}
+		const optsObj = (opts ?? {}) as Record<string, unknown>;
+		const baseHash = computeBaseHash(
+			"action:" + slug,
+			actionSemanticOpts(input, optsObj.connection),
+		);
+		const occurrence = nextOccurrence(baseHash);
+		const callId = deriveCallId(baseHash, occurrence);
+
+		const cr = completedResults[callId];
+		if (cr) {
+			if (cr.status === "done" || cr.status === "skipped") {
+				return resolveFromJournal(cr);
+			}
+			state.progress++;
+			throw new Error(actionErrorMessage(slug, cr));
+		}
+		if (budgetExhausted) throw makeBudgetError();
+
+		state.pendings.push({
+			callId,
+			kind: "action",
+			prompt: "",
+			optsRaw: optsObj,
+			phaseAtCall: state.currentPhase,
+			baseHash,
+			occurrence,
+			actionSlug: slug,
+			...(input === undefined ? {} : { args: input }),
+		});
+		state.progress++;
+		return neverSettle();
+	}
+
+	function sleep(seconds: unknown): Promise<unknown> {
+		state.totalCallsSeen++;
+		if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
+			throw new TypeError("sleep(seconds): seconds must be a finite number >= 0");
+		}
+		const baseHash = computeBaseHash("sleep", sleepSemanticOpts(seconds));
+		const occurrence = nextOccurrence(baseHash);
+		const callId = deriveCallId(baseHash, occurrence);
+
+		const cr = completedResults[callId];
+		if (cr) return resolveFromJournal(cr); // done/skip/error all resolve
+
+		state.pendings.push({
+			callId,
+			kind: "sleep",
+			prompt: "",
+			phaseAtCall: state.currentPhase,
+			baseHash,
+			occurrence,
+			seconds,
+		});
+		state.progress++;
+		return neverSettle();
+	}
+
+	function waitForEvent(name: unknown, opts?: unknown): Promise<unknown> {
+		state.totalCallsSeen++;
+		if (typeof name !== "string" || !name.trim()) {
+			throw new TypeError("waitForEvent(name, opts): name must be a non-empty string");
+		}
+		if (name.length > 200) {
+			throw new TypeError("waitForEvent(name): name exceeds 200 chars");
+		}
+		if (opts !== undefined && (typeof opts !== "object" || opts === null)) {
+			throw new TypeError("waitForEvent(name, opts): opts must be an object");
+		}
+		const optsObj = (opts ?? {}) as Record<string, unknown>;
+		const baseHash = computeBaseHash("event:" + name, eventSemanticOpts());
+		const occurrence = nextOccurrence(baseHash);
+		const callId = deriveCallId(baseHash, occurrence);
+
+		const cr = completedResults[callId];
+		if (cr) return resolveFromJournal(cr); // gate primitive: never throws for time
+
+		state.pendings.push({
+			callId,
+			kind: "event",
+			prompt: "",
+			optsRaw: optsObj,
+			phaseAtCall: state.currentPhase,
+			baseHash,
+			occurrence,
+			eventName: name,
+		});
+		state.progress++;
+		return neverSettle();
+	}
+
+	/** Human-approval gate — waitForEvent('approval') with approval-row logging
+	 * on the pump side. Resolves {approved, timedOut, ...} — never throws. */
+	function approve(opts?: unknown): Promise<unknown> {
+		return waitForEvent("approval", opts);
+	}
+
 	function parallel(thunks: unknown): Promise<unknown[]> {
 		if (!Array.isArray(thunks)) {
 			throw new TypeError("parallel(thunks): expected an array of thunks");
@@ -913,6 +1066,16 @@ export async function evaluateScript(
 	sandbox.console = consoleShim;
 	sandbox.args = argsGlobal;
 	sandbox.budget = budgetGlobal;
+	if (req.features?.actions === true) {
+		// Deterministic-side primitives (contract 1.2.0). Installed only when the
+		// deployment advertises support — on a flag-off pump a script referencing
+		// action() fails with a clear ReferenceError instead of emitting a task
+		// kind the orchestrator would reject.
+		sandbox.action = Object.freeze(action);
+		sandbox.sleep = Object.freeze(sleep);
+		sandbox.approve = Object.freeze(approve);
+		sandbox.waitForEvent = Object.freeze(waitForEvent);
+	}
 
 	const phasesResult = { declared: declaredPhases, current: null as string | null };
 
@@ -1133,6 +1296,78 @@ function toTask(p: Pending): EvaluateTask {
 			// `args` global is undefined (jsonSafe(undefined) would coerce to null,
 			// losing the distinction the contract preserves).
 			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
+		};
+	}
+	if (p.kind === "action") {
+		const o = p.optsRaw ?? {};
+		return {
+			callId: p.callId,
+			kind: "action",
+			prompt: "",
+			opts: {
+				label: (o.label as string | undefined) ?? null,
+				phase,
+				schema: null,
+				model: null,
+				effort: null,
+				isolation: null,
+				agentType: null,
+			},
+			baseHash: p.baseHash,
+			occurrence: p.occurrence,
+			actionSlug: p.actionSlug,
+			actionOpts: jsonSafe({
+				connection: o.connection ?? null,
+				timeoutMs: typeof o.timeoutMs === "number" ? o.timeoutMs : null,
+				allowFailure: o.allowFailure === true,
+				// Opt-IN re-run safety marker (SW `idempotent` parity): true skips
+				// the idempotency gate; default false keeps the gate on.
+				idempotent: o.idempotent === true,
+			}) as Record<string, unknown>,
+			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
+		};
+	}
+	if (p.kind === "sleep") {
+		return {
+			callId: p.callId,
+			kind: "sleep",
+			prompt: "",
+			opts: {
+				label: null,
+				phase,
+				schema: null,
+				model: null,
+				effort: null,
+				isolation: null,
+				agentType: null,
+			},
+			baseHash: p.baseHash,
+			occurrence: p.occurrence,
+			seconds: p.seconds,
+		};
+	}
+	if (p.kind === "event") {
+		const o = p.optsRaw ?? {};
+		return {
+			callId: p.callId,
+			kind: "event",
+			prompt: "",
+			opts: {
+				label: (o.label as string | undefined) ?? null,
+				phase,
+				schema: null,
+				model: null,
+				effort: null,
+				isolation: null,
+				agentType: null,
+			},
+			baseHash: p.baseHash,
+			occurrence: p.occurrence,
+			eventName: p.eventName,
+			eventOpts: jsonSafe({
+				timeoutMinutes: typeof o.timeoutMinutes === "number" ? o.timeoutMinutes : null,
+				message: typeof o.message === "string" ? o.message : null,
+			}) as Record<string, unknown>,
 		};
 	}
 	const o = p.optsRaw ?? {};

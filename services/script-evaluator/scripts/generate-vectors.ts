@@ -15,6 +15,8 @@ import { EVALUATOR_VERSION, evaluateScript } from "../src/sandbox.js";
 interface VectorCase {
 	description: string;
 	script: string;
+	/** Deployment capabilities for this case (action/sleep/event cases need actions on). */
+	features?: { actions?: boolean };
 }
 
 const META = (name: string) =>
@@ -55,6 +57,38 @@ const CASES: VectorCase[] = [
 			META("parallel-batch") +
 			"const r = await parallel([\n  () => agent('alpha'),\n  () => agent('beta'),\n  () => agent('gamma'),\n])\nreturn { r }",
 	},
+	// ── Contract 1.2.0 additive kinds (evaluator 1.3.0, features.actions) ──
+	{
+		description: "action() call (kind=action; input + connection hashed, execution knobs not)",
+		script:
+			META("action-call") +
+			"const r = await action('sheets/append_row', { row: 7 }, { connection: 'conn_1', label: 'log', timeoutMs: 5000 })\nreturn { r }",
+		features: { actions: true },
+	},
+	{
+		description: "duplicate action() same slug+input → occurrence counter increments",
+		script:
+			META("dup-action") +
+			"const r = await parallel([\n  () => action('svc/op', { x: 1 }),\n  () => action('svc/op', { x: 1 }),\n])\nreturn { r }",
+		features: { actions: true },
+	},
+	{
+		description: "sleep() (kind=sleep; seconds participates in baseHash)",
+		script: META("sleep-call") + "await sleep(30)\nreturn {}",
+		features: { actions: true },
+	},
+	{
+		description: "approve() → kind=event, name 'approval' (timeout/message not hashed)",
+		script:
+			META("approve-call") +
+			"const g = await approve({ message: 'ship?', timeoutMinutes: 60 })\nreturn { g }",
+		features: { actions: true },
+	},
+	{
+		description: "waitForEvent(name) → kind=event (name rides the promptSub)",
+		script: META("wait-event") + "const e = await waitForEvent('deploy.finished')\nreturn { e }",
+		features: { actions: true },
+	},
 ];
 
 async function main(): Promise<void> {
@@ -66,6 +100,7 @@ async function main(): Promise<void> {
 			completedResults: {},
 			knownCallIds: [],
 			seenLogCount: 0,
+			...(c.features ? { features: c.features } : {}),
 		});
 		if (res.status !== "need") {
 			throw new Error(
@@ -83,7 +118,13 @@ async function main(): Promise<void> {
 				prompt: t.prompt,
 				...(t.kind === "workflow"
 					? { workflowRef: t.workflowRef, args: t.args }
-					: { label: t.opts.label, schema: t.opts.schema }),
+					: t.kind === "action"
+						? { actionSlug: t.actionSlug, args: t.args, actionOpts: t.actionOpts, label: t.opts.label }
+						: t.kind === "sleep"
+							? { seconds: t.seconds }
+							: t.kind === "event"
+								? { eventName: t.eventName, eventOpts: t.eventOpts, label: t.opts.label }
+								: { label: t.opts.label, schema: t.opts.schema }),
 			})),
 		});
 	}

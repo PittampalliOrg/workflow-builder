@@ -44,6 +44,7 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     user_id = input_data.get("userId")
     project_id = input_data.get("projectId")
     budget_total = input_data.get("budgetTotal")
+    features = input_data.get("features") if isinstance(input_data.get("features"), dict) else None
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
 
     retries = int(spec.get("retries") or 0)
@@ -90,6 +91,10 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         }
         if "args" in spec:
             child_input["args"] = spec.get("args")
+        # Nested children inherit the parent's deployment capabilities so
+        # action()/sleep()/approve() work at every nesting level.
+        if features:
+            child_input["features"] = features
         return {
             "kind": "workflow",
             "callId": call_id,
