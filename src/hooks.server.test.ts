@@ -83,6 +83,13 @@ describe("preview-control broker edge", () => {
     ).toBeNull();
     expect(
       previewControlBrokerModeResponse(
+        "/api/internal/preview-control/environment/feature-one/teardown/status",
+        "POST",
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      previewControlBrokerModeResponse(
         "/api/internal/preview-control/environment/feature-one/cleanup",
         "GET",
         true,
@@ -106,6 +113,14 @@ describe("preview-control broker edge", () => {
       ],
       [
         "/api/internal/preview-control/environment/feature-one/headlamp/extra",
+        "POST",
+      ],
+      [
+        "/api/internal/preview-control/environment/feature-one/teardown/status",
+        "GET",
+      ],
+      [
+        "/api/internal/preview-control/environment/feature-one/teardown/status/extra",
         "POST",
       ],
     ] as const) {
