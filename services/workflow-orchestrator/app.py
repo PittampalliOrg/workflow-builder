@@ -3165,6 +3165,10 @@ class ScriptWorkflowRequest(BaseModel):
     defaults: dict = Field(default_factory=dict)
     limits: dict = Field(default_factory=dict)
     dispatchMode: str | None = None
+    # Deployment capabilities (contract 1.2.0): {actions: true} enables the
+    # action/sleep/event dispatch kinds for this run (input-derived so replay
+    # is deterministic across env flips; nested children inherit it).
+    features: dict = Field(default_factory=dict)
     triggerData: dict = Field(default_factory=dict)
     traceContext: dict | None = None
 
@@ -3246,6 +3250,7 @@ def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Reques
             "nested": bool(request.nested),
             "limits": request.limits if isinstance(request.limits, dict) else {},
             "defaults": request.defaults if isinstance(request.defaults, dict) else {},
+            "features": request.features if isinstance(request.features, dict) else {},
             "dispatchMode": request.dispatchMode,
             "workflowId": request.workflowId,
             "userId": request.userId,

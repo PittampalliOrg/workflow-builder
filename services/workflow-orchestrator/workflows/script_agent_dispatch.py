@@ -28,6 +28,7 @@ from typing import Any
 import dapr.ext.workflow as wf
 
 from workflows.session_host_wait import spawn_session_with_host_wait
+from activities.execute_action import execute_action
 from activities.resolve_script_workflow import resolve_script_workflow
 from activities.team_ops import execute_team_op
 
@@ -35,6 +36,7 @@ from activities.team_ops import execute_team_op
 # stay byte-compatible with the SW interpreter (avoids churn / drift).
 from workflows.sw_workflow import (
     _call_child_workflow_with_history_propagation,
+    _is_ap_piece_action,
     _resolve_native_agent_runtime,
     _freeze,
 )
@@ -327,6 +329,7 @@ def _start_script_call(
     user_id: str | None,
     project_id: str | None,
     otel: dict[str, Any],
+    features: dict[str, Any] | None = None,
 ):
     """Dispatch one call. Yields its spawn/resolve activity; returns a child
     Task, ``None`` (bridge refused / bad agentType -> journal null), or
@@ -380,6 +383,10 @@ def _start_script_call(
         # parent passed nothing so the child's `args` global is undefined.
         if "args" in spec:
             child_input["args"] = spec.get("args")
+        # Nested children inherit the parent's deployment capabilities so
+        # action()/sleep()/approve() work at every nesting level.
+        if features:
+            child_input["features"] = features
         return ctx.call_child_workflow(
             DYNAMIC_SCRIPT_WORKFLOW_NAME,
             input=_freeze(child_input),
@@ -559,6 +566,84 @@ def start_team_call(
         ),
         retry_policy=_TEAM_OP_RETRY_POLICY,
     )
+
+
+def start_action_call(
+    ctx,
+    *,
+    call_id: str,
+    spec: dict[str, Any],
+    exec_id: str,
+    workflow_id: str | None,
+    otel: dict[str, Any],
+):
+    """Dispatch a deterministic ``action()`` call (contract 1.2.0, P1b slice).
+
+    Non-generator (``start_team_call`` precedent): returns an un-awaited
+    ``execute_action`` activity Task that multiplexes through the pump's
+    ``when_any`` set, or ``{"dispatchError": ...}`` for calls this build cannot
+    dispatch (the pump journals those as ``action_error`` — the evaluator
+    throws the message into the script, catchable).
+
+    Slug classes (SW-parity via ``_is_ap_piece_action``):
+      * non-AP single-shot slugs (workspace/command, code/*, system/*, web/*
+        sync, ...) dispatch here as plain activities — same call shape as the
+        SW interpreter's non-AP path (no retry policy; transport failures come
+        back as ``success:false``).
+      * AP piece slugs need the pause/retry runner child (DELAY/WEBHOOK
+        contract) — P1c; until then they dispatch-error deterministically.
+    """
+    slug = str(spec.get("actionSlug") or "").strip()
+    if not slug or "/" not in slug:
+        return {"dispatchError": f"action(): invalid slug {slug!r}"}
+    if _is_ap_piece_action(slug):
+        return {
+            "dispatchError": (
+                f"action('{slug}'): ActivePieces piece slugs are not yet dispatchable "
+                "from dynamic scripts (pause/retry runner lands in P1c — "
+                "docs/code-first-cutover.md item 6)"
+            )
+        }
+
+    action_opts = spec.get("actionOpts") if isinstance(spec.get("actionOpts"), dict) else {}
+    raw_input = spec.get("args")
+    if isinstance(raw_input, dict):
+        config: dict[str, Any] = dict(raw_input)
+    elif raw_input is None:
+        config = {}
+    else:
+        # Scalar/array inputs ride under "input" so actionType can merge in.
+        config = {"input": raw_input}
+    config["actionType"] = slug
+
+    connection = action_opts.get("connection")
+    activity_input: dict[str, Any] = {
+        "node": {
+            "id": call_id,
+            "type": "action",
+            "label": spec.get("label") or slug,
+            "config": config,
+        },
+        # Script inputs are concrete JS values — no {{...}} templates to resolve.
+        "nodeOutputs": {},
+        "executionId": exec_id,
+        "workflowId": workflow_id or "",
+        "dbExecutionId": exec_id,
+        "connectionExternalId": (
+            connection if isinstance(connection, str) and connection.strip() else None
+        ),
+        # Stronger than SW's task-name key: content-addressed and stable across
+        # retries, replay, and resume (docs/code-first-cutover.md item 6).
+        "idempotencyKey": f"{workflow_id or ''}:{exec_id}:{call_id}",
+        "executionType": "BEGIN",
+        "_otel": otel,
+    }
+    # opts.idempotent: the author marks the action safe to RE-RUN (skips the
+    # idempotency gate). Default False — gate stays on (SW `idempotent` parity).
+    if action_opts.get("idempotent") is True:
+        activity_input["skipIdempotencyGate"] = True
+
+    return ctx.call_activity(execute_action, input=_freeze(activity_input))
 
 
 def _team_token_budget(meta: dict[str, Any] | None) -> int | None:

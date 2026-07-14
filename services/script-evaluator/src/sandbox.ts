@@ -1320,7 +1320,9 @@ function toTask(p: Pending): EvaluateTask {
 				connection: o.connection ?? null,
 				timeoutMs: typeof o.timeoutMs === "number" ? o.timeoutMs : null,
 				allowFailure: o.allowFailure === true,
-				idempotent: o.idempotent !== false,
+				// Opt-IN re-run safety marker (SW `idempotent` parity): true skips
+				// the idempotency gate; default false keeps the gate on.
+				idempotent: o.idempotent === true,
 			}) as Record<string, unknown>,
 			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
 		};

@@ -39,6 +39,27 @@ _MAX_FEEDBACK_CHARS = 2000
 _DEFAULT_MAX_STRUCTURED_RETRIES = 5
 _ERROR_MAX_STRUCTURED_RETRIES = "error_max_structured_output_retries"
 _ERROR_WORKFLOW_CHILD = "workflow_child_error"
+_ERROR_ACTION = "action_error"
+
+
+def _cap_json_result(value: Any) -> Any:
+    """Bound non-string results the way ``_cap_result`` bounds text: an
+    oversized action()/workflow() payload otherwise rides pump history and
+    every /evaluate completedResults POST toward the 16MiB gRPC ceiling."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return {"truncated": True, "reason": "unserializable result"}
+    size = len(encoded.encode("utf-8"))
+    if size <= _MAX_RESULT_BYTES:
+        return value
+    return {
+        "truncated": True,
+        "bytes": size,
+        "preview": encoded[: 4 * 1024],
+    }
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -317,7 +338,7 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
         if (spec.get("kind") or "agent") == "workflow":
             if isinstance(raw, dict) and raw.get("success") and not _is_null_result(raw):
                 row = _base_row("done")
-                row["result"] = raw.get("returnValue")
+                row["result"] = _cap_json_result(raw.get("returnValue"))
                 _persist(row)
                 return {"status": "done"}
             message = None
@@ -369,6 +390,85 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             row["errorCode"] = "team_op_error"
             _persist(row)
             return {"status": "error", "errorCode": "team_op_error"}
+
+        # 2c. Deterministic action() (contract 1.2.0). Same THROW-side contract
+        #     as workflow(): failure journals `error` (the evaluator throws the
+        #     message, catchable) — UNLESS opts.allowFailure, which journals
+        #     `done` with the {success:false} envelope so the evaluator needs no
+        #     allowFailure branch (docs/code-first-cutover.md item 6).
+        if (spec.get("kind") or "agent") == "action":
+            action_opts = (
+                spec.get("actionOpts") if isinstance(spec.get("actionOpts"), dict) else {}
+            )
+            if isinstance(raw, dict) and raw.get("success"):
+                row = _base_row("done")
+                row["result"] = _cap_json_result(raw.get("data"))
+                _persist(row)
+                return {"status": "done"}
+            if action_opts.get("allowFailure") is True:
+                envelope = raw if isinstance(raw, dict) else {"error": str(raw)}
+                row = _base_row("done")
+                row["result"] = _cap_json_result(
+                    {
+                        "success": False,
+                        "error": envelope.get("error"),
+                        "data": envelope.get("data"),
+                    }
+                )
+                _persist(row)
+                return {"status": "done"}
+            message = None
+            if isinstance(raw, dict):
+                err = raw.get("error")
+                if isinstance(err, str) and err.strip():
+                    message = err.strip()
+                elif raw.get("cancelled"):
+                    message = "action() was cancelled"
+            if not message:
+                message = f"action('{spec.get('actionSlug') or ''}') failed"
+            row = _base_row("error")
+            row["result"] = {"message": message}
+            row["errorCode"] = _ERROR_ACTION
+            _persist(row)
+            return {"status": "error", "errorCode": _ERROR_ACTION}
+
+        # 2d. sleep(): always resolves (the pump synthesizes the envelope when
+        #     the timer fires; a dispatch error still lands here as done=False →
+        #     treat any dict without success as a resolved no-op: sleep never
+        #     throws into the script).
+        if (spec.get("kind") or "agent") == "sleep":
+            if isinstance(raw, dict) and raw.get("success"):
+                row = _base_row("done")
+                row["result"] = {"sleptSeconds": raw.get("sleptSeconds", spec.get("seconds"))}
+                _persist(row)
+                return {"status": "done"}
+            # Dispatch error (invalid seconds / cap) — journal error so the run
+            # rail shows the reason; the evaluator still RESOLVES sleep() to null.
+            message = (
+                str(raw.get("error")).strip()
+                if isinstance(raw, dict) and raw.get("error")
+                else "sleep() failed"
+            )
+            row = _base_row("error")
+            row["result"] = {"message": message}
+            row["errorCode"] = "sleep_error"
+            _persist(row)
+            return {"status": "error", "errorCode": "sleep_error"}
+
+        # 2e. Approval/event gates: resolve whatever arrived ({timedOut: true}
+        #     on timeout) — never an error for time. A dispatch failure journals
+        #     error for run-rail visibility; the evaluator resolves null.
+        if (spec.get("kind") or "agent") == "event":
+            if isinstance(raw, dict) and raw.get("success") is False and raw.get("error"):
+                row = _base_row("error")
+                row["result"] = {"message": str(raw.get("error")).strip()}
+                row["errorCode"] = "event_dispatch_error"
+                _persist(row)
+                return {"status": "error", "errorCode": "event_dispatch_error"}
+            row = _base_row("done")
+            row["result"] = _cap_json_result(raw if isinstance(raw, dict) else {"value": raw})
+            _persist(row)
+            return {"status": "done"}
 
         # 3. Death / cancel / failure / timeout -> null.
         if _is_null_result(raw):

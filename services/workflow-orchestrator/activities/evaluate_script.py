@@ -125,6 +125,10 @@ def evaluate_script(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         # `args` global is undefined when no input was provided.
         if "args" in input_data:
             request_body["args"] = input_data.get("args")
+        # Deployment capabilities (contract 1.2.0): features.actions installs the
+        # action()/sleep()/approve()/waitForEvent() sandbox globals.
+        if isinstance(input_data.get("features"), dict):
+            request_body["features"] = input_data["features"]
 
         endpoint = f"{_evaluator_url()}/evaluate"
         try:

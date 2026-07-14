@@ -53,6 +53,7 @@ from activities.log_node_execution import update_execution_node
 from workflows.script_agent_dispatch import (
     _start_script_call,
     script_child_instance_id,
+    start_action_call,
     start_prepared_script_call,
     start_team_call,
 )
@@ -68,18 +69,29 @@ CONTROL_EVENT_NAME = "script.call.control"
 DISPATCH_MODE_SERIAL_V1 = "serial-v1"
 DISPATCH_MODE_BATCH_V2 = "batch-v2"
 
-#: Task kinds this orchestrator implements. Contract 1.2.0 RESERVES
-#: action/sleep/event — a newer evaluator may emit them before this pump
-#: implements dispatch; they must journal a dispatch error, never fall through
-#: to the kind-default "agent" (a phantom empty-prompt session). Extend this
-#: set as each P1 primitive lands (docs/code-first-cutover.md item 11).
+#: Task kinds every orchestrator build implements. A kind outside the run's
+#: allowed set journals a dispatch error, never falls through to the
+#: kind-default "agent" (a phantom empty-prompt session) — the contract-1.2.0
+#: version-skew guard (docs/code-first-cutover.md item 11).
 KNOWN_TASK_KINDS = {"agent", "workflow", "team"}
+
+#: Contract-1.2.0 kinds, enabled per-run by input `features.actions` (stamped
+#: by the BFF from DYNAMIC_SCRIPT_ACTIONS_ENABLED at start — input-derived so
+#: replay is deterministic across env flips). These dispatch OUTSIDE the agent
+#: slots under their own caps: a deterministic activity, a durable timer, or an
+#: approval/event gate must never consume (or starve behind) agent concurrency.
+ACTION_CLASS_KINDS = {"action", "sleep", "event"}
 
 # Politeness caps (above Kueue admission). Input limits are clamped by env.
 DEFAULT_MAX_CONCURRENCY = int(os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENCY", "5") or "5")
 DEFAULT_MAX_AGENT_CALLS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_AGENT_CALLS", "50") or "50")
 DEFAULT_MAX_LIFETIME_AGENTS = 1000
 DEFAULT_MAX_STRUCTURED_RETRIES = 5
+DEFAULT_MAX_CONCURRENT_ACTIONS = int(
+    os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENT_ACTIONS", "16") or "16"
+)
+DEFAULT_MAX_ACTION_CALLS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_ACTION_CALLS", "500") or "500")
+MAX_SLEEP_SECONDS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_SLEEP_SECONDS", "86400") or "86400")
 # Post-drain settle delay before the next budget aggregate (see the
 # usage-settle gate in the pump loop). Only applies to budget-bounded runs.
 USAGE_SETTLE_SECONDS = int(os.environ.get("DYNAMIC_SCRIPT_USAGE_SETTLE_SECONDS", "3") or "3")
@@ -132,11 +144,21 @@ def _clamp_limits(input_limits: dict[str, Any]) -> dict[str, int]:
     max_structured = _as_int(
         input_limits.get("maxStructuredRetries"), DEFAULT_MAX_STRUCTURED_RETRIES
     )
+    max_concurrent_actions = min(
+        _as_int(input_limits.get("maxConcurrentActions"), DEFAULT_MAX_CONCURRENT_ACTIONS),
+        DEFAULT_MAX_CONCURRENT_ACTIONS,
+    )
+    max_lifetime_actions = min(
+        _as_int(input_limits.get("maxLifetimeActions"), DEFAULT_MAX_ACTION_CALLS),
+        DEFAULT_MAX_ACTION_CALLS,
+    )
     return {
         "maxConcurrentAgents": max_concurrent,
         "maxLifetimeAgents": max_lifetime,
         "maxItemsPerCall": _as_int(input_limits.get("maxItemsPerCall"), 4096),
         "maxStructuredRetries": max_structured,
+        "maxConcurrentActions": max(1, max_concurrent_actions),
+        "maxLifetimeActions": max(1, max_lifetime_actions),
     }
 
 
@@ -176,6 +198,12 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     has_args = "args" in input_data
     args = input_data.get("args")
     nested = bool(input_data.get("nested"))
+    # Deployment capabilities — INPUT-derived (the BFF stamps them at start from
+    # DYNAMIC_SCRIPT_ACTIONS_ENABLED) so replay stays deterministic across env
+    # flips; nested workflow() children inherit the parent's features.
+    features = input_data.get("features") if isinstance(input_data.get("features"), dict) else {}
+    actions_enabled = features.get("actions") is True
+    allowed_kinds = KNOWN_TASK_KINDS | (ACTION_CLASS_KINDS if actions_enabled else set())
     budget_total = input_data.get("budgetTotal")
     journal_import_from = input_data.get("journalImportFromExecutionId")
     limits = _clamp_limits(
@@ -210,6 +238,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     resolved: set[str] = set()        # terminally journaled callIds
     seen_log_count = 0
     dispatched = 0
+    dispatched_actions = 0
     seq_counter = 0
     lifetime_exceeded = False
     last_status_json: str | None = None
@@ -281,6 +310,8 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         }
         if has_args:
             evaluate_input["args"] = args
+        if actions_enabled:
+            evaluate_input["features"] = {"actions": True}
         plan = yield ctx.call_activity(
             evaluate_script,
             input=_freeze(evaluate_input),
@@ -399,6 +430,16 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     "occurrence": task.get("occurrence"),
                     "workflowRef": task.get("workflowRef"),
                     "teamOp": task.get("teamOp"),
+                    # Contract-1.2.0 action-class carriers (None for other kinds).
+                    "actionSlug": task.get("actionSlug"),
+                    "actionOpts": (
+                        task.get("actionOpts") if isinstance(task.get("actionOpts"), dict) else None
+                    ),
+                    "seconds": task.get("seconds"),
+                    "eventName": task.get("eventName"),
+                    "eventOpts": (
+                        task.get("eventOpts") if isinstance(task.get("eventOpts"), dict) else None
+                    ),
                 }
             )
             # workflow() child args: VERBATIM any-JSON value; key-absence means
@@ -419,10 +460,12 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             spec["maxStructuredRetries"] = limits["maxStructuredRetries"]
             spec.setdefault("retries", 0)
             task_specs[cid] = spec
-            if str(spec.get("kind") or "agent") not in KNOWN_TASK_KINDS:
-                # Version-skew guard: journal a dispatch error and resolve —
-                # never enqueue an unknown kind (it would dispatch as a phantom
-                # agent session). Deploy orchestrator >= evaluator.
+            if str(spec.get("kind") or "agent") not in allowed_kinds:
+                # Version-skew / feature-gate guard: journal a dispatch error and
+                # resolve — never enqueue a kind outside the run's allowed set
+                # (it would dispatch as a phantom agent session). Deploy
+                # orchestrator >= evaluator; action-class kinds additionally
+                # require input features.actions.
                 spec["seq"] = seq_counter
                 seq_counter += 1
                 yield ctx.call_activity(
@@ -455,6 +498,126 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         # 4. Dispatch under caps.
         dispatched_this_round = 0
         resolved_at_dispatch = 0  # calls journaled terminal AT dispatch (no child)
+
+        # 4-pre. Action-class kinds (action/sleep/event) dispatch OUTSIDE the
+        # agent slots under their own caps — a deterministic activity, durable
+        # timer, or approval gate must never consume (or starve behind) agent
+        # concurrency. Both dispatch modes share this pre-pass; over-cap calls
+        # defer to the next round.
+        if actions_enabled:
+            action_pending = [
+                c
+                for c in queue
+                if (task_specs.get(c, {}).get("kind") or "agent") in ACTION_CLASS_KINDS
+            ]
+            if action_pending:
+                pending_set = set(action_pending)
+                queue = [c for c in queue if c not in pending_set]
+                action_outstanding = sum(
+                    1
+                    for c in outstanding
+                    if (task_specs.get(c, {}).get("kind") or "agent") in ACTION_CLASS_KINDS
+                )
+                deferred_actions: list[str] = []
+                for cid in action_pending:
+                    if action_outstanding >= limits["maxConcurrentActions"]:
+                        deferred_actions.append(cid)
+                        continue
+                    spec = task_specs[cid]
+                    kind = str(spec.get("kind") or "agent")
+                    spec["seq"] = seq_counter
+                    seq_counter += 1
+                    child_instance_id = script_child_instance_id(
+                        ctx.instance_id, cid, spec.get("retries", 0)
+                    )
+                    spec["_instance_id"] = child_instance_id
+
+                    child_task: Any
+                    if dispatched_actions >= limits["maxLifetimeActions"]:
+                        child_task = {
+                            "dispatchError": (
+                                f"action lifetime cap reached ({limits['maxLifetimeActions']}) "
+                                "— raise DYNAMIC_SCRIPT_MAX_ACTION_CALLS or reduce "
+                                "action()/sleep() calls"
+                            )
+                        }
+                    elif kind == "sleep":
+                        child_task = _start_sleep_timer(ctx, spec)
+                    elif kind == "action":
+                        child_task = start_action_call(
+                            ctx,
+                            call_id=cid,
+                            spec=spec,
+                            exec_id=exec_id,
+                            workflow_id=workflow_id,
+                            otel=otel,
+                        )
+                    else:  # kind == "event" — approval gates land in P1d
+                        child_task = {
+                            "dispatchError": (
+                                "approve()/waitForEvent() gates are not yet dispatchable "
+                                "(docs/code-first-cutover.md item 8, P1d)"
+                            )
+                        }
+
+                    if child_task is None or (
+                        isinstance(child_task, dict) and child_task.get("dispatchError")
+                    ):
+                        raw = (
+                            {"success": False, "error": str(child_task["dispatchError"])}
+                            if isinstance(child_task, dict)
+                            else {"success": False, "cancelled": True}
+                        )
+                        yield ctx.call_activity(
+                            record_script_call_result,
+                            input=_freeze(
+                                {
+                                    "executionId": exec_id,
+                                    "callId": cid,
+                                    "seq": spec["seq"],
+                                    "spec": _spec_for_journal(spec),
+                                    "raw": raw,
+                                    "_otel": otel,
+                                }
+                            ),
+                            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                        )
+                        resolved.add(cid)
+                        resolved_at_dispatch += 1
+                        continue
+
+                    outstanding[cid] = child_task
+                    dispatched_actions += 1
+                    dispatched_this_round += 1
+                    action_outstanding += 1
+                    yield ctx.call_activity(
+                        record_script_call_dispatch,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec["seq"],
+                                "sessionId": None,
+                                "spec": _spec_for_journal(spec),
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
+                    yield ctx.call_activity(
+                        update_execution_node,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "nodeId": cid,
+                                "nodeName": spec.get("label") or spec.get("actionSlug") or kind,
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
+                # Over-cap action calls wait for the next dispatch round.
+                queue = deferred_actions + queue
         if dispatch_mode == DISPATCH_MODE_BATCH_V2:
             batch: list[str] = []
             while queue and len(outstanding) + len(batch) < limits["maxConcurrentAgents"]:
@@ -567,6 +730,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                                     "workflowId": workflow_id,
                                     "userId": user_id,
                                     "projectId": project_id,
+                                    "features": features,
                                     "_otel": otel,
                                 }
                             ),
@@ -708,6 +872,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         user_id=user_id,
                         project_id=project_id,
                         otel=otel,
+                        features=features if actions_enabled else None,
                     )
                 child_instance_id = script_child_instance_id(
                     ctx.instance_id, cid, spec.get("retries", 0)
@@ -931,6 +1096,9 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                 raw = {"success": False, "error": str(exc)}
             del outstanding[cid]
             spec = task_specs.get(cid) or {}
+            if (spec.get("kind") or "agent") == "sleep" and raw is None:
+                # Timer Tasks complete with None — synthesize the journal envelope.
+                raw = {"success": True, "sleptSeconds": spec.get("seconds")}
             rec = yield ctx.call_activity(
                 record_script_call_result,
                 input=_freeze(
@@ -956,7 +1124,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             else:
                 resolved.add(cid)
                 drained_done += 1
-            if run_id and (spec.get("kind") or "agent") != "team":
+            if run_id and (spec.get("kind") or "agent") not in ({"team"} | ACTION_CLASS_KINDS):
                 yield ctx.call_activity(
                     track_agent_run_completed,
                     input=_freeze(
@@ -981,6 +1149,21 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         if budget_total is not None and drained_done > 0:
             yield ctx.create_timer(timedelta(seconds=USAGE_SETTLE_SECONDS))
         # loop
+
+
+def _start_sleep_timer(ctx, spec: dict[str, Any]):
+    """An un-awaited durable-timer Task for a sleep() call — multiplexes through
+    the pump's when_any exactly like child/activity Tasks (SW precedent: the
+    dev-preview deadline race composes timers in when_any). Clamped to
+    MAX_SLEEP_SECONDS; a stopped+resumed run restarts pending sleeps at full
+    duration (only `done` journal rows import)."""
+    try:
+        seconds = float(spec.get("seconds"))
+    except (TypeError, ValueError):
+        return {"dispatchError": "sleep(): seconds must be a number"}
+    if seconds < 0:
+        return {"dispatchError": "sleep(): seconds must be >= 0"}
+    return ctx.create_timer(timedelta(seconds=min(seconds, float(MAX_SLEEP_SECONDS))))
 
 
 def _team_call_label(op: Any, args: Any) -> str:
@@ -1017,6 +1200,13 @@ def _spec_for_journal(spec: dict[str, Any]) -> dict[str, Any]:
         "schema": spec.get("schema"),
         "retries": _as_int(spec.get("retries"), 0),
         "maxStructuredRetries": _as_int(spec.get("maxStructuredRetries"), DEFAULT_MAX_STRUCTURED_RETRIES),
+        # Contract-1.2.0 action-class carriers (None for other kinds); the
+        # journal's kind branches read actionSlug/actionOpts.allowFailure and
+        # seconds for the terminal-row decision.
+        "actionSlug": spec.get("actionSlug"),
+        "actionOpts": spec.get("actionOpts"),
+        "seconds": spec.get("seconds"),
+        "eventName": spec.get("eventName"),
     }
 
 

@@ -165,7 +165,7 @@
             "connection": "conn_1",
             "timeoutMs": 5000,
             "allowFailure": false,
-            "idempotent": true
+            "idempotent": false
           },
           "label": "log"
         }
@@ -189,7 +189,7 @@
             "connection": null,
             "timeoutMs": null,
             "allowFailure": false,
-            "idempotent": true
+            "idempotent": false
           },
           "label": null
         },
@@ -207,7 +207,7 @@
             "connection": null,
             "timeoutMs": null,
             "allowFailure": false,
-            "idempotent": true
+            "idempotent": false
           },
           "label": null
         }

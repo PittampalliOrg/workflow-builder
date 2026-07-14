@@ -68,7 +68,13 @@ transcript). Keep this list in sync with the active `/goal`.
   via a new `action_runner` child porting SW's AP retry + DELAY→timer +
   WEBHOOK→`wait_for_external_event(ap.resume.<id>)` pause contract; idempotencyKey
   `workflowId:execId:callId`; throws unless `allowFailure:true`.
-- [ ] **7.** `sleep(seconds)`: journaled `create_timer` task in the pump's `when_any` set.
+  *(P1b landed the non-AP slice: evaluator-1.3.0 hooks, pump dispatch as activity
+  tasks, idempotencyKey, throw/allowFailure semantics — AP slugs journal a
+  deterministic dispatch error until the P1c runner child.)*
+- [x] **7.** `sleep(seconds)`: journaled `create_timer` task in the pump's `when_any`
+  set. Dispatched un-awaited; drain synthesizes `{sleptSeconds}`; clamped by
+  `DYNAMIC_SCRIPT_MAX_SLEEP_SECONDS` (86400 default). Pump + evaluator + journal
+  tests green 2026-07-14.
 - [ ] **8.** `approve()`/`waitForEvent()`: wait_event child per callId, reusing SW
   approval-log activities; approval routes journal-driven for scripts; timeout RESOLVES
   `{timedOut:true}`.
@@ -77,9 +83,13 @@ transcript). Keep this list in sync with the active `/goal`.
   default runtime.
 - [ ] **10.** `meta.input` JSON Schema validated at `startDynamicScriptRun` (covers the
   trigger spine) + rendered as an execute-dialog form.
-- [ ] **11.** Pump: explicit task-kind allowlist (unknown kind → dispatchError, never a
-  phantom agent dispatch); kind-aware caps (actions/sleeps/gates don't consume agent
-  slots); dict results capped like strings.
+- [x] **11.** Pump: explicit task-kind allowlist (unknown kind → dispatchError, never a
+  phantom agent dispatch — shipped with P0, `test_unknown_task_kind_journals_dispatch_error…`);
+  kind-aware caps (action-class dispatches OUTSIDE agent slots: `maxConcurrentActions`
+  16 / `maxLifetimeActions` 500 via `DYNAMIC_SCRIPT_MAX_{CONCURRENT_ACTIONS,ACTION_CALLS}`,
+  `test_actions_do_not_consume_agent_concurrency_slots`); dict results capped like strings
+  (`_cap_json_result`, applied to action data + workflow returnValue,
+  `test_action_oversized_data_is_truncated`).
 - [ ] **P1 proof:** tests green + one dev smoke run exercising
   `action()`+`sleep()`+`approve()`+named agent, journal rows shown.
 

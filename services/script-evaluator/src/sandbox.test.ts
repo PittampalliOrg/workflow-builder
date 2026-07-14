@@ -795,7 +795,8 @@ describe("action()/sleep()/approve() feature gating", () => {
 			connection: null,
 			timeoutMs: 5000,
 			allowFailure: false,
-			idempotent: true,
+			// Opt-in re-run marker: default false = idempotency gate stays ON.
+			idempotent: false,
 		});
 		expect(t.callId).toBe(dcid("sheets/append_row", { row: 1 }));
 	});

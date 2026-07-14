@@ -31,6 +31,15 @@ function dynamicScriptMaxConcurrency(): number {
 	return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5;
 }
 
+/** Contract-1.2.0 action-class primitives (action/sleep/approve/waitForEvent).
+ * Stamped into the workflow INPUT at start so replay stays deterministic across
+ * env flips; nested workflow() children inherit it. Default OFF until the
+ * dispatch path soaks (docs/code-first-cutover.md item 6). */
+function dynamicScriptActionsEnabled(): boolean {
+	const raw = (env.DYNAMIC_SCRIPT_ACTIONS_ENABLED ?? "").trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export class DaprWorkflowScheduler implements WorkflowScheduler {
 	async startSwWorkflow(input: WorkflowStartRequest): Promise<{ instanceId?: string }> {
 		const response = await daprFetch(`${input.orchestratorUrl}/api/v2/sw-workflows`, {
@@ -93,6 +102,7 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 					maxItemsPerCall: DYNAMIC_SCRIPT_MAX_ITEMS_PER_CALL,
 					maxStructuredRetries: DYNAMIC_SCRIPT_MAX_STRUCTURED_RETRIES,
 				},
+				...(dynamicScriptActionsEnabled() ? { features: { actions: true } } : {}),
 				traceContext: input.traceContext,
 			}),
 		});
