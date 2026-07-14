@@ -320,20 +320,31 @@ export const POST: RequestHandler = async ({ request }) => {
 				{ status: 422 },
 			);
 		}
+		// opts.agent accepts a project agent SLUG or an agent ID (evals pin ids;
+		// authors write slugs). Slug first, then id — both fail closed.
 		const resolvedBySlug = await getApplicationAdapters().teamStore.resolveAgentIdBySlug(
 			projectId,
 			resolveAgentSlugRaw,
 		);
-		if (!resolvedBySlug) {
+		let resolvedId = resolvedBySlug?.id ?? null;
+		if (!resolvedId) {
+			const byId = await workflowData.resolvePublishedWorkflowAgentForEnsure({
+				agentId: resolveAgentSlugRaw,
+				agentVersion: null,
+				projectId,
+			});
+			if (byId?.ok) resolvedId = resolveAgentSlugRaw;
+		}
+		if (!resolvedId) {
 			return json(
 				{
 					code: "agent_ref_unresolved",
-					error: `agent slug '${resolveAgentSlugRaw}' not found in project ${projectId}`,
+					error: `agent '${resolveAgentSlugRaw}' not found in project ${projectId} (tried slug, then id)`,
 				},
 				{ status: 422 },
 			);
 		}
-		effectiveAgentId = resolvedBySlug.id;
+		effectiveAgentId = resolvedId;
 		// Version pin (evals): honored when the caller sends one; otherwise the
 		// latest registered version.
 		const resolveAgentVersionRaw =

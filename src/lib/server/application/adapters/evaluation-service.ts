@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { error } from "@sveltejs/kit";
 import { env } from "$env/dynamic/private";
+import { dynamicScriptActionsEnabled } from "$lib/server/application/adapters/dapr";
 import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
@@ -1877,8 +1878,10 @@ export async function startEvaluationRunItemWorkflow(params: {
 	if (!row.run.subjectId) throw error(400, "Evaluation run is missing subjectId");
 
 	let workflow: typeof workflows.$inferSelect;
-	let spec: Record<string, unknown>;
+	// `spec` is null on the dynamic-script producer path (cutover P3).
+	let spec: Record<string, unknown> | null;
 	let triggerData: Record<string, unknown>;
+	let scriptBuild: { script: string; meta: Record<string, unknown> } | null = null;
 
 	if (row.run.subjectType === "agent") {
 		const taskConfigWorkflowId =
@@ -1914,6 +1917,30 @@ export async function startEvaluationRunItemWorkflow(params: {
 				input: { ...row.item.input, agentRef },
 				expectedOutput: row.item.expectedOutput,
 			});
+		} else if (
+			row.evaluation.taskConfig.adapter !== "swebench" &&
+			agentEvalScriptProducerEnabled()
+		) {
+			// Cutover P3 (item 15): agent evaluations run as a dynamic-script.
+			// The SW builder above stays callable — flip EVAL_AGENT_SCRIPT_PRODUCER
+			// off to fall back while shadow parity is in flight.
+			workflow = await ensureHiddenEvaluationWorkflow({
+				projectId: row.run.projectId,
+				userId: row.run.userId,
+			});
+			scriptBuild = buildAgentEvaluationScript({
+				evaluationName: row.evaluation.name,
+				agentId: row.run.subjectId,
+				agentVersion: parseOptionalInteger(row.run.subjectVersion),
+				input: row.item.input,
+				taskConfig: row.evaluation.taskConfig,
+			});
+			spec = null;
+			triggerData = {
+				runId: row.run.id,
+				itemId: row.item.id,
+				input: row.item.input,
+			};
 		} else {
 			workflow = await ensureHiddenEvaluationWorkflow({
 				projectId: row.run.projectId,
@@ -1976,26 +2003,59 @@ export async function startEvaluationRunItemWorkflow(params: {
 			phase: "running",
 			progress: 0,
 			input: triggerData,
-			executionIrVersion: "sw-1.0",
-			executionIr: {
-				spec,
-				triggerData,
-				evaluationRunId: row.run.id,
-				evaluationRunItemId: row.item.id,
-			},
+			executionIrVersion: scriptBuild ? "dynamic-script-2" : "sw-1.0",
+			executionIr: scriptBuild
+				? {
+						engine: "dynamic-script",
+						script: scriptBuild.script,
+						meta: scriptBuild.meta,
+						args: triggerData,
+						budgetTotal: null,
+						dispatchMode: "batch-v2",
+						evaluationRunId: row.run.id,
+						evaluationRunItemId: row.item.id,
+					}
+				: {
+						spec,
+						triggerData,
+						evaluationRunId: row.run.id,
+						evaluationRunItemId: row.item.id,
+					},
 		})
 		.returning({ id: workflowExecutions.id });
 
-	const res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			workflow: spec,
-			workflowId: workflow.id,
-			triggerData,
-			dbExecutionId: execution.id,
-		}),
-	});
+	const res = scriptBuild
+		? await daprFetch(`${getOrchestratorUrl()}/api/v2/script-workflows`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					script: scriptBuild.script,
+					scriptSha256: createHash("sha256")
+						.update(scriptBuild.script, "utf8")
+						.digest("hex"),
+					meta: scriptBuild.meta,
+					args: triggerData,
+					nested: false,
+					dispatchMode: "batch-v2",
+					dbExecutionId: execution.id,
+					workflowId: workflow.id,
+					userId: row.run.userId,
+					projectId: row.run.projectId,
+					defaults: { agentRuntime: "dapr-agent-py", timeoutMinutes: 30 },
+					limits: {},
+					...(dynamicScriptActionsEnabled() ? { features: { actions: true } } : {}),
+				}),
+			})
+		: await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					workflow: spec,
+					workflowId: workflow.id,
+					triggerData,
+					dbExecutionId: execution.id,
+				}),
+			});
 	if (!res.ok) {
 		const detail = await res.text().catch(() => "");
 		await database
@@ -2446,6 +2506,13 @@ function normalizeImportedOutputs(value: unknown): Map<string, unknown> {
 
 export function extractEvaluationGeneratedOutput(value: unknown): unknown {
 	if (!isRecord(value)) return value;
+	// Dynamic-script envelope (cutover P3): the pump persists
+	// `{phase, success, outputs: {returnValue}}`. Unwrap to the script's
+	// returnValue before the SW key walk below.
+	const outputs = value.outputs;
+	if (isRecord(outputs) && outputs.returnValue !== undefined && outputs.returnValue !== null) {
+		return extractEvaluationGeneratedOutput(outputs.returnValue);
+	}
 	for (const key of [
 		"generatedOutput",
 		"generated_output",
@@ -2700,6 +2767,59 @@ async function ensureHiddenEvaluationWorkflow(params: {
 		})
 		.returning();
 	return created;
+}
+
+/** Producer flag (cutover P3, item 15): when on, agent evaluations run as a
+ * dynamic-script instead of an SW 1.0 spec. The SW builder stays callable so a
+ * flip is reversible until shadow parity signs off. */
+export function agentEvalScriptProducerEnabled(): boolean {
+	const raw = (env.EVAL_AGENT_SCRIPT_PRODUCER ?? "").trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * The dynamic-script port of `buildAgentEvaluationWorkflowSpec` (cutover P3).
+ * One named-agent call; the jq output projections become plain JS. The script
+ * returns `{generatedOutput, raw}` — the exact shape the grader path already
+ * reads (see `extractEvaluationGeneratedOutput`).
+ */
+export function buildAgentEvaluationScript(params: {
+	evaluationName: string;
+	agentId: string;
+	agentVersion: number | null;
+	input: Record<string, unknown>;
+	taskConfig: Record<string, unknown>;
+}): { script: string; meta: Record<string, unknown> } {
+	const prompt = renderPromptTemplate(params.taskConfig, params.input);
+	const meta = {
+		name: "evaluation-item",
+		description: `Evaluation: ${params.evaluationName}`,
+		phases: [{ title: "Run" }],
+	};
+	const script = [
+		`export const meta = ${JSON.stringify(meta)}`,
+		"",
+		"phase('Run')",
+		"",
+		"// The agent under evaluation (resolved fail-closed in the bridge: an",
+		"// unknown id/slug journals null, never the metered default runtime).",
+		`const raw = await agent(${JSON.stringify(prompt)}, {`,
+		`  agent: ${JSON.stringify(params.agentId)},`,
+		...(params.agentVersion != null ? [`  agentVersion: ${params.agentVersion},`] : []),
+		"  label: 'evaluate',",
+		"})",
+		"",
+		"// The SW spec projected `.output.output // .output.result // …` in jq;",
+		"// agent() already returns the final text (or the schema'd object).",
+		"const generatedOutput =",
+		"  raw && typeof raw === 'object'",
+		"    ? (raw.output ?? raw.result ?? raw.text ?? raw.content ?? raw)",
+		"    : raw",
+		"",
+		"return { generatedOutput, raw }",
+		"",
+	].join("\n");
+	return { script, meta };
 }
 
 export function buildAgentEvaluationWorkflowSpec(params: {

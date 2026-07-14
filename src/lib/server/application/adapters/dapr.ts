@@ -35,7 +35,7 @@ function dynamicScriptMaxConcurrency(): number {
  * Stamped into the workflow INPUT at start so replay stays deterministic across
  * env flips; nested workflow() children inherit it. Default OFF until the
  * dispatch path soaks (docs/code-first-cutover.md item 6). */
-function dynamicScriptActionsEnabled(): boolean {
+export function dynamicScriptActionsEnabled(): boolean {
 	const raw = (env.DYNAMIC_SCRIPT_ACTIONS_ENABLED ?? "").trim().toLowerCase();
 	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }

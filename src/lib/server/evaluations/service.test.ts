@@ -705,3 +705,50 @@ function codeEvalTestFileContent(row: ReturnType<typeof normalizeCodeEvalRowForE
 	);
 	return (row.expectedOutput as { testFileContent: string }).testFileContent;
 }
+
+// ── Cutover P3: agent-eval script producer (item 15) ─────────────────────────
+import {
+	buildAgentEvaluationScript,
+	extractEvaluationGeneratedOutput as extractGen,
+} from "$lib/server/application/adapters/evaluation-service";
+
+describe("buildAgentEvaluationScript (P3 producer port)", () => {
+	const params = {
+		evaluationName: "My Eval",
+		agentId: "agent-123",
+		agentVersion: 4 as number | null,
+		input: { question: "2+2?" },
+		taskConfig: { promptTemplate: "Answer: {{input.question}}" },
+	};
+
+	it("emits a named-agent script with the version pin and the {generatedOutput, raw} contract", () => {
+		const { script, meta } = buildAgentEvaluationScript(params);
+		expect(meta.name).toBe("evaluation-item");
+		expect(script).toContain("export const meta =");
+		expect(script).toContain("agent: \"agent-123\"");
+		expect(script).toContain("agentVersion: 4");
+		expect(script).toContain("return { generatedOutput, raw }");
+		// The prompt template rendered against the item input.
+		expect(script).toContain("2+2?");
+	});
+
+	it("omits agentVersion when the run pins no version", () => {
+		const { script } = buildAgentEvaluationScript({ ...params, agentVersion: null });
+		expect(script).not.toContain("agentVersion:");
+	});
+});
+
+describe("extractEvaluationGeneratedOutput unwraps the dynamic-script envelope", () => {
+	it("reads the script returnValue through {outputs: {returnValue}}", () => {
+		const pumpOutput = {
+			phase: "completed",
+			success: true,
+			outputs: { returnValue: { generatedOutput: "4", raw: "4" } },
+		};
+		expect(extractGen(pumpOutput)).toBe("4");
+	});
+
+	it("still reads the SW workflowOutput shape", () => {
+		expect(extractGen({ generatedOutput: "sw-answer", raw: {} })).toBe("sw-answer");
+	});
+});
