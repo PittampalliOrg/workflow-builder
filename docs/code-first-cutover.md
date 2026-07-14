@@ -238,13 +238,29 @@ Regression test:
 356 passed. The GAN / preview / dev-session fixture ports are unblocked (still to be
 written).
 
-**B2 — the shadow-parity gates need real eval/benchmark spend and multi-hour runtime.**
-The code-eval 20-item and SWE-bench ≥5-instance canaries (and the one live GAN run) are
-the goal's proof for item 15. They are implemented and flag-gated, but each canary bills
-real LLM usage and runs for hours; they have not been executed. **Recommended sequence:**
-flip `CODE_EVAL_SCRIPT_PRODUCER=true` on dev, run one HumanEval+ suite (20 items) against
-the P0 baseline, diff `benchmark_run_instance_scores`; then `EVAL_AGENT_SCRIPT_PRODUCER`;
-then the SWE-bench canary last (most expensive).
+**B2 — the shadow-parity canaries cannot be run as specified: there is no SW baseline on
+dev.** Item 15 asks for parity "vs pre-captured SW baselines". A live census (2026-07-14)
+shows **0 evaluation runs on dev in the last 90 days** and no `code-eval-item` workflow row
+— so no baseline exists, and producing one means running the SW side of every suite first
+(doubling the LLM spend). The canaries themselves (code-eval 20-item, SWE-bench ≥5-instance,
+one live GAN run) each bill real usage and run for hours.
+
+*What WAS proven on dev instead* (2026-07-14): the ported **code-eval script executed
+end-to-end on the cluster** (runs `fs0jYluYaUBqSCgyRcSKJ` → `RPC92pbMxEEXjp1ccsT8m`),
+which caught three real integration bugs no unit test had — the `workspace/*` result
+envelope, the `workspace/profile` sandbox-name nesting, and the **executionId identity**
+(openshell `/api/tools/*` resolve a sandbox by the DAPR instance id, so the DB id 404'd
+`write_file` while `profile`/`command` returned 200). All three are fixed, pinned by tests,
+and the guard suite now models the real envelope.
+
+**Runbook when budget/time is available** (each step is a flag flip + one suite):
+1. `CODE_EVAL_SCRIPT_PRODUCER=false` → run one HumanEval+ suite (20 items) → capture the SW
+   baseline in `benchmark_run_instance_scores`.
+2. `CODE_EVAL_SCRIPT_PRODUCER=true` → re-run the same 20 items → diff per-item verdicts.
+3. Repeat for `EVAL_AGENT_SCRIPT_PRODUCER`, then `EVAL_SWEBENCH_SCRIPT_PRODUCER` /
+   `BENCHMARK_SCRIPT_PRODUCER` (≥5 instances — the most expensive; do it last).
+4. One live GAN run of `preview-gan-ui-feature.js` inside a Tier-2 preview.
+Every flag falls back to the SW builder, so a failed parity check is a one-line revert.
 
 ## References
 
