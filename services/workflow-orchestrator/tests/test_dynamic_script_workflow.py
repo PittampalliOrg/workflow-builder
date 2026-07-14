@@ -14,6 +14,7 @@ and never executes the activity body).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -843,6 +844,11 @@ def test_replay_determinism_identical_action_log():
 # ---------------------------------------------------------------------------
 def test_evaluate_request_and_response_keys_match_contract():
     contract = json.loads(CONTRACT_PATH.read_text())
+    # 1.2.0 = additive-only bump (code-first cutover P0): reserves task kinds
+    # action/sleep/event, agent() semanticOpts key 'agent', and advisory
+    # tasks[].position. callId derivation stays FROZEN — the vector test below
+    # proves every pre-1.2.0 callId is byte-identical.
+    assert contract["contractVersion"] == "1.2.0"
     accepted_request_keys = set(contract["request"].keys())
     # Keys the evaluate_script activity puts on the /evaluate request body.
     produced_request_keys = {
@@ -899,6 +905,52 @@ def test_can_consume_callid_vector_task_specs():
                 assert built["callId"] == call_id
             seen += 1
     assert seen > 0
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-occurrence identity: identical un-labeled agent() calls share a
+# baseHash and differ ONLY in the _<occurrence> callId suffix (chars 40+).
+# The child instance id must keep that tail — callId[:16] alone collided all
+# duplicates onto ONE child/session id (Dapr serializes them through a shared
+# session or wedges the parent; per-call skip kills the session every
+# duplicate rides on).
+# ---------------------------------------------------------------------------
+def test_duplicate_prompt_occurrences_get_distinct_child_ids():
+    base = "f" * 40
+    iid0 = script_child_instance_id("dsw-x-exec-e1", base + "_0", 0)
+    iid1 = script_child_instance_id("dsw-x-exec-e1", base + "_1", 0)
+    iid2 = script_child_instance_id("dsw-x-exec-e1", base + "_2", 0)
+    assert len({iid0, iid1, iid2}) == 3
+    # Still lifecycle wedge-finalize + nodeIdFromChildSessionId compatible.
+    pat = re.compile(r"__durable(?:-[a-z0-9-]+)?__(.+?)__run__\d+")
+    for iid in (iid0, iid1, iid2):
+        assert pat.search(iid), iid
+    # Deterministic per (callId, retries): replay recomputes the same id...
+    assert script_child_instance_id("dsw-x-exec-e1", base + "_0", 0) == iid0
+    # ...while the structured-retry counter still differentiates re-runs.
+    assert script_child_instance_id("dsw-x-exec-e1", base + "_0", 1) != iid0
+
+
+def test_duplicate_prompt_agent_calls_dispatch_distinct_children():
+    """End-to-end through the pump: two identical un-labeled agent() calls
+    (same baseHash, occurrences 0/1) dispatch TWO distinct children, each
+    individually completable, both journaled under their own callId."""
+    base = "d" * 40
+    t0 = agent_task(base + "_0", prompt="same prompt")
+    t1 = agent_task(base + "_1", prompt="same prompt")
+    t1["occurrence"] = 1
+    ctx = FakeCtx(evaluator=make_evaluator([t0, t1], {"ok": True}))
+
+    def complete_both(c: FakeCtx):
+        c.complete_child(base + "_0", {"success": True, "content": "first"})
+        c.complete_child(base + "_1", {"success": True, "content": "second"})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete_both])
+    assert result["success"] is True
+    dispatched = [a[2] for a in ctx.action_log if a[0] == "child"]
+    assert len(dispatched) == 2 and len(set(dispatched)) == 2, dispatched
+    recorded = sorted(inp["callId"] for inp in ctx.record_inputs)
+    assert recorded == [base + "_0", base + "_1"]
 
 
 # ---------------------------------------------------------------------------

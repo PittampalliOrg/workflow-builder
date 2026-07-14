@@ -80,8 +80,24 @@ def script_child_instance_id(parent_instance_id: str, call_id: str, retries: int
     ``__durable(?:-[a-z0-9-]+)?__(.+?)__run__\\d+`` (reconciled decision) so
     ``nodeIdFromChildSessionId`` keeps resolving — hence ``durable-script`` +
     ``__run__<retries>``.
+
+    The fragment keeps the first 16 baseHash chars AND the ``_<occurrence>``
+    tail (callId chars 40+). Without the tail, duplicate prompt+opts calls
+    (same baseHash, occurrences ``_0``/``_1``/...) collide onto ONE child
+    instance/session id — Dapr then serializes them through a single shared
+    session (or wedges the parent), every duplicate journal lane attaches to
+    the same transcript, and per-call skip kills the session all duplicates
+    ride on. The occurrence counter sits at char 41+ of the frozen callId
+    (baseHash[:40] + '_' + occurrence), which is exactly what ``[:16]``
+    dropped.
+
+    Deploy note: changing this derivation skews skip/stop targeting for runs
+    already in flight at rollout (completed children replay from history and
+    are unaffected; child-workflow replay validation checks names, not
+    instance ids) — roll out in a quiet window, dev first.
     """
-    fragment = _sanitize_id_component(str(call_id)[:16])
+    cid = str(call_id)
+    fragment = _sanitize_id_component(cid[:16] + cid[40:])
     return f"{parent_instance_id}__durable-script__{fragment}__run__{int(retries or 0)}"
 
 

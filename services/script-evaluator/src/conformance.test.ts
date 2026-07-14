@@ -19,6 +19,13 @@ describe("contract conformance (SSOT)", () => {
 		expect(EVALUATOR_VERSION).toBe(contract.evaluatorVersion);
 	});
 
+	it("contractVersion is the 1.2.0 additive line (callId derivation frozen)", () => {
+		// 1.2.0 (code-first cutover P0) only RESERVES additions — task kinds
+		// action/sleep/event, semanticOpts key 'agent', advisory tasks[].position.
+		// The call-id vector suite proves existing callIds stay byte-identical.
+		expect(contract.contractVersion).toBe("1.2.0");
+	});
+
 	it("first round produces the contract 'need' shape", async () => {
 		const res = await evaluateScript({
 			script,

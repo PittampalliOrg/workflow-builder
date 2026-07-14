@@ -1,6 +1,7 @@
 {
 	"$comment": "SSOT contract for the script-evaluator /evaluate exchange. Consumed by services/script-evaluator vitest suite and services/workflow-orchestrator pytest suite. Version bumps require updating BOTH suites. callId derivation is FROZEN by this contract: baseHash = sha256(prompt + '\\u0000' + canonicalJSON(semanticOpts)) hex; semanticOpts = {schema, model, effort, isolation, agentType, label} with undefined/null keys OMITTED and remaining keys sorted lexicographically at every nesting level (canonicalJSON); callId = baseHash[:40] + '_' + occurrence where occurrence is the per-baseHash encounter counter (0-based) in script issue order.",
-	"contractVersion": "1.1.0",
+	"$comment_1_2_0": "1.2.0 is a pure-additive bump (code-first cutover P0, docs/code-first-cutover.md). It RESERVES, without yet shipping: task kinds 'action' (deterministic activity via execute_action/function-router), 'sleep' (journaled durable timer), and 'event' (approve()/waitForEvent() gate) — dispatched only behind DYNAMIC_SCRIPT_ACTIONS_ENABLED once implemented; an optional 'agent' key in agent() semanticOpts (named-agent slug, joins the hash additively — absent keys are omitted, so every existing callId is byte-identical); and an optional advisory tasks[].position {line, column} (call-site in stored-source coordinates; NEVER part of callId derivation). Consumers MUST treat unknown task kinds as dispatch errors, never as agent calls.",
+	"contractVersion": "1.2.0",
 	"evaluatorVersion": "1.2.1",
 	"limits": {
 		"maxScriptBytes": 262144,

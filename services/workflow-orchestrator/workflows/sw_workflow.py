@@ -43,6 +43,7 @@ from core.sw_types import (
     get_task_type,
 )
 from core.sw_expressions import (
+    SWExpressionError,
     evaluate_condition,
     evaluate_structure,
     resolve_input_definition,
