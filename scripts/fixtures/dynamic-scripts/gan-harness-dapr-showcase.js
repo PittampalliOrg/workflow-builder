@@ -139,13 +139,19 @@ export const meta = {
 const t = args ?? {}
 const repoUrl = t.repoUrl ?? 'jonschlinkert/is-number'
 
+// Action result envelopes (dialect contract):
+//   success            -> the payload directly:            { result: {...}, backend, ... }
+//   allowFailure + fail -> wrapped:  { success:false, error, data: { result: {...}, exitCode, ... } }
+// So unwrap `.data` FIRST, then `.result`. Reading only `.result` silently
+// loses every failing command's exitCode/stdout (caught on dev 2026-07-14).
 function shell(res) {
-  const r = res?.result ?? res ?? {}
+  const base = res?.data ?? res ?? {}
+  const r = base.result ?? base
   return {
-    exitCode: r.exitCode ?? res?.exitCode ?? 1,
-    stdout: r.stdout ?? res?.stdout ?? '',
-    stderr: r.stderr ?? res?.stderr ?? '',
-    content: r.content ?? res?.content ?? '',
+    exitCode: r.exitCode ?? base.exitCode ?? 1,
+    stdout: r.stdout ?? base.stdout ?? '',
+    stderr: r.stderr ?? base.stderr ?? '',
+    content: r.content ?? base.content ?? '',
   }
 }
 
@@ -175,7 +181,8 @@ const profile = await action('workspace/profile', {
   "sandboxTemplate": "dapr-agent",
   "commandTimeoutMs": 300000
 }, { label: 'workspace_profile' })
-const profileData = profile?.result ?? profile ?? {}
+const profileBase = profile?.data ?? profile ?? {}
+const profileData = profileBase.result ?? profileBase
 const workspaceRef = profileData.workspaceRef
 const sandboxName =
   profileData.sandboxName ?? profileData.sandbox?.details?.sandboxName ?? profileData.sandbox?.sandboxName

@@ -291,7 +291,7 @@ describe("code-eval-item: emitted plan", () => {
 			(task) =>
 				task.actionSlug === "workspace/profile"
 					? { workspaceRef: "ws-1", sandboxName: "sb-1" }
-					: { result: { exitCode: 1, stderr: "no python" }, backend: "openshell" },
+					: { success: false, error: "probe failed", data: { result: { exitCode: 1, stderr: "no python" } } },
 			6,
 		);
 		expect(tasks.filter((t) => t.kind === "agent")).toHaveLength(0);
