@@ -88,8 +88,66 @@ export class ApplicationWorkflowExecutionControlService {
 			executionReadModels: WorkflowExecutionReadModelPort;
 			runStarter: WorkflowRunStarterPort;
 			workflowSpecs: WorkflowSpecValidatorPort;
+			/** Dynamic-script gate lookups (cutover P1d): approve()/waitForEvent()
+			 * gates live in the call journal, not the spec. Optional so lite/test
+			 * wiring without a journal store keeps working (scripts then report
+			 * no gates). */
+			scriptCalls?: {
+				listInternal(executionId: string): Promise<
+					Array<{
+						callId: string;
+						status: string;
+						label?: string | null;
+						result?: unknown;
+					}>
+				>;
+			};
 		},
 	) {}
+
+	/** Waiting approve()/waitForEvent() gates for a dynamic-script run: RUNNING
+	 * journal rows carrying the wait_event child's pause marker. */
+	private async listScriptGates(executionId: string): Promise<
+		Array<{
+			callId: string;
+			label: string | null;
+			logicalName: string;
+			message: string | null;
+			eventName: string;
+			waiterInstanceId: string;
+		}>
+	> {
+		if (!this.deps.scriptCalls) return [];
+		try {
+			const rows = await this.deps.scriptCalls.listInternal(executionId);
+			return rows.flatMap((row) => {
+				if (row.status !== "running") return [];
+				const pause = (row.result as { pause?: Record<string, unknown> } | null)?.pause;
+				if (!pause || pause.type !== "EVENT") return [];
+				const eventName = typeof pause.eventName === "string" ? pause.eventName : "";
+				const waiterInstanceId =
+					typeof pause.waiterInstanceId === "string" ? pause.waiterInstanceId : "";
+				if (!eventName || !waiterInstanceId) return [];
+				return [
+					{
+						callId: row.callId,
+						label: row.label ?? null,
+						logicalName:
+							typeof pause.logicalName === "string" ? pause.logicalName : "event",
+						message: typeof pause.message === "string" ? pause.message : null,
+						eventName,
+						waiterInstanceId,
+					},
+				];
+			});
+		} catch (err) {
+			console.warn(
+				`[approval] script gate lookup failed for ${executionId}:`,
+				err instanceof Error ? err.message : String(err),
+			);
+			return [];
+		}
+	}
 
 	async executeWorkflow(
 		input: WorkflowExecutionStartInput,
@@ -384,6 +442,61 @@ export class ApplicationWorkflowExecutionControlService {
 			return workflowControlError(409, "Run has no Dapr instance to signal");
 		}
 
+		// Dynamic-script runs (cutover P1d): the waiter is a wait_event child on
+		// a per-callId event name — resolve the gate from the journal's pause
+		// markers instead of the spec, and raise at the child.
+		if (execution.executionIrVersion?.startsWith("dynamic-script")) {
+			const gates = await this.listScriptGates(input.executionId);
+			if (gates.length === 0) {
+				return workflowControlError(409, "No approval gate is waiting on this run");
+			}
+			const requestedCallId =
+				typeof input.body?.callId === "string" ? input.body.callId : undefined;
+			const gate = requestedCallId
+				? gates.find((g) => g.callId === requestedCallId)
+				: gates.length === 1
+					? gates[0]
+					: undefined;
+			if (!gate) {
+				return workflowControlError(
+					409,
+					requestedCallId
+						? `No waiting gate matches callId ${requestedCallId}`
+						: "Multiple gates are waiting — pass body.callId to disambiguate",
+				);
+			}
+			const approved = input.body?.approved !== false;
+			const raisedGate = await this.deps.approvalEvents.raiseWorkflowEvent({
+				instanceId: gate.waiterInstanceId,
+				eventName: gate.eventName,
+				eventData: {
+					approved,
+					approvedBy: input.userId,
+					...(typeof input.body?.note === "string" ? { note: input.body.note } : {}),
+					source: "run-ui",
+				},
+			});
+			if (!raisedGate.ok) {
+				console.error(
+					`[approve] gate raise ${raisedGate.status}:`,
+					raisedGate.detail.slice(0, 300),
+				);
+				return workflowControlError(
+					raisedGate.status === 404 ? 409 : 502,
+					"Failed to raise approval event",
+				);
+			}
+			return {
+				status: "ok",
+				body: {
+					ok: true,
+					callId: gate.callId,
+					approved,
+					instanceId: gate.waiterInstanceId,
+				},
+			};
+		}
+
 		const raised = await this.deps.approvalEvents.raiseApprovalEvent({
 			instanceId: execution.daprInstanceId,
 			eventType,
@@ -424,6 +537,25 @@ export class ApplicationWorkflowExecutionControlService {
 			)
 		) {
 			return { status: "ok", body: { awaiting: false } };
+		}
+
+		// Dynamic-script runs (cutover P1d): gates are journal rows with pause
+		// markers, plural (scripts can hold parallel approve()/waitForEvent()).
+		if (execution.executionIrVersion?.startsWith("dynamic-script")) {
+			const gates = await this.listScriptGates(input.executionId);
+			if (gates.length === 0) return { status: "ok", body: { awaiting: false } };
+			return {
+				status: "ok",
+				body: {
+					awaiting: true,
+					gates: gates.map((g) => ({
+						callId: g.callId,
+						name: g.logicalName,
+						label: g.label,
+						message: g.message,
+					})),
+				},
+			};
 		}
 
 		const workflow = await this.deps.workflowData.getWorkflowByRef({

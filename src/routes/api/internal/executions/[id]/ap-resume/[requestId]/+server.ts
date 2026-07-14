@@ -81,10 +81,50 @@ async function handleResume(
 		throw error(409, "execution has no Dapr workflow instance");
 	}
 
+	// Dynamic-script runs (cutover P1c): the WEBHOOK waiter is the action_runner
+	// CHILD, not the root pump instance. The runner journals a pause marker
+	// (result.pause = {requestId, waiterInstanceId}) into the call's running
+	// journal row — raise there. Fall back to the root when no marker matches
+	// (a lost marker degrades to the SW-era behavior: the resume is lost and
+	// the row stays visibly running).
+	let targetInstanceId = execution.daprInstanceId;
+	if (execution.executionIrVersion?.startsWith("dynamic-script")) {
+		try {
+			const { scriptCalls } = getApplicationAdapters();
+			const rows = await scriptCalls.listInternal(executionId);
+			const waiterInstanceId = rows
+				.map((row) =>
+					row.status === "running"
+						? (row.result as { pause?: { requestId?: unknown; waiterInstanceId?: unknown } } | null)
+								?.pause
+						: null,
+				)
+				.find(
+					(pause) =>
+						pause?.requestId === requestId &&
+						typeof pause?.waiterInstanceId === "string" &&
+						pause.waiterInstanceId.length > 0,
+				)?.waiterInstanceId as string | undefined;
+			if (waiterInstanceId) {
+				targetInstanceId = waiterInstanceId;
+			} else {
+				console.warn(
+					`[ap-resume] no pause marker for requestId=${requestId} on dynamic-script ` +
+						`execution ${executionId}; falling back to root instance`,
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`[ap-resume] journal lookup failed for execution ${executionId}; falling back ` +
+					`to root instance: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
 	const queryParams = Object.fromEntries(url.searchParams.entries());
 
 	const res = await daprFetch(
-		`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(execution.daprInstanceId)}/events`,
+		`${getOrchestratorUrl()}/api/v2/workflows/${encodeURIComponent(targetInstanceId)}/events`,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -98,7 +138,7 @@ async function handleResume(
 	if (!res.ok) {
 		const detail = await res.text().catch(() => "");
 		console.error(
-			`[ap-resume] Failed to raise ap.resume.${requestId} on ${execution.daprInstanceId}: ` +
+			`[ap-resume] Failed to raise ap.resume.${requestId} on ${targetInstanceId}: ` +
 				`${res.status} ${detail.slice(0, 200)}`,
 		);
 		throw error(502, "failed to deliver resume event to the workflow");
@@ -106,7 +146,7 @@ async function handleResume(
 
 	console.log(
 		`[ap-resume] Raised ap.resume.${requestId} on execution ${executionId} ` +
-			`(instance=${execution.daprInstanceId})`,
+			`(instance=${targetInstanceId})`,
 	);
 	return json({ ok: true, executionId, requestId });
 }

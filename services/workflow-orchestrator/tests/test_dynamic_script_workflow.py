@@ -262,7 +262,10 @@ class FakeCtx:
         self.prepare_inputs: list[dict] = []
         self.stop_inputs: list[dict] = []
         self.execute_action_inputs: list[dict] = []
-        self.execute_action_result: dict = {"success": True, "data": {"ok": 1}}
+        # Sequenced results: pop from the front while >1 remain (last repeats) —
+        # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
+        self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
+        self.pause_inputs: list[dict] = []
 
     # -- deterministic side effects captured for assertions ----------------
     @property
@@ -272,7 +275,7 @@ class FakeCtx:
     def set_custom_status(self, status: str) -> None:
         self.custom_statuses.append(status)
 
-    def wait_for_external_event(self, name: str) -> CompletableTask:
+    def wait_for_external_event(self, name: str, timeout=None) -> CompletableTask:
         task = CompletableTask()
         self.events.setdefault(name, []).append(task)
         self.action_log.append(("event", name))
@@ -328,7 +331,12 @@ class FakeCtx:
             return self._prepare_result(inp)
         if name == "execute_action":
             self.execute_action_inputs.append(inp)
-            return self.execute_action_result
+            if len(self.execute_action_results) > 1:
+                return self.execute_action_results.pop(0)
+            return self.execute_action_results[0]
+        if name == "record_script_call_pause":
+            self.pause_inputs.append(inp)
+            return {"success": True}
         if name == "request_session_stop":
             self.stop_inputs.append(inp)
             return {"ok": True, "state": "stopping"}
@@ -1575,26 +1583,185 @@ def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
     assert raws == [{"success": True, "data": {"ok": 1}}]
 
 
-def test_action_ap_slug_journals_dispatch_error_until_p1c():
+def test_action_ap_slug_dispatches_runner_child_with_pause_contract():
+    """AP piece slugs dispatch as an action_runner_workflow_v1 CHILD carrying
+    the SW AP durability contract (raiseOnRetryable + content-addressed
+    idempotencyKey + journal context for the WEBHOOK pause marker)."""
     cid = "c3" * 20 + "_0"
     task = action_task(cid, "google-sheets/append_row", {"row": 1})
     ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete_runner(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "data": {"appended": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_runner]
+    )
+    assert result["success"] is True
+    assert len([a for a in ctx.action_log if a[0] == "child"]) == 1
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["activityInput"]["raiseOnRetryable"] is True
+    assert child_input["activityInput"]["idempotencyKey"] == f"wf1:e1:{cid}"
+    assert child_input["journal"]["callId"] == cid
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert raws == [{"success": True, "data": {"appended": True}}]
+
+
+def test_action_crawl_async_journals_clear_dispatch_error():
+    cid = "e7" * 20 + "_0"
+    task = action_task(cid, "web/crawl.async", {"url": "https://x"})
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
     result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
     assert result["success"] is True
-    assert ctx.execute_action_inputs == []  # never dispatched
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
     assert len(raws) == 1 and raws[0]["success"] is False
-    assert "P1c" in raws[0]["error"]
+    assert "web/crawl" in raws[0]["error"]
 
 
-def test_event_kind_journals_dispatch_error_until_p1d():
+# ---------------------------------------------------------------------------
+# action_runner_workflow_v1: BEGIN -> (pause -> RESUME)* -> final result.
+# ---------------------------------------------------------------------------
+def test_action_runner_webhook_pause_marks_journal_and_resumes():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="runner-1")
+    ctx.execute_action_results = [
+        {"success": True, "pause": {"type": "WEBHOOK", "requestId": "req-42"}},
+        {"success": True, "data": {"resumed": True}},
+    ]
+    gen = action_runner_workflow(
+        ctx,
+        {
+            "activityInput": {"node": {"id": "c1"}, "raiseOnRetryable": True},
+            "journal": {"executionId": "e1", "callId": "c1", "seq": 3, "spec": {"kind": "action"}},
+        },
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway runner loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        if not task.is_complete:
+            # The WEBHOOK wait — deliver the callback payload.
+            assert ctx.events.get("ap.resume.req-42"), "runner did not wait on ap.resume.req-42"
+            task.complete({"requestId": "req-42", "body": {"approved": True}})
+        send = task.get_result()
+
+    assert result == {"success": True, "data": {"resumed": True}}
+    # Pause marker journaled with the waiter instance id (ap-resume route target).
+    assert len(ctx.pause_inputs) == 1
+    pause = ctx.pause_inputs[0]["pause"]
+    assert pause["requestId"] == "req-42" and pause["waiterInstanceId"] == "runner-1"
+    # RESUME round carried the callback payload.
+    assert ctx.execute_action_inputs[1]["executionType"] == "RESUME"
+    assert ctx.execute_action_inputs[1]["resumePayload"]["body"] == {"approved": True}
+
+
+def test_action_runner_delay_pause_uses_timer_then_resumes():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="runner-2")
+    ctx.execute_action_results = [
+        {"success": True, "pause": {"type": "DELAY", "delaySeconds": 30}},
+        {"success": True, "data": {"done": 1}},
+    ]
+    gen = action_runner_workflow(
+        ctx, {"activityInput": {"node": {"id": "c2"}}, "journal": {}}
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway runner loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        assert task.is_complete, "runner yielded a pending task the test did not arm"
+        send = task.get_result()
+    assert result == {"success": True, "data": {"done": 1}}
+    assert any(a[0] == "timer" for a in ctx.action_log)
+    assert ctx.pause_inputs == []  # DELAY needs no resume-target marker
+
+
+def test_event_kind_dispatches_wait_event_child_and_resolves_payload():
+    """approve()/waitForEvent() dispatches a wait_event_workflow_v1 child on a
+    per-callId event name; the delivered payload journals as the gate result."""
     cid = "d4" * 20 + "_0"
     ctx = FakeCtx(evaluator=make_evaluator([event_task(cid)], {"ok": True}))
-    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+
+    def approve_gate(c: FakeCtx):
+        c.complete_child(cid, {"approved": True, "approvedBy": "u1"})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [approve_gate]
+    )
     assert result["success"] is True
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["eventName"] == f"script.event.{cid}"
+    assert child_input["logicalName"] == "approval"
+    assert child_input["journal"]["callId"] == cid
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
-    assert len(raws) == 1 and raws[0]["success"] is False
-    assert "P1d" in raws[0]["error"]
+    assert raws == [{"approved": True, "approvedBy": "u1"}]
+
+
+def test_wait_event_workflow_marks_waiter_and_resolves_timeout():
+    """The gate child journals its waiter marker (approve-route target), logs
+    the approval-request row, and RESOLVES {timedOut:true} on timeout."""
+    from workflows.wait_event_workflow import wait_event_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="gate-1")
+    gen = wait_event_workflow(
+        ctx,
+        {
+            "eventName": "script.event.abc_0",
+            "logicalName": "approval",
+            "timeoutMinutes": 60,
+            "journal": {"executionId": "e1", "callId": "abc_0", "seq": 1, "spec": {"kind": "event"}},
+        },
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway gate loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        if not task.is_complete:
+            # The external-event wait: simulate a TIMEOUT by throwing into the
+            # generator the way durabletask surfaces expired waits.
+            assert ctx.events.get("script.event.abc_0"), "gate did not wait on its event"
+            try:
+                gen.throw(TimeoutError())
+            except StopIteration as exc:
+                result = exc.value
+                break
+            continue
+        send = task.get_result()
+
+    assert result == {"timedOut": True}
+    # Waiter marker journaled (approve route target).
+    assert len(ctx.pause_inputs) == 1
+    pause = ctx.pause_inputs[0]["pause"]
+    assert pause["type"] == "EVENT" and pause["waiterInstanceId"] == "gate-1"
+    assert pause["eventName"] == "script.event.abc_0"
+    # Approval request + timeout rows logged.
+    logged = [a[1] for a in ctx.action_log if a[0] == "activity"]
+    assert "log_approval_request" in logged and "log_approval_timeout" in logged
 
 
 def test_action_kinds_without_features_flag_hit_skew_guard():

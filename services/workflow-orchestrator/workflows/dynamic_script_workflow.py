@@ -54,6 +54,7 @@ from workflows.script_agent_dispatch import (
     _start_script_call,
     script_child_instance_id,
     start_action_call,
+    start_event_wait_call,
     start_prepared_script_call,
     start_team_call,
 )
@@ -552,13 +553,14 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                             workflow_id=workflow_id,
                             otel=otel,
                         )
-                    else:  # kind == "event" — approval gates land in P1d
-                        child_task = {
-                            "dispatchError": (
-                                "approve()/waitForEvent() gates are not yet dispatchable "
-                                "(docs/code-first-cutover.md item 8, P1d)"
-                            )
-                        }
+                    else:  # kind == "event" — approve()/waitForEvent() gate child
+                        child_task = start_event_wait_call(
+                            ctx,
+                            call_id=cid,
+                            spec=spec,
+                            exec_id=exec_id,
+                            otel=otel,
+                        )
 
                     if child_task is None or (
                         isinstance(child_task, dict) and child_task.get("dispatchError")
