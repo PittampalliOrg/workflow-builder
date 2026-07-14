@@ -14,6 +14,7 @@ and never executes the activity body).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -152,6 +153,19 @@ def make_evaluator(
     return ev
 
 
+def make_spawn_sequence(*values):
+    """Successive spawn_session_for_workflow bodies (last one repeats) — models
+    a per-session host progressing queued -> ready across P2 re-polls."""
+    state = {"i": 0}
+
+    def _next():
+        value = values[min(state["i"], len(values) - 1)]
+        state["i"] += 1
+        return value
+
+    return _next
+
+
 # ---------------------------------------------------------------------------
 # FakeCtx
 # ---------------------------------------------------------------------------
@@ -168,6 +182,11 @@ class FakeCtx:
     ):
         self.instance_id = instance_id
         self.is_replaying = False
+        # Deterministic fake workflow clock (concurrency plan P2): readiness
+        # waits now live in workflow code as durable-timer polls keyed off
+        # ctx.current_utc_datetime; the clock starts fixed and only advances
+        # when a create_timer fires, so replay-determinism assertions hold.
+        self._now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         self._evaluator = evaluator
         self._record_fn = record_fn or (lambda inp: {"status": "done"})
         self._usage_values = list(usage_values or [])
@@ -195,6 +214,10 @@ class FakeCtx:
         self.stop_inputs: list[dict] = []
 
     # -- deterministic side effects captured for assertions ----------------
+    @property
+    def current_utc_datetime(self) -> datetime:
+        return self._now
+
     def set_custom_status(self, status: str) -> None:
         self.custom_statuses.append(status)
 
@@ -214,9 +237,16 @@ class FakeCtx:
         task.complete(result)
         return task
 
-    def create_timer(self, fire_after) -> CompletableTask:
-        # Usage-settle gate (budget-bounded runs): fires immediately in tests.
-        self.action_log.append(("timer", str(fire_after)))
+    def create_timer(self, fire_at) -> CompletableTask:
+        # Durable timers: the usage-settle gate passes a timedelta; the P2
+        # workflow-level readiness polls pass an absolute datetime derived from
+        # ctx.current_utc_datetime. Both fire immediately in tests, but the
+        # fake clock advances deterministically to the timer's fire time so
+        # poll deadlines are exercised for real.
+        if isinstance(fire_at, timedelta):
+            fire_at = self._now + fire_at
+        self.action_log.append(("timer", fire_at.isoformat()))
+        self._now = fire_at
         task = CompletableTask()
         task.complete(None)
         return task
@@ -336,6 +366,13 @@ class FakeCtx:
             "appId": (
                 bridge.get("agentAppId") if isinstance(bridge, dict) else "dapr-agent-py"
             ),
+            # Concurrency plan P2: prepare_script_call now returns the ensure
+            # payload + the BFF's last host status so the pump's durable
+            # readiness barrier can re-poll queued hosts.
+            "agentHostStatus": (
+                bridge.get("agentHostStatus") if isinstance(bridge, dict) else None
+            ),
+            "bridgePayload": {"sessionId": child_instance_id, "nodeId": cid},
         }
 
     # -- test helpers to complete real child tasks -------------------------
@@ -481,6 +518,110 @@ def test_default_serial_mode_preserves_legacy_spawn_path_for_replay_safety():
         a[0] == "activity" and a[1] == "spawn_session_for_workflow"
         for a in ctx.action_log
     )
+
+
+def _queued_bridge_body(**overrides):
+    body = {
+        "childInput": {"foo": "bar"},
+        "agentAppId": "agent-session-abc",
+        "agentId": "ag1",
+        "agentHostStatus": "queued",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_batch_v2_queued_host_polls_on_durable_timer_until_ready():
+    """Concurrency plan P2: the activity is single-shot; a queued per-session
+    host is re-polled by the PUMP on durable ctx.create_timer ticks, and the
+    call dispatches once the re-poll reports ready (refreshed childInput wins,
+    the pump's overlay keys are preserved)."""
+    cid = "a" * 40 + "_0"
+    ready = _queued_bridge_body(
+        childInput={"foo": "bar", "runtimeSandboxName": "sb-1"},
+        agentHostStatus="ready",
+    )
+    ctx = FakeCtx(
+        evaluator=make_evaluator([agent_task(cid, label="A")], "done"),
+        spawn_result=make_spawn_sequence(_queued_bridge_body(), ready),
+    )
+    inp = base_input(dispatchMode="batch-v2")
+    steps = [lambda c: c.complete_child(cid, {"success": True, "content": "ok"})]
+    result = drive(dynamic_script_workflow(ctx, inp), ctx, steps)
+    assert result["success"] is True
+
+    # Exactly one workflow-level re-poll activity, preceded by a durable timer,
+    # both BEFORE the child dispatch.
+    spawn_polls = [
+        i for i, a in enumerate(ctx.action_log)
+        if a[0] == "activity" and a[1] == "spawn_session_for_workflow"
+    ]
+    timers = [i for i, a in enumerate(ctx.action_log) if a[0] == "timer"]
+    first_child = next(i for i, a in enumerate(ctx.action_log) if a[0] == "child")
+    assert len(spawn_polls) == 1
+    assert timers and timers[0] < spawn_polls[0] < first_child
+
+    # The re-polled body's childInput reaches the dispatched child, with the
+    # prepared descriptor's overlay keys re-applied.
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["runtimeSandboxName"] == "sb-1"
+    assert child_input["nodeId"] == cid
+    assert child_input["workflowExecutionId"] == "e1"
+    assert child_input["agentAppId"] == "agent-session-abc"
+
+
+def test_batch_v2_host_ready_timeout_journals_per_call_dispatch_error(monkeypatch):
+    """Concurrency plan P2: a host that never leaves 'queued' times out at the
+    pump's durable barrier and becomes a PER-CALL dispatchError journal row —
+    the run itself proceeds (no whole-run TimeoutError)."""
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "5")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "12")
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(
+        evaluator=make_evaluator([agent_task(cid)], "done"),
+        spawn_result=_queued_bridge_body(),
+    )
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(dispatchMode="batch-v2")), ctx, []
+    )
+    assert result["success"] is True  # the script run completes
+    assert ctx.children == {}  # the timed-out call never dispatched a child
+    assert len(ctx.record_inputs) == 1
+    raw = ctx.record_inputs[0]["raw"]
+    assert raw["success"] is False
+    assert "did not become ready" in raw["error"]
+    # Deadline honored on the fake clock: 12s timeout / 5s poll = 2 re-polls.
+    spawn_polls = [
+        a for a in ctx.action_log
+        if a[0] == "activity" and a[1] == "spawn_session_for_workflow"
+    ]
+    assert len(spawn_polls) == 2
+
+
+def test_serial_mode_queued_host_polls_on_durable_timer_until_ready():
+    """Concurrency plan P2 (serial path): spawn_session_with_host_wait re-calls
+    the single-shot spawn activity on durable timers until the host is ready,
+    then the child dispatches — replacing the old in-activity sleep loop."""
+    cid = "a" * 40 + "_0"
+    ready = _queued_bridge_body(agentHostStatus="ready")
+    ctx = FakeCtx(
+        evaluator=make_evaluator([agent_task(cid)], "done"),
+        spawn_result=make_spawn_sequence(_queued_bridge_body(), ready),
+    )
+    steps = [lambda c: c.complete_child(cid, {"success": True, "content": "ok"})]
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, steps)
+    assert result["success"] is True
+
+    spawn_calls = [
+        i for i, a in enumerate(ctx.action_log)
+        if a[0] == "activity" and a[1] == "spawn_session_for_workflow"
+    ]
+    timers = [i for i, a in enumerate(ctx.action_log) if a[0] == "timer"]
+    first_child = next(i for i, a in enumerate(ctx.action_log) if a[0] == "child")
+    # ensure -> timer -> re-poll -> dispatch
+    assert len(spawn_calls) == 2
+    assert timers and spawn_calls[0] < timers[0] < spawn_calls[1] < first_child
 
 
 def test_child_failure_journals_null():
@@ -979,6 +1120,9 @@ def test_agent_dispatch_stamps_resolved_runtime_on_agent_config(monkeypatch):
 
     class _Ctx:
         instance_id = "dsw-test-exec-e1"
+        # Concurrency plan P2: spawn_session_with_host_wait derives its poll
+        # deadline from the workflow clock even when no host wait is needed.
+        current_utc_datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
         def call_activity(self, fn, *, input=None, retry_policy=None):
             name = getattr(fn, "__name__", str(fn))

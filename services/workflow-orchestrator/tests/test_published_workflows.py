@@ -317,6 +317,9 @@ def _block_psycopg2_imports(monkeypatch):
 SPAWN_SESSION = _load_module(
     "workflow_orchestrator_spawn_session", "activities/spawn_session.py"
 )
+SESSION_HOST_WAIT = _load_module(
+    "workflow_orchestrator_session_host_wait", "workflows/session_host_wait.py"
+)
 PERSIST_RESULTS = _load_module(
     "workflow_orchestrator_persist_results", "activities/persist_results_to_db.py"
 )
@@ -331,6 +334,35 @@ class _FakeWorkflowTask:
 
     def get_result(self):
         return self.result
+
+
+class _FakeDurableClockCtx:
+    """Deterministic workflow clock for durable-timer readiness polling.
+
+    Concurrency plan P2 moved agent-host readiness waits out of the spawn
+    activity into workflow code (``workflows.session_host_wait``), which reads
+    ``ctx.current_utc_datetime`` and sleeps on ``ctx.create_timer``. The fake
+    clock starts at a fixed epoch and advances to each timer's fire_at when
+    ``create_timer`` records it, mirroring replay, so action logs stay
+    deterministic.
+    """
+
+    _CLOCK_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def __init__(self):
+        self._now = self._CLOCK_EPOCH
+        self.timers = []
+
+    @property
+    def current_utc_datetime(self):
+        return self._now
+
+    def create_timer(self, fire_at):
+        if isinstance(fire_at, timedelta):
+            fire_at = self._now + fire_at
+        self.timers.append(fire_at)
+        self._now = fire_at
+        return _FakeWorkflowTask("timer", fire_at=fire_at)
 
 
 class _FakeTerminalWorkflowCtx:
@@ -2434,7 +2466,7 @@ def test_durable_run_routes_through_session_bridge():
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-wf-1"
 
         def call_activity(self, activity, input=None):
@@ -2456,9 +2488,6 @@ def test_durable_run_routes_through_session_bridge():
                 instance_id=instance_id,
                 app_id=app_id,
             )
-
-        def create_timer(self, timeout):
-            return _FakeWorkflowTask("timer", timeout=timeout)
 
         def wait_for_external_event(self, event_name):
             return _FakeWorkflowTask("external_event", result={}, name=event_name)
@@ -2570,7 +2599,7 @@ def test_durable_run_session_bridge_passes_own_history_propagation():
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-wf-propagation"
 
         def call_activity(self, activity, input=None):
@@ -2597,9 +2626,6 @@ def test_durable_run_session_bridge_passes_own_history_propagation():
                 app_id=app_id,
                 propagation=propagation,
             )
-
-        def create_timer(self, timeout):
-            return _FakeWorkflowTask("timer", timeout=timeout)
 
         def wait_for_external_event(self, event_name):
             return _FakeWorkflowTask("external_event", result={}, name=event_name)
@@ -2792,7 +2818,7 @@ def test_durable_run_session_bridge_times_out_when_child_does_not_finish(monkeyp
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-wf-timeout"
 
         def call_activity(self, activity, input=None):
@@ -2811,9 +2837,6 @@ def test_durable_run_session_bridge_times_out_when_child_does_not_finish(monkeyp
                 instance_id=instance_id,
                 app_id=app_id,
             )
-
-        def create_timer(self, timeout):
-            return _FakeWorkflowTask("timer", timeout=timeout)
 
     workflow_gen = SW_WORKFLOW._handle_call_task(
         _FakeCtx(),
@@ -2874,7 +2897,7 @@ def test_benchmark_durable_run_session_bridge_uses_child_completion_without_pare
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-benchmark-wf-1"
 
         def call_activity(self, activity, input=None):
@@ -2975,7 +2998,7 @@ def test_benchmark_durable_run_session_bridge_returns_cancelled_on_workflow_canc
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-benchmark-wf-cancel"
 
         def call_activity(self, activity, input=None):
@@ -3050,7 +3073,14 @@ def test_benchmark_durable_run_session_bridge_returns_cancelled_on_workflow_canc
     assert result["childWorkflowName"] == "session_workflow"
 
 
-def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
+def test_benchmark_durable_run_polls_readiness_with_durable_timer_only_while_queued(
+    monkeypatch,
+):
+    # Concurrency plan P2: readiness waiting moved from the spawn activity into
+    # workflow history — the parent adds a durable timer per queued poll and
+    # stops timing the moment the BFF reports the host ready.
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "5")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "600")
     workflow = types.SimpleNamespace(
         use=None,
         document=types.SimpleNamespace(name="test-workflow"),
@@ -3076,8 +3106,8 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
         integrations=None,
     )
 
-    class _FakeCtx:
-        instance_id = "parent-benchmark-wf-pre-waited-host"
+    class _FakeCtx(_FakeDurableClockCtx):
+        instance_id = "parent-benchmark-wf-queued-host"
 
         def call_activity(self, activity, input=None):
             return {
@@ -3099,13 +3129,11 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
                 app_id=app_id,
             )
 
-        def create_timer(self, timeout):
-            raise AssertionError("agent host readiness belongs inside spawn_session activity")
-
         def wait_for_external_event(self, event_name):
             return _FakeWorkflowTask("external_event", result={}, name=event_name)
 
     ctx = _FakeCtx()
+    start = ctx.current_utc_datetime
     workflow_gen = SW_WORKFLOW._handle_call_task(
         ctx,
         "durable_validation_run",
@@ -3127,6 +3155,24 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
     yielded = next(workflow_gen)
     assert yielded["activity"] == "spawn_session_for_workflow"
 
+    # Host still queued: the bridge sleeps on ONE durable timer, then re-polls
+    # the single-shot spawn activity.
+    timer_yield = workflow_gen.send(
+        {
+            "childInput": {"sessionId": "child-session"},
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "queued",
+        }
+    )
+    assert timer_yield.kind == "timer"
+    assert timer_yield.fire_at == start + timedelta(seconds=5)
+    assert ctx.timers == [start + timedelta(seconds=5)]
+
+    repoll = workflow_gen.send(None)
+    assert repoll["activity"] == "spawn_session_for_workflow"
+
+    # Host ready: no further timers; child dispatch proceeds against the
+    # per-session host app id.
     wait_yield = workflow_gen.send(
         {
             "childInput": {"sessionId": "child-session"},
@@ -3145,6 +3191,9 @@ def test_benchmark_durable_run_does_not_add_parent_readiness_timer():
 
     result = stop.value.value
     assert result["success"] is True
+    # The readiness poll was the only timer — benchmark runs still add no
+    # parent per-turn timeout timer.
+    assert ctx.timers == [start + timedelta(seconds=5)]
 
 
 def test_benchmark_durable_run_returns_cancelled_when_spawn_sees_cancelled_run():
@@ -3173,7 +3222,7 @@ def test_benchmark_durable_run_returns_cancelled_when_spawn_sees_cancelled_run()
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-benchmark-wf-cancel"
 
         def call_activity(self, activity, input=None):
@@ -3258,7 +3307,7 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-benchmark-wf-no-host-status"
 
         def call_activity(self, activity, input=None):
@@ -3328,36 +3377,50 @@ class _FakeResponse:
         return self._body
 
 
-def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch):
-    bodies = [
-        {
-            "sessionId": "child-session",
-            "agentAppId": "agent-session-abc123",
-            "agentHostStatus": "queued",
-            "childInput": {"sessionId": "child-session"},
-        },
-        {
-            "sessionId": "child-session",
-            "agentAppId": "agent-session-abc123",
-            "agentHostStatus": "ready",
-            "childInput": {"sessionId": "child-session"},
-        },
-    ]
+class _FakeHostWaitCtx(_FakeDurableClockCtx):
+    """Workflow ctx for spawn_session_with_host_wait generator tests."""
+
+    instance_id = "parent-host-wait-wf-1"
+
+    def __init__(self):
+        super().__init__()
+        self.activity_calls = []
+
+    def call_activity(self, activity, input=None):
+        self.activity_calls.append(input)
+        return {
+            "kind": "call_activity",
+            "activity": getattr(activity, "__name__", str(activity)),
+            "input": input,
+        }
+
+
+def test_spawn_session_activity_posts_once_and_propagates_otel_headers(monkeypatch):
+    # Concurrency plan P2: the activity is single-shot — one ensure POST that
+    # returns the current host status; no in-activity readiness sleeping.
     posts = []
 
     def fake_post(endpoint, **kwargs):
         posts.append((endpoint, kwargs))
-        return _FakeResponse(bodies[len(posts) - 1])
+        return _FakeResponse(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "queued",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
 
-    sleeps = []
-    monotonic_values = iter([0, 1])
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "1")
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "10")
     monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
-    monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(SPAWN_SESSION.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        SPAWN_SESSION.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("single-shot ensure POST should not sleep on queued host")
+        ),
+    )
 
-    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+    body = SPAWN_SESSION._post_ensure_for_workflow(
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
@@ -3368,15 +3431,67 @@ def test_spawn_session_activity_polls_agent_session_host_until_ready(monkeypatch
         },
     )
 
-    assert body["agentHostStatus"] == "ready"
-    assert len(posts) == 2
-    assert sleeps == [1]
+    # Queued host status is returned to the caller instead of being polled
+    # inside the activity; the workflow-side wait decides what to do next.
+    assert body["agentHostStatus"] == "queued"
+    assert SPAWN_SESSION.agent_session_host_wait_needed(body) is True
+    assert len(posts) == 1
     assert posts[0][1]["headers"] == {
         "X-Internal-Token": "token",
         "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
         "tracestate": "vendor=value",
         "baggage": "workflow.execution.id=exec_1,session.id=session_1",
     }
+
+
+def test_spawn_session_host_wait_polls_agent_session_host_until_ready(monkeypatch):
+    # Concurrency plan P2: readiness polling moved out of the activity into
+    # workflow code — durable ctx.create_timer between single-shot re-polls.
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "1")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "10")
+
+    ctx = _FakeHostWaitCtx()
+    start = ctx.current_utc_datetime
+    gen = SESSION_HOST_WAIT.spawn_session_with_host_wait(
+        ctx, {"sessionId": "child-session"}, lambda value: value
+    )
+
+    first = next(gen)
+    assert first["activity"] == "spawn_session_for_workflow"
+    assert first["input"] == {"sessionId": "child-session"}
+
+    timer_yield = gen.send(
+        {
+            "sessionId": "child-session",
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "queued",
+            "childInput": {"sessionId": "child-session"},
+        }
+    )
+    assert timer_yield.kind == "timer"
+    assert timer_yield.fire_at == start + timedelta(seconds=1)
+
+    repoll = gen.send(None)
+    assert repoll["activity"] == "spawn_session_for_workflow"
+    assert repoll["input"] == {"sessionId": "child-session"}
+
+    with pytest.raises(StopIteration) as stop:
+        gen.send(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "ready",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
+
+    result = stop.value.value
+    assert result["agentHostStatus"] == "ready"
+    assert ctx.timers == [start + timedelta(seconds=1)]
+    assert ctx.activity_calls == [
+        {"sessionId": "child-session"},
+        {"sessionId": "child-session"},
+    ]
 
 
 def test_spawn_session_activity_retries_transient_request_error(monkeypatch):
@@ -3404,7 +3519,7 @@ def test_spawn_session_activity_retries_transient_request_error(monkeypatch):
     monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
     monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+    body = SPAWN_SESSION._post_ensure_for_workflow(
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
@@ -3440,7 +3555,7 @@ def test_spawn_session_activity_retries_retryable_bff_status(monkeypatch):
     monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
     monkeypatch.setattr(SPAWN_SESSION.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+    body = SPAWN_SESSION._post_ensure_for_workflow(
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
@@ -3461,7 +3576,7 @@ def test_spawn_session_activity_returns_cancelled_for_cancelled_benchmark_run(mo
 
     monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
 
-    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+    body = SPAWN_SESSION._post_ensure_for_workflow(
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
@@ -3473,28 +3588,42 @@ def test_spawn_session_activity_returns_cancelled_for_cancelled_benchmark_run(mo
     assert body["stopReason"]["type"] == "cancelled"
 
 
-def test_spawn_session_activity_times_out_waiting_for_agent_session_host(monkeypatch):
-    def fake_post(_endpoint, **_kwargs):
-        return _FakeResponse(
-            {
-                "sessionId": "child-session",
-                "agentAppId": "agent-session-abc123",
-                "agentHostStatus": "queued",
-                "childInput": {"sessionId": "child-session"},
-            }
-        )
-
-    monotonic_values = iter([0, 4])
+def test_spawn_session_host_wait_times_out_waiting_for_agent_session_host(monkeypatch):
+    # Concurrency plan P2: the readiness timeout is enforced by the
+    # workflow-side durable-timer loop against ctx.current_utc_datetime, not by
+    # time.monotonic inside the activity; the TimeoutError shape is unchanged.
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "2")
     monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "3")
-    monkeypatch.setattr(SPAWN_SESSION.requests, "post", fake_post)
-    monkeypatch.setattr(SPAWN_SESSION.time, "monotonic", lambda: next(monotonic_values))
 
+    queued_body = {
+        "sessionId": "child-session",
+        "agentAppId": "agent-session-abc123",
+        "agentHostStatus": "queued",
+        "childInput": {"sessionId": "child-session"},
+    }
+
+    ctx = _FakeHostWaitCtx()
+    start = ctx.current_utc_datetime
+    gen = SESSION_HOST_WAIT.spawn_session_with_host_wait(
+        ctx, {"sessionId": "child-session"}, lambda value: value
+    )
+
+    first = next(gen)
+    assert first["activity"] == "spawn_session_for_workflow"
+
+    timer_yield = gen.send(dict(queued_body))
+    assert timer_yield.kind == "timer"
+    assert timer_yield.fire_at == start + timedelta(seconds=2)
+
+    repoll = gen.send(None)
+    assert repoll["activity"] == "spawn_session_for_workflow"
+
+    # Next poll would land past the deadline (start + 3s) — the wait gives up
+    # with the same TimeoutError the in-activity loop used to raise.
     with pytest.raises(TimeoutError, match="agent workflow host agent-session-abc123"):
-        SPAWN_SESSION._ensure_agent_session_host_ready(
-            "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
-            {"sessionId": "child-session"},
-            "token",
-        )
+        gen.send(dict(queued_body))
+
+    assert ctx.timers == [start + timedelta(seconds=2)]
 
 
 def test_spawn_session_activity_preserves_old_bff_missing_host_status(monkeypatch):
@@ -3514,13 +3643,16 @@ def test_spawn_session_activity_preserves_old_bff_missing_host_status(monkeypatc
         lambda _seconds: (_ for _ in ()).throw(AssertionError("should not sleep")),
     )
 
-    body = SPAWN_SESSION._ensure_agent_session_host_ready(
+    body = SPAWN_SESSION._post_ensure_for_workflow(
         "http://workflow-builder/api/internal/sessions/ensure-for-workflow",
         {"sessionId": "child-session"},
         "token",
     )
 
     assert body["agentAppId"] == "agent-session-abc123"
+    # Missing agentHostStatus (old BFF) => the workflow-side wait (concurrency
+    # plan P2) dispatches immediately instead of polling.
+    assert SPAWN_SESSION.agent_session_host_wait_needed(body) is False
 
 
 def test_benchmark_sw_workflow_skips_parent_workspace_cleanup():
@@ -3565,7 +3697,7 @@ def _durable_skill_policy_generator(agent_config):
         integrations=None,
     )
 
-    class _FakeCtx:
+    class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-skill-wf-1"
 
         def call_activity(self, activity, input=None):

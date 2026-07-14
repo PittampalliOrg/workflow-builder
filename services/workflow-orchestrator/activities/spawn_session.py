@@ -15,11 +15,17 @@ Durability:
     derived from ``{workflow_execution_id}__{node_id}__run__{index}``.
     The endpoint short-circuits if a row already exists so Dapr activity
     retries don't duplicate writes.
-  * Polling is intentionally contained in this activity when the BFF reports
-    that a per-session agent host is still queued. Dapr workflow code must not
-    add readiness timers around this path because that mutates parent workflow
-    history and can trip replay nondeterminism during high fanout runs.
-  * Does not hold any workflow state in memory between yields; activity retries
+  * NON-BLOCKING (concurrency plan P2): this activity makes ONE ensure POST
+    and returns the BFF's current host status. Host-readiness waiting lives in
+    workflow code as a durable-timer poll loop
+    (``workflows.session_host_wait``) — the previous in-activity
+    ``time.sleep`` loop pinned one of the runtime's thread-pool workers for up
+    to AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS per in-flight spawn, capping
+    fleet-wide concurrent spawns at replicas x thread-pool size and
+    head-of-line blocking every other activity during admission waves. The
+    timer loop is the standard replay-safe eternal-poll pattern (each
+    iteration's timer + activity events are recorded and replayed in order).
+  * Does not hold any workflow state in memory between yields; re-invocations
     are safe because the BFF endpoint is idempotent for ``sessionId``.
 """
 
@@ -102,6 +108,21 @@ def _agent_session_host_status(value: dict[str, Any]) -> str | None:
 
 def _agent_session_host_is_ready(value: str | None) -> bool:
     return value in {"ready", "running"}
+
+
+def agent_session_host_wait_needed(result: Any) -> bool:
+    """True when a bridge result reports a per-session host that is not ready yet.
+
+    Non-host runtimes (no agent-session-* app id), missing statuses, and
+    cancelled results all return False — callers dispatch immediately in
+    those cases, matching the old in-activity loop's exit conditions.
+    """
+    if not isinstance(result, dict) or result.get("cancelled") is True:
+        return False
+    if not _is_agent_session_app_id(result.get("agentAppId")):
+        return False
+    status = _agent_session_host_status(result)
+    return status is not None and not _agent_session_host_is_ready(status)
 
 
 def _post_ensure_for_workflow(
@@ -194,42 +215,6 @@ def _post_ensure_for_workflow(
             f"spawn_session_for_workflow: expected object from BFF, got {type(body).__name__}"
         )
     return body
-
-
-def _ensure_agent_session_host_ready(
-    endpoint: str,
-    payload: dict[str, Any],
-    internal_token: str,
-    otel: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    poll_seconds = _int_env(
-        "AGENT_SESSION_HOST_READY_POLL_SECONDS",
-        DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS,
-    )
-    timeout_seconds = _int_env(
-        "AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS",
-        DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS,
-    )
-    deadline = time.monotonic() + timeout_seconds
-    body = _post_ensure_for_workflow(endpoint, payload, internal_token, otel)
-
-    while True:
-        agent_app_id = body.get("agentAppId")
-        if not _is_agent_session_app_id(agent_app_id):
-            return body
-
-        host_status = _agent_session_host_status(body)
-        if host_status is None or _agent_session_host_is_ready(host_status):
-            return body
-
-        if time.monotonic() >= deadline:
-            raise TimeoutError(
-                f"agent workflow host {agent_app_id} did not become ready before "
-                f"scheduling session_workflow; last status={host_status}"
-            )
-
-        time.sleep(poll_seconds)
-        body = _post_ensure_for_workflow(endpoint, payload, internal_token, otel)
 
 
 def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -330,7 +315,7 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
         }
 
         endpoint = f"{workflow_builder_url}/api/internal/sessions/ensure-for-workflow"
-        body = _ensure_agent_session_host_ready(endpoint, payload, internal_token, otel)
+        body = _post_ensure_for_workflow(endpoint, payload, internal_token, otel)
 
         if body.get("cancelled") is True:
             return {

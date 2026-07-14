@@ -58,6 +58,10 @@ from workflows.team_join_workflow import (
     team_join_workflow,
     TEAM_JOIN_WORKFLOW_NAME,
 )
+from workflows.fork_branch_workflow import (
+    fork_branch_workflow,
+    FORK_BRANCH_WORKFLOW_NAME,
+)
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
@@ -1172,6 +1176,19 @@ async def lifespan(app: FastAPI):
     logger.info(
         "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
         TEAM_JOIN_WORKFLOW_NAME,
+    )
+
+    # Register the fork-branch child (concurrency plan P2: SW fork branches
+    # fan out as children joined via when_all instead of running sequentially).
+    wfr.register_versioned_workflow(
+        fork_branch_workflow,
+        name=FORK_BRANCH_WORKFLOW_NAME,
+        version_name="1.0.0",
+        is_latest=True,
+    )
+    logger.info(
+        "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
+        FORK_BRANCH_WORKFLOW_NAME,
     )
 
     # Start the workflow runtime

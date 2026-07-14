@@ -30,6 +30,7 @@ from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
+from dapr.ext.workflow import when_all as wf_when_all
 from dapr.ext.workflow import when_any as wf_when_any
 
 from core.config import config
@@ -1992,7 +1993,7 @@ def _run_native_durable_agent_child_workflow(
     )
 
     if session_bridge_eligible:
-        from activities.spawn_session import spawn_session_for_workflow
+        from workflows.session_host_wait import spawn_session_with_host_wait
 
         # userId + projectId are resolved server-side from workflow_executions
         # by the internal endpoint, so we don't need them in TaskContext.
@@ -2055,8 +2056,12 @@ def _run_native_durable_agent_child_workflow(
             "goal": goal_spec,
             "_otel": tc.otel_ctx,
         }
-        bridge_result = yield ctx.call_activity(
-            spawn_session_for_workflow, input=_freeze(bridge_payload)
+        # Durable-timer readiness wait (concurrency plan P2): the spawn
+        # activity is a single non-blocking ensure POST; queued-host polling
+        # happens here in workflow history so admission waves can have
+        # hundreds of pending spawns without exhausting activity threads.
+        bridge_result = yield from spawn_session_with_host_wait(
+            ctx, bridge_payload, _freeze
         )
         if isinstance(bridge_result, dict) and bridge_result.get("cancelled"):
             reason = bridge_result.get("error") or "workflow cancelled"
@@ -3516,20 +3521,118 @@ def _handle_fork_task(
     task_data: dict[str, Any],
     tc: TaskContext,
 ) -> Any:
-    """Execute a fork task: run branches (sequentially for now, parallel TBD)."""
+    """Execute a fork task: branches run CONCURRENTLY as child workflows.
+
+    Concurrency plan P2: each branch dispatches as a ``fork_branch_workflow``
+    child (fan-out/fan-in via ``when_all``) so a 3-branch fork runs 3 agents
+    at once instead of one at a time. Parallelism is bounded per wave by
+    ``fork.maxConcurrent`` on the task (falling back to
+    SW_FORK_MAX_PARALLEL_BRANCHES, default 8). Branch children receive a
+    snapshot of the parent context and their output/state deltas merge back
+    in deterministic wave order (last-wins on conflicts). Kill switch:
+    SW_FORK_PARALLEL_ENABLED=false restores the sequential in-history path
+    (also used for single-branch forks, where a child adds only overhead).
+    """
     fork_config = task_data.get("fork", {})
     branches = fork_config.get("branches", [])
     task_input = _resolve_task_input(task_data, tc)
     _log_info(ctx, "[SW Workflow] fork task: %s (%d branches)", task_name, len(branches))
 
-    # Execute branches sequentially (Dapr doesn't natively support parallel activities
-    # within a single workflow function without fan-out/fan-in patterns)
+    branch_items = [
+        (branch_name, branch_data)
+        for branch_item in branches
+        for branch_name, branch_data in branch_item.items()
+    ]
+    parallel_enabled = (
+        len(branch_items) > 1
+        and _as_bool(os.environ.get("SW_FORK_PARALLEL_ENABLED", "true"), True)
+    )
+
     branch_results = {}
-    for branch_item in branches:
-        for branch_name, branch_data in branch_item.items():
+    if not parallel_enabled:
+        for branch_name, branch_data in branch_items:
             branch_task_name = f"{task_name}/{branch_name}"
             result = yield from _dispatch_task(ctx, branch_task_name, branch_data, tc)
             branch_results[branch_name] = result
+    else:
+        from workflows.fork_branch_workflow import FORK_BRANCH_WORKFLOW_NAME
+
+        try:
+            max_parallel = int(
+                fork_config.get("maxConcurrent")
+                or os.environ.get("SW_FORK_MAX_PARALLEL_BRANCHES", "8")
+            )
+        except (TypeError, ValueError):
+            max_parallel = 8
+        max_parallel = max(1, max_parallel)
+
+        workflow_doc = tc.workflow.model_dump(by_alias=True, exclude_none=True)
+
+        def _instance_token(value: str) -> str:
+            return re.sub(r"[^A-Za-z0-9_-]", "-", value)
+
+        for wave_start in range(0, len(branch_items), max_parallel):
+            wave = branch_items[wave_start : wave_start + max_parallel]
+            wave_tasks = []
+            for branch_name, branch_data in wave:
+                branch_task_name = f"{task_name}/{branch_name}"
+                child_input = {
+                    "workflow": workflow_doc,
+                    "workflowId": tc.workflow_id,
+                    "triggerData": tc.trigger_data,
+                    "dbExecutionId": tc.db_execution_id,
+                    "integrations": tc.integrations,
+                    "workspaceExecutionId": tc.workspace_execution_id,
+                    "seedWorkspaceFrom": tc.seed_workspace_from,
+                    "resumable": tc.resumable,
+                    "branchTaskName": branch_task_name,
+                    "branchTask": branch_data,
+                    "stateVars": tc.state_vars,
+                    "taskOutputs": tc.task_outputs,
+                    "completedTasks": sorted(tc.completed_tasks),
+                    "_otel": tc.otel_ctx,
+                }
+                wave_tasks.append(
+                    (
+                        branch_name,
+                        ctx.call_child_workflow(
+                            FORK_BRANCH_WORKFLOW_NAME,
+                            input=_freeze(child_input),
+                            instance_id=(
+                                f"{ctx.instance_id}__fork__"
+                                f"{_instance_token(task_name)}__"
+                                f"{_instance_token(branch_name)}"
+                            ),
+                        ),
+                    )
+                )
+            wave_results = yield wf_when_all([task for _, task in wave_tasks])
+            for (branch_name, _), child_result in zip(wave_tasks, wave_results):
+                if not isinstance(child_result, dict):
+                    branch_results[branch_name] = child_result
+                    continue
+                branch_results[branch_name] = child_result.get("result")
+                child_outputs = child_result.get("taskOutputs")
+                if isinstance(child_outputs, dict):
+                    for key, value in child_outputs.items():
+                        if key != "trigger":
+                            tc.task_outputs[key] = value
+                child_state = child_result.get("stateVars")
+                if isinstance(child_state, dict):
+                    tc.state_vars.update(child_state)
+                child_completed = child_result.get("completedTasks")
+                if isinstance(child_completed, list):
+                    tc.completed_tasks.update(str(item) for item in child_completed)
+                child_counts = child_result.get("taskExecutionCounts")
+                if isinstance(child_counts, dict):
+                    for key, value in child_counts.items():
+                        try:
+                            count = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                        tc.task_execution_counts[key] = max(
+                            tc.task_execution_counts.get(key, 0), count
+                        )
 
     fork_result = _apply_task_output_definition(
         task_data,
