@@ -689,7 +689,12 @@ def start_action_call(
         },
         # Script inputs are concrete JS values — no {{...}} templates to resolve.
         "nodeOutputs": {},
-        "executionId": exec_id,
+        # SW parity (sw_workflow.py:4160 `execution_id = ctx.instance_id`): the
+        # openshell tool endpoints (/api/tools/*) resolve a sandbox by
+        # executionId = the DAPR INSTANCE id, not the DB row id. Passing the DB
+        # id made workspace/write_file 404 while profile/command (which take a
+        # workspaceRef) succeeded — live-caught on dev 2026-07-14.
+        "executionId": ctx.instance_id,
         "workflowId": workflow_id or "",
         "dbExecutionId": exec_id,
         "connectionExternalId": (

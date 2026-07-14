@@ -256,8 +256,8 @@ describe("code-eval-item: emitted plan", () => {
 					: task.actionSlug === "workspace/profile"
 						? { workspaceRef: "ws-1", sandboxName: "sb-1" }
 						: task.actionSlug === "workspace/read_file"
-							? { content: "def solve(): pass" }
-							: { exitCode: 0, stdout: "{}", stderr: "" },
+							? { result: { content: "def solve(): pass" }, backend: "openshell" }
+							: { result: { exitCode: 0, stdout: "{}", stderr: "" }, backend: "openshell" },
 			10,
 		);
 		const labels = tasks.map((t) => String(t.opts.label ?? t.actionSlug));
@@ -290,7 +290,7 @@ describe("code-eval-item: emitted plan", () => {
 			(task) =>
 				task.actionSlug === "workspace/profile"
 					? { workspaceRef: "ws-1", sandboxName: "sb-1" }
-					: { exitCode: 1, stderr: "no python" },
+					: { result: { exitCode: 1, stderr: "no python" }, backend: "openshell" },
 			6,
 		);
 		expect(tasks.filter((t) => t.kind === "agent")).toHaveLength(0);
@@ -316,7 +316,7 @@ describe("code-eval-item: emitted plan", () => {
 					? "done"
 					: task.actionSlug === "workspace/profile"
 						? { workspaceRef: "ws-9", sandboxName: "sb-9" }
-						: { exitCode: 0, stdout: "{}" },
+						: { result: { exitCode: 0, stdout: "{}" }, backend: "openshell" },
 			10,
 		);
 		const solve = tasks.find((t) => t.kind === "agent");

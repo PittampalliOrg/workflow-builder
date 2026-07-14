@@ -33,8 +33,15 @@ const profile = await action('workspace/profile', {
   sandboxPolicy: { keepAfterRun: true, mode: 'per-run', template, ttlSeconds: 1800 },
 }, { label: 'workspace_profile' })
 
-const workspaceRef = profile?.workspaceRef
-const sandboxName = profile?.sandboxName
+// workspace/profile returns `{ result: { workspaceRef, sandbox: {...}, … } }` —
+// unwrap it (the SW spec read `.workspace_profile.workspaceRef` off the node
+// output envelope, which the interpreter had already flattened).
+const profileData = profile?.result ?? profile ?? {}
+const workspaceRef = profileData.workspaceRef
+const sandboxName =
+  profileData.sandboxName ??
+  profileData.sandbox?.details?.sandboxName ??
+  profileData.sandbox?.sandboxName
 
 const probe = await action('workspace/command', {
   workspaceRef,
@@ -43,7 +50,7 @@ const probe = await action('workspace/command', {
   timeoutMs: 60000,
 }, { label: 'validate_runtime', allowFailure: true })
 
-const probeExit = probe?.exitCode ?? 1
+const probeExit = shell(probe).exitCode
 let solutionContent = ''
 let tests = null
 let metadata = null
@@ -92,13 +99,25 @@ if (probeExit === 0) {
     path: '/sandbox/solution.py',
     timeoutMs: 60000,
   }, { label: 'read_solution', allowFailure: true })
-  solutionContent = solution?.content ?? ''
+  solutionContent = shell(solution).content
 
   metadata = await action('workspace/command', {
     workspaceRef,
     command: CAPTURE_METADATA_COMMAND,
     timeoutMs: 60000,
   }, { label: 'capture_metadata', allowFailure: true })
+}
+
+// workspace/* actions return `{ result: {stdout, stderr, exitCode}, backend, … }`
+// — unwrap it (the SW spec did this with `.output.result.stdout // .output.stdout`).
+function shell(res) {
+  const r = res?.result ?? res ?? {}
+  return {
+    exitCode: r.exitCode ?? res?.exitCode ?? 1,
+    stdout: r.stdout ?? res?.stdout ?? '',
+    stderr: r.stderr ?? res?.stderr ?? '',
+    content: r.content ?? res?.content ?? '',
+  }
 }
 
 function parseJson(text) {
@@ -109,10 +128,11 @@ function parseJson(text) {
   }
 }
 
-const meta_ = parseJson(metadata?.stdout)
-const exitCode = tests?.exitCode ?? 1
-const stdout = tests?.stdout ?? ''
-const stderr = tests?.stderr ?? ''
+const meta_ = parseJson(shell(metadata).stdout)
+const testsShell = shell(tests)
+const exitCode = tests ? testsShell.exitCode : 1
+const stdout = testsShell.stdout
+const stderr = testsShell.stderr
 
 return {
   taskId,
@@ -125,9 +145,5 @@ return {
   solutionContent,
   solutionSha256: meta_.solutionSha256 ?? '',
   testFileSha256: meta_.testFileSha256 ?? expected.testFileSha256 ?? '',
-  runtimeProbe: {
-    exitCode: probe?.exitCode,
-    stdout: probe?.stdout,
-    stderr: probe?.stderr,
-  },
+  runtimeProbe: shell(probe),
 }

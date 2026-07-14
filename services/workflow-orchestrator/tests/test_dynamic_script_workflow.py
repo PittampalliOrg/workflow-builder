@@ -1577,6 +1577,11 @@ def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
     assert inp["node"]["config"]["actionType"] == "workspace/command"
     assert inp["node"]["config"]["command"] == "ls"
     assert inp["idempotencyKey"] == f"wf1:e1:{cid}"
+    # SW parity (sw_workflow.py:4160): openshell /api/tools/* resolves a sandbox
+    # by executionId = the DAPR INSTANCE id. Passing the DB id 404'd
+    # workspace/write_file on dev while profile/command still worked.
+    assert inp["executionId"] == ctx.instance_id
+    assert inp["dbExecutionId"] == "e1"
     assert "skipIdempotencyGate" not in inp  # idempotent defaults to False
     # The activity envelope reached the journal verbatim.
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
