@@ -18,6 +18,7 @@ import type {
   PreviewEnvironmentDeletionIntent,
   PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentVersionedServiceCatalogPort,
+  VclusterPreviewCleanupSnapshot,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
@@ -26,6 +27,8 @@ const PLATFORM = "a".repeat(40);
 const SOURCE = "b".repeat(40);
 const CATALOG = `sha256:${"c".repeat(64)}` as const;
 const REQUESTED_AT = "2026-07-10T12:00:00.000Z";
+const TICKET_ROOT = "f".repeat(64);
+vi.stubEnv("PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN", TICKET_ROOT);
 const API_PATH =
   "/apis/preview.stacks.io/v1alpha1/namespaces/preview-system/previewenvironments";
 
@@ -149,6 +152,16 @@ function json(value: unknown, status = 200) {
 
 function bodyOf(init: RequestInit | undefined): Record<string, unknown> {
   return JSON.parse(String(init?.body));
+}
+
+function ticketFor(guard: { requestId: string; sourceRevision: string }) {
+  return {
+    name: command.name,
+    environmentUid: "uid-1",
+    requestId: guard.requestId,
+    sourceRevision: guard.sourceRevision,
+    signature: "e".repeat(64),
+  };
 }
 
 function previewRecord(): VclusterPreviewRecord {
@@ -474,6 +487,122 @@ describe("KubernetesPreviewEnvironmentDesiredStateAdapter", () => {
     });
   });
 
+  it("returns after the UID-fenced deletion request without waiting for absence", async () => {
+    const fetch = vi.fn(async (_path: string, init: RequestInit = {}) =>
+      init.method === "DELETE" ? json({ kind: "Status" }, 202) : json(resource()),
+    );
+    const sleep = vi.fn(async () => undefined);
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: fetch as never,
+      sleep,
+    });
+
+    await expect(
+      adapter.requestDelete({
+        name: command.name,
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+      }),
+    ).resolves.toEqual({
+      name: command.name,
+      environmentUid: "uid-1",
+      state: "deletion-requested",
+    });
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports an already-completed delete race as absent", async () => {
+    const fetch = vi.fn(async (_path: string, init: RequestInit = {}) =>
+      init.method === "DELETE"
+        ? json({ reason: "NotFound" }, 404)
+        : json(resource()),
+    );
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: fetch as never,
+    });
+
+    await expect(
+      adapter.requestDelete({
+        name: command.name,
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+      }),
+    ).resolves.toEqual({
+      name: command.name,
+      environmentUid: null,
+      state: "absent",
+    });
+  });
+
+  it("observes only the accepted UID and deletion tuple as pending", async () => {
+    const deleting = resource();
+    deleting.metadata.deletionTimestamp = "2026-07-14T12:00:00Z";
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: vi.fn(async () => json(deleting)) as never,
+    });
+
+    await expect(
+      adapter.observeDelete({
+        name: command.name,
+        environmentUid: "uid-1",
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+      }),
+    ).resolves.toBe("pending");
+  });
+
+  it("treats CR absence or a same-name replacement as ticket completion", async () => {
+    const replacement = resource();
+    replacement.metadata.uid = "uid-2";
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(json({ reason: "NotFound" }, 404))
+      .mockResolvedValueOnce(json(replacement));
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: fetch as never,
+    });
+    const input = {
+      name: command.name,
+      environmentUid: "uid-1",
+      guard: {
+        mode: "owned" as const,
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      },
+    };
+
+    await expect(adapter.observeDelete(input)).resolves.toBe("complete");
+    await expect(adapter.observeDelete(input)).resolves.toBe("complete");
+  });
+
+  it("fails closed if the accepted UID is no longer terminating", async () => {
+    const adapter = new KubernetesPreviewEnvironmentDesiredStateAdapter({
+      fetch: vi.fn(async () => json(resource())) as never,
+    });
+
+    await expect(
+      adapter.observeDelete({
+        name: command.name,
+        environmentUid: "uid-1",
+        guard: {
+          mode: "owned",
+          requestId: command.provenance.requestId,
+          sourceRevision: command.sourceRevision,
+        },
+      }),
+    ).rejects.toThrow("is no longer terminating");
+  });
+
   it("preserves a same-name replacement that appears during convergence", async () => {
     let reads = 0;
     const replacement = resource();
@@ -702,7 +831,9 @@ describe("DesiredStateVclusterPreviewGateway", () => {
           ready: false,
         };
       }),
+      requestDelete: vi.fn(),
       deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "pending" as const),
       absent: vi.fn(async () => false),
     } satisfies PreviewEnvironmentDesiredStatePort;
     const sea = gateway({
@@ -721,15 +852,22 @@ describe("DesiredStateVclusterPreviewGateway", () => {
     expect(order).toEqual(["desired:create", "sea:up", "desired:inspect"]);
   });
 
-  it("waits for finalizer-driven physical proof without resubmitting SEA down", async () => {
+  it("returns after submitting desired-state deletion without resubmitting SEA down", async () => {
     const order: string[] = [];
     const desired = {
       create: vi.fn(),
       inspect: vi.fn(),
-      deleteAndWait: vi.fn(async () => {
-        order.push("desired:absent");
+      requestDelete: vi.fn(async () => {
+        order.push("desired:requested");
+        return {
+          name: command.name,
+          environmentUid: "uid-1",
+          state: "deletion-requested" as const,
+        };
       }),
-      absent: vi.fn(async () => true),
+      deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "pending" as const),
+      absent: vi.fn(async () => false),
     } satisfies PreviewEnvironmentDesiredStatePort;
     const sea = gateway({
       teardown: vi.fn(async () => {
@@ -756,11 +894,99 @@ describe("DesiredStateVclusterPreviewGateway", () => {
       catalog,
     });
 
-    await adapter.teardown(command.name, {
-      mode: "owned",
-      requestId: command.provenance.requestId,
-      sourceRevision: command.sourceRevision,
+    await expect(
+      adapter.request(command.name, {
+        mode: "owned",
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      }),
+    ).resolves.toMatchObject({
+      preview: { phase: "terminating", ready: false },
+      ticket: {
+        name: command.name,
+        environmentUid: "uid-1",
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+        signature: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     });
+    expect(order).toEqual(["desired:requested"]);
+    expect(sea.teardown).not.toHaveBeenCalled();
+    expect(sea.cleanup).not.toHaveBeenCalled();
+  });
+
+  it("returns an idempotent absent result when the request target is already gone", async () => {
+    const desired = {
+      create: vi.fn(),
+      inspect: vi.fn(),
+      requestDelete: vi.fn(async () => ({
+        name: command.name,
+        environmentUid: null,
+        state: "absent" as const,
+      })),
+      deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "pending" as const),
+      absent: vi.fn(async () => true),
+    } satisfies PreviewEnvironmentDesiredStatePort;
+    const sea = gateway();
+    const adapter = new DesiredStateVclusterPreviewGateway({
+      gateway: sea,
+      desiredState: desired,
+      catalog,
+    });
+
+    await expect(
+      adapter.request(command.name, {
+        mode: "owned",
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      }),
+    ).resolves.toMatchObject({
+      preview: { phase: "absent", ready: false },
+      ticket: null,
+    });
+    expect(sea.cleanup).not.toHaveBeenCalled();
+  });
+
+  it("preserves full finalizer convergence for background teardown callers", async () => {
+    const order: string[] = [];
+    const desired = {
+      create: vi.fn(),
+      inspect: vi.fn(),
+      requestDelete: vi.fn(),
+      deleteAndWait: vi.fn(async () => {
+        order.push("desired:absent");
+      }),
+      observeDelete: vi.fn(async () => "pending" as const),
+      absent: vi.fn(async () => true),
+    } satisfies PreviewEnvironmentDesiredStatePort;
+    const complete = await gateway().cleanup(command.name);
+    const sea = gateway({
+      cleanup: vi.fn(async () => {
+        order.push("sea:proof");
+        return {
+          ...complete,
+          complete: true,
+          phase: "complete" as const,
+          checks: Object.fromEntries(
+            Object.keys(complete.checks).map((key) => [key, true]),
+          ) as never,
+        };
+      }),
+    });
+    const adapter = new DesiredStateVclusterPreviewGateway({
+      gateway: sea,
+      desiredState: desired,
+      catalog,
+    });
+
+    await expect(
+      adapter.teardown(command.name, {
+        mode: "owned",
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      }),
+    ).resolves.toMatchObject({ phase: "absent" });
     expect(order).toEqual(["desired:absent", "sea:proof"]);
     expect(sea.teardown).not.toHaveBeenCalled();
   });
@@ -776,9 +1002,11 @@ describe("DesiredStateVclusterPreviewGateway", () => {
         ready: false,
       })),
       inspect: vi.fn(),
+      requestDelete: vi.fn(),
       deleteAndWait: vi.fn(async () => {
         order.push("desired:absent");
       }),
+      observeDelete: vi.fn(async () => "pending" as const),
       absent: vi.fn(async () => true),
     } satisfies PreviewEnvironmentDesiredStatePort;
     const sea = gateway({
@@ -812,9 +1040,11 @@ describe("DesiredStateVclusterPreviewGateway", () => {
         ready: false,
       })),
       inspect: vi.fn(),
+      requestDelete: vi.fn(),
       deleteAndWait: vi.fn(async () => {
         throw new Error("finalizer timeout");
       }),
+      observeDelete: vi.fn(async () => "pending" as const),
       absent: vi.fn(async () => false),
     } satisfies PreviewEnvironmentDesiredStatePort;
     const adapter = new DesiredStateVclusterPreviewGateway({
@@ -840,14 +1070,27 @@ describe("DesiredStateVclusterPreviewGateway", () => {
   });
 
   it("sources the PreviewEnvironment absence check from the physical broker", async () => {
+    const baseline = await gateway().cleanup(command.name);
+    const physical = gateway({
+      cleanup: vi.fn(async () => ({
+        ...baseline,
+        complete: true,
+        phase: "complete" as const,
+        checks: Object.fromEntries(
+          Object.keys(baseline.checks).map((key) => [key, true]),
+        ) as VclusterPreviewCleanupSnapshot["checks"],
+      })),
+    });
     const desired = {
       create: vi.fn(),
       inspect: vi.fn(),
+      requestDelete: vi.fn(),
       deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "pending" as const),
       absent: vi.fn(async () => true),
     } satisfies PreviewEnvironmentDesiredStatePort;
     const adapter = new DesiredStateVclusterPreviewGateway({
-      gateway: gateway(),
+      gateway: physical,
       desiredState: desired,
       catalog,
     });
@@ -858,6 +1101,113 @@ describe("DesiredStateVclusterPreviewGateway", () => {
       checks: { previewEnvironmentAbsent: true },
       message: null,
     });
+  });
+
+  it("keeps cleanup pending while the hub finalizer still owns desired state", async () => {
+    const baseline = await gateway().cleanup(command.name);
+    const physicalCleanup = {
+      ...baseline,
+      complete: true,
+      phase: "complete" as const,
+      checks: Object.fromEntries(
+        Object.keys(baseline.checks).map((key) => [key, true]),
+      ) as VclusterPreviewCleanupSnapshot["checks"],
+      message: null,
+    } satisfies VclusterPreviewCleanupSnapshot;
+    const physical = gateway({
+      cleanup: vi.fn(async () => physicalCleanup),
+    });
+    const desired = {
+      create: vi.fn(),
+      inspect: vi.fn(),
+      requestDelete: vi.fn(),
+      deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "pending" as const),
+      absent: vi.fn(async () => false),
+    } satisfies PreviewEnvironmentDesiredStatePort;
+    const adapter = new DesiredStateVclusterPreviewGateway({
+      gateway: physical,
+      desiredState: desired,
+      catalog,
+    });
+
+    await expect(adapter.cleanup(command.name)).resolves.toMatchObject({
+      complete: false,
+      phase: "pending",
+      checks: { previewEnvironmentAbsent: false },
+    });
+  });
+
+  it("uses a signed accepted ticket to prove controller-finalized cleanup", async () => {
+    const physical = gateway({
+      cleanup: vi.fn(async () => {
+        throw new Error("SEA receipt was already collected");
+      }),
+    });
+    const desired = {
+      create: vi.fn(),
+      inspect: vi.fn(),
+      requestDelete: vi.fn(async () => ({
+        name: command.name,
+        environmentUid: "uid-1",
+        state: "deletion-requested" as const,
+      })),
+      deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "complete" as const),
+      absent: vi.fn(async () => true),
+    } satisfies PreviewEnvironmentDesiredStatePort;
+    const adapter = new DesiredStateVclusterPreviewGateway({
+      gateway: physical,
+      desiredState: desired,
+      catalog,
+    });
+
+    const acceptance = await adapter.request(command.name, {
+      mode: "owned",
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    });
+    expect(acceptance.ticket).not.toBeNull();
+    await expect(adapter.status(acceptance.ticket!)).resolves.toMatchObject({
+      complete: true,
+      phase: "complete",
+      checks: {
+        runnerSucceeded: true,
+        previewEnvironmentAbsent: true,
+        headlampRegistrationAbsent: true,
+        runnerIdentityAbsent: true,
+      },
+    });
+    expect(physical.cleanup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a forged teardown ticket before any cleanup observation", async () => {
+    const desired = {
+      create: vi.fn(),
+      inspect: vi.fn(),
+      requestDelete: vi.fn(),
+      deleteAndWait: vi.fn(),
+      observeDelete: vi.fn(async () => "complete" as const),
+      absent: vi.fn(async () => true),
+    } satisfies PreviewEnvironmentDesiredStatePort;
+    const physical = gateway();
+    const adapter = new DesiredStateVclusterPreviewGateway({
+      gateway: physical,
+      desiredState: desired,
+      catalog,
+    });
+
+    await expect(
+      adapter.status({
+        name: command.name,
+        environmentUid: "uid-1",
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+        signature: "0".repeat(64),
+      }),
+    ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
+    expect(desired.observeDelete).not.toHaveBeenCalled();
+    expect(physical.cleanup).not.toHaveBeenCalled();
   });
 });
 
@@ -1080,7 +1430,45 @@ describe("BrokeredVclusterPreviewGateway", () => {
     );
   });
 
-  it("sends guarded teardown only to the authenticated physical broker", async () => {
+  it("preserves the full-convergence broker contract for background callers", async () => {
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    };
+    const preview = {
+      name: command.name,
+      phase: "absent",
+      ready: false,
+      sourceRevision: command.sourceRevision,
+      provenance: null,
+    };
+    const brokerFetch = vi.fn(async () =>
+      json({
+        ok: true,
+        preview,
+        receipt: {
+          name: command.name,
+          guard,
+          desiredStateAbsent: true,
+        },
+      }),
+    );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+    });
+
+    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(preview);
+    expect(brokerFetch).toHaveBeenCalledWith(
+      `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown`,
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ guard }) }),
+    );
+  });
+
+  it("sends request-only teardown to the authenticated physical broker", async () => {
     const local = gateway();
     const sparseSeaReceipt = {
       name: command.name,
@@ -1094,16 +1482,22 @@ describe("BrokeredVclusterPreviewGateway", () => {
       requestId: command.provenance.requestId,
       sourceRevision: command.sourceRevision,
     };
+    const ticket = ticketFor(guard);
     const brokerFetch = vi.fn(async (_url: string, _init?: RequestInit) =>
-      json({
-        ok: true,
-        preview: sparseSeaReceipt,
-        receipt: {
-          name: command.name,
-          guard,
-          desiredStateAbsent: true,
+      json(
+        {
+          ok: true,
+          preview: sparseSeaReceipt,
+          ticket,
+          receipt: {
+            name: command.name,
+            guard,
+            ticket,
+            desiredStateDeletionAccepted: true,
+          },
         },
-      }),
+        202,
+      ),
     );
     const adapter = new BrokeredVclusterPreviewGateway({
       gateway: local,
@@ -1112,12 +1506,13 @@ describe("BrokeredVclusterPreviewGateway", () => {
       token: () => "broker-token",
     });
 
-    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(
-      sparseSeaReceipt,
-    );
+    await expect(adapter.request(command.name, guard)).resolves.toEqual({
+      preview: sparseSeaReceipt,
+      ticket,
+    });
     expect(local.teardown).not.toHaveBeenCalled();
     expect(brokerFetch).toHaveBeenCalledWith(
-      `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown`,
+      `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown?wait=false`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ guard }),
@@ -1142,6 +1537,7 @@ describe("BrokeredVclusterPreviewGateway", () => {
         summaryFileId: "quarantine-summary-1",
       },
     };
+    const ticket = ticketFor(guard);
     const preview = {
       name: command.name,
       phase: "terminating",
@@ -1150,15 +1546,20 @@ describe("BrokeredVclusterPreviewGateway", () => {
       provenance: null,
     };
     const brokerFetch = vi.fn(async (_url: string, _init?: RequestInit) =>
-      json({
-        ok: true,
-        preview,
-        receipt: {
-          name: command.name,
-          guard,
-          desiredStateAbsent: true,
+      json(
+        {
+          ok: true,
+          preview,
+          ticket,
+          receipt: {
+            name: command.name,
+            guard,
+            ticket,
+            desiredStateDeletionAccepted: true,
+          },
         },
-      }),
+        202,
+      ),
     );
     const adapter = new BrokeredVclusterPreviewGateway({
       gateway: local,
@@ -1167,11 +1568,30 @@ describe("BrokeredVclusterPreviewGateway", () => {
       token: () => "broker-token",
     });
 
-    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(
+    await expect(adapter.request(command.name, guard)).resolves.toEqual({
       preview,
-    );
+      ticket,
+    });
     expect(local.teardown).not.toHaveBeenCalled();
     expect(bodyOf(brokerFetch.mock.calls[0]?.[1])).toEqual({ guard });
+  });
+
+  it("preserves a physical ownership conflict at the broker boundary", async () => {
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    };
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      fetch: vi.fn(async () => json({ error: "generation replaced" }, 409)),
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+    });
+
+    await expect(adapter.request(command.name, guard)).rejects.toBeInstanceOf(
+      PreviewEnvironmentDesiredStateOwnershipError,
+    );
   });
 
   it("replays the exact guarded teardown once after a transport failure", async () => {
@@ -1180,6 +1600,7 @@ describe("BrokeredVclusterPreviewGateway", () => {
       requestId: command.provenance.requestId,
       sourceRevision: command.sourceRevision,
     };
+    const ticket = ticketFor(guard);
     const preview = {
       name: command.name,
       phase: "terminating",
@@ -1191,15 +1612,20 @@ describe("BrokeredVclusterPreviewGateway", () => {
       .fn()
       .mockRejectedValueOnce(new TypeError("fetch failed"))
       .mockResolvedValueOnce(
-        json({
-          ok: true,
-          preview,
-          receipt: {
-            name: command.name,
-            guard,
-            desiredStateAbsent: true,
+        json(
+          {
+            ok: true,
+            preview,
+            ticket,
+            receipt: {
+              name: command.name,
+              guard,
+              ticket,
+              desiredStateDeletionAccepted: true,
+            },
           },
-        }),
+          202,
+        ),
       );
     const adapter = new BrokeredVclusterPreviewGateway({
       gateway: gateway(),
@@ -1208,17 +1634,70 @@ describe("BrokeredVclusterPreviewGateway", () => {
       token: () => "broker-token",
     });
 
-    await expect(adapter.teardown(command.name, guard)).resolves.toEqual(
+    await expect(adapter.request(command.name, guard)).resolves.toEqual({
       preview,
-    );
+      ticket,
+    });
     expect(brokerFetch).toHaveBeenCalledTimes(2);
     for (const call of brokerFetch.mock.calls) {
       expect(call[0]).toBe(
-        `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown`,
+        `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown?wait=false`,
       );
       expect(bodyOf(call[1])).toEqual({ guard });
     }
   });
+
+  it.each(["AbortError", "TimeoutError"])(
+    "replays the exact guarded teardown once after %s",
+    async (errorName) => {
+      const guard = {
+        mode: "owned" as const,
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      };
+      const ticket = ticketFor(guard);
+      const preview = {
+        name: command.name,
+        phase: "terminating",
+        ready: false,
+        sourceRevision: null,
+        provenance: null,
+      };
+      const timeout = Object.assign(new Error("response lost"), {
+        name: errorName,
+      });
+      const brokerFetch = vi
+        .fn()
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValueOnce(
+          json(
+            {
+              ok: true,
+              preview,
+              ticket,
+              receipt: {
+                name: command.name,
+                guard,
+                ticket,
+                desiredStateDeletionAccepted: true,
+              },
+            },
+            202,
+          ),
+        );
+      const adapter = new BrokeredVclusterPreviewGateway({
+        gateway: gateway(),
+        fetch: brokerFetch as typeof fetch,
+        baseUrl: () => "http://preview-control-broker:3000",
+        token: () => "broker-token",
+      });
+
+      await expect(adapter.request(command.name, guard)).resolves.toMatchObject({
+        ticket,
+      });
+      expect(brokerFetch).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("fails closed when the guarded teardown transport fails twice", async () => {
     const guard = {
@@ -1236,11 +1715,90 @@ describe("BrokeredVclusterPreviewGateway", () => {
       token: () => "broker-token",
     });
 
-    await expect(adapter.teardown(command.name, guard)).rejects.toThrow(
+    await expect(adapter.request(command.name, guard)).rejects.toThrow(
       "fetch failed",
     );
     expect(brokerFetch).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["ready", ["terminating"]])(
+    "rejects an accepted receipt paired with an invalid command phase: %j",
+    async (phase) => {
+      const guard = {
+        mode: "owned" as const,
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      };
+      const ticket = ticketFor(guard);
+      const adapter = new BrokeredVclusterPreviewGateway({
+        gateway: gateway(),
+        fetch: vi.fn(async () =>
+          json(
+            {
+              ok: true,
+              preview: { name: command.name, phase },
+              ticket,
+              receipt: {
+                name: command.name,
+                guard,
+                ticket,
+                desiredStateDeletionAccepted: true,
+              },
+            },
+            202,
+          ),
+        ) as typeof fetch,
+        baseUrl: () => "http://preview-control-broker:3000",
+        token: () => "broker-token",
+      });
+
+      await expect(
+        adapter.request(command.name, guard),
+      ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
+    },
+  );
+
+  it.each([
+    ["missing-ok", 202, "terminating", undefined],
+    ["terminating-with-complete-status", 200, "terminating", true],
+    ["absent-with-accepted-status", 202, "absent", true],
+    ["unexpected-success-status", 201, "terminating", true],
+  ])(
+    "rejects a cross-paired physical teardown response: %s",
+    async (_case, responseStatus, phase, ok) => {
+      const guard = {
+        mode: "owned" as const,
+        requestId: command.provenance.requestId,
+        sourceRevision: command.sourceRevision,
+      };
+      const ticket = ticketFor(guard);
+      const adapter = new BrokeredVclusterPreviewGateway({
+        gateway: gateway(),
+        fetch: vi.fn(async () =>
+          json(
+            {
+              ...(ok === undefined ? {} : { ok }),
+              preview: { name: command.name, phase },
+              ticket,
+              receipt: {
+                name: command.name,
+                guard,
+                ticket,
+                desiredStateDeletionAccepted: true,
+              },
+            },
+            responseStatus,
+          ),
+        ) as typeof fetch,
+        baseUrl: () => "http://preview-control-broker:3000",
+        token: () => "broker-token",
+      });
+
+      await expect(
+        adapter.request(command.name, guard),
+      ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
+    },
+  );
 
   it("refuses unguarded destructive commands before network access", async () => {
     const brokerFetch = vi.fn();
@@ -1251,14 +1809,15 @@ describe("BrokeredVclusterPreviewGateway", () => {
       token: () => "broker-token",
     });
     await expect(
-      adapter.teardown(command.name, undefined as never),
+      adapter.request(command.name, undefined as never),
     ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
     expect(brokerFetch).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["desired-state-present", { desiredStateAbsent: false }],
+    ["deletion-not-accepted", { desiredStateDeletionAccepted: false }],
     ["wrong-name", { name: "another-preview" }],
+    ["unexpected-field", { injected: true }],
     [
       "wrong-guard",
       {
@@ -1277,22 +1836,28 @@ describe("BrokeredVclusterPreviewGateway", () => {
         requestId: command.provenance.requestId,
         sourceRevision: command.sourceRevision,
       };
+      const ticket = ticketFor(guard);
       const brokerFetch = vi.fn(async () =>
-        json({
-          ok: true,
-          preview: {
-            name: command.name,
-            phase: "terminating",
-            sourceRevision: null,
-            provenance: null,
+        json(
+          {
+            ok: true,
+            preview: {
+              name: command.name,
+              phase: "terminating",
+              sourceRevision: null,
+              provenance: null,
+            },
+            ticket,
+            receipt: {
+              name: command.name,
+              guard,
+              ticket,
+              desiredStateDeletionAccepted: true,
+              ...change,
+            },
           },
-          receipt: {
-            name: command.name,
-            guard,
-            desiredStateAbsent: true,
-            ...change,
-          },
-        }),
+          202,
+        ),
       );
       const adapter = new BrokeredVclusterPreviewGateway({
         gateway: gateway(),
@@ -1302,7 +1867,7 @@ describe("BrokeredVclusterPreviewGateway", () => {
       });
 
       await expect(
-        adapter.teardown(command.name, guard),
+        adapter.request(command.name, guard),
       ).rejects.toBeInstanceOf(PreviewEnvironmentDesiredStateOwnershipError);
     },
   );
@@ -1325,6 +1890,37 @@ describe("BrokeredVclusterPreviewGateway", () => {
       `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/cleanup`,
       expect.objectContaining({
         headers: { "X-Preview-Control-Broker-Token": "broker-token" },
+      }),
+    );
+  });
+
+  it("gets ticket-bound teardown status through the short observation path", async () => {
+    const guard = {
+      mode: "owned" as const,
+      requestId: command.provenance.requestId,
+      sourceRevision: command.sourceRevision,
+    };
+    const ticket = ticketFor(guard);
+    const cleanup = await gateway().cleanup(command.name);
+    const brokerFetch = vi.fn(async () =>
+      json({ ok: true, cleanup, receipt: { ticket } }, 202),
+    );
+    const adapter = new BrokeredVclusterPreviewGateway({
+      gateway: gateway(),
+      fetch: brokerFetch as typeof fetch,
+      baseUrl: () => "http://preview-control-broker:3000",
+      token: () => "broker-token",
+      observationTimeoutMs: 5_000,
+      timeoutMs: 25 * 60_000,
+    });
+
+    await expect(adapter.status(ticket)).resolves.toEqual(cleanup);
+    expect(brokerFetch).toHaveBeenCalledWith(
+      `http://preview-control-broker:3000/api/internal/preview-control/environment/${command.name}/teardown/status`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ ticket }),
+        signal: expect.any(AbortSignal),
       }),
     );
   });

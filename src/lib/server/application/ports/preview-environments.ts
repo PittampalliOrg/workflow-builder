@@ -303,6 +303,21 @@ export class PreviewEnvironmentDesiredStateOwnershipError extends PreviewEnviron
   }
 }
 
+/** Durable result of submitting the UID-fenced PreviewEnvironment deletion. */
+export type PreviewEnvironmentDeletionRequestReceipt = Readonly<{
+  name: string;
+}> &
+  (
+    | Readonly<{
+        environmentUid: string;
+        state: "deletion-requested";
+      }>
+    | Readonly<{
+        environmentUid: null;
+        state: "absent";
+      }>
+  );
+
 /**
  * Physical desired-state authority for the hub PreviewEnvironment CR.
  *
@@ -316,6 +331,17 @@ export interface PreviewEnvironmentDesiredStatePort {
   inspect(
     input: ValidatedPreviewEnvironmentLaunchSpec,
   ): Promise<PreviewEnvironmentDesiredStateSnapshot | null>;
+  requestDelete(
+    input: Readonly<{
+      name: string;
+      guard: PreviewEnvironmentDesiredStateDeleteGuard;
+    }>,
+  ): Promise<PreviewEnvironmentDeletionRequestReceipt>;
+  observeDelete(input: Readonly<{
+    name: string;
+    environmentUid: string;
+    guard: Extract<PreviewEnvironmentDesiredStateDeleteGuard, { mode: "owned" }>;
+  }>): Promise<"pending" | "complete">;
   deleteAndWait(
     input: Readonly<{
       name: string;

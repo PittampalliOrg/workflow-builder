@@ -6,9 +6,16 @@ const guard = {
 	requestId: 'request-1',
 	sourceRevision: 'b'.repeat(40)
 };
+const ticket = {
+	name: 'feature-one',
+	environmentUid: 'uid-1',
+	requestId: guard.requestId,
+	sourceRevision: guard.sourceRevision,
+	signature: 'e'.repeat(64)
+};
 
 describe('ApplicationPreviewEnvironmentLifecycleBrokerService', () => {
-	it('emits the exact receipt only after physical teardown resolves', async () => {
+	it('preserves the full-convergence receipt for background callers', async () => {
 		let resolveTeardown!: (value: Record<string, unknown>) => void;
 		const teardown = vi.fn(
 			() =>
@@ -18,7 +25,9 @@ describe('ApplicationPreviewEnvironmentLifecycleBrokerService', () => {
 		);
 		const service = new ApplicationPreviewEnvironmentLifecycleBrokerService({
 			teardown: teardown as never,
-			cleanup: vi.fn()
+			cleanup: vi.fn(),
+			request: vi.fn(),
+			status: vi.fn()
 		});
 		let settled = false;
 		const result = service
@@ -27,9 +36,9 @@ describe('ApplicationPreviewEnvironmentLifecycleBrokerService', () => {
 		await Promise.resolve();
 		expect(settled).toBe(false);
 
-		resolveTeardown({ name: 'feature-one', phase: 'terminating' });
+		resolveTeardown({ name: 'feature-one', phase: 'absent' });
 		await expect(result).resolves.toEqual({
-			preview: { name: 'feature-one', phase: 'terminating' },
+			preview: { name: 'feature-one', phase: 'absent' },
 			receipt: {
 				name: 'feature-one',
 				guard,
@@ -38,16 +47,59 @@ describe('ApplicationPreviewEnvironmentLifecycleBrokerService', () => {
 		});
 	});
 
+	it('emits the accepted receipt as soon as deletion submission resolves', async () => {
+		const request = vi.fn(async () => ({
+			preview: { name: 'feature-one', phase: 'terminating' },
+			ticket
+		}));
+		const service = new ApplicationPreviewEnvironmentLifecycleBrokerService({
+			teardown: vi.fn(),
+			cleanup: vi.fn(),
+			request: request as never,
+			status: vi.fn()
+		});
+
+			await expect(service.requestTeardown({ name: 'feature-one', guard })).resolves.toEqual({
+				preview: { name: 'feature-one', phase: 'terminating' },
+				ticket,
+				receipt: {
+					name: 'feature-one',
+					guard,
+					ticket,
+					desiredStateDeletionAccepted: true
+			}
+		});
+			expect(request).toHaveBeenCalledWith('feature-one', guard);
+		});
+
+	it('binds cleanup observations to the accepted ticket', async () => {
+		const cleanup = { name: 'feature-one', complete: false, phase: 'pending' };
+		const status = vi.fn(async () => cleanup);
+		const service = new ApplicationPreviewEnvironmentLifecycleBrokerService({
+			teardown: vi.fn(),
+			cleanup: vi.fn(),
+			request: vi.fn(),
+			status: status as never
+		});
+
+		await expect(service.status(ticket)).resolves.toEqual({
+			cleanup,
+			receipt: { ticket }
+		});
+		expect(status).toHaveBeenCalledWith(ticket);
+	});
+
 	it('never emits a receipt when physical teardown fails', async () => {
 		const service = new ApplicationPreviewEnvironmentLifecycleBrokerService({
 			teardown: vi.fn(async () => {
 				throw new Error('finalizer timeout');
 			}),
-			cleanup: vi.fn()
+			cleanup: vi.fn(),
+			request: vi.fn(),
+			status: vi.fn()
 		});
 		await expect(service.teardown({ name: 'feature-one', guard })).rejects.toThrow(
 			'finalizer timeout'
 		);
 	});
 });
-

@@ -54,6 +54,7 @@ describe("dev hub data remote", () => {
 		expect(source).toContain("vclusterPreviews.present(access.preview)");
 		expect(pageSource).toContain("? getVclusterPreview(previewEnvironmentId)");
 		expect(pageSource).toContain("controlPlane ? getPrPreviews() : null");
+		expect(pageSource).not.toContain("teardownProgress={visibleTeardowns}");
 	});
 
 	it("starts the visibility poll outside reactive dependency tracking", () => {
@@ -69,9 +70,14 @@ describe("dev hub data remote", () => {
 		expect(source).toContain("requireAdminSession");
 		expect(source).toContain("command(");
 		expect(source).toContain("input.forceFailed === true");
+		expect(source).toContain("expectedRequestId: input.expectedRequestId");
+		expect(source).toContain("expectedSourceRevision: input.expectedSourceRevision");
 		expect(source).toContain("PreviewAccessDeniedError");
 		expect(source).toContain("PreviewTeardownRefusedError");
+		expect(source).toContain("PreviewEnvironmentDesiredStateOwnershipError");
+		expect(source).toContain("PreviewEnvironmentDesiredStateError");
 		expect(source).toContain("error(403");
 		expect(source).toContain("error(409");
+		expect(source).toContain("error(503");
 	});
 });

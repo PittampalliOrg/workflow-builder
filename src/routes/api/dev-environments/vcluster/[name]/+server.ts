@@ -1,10 +1,16 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { PreviewRuntimeIdentityChangedError } from '$lib/server/application/ports';
+import {
+	PreviewEnvironmentDesiredStateError,
+	PreviewEnvironmentDesiredStateOwnershipError,
+	PreviewRuntimeIdentityChangedError
+} from '$lib/server/application/ports';
 import { PreviewAccessDeniedError } from '$lib/server/application/preview-access';
 import { PreviewTeardownRefusedError } from '$lib/server/application/preview-teardown';
 import { requirePlatformAdmin } from '$lib/server/platform-admin';
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /** Status of one Tier-2 preview (Job phase == environment readiness). */
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -33,11 +39,22 @@ export const DELETE: RequestHandler = async ({ params, locals, url }) => {
 		if (!adapters.previewDeploymentScope.isControlPlane()) {
 			return error(403, 'Preview fleet operations are unavailable from a preview deployment');
 		}
+		await requirePlatformAdmin(locals);
+		const expectedRequestId = url.searchParams.get('expectedRequestId') ?? '';
+		const expectedSourceRevision = url.searchParams.get('expectedSourceRevision') ?? '';
+		if (
+			!expectedRequestId ||
+			expectedRequestId.length > 256 ||
+			!FULL_SHA.test(expectedSourceRevision)
+		) {
+			return error(400, 'The selected preview generation is required');
+		}
 		const discardUnarchived = url.searchParams.get('discardUnarchived') === 'true';
-		if (discardUnarchived) await requirePlatformAdmin(locals);
 		const result = await adapters.previewTeardown.teardown({
 			name: params.name,
 			actorUserId: locals.session.userId,
+			expectedRequestId,
+			expectedSourceRevision,
 			projectId: locals.session.projectId ?? null,
 			...(discardUnarchived
 				? { discardUnarchived: true }
@@ -45,13 +62,25 @@ export const DELETE: RequestHandler = async ({ params, locals, url }) => {
 					? { forceFailed: true }
 					: {})
 		});
-		return json({
-			preview: adapters.vclusterPreviews.present(result.preview),
-			...(result.archive ? { archive: result.archive } : {})
-		});
+		// User teardown is an acceptance command. The signed ticket remains valid
+		// after the fleet feed stops listing the terminating namespace.
+		return json(
+			{
+				preview: adapters.vclusterPreviews.present(result.preview),
+				teardown: result.ticket,
+				...(result.archive ? { archive: result.archive } : {})
+			},
+			result.preview.phase === 'absent'
+				? { status: 200 }
+				: { status: 202, headers: { 'retry-after': '5' } }
+		);
 	} catch (cause) {
 		if (cause instanceof PreviewAccessDeniedError) return error(403, cause.message);
 		if (cause instanceof PreviewTeardownRefusedError) return error(409, cause.message);
+		if (cause instanceof PreviewEnvironmentDesiredStateOwnershipError) {
+			return error(409, cause.message);
+		}
+		if (cause instanceof PreviewEnvironmentDesiredStateError) return error(503, cause.message);
 		throw cause;
 	}
 };

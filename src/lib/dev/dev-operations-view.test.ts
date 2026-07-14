@@ -112,6 +112,20 @@ describe("dev operations view model", () => {
     });
   });
 
+  it("keeps terminating previews visible as active lifecycle work", () => {
+    expect(
+      summarizeDevOperations(
+        [preview({ phase: "terminating", ready: false })],
+        [],
+        null,
+      ),
+    ).toMatchObject({
+      ready: 0,
+      provisioning: 1,
+      attention: 0,
+    });
+  });
+
   it("formats profile and elapsed provisioning labels", () => {
     expect(previewProfileLabel("app-live")).toBe("Application development");
     expect(previewProfileLabel("manifest-candidate")).toBe(

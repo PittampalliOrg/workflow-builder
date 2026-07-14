@@ -9,6 +9,7 @@ import type {
   PreviewControlIdentity,
   PreviewDeploymentScopePort,
   PreviewEnvironmentObservationReaderPort,
+  PreviewEnvironmentTeardownStatusPort,
   VclusterPreviewGatewayPort,
   VclusterPreviewSleepOutcome,
   VclusterPreviewTouchResult,
@@ -72,7 +73,8 @@ function counts(
 }
 
 type TestPreviewGateway = VclusterPreviewGatewayPort &
-  PreviewEnvironmentObservationReaderPort;
+  PreviewEnvironmentObservationReaderPort &
+  PreviewEnvironmentTeardownStatusPort;
 
 function observedRecord(
   identity: Parameters<PreviewEnvironmentObservationReaderPort["inspect"]>[0],
@@ -145,6 +147,27 @@ function gateway(over: Partial<TestPreviewGateway> = {}): TestPreviewGateway {
     cleanup: vi.fn(async (name: string) => ({
       name,
       resourceName: name,
+      complete: false,
+      phase: "pending" as const,
+      checks: {
+        runnerSucceeded: false,
+        previewEnvironmentAbsent: false,
+        applicationAbsent: false,
+        agentRegistrationAbsent: false,
+        agentNamespacesAbsent: false,
+        databaseAbsent: false,
+        natsStreamAbsent: false,
+        headlampRegistrationAbsent: false,
+        tailnetEgressAbsent: false,
+        hostNamespaceAbsent: false,
+        storageScopeAbsent: false,
+        runnerIdentityAbsent: false,
+      },
+      message: null,
+    })),
+    status: vi.fn(async (ticket) => ({
+      name: ticket.name,
+      resourceName: ticket.name,
       complete: false,
       phase: "pending" as const,
       checks: {
@@ -322,9 +345,10 @@ describe("ApplicationVclusterPreviewService", () => {
       "https://github.com/PittampalliOrg/workflow-builder/pull/42",
     );
     expect(previews[1].prUrl).toBeNull();
+    expect(gw.cleanup).not.toHaveBeenCalled();
   });
 
-  it("delegates runtime and cleanup observations through the gateway port", async () => {
+  it("delegates runtime and ticket-bound teardown observations through gateway ports", async () => {
     const authorized = record({
       name: "feature-x",
       owner: { kind: "user", id: "user-1" },
@@ -357,7 +381,14 @@ describe("ApplicationVclusterPreviewService", () => {
       },
       services: [],
     });
-    await expect(svc.cleanup("Feature_X")).resolves.toMatchObject({
+    const ticket = {
+      name: "feature-x",
+      environmentUid: "uid-1",
+      requestId: "request-1",
+      sourceRevision: "b".repeat(40),
+      signature: "e".repeat(64),
+    };
+    await expect(svc.teardownStatus(ticket)).resolves.toMatchObject({
       name: "feature-x",
       phase: "pending",
     });
@@ -373,7 +404,7 @@ describe("ApplicationVclusterPreviewService", () => {
       catalogDigest: `sha256:${"c".repeat(64)}`,
     });
     expect(gw.get).not.toHaveBeenCalled();
-    expect(gw.cleanup).toHaveBeenCalledWith("feature-x");
+    expect(gw.status).toHaveBeenCalledWith(ticket);
   });
 
   it("rejects a runtime observation when the authorized preview identity changed", async () => {

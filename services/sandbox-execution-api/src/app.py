@@ -10942,14 +10942,18 @@ def provision_vcluster_preview(
             )
 
         allow_absent_down_bootstrap = False
+        receipt_state = (
+            exact_down_receipt_state()
+            if body.action == "down"
+            else _PreviewDownReceiptState()
+        )
+        if receipt_state.in_flight:
+            # Repeated down requests may arrive while the exact immutable runner is
+            # still deleting the namespace. Preserve that receipt instead of
+            # contending for a second operation Lease and returning a false 409.
+            set_current_span_io("output", response)
+            return response
         if body.action == "down" and not _namespace_exists(core, safe_name):
-            receipt_state = exact_down_receipt_state()
-            if receipt_state.in_flight:
-                # The runner can release its operation Lease just before Kubernetes
-                # records Job completion. Preserve that exact immutable Job while
-                # its terminal status catches up instead of replacing its receipt.
-                set_current_span_io("output", response)
-                return response
             receipt_succeeded = receipt_state.succeeded
             try:
                 identity_absent = PreviewRunnerIdentityAdapter(

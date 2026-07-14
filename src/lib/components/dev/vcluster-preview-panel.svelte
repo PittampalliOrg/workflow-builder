@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -32,6 +33,7 @@
 		ShieldCheck,
 		TimerReset,
 		Trash2,
+		X,
 		Zap
 	} from '@lucide/svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
@@ -42,6 +44,10 @@
 	import {
 		effectivePreviewStatus,
 		expiresIn,
+		previewTeardownOutcome,
+		previewTeardownProgress,
+		previewTeardownStatusPath,
+		previewsWithAcceptedTeardowns,
 		relativeTime,
 		sleepDisabledReason
 	} from '$lib/components/dev/preview-lifecycle';
@@ -51,7 +57,12 @@
 		previewGitOpsHref,
 		previewProfileLabel
 	} from '$lib/dev/dev-operations-view';
-	import type { VclusterPreviewCounts, VclusterPreviewSummary } from '$lib/types/dev-previews';
+	import type {
+		VclusterPreviewCleanupSnapshot,
+		VclusterPreviewCounts,
+		VclusterPreviewSummary,
+		VclusterPreviewTeardownTicket
+	} from '$lib/types/dev-previews';
 	import {
 		launchPreview,
 		sleepPreview,
@@ -59,9 +70,8 @@
 		wakePreview
 	} from '../../../routes/workspaces/[slug]/dev/data.remote';
 
-	// Presentational: data (previews + counts) is fed by the hub page's query +
-	// single 5s tick; the panel owns only the mutation commands and asks the
-	// parent to refresh via onchanged().
+	// Fleet data comes from the page's shared poll. A short-lived, ticket-bound
+	// poll remains active only while an accepted teardown is converging.
 	let {
 		previews = [],
 		counts = null,
@@ -97,9 +107,28 @@
 	let toTeardown = $state<VclusterPreviewSummary | null>(null);
 	let toForceTeardown = $state<VclusterPreviewSummary | null>(null);
 	let inspectedName = $state<string | null>(null);
+	type AcceptedTeardown = {
+		preview: VclusterPreviewSummary;
+		ticket: VclusterPreviewTeardownTicket;
+		cleanup: VclusterPreviewCleanupSnapshot | null;
+		statusError: string | null;
+		terminalStatusError: boolean;
+	};
+	const TEARDOWN_STORAGE_KEY = 'workflow-builder:accepted-preview-teardowns:v1';
+	let acceptedTeardowns = $state<Record<string, AcceptedTeardown>>({});
+	let teardownPollInFlight = false;
+
+	const displayedPreviews = $derived.by(() => {
+		return previewsWithAcceptedTeardowns(
+			previews,
+			Object.values(acceptedTeardowns).map(({ preview }) => preview)
+		);
+	});
 
 	const inspectedPreview = $derived(
-		inspectedName ? (previews.find((preview) => preview.name === inspectedName) ?? null) : null
+		inspectedName
+			? (displayedPreviews.find((preview) => preview.name === inspectedName) ?? null)
+			: null
 	);
 
 	const selectedPreviewServices = $derived(
@@ -157,6 +186,186 @@
 		const source = provenanceValue(p, 'sourceRepository');
 		return platform && source ? `${platform} / ${source}` : (platform ?? source);
 	}
+	function teardownCommand(p: VclusterPreviewSummary) {
+		const expectedRequestId = provenanceValue(p, 'requestId');
+		const expectedSourceRevision = p.sourceRevision;
+		if (
+			!expectedRequestId ||
+			expectedRequestId.length > 256 ||
+			!expectedSourceRevision ||
+			!/^[0-9a-f]{40}$/.test(expectedSourceRevision)
+		) {
+			throw new Error('Preview ownership is incomplete; refresh before tearing it down');
+		}
+		return { name: p.name, expectedRequestId, expectedSourceRevision };
+	}
+	function validTeardownTicket(value: unknown): value is VclusterPreviewTeardownTicket {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+		const ticket = value as Record<string, unknown>;
+		return (
+			typeof ticket.name === 'string' &&
+			/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(ticket.name) &&
+			typeof ticket.environmentUid === 'string' &&
+			ticket.environmentUid.length > 0 &&
+			ticket.environmentUid.length <= 128 &&
+			typeof ticket.requestId === 'string' &&
+			ticket.requestId.length > 0 &&
+			ticket.requestId.length <= 256 &&
+			typeof ticket.sourceRevision === 'string' &&
+			/^[0-9a-f]{40}$/.test(ticket.sourceRevision) &&
+			typeof ticket.signature === 'string' &&
+			/^[0-9a-f]{64}$/.test(ticket.signature)
+		);
+	}
+	function persistAcceptedTeardowns() {
+		try {
+			sessionStorage.setItem(TEARDOWN_STORAGE_KEY, JSON.stringify(acceptedTeardowns));
+		} catch {
+			// Status remains live in-memory when browser storage is unavailable.
+		}
+	}
+	function restoreAcceptedTeardowns() {
+		try {
+			const parsed = JSON.parse(sessionStorage.getItem(TEARDOWN_STORAGE_KEY) ?? '{}') as Record<
+				string,
+				unknown
+			>;
+			const restored: Record<string, AcceptedTeardown> = {};
+			for (const [previewName, value] of Object.entries(parsed)) {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+				const candidate = value as Record<string, unknown>;
+				const preview = candidate.preview as VclusterPreviewSummary | undefined;
+				if (!preview || preview.name !== previewName || !validTeardownTicket(candidate.ticket)) {
+					continue;
+				}
+				if (candidate.ticket.name !== previewName) continue;
+				restored[previewName] = {
+					preview,
+					ticket: candidate.ticket,
+					cleanup: null,
+					statusError:
+						typeof candidate.statusError === 'string' ? candidate.statusError.slice(0, 240) : null,
+					terminalStatusError: candidate.terminalStatusError === true
+				};
+			}
+			acceptedTeardowns = restored;
+		} catch {
+			acceptedTeardowns = {};
+		}
+		persistAcceptedTeardowns();
+	}
+	async function pollAcceptedTeardowns() {
+		const pending = Object.entries(acceptedTeardowns).filter(
+			([, accepted]) => !accepted.terminalStatusError
+		);
+		if (teardownPollInFlight || pending.length === 0) return;
+		teardownPollInFlight = true;
+		try {
+			await Promise.all(
+				pending.map(async ([previewName, accepted]) => {
+					try {
+						const response = await fetch(previewTeardownStatusPath(accepted.ticket), {
+							headers: { Accept: 'application/json' }
+						});
+						const body = (await response.json().catch(() => null)) as {
+							teardown?: VclusterPreviewCleanupSnapshot;
+							message?: string;
+						} | null;
+						if (!response.ok) {
+							const message = body?.message ?? `cleanup status failed (HTTP ${response.status})`;
+							if ([400, 401, 403, 409, 410].includes(response.status)) {
+								const current = acceptedTeardowns[previewName];
+								if (!current || current.ticket.signature !== accepted.ticket.signature) return;
+								acceptedTeardowns = {
+									...acceptedTeardowns,
+									[previewName]: {
+										...current,
+										statusError: message,
+										terminalStatusError: true
+									}
+								};
+								persistAcceptedTeardowns();
+								return;
+							}
+							throw new Error(message);
+						}
+						if (!body?.teardown || body.teardown.name !== previewName) {
+							throw new Error('cleanup status returned a mismatched preview');
+						}
+						const current = acceptedTeardowns[previewName];
+						if (!current || current.ticket.signature !== accepted.ticket.signature) return;
+						if (body.teardown.complete) {
+							const next = { ...acceptedTeardowns };
+							delete next[previewName];
+							acceptedTeardowns = next;
+							persistAcceptedTeardowns();
+							toast.success(`Preview "${previewName}" torn down`);
+							onchanged?.();
+							return;
+						}
+						acceptedTeardowns = {
+							...acceptedTeardowns,
+							[previewName]: {
+								...current,
+								cleanup: body.teardown,
+								statusError: null,
+								terminalStatusError: false
+							}
+						};
+						persistAcceptedTeardowns();
+					} catch (cause) {
+						const current = acceptedTeardowns[previewName];
+						if (!current || current.ticket.signature !== accepted.ticket.signature) return;
+						acceptedTeardowns = {
+							...acceptedTeardowns,
+							[previewName]: {
+								...current,
+								statusError: cause instanceof Error ? cause.message : String(cause)
+							}
+						};
+					}
+				})
+			);
+		} finally {
+			teardownPollInFlight = false;
+		}
+	}
+	function markTeardownAccepted(
+		p: VclusterPreviewSummary,
+		ticket: VclusterPreviewTeardownTicket
+	) {
+		acceptedTeardowns = {
+			...acceptedTeardowns,
+			[p.name]: {
+				preview: p,
+				ticket,
+				cleanup: null,
+				statusError: null,
+				terminalStatusError: false
+			}
+		};
+		persistAcceptedTeardowns();
+		void pollAcceptedTeardowns();
+	}
+	function teardownAccepted(p: VclusterPreviewSummary): boolean {
+		return p.name in acceptedTeardowns;
+	}
+	function dismissAcceptedTeardown(name: string) {
+		const next = { ...acceptedTeardowns };
+		delete next[name];
+		acceptedTeardowns = next;
+		persistAcceptedTeardowns();
+		onchanged?.();
+	}
+
+	onMount(() => {
+		restoreAcceptedTeardowns();
+		void pollAcceptedTeardowns();
+		const timer = setInterval(() => {
+			if (document.visibilityState === 'visible') void pollAcceptedTeardowns();
+		}, 5000);
+		return () => clearInterval(timer);
+	});
 
 	async function launch() {
 		const n = name.trim();
@@ -253,23 +462,28 @@
 		toTeardown = null;
 		setBusy(p.name, 'teardown');
 		try {
-			const { archive } = await teardownPreview({ name: p.name });
+			const { archive, preview, teardown } = await teardownPreview(teardownCommand(p));
+			const outcome = previewTeardownOutcome(preview.phase);
+			if (preview.phase !== 'absent') {
+				if (!teardown) throw new Error('Teardown was accepted without a status ticket');
+				markTeardownAccepted(p, teardown);
+			}
 			if (archive && archive.archived) {
 				const runs = archive.executionCount ?? 0;
 				const bundles = archive.bundleCount ?? 0;
 				toast.success(`Archived ${runs} run${runs === 1 ? '' : 's'} + ${bundles} bundle${bundles === 1 ? '' : 's'}`, {
-					description: `Preview "${p.name}" torn down.`,
+					description: `Preview "${p.name}" ${outcome}.`,
 					action: {
 						label: 'View archive',
 						onClick: () => void goto(`/workspaces/${slug}/previews/archived/${encodeURIComponent(p.name)}`)
 					}
 				});
 			} else if (archive && !archive.archived) {
-				toast.warning(`Torn down — nothing archived`, {
+				toast.warning(`${outcome === 'torn down' ? 'Torn down' : 'Teardown started'} — nothing archived`, {
 					description: archive.reason ?? 'no runs or bundles to keep'
 				});
 			} else {
-				toast.success(`Preview "${p.name}" torn down`);
+				toast.success(`Preview "${p.name}" ${outcome}`);
 			}
 			onchanged?.();
 		} catch (e) {
@@ -298,8 +512,15 @@
 		toForceTeardown = null;
 		setBusy(p.name, 'teardown');
 		try {
-			const { archive } = await teardownPreview({ name: p.name, forceFailed: true });
+			const { archive, preview, teardown } = await teardownPreview({
+				...teardownCommand(p),
+				forceFailed: true
+			});
 			if (!archive?.quarantined) throw new Error('Loss-accounting receipt was not returned');
+			if (preview.phase !== 'absent') {
+				if (!teardown) throw new Error('Teardown was accepted without a status ticket');
+				markTeardownAccepted(p, teardown);
+			}
 			toast.success(`Preview "${p.name}" teardown started`, {
 				description: 'A durable quarantine summary recorded the incomplete archive.'
 			});
@@ -325,7 +546,7 @@
 					<h2 id="isolated-previews-heading" class="text-sm font-semibold">
 						{controlPlane ? 'Isolated previews' : 'Current isolated preview'}
 					</h2>
-					<Badge variant="secondary" class="h-5 px-1.5 text-[10px]">{previews.length}</Badge>
+					<Badge variant="secondary" class="h-5 px-1.5 text-[10px]">{displayedPreviews.length}</Badge>
 				</div>
 				<p class="mt-1 text-xs text-muted-foreground">
 					{controlPlane
@@ -452,18 +673,24 @@
 		{/if}
 	{/if}
 
-	{#if previews.length > 0}
+	{#if displayedPreviews.length > 0}
 		<ul class="divide-y rounded-lg border">
-			{#each previews as p (p.name)}
+			{#each displayedPreviews as p (p.name)}
 				{@const sleepReason = sleepDisabledReason(p)}
 				{@const expiry = expiresIn(p.expiresAt)}
 				{@const lastActive = relativeTime(p.lastActive)}
 				{@const bootElapsed = formatBootElapsed(p.bootSeconds)}
 				{@const gitOpsHref = previewGitOpsHref(p)}
+				{@const acceptedTeardown = acceptedTeardowns[p.name] ?? null}
+				{@const cleanupSnapshot = acceptedTeardown?.cleanup ?? null}
+				{@const cleanupProgress = cleanupSnapshot ? previewTeardownProgress(cleanupSnapshot) : null}
+				{@const cleanupStatusError = acceptedTeardown?.statusError ?? null}
+				{@const cleanupStatusLost = acceptedTeardown?.terminalStatusError === true}
+				{@const isTerminating = teardownAccepted(p) || /terminat|delet/i.test(p.phase)}
 				<li class="space-y-2 px-3 py-3">
 					<div class="flex items-center justify-between gap-3">
 						<div class="flex items-center gap-2 min-w-0 flex-wrap">
-							{#if readProxyEnabled && p.ready}
+							{#if readProxyEnabled && p.ready && !isTerminating}
 								<button
 									type="button"
 									class="shrink-0 text-muted-foreground hover:text-foreground"
@@ -488,6 +715,8 @@
 
 							{#if resuming[p.name]}
 								<StatusPill status="resuming" label="Resuming…" />
+							{:else if isTerminating}
+								<StatusPill status={cleanupProgress?.failed ? 'failed' : 'terminating'} />
 							{:else}
 								<StatusPill status={effectivePreviewStatus(p)} />
 							{/if}
@@ -523,7 +752,6 @@
 									>{p.origin?.kind ?? p.legacyOrigin}</span
 								>
 							{/if}
-
 						</div>
 
 						<div class="flex items-center gap-1 shrink-0">
@@ -537,7 +765,7 @@
 									<GitBranch class="size-4" />
 								</a>
 							{/if}
-							{#if p.ready && p.url}
+							{#if p.ready && p.url && !isTerminating}
 								<a
 									href={p.url}
 									target="_blank"
@@ -550,7 +778,7 @@
 							<DropdownMenu.Root>
 								<DropdownMenu.Trigger
 									class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-									disabled={!!busy[p.name]}
+									disabled={isTerminating || !!busy[p.name]}
 									aria-label={`Actions for ${p.name}`}
 								>
 									{#if busy[p.name]}<Loader2 class="size-4 motion-safe:animate-spin" />{:else}<MoreHorizontal
@@ -558,29 +786,29 @@
 										/>{/if}
 								</DropdownMenu.Trigger>
 								<DropdownMenu.Content align="end">
-								<DropdownMenu.Item onclick={() => (inspectedName = p.name)}>
-									<PanelRightOpen class="size-4" /> Inspect
-								</DropdownMenu.Item>
-								{#if controlPlane}
-									<DropdownMenu.Separator />
-									{#if p.state === 'slept'}
-										<DropdownMenu.Item onclick={() => doWake(p)}>
-											<Zap class="size-4" /> Wake
-										</DropdownMenu.Item>
-									{:else}
-										<DropdownMenu.Item
-											disabled={!!sleepReason}
-											onclick={() => !sleepReason && doSleep(p)}
-											title={sleepReason ?? undefined}
-										>
-											<Moon class="size-4" /> Sleep
-										</DropdownMenu.Item>
-										{#if sleepReason}
-											<p class="px-2 pb-1 text-[10px] text-muted-foreground max-w-[200px]">{sleepReason}</p>
+									<DropdownMenu.Item onclick={() => (inspectedName = p.name)}>
+										<PanelRightOpen class="size-4" /> Inspect
+									</DropdownMenu.Item>
+									{#if controlPlane}
+										<DropdownMenu.Separator />
+										{#if p.state === 'slept'}
+											<DropdownMenu.Item onclick={() => doWake(p)}>
+												<Zap class="size-4" /> Wake
+											</DropdownMenu.Item>
+										{:else}
+											<DropdownMenu.Item
+												disabled={!!sleepReason}
+												onclick={() => !sleepReason && doSleep(p)}
+												title={sleepReason ?? undefined}
+											>
+												<Moon class="size-4" /> Sleep
+											</DropdownMenu.Item>
+											{#if sleepReason}
+												<p class="px-2 pb-1 text-[10px] text-muted-foreground max-w-[200px]">{sleepReason}</p>
+											{/if}
 										{/if}
 									{/if}
-								{/if}
-									{#if readProxyEnabled && p.ready}
+									{#if readProxyEnabled && p.ready && !isTerminating}
 										<DropdownMenu.Item
 											onclick={() =>
 												(expandedRuns = { ...expandedRuns, [p.name]: !expandedRuns[p.name] })}
@@ -588,21 +816,61 @@
 											<ChevronDown class="size-4" /> Recent runs
 										</DropdownMenu.Item>
 									{/if}
-								{#if controlPlane}
-									<DropdownMenu.Separator />
-									<DropdownMenu.Item
-										class="text-destructive focus:text-destructive"
-										onclick={() => (toTeardown = p)}
-									>
-										<Trash2 class="size-4" /> Tear down
-									</DropdownMenu.Item>
-								{/if}
+									{#if controlPlane}
+										<DropdownMenu.Separator />
+										<DropdownMenu.Item
+											class="text-destructive focus:text-destructive"
+											onclick={() => (toTeardown = p)}
+										>
+											<Trash2 class="size-4" /> Tear down
+										</DropdownMenu.Item>
+									{/if}
 								</DropdownMenu.Content>
 							</DropdownMenu.Root>
 						</div>
 					</div>
 
-					{#if !p.ready && p.state !== 'slept' && !['failed', 'error'].includes(p.phase)}
+					{#if isTerminating}
+						<div class={cleanupProgress?.failed ? 'rounded-md bg-destructive/5 px-2.5 py-2' : 'rounded-md bg-cyan-500/5 px-2.5 py-2'}>
+							<div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+								<span
+									class={cleanupProgress?.failed ? 'inline-flex items-center gap-1.5 font-medium text-destructive' : 'inline-flex items-center gap-1.5 font-medium text-cyan-700 dark:text-cyan-300'}
+									role="status"
+									aria-live="polite"
+									aria-atomic="true"
+									title={cleanupStatusError ?? undefined}
+								>
+									<Loader2 class={cleanupProgress?.failed || cleanupStatusLost ? 'size-3.5' : 'size-3.5 motion-safe:animate-spin'} />
+									{cleanupStatusLost
+										? 'Cleanup status lost'
+										: cleanupStatusError
+										? 'Cleanup status unavailable; retrying'
+										: (cleanupProgress?.label ?? 'Teardown request accepted')}
+								</span>
+								{#if cleanupStatusLost}
+									<button
+										type="button"
+										class="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+										onclick={() => dismissAcceptedTeardown(p.name)}
+										aria-label={`Dismiss lost cleanup status for ${p.name}`}
+										title="Dismiss status"
+									>
+										<X class="size-3.5" />
+									</button>
+								{:else if cleanupProgress}
+									<span class="tabular-nums text-muted-foreground">
+										{cleanupProgress.completed}/{cleanupProgress.total} checks
+									</span>
+								{/if}
+							</div>
+							<div class="mt-2 h-1 overflow-hidden rounded-full bg-cyan-500/15" aria-hidden="true">
+								<span
+									class={cleanupProgress?.failed ? 'block h-full rounded-full bg-destructive transition-[width]' : 'block h-full rounded-full bg-cyan-500 transition-[width]'}
+									style={`width: ${cleanupProgress?.percent ?? 4}%`}
+								></span>
+							</div>
+						</div>
+					{:else if !p.ready && p.state !== 'slept' && !['failed', 'error'].includes(p.phase)}
 						<div class="rounded-md bg-amber-500/5 px-2.5 py-2">
 							<div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
 								<span
@@ -659,7 +927,7 @@
 						{/if}
 					</div>
 
-					{#if readProxyEnabled && p.ready && expandedRuns[p.name]}
+					{#if readProxyEnabled && p.ready && !isTerminating && expandedRuns[p.name]}
 						<div class="mt-1" id={`preview-runs-${p.name}`}>
 							<PreviewRunsPanel name={p.name} url={p.url} />
 						</div>

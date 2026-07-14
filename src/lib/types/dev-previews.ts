@@ -78,6 +78,55 @@ export interface VclusterPreviewRecord {
   catalogDigest: string | null;
 }
 
+/** Client-safe teardown convergence state projected by the physical controller. */
+export type VclusterPreviewCleanupSnapshot = {
+  name: string;
+  resourceName: string;
+  complete: boolean;
+  phase: "pending" | "complete" | "failed";
+  checks: {
+    runnerSucceeded: boolean;
+    previewEnvironmentAbsent: boolean;
+    applicationAbsent: boolean;
+    agentRegistrationAbsent: boolean;
+    agentNamespacesAbsent: boolean;
+    databaseAbsent: boolean;
+    natsStreamAbsent: boolean;
+    headlampRegistrationAbsent: boolean;
+    tailnetEgressAbsent: boolean;
+    hostNamespaceAbsent: boolean;
+    storageScopeAbsent: boolean;
+    runnerIdentityAbsent: boolean;
+  };
+  /** Exact durable down-runner identity, when a controller deletion intent exists. */
+  teardownProof?: {
+    intentId: `sha256:${string}`;
+    environmentUid: string;
+    requestId: string;
+    sourceRevision: string;
+    jobName: string;
+    jobUid: string;
+    runnerGeneration: `op:${string}`;
+  };
+  message: string | null;
+};
+
+/** Exact PreviewEnvironment generation accepted for asynchronous teardown. */
+export type VclusterPreviewTeardownTicket = {
+  name: string;
+  environmentUid: string;
+  requestId: string;
+  sourceRevision: string;
+  /** Physical-broker HMAC; the root never crosses this wire boundary. */
+  signature: string;
+};
+
+export type VclusterPreviewTeardownAcceptance = {
+  preview: VclusterPreviewRecord;
+  /** Null only when the guarded target was already absent at submission time. */
+  ticket: VclusterPreviewTeardownTicket | null;
+};
+
 /**
  * One Tier-2 preview as the Dev hub renders it: a `VclusterPreviewRecord`
  * decorated with the UI-only `prUrl` (built from `prNumber` + the configured

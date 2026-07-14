@@ -10,8 +10,12 @@ import {
 	PreviewEnvironmentUnavailableError,
 	PreviewEnvironmentValidationError
 } from '$lib/server/application/preview-environments';
+import {
+	PreviewEnvironmentDesiredStateError,
+	PreviewEnvironmentDesiredStateOwnershipError
+} from '$lib/server/application/ports';
 import type { PreviewArchiveResult, PrPreviewStatus } from '$lib/server/application/ports';
-import { safePreviewName } from '$lib/types/dev-previews';
+import { safePreviewName, type VclusterPreviewTeardownTicket } from '$lib/types/dev-previews';
 import type {
 	PreviewSleepResult,
 	PreviewWakeResult,
@@ -247,10 +251,13 @@ export const teardownPreview = command(
 	'unchecked',
 	async (input: {
 		name: string;
+		expectedRequestId: string;
+		expectedSourceRevision: string;
 		forceFailed?: boolean;
 	}): Promise<{
 		archive: PreviewArchiveResult | null;
 		preview: VclusterPreviewSummary;
+		teardown: VclusterPreviewTeardownTicket | null;
 	}> => {
 		requireControlPlaneDeployment();
 		const session = await requireAdminSession();
@@ -259,16 +266,21 @@ export const teardownPreview = command(
 			const result = await adapters.previewTeardown.teardown({
 				name: input.name,
 				actorUserId: session.userId,
+				expectedRequestId: input.expectedRequestId,
+				expectedSourceRevision: input.expectedSourceRevision,
 				projectId: session.projectId ?? null,
 				...(input.forceFailed === true ? { forceFailed: true } : {})
 			});
 			return {
 				archive: result.archive,
-				preview: adapters.vclusterPreviews.present(result.preview)
+				preview: adapters.vclusterPreviews.present(result.preview),
+				teardown: result.ticket
 			};
 		} catch (cause) {
 			if (cause instanceof PreviewAccessDeniedError) error(403, cause.message);
 			if (cause instanceof PreviewTeardownRefusedError) error(409, cause.message);
+			if (cause instanceof PreviewEnvironmentDesiredStateOwnershipError) error(409, cause.message);
+			if (cause instanceof PreviewEnvironmentDesiredStateError) error(503, cause.message);
 			throw cause;
 		}
 	}
