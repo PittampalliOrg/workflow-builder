@@ -29,6 +29,7 @@ import dapr.ext.workflow as wf
 
 from workflows.session_host_wait import spawn_session_with_host_wait
 from workflows.action_runner_workflow import action_runner_workflow
+from workflows.wait_event_workflow import wait_event_workflow
 from activities.execute_action import execute_action
 from activities.resolve_script_workflow import resolve_script_workflow
 from activities.team_ops import execute_team_op
@@ -679,6 +680,51 @@ def start_action_call(
 
     activity_input["executionType"] = "BEGIN"
     return ctx.call_activity(execute_action, input=_freeze(activity_input))
+
+
+def start_event_wait_call(
+    ctx,
+    *,
+    call_id: str,
+    spec: dict[str, Any],
+    exec_id: str,
+    otel: dict[str, Any],
+):
+    """Dispatch an ``approve()``/``waitForEvent()`` gate (contract 1.2.0, P1d)
+    as a ``wait_event_workflow_v1`` child. The runtime event name is
+    per-callId (``script.event.<callId>``) so scripts can hold PARALLEL gates;
+    the logical name ('approval', 'deploy.finished', ...) rides as metadata.
+    """
+    logical_name = str(spec.get("eventName") or "").strip() or "event"
+    event_opts = spec.get("eventOpts") if isinstance(spec.get("eventOpts"), dict) else {}
+    return ctx.call_child_workflow(
+        wait_event_workflow,
+        input=_freeze(
+            {
+                "eventName": f"script.event.{call_id}",
+                "logicalName": logical_name,
+                "timeoutMinutes": event_opts.get("timeoutMinutes"),
+                "message": event_opts.get("message"),
+                "label": spec.get("label"),
+                "journal": {
+                    "executionId": exec_id,
+                    "callId": call_id,
+                    "seq": spec.get("seq", 0),
+                    "spec": {
+                        "kind": spec.get("kind") or "event",
+                        "label": spec.get("label"),
+                        "phase": spec.get("phase"),
+                        "promptSha256": spec.get("promptSha256"),
+                        "baseHash": spec.get("baseHash"),
+                        "occurrence": spec.get("occurrence"),
+                        "retries": int(spec.get("retries") or 0),
+                    },
+                },
+                "_otel": otel,
+            }
+        ),
+        instance_id=str(spec.get("_instance_id") or ""),
+    )
 
 
 def _team_token_budget(meta: dict[str, Any] | None) -> int | None:

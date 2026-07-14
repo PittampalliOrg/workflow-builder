@@ -1522,6 +1522,7 @@ export function getApplicationAdapters(
         executionReadModels: getWorkflowExecutionReadModels(),
         runStarter: new LegacyWorkflowRunStarterPort(),
         workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
+        scriptCalls: getScriptCalls(),
       }));
   const getTriggeredWorkflowStart = () =>
     (triggeredWorkflowStart ??= new ApplicationTriggeredWorkflowStartService({

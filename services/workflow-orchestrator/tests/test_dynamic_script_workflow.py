@@ -275,7 +275,7 @@ class FakeCtx:
     def set_custom_status(self, status: str) -> None:
         self.custom_statuses.append(status)
 
-    def wait_for_external_event(self, name: str) -> CompletableTask:
+    def wait_for_external_event(self, name: str, timeout=None) -> CompletableTask:
         task = CompletableTask()
         self.events.setdefault(name, []).append(task)
         self.action_log.append(("event", name))
@@ -1693,14 +1693,75 @@ def test_action_runner_delay_pause_uses_timer_then_resumes():
     assert ctx.pause_inputs == []  # DELAY needs no resume-target marker
 
 
-def test_event_kind_journals_dispatch_error_until_p1d():
+def test_event_kind_dispatches_wait_event_child_and_resolves_payload():
+    """approve()/waitForEvent() dispatches a wait_event_workflow_v1 child on a
+    per-callId event name; the delivered payload journals as the gate result."""
     cid = "d4" * 20 + "_0"
     ctx = FakeCtx(evaluator=make_evaluator([event_task(cid)], {"ok": True}))
-    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+
+    def approve_gate(c: FakeCtx):
+        c.complete_child(cid, {"approved": True, "approvedBy": "u1"})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [approve_gate]
+    )
     assert result["success"] is True
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["eventName"] == f"script.event.{cid}"
+    assert child_input["logicalName"] == "approval"
+    assert child_input["journal"]["callId"] == cid
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
-    assert len(raws) == 1 and raws[0]["success"] is False
-    assert "P1d" in raws[0]["error"]
+    assert raws == [{"approved": True, "approvedBy": "u1"}]
+
+
+def test_wait_event_workflow_marks_waiter_and_resolves_timeout():
+    """The gate child journals its waiter marker (approve-route target), logs
+    the approval-request row, and RESOLVES {timedOut:true} on timeout."""
+    from workflows.wait_event_workflow import wait_event_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="gate-1")
+    gen = wait_event_workflow(
+        ctx,
+        {
+            "eventName": "script.event.abc_0",
+            "logicalName": "approval",
+            "timeoutMinutes": 60,
+            "journal": {"executionId": "e1", "callId": "abc_0", "seq": 1, "spec": {"kind": "event"}},
+        },
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway gate loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        if not task.is_complete:
+            # The external-event wait: simulate a TIMEOUT by throwing into the
+            # generator the way durabletask surfaces expired waits.
+            assert ctx.events.get("script.event.abc_0"), "gate did not wait on its event"
+            try:
+                gen.throw(TimeoutError())
+            except StopIteration as exc:
+                result = exc.value
+                break
+            continue
+        send = task.get_result()
+
+    assert result == {"timedOut": True}
+    # Waiter marker journaled (approve route target).
+    assert len(ctx.pause_inputs) == 1
+    pause = ctx.pause_inputs[0]["pause"]
+    assert pause["type"] == "EVENT" and pause["waiterInstanceId"] == "gate-1"
+    assert pause["eventName"] == "script.event.abc_0"
+    # Approval request + timeout rows logged.
+    logged = [a[1] for a in ctx.action_log if a[0] == "activity"]
+    assert "log_approval_request" in logged and "log_approval_timeout" in logged
 
 
 def test_action_kinds_without_features_flag_hit_skew_guard():

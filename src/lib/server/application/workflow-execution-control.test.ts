@@ -963,3 +963,144 @@ function executionRecord(
 		...overrides,
 	};
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic-script approval gates (cutover P1d): approve()/waitForEvent() gates
+// are journal rows with wait_event pause markers, raised at the WAITER child.
+// ---------------------------------------------------------------------------
+describe("dynamic-script approval gates", () => {
+	function gateRow(callId: string, over: Record<string, unknown> = {}) {
+		return {
+			callId,
+			status: "running",
+			label: "ship gate",
+			result: {
+				pause: {
+					type: "EVENT",
+					eventName: `script.event.${callId}`,
+					logicalName: "approval",
+					waiterInstanceId: `root__durable-script__${callId.slice(0, 16)}__run__0`,
+					message: "ship it?",
+					...over,
+				},
+			},
+		};
+	}
+
+	function makeScriptService(rows: unknown[]) {
+		const approvalEvents: WorkflowApprovalEventPort = {
+			raiseApprovalEvent: vi.fn(async () => ({ ok: true as const })),
+			raiseWorkflowEvent: vi.fn(async () => ({ ok: true as const })),
+		};
+		const workflowData = {
+			getExecutionById: vi.fn(async () =>
+				executionRecord({ executionIrVersion: "dynamic-script-2" }),
+			),
+			getScopedExecutionById: vi.fn(async () =>
+				executionRecord({ executionIrVersion: "dynamic-script-2" }),
+			),
+			getWorkflowByRef: vi.fn(async () => workflowDefinition()),
+			getRunningWorkflowExecution: vi.fn(async () => null),
+			isPlatformAdmin: vi.fn(async () => true),
+			validateApiKeyForUser: vi.fn(async () => ({
+				valid: true as const,
+				apiKeyId: "key-1",
+			})),
+		};
+		const service = new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners: { getCoordinatorOwner: vi.fn(async () => null) },
+			executionLifecycle: {
+				checkExecutionAccess: vi.fn(async () => ({ status: "ok" as const, active: true })),
+				stopExecution: vi.fn(async () => ({
+					confirmed: true,
+					notFound: false,
+					state: "confirmed",
+				})),
+			} as unknown as WorkflowExecutionLifecycleControllerPort,
+			executionReadModels: {
+				assertMigrated: vi.fn(async () => undefined),
+			} as unknown as WorkflowExecutionReadModelPort,
+			runStarter: { startWorkflowRun: vi.fn() } as unknown as WorkflowRunStarterPort,
+			workflowSpecs: { validate: vi.fn() } as unknown as WorkflowSpecValidatorPort,
+			scriptCalls: { listInternal: vi.fn(async () => rows) } as never,
+		});
+		return { service, approvalEvents };
+	}
+
+	it("approves the single waiting gate at the waiter child", async () => {
+		const { service, approvalEvents } = makeScriptService([gateRow("abc_0")]);
+		const result = await service.approveExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { note: "lgtm" },
+		});
+		expect(approvalEvents.raiseWorkflowEvent).toHaveBeenCalledWith({
+			instanceId: `root__durable-script__${"abc_0".slice(0, 16)}__run__0`,
+			eventName: "script.event.abc_0",
+			eventData: {
+				approved: true,
+				approvedBy: "user-1",
+				note: "lgtm",
+				source: "run-ui",
+			},
+		});
+		expect(result.status).toBe("ok");
+	});
+
+	it("rejects (approved: false) still resolves the gate", async () => {
+		const { service, approvalEvents } = makeScriptService([gateRow("abc_0")]);
+		await service.approveExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { approved: false },
+		});
+		const call = (approvalEvents.raiseWorkflowEvent as ReturnType<typeof vi.fn>).mock
+			.calls[0][0];
+		expect(call.eventData.approved).toBe(false);
+	});
+
+	it("409s with disambiguation guidance when multiple gates wait", async () => {
+		const { service } = makeScriptService([gateRow("abc_0"), gateRow("def_0")]);
+		const result = await service.approveExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: {},
+		});
+		expect(result).toMatchObject({ status: "error", httpStatus: 409 });
+	});
+
+	it("409s when no gate waits", async () => {
+		const { service } = makeScriptService([]);
+		const result = await service.approveExecution({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			body: {},
+		});
+		expect(result).toMatchObject({ status: "error", httpStatus: 409 });
+	});
+
+	it("getApprovalState lists plural gates for dynamic-script runs", async () => {
+		const { service } = makeScriptService([gateRow("abc_0"), gateRow("def_0")]);
+		const result = await service.getApprovalState({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+		});
+		expect(result).toEqual({
+			status: "ok",
+			body: {
+				awaiting: true,
+				gates: [
+					{ callId: "abc_0", name: "approval", label: "ship gate", message: "ship it?" },
+					{ callId: "def_0", name: "approval", label: "ship gate", message: "ship it?" },
+				],
+			},
+		});
+	});
+});
