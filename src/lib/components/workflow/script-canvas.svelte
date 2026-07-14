@@ -4,6 +4,7 @@
 		Controls,
 		Background,
 		BackgroundVariant,
+		MiniMap,
 		MarkerType,
 		type NodeTypes,
 		type Node,
@@ -90,10 +91,12 @@
 			}
 			return {
 				...e,
-				type: 'smoothstep',
+				// Default (bezier) edges: soft curvature reads more organically than
+				// smoothstep's bus-bar right angles, especially on fan-out/fan-in.
+				type: 'default',
 				animated: isParallel || isPipeline,
 				markerEnd: { type: MarkerType.ArrowClosed, width: 15, height: 15, color: stroke },
-				style: `stroke: ${stroke}; stroke-width: ${isParallel || isPipeline ? 1.75 : 1.25}px; opacity: ${isParallel || isPipeline ? 0.85 : 0.4};`
+				style: `stroke: ${stroke}; stroke-width: ${isParallel || isPipeline ? 1.75 : 1.25}px; opacity: ${isParallel || isPipeline ? 0.85 : 0.45};`
 			};
 		})
 	);
@@ -126,6 +129,21 @@
 	}
 
 	const isEmpty = $derived((graph?.nodes.length ?? 0) === 0);
+	const showMiniMap = $derived((graph?.nodes.length ?? 0) > 10);
+	const MINIMAP_HUES: Record<string, string> = {
+		agent: 'oklch(0.72 0.12 180)',
+		action: 'oklch(0.7 0.15 295)',
+		event: 'oklch(0.72 0.17 15)',
+		team: 'oklch(0.74 0.12 210)',
+		workflow: 'oklch(0.68 0.14 275)',
+		parallel: 'oklch(0.78 0.15 75)',
+		pipeline: 'oklch(0.72 0.13 235)',
+		phase: 'oklch(0.72 0.18 328)'
+	};
+	function miniMapColor(node: Node): string {
+		const v = (node.data as { variant?: string } | undefined)?.variant ?? '';
+		return MINIMAP_HUES[v] ?? 'var(--muted-foreground)';
+	}
 </script>
 
 <div class="relative h-full w-full">
@@ -210,6 +228,50 @@
 		>
 			<Background variant={BackgroundVariant.Dots} gap={18} size={1} />
 			<Controls showLock={false} />
+			{#if showMiniMap}
+				<MiniMap nodeColor={miniMapColor} pannable zoomable class="!bg-background/80" />
+			{/if}
 		</SvelteFlow>
 	{/if}
 </div>
+
+<style>
+	/* Node enter: a one-shot fade+rise. Runs on the SvelteFlow node wrapper so
+	 * re-layouts (draft edits) animate new nodes in without re-triggering old
+	 * ones (the keyframe restarts only when the element mounts). */
+	:global(.svelte-flow__node) {
+		animation: wfb-node-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+	}
+	@keyframes wfb-node-enter {
+		from {
+			opacity: 0;
+			transform: translateY(6px) scale(0.985);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
+	}
+	/* Live-run pulse: a soft breathing ring on cards with a RUNNING journal
+	 * row (box-shadow on a rounded card — cheap, no layout). */
+	:global(.wfb-node-card.wfb-node-running) {
+		animation: wfb-node-pulse 2.2s ease-in-out infinite;
+	}
+	@keyframes wfb-node-pulse {
+		0%,
+		100% {
+			box-shadow: 0 0 0 0 color-mix(in oklch, oklch(0.72 0.13 235) 35%, transparent);
+		}
+		50% {
+			box-shadow: 0 0 0 6px color-mix(in oklch, oklch(0.72 0.13 235) 8%, transparent);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.svelte-flow__node) {
+			animation: none;
+		}
+		:global(.wfb-node-card.wfb-node-running) {
+			animation: none;
+		}
+	}
+</style>

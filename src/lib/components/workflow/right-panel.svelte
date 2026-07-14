@@ -14,6 +14,7 @@
 	import NodeConfigPanel from './node-config-panel.svelte';
 	import ActionProperties from './action-properties.svelte';
 	import SpecEditor from './spec-editor.svelte';
+	import ScriptCodePanel from './script-code-panel.svelte';
 	import RunsPanel from './runs-panel.svelte';
 	import AiTabContent from './ai-tab-content.svelte';
 	import WorkflowTriggersPanel from './workflow-triggers-panel.svelte';
@@ -33,6 +34,23 @@
 	// One-time nudge per newly-selected run (only widens, never shrinks; not persisted,
 	// so it never clobbers the user's saved width). The panel stays user-resizable.
 	const RUN_VIEW_MIN = 600;
+	const CODE_VIEW_MIN = 560;
+	let codeNudged = $state(false);
+	$effect(() => {
+		if (
+			ui.rightPanelTab === 'code' &&
+			store.isDynamicScript &&
+			!codeNudged &&
+			panelWidth < CODE_VIEW_MIN
+		) {
+			codeNudged = true;
+			const cap =
+				typeof window !== 'undefined'
+					? Math.round((window.innerWidth * MAX_WIDTH_PCT) / 100)
+					: CODE_VIEW_MIN;
+			panelWidth = Math.min(CODE_VIEW_MIN, cap);
+		}
+	});
 	let nudgedFor = $state<string | null>(null);
 	$effect(() => {
 		const sel = store.selectedExecutionId;
@@ -82,7 +100,11 @@
 		if (store.selectedNode || ui.rightPanelTab === 'properties') {
 			all.push({ id: 'properties', label: 'Properties', icon: Settings2 });
 		}
-		all.push({ id: 'code', label: 'Spec', icon: Code2 });
+		all.push({
+			id: 'code',
+			label: store.isDynamicScript ? 'Code' : 'Spec',
+			icon: Code2
+		});
 		all.push({ id: 'ai', label: 'AI', icon: Sparkles });
 		all.push({ id: 'runs', label: 'Runs', icon: Play });
 		all.push({ id: 'triggers', label: 'Triggers', icon: Webhook });
@@ -98,6 +120,7 @@
 
 	// Panel header title
 	const headerTitle = $derived.by(() => {
+		if (ui.rightPanelTab === 'code' && store.isDynamicScript) return 'Script';
 		if (ui.rightPanelTab === 'properties' || ui.rightPanelTab === 'code') {
 			return store.selectedNode?.data?.label || 'Node';
 		}
@@ -213,7 +236,11 @@
 		</TabsContent>
 
 		<TabsContent value="code" class="mt-0 flex-1 overflow-hidden flex flex-col">
-			<SpecEditor />
+			{#if store.isDynamicScript}
+				<ScriptCodePanel />
+			{:else}
+				<SpecEditor />
+			{/if}
 		</TabsContent>
 
 		<TabsContent value="ai" class="mt-0 flex-1 overflow-hidden flex flex-col">
