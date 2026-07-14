@@ -133,6 +133,18 @@ export type RuntimeCliAuth = {
 
 export type RuntimeDescriptor = {
 	id: string;
+	/**
+	 * Session-hosting mode (concurrency plan P3). "shared-pool": sessions
+	 * multiplex as workflow instances onto the standing pool Deployment for the
+	 * runtime class (e.g. agent-runtime-pool-coding) instead of provisioning a
+	 * per-session Kueue host — the Dapr workflow engine hash-spreads instances
+	 * across pool replicas. Only valid for runtimes WITHOUT per-session secret
+	 * env (no cliAuth): the pool has no per-session secret channel; session
+	 * config rides childInput per dispatch. Absent / "per-session-pod" keeps the
+	 * dedicated per-session host lane. Explicit runtimeIsolation="dedicated" and
+	 * per-session secret env always override back to per-session-pod.
+	 */
+	hostMode?: "per-session-pod" | "shared-pool";
 	appIdConfigKey: string;
 	instancePrefix: string;
 	family: "durable-session" | "browser" | "interactive-cli";

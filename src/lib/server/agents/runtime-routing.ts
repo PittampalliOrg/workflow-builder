@@ -162,7 +162,14 @@ export function resolveAgentRuntimePool(
 ): AgentRuntimePool | null {
 	const explicit = explicitPoolFromConfig(config, runtimeClass);
 	if (explicit) return explicit;
-	if (!runtimePoolAutoEnabled()) return null;
+	// Concurrency plan P3: a registry hostMode="shared-pool" descriptor resolves
+	// its class pool independent of the AGENT_RUNTIME_SHARED_POOLS_ENABLED
+	// rollout flag — the per-session-host skip keyed on hostMode is also
+	// flag-independent, and the two must agree or a flag flip would strand
+	// sessions on a dedicated app-id that has no Deployment.
+	const descriptorWantsPool =
+		getRuntimeDescriptor(config?.runtime)?.hostMode === "shared-pool";
+	if (!descriptorWantsPool && !runtimePoolAutoEnabled()) return null;
 
 	const map = parsePoolConfigJson();
 	const configured = map[runtimeClass];
@@ -264,13 +271,22 @@ export function resolveAgentRuntimeRoute(params: {
 	}
 
 	const pool = resolveAgentRuntimePool(runtimeClass, params.config);
-	if (pool && (isolation === "shared" || runtimePoolAutoEnabled())) {
+	// Concurrency plan P3: a registry descriptor with hostMode="shared-pool"
+	// makes the pool the runtime's PRIMARY route (dedicated-reasons above still
+	// win), independent of the AGENT_RUNTIME_SHARED_POOLS_ENABLED rollout flag.
+	const descriptorWantsPool = runtimeDescriptor?.hostMode === "shared-pool";
+	if (pool && (isolation === "shared" || descriptorWantsPool || runtimePoolAutoEnabled())) {
 		return {
 			appId: pool.appId,
 			slug: pool.slug,
 			runtimeClass: pool.runtimeClass,
 			isolation: "shared",
-			reason: isolation === "shared" ? "agent requested shared runtime pool" : "shared runtime pools enabled",
+			reason:
+				isolation === "shared"
+					? "agent requested shared runtime pool"
+					: descriptorWantsPool
+						? `${runtimeDescriptor.id} registry hostMode is shared-pool`
+						: "shared runtime pools enabled",
 			pool,
 		};
 	}

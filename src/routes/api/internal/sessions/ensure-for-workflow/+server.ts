@@ -16,6 +16,7 @@ import type { AgentConfig } from "$lib/types/agents";
 import {
 	agentRuntimeDedicatedAppId,
 	agentRuntimeSlugFromAppId,
+	resolveAgentRuntimeRoute,
 } from "$lib/server/agents/runtime-routing";
 import {
 	extractTraceContext,
@@ -693,7 +694,27 @@ export const POST: RequestHandler = async ({ request }) => {
 				: null,
 		seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
 	});
-	const childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+	let childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+	// Concurrency plan P3: when a shared-pool runtime skipped the per-session
+	// host, the identity the orchestrator stamped (legacy shared app id, e.g.
+	// "dapr-agent-py") must be re-routed through the pool resolver so the
+	// session multiplexes onto the standing pool Deployment
+	// (agent-runtime-pool-<class>) instead of the legacy Deployment.
+	if (
+		!sessionHost &&
+		getRuntimeDescriptor(
+			(dispatchAgentConfig as { runtime?: string } | null)?.runtime,
+		)?.hostMode === "shared-pool"
+	) {
+		const poolRoute = resolveAgentRuntimeRoute({
+			agentSlug: bodyAgentSlug ?? dispatchAgentConfig?.runtime ?? "agent",
+			runtimeAppId: targetAgentAppId,
+			config: dispatchAgentConfig,
+		});
+		if (poolRoute.isolation === "shared") {
+			childAgentAppId = poolRoute.appId;
+		}
+	}
 	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
 	if (childAgentAppId) {
 		await workflowData.updateWorkflowEnsureSessionRuntime({

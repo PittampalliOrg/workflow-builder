@@ -7,6 +7,7 @@
   "runtimes": [
     {
       "id": "dapr-agent-py",
+      "hostMode": "shared-pool",
       "appIdConfigKey": "DAPR_AGENT_PY_APP_ID",
       "instancePrefix": "durable",
       "family": "durable-session",

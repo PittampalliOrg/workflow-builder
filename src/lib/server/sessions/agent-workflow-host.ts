@@ -378,6 +378,24 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			};
 		}
 	}
+	// Concurrency plan P3: shared-pool runtimes (registry hostMode) skip the
+	// per-session Kueue host — returning null makes both spawn.ts and
+	// ensure-for-workflow fall back to runtimeRoute.appId, which
+	// resolveAgentRuntimeRoute routes to the standing pool Deployment for the
+	// runtime class. Sessions multiplex there as workflow instances; per-session
+	// config rides childInput. Three overrides force the dedicated host anyway:
+	// explicit dedicated isolation, per-session secret env (no delivery channel
+	// on a shared pod), and persistentHost (UI sessions that pin their host).
+	if (
+		getRuntimeDescriptor((params.agentConfig as { runtime?: string } | null)?.runtime)
+			?.hostMode === "shared-pool" &&
+		(params.agentConfig as { runtimeIsolation?: string } | null)?.runtimeIsolation !==
+			"dedicated" &&
+		Object.keys(params.sessionSecretEnv ?? {}).length === 0 &&
+		params.persistentHost !== true
+	) {
+		return null;
+	}
 	if (!agentWorkflowHostBackendEnabled()) return null;
 	const baseUrl = sandboxExecutionApiUrl();
 	if (!baseUrl) {
