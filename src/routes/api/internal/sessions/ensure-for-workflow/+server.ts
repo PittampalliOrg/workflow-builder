@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
-import { resolveAgentIdBySlug } from "$lib/server/teams/team-repo";
 import type {
 	WorkflowDataService,
 	WorkflowPublishedAgent,
@@ -321,7 +320,10 @@ export const POST: RequestHandler = async ({ request }) => {
 				{ status: 422 },
 			);
 		}
-		const resolvedBySlug = await resolveAgentIdBySlug(projectId, resolveAgentSlugRaw);
+		const resolvedBySlug = await getApplicationAdapters().teamStore.resolveAgentIdBySlug(
+			projectId,
+			resolveAgentSlugRaw,
+		);
 		if (!resolvedBySlug) {
 			return json(
 				{
