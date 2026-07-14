@@ -84,7 +84,9 @@
 						"effort": null,
 						"isolation": null,
 						"agentType": null,
-						"agent": null
+						"agent": null,
+						"agentVersion": null,
+						"sandbox": null
 					},
 					"baseHash": "<64 hex>",
 					"occurrence": 0

@@ -115,31 +115,101 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ### P2 — canvas
 
-- [ ] **12.** Evaluator captures call-site positions → additive `tasks[].position`
-  (NEVER in the callId hash) → journal `call_site` column + migration → returned by
-  `/script-calls`.
-- [ ] **13.** ScriptCanvas live overlay: per-node journal status, fan-out grouped by call
-  site, kill/skip on nodes; run-page Canvas List|Graph toggle.
-- [ ] **14.** Execute dialog renders the `meta.input` form. Proof: vitest green + DOM
-  evidence on a live dev run.
+- [x] **12.** Evaluator captures call-site positions → additive `tasks[].position`
+  (NEVER in the callId hash) → journal `call_site` column (migration 0107) + both store
+  adapters → returned by `/script-calls`. PR #570; evaluator 92 + orchestrator 355 passed.
+  **Dev-proven** 2026-07-14 (run `j_6GYNddjtdKAbfY9JDl7`): every journal row carries its
+  position — `action {line:23}`, `sleep {line:26}`, `event {line:30}`, `agent {line:33}`,
+  matching the stored source exactly. (Live-caught + fixed: the AP/gate child journal
+  specs omitted `callSite`, so a pause-marker rewrite clobbered the running row's
+  position to NULL.)
+- [x] **13.** ScriptCanvas live overlay: per-node journal status, fan-out grouped by call
+  site, kill/skip on nodes; run-page Canvas List|Graph toggle. PR #570. **Dev-proven**
+  2026-07-14: the run page's Canvas tab shows List|Graph; Graph renders the frozen
+  script's node graph with the `named-agent` node carrying a live **"1 done"** chip —
+  the journal row joined to its static node by `call_site.line`.
+- [x] **14.** Execute dialog renders the `meta.input` form. **Dev-proven** 2026-07-14: the
+  dialog detects `meta.input` and renders Form|JSON tabs with the schema's fields
+  (url / gateTimeoutMinutes / namedAgent + defaults). (Live-caught + fixed: the sjsf
+  `JsonSchemaGeneratedForm` needs a theme-component registration this app never wires —
+  it threw and the boundary fell back to JSON-only; the fields are now rendered natively,
+  same shape as the SW trigger form.) Validator vitest 17 passed.
 
 ### P3 — system-producer migration (per-producer flag; SW builder callable until parity)
 
-- [ ] **15.** Ported to scripts with dev shadow-parity vs pre-captured SW baselines:
-  agent-eval builder; code-eval-item (SAME workflow id, 20-item parity); swebench eval +
-  benchmark builders (≥5-instance parity incl. the sandbox-execution-api start path); GAN
-  generator (one live GAN run green); microservice-dev-session; pr-heavy-review; office
-  smokes via BFF internal execute.
-- [ ] **16.** events-ingest legacy route deleted AFTER a replacement github trigger row
-  is live.
-- [ ] **17.** Seeds retargeted to ported scripts; 13 obsolete SW fixtures deleted; the
-  348-expect guard suite rewritten against evaluator `/evaluate` plan output, green.
+- [ ] **15.** Ported to scripts with dev shadow-parity vs pre-captured SW baselines.
+  **Per-producer status (2026-07-14):**
+  - [x] **office smokes** — start through the BFF internal execute route (PR #571,
+    merged); the last raw-SQL execution fabricator is gone.
+  - [x] **agent-eval builder** — `buildAgentEvaluationScript` behind
+    `EVAL_AGENT_SCRIPT_PRODUCER` (SW builder still callable); the pump envelope is
+    unwrapped by `extractEvaluationGeneratedOutput` so graders need zero changes;
+    evaluations vitest 26 passed. **Parity run not yet executed** (needs eval spend).
+  - [x] **code-eval-item** — ported (`scripts/fixtures/dynamic-scripts/code-eval-item.js`),
+    seeded under the SAME workflow id via `CODE_EVAL_SCRIPT_PRODUCER` (so
+    `CODE_EVAL_WORKFLOW_ID` + the 3 template routes are untouched). Validates + first-round
+    dispatches through the REAL evaluator (`producer-ports.test.ts`).
+    **20-item parity run not yet executed** (needs eval spend).
+  - [x] **swebench eval builder** (`EVAL_SWEBENCH_SCRIPT_PRODUCER`) and
+    **benchmark instance builder** (`BENCHMARK_SCRIPT_PRODUCER`) — both DERIVE every
+    value from their SW builder (env spec, prompt, clone/extract commands, sandbox
+    policy) so the producers cannot drift, then re-express the same 4-step spine with
+    the agent bound to the profile's sandbox. Benchmark dispatch is engine-aware on all
+    three paths (executionIr, host-execution-plane payload, direct orchestrator POST),
+    and `sandbox-execution-api/worker.py` routes to `/api/v2/script-workflows` when the
+    payload carries a script build (the goal's *"incl. sandbox-execution-api start
+    path"*). Tests: evaluations 27, benchmarks 71 passed.
+    **≥5-instance parity run not yet executed** (needs benchmark spend — see B2).
+  - [x] **GAN generator** — `gen/gan-script-generator.ts` emits the harness as a script
+    (23KB), reusing the SW emitter's persona instructions/prompts AND its gate shell
+    verbatim so the two producers cannot drift; the jq `for`/`while` refine loop becomes
+    a plain JS loop and the verdict is a schema'd critic call. Emitted fixture checked in
+    (`scripts/fixtures/dynamic-scripts/preview-gan-ui-feature.js`) with a byte-identical
+    drift guard. **One live GAN run not yet executed** (see B2).
+  - [x] **microservice-dev-session** — ported (20KB), verbatim seed shell + handoff prose.
+  - [x] **pr-heavy-review** — ported: review → independent judge → publish, three CLI
+    agents on ONE shared workspace.
+  - **Enabling capability shipped for all of the above:** the `workspace` sentinel +
+    `agent(..., {sandbox: {...}})` binding — a script can now create a workspace/sandbox
+    with `action('workspace/profile', …)` and bind agents to it (the gap that blocked
+    every workspace-shaped producer).
+- [x] **16.** events-ingest legacy route + `external-event-registry.ts` **deleted**. The
+  route was already inert on dev (`SUPPORTED_WORKFLOW_ID` unset) and its replacement —
+  the engine-agnostic github trigger spine — is live-proven (trigger
+  `lErvqAEkpnd_BSe4RUCGT` drove 250 executions). Boundary ratchet: 2 edges removed.
+  *(Activating a repo webhook is left to the user: it is an outward-facing action.)*
+- [x] **17.** Seeds retargeted; fixtures pruned; guard suite **fully rewritten**.
+  - 13 obsolete SW fixtures deleted + their 3 orphaned guards; `seed-workflows` fixture
+    block pruned to the port set.
+  - **Every remaining fixture is ported**, including the last two: `preview-gan-redesign`
+    and `gan-harness-dapr-showcase` (the 12-step harness — its SW `listen` gate becomes a
+    first-class `approve()`, and all three jq `for`/`while` loops become plain JS loops
+    whose exits read **schema'd** critic verdicts instead of parsing free-form JSON out of
+    stdout — the exact failure mode `docs/gan-run-analysis-2026-06-30.md` recorded).
+  - **`producer-plan-guards.test.ts` (19 tests, green)** replaces the entire
+    regex-over-`fixture.do` suite: every script is fed to the REAL script-evaluator and the
+    emitted `/evaluate` **task plan** is asserted — call kinds, action slugs, labels, the
+    schema'd critic, shared-workspace + profile-sandbox binding, and loop behavior across
+    rounds (a failing build gate short-circuits the critic; a failing runtime probe
+    short-circuits a code-eval item; a DENIED/timed-out approval gate short-circuits before
+    any design work; the paired UI/code critics run in the same round). Strictly stronger
+    than the structural proxy: a script that parses but plans the wrong calls fails here.
+  - **ZERO SW-era guard files remain.** (They live in the evaluator's own vitest lane —
+    the root runner does not set `--experimental-vm-modules`, which `vm.SourceTextModule`
+    needs.) Evaluator lane: **118 passed**.
 
 ### P4 — freeze
 
-- [ ] **18.** engineType default → `dynamic-script`; POST/PUT reject new SW specs
-  (internal override header); legacy MCP `create_workflow` removed; `SW_START_DISABLED`
-  flag implemented but SHIPPED OFF; editor read-only for `engineType=dapr` rows.
+- [x] **18.** P4 freeze, **shipped OFF** (`SW_AUTHORING_FROZEN`): new workflows default to
+  `dynamic-script`; `POST /api/workflows` rejects explicit SW creation and
+  `PUT /api/workflows/[id]` rejects SW *spec* writes (internal callers bypass via
+  `internalOverride` so system producers can still seed during the migration window;
+  legacy rows stay readable/runnable/metadata-editable). Legacy MCP `create_workflow`
+  was already removed (asserted by `workflow-tools.test.ts`). `SW_START_DISABLED`
+  implemented in `start-run.ts` and SHIPPED OFF (410 when flipped). Editor read-only
+  for legacy rows: the ScriptCanvas/WorkflowCanvas split already routes `dapr` rows to
+  the SW canvas; a read-only gate rides the freeze flag. Tests:
+  workflow-definition-commands vitest **12 passed** (3 new, incl. off-by-default).
 
 ## Constraints (binding for every phase)
 
@@ -165,7 +235,39 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ## Blockers
 
-*(none — record here any blocker persisting 3 consecutive turns, then stop per the goal)*
+**B1 — RESOLVED (2026-07-14).** `dev/preview` durable activation is now expressible from a
+script: `action('dev/preview', {mode:'preview-native', services:[…]})` dispatches through
+`action_runner_workflow_v1`, which reuses the SW interpreter's own
+`_run_durable_dev_preview_activation` generator verbatim (strict batch/ready-set poll with
+durable timers + deadline). AP-only retry semantics are not stamped on activation calls.
+Regression test:
+`test_dev_preview_activation_routes_to_runner_child_with_durable_poll`; orchestrator suite
+356 passed. The GAN / preview / dev-session fixture ports are unblocked (still to be
+written).
+
+**B2 — the shadow-parity canaries cannot be run as specified: there is no SW baseline on
+dev.** Item 15 asks for parity "vs pre-captured SW baselines". A live census (2026-07-14)
+shows **0 evaluation runs on dev in the last 90 days** and no `code-eval-item` workflow row
+— so no baseline exists, and producing one means running the SW side of every suite first
+(doubling the LLM spend). The canaries themselves (code-eval 20-item, SWE-bench ≥5-instance,
+one live GAN run) each bill real usage and run for hours.
+
+*What WAS proven on dev instead* (2026-07-14): the ported **code-eval script executed
+end-to-end on the cluster** (runs `fs0jYluYaUBqSCgyRcSKJ` → `RPC92pbMxEEXjp1ccsT8m`),
+which caught three real integration bugs no unit test had — the `workspace/*` result
+envelope, the `workspace/profile` sandbox-name nesting, and the **executionId identity**
+(openshell `/api/tools/*` resolve a sandbox by the DAPR instance id, so the DB id 404'd
+`write_file` while `profile`/`command` returned 200). All three are fixed, pinned by tests,
+and the guard suite now models the real envelope.
+
+**Runbook when budget/time is available** (each step is a flag flip + one suite):
+1. `CODE_EVAL_SCRIPT_PRODUCER=false` → run one HumanEval+ suite (20 items) → capture the SW
+   baseline in `benchmark_run_instance_scores`.
+2. `CODE_EVAL_SCRIPT_PRODUCER=true` → re-run the same 20 items → diff per-item verdicts.
+3. Repeat for `EVAL_AGENT_SCRIPT_PRODUCER`, then `EVAL_SWEBENCH_SCRIPT_PRODUCER` /
+   `BENCHMARK_SCRIPT_PRODUCER` (≥5 instances — the most expensive; do it last).
+4. One live GAN run of `preview-gan-ui-feature.js` inside a Tier-2 preview.
+Every flag falls back to the SW builder, so a failed parity check is a one-line revert.
 
 ## References
 

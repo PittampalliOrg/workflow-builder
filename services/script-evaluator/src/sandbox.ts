@@ -83,6 +83,15 @@ export interface TaskOpts {
 	 * the ensure-for-workflow bridge — unknown slugs journal null, never fall
 	 * back to the metered default runtime. */
 	agent?: string | null;
+	/** Named-agent version pin (evals): absent = latest registered version. */
+	agentVersion?: number | null;
+	/** Workspace/sandbox binding (contract 1.2.0): `{workspaceRef?, name?,
+	 * template?, cwd?, maxTurns?, timeoutMinutes?, policy?}`. Lets a script bind
+	 * an agent to a workspace it created with `action('workspace/profile', …)`
+	 * — the capability code-eval / SWE-bench / GAN producers need. Use the
+	 * `workspace` sentinel for `workspaceRef` so the hash stays stable across
+	 * executions (the pump substitutes the run's real ref at dispatch). */
+	sandbox?: Record<string, unknown> | null;
 }
 
 export interface EvaluateTask {
@@ -381,6 +390,12 @@ const WRAPPER_PREFIX_LINES = WRAPPER_PREFIX.split("\n").length - 1;
 
 /** The SourceTextModule identifier — call-site frames are filtered on it. */
 const SCRIPT_MODULE_ID = "workflow-script";
+
+/** The `workspace` global's value: a stable sentinel the pump substitutes with
+ * the run's real shared workspace ref at dispatch (contract 1.2.0). Stable so
+ * action() input hashes — and thus resume-after-edit reuse — survive across
+ * executions. */
+export const WORKSPACE_SENTINEL = "@workspace";
 
 /** Advisory call-site of the CURRENT hook invocation, in ORIGINAL stored-source
  * coordinates (cutover P2, contract-1.2.0 `tasks[].position`). Captured via the
@@ -1126,6 +1141,12 @@ export async function evaluateScript(
 	sandbox.console = consoleShim;
 	sandbox.args = argsGlobal;
 	sandbox.budget = budgetGlobal;
+	// `workspace` (contract 1.2.0): the run's shared workspace handle. A STABLE
+	// SENTINEL, not the concrete per-execution ref — the ref changes every run
+	// (ws_script_<executionId>), and action() hashes its input, so a literal ref
+	// would re-dispatch every call on resume-after-edit. The pump substitutes the
+	// real ref into action() inputs at dispatch (see script_agent_dispatch).
+	sandbox.workspace = WORKSPACE_SENTINEL;
 	if (req.features?.actions === true) {
 		// Deterministic-side primitives (contract 1.2.0). Installed only when the
 		// deployment advertises support — on a flag-off pump a script referencing
@@ -1449,6 +1470,11 @@ function toTask(p: Pending): EvaluateTask {
 			isolation: (o.isolation as string | undefined) ?? null,
 			agentType: (o.agentType as string | undefined) ?? null,
 			agent: (o.agent as string | undefined) ?? null,
+			agentVersion: typeof o.agentVersion === "number" ? o.agentVersion : null,
+			sandbox:
+				o.sandbox && typeof o.sandbox === "object" && !Array.isArray(o.sandbox)
+					? (jsonSafe(o.sandbox) as Record<string, unknown>)
+					: null,
 		},
 		baseHash: p.baseHash,
 		occurrence: p.occurrence,

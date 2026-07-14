@@ -4696,26 +4696,11 @@ async function seedGeneratorCriticShowcases(params: {
 		instructions: GAN_GENERATOR_ULTRACODE_PERSONA,
 	});
 
+	// Cutover P3 (item 17): the fixture set is the PORT SET — 13 historical
+	// showcases were deleted (git history keeps them); every fixture retained
+	// here extends the SW interpreter's mandatory lifetime.
 	const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
 	for (const file of [
-		"evaluator-optimizer-showcase.json",
-		"design-critic-showcase.json",
-		"evaluator-gated-showcase.json",
-		"retroforge-showcase.json",
-		"retroforge-cli-showcase.json",
-		"retroforge-codex-cli-showcase.json",
-		"retroforge-agy-cli-showcase.json",
-		// Parameterized per-phase mix-and-match: planAgent/generatorAgent/criticAgent
-		// each selectable independently (Phase 1, interchangeable-agents workstream).
-		"generator-critic-showcase.json",
-		// Coding generator/critic: clone a repo → redesign → build-gate → Playwright
-		// critic (screenshots the running app) → open a PR. (interactive-cli family.)
-		"coding-redesign-cli-showcase.json",
-		// GAN-style harness: Planner → Generator↔Evaluator contract negotiation →
-		// contract-graded build loop → PR. Parameterized build/install/preview
-		// (default "auto"). interactive-cli family ONLY (7 cliWorkspace/JuiceFS nodes;
-		// see docs/gan-harness-workflow.md "Runtime / workspace-backend compatibility").
-		"gan-harness-cli-showcase.json",
 		// Same GAN harness re-authored for dapr-agent-py on the openshell-shared
 		// backend: a workspace/profile provisions ONE shared /sandbox sandbox + a
 		// deterministic clone_repo; all durable/run agents (evaluator-critic-agent)
@@ -4723,27 +4708,6 @@ async function seedGeneratorCriticShowcases(params: {
 		// (no cliWorkspace). Code profiles (library/service); default library on
 		// jonschlinkert/is-number. ui-web/browser eval is a follow-up.
 		"gan-harness-dapr-showcase.json",
-		// PILOT: dapr-agent-py on the juicefs-shared backend (runtime
-		// dapr-agent-py-juicefs → LocalWorkspaceRuntime + /sandbox/work CSI mount,
-		// no openshell RPC). Same juicefs/cliWorkspace spine as the CLI showcase but
-		// dapr agents; a deterministic cliWorkspace clone_repo replaces the
-		// agent-driven clone (the dapr pod has no GITHUB_TOKEN). Proves the
-		// dapr→juicefs migration + cross-family workspace sharing.
-		// docs/dapr-agent-py-sandbox-architecture.md.
-		"gan-harness-dapr-juicefs-pilot.json",
-		// ALL-ON-JUICEFS GAN VISUAL LOOP: GLM-5.2 (dapr-agent-py-juicefs) plans +
-		// builds a standalone SvelteKit dashboard (workflows/sessions/fleet/gitops
-		// primitives, mock data) → deterministic ui-web build+preview gate → a real
-		// browser visual critic (cli-playwright-critic-agent, in-pod Chromium, same
-		// /sandbox/work) screenshots + judges it. Derived from the post-refinement
-		// pilot do[] (behavioral criteria, calibrated evaluator, failing[] feedback,
-		// shallow clone). repoUrl=PittampalliOrg/glm-dashboard-starter.
-		"gan-harness-glm-visual-dashboard.json",
-		// Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
-		// critic drives a real browser (navigate/snapshot/screenshot); the in-pod
-		// @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
-		// inline on the run's Browser tab. Isolates browser/video from the heavy flow.
-		"browser-recording-test-showcase.json",
 		// Minimal clone + single-agent-edit workflow: fast verification of W3
 		// local-build, uid alignment, durable source-bundle persistence, and
 		// concurrency-safe parallel tool calls — no GAN plan/negotiate/refine loop.

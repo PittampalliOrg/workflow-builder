@@ -38,6 +38,7 @@ from activities.team_ops import execute_team_op
 # stay byte-compatible with the SW interpreter (avoids churn / drift).
 from workflows.sw_workflow import (
     _call_child_workflow_with_history_propagation,
+    _expects_durable_dev_preview_activation,
     _is_ap_piece_action,
     _resolve_native_agent_runtime,
     _freeze,
@@ -433,7 +434,17 @@ def _start_script_call(
     agent_config["runtime"] = _name
 
     label = str(opts.get("label") or "").strip() or str(call_id)[:8]
-    workspace_ref = f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None
+    # Workspace/sandbox binding (contract 1.2.0, cutover P3): opts.sandbox lets a
+    # script bind the agent to a workspace it created via
+    # action('workspace/profile', …) — the capability the code-eval / SWE-bench /
+    # GAN producers need. isolation:'shared' remains the simple path.
+    sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
+    sandbox_opt = _substitute_workspace(sandbox_opt, f"ws_script_{exec_id}")
+    workspace_ref = (
+        str(sandbox_opt.get("workspaceRef"))
+        if sandbox_opt.get("workspaceRef")
+        else (f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None)
+    )
     timeout_minutes = None
     try:
         timeout_minutes = int(defaults.get("timeoutMinutes")) if defaults.get("timeoutMinutes") else 30
@@ -456,8 +467,25 @@ def _start_script_call(
         "title": f"{meta.get('name') or 'script'} · {label}",
         "workspaceRef": workspace_ref,
         # Single auto-turn per corrective session (structured retry = NEW session).
-        "timeoutMinutes": timeout_minutes,
-        "maxIterations": None,
+        "timeoutMinutes": (
+            int(sandbox_opt["timeoutMinutes"])
+            if isinstance(sandbox_opt.get("timeoutMinutes"), int)
+            else timeout_minutes
+        ),
+        "maxIterations": (
+            int(sandbox_opt["maxTurns"]) if isinstance(sandbox_opt.get("maxTurns"), int) else None
+        ),
+        **(
+            {"sandboxName": sandbox_opt["sandboxName"]}
+            if isinstance(sandbox_opt.get("sandboxName"), str)
+            else {}
+        ),
+        **({"cwd": sandbox_opt["cwd"]} if isinstance(sandbox_opt.get("cwd"), str) else {}),
+        **(
+            {"sandboxPolicy": sandbox_opt["policy"]}
+            if isinstance(sandbox_opt.get("policy"), dict)
+            else {}
+        ),
         "userId": user_id,
         "projectId": project_id,
         "_otel": otel,
@@ -468,6 +496,9 @@ def _start_script_call(
     agent_slug_opt = str(opts.get("agent") or "").strip()
     if agent_slug_opt:
         bridge_payload["resolveAgentSlug"] = agent_slug_opt
+        agent_version_opt = opts.get("agentVersion")
+        if isinstance(agent_version_opt, int) and agent_version_opt > 0:
+            bridge_payload["resolveAgentVersion"] = agent_version_opt
 
     # Durable-timer readiness wait (concurrency plan P2) — see
     # workflows/session_host_wait.py.
@@ -576,6 +607,24 @@ def start_team_call(
     )
 
 
+#: The `workspace` global's sentinel (script-evaluator WORKSPACE_SENTINEL).
+#: Substituted with the run's real shared workspace ref at dispatch so the
+#: script's action() input hashes stay stable across executions (resume reuse).
+WORKSPACE_SENTINEL = "@workspace"
+
+
+def _substitute_workspace(value: Any, workspace_ref: str) -> Any:
+    """Deep-replace the workspace sentinel with the run's real ref. Pure +
+    deterministic (replay-safe)."""
+    if isinstance(value, str):
+        return workspace_ref if value == WORKSPACE_SENTINEL else value
+    if isinstance(value, list):
+        return [_substitute_workspace(v, workspace_ref) for v in value]
+    if isinstance(value, dict):
+        return {k: _substitute_workspace(v, workspace_ref) for k, v in value.items()}
+    return value
+
+
 def start_action_call(
     ctx,
     *,
@@ -618,7 +667,9 @@ def start_action_call(
         }
 
     action_opts = spec.get("actionOpts") if isinstance(spec.get("actionOpts"), dict) else {}
-    raw_input = spec.get("args")
+    # The run's shared workspace (same key agent(isolation:'shared') binds), so
+    # workspace/* actions and agents operate on ONE filesystem.
+    raw_input = _substitute_workspace(spec.get("args"), f"ws_script_{exec_id}")
     if isinstance(raw_input, dict):
         config: dict[str, Any] = dict(raw_input)
     elif raw_input is None:
@@ -638,7 +689,12 @@ def start_action_call(
         },
         # Script inputs are concrete JS values — no {{...}} templates to resolve.
         "nodeOutputs": {},
-        "executionId": exec_id,
+        # SW parity (sw_workflow.py:4160 `execution_id = ctx.instance_id`): the
+        # openshell tool endpoints (/api/tools/*) resolve a sandbox by
+        # executionId = the DAPR INSTANCE id, not the DB row id. Passing the DB
+        # id made workspace/write_file 404 while profile/command (which take a
+        # workspaceRef) succeeded — live-caught on dev 2026-07-14.
+        "executionId": ctx.instance_id,
         "workflowId": workflow_id or "",
         "dbExecutionId": exec_id,
         "connectionExternalId": (
@@ -654,11 +710,15 @@ def start_action_call(
     if action_opts.get("idempotent") is True:
         activity_input["skipIdempotencyGate"] = True
 
-    if _is_ap_piece_action(slug):
+    # dev/preview activation needs the runner child's durable poll (blocker B1).
+    needs_activation = _expects_durable_dev_preview_activation(slug, config)
+
+    if _is_ap_piece_action(slug) or needs_activation:
         # AP durability contract: the runner child owns BEGIN/RESUME rounds,
         # _AP_RETRY_POLICY, and the DELAY/WEBHOOK pause waits; its instance id
         # (deterministic, already stamped by the pump) is the resume target.
-        activity_input["raiseOnRetryable"] = True
+        if not needs_activation:
+            activity_input["raiseOnRetryable"] = True
         return ctx.call_child_workflow(
             action_runner_workflow,
             input=_freeze(
@@ -676,6 +736,9 @@ def start_action_call(
                             "baseHash": spec.get("baseHash"),
                             "occurrence": spec.get("occurrence"),
                             "retries": int(spec.get("retries") or 0),
+                            # Keep the call-site on pause-marker rewrites of the
+                            # running row (they clobbered it to NULL otherwise).
+                            "callSite": spec.get("position"),
                         },
                     },
                     "_otel": otel,
@@ -724,6 +787,9 @@ def start_event_wait_call(
                         "baseHash": spec.get("baseHash"),
                         "occurrence": spec.get("occurrence"),
                         "retries": int(spec.get("retries") or 0),
+                        # Keep the call-site on pause-marker rewrites of the
+                        # running row (they clobbered it to NULL otherwise).
+                        "callSite": spec.get("position"),
                     },
                 },
                 "_otel": otel,

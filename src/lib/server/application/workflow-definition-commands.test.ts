@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { privateEnv } = vi.hoisted(() => ({
+	privateEnv: {} as Record<string, string | undefined>,
+}));
+vi.mock("$env/dynamic/private", () => ({ env: privateEnv }));
+
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import type {
 	WorkflowConnectionRefSyncPort,
@@ -262,6 +268,53 @@ describe("ApplicationWorkflowDefinitionCommandService", () => {
 			body: "No published versions found",
 		});
 	});
+
+	// ── P4 freeze (cutover item 18) ──────────────────────────────────────────
+	describe("SW authoring freeze", () => {
+		it("rejects explicit SW creation, allows internal override, defaults to script", async () => {
+			privateEnv.SW_AUTHORING_FROZEN = "true";
+
+			const rejected = await service.createWorkflow({
+				body: { name: "legacy", engineType: "dapr" },
+				userId: "u1",
+				projectId: "p1",
+			});
+			expect(rejected).toMatchObject({ status: "error", httpStatus: 400 });
+
+			const allowed = await service.createWorkflow({
+				body: { name: "system", engineType: "dapr" },
+				userId: "u1",
+				projectId: "p1",
+				internalOverride: true,
+			});
+			expect(allowed.status).toBe("ok");
+
+			await service.createWorkflow({ body: { name: "new" }, userId: "u1", projectId: "p1" });
+			const lastCall = workflowData.createWorkflowDefinition.mock.calls.at(-1)?.[0];
+			expect(lastCall.engineType).toBe("dynamic-script");
+			delete privateEnv.SW_AUTHORING_FROZEN;
+		});
+
+		it("rejects SW spec writes while the freeze is on", async () => {
+			privateEnv.SW_AUTHORING_FROZEN = "true";
+			const res = await service.updateWorkflow({
+				workflowId: "wf-1",
+				body: { spec: { document: { dsl: "1.0.0", name: "x" }, do: [] } },
+			});
+			expect(res).toMatchObject({ status: "error", httpStatus: 400 });
+			delete privateEnv.SW_AUTHORING_FROZEN;
+		});
+
+		it("is OFF by default: SW creation still works", async () => {
+			const res = await service.createWorkflow({
+				body: { name: "legacy", engineType: "dapr" },
+				userId: "u1",
+				projectId: "p1",
+			});
+			expect(res.status).toBe("ok");
+		});
+	});
+
 });
 
 function workflowDefinition(): WorkflowDefinition {

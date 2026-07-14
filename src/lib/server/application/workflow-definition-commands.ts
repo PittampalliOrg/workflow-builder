@@ -1,3 +1,4 @@
+import { env } from "$env/dynamic/private";
 import type {
 	CreateWorkflowDefinitionInput,
 	UpdateWorkflowDefinitionInput,
@@ -43,13 +44,42 @@ export class ApplicationWorkflowDefinitionCommandService {
 		},
 	) {}
 
+	/** P4 freeze (cutover item 18): new SW 1.0 workflows are rejected once
+	 * SW_AUTHORING_FROZEN is on. `internalOverride` (the internal-token routes)
+	 * bypasses it so system producers can still seed SW rows during the
+	 * migration window. Legacy rows stay readable/runnable — freeze blocks
+	 * CREATION, not execution. */
+	private swAuthoringFrozen(): boolean {
+		const raw = (env.SW_AUTHORING_FROZEN ?? "").trim().toLowerCase();
+		return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+	}
+
 	async createWorkflow(input: {
 		body: unknown;
 		userId: string;
 		projectId: string;
+		/** Internal callers (system producers) bypass the SW authoring freeze. */
+		internalOverride?: boolean;
 	}): Promise<WorkflowDefinitionCommandResult> {
 		const body = asRecord(input.body);
-		const engineType = (stringValue(body.engineType) || "dapr") as WorkflowEngineType;
+		// P4 freeze: default new workflows to the script engine and reject
+		// explicit SW ('dapr'/'vercel') creation.
+		const requestedEngine = stringValue(body.engineType);
+		const engineType = (requestedEngine ||
+			(this.swAuthoringFrozen() ? "dynamic-script" : "dapr")) as WorkflowEngineType;
+		if (
+			this.swAuthoringFrozen() &&
+			!input.internalOverride &&
+			engineType !== "dynamic-script"
+		) {
+			return {
+				status: "error",
+				httpStatus: 400,
+				body:
+					"SW 1.0 authoring is frozen — new workflows are dynamic-script " +
+					"(docs/code-first-cutover.md). Existing SW workflows still run.",
+			};
+		}
 		let spec = body.spec;
 		if (engineType === "dynamic-script" && spec !== undefined) {
 			const validated = await this.validateAndStampDynamicScript(spec);
@@ -81,6 +111,8 @@ export class ApplicationWorkflowDefinitionCommandService {
 	async updateWorkflow(input: {
 		workflowId: string;
 		body: unknown;
+		/** Internal callers (system producers) bypass the SW authoring freeze. */
+		internalOverride?: boolean;
 	}): Promise<WorkflowDefinitionCommandResult> {
 		const body = asRecord(input.body);
 		const updateData: UpdateWorkflowDefinitionInput = {
@@ -100,6 +132,22 @@ export class ApplicationWorkflowDefinitionCommandService {
 				stringValue(body.engineType) === "dynamic-script" ||
 				existing?.engineType === "dynamic-script" ||
 				asRecord(body.spec).engine === "dynamic-script";
+			// P4 freeze: reject SW spec WRITES (a legacy row stays runnable and
+			// metadata-editable; only its `document` spec is frozen).
+			if (
+				this.swAuthoringFrozen() &&
+				!input.internalOverride &&
+				!isDynamicScript &&
+				asRecord(body.spec).document !== undefined
+			) {
+				return {
+					status: "error",
+					httpStatus: 400,
+					body:
+						"SW 1.0 spec editing is frozen — convert this workflow to a " +
+						"dynamic-script (docs/code-first-cutover.md).",
+				};
+			}
 			if (isDynamicScript) {
 				const validated = await this.validateAndStampDynamicScript(body.spec);
 				if (!validated.ok) {

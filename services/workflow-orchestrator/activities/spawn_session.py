@@ -327,6 +327,7 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             # Named-agent resolution request (cutover P1e): the BFF resolves the
             # slug fail-closed and MUST echo resolvedAgentSlug (skew guard below).
             "resolveAgentSlug": input_data.get("resolveAgentSlug"),
+            "resolveAgentVersion": input_data.get("resolveAgentVersion"),
             # Sandbox plumbing forwarded to the BFF's buildChildInput so
             # session_workflow → agent_workflow can bind the OpenShell sandbox.
             "workspaceRef": input_data.get("workspaceRef"),

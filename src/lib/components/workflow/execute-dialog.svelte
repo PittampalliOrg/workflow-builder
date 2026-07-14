@@ -7,7 +7,6 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Select from '$lib/components/ui/select';
 	import * as Tabs from '$lib/components/ui/tabs';
-	import JsonSchemaDataEditor from './json-schema-data-editor.svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import {
 		Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
@@ -195,7 +194,88 @@
 			? (input as Record<string, unknown>)
 			: null;
 	});
-	let scriptFormArgs = $state<unknown>(undefined);
+	// Flat field model for the meta.input form. The sjsf generated form needs a
+	// theme-component registration this app doesn't wire (its other consumers
+	// hand-roll fields too), so render the fields directly — same shape as the
+	// SW trigger form above.
+	type ScriptInputField = {
+		key: string;
+		type: 'string' | 'number' | 'boolean' | 'enum' | 'json';
+		label: string;
+		description: string | null;
+		required: boolean;
+		options: string[];
+		defaultValue: unknown;
+	};
+	const scriptInputFields = $derived.by<ScriptInputField[]>(() => {
+		const schema = scriptInputSchema;
+		if (!schema) return [];
+		const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+		const required = new Set(
+			Array.isArray(schema.required) ? (schema.required as string[]) : []
+		);
+		return Object.entries(props).map(([key, prop]) => {
+			const enumVals = Array.isArray(prop.enum) ? (prop.enum as unknown[]) : [];
+			const t = String(prop.type ?? '');
+			const type: ScriptInputField['type'] = enumVals.length
+				? 'enum'
+				: t === 'number' || t === 'integer'
+					? 'number'
+					: t === 'boolean'
+						? 'boolean'
+						: t === 'object' || t === 'array'
+							? 'json'
+							: 'string';
+			return {
+				key,
+				type,
+				label: typeof prop.title === 'string' ? prop.title : toFieldLabel(key),
+				description: typeof prop.description === 'string' ? prop.description : null,
+				required: required.has(key),
+				options: enumVals.map((v) => String(v)),
+				defaultValue: prop.default
+			};
+		});
+	});
+	let scriptFieldValues = $state<Record<string, string>>({});
+	$effect(() => {
+		if (!open || !scriptInputSchema) return;
+		const next: Record<string, string> = {};
+		for (const f of scriptInputFields) {
+			const existing = scriptFieldValues[f.key];
+			next[f.key] =
+				existing !== undefined && existing !== ''
+					? existing
+					: f.defaultValue === undefined || f.defaultValue === null
+						? ''
+						: typeof f.defaultValue === 'object'
+							? JSON.stringify(f.defaultValue)
+							: String(f.defaultValue);
+		}
+		scriptFieldValues = next;
+	});
+	function scriptArgsFromFields(): Record<string, unknown> {
+		const out: Record<string, unknown> = {};
+		for (const f of scriptInputFields) {
+			const raw = scriptFieldValues[f.key];
+			if (raw === undefined || raw === '') continue;
+			if (f.type === 'number') {
+				const n = Number(raw);
+				if (Number.isFinite(n)) out[f.key] = n;
+			} else if (f.type === 'boolean') {
+				out[f.key] = raw === 'true';
+			} else if (f.type === 'json') {
+				try {
+					out[f.key] = JSON.parse(raw);
+				} catch {
+					out[f.key] = raw;
+				}
+			} else {
+				out[f.key] = raw;
+			}
+		}
+		return out;
+	}
 
 	async function handleScriptSubmit() {
 		errorMsg = null;
@@ -203,7 +283,7 @@
 		try {
 			let input: Record<string, unknown>;
 			if (scriptInputSchema) {
-				input = (scriptFormArgs ?? {}) as Record<string, unknown>;
+				input = scriptArgsFromFields();
 			} else {
 				try {
 					input = scriptArgsJson.trim() ? JSON.parse(scriptArgsJson) : {};
@@ -467,12 +547,64 @@
 						</p>
 					{/if}
 					{#if scriptInputSchema}
-						<JsonSchemaDataEditor
-							schema={scriptInputSchema}
-							value={scriptFormArgs ?? {}}
-							onChange={(v) => (scriptFormArgs = v)}
-							title="Input"
-						/>
+						<div class="space-y-2.5">
+							<p class="text-xs font-semibold">Input</p>
+							{#each scriptInputFields as field (field.key)}
+								<div class="space-y-1.5">
+									<Label for="script-input-{field.key}">
+										{field.label}
+										{#if field.required}<span class="text-destructive">*</span>{/if}
+									</Label>
+									{#if field.type === 'enum'}
+										<Select.Root
+											type="single"
+											value={scriptFieldValues[field.key] ?? ''}
+											onValueChange={(v) => (scriptFieldValues = { ...scriptFieldValues, [field.key]: v })}
+										>
+											<Select.Trigger class="w-full">
+												{scriptFieldValues[field.key] || field.description || 'Select…'}
+											</Select.Trigger>
+											<Select.Content>
+												{#each field.options as option (option)}
+													<Select.Item value={option}>{option}</Select.Item>
+												{/each}
+											</Select.Content>
+										</Select.Root>
+									{:else if field.type === 'boolean'}
+										<Select.Root
+											type="single"
+											value={scriptFieldValues[field.key] ?? ''}
+											onValueChange={(v) => (scriptFieldValues = { ...scriptFieldValues, [field.key]: v })}
+										>
+											<Select.Trigger class="w-full">
+												{scriptFieldValues[field.key] || 'false'}
+											</Select.Trigger>
+											<Select.Content>
+												<Select.Item value="true">true</Select.Item>
+												<Select.Item value="false">false</Select.Item>
+											</Select.Content>
+										</Select.Root>
+									{:else if field.type === 'json'}
+										<Textarea
+											id="script-input-{field.key}"
+											bind:value={scriptFieldValues[field.key]}
+											rows={3}
+											class="font-mono text-xs"
+										/>
+									{:else}
+										<Input
+											id="script-input-{field.key}"
+											type={field.type === 'number' ? 'number' : 'text'}
+											bind:value={scriptFieldValues[field.key]}
+											placeholder={field.description ?? ''}
+										/>
+									{/if}
+									{#if field.description}
+										<p class="text-[10px] text-muted-foreground">{field.description}</p>
+									{/if}
+								</div>
+							{/each}
+						</div>
 					{:else}
 						<div class="space-y-1.5">
 							<Label for="script-args">Args (JSON)</Label>

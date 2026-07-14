@@ -949,6 +949,33 @@ describe("named-agent opts.agent (contract 1.2.0)", () => {
 	});
 });
 
+describe("named-agent version pin (opts.agentVersion)", () => {
+	it("joins the hash additively; null/absent identical to legacy", () => {
+		const pinned = deriveCallId(
+			computeBaseHash("do it", agentSemanticOpts({ agent: "r", agentVersion: 3 })),
+			0,
+		);
+		const unpinned = deriveCallId(
+			computeBaseHash("do it", agentSemanticOpts({ agent: "r" })),
+			0,
+		);
+		expect(pinned).not.toBe(unpinned);
+		expect(
+			deriveCallId(
+				computeBaseHash("do it", agentSemanticOpts({ agent: "r", agentVersion: null })),
+				0,
+			),
+		).toBe(unpinned);
+	});
+
+	it("rides task.opts to dispatch", async () => {
+		const res = await evaluateScript(
+			req(META + "const a = await agent('go', { agent: 'r', agentVersion: 3 }); return { a }"),
+		);
+		expect(res.tasks[0].opts.agentVersion).toBe(3);
+	});
+});
+
 describe("call-site position capture (contract 1.2.0 tasks[].position)", () => {
 	it("positions are in ORIGINAL source coordinates (meta padded, wrapper offset subtracted)", async () => {
 		const script = [
