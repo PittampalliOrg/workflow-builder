@@ -80,11 +80,16 @@ transcript). Keep this list in sync with the active `/goal`.
   `getApprovalState`/`approveExecution` journal-driven for scripts (plural gates,
   `body.callId` disambiguation, `approved:false` resolves too); timeout RESOLVES
   `{timedOut:true}` (24h default / 7d cap). PR #567, suites green 2026-07-14.
-- [ ] **9.** `agent(..., {agent: slug})`: resolved fail-closed in the ensure-for-workflow
-  bridge with swap-safety; unknown slug journals null; NEVER falls back to the metered
-  default runtime.
-- [ ] **10.** `meta.input` JSON Schema validated at `startDynamicScriptRun` (covers the
-  trigger spine) + rendered as an execute-dialog form.
+- [x] **9.** `agent(..., {agent: slug})`: resolved fail-closed in the ensure-for-workflow
+  bridge with swap-safety; unknown slug journals null (422 `agent_ref_unresolved` →
+  deterministic bridge refusal); NEVER falls back to the metered default runtime —
+  including old-BFF skew (missing `resolvedAgentSlug` echo → refusal). PR #568;
+  orchestrator 353 + evaluator 86 passed 2026-07-14.
+- [x] **10.** `meta.input` JSON Schema validated at `startDynamicScriptRun` via Ajv
+  (useDefaults on a clone; object schema + absent args starts from `{}`; invalid schema
+  = 400) — covers UI/MCP/trigger-spine/resume; execute dialog renders it via
+  `JsonSchemaDataEditor` (Form|JSON tabs) replacing the raw Args textarea. PR #568;
+  validator vitest 17 passed 2026-07-14.
 - [x] **11.** Pump: explicit task-kind allowlist (unknown kind → dispatchError, never a
   phantom agent dispatch — shipped with P0, `test_unknown_task_kind_journals_dispatch_error…`);
   kind-aware caps (action-class dispatches OUTSIDE agent slots: `maxConcurrentActions`
