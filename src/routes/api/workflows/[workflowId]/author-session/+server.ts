@@ -17,10 +17,47 @@ import { getApplicationAdapters } from '$lib/server/application';
 // and reused. Returns { sessionId, agentId }.
 // ---------------------------------------------------------------------------
 
-const AUTHOR_SLUG = 'workflow-author-dynamic';
 const WORKFLOW_MCP_URL =
 	process.env.WORKFLOW_MCP_SERVER_URL ??
 	'http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp';
+
+/** Selectable author runtimes. The default is the platform-metered GLM 5.2
+ * dapr-agent-py loop (near-instant session start); the CLI runtimes bring the
+ * user's own subscription auth + a stronger coding model at the cost of a
+ * per-session pod cold start. All four get the SAME system prompt and the
+ * SAME workflow-authoring MCP tools — the capability compiler translates
+ * `mcpServers` (streamable_http) for every CLI target. */
+const AUTHOR_RUNTIMES = {
+	'dapr-agent-py': {
+		slug: 'workflow-author-dynamic',
+		name: 'Workflow Author (GLM 5.2)',
+		description:
+			'Authors dynamic-script workflows from natural language, embedded in the canvas AI panel.'
+	},
+	'claude-code-cli': {
+		slug: 'workflow-author-claude',
+		name: 'Workflow Author (Claude Code)',
+		description:
+			'Claude Code CLI authoring dynamic-script workflows via the workflow-authoring MCP tools.'
+	},
+	'codex-cli': {
+		slug: 'workflow-author-codex',
+		name: 'Workflow Author (Codex)',
+		description:
+			'Codex CLI authoring dynamic-script workflows via the workflow-authoring MCP tools.'
+	},
+	'agy-cli': {
+		slug: 'workflow-author-agy',
+		name: 'Workflow Author (Agy)',
+		description:
+			'Antigravity CLI authoring dynamic-script workflows via the workflow-authoring MCP tools.'
+	}
+} as const;
+type AuthorRuntime = keyof typeof AUTHOR_RUNTIMES;
+
+function isAuthorRuntime(value: unknown): value is AuthorRuntime {
+	return typeof value === 'string' && value in AUTHOR_RUNTIMES;
+}
 
 function authorSystemPrompt(workflowName: string): string {
 	return [
@@ -44,31 +81,51 @@ function authorSystemPrompt(workflowName: string): string {
 	].join('\n');
 }
 
-function authorConfig(workflowName: string) {
+const AUTHOR_MCP_SERVERS = [
+	{
+		url: WORKFLOW_MCP_URL,
+		name: 'workflow-authoring',
+		transport: 'streamable_http'
+	}
+];
+
+function authorConfig(workflowName: string, runtime: AuthorRuntime) {
+	if (runtime === 'dapr-agent-py') {
+		return {
+			model: 'zai/glm-5.2',
+			modelSpec: 'zai/glm-5.2',
+			runtime,
+			maxTurns: 60,
+			timeoutMinutes: 60,
+			tools: [],
+			skills: [],
+			systemPrompt: authorSystemPrompt(workflowName),
+			mcpServers: AUTHOR_MCP_SERVERS
+		};
+	}
+	// CLI runtimes: NO model/modelSpec (native subscription auth — API keys must
+	// never reach the pod) and the role prompt rides `instructions` (the agent's
+	// resolved config is the instruction source for CLI agents).
 	return {
-		model: 'zai/glm-5.2',
-		modelSpec: 'zai/glm-5.2',
-		runtime: 'dapr-agent-py',
-		maxTurns: 60,
-		timeoutMinutes: 60,
+		runtime,
+		maxTurns: 40,
+		timeoutMinutes: 45,
 		tools: [],
 		skills: [],
-		systemPrompt: authorSystemPrompt(workflowName),
-		mcpServers: [
-			{
-				url: WORKFLOW_MCP_URL,
-				name: 'workflow-authoring',
-				transport: 'streamable_http'
-			}
-		]
+		instructions: authorSystemPrompt(workflowName),
+		mcpServers: AUTHOR_MCP_SERVERS
 	};
 }
 
-export const POST: RequestHandler = async ({ params, locals }) => {
+export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.session?.userId) return error(401, 'Authentication required');
 	const userId = locals.session.userId;
 	const projectId = locals.session.projectId ?? null;
 	if (!projectId) return error(400, 'No active project');
+
+	const body = (await request.json().catch(() => ({}))) as { runtime?: unknown };
+	const runtime: AuthorRuntime = isAuthorRuntime(body.runtime) ? body.runtime : 'dapr-agent-py';
+	const author = AUTHOR_RUNTIMES[runtime];
 
 	const app = getApplicationAdapters();
 	const workflow = (await app.workflowData.getWorkflowByRef({
@@ -77,15 +134,16 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 	})) as { id: string; name: string; engineType?: string | null } | null;
 	if (!workflow) return error(404, 'Workflow not found');
 
-	// Ensure the per-project author agent exists (idempotent by project+slug).
+	// Ensure the per-project author agent for the CHOSEN runtime exists
+	// (idempotent by project+slug; one agent row per runtime).
 	let agentId: string | null = null;
 	try {
 		const existing = (
 			await app.agentCatalog.listAgents({
-				query: { projectId, q: AUTHOR_SLUG },
+				query: { projectId, q: author.slug },
 				currentProjectId: projectId
 			})
-		).find((agent) => agent.slug === AUTHOR_SLUG);
+		).find((agent) => agent.slug === author.slug);
 		agentId = existing?.id ?? null;
 	} catch (err) {
 		console.error('[author-session] agent lookup failed:', err);
@@ -96,14 +154,13 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 			userId,
 			currentProjectId: projectId,
 			body: {
-				name: 'Workflow Author (GLM 5.2)',
-				slug: AUTHOR_SLUG,
-				description:
-					'Authors dynamic-script workflows from natural language, embedded in the canvas AI panel.',
-				runtime: 'dapr-agent-py',
+				name: author.name,
+				slug: author.slug,
+				description: author.description,
+				runtime,
 				tags: ['workflow-author'],
 				projectId,
-				config: authorConfig(workflow.name)
+				config: authorConfig(workflow.name, runtime)
 			}
 		});
 		if (created.status === 'invalid') return error(400, created.message);
@@ -118,7 +175,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		projectId,
 		body: {
 			agentId,
-			agentConfig: authorConfig(workflow.name),
+			agentConfig: authorConfig(workflow.name, runtime),
 			title: `Author · ${workflow.name}`,
 			initialMessage: `I want to author the dynamic-script workflow "${workflow.name}". I'll describe what it should do in my next message.`
 		}
@@ -126,7 +183,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 
 	switch (result.status) {
 		case 'created':
-			return json({ sessionId: result.session.id, agentId }, { status: 201 });
+			return json({ sessionId: result.session.id, agentId, runtime }, { status: 201 });
 		case 'precondition_failed':
 			return json(
 				{ code: result.code, message: result.message, session: result.session },
