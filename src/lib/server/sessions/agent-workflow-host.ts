@@ -392,7 +392,11 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		(params.agentConfig as { runtimeIsolation?: string } | null)?.runtimeIsolation !==
 			"dedicated" &&
 		Object.keys(params.sessionSecretEnv ?? {}).length === 0 &&
-		params.persistentHost !== true
+		params.persistentHost !== true &&
+		// gVisor-class sessions exist to get a kernel-isolated per-session pod;
+		// multiplexing them onto a shared pool would defeat the isolation even
+		// when the benchmark stable-app-id env is unset.
+		!(params.benchmarkExecutionClass ?? "").toLowerCase().includes("gvisor")
 	) {
 		return null;
 	}
