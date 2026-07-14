@@ -46,6 +46,10 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		errorCode: (body.errorCode as string | null | undefined) ?? undefined,
 		retries: typeof body.retries === "number" ? body.retries : undefined,
 		tokensUsed: typeof body.tokensUsed === "number" ? body.tokensUsed : undefined,
+		callSite:
+			body.callSite && typeof body.callSite === "object" && !Array.isArray(body.callSite)
+				? (body.callSite as { line: number; column: number })
+				: null,
 	};
 
 	try {

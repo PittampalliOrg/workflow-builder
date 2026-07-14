@@ -16,6 +16,7 @@ const row = [
 	null,
 	1,
 	42,
+	{ line: 7, column: 23 },
 	"2026-07-09T12:00:00.000Z",
 	"2026-07-09T12:00:01.000Z",
 ];
@@ -59,6 +60,7 @@ describe("DaprPostgresScriptCallsStore", () => {
 				errorCode: null,
 				retries: 1,
 				tokensUsed: 42,
+				callSite: { line: 7, column: 23 },
 				createdAt: "2026-07-09T12:00:00.000Z",
 				updatedAt: "2026-07-09T12:00:01.000Z",
 			},

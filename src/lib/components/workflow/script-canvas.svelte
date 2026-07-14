@@ -13,24 +13,46 @@
 	import { FileCode2, Sparkles, Info, GitFork, Braces } from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
-	import { scriptToGraph, type ScriptGraphModel } from '$lib/utils/script-graph-adapter';
+	import {
+		scriptToGraph,
+		type CallLineState,
+		type ScriptGraphModel
+	} from '$lib/utils/script-graph-adapter';
 	import ScriptNode from './nodes/script-node.svelte';
 
-	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
-	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+	interface Props {
+		/** Run-page mode: the run's FROZEN source (executionIr.script). When
+		 * omitted the authoring store context supplies the live editor source. */
+		scriptSource?: string | null;
+		scriptMeta?: unknown;
+		/** Per-line journal aggregation for the live overlay (run page). */
+		callStates?: Record<number, CallLineState> | null;
+		onKillSession?: (sessionId: string) => void;
+		onSkipCall?: (callId: string) => void;
+	}
+	let {
+		scriptSource = null,
+		scriptMeta = undefined,
+		callStates = null,
+		onKillSession = undefined,
+		onSkipCall = undefined
+	}: Props = $props();
+
+	const store = getContext<ReturnType<typeof createWorkflowStore> | undefined>('workflow');
+	const ui = getContext<ReturnType<typeof createUiStore> | undefined>('ui');
 
 	const nodeTypes: NodeTypes = { script: ScriptNode } satisfies NodeTypes;
 
 	let colorMode = $derived<'light' | 'dark' | 'system'>(
-		ui.theme === 'dark' ? 'dark' : ui.theme === 'light' ? 'light' : 'system'
+		ui?.theme === 'dark' ? 'dark' : ui?.theme === 'light' ? 'light' : 'system'
 	);
 
 	// Pure derivation of the structural preview from the script source (rebuilds
 	// when the authoring session saves → editor refetch → store.scriptSource).
 	const graph = $derived.by(() => {
-		const src = store.scriptSource;
+		const src = scriptSource ?? store?.scriptSource;
 		if (!src) return null;
-		return scriptToGraph(src, store.scriptMeta);
+		return scriptToGraph(src, scriptMeta ?? store?.scriptMeta);
 	});
 	const model = $derived<ScriptGraphModel | null>(graph?.model ?? null);
 	const styledEdges = $derived(
@@ -59,7 +81,18 @@
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
 	$effect(() => {
-		nodes = (graph?.nodes ?? []).map((n) => ({ ...n }));
+		nodes = (graph?.nodes ?? []).map((n) => {
+			const line = (n.data as { line?: number | null } | undefined)?.line;
+			const callState =
+				callStates && typeof line === 'number' ? (callStates[line] ?? null) : null;
+			return {
+				...n,
+				data: {
+					...n.data,
+					...(callState ? { callState, onKillSession, onSkipCall } : {})
+				}
+			};
+		});
 		edges = styledEdges.map((e) => ({ ...e }));
 	});
 
@@ -82,12 +115,14 @@
 					appears here.
 				</p>
 			</div>
-			<button
-				class="inline-flex items-center gap-1.5 rounded-md border border-fuchsia-400/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-fuchsia-200 hover:bg-fuchsia-500/20"
-				onclick={() => ui.openRightPanel('ai')}
-			>
-				<Sparkles class="size-3.5" /> Author with AI
-			</button>
+			{#if ui}
+				<button
+					class="inline-flex items-center gap-1.5 rounded-md border border-fuchsia-400/30 bg-fuchsia-500/10 px-3 py-1.5 text-xs font-medium text-fuchsia-200 hover:bg-fuchsia-500/20"
+					onclick={() => ui.openRightPanel('ai')}
+				>
+					<Sparkles class="size-3.5" /> Author with AI
+				</button>
+			{/if}
 		</div>
 	{:else}
 		<div class="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2 rounded-lg border border-border/50 bg-background/80 px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-sm backdrop-blur">

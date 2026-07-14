@@ -108,6 +108,10 @@ export interface EvaluateTask {
 	eventName?: string;
 	/** event-kind only: execution knobs (NOT hashed): timeoutMinutes/message. */
 	eventOpts?: Record<string, unknown>;
+	/** Advisory call-site in ORIGINAL stored-source coordinates (contract 1.2.0,
+	 * cutover P2): the static-graph <-> journal join key. NEVER part of callId
+	 * derivation — edits shift positions while callIds stay content-addressed. */
+	position?: { line: number; column: number };
 }
 
 export interface EvaluateResponse {
@@ -373,6 +377,45 @@ function buildWrapperSource(body: string): string {
 	return WRAPPER_PREFIX + body + WRAPPER_SUFFIX;
 }
 
+/** Lines the wrapper prefix adds BEFORE the user body (computed, not
+ * hardcoded — the prefix is edited more often than this constant would be). */
+const WRAPPER_PREFIX_LINES = WRAPPER_PREFIX.split("\n").length - 1;
+
+/** The SourceTextModule identifier — call-site frames are filtered on it. */
+const SCRIPT_MODULE_ID = "workflow-script";
+
+/** Advisory call-site of the CURRENT hook invocation, in ORIGINAL stored-source
+ * coordinates (cutover P2, contract-1.2.0 `tasks[].position`). Captured via the
+ * HOST realm's Error.prepareStackTrace (the vm realm cannot tamper with it;
+ * codeGeneration flags don't affect stack capture — verified by repro on the
+ * service's node:22-alpine image). Sync set/restore, so concurrent /evaluate
+ * requests cannot interleave. NEVER part of callId derivation — positions shift
+ * when code is edited while callIds stay content-addressed. Returns null when
+ * no script frame is found (defensive; overlay falls back to label/phase). */
+function captureCallSite(): { line: number; column: number } | null {
+	const prev = Error.prepareStackTrace;
+	try {
+		Error.prepareStackTrace = (_err, frames) => frames;
+		const holder: { stack?: unknown } = {};
+		Error.captureStackTrace(holder as Error, captureCallSite);
+		const frames = holder.stack as unknown as NodeJS.CallSite[];
+		if (!Array.isArray(frames)) return null;
+		for (const frame of frames) {
+			if (frame.getFileName?.() !== SCRIPT_MODULE_ID) continue;
+			const rawLine = frame.getLineNumber?.() ?? 0;
+			const column = frame.getColumnNumber?.() ?? 0;
+			const line = rawLine - WRAPPER_PREFIX_LINES;
+			if (line > 0) return { line, column };
+			return null;
+		}
+		return null;
+	} catch {
+		return null;
+	} finally {
+		Error.prepareStackTrace = prev;
+	}
+}
+
 // ── Static `export const meta` extraction ────────────────────────────────────
 
 interface MetaExtraction {
@@ -475,7 +518,12 @@ export function extractMeta(script: string): MetaExtraction {
 	let after = end;
 	while (after < script.length && /[ \t]/.test(script[after])) after++;
 	if (script[after] === ";") after++;
-	const body = script.slice(0, m.index) + script.slice(after);
+	// Replace the meta span with whitespace instead of splicing it out: every
+	// remaining byte keeps its ORIGINAL line/column, so call-site positions
+	// (and user-facing error line numbers) map 1:1 onto the stored source with
+	// only the fixed wrapper-prefix offset to subtract.
+	const padding = script.slice(m.index, after).replace(/[^\n]/g, " ");
+	const body = script.slice(0, m.index) + padding + script.slice(after);
 
 	let meta: Record<string, unknown> | undefined;
 	try {
@@ -569,6 +617,8 @@ interface Pending {
 	actionSlug?: string;
 	seconds?: number;
 	eventName?: string;
+	/** Advisory call-site (stored-source line/column) — never in callId. */
+	position?: { line: number; column: number } | null;
 }
 
 export async function evaluateScript(
@@ -652,6 +702,7 @@ export async function evaluateScript(
 			prompt,
 			optsRaw: optsObj,
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 		});
@@ -690,6 +741,7 @@ export async function evaluateScript(
 			kind: "workflow",
 			prompt: "",
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 			workflowRef: nameOrRef,
@@ -727,6 +779,7 @@ export async function evaluateScript(
 			kind: "team",
 			prompt: "",
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 			teamOp: op,
@@ -894,6 +947,7 @@ export async function evaluateScript(
 			prompt: "",
 			optsRaw: optsObj,
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 			actionSlug: slug,
@@ -920,6 +974,7 @@ export async function evaluateScript(
 			kind: "sleep",
 			prompt: "",
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 			seconds,
@@ -953,6 +1008,7 @@ export async function evaluateScript(
 			prompt: "",
 			optsRaw: optsObj,
 			phaseAtCall: state.currentPhase,
+			position: captureCallSite(),
 			baseHash,
 			occurrence,
 			eventName: name,
@@ -1277,6 +1333,7 @@ function toTask(p: Pending): EvaluateTask {
 			},
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
+			...(p.position ? { position: p.position } : {}),
 			teamOp: p.teamOp,
 			...(p.args === undefined ? {} : { args: jsonSafe(p.args) }),
 		};
@@ -1297,6 +1354,7 @@ function toTask(p: Pending): EvaluateTask {
 			},
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
+			...(p.position ? { position: p.position } : {}),
 			workflowRef: jsonSafe(p.workflowRef),
 			// Omit args entirely when the parent passed nothing so the child's
 			// `args` global is undefined (jsonSafe(undefined) would coerce to null,
@@ -1321,6 +1379,7 @@ function toTask(p: Pending): EvaluateTask {
 			},
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
+			...(p.position ? { position: p.position } : {}),
 			actionSlug: p.actionSlug,
 			actionOpts: jsonSafe({
 				connection: o.connection ?? null,
@@ -1349,6 +1408,7 @@ function toTask(p: Pending): EvaluateTask {
 			},
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
+			...(p.position ? { position: p.position } : {}),
 			seconds: p.seconds,
 		};
 	}
@@ -1369,6 +1429,7 @@ function toTask(p: Pending): EvaluateTask {
 			},
 			baseHash: p.baseHash,
 			occurrence: p.occurrence,
+			...(p.position ? { position: p.position } : {}),
 			eventName: p.eventName,
 			eventOpts: jsonSafe({
 				timeoutMinutes: typeof o.timeoutMinutes === "number" ? o.timeoutMinutes : null,
@@ -1394,6 +1455,7 @@ function toTask(p: Pending): EvaluateTask {
 		},
 		baseHash: p.baseHash,
 		occurrence: p.occurrence,
+		...(p.position ? { position: p.position } : {}),
 	};
 }
 

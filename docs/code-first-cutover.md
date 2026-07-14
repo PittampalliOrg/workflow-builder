@@ -97,8 +97,21 @@ transcript). Keep this list in sync with the active `/goal`.
   `test_actions_do_not_consume_agent_concurrency_slots`); dict results capped like strings
   (`_cap_json_result`, applied to action data + workflow returnValue,
   `test_action_oversized_data_is_truncated`).
-- [ ] **P1 proof:** tests green + one dev smoke run exercising
-  `action()`+`sleep()`+`approve()`+named agent, journal rows shown.
+- [x] **P1 proof:** dev smoke run `Te2o6gXJqF2OgmXYHkA-h` (2026-07-14, fixture
+  `scripts/fixtures/dynamic-scripts/p1-smoke-action-class.js`, flag live on dev)
+  exercised all four primitives in one run — journal rows:
+  `action|done|crawl|{success:false, error:"Unknown Dapr Error 500"}` (allowFailure
+  envelope journaled; the crawl BACKEND 500 is a payload-shape follow-up, the engine
+  path — dispatch → execute_action → journal → script continued — is exactly correct),
+  `sleep|done|{sleptSeconds:5}`,
+  `event|done|{approved:true, approvedBy:"p1-smoke"}` (gate resolved by a raise at the
+  journaled waiter child `…__durable-script__e48802dad51f552e_0__run__0` — note the
+  P0 occurrence-tail fix visible in the id),
+  `agent|done|named-agent|"P1-SMOKE-OK"` (named `trace-analyst` resolved fail-closed);
+  execution terminal `success`, returnValue
+  `{gate:{approved:true,…}, named:"P1-SMOKE-OK", crawlOk:false, crawlDispatched:true}`.
+  meta.input defaults applied at start (P1f path). Follow-up: `action('web/crawl')`
+  payload shape vs crawl4ai-adapter (backend 500).
 
 ### P2 — canvas
 

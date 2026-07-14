@@ -28,6 +28,7 @@ const SCRIPT_CALL_COLUMNS = `
 	error_code,
 	retries,
 	tokens_used,
+	call_site,
 	created_at,
 	updated_at
 `;
@@ -48,8 +49,9 @@ function rowToScriptCall(row: unknown[]): ScriptCallRecord {
 		errorCode: stringOrNull(row[11]),
 		retries: numberValue(row[12]),
 		tokensUsed: numberValue(row[13]),
-		createdAt: isoTimestamp(row[14]),
-		updatedAt: isoTimestamp(row[15]),
+		callSite: (row[14] ?? null) as { line: number; column: number } | null,
+		createdAt: isoTimestamp(row[15]),
+		updatedAt: isoTimestamp(row[16]),
 	};
 }
 
@@ -99,6 +101,7 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 			input.errorCode ?? null,
 			input.retries ?? 0,
 			input.tokensUsed ?? 0,
+			jsonParam(input.callSite ?? null),
 		];
 		const paramNames = [
 			"workflow_execution_id",
@@ -116,6 +119,7 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 			"error_code",
 			"retries",
 			"tokens_used",
+			"call_site",
 		];
 		await this.client.exec({
 			summary: "workflow_script_calls.upsert",
@@ -137,11 +141,12 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 					error_code,
 					retries,
 					tokens_used,
+					call_site,
 					updated_at
 				)
 				VALUES (
 					$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-					CAST($12 AS jsonb), $13, $14, $15, now()
+					CAST($12 AS jsonb), $13, $14, $15, CAST($16 AS jsonb), now()
 				)
 				ON CONFLICT (workflow_execution_id, call_id)
 				DO UPDATE SET
@@ -158,6 +163,7 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 					error_code = EXCLUDED.error_code,
 					retries = EXCLUDED.retries,
 					tokens_used = EXCLUDED.tokens_used,
+					call_site = EXCLUDED.call_site,
 					updated_at = now()
 			`,
 			params,
@@ -220,6 +226,9 @@ export class DaprPostgresScriptCallsStore implements ScriptCallsStore {
 				errorCode: call.errorCode,
 				retries: call.retries,
 				tokensUsed: call.tokensUsed,
+				// Imported rows keep their PRE-edit call-site (advisory; the
+				// overlay treats it as a fallback-only hint after imports).
+				callSite: call.callSite,
 			});
 			imported += 1;
 		}

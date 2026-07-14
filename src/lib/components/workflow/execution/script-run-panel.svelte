@@ -18,6 +18,8 @@
 <script lang="ts">
 	import { Loader2, Bot, Radio, MessageSquare, Users } from '@lucide/svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
+	import ScriptCanvas from '$lib/components/workflow/script-canvas.svelte';
+	import type { CallLineState } from '$lib/utils/script-graph-adapter';
 	import ScriptPhaseRail, {
 		scriptCallLabel,
 		type ScriptCall
@@ -80,6 +82,68 @@
 	let followLatest = $state(true);
 
 	const agentCalls = $derived(calls.filter((c) => c.kind === 'agent'));
+
+	// P2b: List | Graph toggle. Graph = the static ScriptCanvas (parsed from the
+	// run's FROZEN source) with a live per-line journal overlay joined on the
+	// evaluator-captured call_site.line.
+	let view = $state<'list' | 'graph'>('list');
+	const scriptSource = $derived(
+		typeof (executionIr as { script?: unknown } | null)?.script === 'string'
+			? ((executionIr as { script: string }).script)
+			: null
+	);
+	const callStates = $derived.by(() => {
+		const map: Record<number, CallLineState> = {};
+		for (const c of calls) {
+			const line = c.callSite?.line;
+			if (typeof line !== 'number') continue;
+			const st = (map[line] ??= {
+				total: 0,
+				running: 0,
+				done: 0,
+				error: 0,
+				skipped: 0,
+				runningSessionIds: [],
+				runningCallIds: []
+			});
+			st.total += 1;
+			if (c.status === 'running') {
+				st.running += 1;
+				st.runningCallIds.push(c.callId);
+				if (c.sessionId) st.runningSessionIds.push(c.sessionId);
+			} else if (c.status === 'done') st.done += 1;
+			else if (c.status === 'error') st.error += 1;
+			else if (c.status === 'skipped') st.skipped += 1;
+		}
+		return map;
+	});
+	const unmappedCalls = $derived(
+		calls.filter((c) => typeof c.callSite?.line !== 'number').length
+	);
+
+	async function killSessionById(sessionId: string) {
+		try {
+			await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stop`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ mode: 'interrupt' })
+			});
+			fetchCalls();
+		} catch {
+			/* poll surfaces the state */
+		}
+	}
+	async function skipCallById(callId: string) {
+		try {
+			await fetch(
+				`/api/workflows/executions/${encodeURIComponent(executionId)}/script-calls/${encodeURIComponent(callId)}/skip`,
+				{ method: 'POST' }
+			);
+			fetchCalls();
+		} catch {
+			/* poll surfaces the state */
+		}
+	}
 	const tallies = $derived({
 		total: calls.length,
 		done: calls.filter((c) => c.status === 'done').length,
@@ -307,17 +371,50 @@
 			</div>
 		{:else}
 			<div class="p-3">
-				<ScriptPhaseRail
-					{executionId}
-					{slug}
-					{calls}
-					declaredPhases={meta.phases}
-					{currentPhase}
-					{isRunning}
-					focusedSessionId={effectiveSessionId}
-					onSelect={selectCall}
-					showActions
-				/>
+				<div class="mb-2 flex items-center gap-1">
+					<button
+						class="rounded-md border px-2 py-0.5 text-[11px] font-medium {view === 'list'
+							? 'border-border bg-muted text-foreground'
+							: 'border-transparent text-muted-foreground hover:bg-muted/50'}"
+						onclick={() => (view = 'list')}
+					>List</button>
+					<button
+						class="rounded-md border px-2 py-0.5 text-[11px] font-medium {view === 'graph'
+							? 'border-border bg-muted text-foreground'
+							: 'border-transparent text-muted-foreground hover:bg-muted/50'}"
+						onclick={() => (view = 'graph')}
+						disabled={!scriptSource}
+						title={scriptSource ? 'Node-graph view with live status' : 'Run has no frozen script source'}
+					>Graph</button>
+					{#if view === 'graph' && unmappedCalls > 0}
+						<span class="ml-auto text-[10px] text-muted-foreground" title="Rows without a call-site (e.g. imported from a pre-edit run) — see the List view">
+							{unmappedCalls} unmapped
+						</span>
+					{/if}
+				</div>
+				{#if view === 'graph' && scriptSource}
+					<div class="h-[520px] overflow-hidden rounded-lg border border-border/60">
+						<ScriptCanvas
+							{scriptSource}
+							scriptMeta={meta}
+							{callStates}
+							onKillSession={killSessionById}
+							onSkipCall={skipCallById}
+						/>
+					</div>
+				{:else}
+					<ScriptPhaseRail
+						{executionId}
+						{slug}
+						{calls}
+						declaredPhases={meta.phases}
+						{currentPhase}
+						{isRunning}
+						focusedSessionId={effectiveSessionId}
+						onSelect={selectCall}
+						showActions
+					/>
+				{/if}
 			</div>
 		{/if}
 	</div>
