@@ -61,6 +61,10 @@ const PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES = Object.freeze([
     /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/teardown$/,
   ],
   [
+    "POST",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/teardown\/status$/,
+  ],
+  [
     "GET",
     /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/cleanup$/,
   ],
