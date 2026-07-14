@@ -115,13 +115,25 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ### P2 — canvas
 
-- [ ] **12.** Evaluator captures call-site positions → additive `tasks[].position`
-  (NEVER in the callId hash) → journal `call_site` column + migration → returned by
-  `/script-calls`.
-- [ ] **13.** ScriptCanvas live overlay: per-node journal status, fan-out grouped by call
-  site, kill/skip on nodes; run-page Canvas List|Graph toggle.
-- [ ] **14.** Execute dialog renders the `meta.input` form. Proof: vitest green + DOM
-  evidence on a live dev run.
+- [x] **12.** Evaluator captures call-site positions → additive `tasks[].position`
+  (NEVER in the callId hash) → journal `call_site` column (migration 0107) + both store
+  adapters → returned by `/script-calls`. PR #570; evaluator 92 + orchestrator 355 passed.
+  **Dev-proven** 2026-07-14 (run `j_6GYNddjtdKAbfY9JDl7`): every journal row carries its
+  position — `action {line:23}`, `sleep {line:26}`, `event {line:30}`, `agent {line:33}`,
+  matching the stored source exactly. (Live-caught + fixed: the AP/gate child journal
+  specs omitted `callSite`, so a pause-marker rewrite clobbered the running row's
+  position to NULL.)
+- [x] **13.** ScriptCanvas live overlay: per-node journal status, fan-out grouped by call
+  site, kill/skip on nodes; run-page Canvas List|Graph toggle. PR #570. **Dev-proven**
+  2026-07-14: the run page's Canvas tab shows List|Graph; Graph renders the frozen
+  script's node graph with the `named-agent` node carrying a live **"1 done"** chip —
+  the journal row joined to its static node by `call_site.line`.
+- [x] **14.** Execute dialog renders the `meta.input` form. **Dev-proven** 2026-07-14: the
+  dialog detects `meta.input` and renders Form|JSON tabs with the schema's fields
+  (url / gateTimeoutMinutes / namedAgent + defaults). (Live-caught + fixed: the sjsf
+  `JsonSchemaGeneratedForm` needs a theme-component registration this app never wires —
+  it threw and the boundary fell back to JSON-only; the fields are now rendered natively,
+  same shape as the SW trigger form.) Validator vitest 17 passed.
 
 ### P3 — system-producer migration (per-producer flag; SW builder callable until parity)
 
