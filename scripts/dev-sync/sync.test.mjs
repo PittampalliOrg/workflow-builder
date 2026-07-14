@@ -278,6 +278,7 @@ test('sync.sh syncs source, stages extraSync, and proves dependency state before
 	);
 	assert.ok(fs.existsSync(path.join(dest, '.deps-ran')), 'deps install on first sync');
 	assert.match(r.stdout, /SYNCED services\/svc → HTTP 200/);
+	assert.match(r.stdout, /sync> changed=3 apply=\d+ms paths=/);
 
 	// Run 2: edit source + BUMP the manifest → deps fires.
 	fs.rmSync(path.join(dest, '.deps-ran'));

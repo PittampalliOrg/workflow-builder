@@ -18,6 +18,7 @@ import { test } from 'node:test';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(HERE, 'server.mjs');
 const BRIDGE = path.join(HERE, 'exec-bridge.mjs');
+const ATOMIC_SYNC = path.join(HERE, 'atomic-sync.mjs');
 const TOKEN = '1'.repeat(64);
 const BRIDGE_TOKEN = '2'.repeat(64);
 const GENERATION = 'sync-generation-1';
@@ -140,7 +141,7 @@ async function startBridge(port, extraEnv = {}) {
 }
 
 /** Build a tar.gz of a {relPath: contents} map (uses the system tar, like the pod). */
-function makeTarGz(files) {
+function makeTarGz(files, directoryModes = {}, archiveRoots) {
 	const src = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-src-'));
 	const tops = new Set();
 	for (const [rel, contents] of Object.entries(files)) {
@@ -149,13 +150,19 @@ function makeTarGz(files) {
 		fs.writeFileSync(abs, contents);
 		tops.add(rel.split('/')[0]);
 	}
+	const modeEntries = Object.entries(directoryModes).sort(
+		([left], [right]) => right.split('/').length - left.split('/').length
+	);
+	for (const [relative, mode] of modeEntries) fs.chmodSync(path.join(src, relative), mode);
 	const out = path.join(os.tmpdir(), `dev-sync-upload-${Date.now()}.tgz`);
-	const args = tops.size
-		? ['-czf', out, '-C', src, ...tops]
+	const roots = archiveRoots ?? [...tops];
+	const args = roots.length
+		? ['-czf', out, '-C', src, ...roots]
 		: ['-czf', out, '-C', src, '-T', '/dev/null'];
 	const r = spawnSync('tar', args);
 	assert.equal(r.status, 0, `tar create failed: ${r.stderr}`);
 	const buf = fs.readFileSync(out);
+	for (const [relative] of [...modeEntries].reverse()) fs.chmodSync(path.join(src, relative), 0o755);
 	fs.rmSync(src, { recursive: true, force: true });
 	fs.rmSync(out, { force: true });
 	return buf;
@@ -214,6 +221,10 @@ test('POST /__sync requires the token and untars into the dest', async (t) => {
 	assert.equal(body.ok, true);
 	assert.equal(body.generation, GENERATION);
 	assert.equal(body.service, SERVICE);
+	assert.deepEqual(body.changedRoots, ['src']);
+	assert.deepEqual(body.changedPaths, ['src']);
+	assert.equal(body.changedPathCount, 1);
+	assert.equal(body.changedPathsTruncated, false);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/a.txt'), 'utf8'), 'hello-sync');
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/nested/b.txt'), 'utf8'), 'nested');
 });
@@ -260,7 +271,7 @@ test('POST /__sync requires the exact receiver root contract', async (t) => {
 	assert.ok(!fs.existsSync(path.join(s.dest, 'src')));
 });
 
-test('atomic root replacement propagates file and whole-root deletions', async (t) => {
+test('file-granular reconciliation propagates deletions without replacing kept files', async (t) => {
 	const roots = ['config', 'src'];
 	const s = await startSidecar({
 		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
@@ -276,19 +287,41 @@ test('atomic root replacement propagates file and whole-root deletions', async (
 		})
 	});
 	assert.equal(first.status, 200);
+	const sourceInode = fs.statSync(path.join(s.dest, 'src')).ino;
+	const keptInode = fs.statSync(path.join(s.dest, 'src/keep.txt')).ino;
 
 	const second = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
 		headers: syncHeaders('deletion-2', SERVICE, roots),
-		body: makeTarGz({ 'src/keep.txt': 'new' })
+		body: makeTarGz({ 'src/keep.txt': 'old' })
 	});
 	assert.equal(second.status, 200);
-	assert.equal(fs.readFileSync(path.join(s.dest, 'src/keep.txt'), 'utf8'), 'new');
+	const result = await second.json();
+	assert.deepEqual(result.changedRoots, ['config', 'src']);
+	assert.deepEqual(result.changedPaths, ['config', 'src/delete.txt']);
+	assert.equal(result.changedPathCount, 2);
+	assert.equal(result.changedPathsTruncated, false);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/keep.txt'), 'utf8'), 'old');
+	assert.equal(fs.statSync(path.join(s.dest, 'src')).ino, sourceInode);
+	assert.equal(fs.statSync(path.join(s.dest, 'src/keep.txt')).ino, keptInode);
 	assert.ok(!fs.existsSync(path.join(s.dest, 'src/delete.txt')));
 	assert.ok(!fs.existsSync(path.join(s.dest, 'config')));
+
+	const exported = await fetch(`${s.base}/__export`, {
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(exported.status, 200);
+	assert.equal(exported.headers.get('x-sync-generation'), 'deletion-2');
+	const bytes = Buffer.from(await exported.arrayBuffer());
+	const listed = spawnSync('tar', ['-tzf', '-'], { input: bytes }).stdout.toString();
+	assert.match(listed, /src\/keep\.txt/);
+	assert.doesNotMatch(listed, /src\/delete\.txt|config\//);
+	const kept = spawnSync('tar', ['-xOzf', '-', 'src/keep.txt'], { input: bytes });
+	assert.equal(kept.status, 0, kept.stderr.toString());
+	assert.equal(kept.stdout.toString(), 'old');
 });
 
-test('atomic root replacement preserves an unchanged config root', async (t) => {
+test('one-file sync preserves its source root, siblings, and unchanged config root', async (t) => {
 	const roots = ['src', 'tsconfig.json'];
 	const s = await startSidecar({
 		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
@@ -297,24 +330,73 @@ test('atomic root replacement preserves an unchanged config root', async (t) => 
 	const first = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
 		headers: syncHeaders('content-aware-1', SERVICE, roots),
-		body: makeTarGz({ 'src/current.txt': 'old', 'tsconfig.json': '{}' })
+		body: makeTarGz({
+			'src/current.txt': 'old',
+			'src/unchanged.txt': 'same',
+			'tsconfig.json': '{}'
+		})
 	});
 	assert.equal(first.status, 200);
+	const sourceInode = fs.statSync(path.join(s.dest, 'src')).ino;
+	const currentInode = fs.statSync(path.join(s.dest, 'src/current.txt')).ino;
+	const unchangedInode = fs.statSync(path.join(s.dest, 'src/unchanged.txt')).ino;
 	const configInode = fs.statSync(path.join(s.dest, 'tsconfig.json')).ino;
 
 	const second = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
 		headers: syncHeaders('content-aware-2', SERVICE, roots),
-		body: makeTarGz({ 'src/current.txt': 'new', 'tsconfig.json': '{}' })
+		body: makeTarGz({
+			'src/current.txt': 'new',
+			'src/unchanged.txt': 'same',
+			'tsconfig.json': '{}'
+		})
 	});
 	assert.equal(second.status, 200);
-	assert.deepEqual((await second.json()).changedRoots, ['src']);
+	const result = await second.json();
+	assert.deepEqual(result.changedRoots, ['src']);
+	assert.deepEqual(result.changedPaths, ['src/current.txt']);
+	assert.equal(result.changedPathCount, 1);
+	assert.equal(result.changedPathsTruncated, false);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'new');
+	assert.equal(fs.statSync(path.join(s.dest, 'src')).ino, sourceInode);
+	assert.notEqual(fs.statSync(path.join(s.dest, 'src/current.txt')).ino, currentInode);
+	assert.equal(fs.statSync(path.join(s.dest, 'src/unchanged.txt')).ino, unchangedInode);
 	assert.equal(fs.statSync(path.join(s.dest, 'tsconfig.json')).ino, configInode);
 	const status = await (
 		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
 	).json();
 	assert.equal(status.generation, 'content-aware-2');
+});
+
+test('one-file sync can update a read-only source root without replacing it', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	assert.equal(
+		(
+			await fetch(`${s.base}/__sync`, {
+				method: 'POST',
+				headers: syncHeaders('readonly-1'),
+				body: makeTarGz({ 'src/current.txt': 'old', 'src/stable.txt': 'same' })
+			})
+		).status,
+		200
+	);
+	const sourceInode = fs.statSync(path.join(s.dest, 'src')).ino;
+	const stableInode = fs.statSync(path.join(s.dest, 'src/stable.txt')).ino;
+	fs.chmodSync(path.join(s.dest, 'src'), 0o555);
+
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('readonly-2'),
+		body: makeTarGz({ 'src/current.txt': 'new', 'src/stable.txt': 'same' })
+	});
+	assert.equal(response.status, 200);
+	const result = await response.json();
+	assert.deepEqual(result.changedPaths, ['src', 'src/current.txt']);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'new');
+	assert.equal(fs.statSync(path.join(s.dest, 'src')).ino, sourceInode);
+	assert.equal(fs.statSync(path.join(s.dest, 'src/stable.txt')).ino, stableInode);
+	assert.equal(fs.statSync(path.join(s.dest, 'src')).mode & 0o7777, 0o755);
 });
 
 test('an all-content no-op still advances sidecar generation state', async (t) => {
@@ -344,6 +426,120 @@ test('an all-content no-op still advances sidecar generation state', async (t) =
 		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
 	).json();
 	assert.equal(status.generation, 'no-op-2');
+});
+
+test('app.py replacement emits a localized watcher event without replacing the workdir', async (t) => {
+	const roots = ['app.py'];
+	const s = await startSidecar({
+		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
+	});
+	t.after(() => s.stop());
+	const first = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('python-reload-1', SERVICE, roots),
+		body: makeTarGz({ 'app.py': 'VERSION = 1\n' })
+	});
+	assert.equal(first.status, 200);
+	const workdirInode = fs.statSync(s.dest).ino;
+
+	let timeout;
+	const watcher = fs.watch(s.dest);
+	t.after(() => watcher.close());
+	const appEvent = new Promise((resolve, reject) => {
+		timeout = setTimeout(() => reject(new Error('no app.py watcher event')), 2000);
+		watcher.on('change', (eventType, filename) => {
+			if (String(filename) === 'app.py') resolve(eventType);
+		});
+	});
+	const second = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('python-reload-2', SERVICE, roots),
+		body: makeTarGz({ 'app.py': 'VERSION = 2\n' })
+	});
+	assert.equal(second.status, 200);
+	const result = await second.json();
+	assert.deepEqual(result.changedPaths, ['app.py']);
+	assert.ok(await appEvent);
+	clearTimeout(timeout);
+	assert.equal(fs.statSync(s.dest).ino, workdirInode);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'app.py'), 'utf8'), 'VERSION = 2\n');
+});
+
+test('regular-file backup emits no watcher event before the committed rename', async (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-watch-root-'));
+	const archivePath = path.join(os.tmpdir(), `dev-sync-watch-${process.pid}-${Date.now()}.tgz`);
+	fs.mkdirSync(path.join(root, 'src'));
+	const watchedPath = path.join(root, 'src/current.txt');
+	fs.writeFileSync(watchedPath, 'old');
+	fs.writeFileSync(archivePath, makeTarGz({ 'src/current.txt': 'new' }));
+	t.after(() => {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(archivePath, { force: true });
+	});
+
+	const observedContents = [];
+	const watcher = fs.watch(watchedPath, () => {
+		try {
+			observedContents.push(fs.readFileSync(watchedPath, 'utf8'));
+		} catch {
+			observedContents.push('<missing>');
+		}
+	});
+	t.after(() => watcher.close());
+
+	const childScript = `
+		import fs from 'node:fs';
+		import path from 'node:path';
+		import { pathToFileURL } from 'node:url';
+		const originalRename = fs.renameSync.bind(fs);
+		let delayed = false;
+		fs.renameSync = (source, target) => {
+			if (!delayed && String(source).includes(path.sep + 'stage' + path.sep)) {
+				delayed = true;
+				process.stdout.write('before-rename\\n');
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+			}
+			return originalRename(source, target);
+		};
+		const { applyAtomicDevSync } = await import(pathToFileURL(process.env.ATOMIC_SYNC).href);
+		await applyAtomicDevSync({
+			root: process.env.SYNC_ROOT,
+			archivePath: process.env.SYNC_ARCHIVE,
+			declaredRoots: ['src'],
+			nextState: {
+				generation: 'watch-2', service: 'workflow-builder',
+				lastSyncAt: '2026-07-13T00:00:00.000Z', lastSyncBytes: 1
+			},
+			stateFile: '.dev-sync-state.json',
+			persistState: () => undefined
+		});
+	`;
+	const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+		env: {
+			...process.env,
+			ATOMIC_SYNC,
+			SYNC_ROOT: root,
+			SYNC_ARCHIVE: archivePath
+		},
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	let stdout = '';
+	let stderr = '';
+	child.stdout.on('data', (chunk) => (stdout += String(chunk)));
+	child.stderr.on('data', (chunk) => (stderr += String(chunk)));
+	const markerDeadline = Date.now() + 3000;
+	while (!stdout.includes('before-rename') && Date.now() < markerDeadline) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.match(stdout, /before-rename/, `child did not reach commit boundary: ${stderr}`);
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.deepEqual(observedContents, [], 'backup changed the watched inode before commit');
+
+	const exitCode = await new Promise((resolve) => child.once('exit', resolve));
+	assert.equal(exitCode, 0, stderr);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(observedContents.includes('new'), `missing committed watcher event: ${observedContents}`);
+	assert.ok(!observedContents.includes('old'), `observed pre-commit content: ${observedContents}`);
 });
 
 test('malformed and link-bearing uploads never mutate the committed generation', async (t) => {
@@ -577,6 +773,7 @@ test('GET /__status reflects the last sync + last run and lists commands', async
 		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
 	).json();
 	assert.equal(status.lastSyncAt, null);
+	assert.equal(status.lastSyncTimingsMs, null);
 	assert.deepEqual(status.commands, ['contract', 'deps']);
 
 	await fetch(`${s.base}/__sync`, {
@@ -587,6 +784,8 @@ test('GET /__status reflects the last sync + last run and lists commands', async
 	status = await (await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })).json();
 	assert.ok(status.lastSyncAt, 'lastSyncAt set after a sync');
 	assert.ok(status.lastSyncBytes > 0);
+	assert.ok(status.lastSyncTimingsMs.total >= 0);
+	assert.ok(status.lastSyncTimingsMs.planning >= 0);
 	assert.equal(status.generation, GENERATION);
 	assert.equal(status.syncService, SERVICE);
 
@@ -807,16 +1006,22 @@ test('POST /__sync flags NEW src/routes files and writes the restart signal once
 	assert.ok(written.requestedAt);
 
 	// The plugin consumes (deletes) the signal before restarting; a re-sync of
-	// the SAME tree adds nothing → no new signal, no restart loop.
+	// an edit to the EXISTING route adds nothing → no new signal, no restart loop.
 	fs.unlinkSync(signal);
+	const edited = makeTarGz({
+		'src/routes/pr-preview-marker/+server.ts':
+			'export const GET = () => new Response("updated");',
+		'src/lib/util.ts': 'export const x = 1;'
+	});
 	const second = await (
 		await fetch(`${s.base}/__sync`, {
 			method: 'POST',
 			headers: syncHeaders('route-generation-2'),
-			body: tgz
+			body: edited
 		})
 	).json();
 	assert.equal(second.ok, true);
+	assert.deepEqual(second.changedPaths, ['src/routes/pr-preview-marker/+server.ts']);
 	assert.equal(second.routesAdded, undefined);
 	assert.ok(!fs.existsSync(signal), 'no signal for a sync that adds no routes');
 });

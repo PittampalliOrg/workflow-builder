@@ -197,12 +197,21 @@ export interface VclusterPreviewGatewayPort {
 }
 
 /** Raw dev-sync-sidecar `/__status` body (before the service parses `lastRun`). */
+export type DevPreviewSyncTimings = {
+  validation: number;
+  staging: number;
+  planning: number;
+  commit: number;
+  total: number;
+};
+
 export type DevPreviewSidecarStatus = {
   ok: boolean;
   service?: string;
   dest?: string;
   lastSyncAt?: string | null;
   lastSyncBytes?: number | null;
+  lastSyncTimingsMs?: DevPreviewSyncTimings | null;
   lastRun?: unknown;
   commands?: string[];
 };

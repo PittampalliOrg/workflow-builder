@@ -13,7 +13,8 @@ import {
 	applyAtomicDevSync,
 	DevSyncTransactionError,
 	parseAllowedSyncRoots,
-	parseDeclaredSyncRoots
+	parseDeclaredSyncRoots,
+	type AtomicDevSyncTimings
 } from './src/lib/server/dev-sync/atomic-sync';
 
 const DEV_SYNC_STATE_FILE = '.dev-sync-state.json';
@@ -150,6 +151,7 @@ function devLiveSyncPlugin(): Plugin {
 		lastSyncBytes: 0,
 		contentSha256: null
 	};
+	let lastSyncTimingsMs: AtomicDevSyncTimings | null = null;
 	let lastExportSha256: string | null = null;
 	let sourceOperation: 'sync' | 'export' | null = null;
 	const beginSourceOperation = (operation: 'sync' | 'export') => {
@@ -377,11 +379,12 @@ function devLiveSyncPlugin(): Plugin {
 							);
 						}
 					})
-						.then(({ changedRoots }) => {
+						.then(({ changedRoots, changedPaths, timingsMs }) => {
 							cleanup();
 							syncState = nextState;
+							lastSyncTimingsMs = timingsMs;
 							console.log(
-								`[wfb-dev-live-sync] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B) -> Vite HMR`
+								`[wfb-dev-live-sync] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B, ${timingsMs.total}ms apply) -> Vite HMR`
 							);
 							release();
 							json(200, {
@@ -391,6 +394,10 @@ function devLiveSyncPlugin(): Plugin {
 								service,
 								contentSha256,
 								changedRoots,
+								changedPathCount: changedPaths.length,
+								changedPaths: changedPaths.slice(0, 50),
+								changedPathsTruncated: changedPaths.length > 50,
+								timingsMs,
 								...(addedRoutes.length
 									? {
 											routesAdded: addedRoutes.slice(0, 50),
@@ -441,6 +448,7 @@ function devLiveSyncPlugin(): Plugin {
 						generation: syncState.generation,
 						lastSyncAt: syncState.lastSyncAt,
 						lastSyncBytes: syncState.lastSyncBytes,
+						lastSyncTimingsMs,
 						contentSha256: syncState.contentSha256,
 						allowedRoots,
 						lastExportSha256
@@ -655,9 +663,16 @@ export default defineConfig({
 		port: 3000,
 		host: true,
 		allowedHosts: true,
-		// Atomic uploads stage below this hidden directory before committing. Do not
-		// let Vite react to the transaction copy; only the committed live roots matter.
-		watch: { ignored: ['**/.dev-sync-transactions/**'] }
+		// Atomic uploads stage below this hidden directory before committing. State
+		// and route-restart signals are transport metadata, not application inputs.
+		// Only committed catalog roots should reach Vite's module watcher.
+		watch: {
+			ignored: [
+				'**/.dev-sync-transactions/**',
+				'**/.dev-sync-state.json*',
+				'**/.dev-sync-restart-request.json'
+			]
+		}
 	},
 	ssr: {
 		noExternal: ['nats']

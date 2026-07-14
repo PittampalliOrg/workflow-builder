@@ -90,6 +90,7 @@ try {
 const RESTART_SIGNAL_FILE = '.dev-sync-restart-request.json';
 const ROUTES_PREFIX = 'src/routes/';
 const SYNC_STATE_FILE = '.dev-sync-state.json';
+const MAX_REPORTED_CHANGED_PATHS = 50;
 const GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -200,6 +201,7 @@ let currentSyncService = initialSyncState.service || CONFIGURED_SERVICE || null;
 let lastSyncAt = initialSyncState.lastSyncAt; // ISO string of the last successful /__sync
 let lastSyncBytes = initialSyncState.lastSyncBytes; // byte size of that upload
 let currentContentSha256 = initialSyncState.contentSha256;
+let lastSyncTimingsMs = null;
 let lastExportSha256 = null;
 let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs, executedIn }
 let sourceOperation = null;
@@ -404,13 +406,14 @@ function handleSync(req, res) {
 				addedRoutes = detectAddedRouteFiles(entries);
 			}
 		})
-			.then(({ changedRoots }) => {
+			.then(({ changedRoots, changedPaths, timingsMs }) => {
 				cleanup();
 				currentGeneration = generation;
 				currentSyncService = syncService;
 				lastSyncAt = syncedAt;
 				lastSyncBytes = buf.length;
 				currentContentSha256 = contentSha256;
+				lastSyncTimingsMs = timingsMs;
 				let restartSignaled = false;
 				if (addedRoutes.length) {
 					try {
@@ -427,7 +430,7 @@ function handleSync(req, res) {
 					}
 				}
 				console.log(
-					`[dev-sync-sidecar] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B) -> ${DEST}`
+					`[dev-sync-sidecar] committed ${changedRoots.join(',') || '<no source changes>'} (${buf.length}B, ${timingsMs.total}ms apply) -> ${DEST}`
 				);
 				release();
 				reply(res, 200, {
@@ -438,6 +441,10 @@ function handleSync(req, res) {
 					service: syncService,
 					contentSha256,
 					changedRoots,
+					changedPathCount: changedPaths.length,
+					changedPaths: changedPaths.slice(0, MAX_REPORTED_CHANGED_PATHS),
+					changedPathsTruncated: changedPaths.length > MAX_REPORTED_CHANGED_PATHS,
+					timingsMs,
 					...(addedRoutes.length ? { routesAdded: addedRoutes.slice(0, 50), restartSignaled } : {})
 				});
 			})
@@ -574,6 +581,7 @@ function handleStatus(req, res) {
 		dest: DEST,
 		lastSyncAt,
 		lastSyncBytes,
+		lastSyncTimingsMs,
 		contentSha256: currentContentSha256,
 		allowedRoots: ALLOWED_ROOTS,
 		allowedRootsError: ALLOWED_ROOTS_ERROR,

@@ -91,6 +91,13 @@ describe('ApplicationDevPreviewSidecarService', () => {
 				dest: '/app',
 				lastSyncAt: '2026-07-05T00:00:00Z',
 				lastSyncBytes: 2048,
+				lastSyncTimingsMs: {
+					validation: 10,
+					staging: 20,
+					planning: 30,
+					commit: 1,
+					total: 62
+				},
 				commands: ['deps', 'test'],
 				lastRun: {
 					name: 'test',
@@ -120,6 +127,13 @@ describe('ApplicationDevPreviewSidecarService', () => {
 		});
 		expect(result?.status.ok).toBe(true);
 		if (result?.status.ok) {
+			expect(result.status.data.lastSyncTimingsMs).toEqual({
+				validation: 10,
+				staging: 20,
+				planning: 30,
+				commit: 1,
+				total: 62
+			});
 			expect(result.status.data.lastRun).toEqual({
 				cmd: 'test',
 				exitCode: 0,

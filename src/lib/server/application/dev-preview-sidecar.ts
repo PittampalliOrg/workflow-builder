@@ -3,7 +3,8 @@ import type {
 	DevEnvironmentSummaryReadModel,
 	DevPreviewSidecarPort,
 	DevPreviewSidecarRunOutput,
-	DevPreviewSidecarSyncOutput
+	DevPreviewSidecarSyncOutput,
+	DevPreviewSyncTimings
 } from '$lib/server/application/ports';
 
 /** The dev-service card view of a sidecar `/__status`: the raw `lastRun` parsed
@@ -13,6 +14,7 @@ export type DevSidecarStatusData = {
 	dest?: string;
 	lastSyncAt: string | null;
 	lastSyncBytes: number | null;
+	lastSyncTimingsMs: DevPreviewSyncTimings | null;
 	commands: string[];
 	lastRun: SidecarLastRunView | null;
 };
@@ -123,6 +125,7 @@ export class ApplicationDevPreviewSidecarService {
 					dest: d.dest,
 					lastSyncAt: d.lastSyncAt ?? null,
 					lastSyncBytes: d.lastSyncBytes ?? null,
+					lastSyncTimingsMs: d.lastSyncTimingsMs ?? null,
 					commands: d.commands ?? [],
 					lastRun: parseSidecarLastRun(d.lastRun)
 				}

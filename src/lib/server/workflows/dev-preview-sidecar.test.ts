@@ -49,6 +49,13 @@ describe('fetchSidecarStatus', () => {
 						dest: '/app',
 						lastSyncAt: '2026-07-04T10:00:00.000Z',
 						lastSyncBytes: 2048,
+						lastSyncTimingsMs: {
+							validation: 10,
+							staging: 20,
+							planning: 30,
+							commit: 1,
+							total: 62
+						},
 						lastRun: null,
 						commands: ['contract', 'deps']
 					}),
@@ -63,7 +70,12 @@ describe('fetchSidecarStatus', () => {
 		});
 		expect(result).toMatchObject({
 			ok: true,
-			data: { ok: true, dest: '/app', commands: ['contract', 'deps'] }
+			data: {
+				ok: true,
+				dest: '/app',
+				commands: ['contract', 'deps'],
+				lastSyncTimingsMs: { planning: 30, total: 62 }
+			}
 		});
 		expect(fetchImpl.mock.calls[0][0]).toBe('http://10.0.0.5:8001/__status');
 	});
