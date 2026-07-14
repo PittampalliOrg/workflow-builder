@@ -16,12 +16,13 @@ import {
 	validateScript,
 	type EvaluateResponse,
 	type EvaluateTask,
-} from "../../../services/script-evaluator/src/sandbox";
-import { PREVIEW_GAN_UI_FEATURE_CONFIG } from "./gen/gan-config";
-import { generateGanScript } from "./gen/gan-script-generator";
+} from "./sandbox";
+import { PREVIEW_GAN_UI_FEATURE_CONFIG } from "../../../scripts/fixtures/generator-critic/gen/gan-config";
+import { generateGanScript } from "../../../scripts/fixtures/generator-critic/gen/gan-script-generator";
 
-const read = (relative: string) =>
-	readFileSync(resolve(process.cwd(), relative), "utf8");
+/** Repo root, regardless of which package vitest was invoked from. */
+const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "../../..");
+const read = (relative: string) => readFileSync(resolve(REPO_ROOT, relative), "utf8");
 
 const FEATURES = { actions: true } as const;
 
