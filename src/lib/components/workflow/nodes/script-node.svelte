@@ -10,7 +10,14 @@
 		Diamond,
 		Repeat,
 		CornerDownRight,
-		Braces
+		Braces,
+		Zap,
+		Clock,
+		Hand,
+		Users,
+		AtSign,
+		Box,
+		ShieldAlert
 	} from '@lucide/svelte';
 	import type { ScriptNodeVariant } from '$lib/utils/script-graph-adapter';
 
@@ -30,6 +37,16 @@
 	const promptPreview = $derived(data.promptPreview as string | null);
 	const hasSchema = $derived(Boolean(data.hasSchema));
 	const schemaProps = $derived((data.schemaProps as string[] | undefined) ?? []);
+	// Full-dialect call specifics (adapter v2).
+	const actionSlug = $derived(data.actionSlug as string | null);
+	const allowFailure = $derived(Boolean(data.allowFailure));
+	const sleepSeconds = $derived(data.sleepSeconds as number | null);
+	const eventName = $derived(data.eventName as string | null);
+	const teamOp = $derived(data.teamOp as string | null);
+	const agentRef = $derived(data.agentRef as string | null);
+	const model = $derived(data.model as string | null);
+	const hasSandbox = $derived(Boolean(data.hasSandbox));
+	const inputProps = $derived((data.inputProps as string[] | undefined) ?? []);
 
 	// One accent per construct so phases and call kinds read at a glance while
 	// every card keeps the same footprint (uniform width + rhythm).
@@ -43,6 +60,10 @@
 		parallel: { accent: 'text-amber-300', ring: 'border-amber-400/40', glow: 'from-amber-500/15', chip: 'bg-amber-500/15 text-amber-200', Icon: GitFork, kind: 'parallel' },
 		pipeline: { accent: 'text-sky-300', ring: 'border-sky-400/40', glow: 'from-sky-500/15', chip: 'bg-sky-500/15 text-sky-200', Icon: ArrowRight, kind: 'pipeline' },
 		workflow: { accent: 'text-indigo-300', ring: 'border-indigo-400/40', glow: 'from-indigo-500/15', chip: 'bg-indigo-500/15 text-indigo-200', Icon: Layers, kind: 'workflow' },
+		action: { accent: 'text-violet-300', ring: 'border-violet-400/40', glow: 'from-violet-500/12', chip: 'bg-violet-500/15 text-violet-200', Icon: Zap, kind: 'action' },
+		sleep: { accent: 'text-slate-300', ring: 'border-slate-400/40', glow: 'from-slate-500/10', chip: 'bg-slate-500/15 text-slate-300', Icon: Clock, kind: 'sleep' },
+		event: { accent: 'text-rose-300', ring: 'border-rose-400/40', glow: 'from-rose-500/12', chip: 'bg-rose-500/15 text-rose-200', Icon: Hand, kind: 'gate' },
+		team: { accent: 'text-cyan-300', ring: 'border-cyan-400/40', glow: 'from-cyan-500/12', chip: 'bg-cyan-500/15 text-cyan-200', Icon: Users, kind: 'team' },
 		end: { accent: 'text-slate-300', ring: 'border-slate-400/40', glow: 'from-slate-500/15', chip: 'bg-slate-500/15 text-slate-200', Icon: Square, kind: 'End' }
 	};
 	const s = $derived(STYLE[variant]);
@@ -50,6 +71,10 @@
 	const isPhase = $derived(variant === 'phase');
 	const isEndpoint = $derived(variant === 'start' || variant === 'end');
 	const isJunction = $derived(variant === 'parallel' || variant === 'pipeline');
+	const isSleep = $derived(variant === 'sleep');
+	const kindLabel = $derived(
+		variant === 'team' && teamOp ? `team.${teamOp}()` : `${s.kind}()`
+	);
 
 	const visibleProps = $derived(schemaProps.slice(0, 3));
 	const extraProps = $derived(Math.max(0, schemaProps.length - visibleProps.length));
@@ -66,6 +91,8 @@
 		runningCallIds: string[];
 	};
 	const callState = $derived(data.callState as CallLineState | undefined);
+	/** Code⇄canvas sync: the editor cursor is on this node's source line. */
+	const codeActive = $derived(Boolean(data.codeActive));
 	const onKillSession = $derived(data.onKillSession as ((sessionId: string) => void) | undefined);
 	const onSkipCall = $derived(data.onSkipCall as ((callId: string) => void) | undefined);
 </script>
@@ -80,14 +107,25 @@
 	{/if}
 
 	{#if isEndpoint}
-		<!-- Start / End: a centered capsule -->
-		<div class="flex justify-center">
+		<!-- Start / End: a centered capsule (Start also lists the run's inputs) -->
+		<div class="flex flex-col items-center gap-1.5">
 			<div
 				class="inline-flex items-center gap-2 rounded-full border {s.ring} bg-gradient-to-b {s.glow} to-background/60 px-4 py-1.5 shadow-sm backdrop-blur"
 			>
 				<s.Icon class="size-3.5 {s.accent}" />
 				<span class="max-w-[180px] truncate text-xs font-semibold text-foreground/90">{label}</span>
 			</div>
+			{#if variant === 'start' && inputProps.length > 0}
+				<div class="flex max-w-[320px] flex-wrap items-center justify-center gap-1">
+					<span class="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/70">args</span>
+					{#each inputProps.slice(0, 5) as prop (prop)}
+						<span class="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-foreground/70">{prop}</span>
+					{/each}
+					{#if inputProps.length > 5}
+						<span class="text-[10px] text-muted-foreground/70">+{inputProps.length - 5}</span>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	{:else if isPhase}
 		<!-- Phase: a full-width lane header band -->
@@ -107,6 +145,28 @@
 					{callCount} step{callCount === 1 ? '' : 's'}
 				</span>
 			{/if}
+		</div>
+	{:else if isSleep}
+		<!-- sleep(): a compact timer capsule -->
+		<div class="flex justify-center">
+			<div
+				class="inline-flex items-center gap-1.5 rounded-full border {s.ring} bg-gradient-to-b {s.glow} to-background/60 px-3 py-1 shadow-sm backdrop-blur
+					{selected ? 'ring-2 ring-primary/60' : ''}
+					{codeActive ? 'ring-2 ring-fuchsia-400/70' : ''}"
+			>
+				<Clock class="size-3.5 {s.accent}" />
+				<span class="text-[11px] font-semibold text-foreground/85">{label}</span>
+				{#if inLoop}
+					<Repeat class="size-3 text-muted-foreground" />
+				{/if}
+				{#if callState}
+					{#if callState.running > 0}
+						<span class="size-1.5 animate-pulse rounded-full bg-sky-300"></span>
+					{:else if callState.done > 0}
+						<span class="size-1.5 rounded-full bg-emerald-400"></span>
+					{/if}
+				{/if}
+			</div>
 		</div>
 	{:else if isJunction}
 		<!-- parallel() / pipeline(): a compact branch chip -->
@@ -130,14 +190,20 @@
 		<div
 			class="overflow-hidden rounded-xl border {s.ring} bg-gradient-to-b {s.glow} to-card/80 shadow-md backdrop-blur transition
 				hover:-translate-y-0.5 hover:shadow-lg
-				{selected ? 'ring-2 ring-primary/60' : ''}"
+				{selected ? 'ring-2 ring-primary/60' : ''}
+				{codeActive ? 'ring-2 ring-fuchsia-400/70 shadow-fuchsia-500/20' : ''}"
 		>
 			<div class="flex items-center gap-2 border-b border-border/40 px-3 py-1.5">
 				<div class="flex size-6 shrink-0 items-center justify-center rounded-md {s.chip}">
 					<s.Icon class="size-3.5" />
 				</div>
-				<span class="text-[10px] font-semibold uppercase tracking-[0.12em] {s.accent}">{s.kind}()</span>
+				<span class="text-[10px] font-semibold uppercase tracking-[0.12em] {s.accent}">{kindLabel}</span>
 				<div class="ml-auto flex items-center gap-1">
+					{#if allowFailure}
+						<span class="inline-flex items-center gap-0.5 rounded bg-background/70 px-1 text-[9px] text-amber-300/90" title="allowFailure: an error journals an envelope instead of failing the run">
+							<ShieldAlert class="size-2.5" /> soft-fail
+						</span>
+					{/if}
 					{#if inLoop}
 						<span class="inline-flex items-center gap-0.5 rounded bg-background/70 px-1 text-[9px] text-muted-foreground" title="Runs inside a loop">
 							<Repeat class="size-2.5" /> loop
@@ -153,6 +219,40 @@
 
 			<div class="px-3 py-2">
 				<div class="truncate text-[13px] font-semibold text-foreground/90" title={label}>{label}</div>
+
+				{#if actionSlug && actionSlug !== label}
+					<div class="mt-1 flex items-center gap-1.5">
+						<Zap class="size-2.5 shrink-0 {s.accent}" />
+						<span class="truncate font-mono text-[10.5px] text-muted-foreground" title={actionSlug}>{actionSlug}</span>
+					</div>
+				{/if}
+
+				{#if eventName}
+					<div class="mt-1 flex items-center gap-1.5">
+						<Hand class="size-2.5 shrink-0 {s.accent}" />
+						<span class="truncate text-[10.5px] text-muted-foreground">
+							{eventName === 'approval' ? 'waits for human approval' : `waits for “${eventName}”`}
+						</span>
+					</div>
+				{/if}
+
+				{#if agentRef || model || hasSandbox}
+					<div class="mt-1 flex flex-wrap items-center gap-1">
+						{#if agentRef}
+							<span class="inline-flex items-center gap-0.5 rounded {s.chip} px-1.5 py-0.5 text-[9.5px] font-medium" title="Named agent — resolved fail-closed at dispatch">
+								<AtSign class="size-2.5" />{agentRef}
+							</span>
+						{/if}
+						{#if model}
+							<span class="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[9.5px] text-foreground/60" title="Model override">{model}</span>
+						{/if}
+						{#if hasSandbox}
+							<span class="inline-flex items-center gap-0.5 rounded bg-background/70 px-1.5 py-0.5 text-[9.5px] text-muted-foreground" title="Bound to a shared workspace/sandbox">
+								<Box class="size-2.5" /> workspace
+							</span>
+						{/if}
+					</div>
+				{/if}
 
 				{#if promptPreview}
 					<div class="mt-1.5 flex items-start gap-1.5">

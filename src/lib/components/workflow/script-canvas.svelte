@@ -10,7 +10,7 @@
 		type Edge
 	} from '@xyflow/svelte';
 	import { getContext } from 'svelte';
-	import { FileCode2, Sparkles, Info, GitFork, Braces } from '@lucide/svelte';
+	import { FileCode2, Sparkles, Info, GitFork, Braces, Bot, Zap, Hand } from '@lucide/svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 	import {
@@ -29,13 +29,19 @@
 		callStates?: Record<number, CallLineState> | null;
 		onKillSession?: (sessionId: string) => void;
 		onSkipCall?: (callId: string) => void;
+		/** Code⇄canvas sync: a node with a source line was clicked. */
+		onNodeLine?: (line: number) => void;
+		/** Code⇄canvas sync: highlight the node nearest this source line. */
+		activeLine?: number | null;
 	}
 	let {
 		scriptSource = null,
 		scriptMeta = undefined,
 		callStates = null,
 		onKillSession = undefined,
-		onSkipCall = undefined
+		onSkipCall = undefined,
+		onNodeLine = undefined,
+		activeLine = null
 	}: Props = $props();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore> | undefined>('workflow');
@@ -58,14 +64,27 @@
 	const styledEdges = $derived(
 		(graph?.edges ?? []).map((e) => {
 			const isParallel = Boolean((e.data as { parallel?: boolean } | undefined)?.parallel);
+			const isLoop = Boolean((e.data as { loop?: boolean } | undefined)?.loop);
 			const isPipeline = e.label === 'then';
 			// Fan-out edges (parallel/pipeline) are animated + hued so concurrency
-			// reads instantly; the sequential spine stays quiet.
-			const stroke = isParallel
-				? 'oklch(0.78 0.15 75)' // amber
-				: isPipeline
-					? 'oklch(0.72 0.13 235)' // sky
-					: 'var(--muted-foreground)';
+			// reads instantly; loop-back edges cycle in rose; the spine stays quiet.
+			const stroke = isLoop
+				? 'oklch(0.72 0.17 15)' // rose
+				: isParallel
+					? 'oklch(0.78 0.15 75)' // amber
+					: isPipeline
+						? 'oklch(0.72 0.13 235)' // sky
+						: 'var(--muted-foreground)';
+			if (isLoop) {
+				return {
+					...e,
+					type: 'bezier',
+					animated: true,
+					markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: stroke },
+					style: `stroke: ${stroke}; stroke-width: 1.5px; stroke-dasharray: 6 4; opacity: 0.75;`,
+					labelStyle: `fill: ${stroke}; font-size: 10px; font-weight: 600;`
+				};
+			}
 			return {
 				...e,
 				type: 'smoothstep',
@@ -85,16 +104,23 @@
 			const line = (n.data as { line?: number | null } | undefined)?.line;
 			const callState =
 				callStates && typeof line === 'number' ? (callStates[line] ?? null) : null;
+			const isActive = activeLine != null && typeof line === 'number' && line === activeLine;
 			return {
 				...n,
 				data: {
 					...n.data,
+					codeActive: isActive,
 					...(callState ? { callState, onKillSession, onSkipCall } : {})
 				}
 			};
 		});
 		edges = styledEdges.map((e) => ({ ...e }));
 	});
+
+	function handleNodeClick({ node }: { node: Node }) {
+		const line = (node.data as { line?: number | null } | undefined)?.line;
+		if (typeof line === 'number' && onNodeLine) onNodeLine(line);
+	}
 
 	const isEmpty = $derived((graph?.nodes.length ?? 0) === 0);
 </script>
@@ -132,19 +158,37 @@
 			<span>{model?.phases.length ?? 0} phase{(model?.phases.length ?? 0) === 1 ? '' : 's'}</span>
 			<span class="text-muted-foreground/50">·</span>
 			<span>{model?.estimatedAgentCalls ?? 0} agent call{(model?.estimatedAgentCalls ?? 0) === 1 ? '' : 's'}</span>
+			{#if model && model.calls.some((c) => c.kind === 'action')}
+				<span class="text-muted-foreground/50">·</span>
+				<span>{model.calls.filter((c) => c.kind === 'action').length} action{model.calls.filter((c) => c.kind === 'action').length === 1 ? '' : 's'}</span>
+			{/if}
+			{#if model && model.calls.some((c) => c.kind === 'event')}
+				<span class="text-muted-foreground/50">·</span>
+				<span class="text-rose-300/90">{model.calls.filter((c) => c.kind === 'event').length} gate{model.calls.filter((c) => c.kind === 'event').length === 1 ? '' : 's'}</span>
+			{/if}
+			{#if model && model.loops.length > 0}
+				<span class="text-muted-foreground/50">·</span>
+				<span>{model.loops.length} loop{model.loops.length === 1 ? '' : 's'}</span>
+			{/if}
 		</div>
 		<div class="pointer-events-none absolute right-3 top-3 z-10 flex flex-col gap-1.5 rounded-lg border border-border/50 bg-background/80 px-2.5 py-2 text-[10px] shadow-sm backdrop-blur">
 			<div class="flex items-center gap-1.5">
+				<Bot class="size-3 text-teal-300" />
+				<span class="text-muted-foreground">agent</span>
+				<Zap class="ml-1 size-3 text-violet-300" />
+				<span class="text-muted-foreground">action</span>
+				<Hand class="ml-1 size-3 text-rose-300" />
+				<span class="text-muted-foreground">gate</span>
+			</div>
+			<div class="flex items-center gap-1.5">
 				<GitFork class="size-3 text-amber-300" />
-				<span class="text-muted-foreground">parallel — runs concurrently</span>
+				<span class="text-muted-foreground">parallel</span>
+				<Braces class="ml-1 size-3 text-teal-300" />
+				<span class="text-muted-foreground">typed output</span>
 			</div>
 			<div class="flex items-center gap-1.5">
-				<Braces class="size-3 text-teal-300" />
-				<span class="text-muted-foreground">typed — structured output</span>
-			</div>
-			<div class="flex items-center gap-1.5">
-				<span class="inline-block h-0 w-4 border-t-[1.5px] border-dashed border-amber-300"></span>
-				<span class="text-muted-foreground">fan-out / fan-in</span>
+				<span class="inline-block h-0 w-4 border-t-[1.5px] border-dashed border-rose-300"></span>
+				<span class="text-muted-foreground">repeats (loop)</span>
 			</div>
 		</div>
 		<SvelteFlow
@@ -158,6 +202,7 @@
 			nodesConnectable={false}
 			elementsSelectable={true}
 			panOnScroll
+			onnodeclick={handleNodeClick}
 			proOptions={{ hideAttribution: true }}
 		>
 			<Background variant={BackgroundVariant.Dots} gap={18} size={1} />

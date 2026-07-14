@@ -19,7 +19,15 @@
 
 import type { Node, Edge } from "@xyflow/svelte";
 
-export type ScriptGraphCallKind = "agent" | "parallel" | "pipeline" | "workflow";
+export type ScriptGraphCallKind =
+  | "agent"
+  | "parallel"
+  | "pipeline"
+  | "workflow"
+  | "action"
+  | "sleep"
+  | "event"
+  | "team";
 
 /** SvelteFlow node type used for every dynamic-script node (one component). */
 export const SCRIPT_NODE_TYPE = "script";
@@ -31,6 +39,10 @@ export type ScriptNodeVariant =
   | "parallel"
   | "pipeline"
   | "workflow"
+  | "action"
+  | "sleep"
+  | "event"
+  | "team"
   | "end";
 
 /** Live-overlay aggregation for ONE source line (cutover P2b): journal rows
@@ -71,6 +83,32 @@ export interface ScriptGraphCall {
    * newlines, so this matches the STORED source — and the journal's
    * call_site.line join key from the evaluator's runtime capture). */
   line: number;
+  /** id of the innermost enclosing while/for loop, else null (see model.loops). */
+  loopId: string | null;
+  /** action-kind: the '<service>/<action>' slug. */
+  actionSlug: string | null;
+  /** action-kind: the call tolerates failure (journals an error envelope). */
+  allowFailure: boolean;
+  /** sleep-kind: duration in seconds, when a numeric literal. */
+  sleepSeconds: number | null;
+  /** event-kind: gate name ('approval' for approve(), else the event name). */
+  eventName: string | null;
+  /** team-kind: which op (spawn|task|send|broadcast|status|join|shutdown). */
+  teamOp: string | null;
+  /** agent-kind: the named-agent slug/id from opts.agent (fail-closed dispatch). */
+  agentRef: string | null;
+  /** agent-kind: opts.model override, when a string literal. */
+  model: string | null;
+  /** agent-kind: bound to a workspace/sandbox (opts.sandbox or isolation:'shared'). */
+  hasSandbox: boolean;
+}
+
+export interface ScriptGraphLoop {
+  id: string;
+  /** 'while' | 'for' */
+  kind: string;
+  /** 1-based source line of the loop keyword. */
+  line: number;
 }
 
 export interface ScriptGraphModel {
@@ -78,6 +116,10 @@ export interface ScriptGraphModel {
   /** Declared (meta.phases) ∪ discovered phase() titles, in first-seen order. */
   phases: string[];
   calls: ScriptGraphCall[];
+  /** while/for loops that contain at least one call (loop containers). */
+  loops: ScriptGraphLoop[];
+  /** Top-level meta.input property names (the run's expected arguments). */
+  inputProps: string[];
   /** agent() call sites (matches the evaluator's estimatedAgentCalls intent). */
   estimatedAgentCalls: number;
 }
@@ -468,6 +510,51 @@ function extractSchema(
   return { hasSchema: true, props: [] };
 }
 
+/** Read a string-literal opt (`key: 'value'`) from a call's argument span.
+ * The KEY is matched on the masked source (string contents blanked, so prompt
+ * text can't fake a key); the VALUE is read from the real source at the same
+ * offset. */
+function stringOptFromSpan(
+  masked: string,
+  real: string,
+  open: number,
+  key: string,
+): string | null {
+  const close = matchParen(masked, open);
+  const span = masked.slice(open, close + 1);
+  const km = new RegExp(`\\b${key}\\s*:\\s*(['"\`])`).exec(span);
+  if (!km) return null;
+  const qAt = open + (km.index ?? 0) + km[0].length - 1;
+  const q = real[qAt];
+  let i = qAt + 1;
+  let out = "";
+  while (i < real.length && real[i] !== q) {
+    if (real[i] === "\\") {
+      out += real[i + 1] ?? "";
+      i += 2;
+      continue;
+    }
+    out += real[i];
+    i += 1;
+  }
+  return out || null;
+}
+
+/** True when `key: true` (or a bare `key,`/`key }` shorthand) appears in the
+ * call's argument span (masked, so prompts can't fake it). */
+function boolOptFromSpan(masked: string, open: number, key: string): boolean {
+  const close = matchParen(masked, open);
+  const span = masked.slice(open, close + 1);
+  return new RegExp(`\\b${key}\\s*:\\s*true\\b`).test(span);
+}
+
+/** True when the span mentions the key at all (e.g. `sandbox: {...}`). */
+function hasOptKey(masked: string, open: number, key: string): boolean {
+  const close = matchParen(masked, open);
+  const span = masked.slice(open, close + 1);
+  return new RegExp(`\\b${key}\\s*:`).test(span);
+}
+
 function truncate(s: string, max = 48): string {
   const clean = s.replace(/\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
@@ -493,8 +580,9 @@ export function parseScriptStructure(
       ? (meta as { name: string }).name
       : "dynamic-script";
 
-  // Precompute loop spans (while/for bodies) so we can flag calls inside them.
-  const loopSpans: Array<[number, number]> = [];
+  // Precompute loop spans (while/for bodies): each becomes an IDENTIFIED loop
+  // so the canvas can draw a repeat container + loop-back edge, not just a chip.
+  const loopSpans: Array<{ id: string; kind: string; start: number; end: number; kwIndex: number }> = [];
   const loopKw = /\b(while|for)\s*\(/g;
   let lm: RegExpExecArray | null;
   while ((lm = loopKw.exec(masked))) {
@@ -513,10 +601,26 @@ export function parseScriptStructure(
       if (masked[i] === "{") bd += 1;
       else if (masked[i] === "}") bd -= 1;
     }
-    loopSpans.push([bodyStart, i]);
+    loopSpans.push({
+      id: `loop${loopSpans.length}`,
+      kind: lm[1],
+      start: bodyStart,
+      end: i,
+      kwIndex: lm.index,
+    });
   }
-  const inLoopAt = (pos: number) =>
-    loopSpans.some(([a, b]) => pos >= a && pos < b);
+  // Innermost enclosing loop wins (spans nest; the tightest span is the label).
+  const loopAt = (pos: number): string | null => {
+    let best: { id: string; size: number } | null = null;
+    for (const sp of loopSpans) {
+      if (pos >= sp.start && pos < sp.end) {
+        const size = sp.end - sp.start;
+        if (!best || size < best.size) best = { id: sp.id, size };
+      }
+    }
+    return best?.id ?? null;
+  };
+  const inLoopAt = (pos: number) => loopAt(pos) !== null;
 
   // Ordered line cursor: the token scan advances monotonically, so counting
   // newlines incrementally is O(n) total.
@@ -529,8 +633,10 @@ export function parseScriptStructure(
     return lineCursorLine;
   };
 
-  // Single ordered scan for phase()/agent()/parallel()/pipeline()/workflow().
-  const tokenRe = /\b(phase|agent|parallel|pipeline|workflow)\s*\(/g;
+  // Single ordered scan for the FULL dialect: control constructs, agent calls,
+  // durable actions/sleeps/gates, and team ops.
+  const tokenRe =
+    /\b(phase|agent|parallel|pipeline|workflow|action|sleep|approve|waitForEvent)\s*\(|\bteam\s*\.\s*(spawn|task|send|broadcast|status|join|shutdown)\s*\(/g;
   const discoveredPhases: string[] = [];
   const calls: ScriptGraphCall[] = [];
   let currentPhase: string | null = null;
@@ -540,7 +646,8 @@ export function parseScriptStructure(
   const groupStack: Array<{ id: string; close: number }> = [];
 
   while ((tm = tokenRe.exec(masked))) {
-    const kind = tm[1] as "phase" | ScriptGraphCallKind;
+    const token = tm[1] ?? "team";
+    const teamOpToken = tm[2] ?? null;
     const open = tm.index + tm[0].length - 1; // index of "("
 
     // Pop groups we've scanned past.
@@ -548,7 +655,7 @@ export function parseScriptStructure(
       groupStack.pop();
     }
 
-    if (kind === "phase") {
+    if (token === "phase") {
       const title = firstStringArg(src, open);
       if (title) {
         currentPhase = title;
@@ -556,6 +663,13 @@ export function parseScriptStructure(
       }
       continue;
     }
+
+    const kind: ScriptGraphCallKind =
+      token === "approve" || token === "waitForEvent"
+        ? "event"
+        : token === "team"
+          ? "team"
+          : (token as ScriptGraphCallKind);
 
     const parentGroup = groupStack.length
       ? groupStack[groupStack.length - 1].id
@@ -566,6 +680,14 @@ export function parseScriptStructure(
     let schema = { hasSchema: false, props: [] as string[] };
     let fanOut: { count: number; labels: string[] } | null = null;
     let groupId: string | null = null;
+    let actionSlug: string | null = null;
+    let allowFailure = false;
+    let sleepSeconds: number | null = null;
+    let eventName: string | null = null;
+    let teamOp: string | null = null;
+    let agentRef: string | null = null;
+    let model: string | null = null;
+    let hasSandbox = false;
 
     if (kind === "workflow") {
       const wfName = firstStringArg(src, open);
@@ -575,6 +697,32 @@ export function parseScriptStructure(
       fanOut = resolveFanOut(masked, src, open);
       label = kind === "parallel" ? "parallel" : "pipeline";
       groupStack.push({ id: groupId, close: matchParen(masked, open) });
+    } else if (kind === "action") {
+      actionSlug = firstStringArg(src, open);
+      allowFailure = boolOptFromSpan(masked, open, "allowFailure");
+      const optLabel = labelFromOpts(masked, src, open);
+      label = optLabel ?? actionSlug ?? "action()";
+    } else if (kind === "sleep") {
+      const close = matchParen(masked, open);
+      const nm = src.slice(open + 1, close).match(/^\s*(\d+(?:\.\d+)?)/);
+      sleepSeconds = nm ? Number(nm[1]) : null;
+      label = sleepSeconds != null ? `wait ${sleepSeconds}s` : "sleep()";
+    } else if (kind === "event") {
+      if (token === "approve") {
+        eventName = "approval";
+        const msg = stringOptFromSpan(masked, src, open, "message");
+        label = msg ? truncate(msg, 40) : "approval gate";
+      } else {
+        eventName = firstStringArg(src, open);
+        label = eventName ?? "waitForEvent()";
+      }
+    } else if (kind === "team") {
+      teamOp = teamOpToken;
+      const optLabel = labelFromOpts(masked, src, open);
+      label = optLabel ?? `team.${teamOpToken ?? "op"}`;
+      if (teamOpToken === "task" || teamOpToken === "broadcast") {
+        promptText = promptPreview(src, open);
+      }
     } else {
       // agent()
       const optLabel = labelFromOpts(masked, src, open);
@@ -582,6 +730,11 @@ export function parseScriptStructure(
       if (optLabel) label = optLabel;
       else label = promptText ? truncate(promptText) : "agent()";
       schema = extractSchema(masked, open);
+      agentRef = stringOptFromSpan(masked, src, open, "agent");
+      model = stringOptFromSpan(masked, src, open, "model");
+      hasSandbox =
+        hasOptKey(masked, open, "sandbox") ||
+        stringOptFromSpan(masked, src, open, "isolation") === "shared";
     }
 
     calls.push({
@@ -597,16 +750,48 @@ export function parseScriptStructure(
       hasSchema: schema.hasSchema,
       schemaProps: schema.props,
       line: lineOf(tm.index),
+      loopId: loopAt(open),
+      actionSlug,
+      allowFailure,
+      sleepSeconds,
+      eventName,
+      teamOp,
+      agentRef,
+      model,
+      hasSandbox,
     });
   }
 
   const phases: string[] = [...declaredPhases];
   for (const p of discoveredPhases) if (!phases.includes(p)) phases.push(p);
 
+  // Only loops that actually contain a call become containers.
+  const lineAt = (idx: number): number => {
+    let line = 1;
+    for (let i = 0; i < idx && i < masked.length; i += 1) {
+      if (masked.charCodeAt(i) === 10) line += 1;
+    }
+    return line;
+  };
+  const loops: ScriptGraphLoop[] = loopSpans
+    .filter((sp) => calls.some((c) => c.loopId === sp.id))
+    .map((sp) => ({ id: sp.id, kind: sp.kind, line: lineAt(sp.kwIndex) }));
+
+  // meta.input top-level property names (the run's expected arguments).
+  const metaInput = (meta as { input?: { properties?: Record<string, unknown> } } | null)
+    ?.input;
+  const inputProps =
+    metaInput && typeof metaInput === "object" && metaInput.properties &&
+    typeof metaInput.properties === "object"
+      ? Object.keys(metaInput.properties)
+      : [];
+
   return {
     name,
     phases,
     calls,
+    loops,
+    inputProps,
     estimatedAgentCalls: calls.filter((c) => c.kind === "agent").length,
   };
 }
@@ -618,6 +803,10 @@ const VARIANT_ICON: Record<ScriptNodeVariant, string> = {
   parallel: "⇉",
   pipeline: "→",
   workflow: "⧉",
+  action: "⚡",
+  sleep: "◔",
+  event: "✋",
+  team: "⚇",
   end: "■",
 };
 
@@ -681,7 +870,9 @@ export function scriptToGraph(
   };
 
   let y = 24;
-  pushNode("__start__", "start", model.name || "Start", y, CENTER);
+  pushNode("__start__", "start", model.name || "Start", y, CENTER, {
+    inputProps: model.inputProps,
+  });
   let prev: string[] = ["__start__"];
   y += 120;
 
@@ -725,12 +916,29 @@ export function scriptToGraph(
     kind: c?.kind ?? "agent",
     line: c?.line ?? null,
     inLoop: c?.inLoop ?? false,
+    loopId: c?.loopId ?? null,
     phase: c?.phase ?? null,
     promptPreview: c?.promptPreview ?? null,
     hasSchema: c?.hasSchema ?? false,
     schemaProps: c?.schemaProps ?? [],
+    actionSlug: c?.actionSlug ?? null,
+    allowFailure: c?.allowFailure ?? false,
+    sleepSeconds: c?.sleepSeconds ?? null,
+    eventName: c?.eventName ?? null,
+    teamOp: c?.teamOp ?? null,
+    agentRef: c?.agentRef ?? null,
+    model: c?.model ?? null,
+    hasSandbox: c?.hasSandbox ?? false,
     ...(labelOverride ? { memberLabel: labelOverride } : {}),
   });
+
+  const loopMembers = new Map<string, string[]>();
+  const trackLoop = (c: ScriptGraphCall | null, nodeId: string) => {
+    if (!c?.loopId) return;
+    const arr = loopMembers.get(c.loopId) ?? [];
+    arr.push(nodeId);
+    loopMembers.set(c.loopId, arr);
+  };
 
   const emitPhaseCalls = (phaseCalls: ScriptGraphCall[]) => {
     // Walk calls in order; a parallel/pipeline junction consumes its members.
@@ -753,6 +961,7 @@ export function scriptToGraph(
           fanOut: Boolean(c.fanOut),
           inLoop: c.inLoop,
         });
+        trackLoop(c, jid);
         for (const p of prev) link(p, jid);
         y += 132;
 
@@ -769,6 +978,7 @@ export function scriptToGraph(
             label: col.label,
             column: i,
           });
+          if (col.call && col.id === `call-${col.call.order}`) trackLoop(col.call, col.id);
           colIds.push(col.id);
           if (isPipeline && i > 0) {
             link(colIds[i - 1], col.id, { label: "then" });
@@ -787,6 +997,7 @@ export function scriptToGraph(
       if (c.parentGroup) continue; // safety: members handled above
       const id = `call-${c.order}`;
       pushNode(id, c.kind, c.label, y, CENTER, emitCallData(c));
+      trackLoop(c, id);
       for (const p of prev) link(p, id);
       prev = [id];
       y += ROW_H;
@@ -813,6 +1024,20 @@ export function scriptToGraph(
 
   pushNode("__end__", "end", "End", y, CENTER);
   for (const p of prev) link(p, "__end__");
+
+  // Loop-back edges: last member → first member, one per loop container, so a
+  // refine/critic loop reads as a cycle instead of a straight line.
+  for (const loop of model.loops) {
+    const members = loopMembers.get(loop.id) ?? [];
+    if (members.length < 2) continue;
+    edges.push({
+      id: `loop-${loop.id}`,
+      source: members[members.length - 1],
+      target: members[0],
+      data: { loop: true },
+      label: "repeats",
+    });
+  }
 
   return { nodes, edges, model };
 }
