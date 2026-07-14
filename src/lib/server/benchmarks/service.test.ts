@@ -14,6 +14,7 @@ import {
 	benchmarkSuccessfulEmptyPatchTerminationReason,
 	benchmarkSessionHostAppId,
 	buildSwebenchInstanceWorkflowGraph,
+	buildSwebenchInstanceScript,
 	buildSwebenchInstanceWorkflowSpec,
 	benchmarkLaunchPreflightError,
 	completedBenchmarkRunHasDurableWorkflowTarget,
@@ -2298,5 +2299,45 @@ describe("SWE-bench terminal run cleanup", () => {
 		).resolves.toBe(true);
 
 		expect(calls).toEqual(["instances", "sandboxes", "leases"]);
+	});
+});
+
+describe("buildSwebenchInstanceScript (P3 producer port)", () => {
+	it("re-expresses the SW spine as a script with the agent bound to the profile sandbox", () => {
+		const params = {
+			runId: "run_1",
+			suiteSlug: "SWE-bench_Lite" as const,
+			datasetName: "princeton-nlp/SWE-bench_Lite",
+			instanceId: "sympy__sympy-20590",
+			repo: "sympy/sympy",
+			baseCommit: "abc123",
+			problemStatement: "Fix it",
+			hintsText: null,
+			testMetadata: { version: "1.7" },
+			agentId: "agent_1",
+			agentVersion: 1,
+			timeoutSeconds: 7200,
+			maxTurns: null,
+			inferenceEnvironment: validatedInferenceEnvironment(),
+		};
+		const spec = buildSwebenchInstanceWorkflowSpec(params) as {
+			do: Array<Record<string, unknown>>;
+		};
+		const { script, meta, scriptSha256 } = buildSwebenchInstanceScript(params);
+
+		expect(meta.name).toBe("swebench-instance");
+		expect(scriptSha256).toMatch(/^[0-9a-f]{64}$/);
+		// Same 4-step spine as the SW spec.
+		expect(spec.do.length).toBe(4);
+		expect(script).toContain("action('workspace/profile'");
+		expect(script).toContain("label: 'checkout_repo'");
+		expect(script).toContain("agent: \"agent_1\"");
+		expect(script).toContain("agentVersion: 1");
+		expect(script).toContain("workspaceRef: profile?.workspaceRef");
+		expect(script).toContain("sandboxName: profile?.sandboxName");
+		expect(script).toContain("label: 'extract_patch'");
+		// The graders read modelPatch off the returnValue.
+		expect(script).toContain("modelPatch,");
+		expect(script).toContain("instanceId: \"sympy__sympy-20590\"");
 	});
 });

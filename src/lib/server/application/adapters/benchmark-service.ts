@@ -3937,6 +3937,28 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		agentRuntime: row.run.agentRuntime,
 	});
 	const spec = await resolveSpecAgentRefs(rawSpec);
+	// Cutover P3 (item 15): with BENCHMARK_SCRIPT_PRODUCER on, the instance runs
+	// as a dynamic-script. Derived from the SAME SW builder, so the producers
+	// cannot drift; flip the flag off to fall back during shadow parity.
+	const scriptBuild = benchmarkScriptProducerEnabled()
+		? buildSwebenchInstanceScript({
+				runId: row.run.id,
+				suiteSlug: row.suite.slug as SwebenchSuiteSlug,
+				datasetName: row.suite.datasetName,
+				instanceId: row.runInstance.instanceId,
+				repo: row.instance.repo,
+				baseCommit: row.instance.baseCommit,
+				problemStatement: row.instance.problemStatement,
+				hintsText: row.instance.hintsText,
+				testMetadata: row.instance.testMetadata,
+				agentId: row.run.agentId,
+				agentVersion: row.run.agentVersion,
+				timeoutSeconds: row.run.timeoutSeconds,
+				maxTurns: row.run.maxTurns,
+				inferenceEnvironment,
+				agentRuntime: row.run.agentRuntime,
+			})
+		: null;
 	const runSummary = isRecord(row.run.summary) ? row.run.summary : {};
 	const runExecutionConfig = isRecord(runSummary.execution)
 		? runSummary.execution
@@ -3957,15 +3979,29 @@ export async function startBenchmarkInstanceWorkflow(params: {
 		await assertBenchmarkOrchestratorReady();
 	}
 	ensureBenchmarkInstanceMlflowRunInBackground(params);
-	const executionIr = {
-		spec,
-		triggerData,
-		benchmarkRunId: row.run.id,
-		dispatch: {
-			backend: dispatchBackend,
-			executionClass,
-		},
-	};
+	const executionIr = scriptBuild
+		? {
+				engine: "dynamic-script" as const,
+				script: scriptBuild.script,
+				meta: scriptBuild.meta,
+				args: triggerData,
+				budgetTotal: null,
+				dispatchMode: "batch-v2" as const,
+				benchmarkRunId: row.run.id,
+				dispatch: {
+					backend: dispatchBackend,
+					executionClass,
+				},
+			}
+		: {
+				spec,
+				triggerData,
+				benchmarkRunId: row.run.id,
+				dispatch: {
+					backend: dispatchBackend,
+					executionClass,
+				},
+			};
 
 	const [execution] = await database
 		.insert(workflowExecutions)
@@ -3977,7 +4013,7 @@ export async function startBenchmarkInstanceWorkflow(params: {
 			phase: "running",
 			progress: 0,
 			input: triggerData,
-			executionIrVersion: "sw-1.0",
+			executionIrVersion: scriptBuild ? "dynamic-script-2" : "sw-1.0",
 			executionIr,
 		})
 		.returning({ id: workflowExecutions.id });
@@ -4010,6 +4046,13 @@ export async function startBenchmarkInstanceWorkflow(params: {
 					executionClass,
 					timeoutSeconds: row.run.timeoutSeconds,
 					workflow: spec,
+					...(scriptBuild
+						? {
+								script: scriptBuild.script,
+								scriptSha256: scriptBuild.scriptSha256,
+								meta: scriptBuild.meta,
+							}
+						: {}),
 					triggerData,
 					traceContext,
 					inferenceEnvironment:
@@ -4184,10 +4227,29 @@ export async function startBenchmarkInstanceWorkflow(params: {
 
 	let res: Response;
 	try {
-		res = await daprFetch(`${getOrchestratorUrl()}/api/v2/sw-workflows`, {
+		res = await daprFetch(
+			`${getOrchestratorUrl()}${scriptBuild ? "/api/v2/script-workflows" : "/api/v2/sw-workflows"}`,
+			{
 			method: "POST",
 				headers: workflowHeaders,
-			body: JSON.stringify({
+			body: JSON.stringify(
+				scriptBuild
+					? {
+							script: scriptBuild.script,
+							scriptSha256: scriptBuild.scriptSha256,
+							meta: scriptBuild.meta,
+							args: triggerData,
+							nested: false,
+							dispatchMode: "batch-v2",
+							workflowId: workflow.id,
+							dbExecutionId: execution.id,
+							userId: row.run.userId,
+							projectId: row.run.projectId,
+							defaults: {},
+							limits: {},
+							traceContext,
+						}
+					: {
 				workflow: spec,
 					workflowId: workflow.id,
 					triggerData,
@@ -5914,6 +5976,102 @@ const SWEBENCH_SOLVE_SANDBOX_REFERENCE_RUNTIMES: ReadonlySet<string> = new Set([
 	"codex-cli",
 	"agy-cli",
 ]);
+
+/** Producer flag (cutover P3, item 15): benchmark SWE-bench instances run as a
+ * dynamic-script. The SW builder stays callable — flip off to fall back while
+ * the ≥5-instance shadow-parity canary is in flight. */
+export function benchmarkScriptProducerEnabled(): boolean {
+	const raw = (env.BENCHMARK_SCRIPT_PRODUCER ?? "").trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * The dynamic-script port of `buildSwebenchInstanceWorkflowSpec` (cutover P3).
+ * Derives EVERY value from the SW builder (env spec, prompt, clone/extract
+ * commands, sandbox policy) so the two producers cannot drift, then re-expresses
+ * the 4-step spine — profile → checkout → solve (agent bound to the profile's
+ * sandbox) → extract_patch — with the jq projections as JS.
+ */
+export function buildSwebenchInstanceScript(
+	params: Parameters<typeof buildSwebenchInstanceWorkflowSpec>[0],
+): { script: string; meta: Record<string, unknown>; scriptSha256: string } {
+	const swSpec = buildSwebenchInstanceWorkflowSpec(params) as unknown as {
+		do: Array<Record<string, { with?: Record<string, unknown> }>>;
+		output: { as: Record<string, unknown> };
+	};
+	const step = (name: string) =>
+		(swSpec.do.find((entry) => name in entry)?.[name]?.with ?? {}) as Record<string, unknown>;
+	const profileWith = step("workspace_profile");
+	const checkoutWith = step("checkout_repo");
+	const solveWith = step("solve");
+	const extractWith = step("extract_patch");
+	const solveBody = (solveWith.body ?? {}) as Record<string, unknown>;
+	const overrides = (solveBody.overrides ?? {}) as Record<string, unknown>;
+	const outputAs = swSpec.output.as;
+
+	const meta = {
+		name: "swebench-instance",
+		description: `SWE-bench instance ${params.instanceId}`,
+		phases: [{ title: "Setup" }, { title: "Solve" }, { title: "Extract" }],
+	};
+
+	const script = [
+		`export const meta = ${JSON.stringify(meta)}`,
+		"",
+		"// Ported from buildSwebenchInstanceWorkflowSpec (cutover P3, item 15).",
+		"phase('Setup')",
+		`const profile = await action('workspace/profile', ${JSON.stringify(profileWith)}, { label: 'workspace_profile' })`,
+		"",
+		"await action('workspace/command', {",
+		"  workspaceRef: profile?.workspaceRef,",
+		`  command: ${JSON.stringify(checkoutWith.command ?? "")},`,
+		`  timeoutMs: ${Number(checkoutWith.timeoutMs ?? 600000)},`,
+		"}, { label: 'checkout_repo' })",
+		"",
+		"phase('Solve')",
+		`const solve = await agent(${JSON.stringify(solveBody.prompt ?? "")}, {`,
+		"  label: 'solve',",
+		`  agent: ${JSON.stringify(params.agentId)},`,
+		`  agentVersion: ${params.agentVersion},`,
+		...(params.agentRuntime ? [`  agentType: ${JSON.stringify(params.agentRuntime)},`] : []),
+		"  sandbox: {",
+		"    workspaceRef: profile?.workspaceRef,",
+		"    sandboxName: profile?.sandboxName,",
+		`    cwd: ${JSON.stringify(solveWith.cwd ?? "/sandbox")},`,
+		...(typeof overrides.maxTurns === "number" ? [`    maxTurns: ${overrides.maxTurns},`] : []),
+		...(typeof overrides.timeoutMinutes === "number"
+			? [`    timeoutMinutes: ${overrides.timeoutMinutes},`]
+			: []),
+		`    policy: ${JSON.stringify(solveWith.sandboxPolicy ?? {})},`,
+		"  },",
+		"})",
+		"",
+		"phase('Extract')",
+		"const extract = await action('workspace/command', {",
+		"  workspaceRef: profile?.workspaceRef,",
+		`  command: ${JSON.stringify(extractWith.command ?? "")},`,
+		`  timeoutMs: ${Number(extractWith.timeoutMs ?? 120000)},`,
+		"}, { label: 'extract_patch', allowFailure: true })",
+		"",
+		"const modelPatch =",
+		"  extract?.result?.stdout ?? extract?.stdout ?? extract?.result?.output ?? extract?.output ?? ''",
+		"",
+		"return {",
+		`  instanceId: ${JSON.stringify(params.instanceId)},`,
+		"  modelPatch,",
+		"  raw: { solve, extractPatch: extract },",
+		"  workspaceRef: profile?.workspaceRef,",
+		"  sandboxName: profile?.sandboxName,",
+		`  inferenceEnvironment: ${JSON.stringify(outputAs.inferenceEnvironment ?? null)},`,
+		"}",
+		"",
+	].join("\n");
+	return {
+		script,
+		meta,
+		scriptSha256: createHash("sha256").update(script, "utf8").digest("hex"),
+	};
+}
 
 export function buildSwebenchInstanceWorkflowSpec(params: {
 	runId?: string;

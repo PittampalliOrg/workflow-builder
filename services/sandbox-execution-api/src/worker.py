@@ -261,15 +261,40 @@ def _start_workflow_once(payload: dict[str, Any]) -> str:
         )
     if isinstance(payload.get("workflowExecutionId"), str):
         headers["x-workflow-session-id"] = payload["workflowExecutionId"]
-    res = requests.post(
-        f"{_orchestrator_url()}/api/v2/sw-workflows",
-        json={
+    # Cutover P3 (item 15): the payload carries EITHER an SW spec ("workflow")
+    # or a dynamic-script build ("script"/"meta"). Route to the matching
+    # orchestrator endpoint so the benchmark producer can flip engines without
+    # touching this worker.
+    script = payload.get("script")
+    if isinstance(script, str) and script.strip():
+        endpoint = f"{_orchestrator_url()}/api/v2/script-workflows"
+        body = {
+            "script": script,
+            "scriptSha256": payload.get("scriptSha256") or "",
+            "meta": payload.get("meta") or {},
+            "args": payload.get("triggerData") or {},
+            "nested": False,
+            "dispatchMode": "batch-v2",
+            "workflowId": payload["workflowId"],
+            "dbExecutionId": payload["workflowExecutionId"],
+            "userId": payload.get("userId"),
+            "projectId": payload.get("projectId"),
+            "defaults": payload.get("defaults") or {},
+            "limits": payload.get("limits") or {},
+            "features": payload.get("features") or {},
+        }
+    else:
+        endpoint = f"{_orchestrator_url()}/api/v2/sw-workflows"
+        body = {
             "workflow": payload["workflow"],
             "workflowId": payload["workflowId"],
             "triggerData": payload.get("triggerData") or {},
             "dbExecutionId": payload["workflowExecutionId"],
             "mlflowContext": payload.get("mlflowContext"),
-        },
+        }
+    res = requests.post(
+        endpoint,
+        json=body,
         headers=headers,
         timeout=max(
             30,

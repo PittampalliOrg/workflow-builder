@@ -1918,6 +1918,33 @@ export async function startEvaluationRunItemWorkflow(params: {
 				expectedOutput: row.item.expectedOutput,
 			});
 		} else if (
+			row.evaluation.taskConfig.adapter === "swebench" &&
+			swebenchEvalScriptProducerEnabled()
+		) {
+			// Cutover P3 (item 15): SWE-bench items run as a dynamic-script. Flip
+			// EVAL_SWEBENCH_SCRIPT_PRODUCER off to fall back to the SW builder while
+			// the ≥5-instance shadow-parity canary is in flight.
+			workflow = await ensureHiddenEvaluationWorkflow({
+				projectId: row.run.projectId,
+				userId: row.run.userId,
+			});
+			scriptBuild = buildSwebenchEvaluationScript({
+				evaluationName: row.evaluation.name,
+				runId: row.run.id,
+				itemId: row.item.id,
+				agentId: row.run.subjectId,
+				agentVersion: parseOptionalInteger(row.run.subjectVersion),
+				input: row.item.input,
+				taskConfig: row.evaluation.taskConfig,
+				executionConfig: row.run.executionConfig,
+			});
+			spec = null;
+			triggerData = {
+				runId: row.run.id,
+				itemId: row.item.id,
+				input: row.item.input,
+			};
+		} else if (
 			row.evaluation.taskConfig.adapter !== "swebench" &&
 			agentEvalScriptProducerEnabled()
 		) {
@@ -2869,6 +2896,110 @@ export function buildAgentEvaluationWorkflowSpec(params: {
 			},
 		},
 	};
+}
+
+/** Producer flag (cutover P3, item 15): SWE-bench evaluation items run as a
+ * dynamic-script. The SW builder stays callable — flip off to fall back while
+ * the ≥5-instance shadow-parity canary is in flight. */
+export function swebenchEvalScriptProducerEnabled(): boolean {
+	const raw = (env.EVAL_SWEBENCH_SCRIPT_PRODUCER ?? "").trim().toLowerCase();
+	return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * The dynamic-script port of `buildSwebenchEvaluationWorkflowSpec` (cutover P3).
+ * Same 4-step spine — profile → checkout → solve (agent BOUND to the profile's
+ * sandbox via the P3 `sandbox` opts) → extract_patch — with the jq output
+ * projections replaced by JS. Returns the exact keys the SWE-bench grader reads
+ * (`modelPatch`, `raw`, `workspaceRef`, `sandboxName`, `inferenceEnvironment`).
+ */
+export function buildSwebenchEvaluationScript(params: {
+	evaluationName: string;
+	runId?: string;
+	itemId?: string;
+	agentId: string;
+	agentVersion: number | null;
+	input: Record<string, unknown>;
+	taskConfig: Record<string, unknown>;
+	executionConfig?: Record<string, unknown>;
+	inferenceEnvironment?: ResolvedSwebenchInferenceEnvironment | null;
+}): { script: string; meta: Record<string, unknown> } {
+	// Reuse the SW builder for every derived value (env spec, prompts, clone +
+	// extract commands, sandbox policy) so the two producers cannot drift.
+	const swSpec = buildSwebenchEvaluationWorkflowSpec(params) as {
+		do: Array<Record<string, { with?: Record<string, unknown>; call?: string }>>;
+		output: { as: Record<string, unknown> };
+	};
+	const step = (name: string) =>
+		(swSpec.do.find((entry) => name in entry)?.[name]?.with ?? {}) as Record<string, unknown>;
+	const profileWith = { ...step("workspace_profile") };
+	const checkoutWith = step("checkout_repo");
+	const solveWith = step("solve");
+	const extractWith = step("extract_patch");
+	const solveBody = (solveWith.body ?? {}) as Record<string, unknown>;
+	const overrides = (solveBody.overrides ?? {}) as Record<string, unknown>;
+	const outputAs = swSpec.output.as;
+
+	const meta = {
+		name: "swebench-evaluation-item",
+		description: `SWE-bench evaluation: ${params.evaluationName}`,
+		phases: [{ title: "Setup" }, { title: "Solve" }, { title: "Extract" }],
+	};
+
+	const script = [
+		`export const meta = ${JSON.stringify(meta)}`,
+		"",
+		"// Ported from buildSwebenchEvaluationWorkflowSpec (cutover P3, item 15).",
+		"// Every derived value (env spec, prompt, clone/extract commands, sandbox",
+		"// policy) comes from the SAME SW builder, so the producers cannot drift.",
+		"phase('Setup')",
+		`const profile = await action('workspace/profile', ${JSON.stringify(profileWith)}, { label: 'workspace_profile' })`,
+		"",
+		`await action('workspace/command', {`,
+		`  workspaceRef: profile?.workspaceRef,`,
+		`  command: ${JSON.stringify(checkoutWith.command ?? "")},`,
+		`  timeoutMs: ${Number(checkoutWith.timeoutMs ?? 600000)},`,
+		`}, { label: 'checkout_repo' })`,
+		"",
+		"phase('Solve')",
+		`const solve = await agent(${JSON.stringify(solveBody.prompt ?? "")}, {`,
+		"  label: 'solve',",
+		`  agent: ${JSON.stringify(params.agentId)},`,
+		...(params.agentVersion != null ? [`  agentVersion: ${params.agentVersion},`] : []),
+		"  sandbox: {",
+		"    workspaceRef: profile?.workspaceRef,",
+		"    sandboxName: profile?.sandboxName,",
+		`    cwd: ${JSON.stringify(solveWith.cwd ?? "/sandbox")},`,
+		...(typeof overrides.maxTurns === "number" ? [`    maxTurns: ${overrides.maxTurns},`] : []),
+		...(typeof overrides.timeoutMinutes === "number"
+			? [`    timeoutMinutes: ${overrides.timeoutMinutes},`]
+			: []),
+		`    policy: ${JSON.stringify(solveWith.sandboxPolicy ?? {})},`,
+		"  },",
+		"})",
+		"",
+		"phase('Extract')",
+		`const extract = await action('workspace/command', {`,
+		`  workspaceRef: profile?.workspaceRef,`,
+		`  command: ${JSON.stringify(extractWith.command ?? "")},`,
+		`  timeoutMs: ${Number(extractWith.timeoutMs ?? 120000)},`,
+		`}, { label: 'extract_patch', allowFailure: true })`,
+		"",
+		"// The SW spec projected `.output.result.stdout // .output.stdout // …` in jq.",
+		"const modelPatch =",
+		"  extract?.result?.stdout ?? extract?.stdout ?? extract?.result?.output ?? extract?.output ?? ''",
+		"",
+		"return {",
+		`  instanceId: ${JSON.stringify(outputAs.instanceId ?? "")},`,
+		"  modelPatch,",
+		"  raw: { solve, extractPatch: extract },",
+		"  workspaceRef: profile?.workspaceRef,",
+		"  sandboxName: profile?.sandboxName,",
+		`  inferenceEnvironment: ${JSON.stringify(outputAs.inferenceEnvironment ?? null)},`,
+		"}",
+		"",
+	].join("\n");
+	return { script, meta };
 }
 
 export function buildSwebenchEvaluationWorkflowSpec(params: {
