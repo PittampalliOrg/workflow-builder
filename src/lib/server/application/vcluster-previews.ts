@@ -3,9 +3,11 @@ import type {
   PreviewWakeResult,
   VclusterLaunchResult,
   VclusterPreviewCounts,
+  VclusterPreviewCleanupSnapshot,
   VclusterPreviewRecord,
   VclusterPreviewRuntimeView,
   VclusterPreviewSummary,
+  VclusterPreviewTeardownTicket,
 } from "$lib/types/dev-previews";
 import { safePreviewName } from "$lib/types/dev-previews";
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
@@ -16,7 +18,7 @@ import type {
   PreviewControlIdentity,
   PreviewDeploymentScopePort,
   PreviewEnvironmentObservationReaderPort,
-  VclusterPreviewCleanupSnapshot,
+  PreviewEnvironmentTeardownStatusPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
@@ -75,7 +77,9 @@ function sameRuntimeControlIdentity(
 }
 
 export type VclusterPreviewServiceDeps = {
-  gateway: VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort;
+  gateway: VclusterPreviewGatewayPort &
+    PreviewEnvironmentObservationReaderPort &
+    PreviewEnvironmentTeardownStatusPort;
   access: PreviewAccessPolicyPort;
   scope: Pick<
     PreviewDeploymentScopePort,
@@ -175,7 +179,10 @@ export class ApplicationVclusterPreviewService {
   }> {
     this.requireControlPlane("preview fleet reads");
     const { previews, counts } = await this.deps.gateway.listWithCounts();
-    return { previews: previews.map((p) => this.decorate(p)), counts };
+    return {
+      previews: previews.map((preview) => this.decorate(preview)),
+      counts,
+    };
   }
 
   /** Status of one preview (accepts a claimed alias). */
@@ -234,10 +241,16 @@ export class ApplicationVclusterPreviewService {
     };
   }
 
-  /** Guarded teardown convergence proof for a terminating preview. */
-  cleanup(name: string): Promise<VclusterPreviewCleanupSnapshot> {
-    this.requirePreviewName(name);
-    return this.deps.gateway.cleanup(safePreviewName(name));
+  /** Generation-fenced convergence proof for an accepted teardown. */
+  teardownStatus(
+    ticket: VclusterPreviewTeardownTicket,
+  ): Promise<VclusterPreviewCleanupSnapshot> {
+    this.requireControlPlane("preview teardown status");
+    this.requirePreviewName(ticket.name);
+    return this.deps.gateway.status({
+      ...ticket,
+      name: safePreviewName(ticket.name),
+    });
   }
 
   /**

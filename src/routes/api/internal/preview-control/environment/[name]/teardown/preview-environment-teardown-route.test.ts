@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
 	teardown: vi.fn(async (input: { guard: unknown }) => ({
 		preview: {
 			name: 'feature-one',
-			phase: 'terminating',
+			phase: 'absent',
 			sourceRevision: null,
 			provenance: null
 		},
@@ -14,6 +14,33 @@ const mocks = vi.hoisted(() => ({
 			name: 'feature-one',
 			guard: input.guard,
 			desiredStateAbsent: true
+		}
+	})),
+	requestTeardown: vi.fn(async (input: { guard: unknown }) => ({
+		preview: {
+			name: 'feature-one',
+			phase: 'terminating',
+			sourceRevision: null,
+			provenance: null
+		},
+		ticket: {
+			name: 'feature-one',
+			environmentUid: 'uid-1',
+			requestId: 'request-1',
+			sourceRevision: 'b'.repeat(40),
+			signature: 'e'.repeat(64)
+		},
+		receipt: {
+			name: 'feature-one',
+			guard: input.guard,
+			ticket: {
+				name: 'feature-one',
+				environmentUid: 'uid-1',
+				requestId: 'request-1',
+				sourceRevision: 'b'.repeat(40),
+				signature: 'e'.repeat(64)
+			},
+			desiredStateDeletionAccepted: true
 		}
 	}))
 }));
@@ -26,16 +53,22 @@ vi.mock('$lib/server/internal-auth', () => ({
 }));
 vi.mock('$lib/server/application', () => ({
 	getApplicationAdapters: () => ({
-		previewEnvironmentLifecycleBroker: { teardown: mocks.teardown }
+		previewEnvironmentLifecycleBroker: {
+			teardown: mocks.teardown,
+			requestTeardown: mocks.requestTeardown
+		}
 	})
 }));
 
 import { POST } from './+server';
 
-function event(body: unknown) {
+
+function event(body: unknown, query = '') {
+	const url = new URL(`http://broker/feature-one/teardown${query}`);
 	return {
 		params: { name: 'feature-one' },
-		request: new Request('http://broker/feature-one/teardown', {
+		url,
+		request: new Request(url, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify(body)
@@ -61,6 +94,7 @@ describe('physical PreviewEnvironment teardown route', () => {
 			name: 'feature-one',
 			guard
 		});
+		expect(mocks.requestTeardown).not.toHaveBeenCalled();
 	});
 
 	it('preserves the bounded forced-quarantine disposition behind archive proof', async () => {
@@ -78,6 +112,33 @@ describe('physical PreviewEnvironment teardown route', () => {
 			name: 'feature-one',
 			guard: { ...guard, archiveQuarantine }
 		});
+	});
+
+	it('returns 202 for the explicit request-only command', async () => {
+		const response = (await POST(event({ guard }, '?wait=false') as never)) as Response;
+
+		expect(response.status).toBe(202);
+		await expect(response.clone().json()).resolves.toMatchObject({
+			ticket: { environmentUid: 'uid-1', signature: 'e'.repeat(64) }
+		});
+		expect(mocks.requestTeardown).toHaveBeenCalledWith({
+			name: 'feature-one',
+			guard
+		});
+		expect(mocks.teardown).not.toHaveBeenCalled();
+	});
+
+	it('does not expose request-only deletion for a superseded guard', async () => {
+		const response = (await POST(
+			event(
+				{ guard: { mode: 'superseded', protectedRequestId: 'protected-request' } },
+				'?wait=false'
+			) as never
+		)) as Response;
+
+		expect(response.status).toBe(400);
+		expect(mocks.requestTeardown).not.toHaveBeenCalled();
+		expect(mocks.teardown).not.toHaveBeenCalled();
 	});
 
 	it.each([

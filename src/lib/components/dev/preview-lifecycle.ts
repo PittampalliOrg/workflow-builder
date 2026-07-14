@@ -1,5 +1,9 @@
 import { resolveStatusTone, type StatusTone } from "$lib/utils/status-tone";
-import type { VclusterPreviewSummary } from "$lib/types/dev-previews";
+import type {
+  VclusterPreviewCleanupSnapshot,
+  VclusterPreviewSummary,
+  VclusterPreviewTeardownTicket,
+} from "$lib/types/dev-previews";
 
 /** A relative "…ago" label for a past timestamp (lastActive). Null for
  * absent/garbage input. */
@@ -67,6 +71,87 @@ export function phaseTone(
   preview: Pick<PreviewLike, "phase" | "state">,
 ): StatusTone {
   return resolveStatusTone(effectivePreviewStatus(preview));
+}
+
+/** Copy boundary for the asynchronous teardown acceptance response. */
+export function previewTeardownOutcome(
+  phase: string,
+): "torn down" | "teardown started" {
+  return phase === "absent" ? "torn down" : "teardown started";
+}
+
+const TEARDOWN_CHECK_LABELS: ReadonlyArray<
+  readonly [keyof VclusterPreviewCleanupSnapshot["checks"], string]
+> = [
+  ["runnerSucceeded", "Waiting for teardown runner"],
+  ["databaseAbsent", "Removing preview database"],
+  ["natsStreamAbsent", "Removing preview event stream"],
+  ["tailnetEgressAbsent", "Removing tailnet access"],
+  ["hostNamespaceAbsent", "Removing workload namespace"],
+  ["storageScopeAbsent", "Releasing preview storage"],
+  ["runnerIdentityAbsent", "Revoking runner identity"],
+  ["applicationAbsent", "Removing Argo CD application"],
+  ["agentRegistrationAbsent", "Removing Argo CD agent registration"],
+  ["agentNamespacesAbsent", "Removing agent namespaces"],
+  ["headlampRegistrationAbsent", "Removing Headlamp registration"],
+  ["previewEnvironmentAbsent", "Finalizing environment record"],
+];
+
+export type PreviewTeardownProgressView = Readonly<{
+  completed: number;
+  total: number;
+  percent: number;
+  label: string;
+  failed: boolean;
+}>;
+
+/** Stable presentation model for controller cleanup checks. */
+export function previewTeardownProgress(
+  snapshot: VclusterPreviewCleanupSnapshot,
+): PreviewTeardownProgressView {
+  const completed = TEARDOWN_CHECK_LABELS.filter(
+    ([check]) => snapshot.checks[check],
+  ).length;
+  const total = TEARDOWN_CHECK_LABELS.length;
+  const next = TEARDOWN_CHECK_LABELS.find(
+    ([check]) => !snapshot.checks[check],
+  );
+  return {
+    completed,
+    total,
+    percent: snapshot.complete ? 100 : Math.round((completed / total) * 100),
+    label:
+      snapshot.phase === "complete"
+        ? "Cleanup complete"
+        : snapshot.phase === "failed"
+          ? snapshot.message || "Cleanup needs attention"
+          : (next?.[1] ?? "Finalizing cleanup"),
+    failed: snapshot.phase === "failed",
+  };
+}
+
+/** Retain an accepted teardown row after SEA stops listing its namespace. */
+export function previewsWithAcceptedTeardowns(
+  previews: readonly VclusterPreviewSummary[],
+  accepted: readonly VclusterPreviewSummary[],
+): VclusterPreviewSummary[] {
+  const current = new Set(previews.map((preview) => preview.name));
+  return [
+    ...previews,
+    ...accepted.filter((preview) => !current.has(preview.name)),
+  ];
+}
+
+export function previewTeardownStatusPath(
+  ticket: VclusterPreviewTeardownTicket,
+): string {
+  const query = new URLSearchParams({
+    environmentUid: ticket.environmentUid,
+    requestId: ticket.requestId,
+    sourceRevision: ticket.sourceRevision,
+    signature: ticket.signature,
+  });
+  return `/api/dev-environments/vcluster/${encodeURIComponent(ticket.name)}/teardown/status?${query}`;
 }
 
 /**

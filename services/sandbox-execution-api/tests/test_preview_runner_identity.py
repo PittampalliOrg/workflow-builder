@@ -979,8 +979,13 @@ def test_repeat_delete_preserves_receipt_while_identity_cleanup_is_pending(
     assert contract.identity_name in rbac.cluster_role_bindings
 
 
+@pytest.mark.parametrize(
+    "namespace_exists",
+    [True, False],
+    ids=["namespace-terminating", "namespace-absent"],
+)
 def test_repeat_delete_preserves_exact_in_flight_receipt_without_reacquiring(
-    monkeypatch,
+    monkeypatch, namespace_exists: bool
 ) -> None:
     name = "still-completing"
     request_id = "request-two"
@@ -1022,8 +1027,30 @@ def test_repeat_delete_preserves_exact_in_flight_receipt_without_reacquiring(
     rbac = FakeRbac(core)
     _seed_identity(core, rbac, name)
     contract = PreviewRunnerIdentityContract(name, "ephemeral")
-    del core.namespaces[contract.target_namespace]
-    del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
+    if not namespace_exists:
+        del core.namespaces[contract.target_namespace]
+        del rbac.role_bindings[(contract.target_namespace, contract.identity_name)]
+    else:
+        namespace = core.namespaces[contract.target_namespace]
+        namespace_annotations = namespace["metadata"].setdefault("annotations", {})
+        namespace_annotations.update(
+            {
+                "preview.stacks.io/source-revision": source_revision,
+                "preview.stacks.io/provenance": (
+                    f'{{"requestId":"{request_id}"}}'
+                ),
+            }
+        )
+        core.namespaces[contract.target_namespace] = SimpleNamespace(
+            metadata=SimpleNamespace(
+                name=contract.target_namespace,
+                uid="bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                labels=namespace["metadata"]["labels"],
+                annotations=namespace_annotations,
+                creation_timestamp=None,
+            ),
+            status=SimpleNamespace(phase="Terminating"),
+        )
     batch = InFlightBatch()
     monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "test-token")
     monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))

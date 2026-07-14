@@ -514,6 +514,8 @@ import type {
   PreviewEnvironmentDesiredStatePort,
   PreviewEnvironmentDeletionOutboxPort,
   PreviewEnvironmentObservationReaderPort,
+  PreviewEnvironmentTeardownCommandPort,
+  PreviewEnvironmentTeardownStatusPort,
   PreviewEnvironmentUserLaunchPort,
   PreviewInfrastructureCandidateBrokerPort,
   PreviewActivationDispatchPort,
@@ -825,10 +827,16 @@ export function getApplicationAdapters(
     | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
     | undefined;
   let physicalVclusterPreviewGateway:
-    | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
+    | (VclusterPreviewGatewayPort &
+        PreviewEnvironmentObservationReaderPort &
+        PreviewEnvironmentTeardownCommandPort &
+        PreviewEnvironmentTeardownStatusPort)
     | undefined;
   let vclusterPreviewGateway:
-    | (VclusterPreviewGatewayPort & PreviewEnvironmentObservationReaderPort)
+    | (VclusterPreviewGatewayPort &
+        PreviewEnvironmentObservationReaderPort &
+        PreviewEnvironmentTeardownCommandPort &
+        PreviewEnvironmentTeardownStatusPort)
     | undefined;
   let previewEnvironments: PreviewEnvironmentUserLaunchPort | undefined;
   let previewEnvironmentLaunchBroker:
@@ -1759,6 +1767,7 @@ export function getApplicationAdapters(
         isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
       },
       archive: getPreviewArchive(),
+      commands: getVclusterPreviewGateway(),
       previews: getVclusterPreviewGateway(),
       scope: previewDeploymentScope,
       archiveOnTeardownEnabled: config.previewArchiveOnTeardownEnabled,

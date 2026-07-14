@@ -4,8 +4,16 @@
 // so the four dev routes stop importing legacy domain modules directly.
 
 import type {
+  VclusterPreviewCleanupSnapshot,
   VclusterPreviewCounts,
   VclusterPreviewRecord,
+  VclusterPreviewTeardownAcceptance,
+  VclusterPreviewTeardownTicket,
+} from "$lib/types/dev-previews";
+export type {
+  VclusterPreviewCleanupSnapshot,
+  VclusterPreviewTeardownAcceptance,
+  VclusterPreviewTeardownTicket,
 } from "$lib/types/dev-previews";
 import type {
   PreviewEnvironmentDeletionIntent,
@@ -112,38 +120,6 @@ export class PreviewRuntimeIdentityChangedError extends Error {
   }
 }
 
-export type VclusterPreviewCleanupSnapshot = {
-  name: string;
-  resourceName: string;
-  complete: boolean;
-  phase: "pending" | "complete" | "failed";
-  checks: {
-    runnerSucceeded: boolean;
-    previewEnvironmentAbsent: boolean;
-    applicationAbsent: boolean;
-    agentRegistrationAbsent: boolean;
-    agentNamespacesAbsent: boolean;
-    databaseAbsent: boolean;
-    natsStreamAbsent: boolean;
-    headlampRegistrationAbsent: boolean;
-    tailnetEgressAbsent: boolean;
-    hostNamespaceAbsent: boolean;
-    storageScopeAbsent: boolean;
-    runnerIdentityAbsent: boolean;
-  };
-  /** Exact durable down-runner identity. Present only for controller deletion intents. */
-  teardownProof?: {
-    intentId: `sha256:${string}`;
-    environmentUid: string;
-    requestId: string;
-    sourceRevision: string;
-    jobName: string;
-    jobUid: string;
-    runnerGeneration: `op:${string}`;
-  };
-  message: string | null;
-};
-
 /**
  * Bounded Tier-2 (vcluster full-isolation) preview gateway. Mirrors the
  * legacy client verbs, but returns the serializable `VclusterPreviewRecord`
@@ -194,6 +170,29 @@ export interface VclusterPreviewGatewayPort {
   touch(name: string): Promise<VclusterPreviewTouchResult>;
   /** A4 explicit sleep; refusal (409) returned as data. */
   sleep(name: string): Promise<VclusterPreviewSleepOutcome>;
+}
+
+/**
+ * Fast user-command boundary for preview teardown.
+ *
+ * Background lifecycle and acceptance callers keep using
+ * `VclusterPreviewGatewayPort.teardown`, whose contract is full convergence.
+ */
+export interface PreviewEnvironmentTeardownCommandPort {
+  request(
+    name: string,
+    guard: Extract<
+      NonNullable<Parameters<VclusterPreviewGatewayPort["teardown"]>[1]>,
+      { mode: "owned" }
+    >,
+  ): Promise<VclusterPreviewTeardownAcceptance>;
+}
+
+/** Generation-fenced query boundary for accepted asynchronous teardown. */
+export interface PreviewEnvironmentTeardownStatusPort {
+  status(
+    ticket: VclusterPreviewTeardownTicket,
+  ): Promise<VclusterPreviewCleanupSnapshot>;
 }
 
 /** Raw dev-sync-sidecar `/__status` body (before the service parses `lastRun`). */

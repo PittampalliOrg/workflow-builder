@@ -3,6 +3,7 @@ import {
   ApplicationPreviewTeardownService,
   PreviewTeardownRefusedError,
 } from "$lib/server/application/preview-teardown";
+import type { PreviewTeardownInput } from "$lib/server/application/preview-teardown";
 import type {
   PreviewAccessPolicyPort,
   PreviewArchivePort,
@@ -124,14 +125,24 @@ function harness(
       containers: [],
     })),
   };
+  const requestTeardown = vi.fn(async (name: string, guard: { requestId: string; sourceRevision: string }) => {
+    events.push("teardown");
+    return {
+      preview: record({ ...authoritative, name, phase: "terminating" }),
+      ticket: {
+        name,
+        environmentUid: "uid-1",
+        requestId: guard.requestId,
+        sourceRevision: guard.sourceRevision,
+        signature: "e".repeat(64),
+      },
+    };
+  });
   const previews = {
     listWithCounts: vi.fn(),
     get: vi.fn(),
     provision: vi.fn(),
-    teardown: vi.fn(async (name: string) => {
-      events.push("teardown");
-      return record({ ...authoritative, name, phase: "terminating" });
-    }),
+    teardown: requestTeardown,
     runtime: vi.fn(async () => {
       events.push("runtime");
       return runtime;
@@ -140,6 +151,29 @@ function harness(
     touch: vi.fn(),
     sleep: vi.fn(),
   } as unknown as VclusterPreviewGatewayPort;
+  const commands = {
+    request: requestTeardown,
+  };
+  const application = new ApplicationPreviewTeardownService({
+    access,
+    admins,
+    archive,
+    commands,
+    previews,
+    scope,
+    archiveOnTeardownEnabled: overrides.archiveOnTeardownEnabled ?? false,
+    now: () => new Date(NOW),
+  });
+  type HarnessInput = Omit<
+    PreviewTeardownInput,
+    "expectedRequestId" | "expectedSourceRevision"
+  > &
+    Partial<
+      Pick<
+        PreviewTeardownInput,
+        "expectedRequestId" | "expectedSourceRevision"
+      >
+    >;
   return {
     access,
     archive,
@@ -147,15 +181,17 @@ function harness(
     events,
     scope,
     admins,
-    service: new ApplicationPreviewTeardownService({
-      access,
-      admins,
-      archive,
-      previews,
-      scope,
-      archiveOnTeardownEnabled: overrides.archiveOnTeardownEnabled ?? false,
-      now: () => new Date(NOW),
-    }),
+    service: {
+      teardown: (input: HarnessInput) =>
+        application.teardown({
+          expectedRequestId:
+            typeof authoritative.provenance?.requestId === "string"
+              ? authoritative.provenance.requestId
+              : "",
+          expectedSourceRevision: authoritative.sourceRevision ?? "",
+          ...input,
+        }),
+    },
   };
 }
 
@@ -200,6 +236,25 @@ describe("ApplicationPreviewTeardownService", () => {
       sourceRevision: SOURCE_REVISION,
       archiveConfirmed: true,
     });
+  });
+
+  it("refuses a stale selected generation before archive or deletion", async () => {
+    const h = harness();
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "owner-1",
+        expectedRequestId: "stale-request",
+        expectedSourceRevision: SOURCE_REVISION,
+      }),
+    ).rejects.toMatchObject({
+      name: "PreviewTeardownRefusedError",
+      code: "ownership-changed",
+      status: 409,
+    });
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
   });
 
   it("refuses a normal mutable teardown when the archive is incomplete", async () => {

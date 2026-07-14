@@ -53,7 +53,7 @@ function archiveQuarantine(
 	};
 }
 
-export const POST: RequestHandler = async ({ request, params }) => {
+export const POST: RequestHandler = async ({ request, params, url }) => {
 	if (
 		(env.PREVIEW_CONTROL_BROKER_MODE || process.env.PREVIEW_CONTROL_BROKER_MODE || '')
 			.trim()
@@ -128,11 +128,23 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		return json({ ok: false, error: 'invalid teardown guard' }, { status: 400 });
 	}
 	try {
-		const result = await getApplicationAdapters().previewEnvironmentLifecycleBroker.teardown({
-			name: params.name,
-			guard
+		const broker = getApplicationAdapters().previewEnvironmentLifecycleBroker;
+		const asynchronous = url.searchParams.get('wait') === 'false';
+		let result;
+		if (asynchronous) {
+			if (guard.mode !== 'owned') {
+				return json(
+					{ ok: false, error: 'request-only teardown requires an owned guard' },
+					{ status: 400 }
+				);
+			}
+			result = await broker.requestTeardown({ name: params.name, guard });
+		} else {
+			result = await broker.teardown({ name: params.name, guard });
+		}
+		return json({ ok: true, ...result }, {
+			status: asynchronous && result.preview.phase !== 'absent' ? 202 : 200
 		});
-		return json({ ok: true, ...result });
 	} catch (cause) {
 		if (cause instanceof PreviewEnvironmentDesiredStateOwnershipError) {
 			return json({ ok: false, error: cause.message }, { status: 409 });

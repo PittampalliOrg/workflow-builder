@@ -4,9 +4,13 @@ import type {
   PreviewArchiveResult,
   PreviewControlAdminAuthorizationPort,
   PreviewDeploymentScopePort,
+  PreviewEnvironmentTeardownCommandPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
-import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import type {
+  VclusterPreviewRecord,
+  VclusterPreviewTeardownTicket,
+} from "$lib/types/dev-previews";
 import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
 
@@ -20,6 +24,7 @@ const FAILED_LAUNCH_RECEIPT_TTL_MS = 30 * 60_000;
 
 export type PreviewTeardownRefusalCode =
   | "ownership-incomplete"
+  | "ownership-changed"
   | "archive-required"
   | "failed-quarantine-ineligible"
   | "failed-quarantine-runtime-unavailable"
@@ -44,6 +49,8 @@ export class PreviewTeardownRefusedError extends Error {
 export type PreviewTeardownInput = Readonly<{
   name: string;
   actorUserId: string;
+  expectedRequestId: string;
+  expectedSourceRevision: string;
   projectId?: string | null;
   forceFailed?: boolean;
   discardUnarchived?: boolean;
@@ -52,12 +59,14 @@ export type PreviewTeardownInput = Readonly<{
 export type PreviewTeardownResult = Readonly<{
   archive: PreviewArchiveResult | null;
   preview: VclusterPreviewRecord;
+  ticket: VclusterPreviewTeardownTicket | null;
 }>;
 
 type PreviewTeardownDeps = Readonly<{
   access: PreviewAccessPolicyPort;
   admins: PreviewControlAdminAuthorizationPort;
   archive: PreviewArchivePort;
+  commands: PreviewEnvironmentTeardownCommandPort;
   previews: VclusterPreviewGatewayPort;
   scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
   archiveOnTeardownEnabled: boolean;
@@ -92,6 +101,15 @@ export class ApplicationPreviewTeardownService {
       throw new PreviewTeardownRefusedError(
         "ownership-incomplete",
         "Preview teardown ownership tuple is incomplete",
+      );
+    }
+    if (
+      input.expectedRequestId !== guard.requestId ||
+      input.expectedSourceRevision !== guard.sourceRevision
+    ) {
+      throw new PreviewTeardownRefusedError(
+        "ownership-changed",
+        "Preview generation changed; refresh before tearing it down",
       );
     }
     if (
@@ -167,13 +185,13 @@ export class ApplicationPreviewTeardownService {
       });
     }
 
-    const preview = await this.deps.previews.teardown(access.preview.name, {
+    const { preview, ticket } = await this.deps.commands.request(access.preview.name, {
       ...guard,
       ...(archive?.archived === true
         ? { archiveConfirmed: true as const }
         : {}),
     });
-    return { archive, preview };
+    return { archive, preview, ticket };
   }
 
   private async forceFailedQuarantine(
@@ -286,7 +304,7 @@ export class ApplicationPreviewTeardownService {
       );
     }
 
-    const preview = await this.deps.previews.teardown(input.preview.name, {
+    const { preview, ticket } = await this.deps.commands.request(input.preview.name, {
       ...input.guard,
       archiveConfirmed: true,
       archiveQuarantine: {
@@ -296,7 +314,7 @@ export class ApplicationPreviewTeardownService {
         summaryFileId: quarantine.summaryFileId,
       },
     });
-    return { archive: quarantine, preview };
+    return { archive: quarantine, preview, ticket };
   }
 
   private assertFailedQuarantineCandidate(

@@ -1,5 +1,5 @@
 import { env } from "$env/dynamic/private";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { kubeApiFetchFromKubeconfig } from "$lib/server/kube/client";
 import { validatePreviewEnvironmentLaunchSpec } from "$lib/server/application/preview-environments";
 import {
@@ -20,12 +20,19 @@ import type {
   PreviewEnvironmentVersionedServiceCatalogPort,
   PreviewControlIdentity,
   PreviewEnvironmentObservationReaderPort,
+  PreviewEnvironmentTeardownCommandPort,
+  PreviewEnvironmentTeardownStatusPort,
   TupleBoundVclusterPreviewRuntimeSnapshot,
   ValidatedPreviewEnvironmentLaunchSpec,
   VclusterPreviewGatewayPort,
   VclusterPreviewLaunchInput,
 } from "$lib/server/application/ports";
-import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
+import type {
+  VclusterPreviewCleanupSnapshot,
+  VclusterPreviewRecord,
+  VclusterPreviewTeardownAcceptance,
+  VclusterPreviewTeardownTicket,
+} from "$lib/types/dev-previews";
 import {
   localPreviewControlCapability,
   localPreviewControlIdentity,
@@ -45,6 +52,7 @@ const ENVIRONMENT_CLEANUP_FINALIZER = "preview.stacks.io/environment-cleanup";
 const API_PATH = `/apis/${API_GROUP}/${API_VERSION}/namespaces/${CONTROL_NAMESPACE}/${API_PLURAL}`;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
+const HMAC_KEY = /^[0-9a-f]{64}$/;
 const KUBERNETES_UID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const RUNNER_GENERATION = /^op:[0-9a-f]{32}$/;
@@ -52,6 +60,60 @@ const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 const DEFAULT_OBSERVATION_TIMEOUT_MS = 30_000;
 const MIN_OBSERVATION_TIMEOUT_MS = 5_000;
 const MAX_OBSERVATION_TIMEOUT_MS = 60_000;
+
+function teardownTicketRoot(): string {
+  const root = (
+    env.PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN ??
+    process.env.PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN ??
+    ""
+  ).trim();
+  if (!HMAC_KEY.test(root)) {
+    throw new PreviewEnvironmentDesiredStateError(
+      "preview teardown ticket authority is not configured",
+    );
+  }
+  return root;
+}
+
+function teardownTicketSignature(
+  ticket: Omit<VclusterPreviewTeardownTicket, "signature">,
+): string {
+  return createHmac("sha256", Buffer.from(teardownTicketRoot(), "hex"))
+    .update(
+      [
+        "preview-teardown:v1",
+        ticket.name,
+        ticket.environmentUid,
+        ticket.requestId,
+        ticket.sourceRevision,
+        "",
+      ].join("\n"),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function verifyTeardownTicket(ticket: VclusterPreviewTeardownTicket): boolean {
+  if (!HMAC_KEY.test(ticket.signature)) return false;
+  const expected = teardownTicketSignature({
+    name: ticket.name,
+    environmentUid: ticket.environmentUid,
+    requestId: ticket.requestId,
+    sourceRevision: ticket.sourceRevision,
+  });
+  return timingSafeEqual(
+    Buffer.from(ticket.signature, "hex"),
+    Buffer.from(expected, "hex"),
+  );
+}
+
+function retryableTransportFailure(cause: unknown): boolean {
+  return (
+    cause instanceof TypeError ||
+    (cause instanceof Error &&
+      (cause.name === "AbortError" || cause.name === "TimeoutError"))
+  );
+}
 const PHASES = new Set([
   "Failed",
   "Blocked",
@@ -844,35 +906,14 @@ export class KubernetesPreviewEnvironmentDesiredStateAdapter
       timeoutMs: number;
     }>,
   ): Promise<void> {
-    if (!input.guard) {
-      throw new PreviewEnvironmentDesiredStateOwnershipError(
-        "PreviewEnvironment deletion requires an ownership guard",
-      );
-    }
-    const initial = await this.readForDeletion(input.name);
-    if (!initial) return;
-    const identity = deletionIdentity(initial, input.name, input.guard);
-    const response = await this.fetchImpl(resourcePath(input.name), {
-      method: "DELETE",
-      body: JSON.stringify({
-        apiVersion: "v1",
-        kind: "DeleteOptions",
-        propagationPolicy: "Background",
-        preconditions: {
-          uid: identity.uid,
-        },
-      }),
-      retries: 0,
-    });
-    if (response.status !== 404 && !response.ok) {
-      throw await responseFailure(response, "PreviewEnvironment delete");
-    }
+    const receipt = await this.requestDelete(input);
+    if (receipt.state === "absent") return;
     const deadline = this.now() + input.timeoutMs;
     while (this.now() <= deadline) {
       const current = await this.readForDeletion(input.name);
       if (!current) return;
       const observed = deletionIdentity(current, input.name, input.guard);
-      if (observed.uid !== identity.uid) {
+      if (observed.uid !== receipt.environmentUid) {
         throw new PreviewEnvironmentDesiredStateOwnershipError(
           "PreviewEnvironment was replaced while deletion was pending",
         );
@@ -882,6 +923,78 @@ export class KubernetesPreviewEnvironmentDesiredStateAdapter
     throw new PreviewEnvironmentDesiredStateError(
       `PreviewEnvironment ${input.name} finalizers did not converge`,
     );
+  }
+
+  async requestDelete(
+    input: Readonly<{
+      name: string;
+      guard: PreviewEnvironmentDesiredStateDeleteGuard;
+    }>,
+  ) {
+    if (!input.guard) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "PreviewEnvironment deletion requires an ownership guard",
+      );
+    }
+    const initial = await this.readForDeletion(input.name);
+    if (!initial) {
+      return {
+        name: input.name,
+        environmentUid: null,
+        state: "absent" as const,
+      };
+    }
+    const identity = deletionIdentity(initial, input.name, input.guard);
+    const response = await this.fetchImpl(resourcePath(input.name), {
+      method: "DELETE",
+      body: JSON.stringify({
+        apiVersion: "v1",
+        kind: "DeleteOptions",
+        propagationPolicy: "Background",
+        preconditions: { uid: identity.uid },
+      }),
+      retries: 0,
+    });
+    if (response.status !== 404 && !response.ok) {
+      throw await responseFailure(response, "PreviewEnvironment delete");
+    }
+    if (response.status === 404) {
+      return {
+        name: input.name,
+        environmentUid: null,
+        state: "absent" as const,
+      };
+    }
+    return {
+      name: input.name,
+      environmentUid: identity.uid,
+      state: "deletion-requested" as const,
+    };
+  }
+
+  async observeDelete(
+    input: Readonly<{
+      name: string;
+      environmentUid: string;
+      guard: Extract<PreviewEnvironmentDesiredStateDeleteGuard, { mode: "owned" }>;
+    }>,
+  ): Promise<"pending" | "complete"> {
+    const current = await this.readForDeletion(input.name);
+    if (!current) return "complete";
+    // Kubernetes cannot reuse a namespaced object name until the prior UID and
+    // its finalizers are gone. A different current UID therefore proves this
+    // signed ticket's generation completed without inspecting the replacement.
+    if (assertResourceEnvelope(current, input.name).uid !== input.environmentUid) {
+      return "complete";
+    }
+    const identity = deletionIdentity(current, input.name, input.guard);
+    const metadata = record(current.metadata);
+    if (typeof metadata?.deletionTimestamp !== "string") {
+      throw new PreviewEnvironmentDesiredStateError(
+        `PreviewEnvironment ${input.name} is no longer terminating`,
+      );
+    }
+    return "pending";
   }
 
   async absent(name: string): Promise<boolean> {
@@ -1065,7 +1178,11 @@ export type DesiredStateVclusterPreviewGatewayOptions = Readonly<{
  * never needs a hub kubeconfig or cross-preview RBAC.
  */
 export class DesiredStateVclusterPreviewGateway
-  implements VclusterPreviewGatewayPort, PreviewEnvironmentObservationReaderPort
+  implements
+    VclusterPreviewGatewayPort,
+    PreviewEnvironmentObservationReaderPort,
+    PreviewEnvironmentTeardownCommandPort,
+    PreviewEnvironmentTeardownStatusPort
 {
   constructor(
     private readonly options: DesiredStateVclusterPreviewGatewayOptions,
@@ -1140,9 +1257,78 @@ export class DesiredStateVclusterPreviewGateway
         `PreviewEnvironment ${name} disappeared without durable physical cleanup proof`,
       );
     }
+    return this.teardownRecord(name, guard, "absent");
+  }
+
+  async request(
+    name: string,
+    guard: Extract<
+      NonNullable<Parameters<VclusterPreviewGatewayPort["teardown"]>[1]>,
+      { mode: "owned" }
+    >,
+  ): Promise<VclusterPreviewTeardownAcceptance> {
+    if (!guard) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "physical preview teardown requires an ownership guard",
+      );
+    }
+    const deletion = await this.options.desiredState.requestDelete({ name, guard });
+    return {
+      preview: this.teardownRecord(
+        name,
+        guard,
+        deletion.state === "absent" ? "absent" : "terminating",
+      ),
+      ticket:
+        deletion.state === "absent"
+          ? null
+          : (() => {
+              const ticket = {
+                name,
+                environmentUid: deletion.environmentUid,
+                requestId: guard.requestId,
+                sourceRevision: guard.sourceRevision,
+              };
+              return {
+                ...ticket,
+                signature: teardownTicketSignature(ticket),
+              };
+            })(),
+    };
+  }
+
+  async status(
+    ticket: VclusterPreviewTeardownTicket,
+  ): Promise<VclusterPreviewCleanupSnapshot> {
+    if (!verifyTeardownTicket(ticket)) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "preview teardown ticket is invalid",
+      );
+    }
+    const deletion = await this.options.desiredState.observeDelete({
+      name: ticket.name,
+      environmentUid: ticket.environmentUid,
+      guard: {
+        mode: "owned",
+        requestId: ticket.requestId,
+        sourceRevision: ticket.sourceRevision,
+      },
+    });
+    if (deletion === "complete") return this.completedCleanup(ticket.name);
+    return this.withDesiredState(
+      await this.options.gateway.cleanup(ticket.name),
+      false,
+    );
+  }
+
+  private teardownRecord(
+    name: string,
+    guard: NonNullable<Parameters<VclusterPreviewGatewayPort["teardown"]>[1]>,
+    phase: "terminating" | "absent",
+  ): VclusterPreviewRecord {
     return {
       name,
-      phase: "absent",
+      phase,
       ready: false,
       url: null,
       targetCluster: "dev",
@@ -1189,7 +1375,16 @@ export class DesiredStateVclusterPreviewGateway
 
   async cleanup(name: string) {
     const cleanup = await this.options.gateway.cleanup(name);
-    const desiredStateAbsent = await this.options.desiredState.absent(name);
+    return this.withDesiredState(
+      cleanup,
+      await this.options.desiredState.absent(name),
+    );
+  }
+
+  private withDesiredState(
+    cleanup: VclusterPreviewCleanupSnapshot,
+    desiredStateAbsent: boolean,
+  ): VclusterPreviewCleanupSnapshot {
     const checks = {
       ...cleanup.checks,
       previewEnvironmentAbsent: desiredStateAbsent,
@@ -1203,9 +1398,37 @@ export class DesiredStateVclusterPreviewGateway
     return {
       ...cleanup,
       complete,
-      phase: complete ? ("complete" as const) : cleanup.phase,
+      phase: complete
+        ? ("complete" as const)
+        : cleanup.phase === "failed"
+          ? ("failed" as const)
+          : ("pending" as const),
       checks,
       message: complete ? null : cleanup.message,
+    };
+  }
+
+  private completedCleanup(name: string): VclusterPreviewCleanupSnapshot {
+    return {
+      name,
+      resourceName: name,
+      complete: true,
+      phase: "complete",
+      checks: {
+        runnerSucceeded: true,
+        previewEnvironmentAbsent: true,
+        applicationAbsent: true,
+        agentRegistrationAbsent: true,
+        agentNamespacesAbsent: true,
+        databaseAbsent: true,
+        natsStreamAbsent: true,
+        headlampRegistrationAbsent: true,
+        tailnetEgressAbsent: true,
+        hostNamespaceAbsent: true,
+        storageScopeAbsent: true,
+        runnerIdentityAbsent: true,
+      },
+      message: null,
     };
   }
 
@@ -1255,7 +1478,11 @@ export type BrokeredVclusterPreviewGatewayOptions = Readonly<{
  * commands continue to cross the authenticated physical-broker boundary.
  */
 export class BrokeredVclusterPreviewGateway
-  implements VclusterPreviewGatewayPort, PreviewEnvironmentObservationReaderPort
+  implements
+    VclusterPreviewGatewayPort,
+    PreviewEnvironmentObservationReaderPort,
+    PreviewEnvironmentTeardownCommandPort,
+    PreviewEnvironmentTeardownStatusPort
 {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly observationTimeoutMs: number;
@@ -1366,10 +1593,14 @@ export class BrokeredVclusterPreviewGateway
     const preview = record(envelope?.preview);
     const receipt = record(envelope?.receipt);
     if (
+      envelope?.ok !== true ||
+      response.status !== 200 ||
       !preview ||
       preview.name !== name ||
-      typeof preview.phase !== "string" ||
+      preview.phase !== "absent" ||
       !receipt ||
+      canonical(Object.keys(receipt).sort()) !==
+        canonical(["desiredStateAbsent", "guard", "name"].sort()) ||
       receipt.name !== name ||
       receipt.desiredStateAbsent !== true ||
       canonical(receipt.guard) !== canonical(guard)
@@ -1379,6 +1610,182 @@ export class BrokeredVclusterPreviewGateway
       );
     }
     return preview as unknown as VclusterPreviewRecord;
+  }
+
+  async request(
+    name: string,
+    guard: Extract<
+      NonNullable<Parameters<VclusterPreviewGatewayPort["teardown"]>[1]>,
+      { mode: "owned" }
+    >,
+  ): Promise<VclusterPreviewTeardownAcceptance> {
+    if (!guard) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "brokered preview teardown requires an ownership guard",
+      );
+    }
+    const baseUrl = (
+      this.options.baseUrl?.() ??
+      env.PREVIEW_CONTROL_BROKER_URL ??
+      process.env.PREVIEW_CONTROL_BROKER_URL ??
+      ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    const token = (
+      this.options.token?.() ??
+      env.PREVIEW_CONTROL_BROKER_TOKEN ??
+      process.env.PREVIEW_CONTROL_BROKER_TOKEN ??
+      ""
+    ).trim();
+    if (!baseUrl || !token) {
+      throw new PreviewEnvironmentDesiredStateError(
+        "physical preview lifecycle broker is not configured",
+      );
+    }
+    const submit = () =>
+      this.fetchImpl(
+        `${baseUrl}/api/internal/preview-control/environment/${encodeURIComponent(name)}/teardown?wait=false`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Preview-Control-Broker-Token": token,
+          },
+          body: JSON.stringify({ guard }),
+          signal: AbortSignal.timeout(this.observationTimeoutMs),
+        },
+      );
+    let response: Response;
+    try {
+      response = await submit();
+    } catch (cause) {
+      // The command is UID-preconditioned and tuple-fenced, so replaying the
+      // exact request once is safe when the response is lost in transport.
+      if (!retryableTransportFailure(cause)) throw cause;
+      response = await submit();
+    }
+    const envelope = record(await response.json().catch(() => null));
+    if (!response.ok) {
+      const ErrorType =
+        response.status === 409
+          ? PreviewEnvironmentDesiredStateOwnershipError
+          : PreviewEnvironmentDesiredStateError;
+      throw new ErrorType(
+        typeof envelope?.error === "string"
+          ? envelope.error
+          : `physical preview teardown request failed (HTTP ${response.status})`,
+      );
+    }
+    const preview = record(envelope?.preview);
+    const ticket = envelope?.ticket === null ? null : record(envelope?.ticket);
+    const receipt = record(envelope?.receipt);
+    if (
+      envelope?.ok !== true ||
+      !preview ||
+      preview.name !== name ||
+      !["terminating", "absent"].includes(String(preview.phase)) ||
+      !(
+        (response.status === 202 && preview.phase === "terminating") ||
+        (response.status === 200 && preview.phase === "absent")
+      ) ||
+      !receipt ||
+      canonical(Object.keys(receipt).sort()) !==
+        canonical(
+          ["desiredStateDeletionAccepted", "guard", "name", "ticket"].sort(),
+        ) ||
+      receipt.name !== name ||
+      receipt.desiredStateDeletionAccepted !== true ||
+      canonical(receipt.guard) !== canonical(guard) ||
+      canonical(receipt.ticket) !== canonical(ticket) ||
+      (preview.phase === "terminating" &&
+        (!ticket ||
+          ticket.name !== name ||
+          typeof ticket.environmentUid !== "string" ||
+          !ticket.environmentUid ||
+          ticket.requestId !== guard.requestId ||
+          ticket.sourceRevision !== guard.sourceRevision ||
+          typeof ticket.signature !== "string" ||
+          !HMAC_KEY.test(ticket.signature) ||
+          canonical(Object.keys(ticket).sort()) !==
+            canonical(
+              [
+                "environmentUid",
+                "name",
+                "requestId",
+                "signature",
+                "sourceRevision",
+              ].sort(),
+            ))) ||
+      (preview.phase === "absent" && ticket !== null)
+    ) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "physical preview teardown request returned a mismatched ownership receipt",
+      );
+    }
+    return {
+      preview: preview as unknown as VclusterPreviewRecord,
+      ticket: ticket as VclusterPreviewTeardownTicket | null,
+    };
+  }
+
+  async status(
+    ticket: VclusterPreviewTeardownTicket,
+  ): Promise<VclusterPreviewCleanupSnapshot> {
+    const baseUrl = (
+      this.options.baseUrl?.() ??
+      env.PREVIEW_CONTROL_BROKER_URL ??
+      process.env.PREVIEW_CONTROL_BROKER_URL ??
+      ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    const token = (
+      this.options.token?.() ??
+      env.PREVIEW_CONTROL_BROKER_TOKEN ??
+      process.env.PREVIEW_CONTROL_BROKER_TOKEN ??
+      ""
+    ).trim();
+    if (!baseUrl || !token) {
+      throw new PreviewEnvironmentDesiredStateError(
+        "physical preview lifecycle broker is not configured",
+      );
+    }
+    const response = await this.fetchImpl(
+      `${baseUrl}/api/internal/preview-control/environment/${encodeURIComponent(ticket.name)}/teardown/status`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Control-Broker-Token": token,
+        },
+        body: JSON.stringify({ ticket }),
+        signal: AbortSignal.timeout(this.observationTimeoutMs),
+      },
+    );
+    const body = record(await response.json().catch(() => null));
+    if (!response.ok) {
+      const ErrorType = response.status === 409
+        ? PreviewEnvironmentDesiredStateOwnershipError
+        : PreviewEnvironmentDesiredStateError;
+      throw new ErrorType(
+        typeof body?.error === "string"
+          ? body.error
+          : `physical preview teardown status failed (HTTP ${response.status})`,
+      );
+    }
+    const receipt = record(body?.receipt);
+    if (
+      body?.ok !== true ||
+      !receipt ||
+      canonical(Object.keys(receipt).sort()) !== canonical(["ticket"].sort()) ||
+      canonical(receipt.ticket) !== canonical(ticket)
+    ) {
+      throw new PreviewEnvironmentDesiredStateOwnershipError(
+        "physical preview teardown status returned a mismatched ownership receipt",
+      );
+    }
+    return this.cleanupFromEnvelope(body, ticket.name);
   }
 
   async runtime(name: string) {
@@ -1549,7 +1956,7 @@ export class BrokeredVclusterPreviewGateway
       `${baseUrl}/api/internal/preview-control/environment/${encodeURIComponent(name)}/cleanup`,
       {
         headers: { "X-Preview-Control-Broker-Token": token },
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 25 * 60_000),
+        signal: AbortSignal.timeout(this.observationTimeoutMs),
       },
     );
     const body = record(await response.json().catch(() => null));
@@ -1560,6 +1967,13 @@ export class BrokeredVclusterPreviewGateway
           : `physical preview cleanup proof failed (HTTP ${response.status})`,
       );
     }
+    return this.cleanupFromEnvelope(body, name);
+  }
+
+  private cleanupFromEnvelope(
+    body: Record<string, unknown> | null,
+    name: string,
+  ): VclusterPreviewCleanupSnapshot {
     const cleanup = record(body?.cleanup);
     const checks = record(cleanup?.checks);
     if (
@@ -1577,9 +1991,7 @@ export class BrokeredVclusterPreviewGateway
         "physical preview cleanup returned an invalid proof",
       );
     }
-    return cleanup as unknown as Awaited<
-      ReturnType<VclusterPreviewGatewayPort["cleanup"]>
-    >;
+    return cleanup as unknown as VclusterPreviewCleanupSnapshot;
   }
 
   touch(name: string) {
