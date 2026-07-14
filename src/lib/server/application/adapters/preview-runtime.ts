@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { Agent, fetch as undiciFetch } from "undici";
 import { env } from "$env/dynamic/private";
 import type {
   PreviewRuntimeCapabilityVerificationPort,
@@ -12,6 +13,8 @@ import {
 
 const TOKEN = /^[0-9a-f]{64}$/;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_NORMALIZED_ERROR_BYTES = 65_536;
+const IPV4_UPSTREAM_DISPATCHER = new Agent({ connect: { family: 4 } });
 
 export class HmacPreviewRuntimeCapabilityAdapter implements PreviewRuntimeCapabilityVerificationPort {
   constructor(
@@ -84,18 +87,25 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
         : DEFAULT_TIMEOUT_MS;
     let response: Response;
     try {
-      response = await (this.options.fetchImpl ?? fetch)(url, {
+      const fetchImpl =
+        this.options.fetchImpl ?? (undiciFetch as unknown as typeof fetch);
+      response = await fetchImpl(url, {
         method: "POST",
         headers: {
           accept: "application/json, text/event-stream",
+          "accept-language": "en-US,en",
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
+          "user-agent": "workflow-builder-preview-runtime/1.0",
           "x-preview-environment-request-id":
             input.identity.environmentRequestId,
         },
         body: JSON.stringify(input.payload),
         signal: AbortSignal.timeout(timeoutMs),
-      });
+        ...(!this.options.fetchImpl
+          ? { dispatcher: IPV4_UPSTREAM_DISPATCHER }
+          : {}),
+      } as RequestInit);
     } catch (cause) {
       const timedOut =
         cause instanceof Error &&
@@ -108,24 +118,30 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
       );
     }
 
-    const contentType = response.headers.get("content-type") ?? "";
+    let contentType = response.headers.get("content-type") ?? "";
+    let body = response.body;
     if (
       !contentType.toLowerCase().startsWith("application/json") &&
       !contentType.toLowerCase().startsWith("text/event-stream")
     ) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new PreviewRuntimeUpstreamError(
-        "unavailable",
-        "preview runtime upstream returned an unsupported content type",
-      );
+      if (response.ok) {
+        await body?.cancel().catch(() => undefined);
+        throw new PreviewRuntimeUpstreamError(
+          "unavailable",
+          "preview runtime upstream returned an unsupported content type",
+        );
+      }
+      body = await normalizeUpstreamErrorBody(response.status, body);
+      contentType = "application/json";
     }
     return Object.freeze({
       status: response.status,
       contentType,
+      retryAfter: response.headers.get("retry-after"),
       requestId:
         response.headers.get("x-request-id") ??
         response.headers.get("request-id"),
-      body: response.body,
+      body,
     });
   }
 
@@ -160,4 +176,65 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
     }
     return target.toString();
   }
+}
+
+async function normalizeUpstreamErrorBody(
+  status: number,
+  body: Response["body"],
+): Promise<Response["body"]> {
+  const bytes = await readBoundedBody(body, MAX_NORMALIZED_ERROR_BYTES);
+  if (bytes) {
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new TypeError("upstream error body must be a JSON object");
+      }
+      return new Response(text).body;
+    } catch {
+      // Fall through to a bounded OpenAI-compatible error without reflecting
+      // arbitrary intermediary content into the preview runtime.
+    }
+  }
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: `preview runtime upstream returned HTTP ${status}`,
+        type: "upstream_error",
+        code: `upstream_http_${status}`,
+      },
+    }),
+  ).body;
+}
+
+async function readBoundedBody(
+  body: Response["body"],
+  maxBytes: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!body) return null;
+  const reader = body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return null;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
