@@ -24,6 +24,7 @@
 		"type-check": "svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:unit": "vitest",
+		"test:dev-sync": "node --test services/dev-sync-sidecar/*.test.mjs scripts/dev-sync/sync.test.mjs",
 		"test:e2e": "playwright test",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "drizzle-kit migrate",

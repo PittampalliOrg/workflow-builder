@@ -81,6 +81,9 @@ jobs:
       - name: Validate preview governance gate
         run: node --test scripts/architecture/check-dependency-boundaries.node-test.mjs scripts/governance/preview-gate.node-test.mjs
 
+      - name: Run dev-sync transport tests
+        run: pnpm test:dev-sync
+
       - name: Run unit tests
         run: pnpm test:unit --run
 

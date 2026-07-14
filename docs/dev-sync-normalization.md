@@ -4,6 +4,8 @@ For the current end-to-end agent workflow, strict multi-service capture,
 GitHub promotion, and immutable acceptance replay, start with
 [`preview-environment-agent-development.md`](preview-environment-agent-development.md).
 This document remains the detailed transport and contract-loop reference.
+For the HMR filesystem transaction, measured latency, and follow-up thresholds,
+see [`dev-sync-hmr-latency.md`](dev-sync-hmr-latency.md).
 
 Extends the agentic dev loop (`docs/agentic-deploy-inspect-loop.md`) so the
 `dev-sync-sidecar` — not the BFF's in-process Vite plugin — is THE dev-loop
@@ -21,7 +23,7 @@ new trust boundary — `/__sync` already delivers code the dev server executes):
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /__sync`           | untar an uploaded `tar.gz` into the workdir → inotify → HMR (unchanged)                                                                                                                                                                                                                       |
 | `GET /__export?paths=…`  | stream a `tar.gz` of the live workdir source — **version capture parity** (`captureDevPreviewSource` guards on the gzip magic bytes, so the wire format matches the plugin: `tar -czf -`, busybox-relative; non-existent paths are filtered first)                                            |
-| `GET /__status`          | `{lastSyncAt, lastSyncBytes, lastRun, commands}` diagnostics (`lastRun.executedIn` says where the last `/__run` executed)                                                                                                                                                                     |
+| `GET /__status`          | `{lastSyncAt, lastSyncBytes, lastSyncTimingsMs, lastRun, commands}` diagnostics (`lastSyncTimingsMs` reports receiver validation/staging/planning/commit/total; `lastRun.executedIn` says where the last `/__run` executed)                                                                         |
 | `POST /__run?cmd=<name>` | run an **allowlisted** named command in the workdir; output capped, exit code returned. The allowlist is `DEV_SYNC_COMMANDS_JSON` (parsed once at boot); an unknown name 404s, a malformed allowlist fails closed. Executes in the **app container** via the exec bridge when present (below) |
 
 `DEV_SYNC_COMMANDS_JSON` is stamped by `sandbox-execution-api` from the dev-preview

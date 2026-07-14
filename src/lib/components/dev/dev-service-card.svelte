@@ -135,6 +135,7 @@
 				{#if statusData.lastSyncAt}
 					· last sync {new Date(statusData.lastSyncAt).toLocaleTimeString()}
 					{#if statusData.lastSyncBytes != null}({Math.round(statusData.lastSyncBytes / 1024)} KiB){/if}
+					{#if statusData.lastSyncTimingsMs}· apply {statusData.lastSyncTimingsMs.total} ms{/if}
 				{:else}
 					· no sync yet
 				{/if}

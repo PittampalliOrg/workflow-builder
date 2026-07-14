@@ -65,6 +65,7 @@ manifest_hash() {
 maybe_deps() {
 	_subdir="$1"
 	_syncurl="$2"
+	_deps_output="$3"
 	newhash=$(manifest_hash)
 	[ -n "$newhash" ] || return 0
 	state="$WORK/.syncdeps.$(printf '%s' "$_subdir" | tr '/.' '__')"
@@ -75,17 +76,17 @@ maybe_deps() {
 	fi
 	runurl=$(printf '%s' "$_syncurl" | sed 's#/__sync$#/__run#')
 	echo "deps: manifest changed for $_subdir → POST $runurl?cmd=deps"
-	code=$(curl -s -o /tmp/dev-sync-deps.out -w '%{http_code}' -X POST \
+	code=$(curl -s -o "$_deps_output" -w '%{http_code}' -X POST \
 		${SYNC_TOKEN:+-H "x-sync-token: $SYNC_TOKEN"} "$runurl?cmd=deps" 2>/dev/null)
 	if [ "$code" = "404" ]; then
 		echo "deps: no deps command configured for this service (skip)"
 		printf '%s' "$newhash" >"$state"
 		return 0
 	fi
-	sed 's/^/deps> /' /tmp/dev-sync-deps.out 2>/dev/null
+	sed 's/^/deps> /' "$_deps_output" 2>/dev/null
 	echo "deps: /__run?cmd=deps → HTTP $code"
 	if [ "$code" != "200" ] || ! python3 -c 'import json, sys; data = json.load(open(sys.argv[1], encoding="utf-8")); exit_code = data.get("exitCode") if isinstance(data, dict) else None; sys.exit(0 if isinstance(data, dict) and data.get("ok") is True and (0 if exit_code is None or exit_code is False else exit_code) == 0 else 1)' \
-		/tmp/dev-sync-deps.out >/dev/null 2>&1; then
+			"$_deps_output" >/dev/null 2>&1; then
 		echo "deps: install failed for $_subdir; leaving the prior manifest baseline for retry" >&2
 		rc=1
 		return 1
@@ -113,6 +114,9 @@ sync_one() {
 			_sync_service=${SUBDIR##*/}
 		fi
 	fi
+	_result_key=$(printf '%s' "$_sync_service" | tr -c 'A-Za-z0-9._-' '_')
+	_sync_output="$CONVERGENCE_DIR/sync-$_result_key.json"
+	_deps_output="$CONVERGENCE_DIR/deps-$_result_key.json"
 	if [ -z "$SYNCURL" ]; then
 		echo "skip: no SYNCURL for $SUBDIR"
 		rc=1
@@ -181,7 +185,7 @@ sync_one() {
 	for p in $PATHS $staged; do
 		[ -e "$p" ] && syncpaths="$syncpaths $p"
 	done
-	archive="/tmp/dev-sync-$$.tgz"
+	archive="$CONVERGENCE_DIR/source-$_result_key.tgz"
 	if [ -n "$syncpaths" ]; then
 		# shellcheck disable=SC2086
 		tar -czf "$archive" $syncpaths
@@ -192,21 +196,43 @@ sync_one() {
 		rc=1
 		return
 	}
-	code=$(curl -s -o /tmp/dev-sync.out -w '%{http_code}' -X POST \
+	result=$(curl -s -o "$_sync_output" -w '%{http_code} %{time_total}' -X POST \
 		--data-binary @"$archive" -H 'content-type: application/gzip' \
 		-H "x-sync-generation: $SYNC_GENERATION_VALUE" \
 		-H "x-sync-service: $_sync_service" \
 		-H "x-sync-roots: $declared_roots_json" \
 		${SYNC_TOKEN:+-H "x-sync-token: $SYNC_TOKEN"} "$SYNCURL" 2>/dev/null)
+	case "$result" in
+		*" "*) code=${result%% *}; elapsed=${result#* } ;;
+		*) code=$result; elapsed="" ;;
+	esac
 	rm -f "$archive"
-	echo "SYNCED $SUBDIR → HTTP $code (service=$_sync_service generation=$SYNC_GENERATION_VALUE)"
+	echo "SYNCED $SUBDIR → HTTP $code${elapsed:+ in ${elapsed}s} (service=$_sync_service generation=$SYNC_GENERATION_VALUE)"
 	if [ "$code" != "200" ]; then
-		sed 's/^/sync> /' /tmp/dev-sync.out 2>/dev/null
+		sed 's/^/sync> /' "$_sync_output" 2>/dev/null
 		rc=1
 		return
 	fi
+	summary=$(python3 -c 'import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    data = {}
+parts = []
+changed = data.get("changedPathCount")
+if isinstance(changed, int):
+    parts.append(f"changed={changed}")
+timings = data.get("timingsMs")
+if isinstance(timings, dict) and isinstance(timings.get("total"), (int, float)):
+    parts.append("apply={}ms".format(timings["total"]))
+paths = data.get("changedPaths")
+if isinstance(paths, list) and paths:
+    shown = ",".join(str(item) for item in paths[:3])
+    parts.append("paths={}{}".format(shown, ",..." if len(paths) > 3 else ""))
+print(" ".join(parts))' "$_sync_output" 2>/dev/null)
+	[ -z "$summary" ] || echo "sync> $summary"
 
-	maybe_deps "$SUBDIR" "$SYNCURL"
+	maybe_deps "$SUBDIR" "$SYNCURL" "$_deps_output"
 }
 
 # Multi-service fan-out (.syncenv.d/*) if present, else the single-service .syncenv.

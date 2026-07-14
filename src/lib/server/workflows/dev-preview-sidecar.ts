@@ -28,8 +28,17 @@ export type SidecarStatus = {
 	dest?: string;
 	lastSyncAt?: string | null;
 	lastSyncBytes?: number | null;
+	lastSyncTimingsMs?: SidecarSyncTimings | null;
 	lastRun?: unknown;
 	commands?: string[];
+};
+
+export type SidecarSyncTimings = {
+	validation: number;
+	staging: number;
+	planning: number;
+	commit: number;
+	total: number;
 };
 
 export type SidecarResult<T> =
@@ -63,6 +72,21 @@ export type SidecarSyncOutput = {
 const STATUS_TIMEOUT_MS = 3_000;
 const RUN_TIMEOUT_MS = 180_000;
 const SYNC_TIMEOUT_MS = 180_000;
+
+function parseSyncTimings(raw: unknown): SidecarSyncTimings | null {
+	if (!raw || typeof raw !== 'object') return null;
+	const value = raw as Record<string, unknown>;
+	const keys = ['validation', 'staging', 'planning', 'commit', 'total'] as const;
+	if (
+		keys.some(
+			(key) =>
+				typeof value[key] !== 'number' || !Number.isFinite(value[key]) || Number(value[key]) < 0
+		)
+	) {
+		return null;
+	}
+	return Object.fromEntries(keys.map((key) => [key, value[key]])) as SidecarSyncTimings;
+}
 
 /** Derive the sidecar base URL from a persisted row's syncUrl (`http://ip:port/__sync`). */
 export function sidecarBaseUrl(syncUrl: string | null | undefined): string | null {
@@ -158,6 +182,7 @@ export async function fetchSidecarStatus(input: {
 				dest: typeof body.dest === 'string' ? body.dest : undefined,
 				lastSyncAt: typeof body.lastSyncAt === 'string' ? body.lastSyncAt : null,
 				lastSyncBytes: typeof body.lastSyncBytes === 'number' ? body.lastSyncBytes : null,
+				lastSyncTimingsMs: parseSyncTimings(body.lastSyncTimingsMs),
 				lastRun: body.lastRun ?? null,
 				commands: Array.isArray(body.commands)
 					? body.commands.filter((c): c is string => typeof c === 'string')
