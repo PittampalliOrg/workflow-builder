@@ -240,6 +240,7 @@ def record_script_call_dispatch(ctx, input_data: dict[str, Any]) -> dict[str, An
         "retries": _as_int(spec.get("retries")),
         "tokensUsed": 0,
         "result": None,
+        "callSite": spec.get("callSite") if isinstance(spec.get("callSite"), dict) else None,
     }
 
     attrs = {
@@ -297,6 +298,7 @@ def record_script_call_pause(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "retries": _as_int(spec.get("retries")),
         "tokensUsed": 0,
         "result": {"pause": pause},
+        "callSite": spec.get("callSite") if isinstance(spec.get("callSite"), dict) else None,
     }
 
     attrs = {
@@ -355,6 +357,7 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             "sessionId": _session_id_from_raw(raw),
             "retries": retries,
             "tokensUsed": _tokens_from_raw(raw),
+            "callSite": spec.get("callSite") if isinstance(spec.get("callSite"), dict) else None,
         }
 
     def _persist(row: dict[str, Any]) -> None:

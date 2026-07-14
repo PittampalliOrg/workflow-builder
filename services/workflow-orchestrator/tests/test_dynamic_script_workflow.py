@@ -1811,3 +1811,22 @@ def test_action_lifetime_cap_journals_dispatch_error():
     outcomes = sorted(str(r.get("error") or "ok") for r in raws.values())
     assert any("lifetime cap" in o for o in outcomes)
     assert any(o == "ok" or "sleptSeconds" in str(raws) for o in outcomes)
+
+
+def test_call_site_position_threads_to_journal_rows():
+    """Contract-1.2.0 tasks[].position rides the spec into every journal write
+    (dispatch + result) as callSite — the canvas overlay's join key."""
+    cid = "f0" * 20 + "_0"
+    task = agent_task(cid, prompt="hi", label="pos")
+    task["position"] = {"line": 7, "column": 23}
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "content": "done"})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete])
+    assert result["success"] is True
+    d_spec = next(i["spec"] for i in ctx.dispatch_inputs if i["callId"] == cid)
+    r_spec = next(i["spec"] for i in ctx.record_inputs if i["callId"] == cid)
+    assert d_spec["callSite"] == {"line": 7, "column": 23}
+    assert r_spec["callSite"] == {"line": 7, "column": 23}

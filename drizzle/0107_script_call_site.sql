@@ -1,0 +1,11 @@
+-- Cutover P2 (docs/code-first-cutover.md item 12): advisory call-site column on
+-- the dynamic-script call journal. {line, column} in ORIGINAL stored-source
+-- coordinates, captured by the script-evaluator at hook entry and threaded
+-- through the pump's dispatch/result journaling. The static ScriptCanvas graph
+-- joins its nodes to journal rows on this — NEVER part of callId identity
+-- (positions shift on edit while callIds stay content-addressed; rows imported
+-- by resume-after-edit carry the PRE-edit positions, and the overlay falls back
+-- to label/phase heuristics for them).
+--
+-- Additive + idempotent (hand-authored to match the 0097 style).
+ALTER TABLE "workflow_script_calls" ADD COLUMN IF NOT EXISTS "call_site" jsonb;

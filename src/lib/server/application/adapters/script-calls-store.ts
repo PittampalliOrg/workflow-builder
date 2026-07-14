@@ -37,6 +37,8 @@ export type ScriptCallRecord = {
 	errorCode: string | null;
 	retries: number;
 	tokensUsed: number;
+	/** Advisory call-site {line, column} in stored-source coordinates (P2). */
+	callSite: { line: number; column: number } | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -56,6 +58,7 @@ export type ScriptCallUpsertInput = {
 	errorCode?: string | null;
 	retries?: number;
 	tokensUsed?: number;
+	callSite?: { line: number; column: number } | null;
 };
 
 export interface ScriptCallsStore {
@@ -95,6 +98,7 @@ function toRecord(row: Row): ScriptCallRecord {
 		errorCode: row.errorCode,
 		retries: row.retries,
 		tokensUsed: row.tokensUsed,
+		callSite: row.callSite ?? null,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
@@ -139,6 +143,7 @@ export async function upsertScriptCall(
 		errorCode: input.errorCode ?? null,
 		retries: input.retries ?? 0,
 		tokensUsed: input.tokensUsed ?? 0,
+		callSite: input.callSite ?? null,
 		updatedAt: now,
 	};
 	const rows = await requireDb()
@@ -163,6 +168,7 @@ export async function upsertScriptCall(
 				errorCode: values.errorCode,
 				retries: values.retries,
 				tokensUsed: values.tokensUsed,
+				callSite: values.callSite,
 				updatedAt: now,
 			},
 		})
@@ -207,6 +213,9 @@ export async function importScriptCalls(input: {
 			errorCode: row.errorCode,
 			retries: row.retries,
 			tokensUsed: row.tokensUsed,
+			// Imported rows keep their PRE-edit call-site (advisory; the overlay
+			// treats it as a fallback-only hint after imports).
+			callSite: row.callSite ?? null,
 		});
 		imported += 1;
 	}

@@ -618,6 +618,11 @@ export const workflowScriptCalls = pgTable(
     errorCode: text("error_code"),
     retries: integer("retries").notNull().default(0),
     tokensUsed: integer("tokens_used").notNull().default(0),
+    // Advisory call-site {line, column} in stored-source coordinates (contract
+    // 1.2.0, cutover P2): the static-graph <-> journal join key for the canvas
+    // overlay. NEVER part of callId identity; stale after resume-after-edit
+    // imports (the overlay falls back to label/phase heuristics then).
+    callSite: jsonb("call_site").$type<{ line: number; column: number } | null>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

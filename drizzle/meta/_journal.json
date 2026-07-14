@@ -708,6 +708,13 @@
       "when": 1784145720000,
       "tag": "0106_team_knowledge_resource",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1784145780000,
+      "tag": "0107_script_call_site",
+      "breakpoints": true
     }
   ]
 }
