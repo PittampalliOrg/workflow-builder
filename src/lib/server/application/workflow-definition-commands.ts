@@ -54,6 +54,22 @@ export class ApplicationWorkflowDefinitionCommandService {
 		return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 	}
 
+	/** Live-editor validation (code⇄canvas split view): the same evaluator-truth
+	 * check the save path runs, WITHOUT saving. */
+	async validateScript(script: string): Promise<
+		| { ok: true; meta: Record<string, unknown> | null; estimatedAgentCalls: number | null }
+		| { ok: false; error: string }
+	> {
+		const result = await validateWithEvaluator(script);
+		if (!result.ok) return { ok: false, error: result.error };
+		return {
+			ok: true,
+			meta: (result.meta as Record<string, unknown> | undefined) ?? null,
+			estimatedAgentCalls:
+				typeof result.estimatedAgentCalls === "number" ? result.estimatedAgentCalls : null,
+		};
+	}
+
 	async createWorkflow(input: {
 		body: unknown;
 		userId: string;

@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { validateWithEvaluator } from '$lib/server/workflows/dynamic-script-validation';
+import { getApplicationAdapters } from '$lib/server/application';
 
 /**
  * Live-editor validation (code-first authoring): validate a dynamic-script
@@ -15,14 +15,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!script.trim()) {
 		return json({ ok: false, error: 'script must be a non-empty string' }, { status: 400 });
 	}
-	const result = await validateWithEvaluator(script);
-	if (!result.ok) {
-		// Validation failures are a NORMAL editor state, not an HTTP error.
-		return json({ ok: false, error: result.error });
-	}
-	return json({
-		ok: true,
-		meta: result.meta ?? null,
-		estimatedAgentCalls: result.estimatedAgentCalls ?? null
-	});
+	const result = await getApplicationAdapters().workflowDefinitionCommands.validateScript(script);
+	// Validation failures are a NORMAL editor state, not an HTTP error.
+	return json(result);
 };
