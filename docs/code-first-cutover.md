@@ -137,21 +137,55 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ### P3 — system-producer migration (per-producer flag; SW builder callable until parity)
 
-- [ ] **15.** Ported to scripts with dev shadow-parity vs pre-captured SW baselines:
-  agent-eval builder; code-eval-item (SAME workflow id, 20-item parity); swebench eval +
-  benchmark builders (≥5-instance parity incl. the sandbox-execution-api start path); GAN
-  generator (one live GAN run green); microservice-dev-session; pr-heavy-review; office
-  smokes via BFF internal execute.
-- [ ] **16.** events-ingest legacy route deleted AFTER a replacement github trigger row
-  is live.
-- [ ] **17.** Seeds retargeted to ported scripts; 13 obsolete SW fixtures deleted; the
-  348-expect guard suite rewritten against evaluator `/evaluate` plan output, green.
+- [ ] **15.** Ported to scripts with dev shadow-parity vs pre-captured SW baselines.
+  **Per-producer status (2026-07-14):**
+  - [x] **office smokes** — start through the BFF internal execute route (PR #571,
+    merged); the last raw-SQL execution fabricator is gone.
+  - [x] **agent-eval builder** — `buildAgentEvaluationScript` behind
+    `EVAL_AGENT_SCRIPT_PRODUCER` (SW builder still callable); the pump envelope is
+    unwrapped by `extractEvaluationGeneratedOutput` so graders need zero changes;
+    evaluations vitest 26 passed. **Parity run not yet executed** (needs eval spend).
+  - [x] **code-eval-item** — ported (`scripts/fixtures/dynamic-scripts/code-eval-item.js`),
+    seeded under the SAME workflow id via `CODE_EVAL_SCRIPT_PRODUCER` (so
+    `CODE_EVAL_WORKFLOW_ID` + the 3 template routes are untouched). Validates + first-round
+    dispatches through the REAL evaluator (`producer-ports.test.ts`).
+    **20-item parity run not yet executed** (needs eval spend).
+  - [ ] **swebench eval + benchmark builders** — not started. Needs the same
+    profile-bind pattern (now available) + the ≥5-instance shadow-parity canary
+    (real LLM spend, hours).
+  - [ ] **GAN generator / preview-gan fixtures / microservice-dev-session /
+    pr-heavy-review** — not started. Blocked on a `dev/preview` durable-activation
+    primitive (the SW interpreter has a bespoke activation poll,
+    `_run_durable_dev_preview_activation`; `action('dev/preview')` currently dispatches
+    as a plain activity with no readiness poll). See §Blockers.
+  - **Enabling capability shipped for all of the above:** the `workspace` sentinel +
+    `agent(..., {sandbox: {...}})` binding — a script can now create a workspace/sandbox
+    with `action('workspace/profile', …)` and bind agents to it (the gap that blocked
+    every workspace-shaped producer).
+- [x] **16.** events-ingest legacy route + `external-event-registry.ts` **deleted**. The
+  route was already inert on dev (`SUPPORTED_WORKFLOW_ID` unset) and its replacement —
+  the engine-agnostic github trigger spine — is live-proven (trigger
+  `lErvqAEkpnd_BSe4RUCGT` drove 250 executions). Boundary ratchet: 2 edges removed.
+  *(Activating a repo webhook is left to the user: it is an outward-facing action.)*
+- [ ] **17.** Seeds retargeted; fixtures pruned; guard suite rewritten.
+  - [x] 13 obsolete SW fixtures **deleted** + their 3 orphaned guards; `seed-workflows`
+    fixture block pruned to the 7-fixture port set. The 4 surviving guards stay green
+    (49 tests).
+  - [ ] Guard rewrite against evaluator `/evaluate` plan output — gated on the GAN /
+    dev-session fixture ports above.
 
 ### P4 — freeze
 
-- [ ] **18.** engineType default → `dynamic-script`; POST/PUT reject new SW specs
-  (internal override header); legacy MCP `create_workflow` removed; `SW_START_DISABLED`
-  flag implemented but SHIPPED OFF; editor read-only for `engineType=dapr` rows.
+- [x] **18.** P4 freeze, **shipped OFF** (`SW_AUTHORING_FROZEN`): new workflows default to
+  `dynamic-script`; `POST /api/workflows` rejects explicit SW creation and
+  `PUT /api/workflows/[id]` rejects SW *spec* writes (internal callers bypass via
+  `internalOverride` so system producers can still seed during the migration window;
+  legacy rows stay readable/runnable/metadata-editable). Legacy MCP `create_workflow`
+  was already removed (asserted by `workflow-tools.test.ts`). `SW_START_DISABLED`
+  implemented in `start-run.ts` and SHIPPED OFF (410 when flipped). Editor read-only
+  for legacy rows: the ScriptCanvas/WorkflowCanvas split already routes `dapr` rows to
+  the SW canvas; a read-only gate rides the freeze flag. Tests:
+  workflow-definition-commands vitest **12 passed** (3 new, incl. off-by-default).
 
 ## Constraints (binding for every phase)
 
@@ -177,7 +211,25 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ## Blockers
 
-*(none — record here any blocker persisting 3 consecutive turns, then stop per the goal)*
+**B1 — `dev/preview` durable activation is not expressible via `action()` (blocks the GAN
+/ preview / dev-session producer ports).** The SW interpreter has a bespoke handler
+(`_run_durable_dev_preview_activation`, ~260 lines) that starts a preview and then polls
+a strict batch/ready-set with durable timers before continuing. `action('dev/preview')`
+currently dispatches as a plain single-shot activity — no readiness poll — so the ported
+fixtures would race their preview. **Fix (designed, not built):** port the activation
+poll into the existing `action_runner_workflow_v1` child (it already owns timer-based
+pause rounds for AP pieces) and route `dev/*` slugs to it, mirroring the AP DELAY branch.
+Estimated S–M. Until then the GAN generator, `preview-gan-*`, `preview-dev-gan`, and
+`microservice-dev-session` ports stay unstarted and their guard rewrites (item 17's second
+half) stay gated.
+
+**B2 — the shadow-parity gates need real eval/benchmark spend and multi-hour runtime.**
+The code-eval 20-item and SWE-bench ≥5-instance canaries (and the one live GAN run) are
+the goal's proof for item 15. They are implemented and flag-gated, but each canary bills
+real LLM usage and runs for hours; they have not been executed. **Recommended sequence:**
+flip `CODE_EVAL_SCRIPT_PRODUCER=true` on dev, run one HumanEval+ suite (20 items) against
+the P0 baseline, diff `benchmark_run_instance_scores`; then `EVAL_AGENT_SCRIPT_PRODUCER`;
+then the SWE-bench canary last (most expensive).
 
 ## References
 
