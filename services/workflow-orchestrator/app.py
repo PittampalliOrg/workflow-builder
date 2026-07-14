@@ -62,6 +62,10 @@ from workflows.fork_branch_workflow import (
     fork_branch_workflow,
     FORK_BRANCH_WORKFLOW_NAME,
 )
+from workflows.action_runner_workflow import (
+    action_runner_workflow,
+    ACTION_RUNNER_WORKFLOW_NAME,
+)
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
 from content_tracing import io_attributes
@@ -1189,6 +1193,21 @@ async def lifespan(app: FastAPI):
     logger.info(
         "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
         FORK_BRANCH_WORKFLOW_NAME,
+    )
+
+    # Register the AP action runner (code-first cutover P1c: an ActivePieces
+    # action() call runs as a child carrying the SW AP durability contract —
+    # retry policy + DELAY/WEBHOOK pause rounds — so the pump's when_any stays
+    # a flat multiplex and the WEBHOOK wait has a stable resume target).
+    wfr.register_versioned_workflow(
+        action_runner_workflow,
+        name=ACTION_RUNNER_WORKFLOW_NAME,
+        version_name="1.0.0",
+        is_latest=True,
+    )
+    logger.info(
+        "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
+        ACTION_RUNNER_WORKFLOW_NAME,
     )
 
     # Start the workflow runtime

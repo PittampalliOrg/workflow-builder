@@ -262,7 +262,10 @@ class FakeCtx:
         self.prepare_inputs: list[dict] = []
         self.stop_inputs: list[dict] = []
         self.execute_action_inputs: list[dict] = []
-        self.execute_action_result: dict = {"success": True, "data": {"ok": 1}}
+        # Sequenced results: pop from the front while >1 remain (last repeats) —
+        # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
+        self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
+        self.pause_inputs: list[dict] = []
 
     # -- deterministic side effects captured for assertions ----------------
     @property
@@ -328,7 +331,12 @@ class FakeCtx:
             return self._prepare_result(inp)
         if name == "execute_action":
             self.execute_action_inputs.append(inp)
-            return self.execute_action_result
+            if len(self.execute_action_results) > 1:
+                return self.execute_action_results.pop(0)
+            return self.execute_action_results[0]
+        if name == "record_script_call_pause":
+            self.pause_inputs.append(inp)
+            return {"success": True}
         if name == "request_session_stop":
             self.stop_inputs.append(inp)
             return {"ok": True, "state": "stopping"}
@@ -1575,16 +1583,114 @@ def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
     assert raws == [{"success": True, "data": {"ok": 1}}]
 
 
-def test_action_ap_slug_journals_dispatch_error_until_p1c():
+def test_action_ap_slug_dispatches_runner_child_with_pause_contract():
+    """AP piece slugs dispatch as an action_runner_workflow_v1 CHILD carrying
+    the SW AP durability contract (raiseOnRetryable + content-addressed
+    idempotencyKey + journal context for the WEBHOOK pause marker)."""
     cid = "c3" * 20 + "_0"
     task = action_task(cid, "google-sheets/append_row", {"row": 1})
     ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete_runner(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "data": {"appended": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_runner]
+    )
+    assert result["success"] is True
+    assert len([a for a in ctx.action_log if a[0] == "child"]) == 1
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["activityInput"]["raiseOnRetryable"] is True
+    assert child_input["activityInput"]["idempotencyKey"] == f"wf1:e1:{cid}"
+    assert child_input["journal"]["callId"] == cid
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert raws == [{"success": True, "data": {"appended": True}}]
+
+
+def test_action_crawl_async_journals_clear_dispatch_error():
+    cid = "e7" * 20 + "_0"
+    task = action_task(cid, "web/crawl.async", {"url": "https://x"})
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
     result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
     assert result["success"] is True
-    assert ctx.execute_action_inputs == []  # never dispatched
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
     assert len(raws) == 1 and raws[0]["success"] is False
-    assert "P1c" in raws[0]["error"]
+    assert "web/crawl" in raws[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# action_runner_workflow_v1: BEGIN -> (pause -> RESUME)* -> final result.
+# ---------------------------------------------------------------------------
+def test_action_runner_webhook_pause_marks_journal_and_resumes():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="runner-1")
+    ctx.execute_action_results = [
+        {"success": True, "pause": {"type": "WEBHOOK", "requestId": "req-42"}},
+        {"success": True, "data": {"resumed": True}},
+    ]
+    gen = action_runner_workflow(
+        ctx,
+        {
+            "activityInput": {"node": {"id": "c1"}, "raiseOnRetryable": True},
+            "journal": {"executionId": "e1", "callId": "c1", "seq": 3, "spec": {"kind": "action"}},
+        },
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway runner loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        if not task.is_complete:
+            # The WEBHOOK wait — deliver the callback payload.
+            assert ctx.events.get("ap.resume.req-42"), "runner did not wait on ap.resume.req-42"
+            task.complete({"requestId": "req-42", "body": {"approved": True}})
+        send = task.get_result()
+
+    assert result == {"success": True, "data": {"resumed": True}}
+    # Pause marker journaled with the waiter instance id (ap-resume route target).
+    assert len(ctx.pause_inputs) == 1
+    pause = ctx.pause_inputs[0]["pause"]
+    assert pause["requestId"] == "req-42" and pause["waiterInstanceId"] == "runner-1"
+    # RESUME round carried the callback payload.
+    assert ctx.execute_action_inputs[1]["executionType"] == "RESUME"
+    assert ctx.execute_action_inputs[1]["resumePayload"]["body"] == {"approved": True}
+
+
+def test_action_runner_delay_pause_uses_timer_then_resumes():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}), instance_id="runner-2")
+    ctx.execute_action_results = [
+        {"success": True, "pause": {"type": "DELAY", "delaySeconds": 30}},
+        {"success": True, "data": {"done": 1}},
+    ]
+    gen = action_runner_workflow(
+        ctx, {"activityInput": {"node": {"id": "c2"}}, "journal": {}}
+    )
+    send = None
+    result = None
+    guard = 0
+    while True:
+        guard += 1
+        assert guard < 50, "runaway runner loop"
+        try:
+            task = gen.send(send)
+        except StopIteration as exc:
+            result = exc.value
+            break
+        assert task.is_complete, "runner yielded a pending task the test did not arm"
+        send = task.get_result()
+    assert result == {"success": True, "data": {"done": 1}}
+    assert any(a[0] == "timer" for a in ctx.action_log)
+    assert ctx.pause_inputs == []  # DELAY needs no resume-target marker
 
 
 def test_event_kind_journals_dispatch_error_until_p1d():
