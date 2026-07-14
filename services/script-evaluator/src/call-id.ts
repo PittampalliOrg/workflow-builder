@@ -13,7 +13,10 @@
 import { createHash } from "node:crypto";
 import { canonicalJSON } from "./canonical-json.js";
 
-/** The opts keys that participate in callId derivation, in canonical set. */
+/** The opts keys that participate in callId derivation, in canonical set.
+ * `agent` (named-agent slug) joined additively in contract 1.2.0 — omit-nullish
+ * keeps every pre-1.2.0 callId byte-identical, and canonicalJSON sorts keys so
+ * list position is irrelevant. */
 export const SEMANTIC_OPT_KEYS = [
 	"schema",
 	"model",
@@ -21,6 +24,7 @@ export const SEMANTIC_OPT_KEYS = [
 	"isolation",
 	"agentType",
 	"label",
+	"agent",
 ] as const;
 
 /** NUL (U+0000) separator between prompt and canonicalized semantic opts. */

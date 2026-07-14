@@ -182,3 +182,58 @@ describe("validateWithEvaluator", () => {
 		expect(result.error).toMatch(/banned_api/);
 	});
 });
+
+// ── meta.input args validation (cutover P1f) ─────────────────────────────────
+import { validateArgsAgainstMetaInput } from "./dynamic-script-validation";
+
+describe("validateArgsAgainstMetaInput", () => {
+	const schema = {
+		type: "object",
+		required: ["topic"],
+		properties: {
+			topic: { type: "string" },
+			rounds: { type: "number", default: 3 },
+		},
+	} as Record<string, unknown>;
+
+	it("accepts valid args and fills schema defaults on a clone", () => {
+		const original = { topic: "hello" };
+		const res = validateArgsAgainstMetaInput(schema, original);
+		expect(res).toEqual({ ok: true, args: { topic: "hello", rounds: 3 } });
+		expect(original).toEqual({ topic: "hello" }); // caller value untouched
+	});
+
+	it("rejects args missing required fields with readable detail", () => {
+		const res = validateArgsAgainstMetaInput(schema, {});
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.error).toContain("topic");
+	});
+
+	it("object schema + absent args starts from {} so defaults apply", () => {
+		const optional = {
+			type: "object",
+			properties: { rounds: { type: "number", default: 2 } },
+		} as Record<string, unknown>;
+		expect(validateArgsAgainstMetaInput(optional, undefined)).toEqual({
+			ok: true,
+			args: { rounds: 2 },
+		});
+		// ...but required fields still fail when nothing was provided.
+		expect(validateArgsAgainstMetaInput(schema, undefined).ok).toBe(false);
+	});
+
+	it("non-object schemas validate scalars verbatim", () => {
+		const scalar = { type: "string", minLength: 3 } as Record<string, unknown>;
+		expect(validateArgsAgainstMetaInput(scalar, "abc")).toEqual({ ok: true, args: "abc" });
+		expect(validateArgsAgainstMetaInput(scalar, "ab").ok).toBe(false);
+	});
+
+	it("an invalid schema is a clear error, not a silent skip", () => {
+		const res = validateArgsAgainstMetaInput(
+			{ type: "object", properties: { x: { type: "not-a-type" } } } as Record<string, unknown>,
+			{},
+		);
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.error).toContain("meta.input is not a valid JSON Schema");
+	});
+});

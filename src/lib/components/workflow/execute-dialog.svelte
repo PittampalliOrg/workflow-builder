@@ -7,6 +7,7 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Select from '$lib/components/ui/select';
 	import * as Tabs from '$lib/components/ui/tabs';
+	import JsonSchemaDataEditor from './json-schema-data-editor.svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import {
 		Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
@@ -182,18 +183,35 @@
 	});
 	let scriptArgsJson = $state('{}');
 	let scriptBudgetTotal = $state<string>('');
+	// meta.input (cutover P1f): an object JSON Schema turns the free-form Args
+	// textarea into a generated form (same start-path validation applies).
+	let scriptInputSchema = $derived.by(() => {
+		const m = ((store.spec as Record<string, unknown> | null)?.meta ?? {}) as Record<
+			string,
+			unknown
+		>;
+		const input = m.input;
+		return input && typeof input === 'object' && !Array.isArray(input)
+			? (input as Record<string, unknown>)
+			: null;
+	});
+	let scriptFormArgs = $state<unknown>(undefined);
 
 	async function handleScriptSubmit() {
 		errorMsg = null;
 		isSubmitting = true;
 		try {
 			let input: Record<string, unknown>;
-			try {
-				input = scriptArgsJson.trim() ? JSON.parse(scriptArgsJson) : {};
-			} catch {
-				errorMsg = 'Invalid args JSON';
-				isSubmitting = false;
-				return;
+			if (scriptInputSchema) {
+				input = (scriptFormArgs ?? {}) as Record<string, unknown>;
+			} else {
+				try {
+					input = scriptArgsJson.trim() ? JSON.parse(scriptArgsJson) : {};
+				} catch {
+					errorMsg = 'Invalid args JSON';
+					isSubmitting = false;
+					return;
+				}
 			}
 			const budgetTotal = scriptBudgetTotal.trim() ? Number(scriptBudgetTotal) : null;
 			if (budgetTotal != null && (!Number.isFinite(budgetTotal) || budgetTotal < 0)) {
@@ -448,16 +466,25 @@
 							Estimated agent calls: <strong>{scriptMeta.estimatedAgentCalls}</strong>
 						</p>
 					{/if}
-					<div class="space-y-1.5">
-						<Label for="script-args">Args (JSON)</Label>
-						<Textarea
-							id="script-args"
-							bind:value={scriptArgsJson}
-							rows={6}
-							class="font-mono"
-							placeholder={'{"topic": "hello"}'}
+					{#if scriptInputSchema}
+						<JsonSchemaDataEditor
+							schema={scriptInputSchema}
+							value={scriptFormArgs ?? {}}
+							onChange={(v) => (scriptFormArgs = v)}
+							title="Input"
 						/>
-					</div>
+					{:else}
+						<div class="space-y-1.5">
+							<Label for="script-args">Args (JSON)</Label>
+							<Textarea
+								id="script-args"
+								bind:value={scriptArgsJson}
+								rows={6}
+								class="font-mono"
+								placeholder={'{"topic": "hello"}'}
+							/>
+						</div>
+					{/if}
 					<div class="space-y-1.5">
 						<Label for="script-budget">Budget (tokens, optional)</Label>
 						<Input

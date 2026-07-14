@@ -63,26 +63,33 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ### P1 — dialect gaps (all behind `DYNAMIC_SCRIPT_ACTIONS_ENABLED`)
 
-- [ ] **6.** `action(slug, input, opts)`: `input` hashed, `label`/`timeoutMs`/
+- [x] **6.** `action(slug, input, opts)`: `input` hashed, `label`/`timeoutMs`/
   `allowFailure` not; non-AP slugs = un-awaited `execute_action` activity tasks; AP slugs
-  via a new `action_runner` child porting SW's AP retry + DELAY→timer +
-  WEBHOOK→`wait_for_external_event(ap.resume.<id>)` pause contract; idempotencyKey
-  `workflowId:execId:callId`; throws unless `allowFailure:true`.
-  *(P1b landed the non-AP slice: evaluator-1.3.0 hooks, pump dispatch as activity
-  tasks, idempotencyKey, throw/allowFailure semantics — AP slugs journal a
-  deterministic dispatch error until the P1c runner child.)*
+  via the `action_runner_workflow_v1` child porting SW's AP retry + DELAY→timer +
+  WEBHOOK→`wait_for_external_event(ap.resume.<id>)` pause contract (waiter marker →
+  ap-resume route targets the child); idempotencyKey `workflowId:execId:callId`;
+  throws unless `allowFailure:true`. `web/crawl.async` dispatch-errors clearly
+  (sync `web/crawl` works; async poll port is a follow-up). PRs #566 + #567,
+  suites green 2026-07-14.
 - [x] **7.** `sleep(seconds)`: journaled `create_timer` task in the pump's `when_any`
   set. Dispatched un-awaited; drain synthesizes `{sleptSeconds}`; clamped by
   `DYNAMIC_SCRIPT_MAX_SLEEP_SECONDS` (86400 default). Pump + evaluator + journal
   tests green 2026-07-14.
-- [ ] **8.** `approve()`/`waitForEvent()`: wait_event child per callId, reusing SW
-  approval-log activities; approval routes journal-driven for scripts; timeout RESOLVES
-  `{timedOut:true}`.
-- [ ] **9.** `agent(..., {agent: slug})`: resolved fail-closed in the ensure-for-workflow
-  bridge with swap-safety; unknown slug journals null; NEVER falls back to the metered
-  default runtime.
-- [ ] **10.** `meta.input` JSON Schema validated at `startDynamicScriptRun` (covers the
-  trigger spine) + rendered as an execute-dialog form.
+- [x] **8.** `approve()`/`waitForEvent()`: `wait_event_workflow_v1` child per callId
+  (`script.event.<callId>` — parallel gates), reusing SW approval-log activities;
+  `getApprovalState`/`approveExecution` journal-driven for scripts (plural gates,
+  `body.callId` disambiguation, `approved:false` resolves too); timeout RESOLVES
+  `{timedOut:true}` (24h default / 7d cap). PR #567, suites green 2026-07-14.
+- [x] **9.** `agent(..., {agent: slug})`: resolved fail-closed in the ensure-for-workflow
+  bridge with swap-safety; unknown slug journals null (422 `agent_ref_unresolved` →
+  deterministic bridge refusal); NEVER falls back to the metered default runtime —
+  including old-BFF skew (missing `resolvedAgentSlug` echo → refusal). PR #568;
+  orchestrator 353 + evaluator 86 passed 2026-07-14.
+- [x] **10.** `meta.input` JSON Schema validated at `startDynamicScriptRun` via Ajv
+  (useDefaults on a clone; object schema + absent args starts from `{}`; invalid schema
+  = 400) — covers UI/MCP/trigger-spine/resume; execute dialog renders it via
+  `JsonSchemaDataEditor` (Form|JSON tabs) replacing the raw Args textarea. PR #568;
+  validator vitest 17 passed 2026-07-14.
 - [x] **11.** Pump: explicit task-kind allowlist (unknown kind → dispatchError, never a
   phantom agent dispatch — shipped with P0, `test_unknown_task_kind_journals_dispatch_error…`);
   kind-aware caps (action-class dispatches OUTSIDE agent slots: `maxConcurrentActions`

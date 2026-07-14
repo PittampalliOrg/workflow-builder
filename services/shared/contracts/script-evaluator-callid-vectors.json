@@ -264,6 +264,21 @@
           "label": null
         }
       ]
+    },
+    {
+      "description": "named-agent agent(..., {agent}) — slug joins the hash additively",
+      "script": "export const meta = { name: 'named-agent', description: 'callId vector', phases: [{ title: 'main' }] }\nconst r = await agent('review the diff', { agent: 'code-reviewer', label: 'review' })\nreturn { r }",
+      "expectedTasks": [
+        {
+          "callId": "0e765917ce8a155e66cf4defecee172f18ea147f_0",
+          "baseHash": "0e765917ce8a155e66cf4defecee172f18ea147fc2f784c484dc40aec622040d",
+          "occurrence": 0,
+          "kind": "agent",
+          "prompt": "review the diff",
+          "label": "review",
+          "schema": null
+        }
+      ]
     }
   ]
 }

@@ -89,6 +89,12 @@ const CASES: VectorCase[] = [
 		script: META("wait-event") + "const e = await waitForEvent('deploy.finished')\nreturn { e }",
 		features: { actions: true },
 	},
+	{
+		description: "named-agent agent(..., {agent}) — slug joins the hash additively",
+		script:
+			META("named-agent") +
+			"const r = await agent('review the diff', { agent: 'code-reviewer', label: 'review' })\nreturn { r }",
+	},
 ];
 
 async function main(): Promise<void> {

@@ -66,7 +66,7 @@
 		"null": "workflow() THROWS (legacy rows without a message throw 'workflow() child failed')"
 	},
 	"argsSemantics": {
-		"$comment": "request.args is the script's VERBATIM input \u2014 any JSON value (object, array, string, number, bool, null). KEY-ABSENCE is meaningful: when the request has no args key, the script's `args` global is undefined (Workflow-tool parity). The same applies to a kind='workflow' task's args field: omitted when the parent passed nothing."
+		"$comment": "request.args is the script's VERBATIM input — any JSON value (object, array, string, number, bool, null). KEY-ABSENCE is meaningful: when the request has no args key, the script's `args` global is undefined (Workflow-tool parity). The same applies to a kind='workflow' task's args field: omitted when the parent passed nothing."
 	},
 	"response": {
 		"need": {
@@ -83,7 +83,8 @@
 						"model": null,
 						"effort": null,
 						"isolation": null,
-						"agentType": null
+						"agentType": null,
+						"agent": null
 					},
 					"baseHash": "<64 hex>",
 					"occurrence": 0
@@ -152,7 +153,7 @@
 		"phases.current is the LAST phase() invoked before quiescence, or null if none",
 		"when budget.exhausted or budget.lifetimeExceeded, every UNRESOLVED agent()/workflow() call must observe a synchronously thrown BudgetExhaustedError/AgentLimitError; resolved (journaled) calls still resolve from completedResults",
 		"workflow() when request.nested=true must observe a thrown Error('workflow() nesting is one level only')",
-		"kind='workflow' tasks carry prompt='' and opts.schema=null; their spec is {callId, kind, workflowRef, args} \u2014 workflowRef/args appear in place of prompt/opts.label",
+		"kind='workflow' tasks carry prompt='' and opts.schema=null; their spec is {callId, kind, workflowRef, args} — workflowRef/args appear in place of prompt/opts.label",
 		"a 4xx response (script_too_large, banned_api, invalid_meta) is NON-retryable; 5xx is retryable"
 	],
 	"banned": [

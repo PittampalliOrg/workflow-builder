@@ -278,3 +278,71 @@ export function extractStaticMeta(script: string): DynamicScriptMeta | undefined
 	if (descMatch) meta.description = descMatch[2];
 	return meta;
 }
+
+// ── meta.input args validation (cutover P1f, docs/code-first-cutover.md #10) ──
+
+import Ajv from "ajv";
+
+export type MetaInputValidationResult =
+	| { ok: true; args: unknown }
+	| { ok: false; error: string };
+
+/**
+ * Validate a run's args against the script's optional `meta.input` JSON
+ * Schema. Runs at `startDynamicScriptRun` so EVERY launch surface (UI, MCP,
+ * trigger spine, resume) enforces the same contract the execute dialog
+ * renders as a form.
+ *
+ * Semantics:
+ *  - `useDefaults` fills schema defaults (on a deep clone — never mutates the
+ *    caller's value).
+ *  - Object-schema convenience: when the author declared an object schema and
+ *    no args were provided, validation starts from `{}` so defaults apply —
+ *    the author opted into a typed input, so "absent -> undefined" yields to
+ *    the schema contract.
+ *  - An INVALID schema is a 400 at start (authors find out immediately), not
+ *    a silent skip.
+ */
+export function validateArgsAgainstMetaInput(
+	schema: Record<string, unknown>,
+	args: unknown,
+): MetaInputValidationResult {
+	let validateFn: ReturnType<Ajv["compile"]>;
+	try {
+		const ajv = new Ajv({
+			allErrors: true,
+			strict: false,
+			useDefaults: true,
+			coerceTypes: false,
+		});
+		validateFn = ajv.compile(schema);
+	} catch (err) {
+		return {
+			ok: false,
+			error: `meta.input is not a valid JSON Schema: ${err instanceof Error ? err.message : String(err)}`,
+		};
+	}
+
+	let candidate: unknown = args;
+	const objectShaped =
+		schema.type === "object" ||
+		(schema.type === undefined &&
+			typeof schema.properties === "object" &&
+			schema.properties !== null);
+	if (candidate === undefined && objectShaped) candidate = {};
+	if (candidate !== undefined) {
+		// Deep clone so Ajv's useDefaults never mutates the caller's object.
+		candidate = JSON.parse(JSON.stringify(candidate));
+	}
+
+	if (!validateFn(candidate)) {
+		const details = (validateFn.errors ?? [])
+			.map((e) => `${e.instancePath || "args"} ${e.message ?? "is invalid"}`)
+			.join("; ");
+		return {
+			ok: false,
+			error: `workflow input does not match meta.input schema: ${details}`,
+		};
+	}
+	return { ok: true, args: candidate };
+}

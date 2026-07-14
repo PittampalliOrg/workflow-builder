@@ -50,6 +50,25 @@ DEFAULT_SPAWN_SESSION_HTTP_RETRY_MAX_SECONDS = 15
 RETRYABLE_ENSURE_FOR_WORKFLOW_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
+def _agent_ref_refusal(status_code: int, body: str) -> bool:
+    """Deterministic named-agent refusal (cutover P1e): the BFF 422s with code
+    ``agent_ref_unresolved`` when a script's ``agent(..., {agent: slug})`` names
+    an unknown slug. FAIL-CLOSED contract: the dispatch journals the call as
+    null — never falls back to the metered default runtime."""
+    return status_code == 422 and "agent_ref_unresolved" in (body or "").lower()
+
+
+def _agent_ref_refusal_bridge_result(session_id: str, body: str) -> dict[str, Any]:
+    message = body.strip() if body.strip() else "named agent could not be resolved"
+    return {
+        "sessionId": session_id,
+        "success": False,
+        "cancelled": True,
+        "refusalKind": "agent_ref_unresolved",
+        "error": message,
+    }
+
+
 def _cancelled_benchmark_refusal(status_code: int, body: str) -> bool:
     normalized = (body or "").lower()
     return (
@@ -199,6 +218,8 @@ def _post_ensure_for_workflow(
         session_id = str(payload.get("sessionId") or "").strip()
         if _cancelled_benchmark_refusal(response.status_code, body_preview):
             return _cancelled_benchmark_bridge_result(session_id, body_preview)
+        if _agent_ref_refusal(response.status_code, body_preview):
+            return _agent_ref_refusal_bridge_result(session_id, body_preview)
         raise RuntimeError(
             f"spawn_session_for_workflow: HTTP {response.status_code} from BFF: {body_preview}"
         )
@@ -303,6 +324,9 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
             "agentVersion": input_data.get("agentVersion"),
             "agentAppId": input_data.get("agentAppId"),
             "agentSlug": input_data.get("agentSlug"),
+            # Named-agent resolution request (cutover P1e): the BFF resolves the
+            # slug fail-closed and MUST echo resolvedAgentSlug (skew guard below).
+            "resolveAgentSlug": input_data.get("resolveAgentSlug"),
             # Sandbox plumbing forwarded to the BFF's buildChildInput so
             # session_workflow → agent_workflow can bind the OpenShell sandbox.
             "workspaceRef": input_data.get("workspaceRef"),
@@ -322,6 +346,13 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
                 "sessionId": body.get("sessionId") or session_id,
                 "success": False,
                 "cancelled": True,
+                # Preserve the refusal class (e.g. agent_ref_unresolved) so the
+                # dispatch can log/journal the reason accurately.
+                **(
+                    {"refusalKind": body["refusalKind"]}
+                    if isinstance(body.get("refusalKind"), str)
+                    else {}
+                ),
                 "error": body.get("error") or "benchmark run cancelled",
                 "stopReason": body.get("stopReason")
                 if isinstance(body.get("stopReason"), dict)
@@ -330,6 +361,26 @@ def spawn_session_for_workflow(ctx, input_data: dict[str, Any]) -> dict[str, Any
                     "reason": body.get("error") or "benchmark run cancelled",
                     "source": "benchmark_cleanup",
                 },
+            }
+
+        # Named-agent skew guard (cutover P1e): when the dispatch requested a
+        # slug resolution, the BFF MUST echo resolvedAgentSlug. An old BFF
+        # silently ignores resolveAgentSlug and provisions the DEFAULT runtime
+        # — a billing hazard (metered ANTHROPIC_API_KEY default vs the named
+        # agent's configured provider). Refuse to dispatch; the orphaned
+        # session row is reaped by the lifecycle reconciler.
+        requested_slug = str(payload.get("resolveAgentSlug") or "").strip()
+        if requested_slug and body.get("resolvedAgentSlug") != requested_slug:
+            return {
+                "sessionId": body.get("sessionId") or session_id,
+                "success": False,
+                "cancelled": True,
+                "refusalKind": "agent_ref_unresolved",
+                "error": (
+                    f"named-agent resolution for {requested_slug!r} was not honored by "
+                    "the BFF (deploy BFF >= cutover P1e); refusing to dispatch on the "
+                    "default runtime"
+                ),
             }
 
         child_input = body.get("childInput")

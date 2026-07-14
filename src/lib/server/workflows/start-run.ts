@@ -32,6 +32,7 @@ import {
 } from '$lib/server/observability/workflow-session';
 import { prewarmWorkflowEntrySessions } from '$lib/server/sessions/prewarm';
 import {
+	validateArgsAgainstMetaInput,
 	validateDynamicScriptSpec,
 	validateWithEvaluator
 } from '$lib/server/workflows/dynamic-script-validation';
@@ -347,20 +348,34 @@ async function startDynamicScriptRun(
 	}
 	// The evaluator returns a NORMALIZED meta (name/description/phases/
 	// estimatedAgentCalls) and drops keys it doesn't model — graft the
-	// platform-owned `team` block (validated by validateDynamicScriptSpec
-	// above) back in so meta.team.tokenBudget reaches the orchestrator's
-	// team ops without an evaluator contract change.
+	// platform-owned `team` and `input` blocks (validated by
+	// validateDynamicScriptSpec above) back in so meta.team.tokenBudget reaches
+	// the orchestrator's team ops and meta.input survives to the run record —
+	// without an evaluator contract change.
 	const specTeam = (validation.meta as Record<string, unknown>).team;
+	const specInput = (validation.meta as Record<string, unknown>).input;
 	const meta = {
 		...evaluatorValidation.meta,
-		...(specTeam !== undefined ? { team: specTeam } : {})
+		...(specTeam !== undefined ? { team: specTeam } : {}),
+		...(specInput !== undefined ? { input: specInput } : {})
 	};
 	const dispatchMode = 'batch-v2';
 	// args is the script's VERBATIM input — any JSON value. undefined means "not
 	// provided": the key is omitted end-to-end so the script's `args` global is
 	// undefined (Workflow-tool parity). JSON serialization drops undefined keys,
 	// which is exactly the wire behavior the orchestrator expects.
-	const args = opts.triggerData;
+	let args = opts.triggerData;
+	// meta.input (cutover P1f): an optional JSON Schema for the run's args —
+	// enforced HERE so every launch surface (UI / MCP / trigger spine / resume)
+	// shares one contract; the execute dialog renders the same schema as a form.
+	if (specInput && typeof specInput === 'object' && !Array.isArray(specInput)) {
+		const checked = validateArgsAgainstMetaInput(
+			specInput as Record<string, unknown>,
+			args
+		);
+		if (!checked.ok) return { ok: false, status: 400, error: checked.error };
+		args = checked.args;
+	}
 	const defaults = (spec as Record<string, unknown>).defaults as
 		| { budgetTotal?: number | null }
 		| undefined;
