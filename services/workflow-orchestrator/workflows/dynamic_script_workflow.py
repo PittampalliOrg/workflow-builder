@@ -30,6 +30,8 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 from dapr.ext.workflow import when_all as wf_when_all
+
+from workflows.session_host_wait import wait_for_prepared_agent_hosts
 from dapr.ext.workflow import when_any as wf_when_any
 
 from activities.aggregate_script_usage import aggregate_script_usage
@@ -531,6 +533,14 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     )
 
                 prepared_results = yield wf_when_all(prepare_tasks)
+                # Durable readiness barrier (concurrency plan P2): prepare no
+                # longer blocks an activity thread waiting for queued hosts;
+                # still-queued descriptors are re-polled here on durable
+                # timers before dispatch (timeouts become per-call
+                # dispatchError entries, not whole-run failures).
+                prepared_results = yield from wait_for_prepared_agent_hosts(
+                    ctx, prepared_results, _freeze, wf_when_all
+                )
                 for cid, prepared in zip(batch, prepared_results):
                     spec = task_specs[cid]
                     child_instance_id = str(spec.get("_instance_id") or "")

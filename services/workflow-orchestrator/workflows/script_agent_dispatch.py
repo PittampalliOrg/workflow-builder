@@ -27,7 +27,7 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
-from activities.spawn_session import spawn_session_for_workflow
+from workflows.session_host_wait import spawn_session_with_host_wait
 from activities.resolve_script_workflow import resolve_script_workflow
 from activities.team_ops import execute_team_op
 
@@ -438,8 +438,10 @@ def _start_script_call(
         "_otel": otel,
     }
 
-    bridge_result = yield ctx.call_activity(
-        spawn_session_for_workflow, input=_freeze(bridge_payload)
+    # Durable-timer readiness wait (concurrency plan P2) — see
+    # workflows/session_host_wait.py.
+    bridge_result = yield from spawn_session_with_host_wait(
+        ctx, bridge_payload, _freeze
     )
     if isinstance(bridge_result, dict) and bridge_result.get("cancelled"):
         # Bridge refused (e.g. cancelled benchmark). No child task — pump journals null.

@@ -156,6 +156,9 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "projectId": project_id,
         "_otel": otel,
     }
+    # Non-blocking (concurrency plan P2): one ensure POST; the pump owns the
+    # durable-timer readiness wait via wait_for_prepared_agent_hosts, keyed on
+    # the bridgePayload/agentHostStatus this descriptor carries back.
     bridge_result = spawn_session_for_workflow(ctx, bridge_payload)
     if isinstance(bridge_result, dict) and bridge_result.get("cancelled"):
         return {
@@ -195,4 +198,8 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "childWorkflowName": target.get("dispatch_workflow_name") or SESSION_WORKFLOW_NAME,
         "childInput": child_input,
         "appId": bridge_app_id,
+        "agentHostStatus": bridge_result.get("agentHostStatus")
+        if isinstance(bridge_result, dict)
+        else None,
+        "bridgePayload": bridge_payload,
     }
