@@ -79,6 +79,10 @@ export interface TaskOpts {
 	effort: string | null;
 	isolation: string | null;
 	agentType: string | null;
+	/** Named-agent slug (contract 1.2.0): dispatch resolves it FAIL-CLOSED in
+	 * the ensure-for-workflow bridge — unknown slugs journal null, never fall
+	 * back to the metered default runtime. */
+	agent?: string | null;
 }
 
 export interface EvaluateTask {
@@ -1383,6 +1387,7 @@ function toTask(p: Pending): EvaluateTask {
 			effort: (o.effort as string | undefined) ?? null,
 			isolation: (o.isolation as string | undefined) ?? null,
 			agentType: (o.agentType as string | undefined) ?? null,
+			agent: (o.agent as string | undefined) ?? null,
 		},
 		baseHash: p.baseHash,
 		occurrence: p.occurrence,

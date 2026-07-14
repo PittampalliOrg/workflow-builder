@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import { resolveAgentIdBySlug } from "$lib/server/teams/team-repo";
 import type {
 	WorkflowDataService,
 	WorkflowPublishedAgent,
@@ -296,6 +297,45 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 	if (!agentConfig) return error(400, "agentConfig is required");
 
+	// Named-agent resolution (cutover P1e): dynamic-script agent(..., {agent})
+	// resolves the slug HERE, at dispatch-prepare time — scripts compute slugs
+	// in JS, so start-time resolution (resolveSpecAgentRefs) cannot apply.
+	// FAIL-CLOSED: an unknown slug is a 422 the orchestrator converts to a
+	// journaled null; NEVER a silent fall-through to the metered default
+	// runtime. Every response echoes resolvedAgentSlug so a NEW orchestrator
+	// detects old-BFF skew (missing echo -> refuse dispatch).
+	const resolveAgentSlugRaw =
+		typeof body.resolveAgentSlug === "string" && body.resolveAgentSlug.trim()
+			? body.resolveAgentSlug.trim()
+			: null;
+	let resolvedAgentSlug: string | null = null;
+	let effectiveAgentId = bodyAgentId;
+	let effectiveAgentVersion = bodyAgentVersion;
+	if (resolveAgentSlugRaw) {
+		if (!projectId) {
+			return json(
+				{
+					code: "agent_ref_unresolved",
+					error: "named-agent resolution requires a projectId on the run",
+				},
+				{ status: 422 },
+			);
+		}
+		const resolvedBySlug = await resolveAgentIdBySlug(projectId, resolveAgentSlugRaw);
+		if (!resolvedBySlug) {
+			return json(
+				{
+					code: "agent_ref_unresolved",
+					error: `agent slug '${resolveAgentSlugRaw}' not found in project ${projectId}`,
+				},
+				{ status: 422 },
+			);
+		}
+		effectiveAgentId = resolvedBySlug.id;
+		effectiveAgentVersion = null; // latest registered version
+		resolvedAgentSlug = resolveAgentSlugRaw;
+	}
+
 	// Swap-safety gate for the durable/run (workflow + SWE-bench) path — mirrors
 	// the direct-spawn gate in sessions/spawn.ts. Warn/reject when the dispatched
 	// runtime would drop a capability the agent config relies on (e.g. an
@@ -549,6 +589,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			sessionId: existing.id,
 			agentId: existing.agentId,
 			agentVersion: existing.agentVersion,
+			...(resolvedAgentSlug ? { resolvedAgentSlug } : {}),
 			agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
 			agentAppId: reuseChildAppId,
 			runtimeSandboxName: reuseRuntimeSandboxName,
@@ -586,8 +627,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	// agent-runtime-<slug> pod. Specs without that identity are older inline
 	// configs and still get a workflow-scoped ephemeral agent.
 	const publishedAgent = await resolvePublishedWorkflowAgent(workflowData, {
-		agentId: bodyAgentId,
-		agentVersion: bodyAgentVersion,
+		agentId: effectiveAgentId,
+		agentVersion: effectiveAgentVersion,
 		projectId,
 	});
 	const sessionAgent = await sessionCommands.resolveWorkflowSessionAgent({
@@ -787,6 +828,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		sessionId,
 		agentId,
 		agentVersion,
+		...(resolvedAgentSlug ? { resolvedAgentSlug } : {}),
 		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 		agentAppId: childAgentAppId,
 		runtimeSandboxName: childRuntimeSandboxName,

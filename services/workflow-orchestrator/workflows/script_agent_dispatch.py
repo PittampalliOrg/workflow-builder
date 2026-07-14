@@ -462,6 +462,12 @@ def _start_script_call(
         "projectId": project_id,
         "_otel": otel,
     }
+    # Named agent (cutover P1e): resolved FAIL-CLOSED in the BFF bridge —
+    # unknown slug -> 422 refusal -> journal null; old-BFF skew (missing
+    # resolvedAgentSlug echo) -> refusal too. Never the default runtime.
+    agent_slug_opt = str(opts.get("agent") or "").strip()
+    if agent_slug_opt:
+        bridge_payload["resolveAgentSlug"] = agent_slug_opt
 
     # Durable-timer readiness wait (concurrency plan P2) — see
     # workflows/session_host_wait.py.

@@ -925,3 +925,26 @@ describe("sleep() and approve()/waitForEvent()", () => {
 		expect(res.error?.message).toMatch(/name/);
 	});
 });
+
+describe("named-agent opts.agent (contract 1.2.0)", () => {
+	it("agent slug participates in the callId hash (additive, omit-nullish)", async () => {
+		const withAgent = deriveCallId(
+			computeBaseHash("do it", agentSemanticOpts({ agent: "reviewer" })),
+			0,
+		);
+		const without = deriveCallId(computeBaseHash("do it", agentSemanticOpts({})), 0);
+		expect(withAgent).not.toBe(without);
+		// null/undefined agent is OMITTED -> identical to no-agent (frozen ids stable).
+		expect(
+			deriveCallId(computeBaseHash("do it", agentSemanticOpts({ agent: null })), 0),
+		).toBe(without);
+	});
+
+	it("task.opts carries the agent slug to dispatch", async () => {
+		const res = await evaluateScript(
+			req(META + "const a = await agent('review this', { agent: 'code-reviewer' }); return { a }"),
+		);
+		expect(res.status).toBe("need");
+		expect(res.tasks[0].opts.agent).toBe("code-reviewer");
+	});
+});
