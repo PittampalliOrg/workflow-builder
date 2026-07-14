@@ -55,10 +55,11 @@ transcript). Keep this list in sync with the active `/goal`.
   `event`, agent semanticOpts key `agent`, advisory `tasks[].position`); callid vector
   test proves existing callIds byte-identical; evaluator vitest (73 passed) +
   orchestrator pytest (328 passed) both updated and green 2026-07-14.
-- [ ] **5.** stacks: `script-evaluator` replicas 1→2 + PDB (it is a hard start-path
+- [x] **5.** stacks: `script-evaluator` replicas 1→2 + PDB (it is a hard start-path
   dependency — `validateWithEvaluator` runs with `degradeOnUnavailable:false` on every
-  script start). Committed as stacks PR #4187 (`cbac77ee7`); check this box when dev
-  shows 2 Ready script-evaluator pods post-merge.
+  script start). Merged as stacks PR #4187 (`a02f63bb7`); dev verified 2026-07-14:
+  2 Ready script-evaluator pods, surge-only strategy live, PDB ALLOWED DISRUPTIONS
+  behaving (`kubectl --context dev rollout status` clean).
 
 ### P1 — dialect gaps (all behind `DYNAMIC_SCRIPT_ACTIONS_ENABLED`)
 
