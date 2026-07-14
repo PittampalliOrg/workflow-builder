@@ -19,6 +19,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		| "getScopedExecutionById"
 		| "getWorkflowByRef"
 		| "getRunningWorkflowExecution"
+		| "isPlatformAdmin"
 		| "validateApiKeyForUser"
 	>;
 	let approvalEvents: WorkflowApprovalEventPort;
@@ -35,6 +36,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			getScopedExecutionById: vi.fn(async () => executionRecord()),
 			getWorkflowByRef: vi.fn(async () => workflowDefinition()),
 			getRunningWorkflowExecution: vi.fn(async () => null),
+			isPlatformAdmin: vi.fn(async () => true),
 			validateApiKeyForUser: vi.fn(async () => ({
 				valid: true as const,
 				apiKeyId: "key-1",
@@ -95,12 +97,15 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
-	it("starts an authenticated workflow execution after workspace scope checks", async () => {
+	it("does not trust launch provenance supplied in generic request JSON", async () => {
 		const result = await service.executeWorkflow({
 			workflowId: "workflow-1",
 			userId: "user-1",
 			projectId: "project-1",
-			body: { input: { prompt: "ship it" } },
+			body: {
+				input: { prompt: "ship it" },
+				launchSurface: "dev-environment",
+			},
 		});
 
 		expect(workflowData.getWorkflowByRef).toHaveBeenCalledWith({
@@ -112,6 +117,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 			triggerData: { prompt: "ship it" },
 			userId: "user-1",
 		});
+		expect(workflowData.isPlatformAdmin).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			status: "ok",
 			body: {
@@ -121,6 +127,45 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 				status: "running",
 			},
 		});
+	});
+
+	it("forwards trusted Dev launch provenance for a platform admin", async () => {
+		const result = await service.executeDevWorkflow({
+			workflowId: "workflow-1",
+			userId: "admin-1",
+			projectId: "project-1",
+			requestOrigin: "https://wfb-feature-one.tail286401.ts.net",
+			body: { input: { mode: "host-throwaway" } },
+		});
+
+		expect(workflowData.isPlatformAdmin).toHaveBeenCalledWith("admin-1");
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			triggerData: { mode: "host-throwaway" },
+			userId: "admin-1",
+			launchSurface: "dev-environment",
+			launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+		});
+		expect(result.status).toBe("ok");
+	});
+
+	it("rejects trusted Dev launch provenance for a non-admin", async () => {
+		vi.mocked(workflowData.isPlatformAdmin).mockResolvedValueOnce(false);
+
+		const result = await service.executeDevWorkflow({
+			workflowId: "workflow-1",
+			userId: "user-1",
+			projectId: "project-1",
+			requestOrigin: "https://wfb-feature-one.tail286401.ts.net",
+			body: { input: { mode: "host-throwaway" } },
+		});
+
+		expect(result).toEqual({
+			status: "error",
+			httpStatus: 403,
+			message: "Admin access required",
+		});
+		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
 	});
 
 	it("hides out-of-workspace workflows before starting authenticated execution", async () => {

@@ -7,7 +7,10 @@
     "title": "Microservice dev-session: provision a live dev preview, then hand off to an interactive coding agent",
     "summary": "Runs the five catalog-backed workflow-builder microservices (workflow-builder, workflow-orchestrator, function-router, mcp-gateway, and workflow-mcp-server) in an isolated preview-native vCluster development environment. It archives one immutable sparse checkout as a mode-0600 JuiceFS handoff, then a persistent interactive coding-agent session verifies and activates that checkout on pod-local storage for fast hot-sync development and full-system inspection.",
     "x-workflow-builder": {
-      "resumable": true
+      "resumable": false,
+      "launch": {
+        "surface": "dev-environment"
+      }
     }
   },
   "input": {

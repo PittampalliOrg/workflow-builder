@@ -1,5 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { getMissingRequiredTriggerFields } from "$lib/utils/trigger-fields";
+import { applyWorkflowInputDefaults } from "$lib/utils/workflow-input-config";
 
 const fixture = JSON.parse(
   readFileSync(
@@ -62,6 +64,23 @@ describe("microservice dev session source checkout", () => {
       expect(fixture.document.summary).toContain(service);
       expect(inputProperties.service.description).toContain(service);
     }
+  });
+
+  it("uses the target-aware Dev launch surface instead of generic Execute", () => {
+    expect(fixture.document["x-workflow-builder"].resumable).toBe(false);
+    expect(fixture.document["x-workflow-builder"].launch).toEqual({
+      surface: "dev-environment",
+    });
+  });
+
+  it("allows the Dev launcher to omit preview-only context in host-throwaway mode", () => {
+    const triggerData = applyWorkflowInputDefaults(fixture, {
+      mode: "host-throwaway",
+      service: "workflow-builder",
+      services: ["workflow-builder"],
+    });
+
+    expect(getMissingRequiredTriggerFields(fixture, triggerData)).toEqual([]);
   });
 
 	it("seeds the brokered GLM agent on the shared JuiceFS runtime", () => {

@@ -16,6 +16,7 @@
 	import CodePreviewDialog from './code-preview-dialog.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
+	import { getWorkflowLaunchSurface, workflowLaunchHref } from '$lib/utils/workflow-launch';
 
 	let isPublishing = $state(false);
 	let showExecuteDialog = $state(false);
@@ -27,13 +28,24 @@
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+	const launchSurface = $derived(getWorkflowLaunchSurface(store.spec));
+	const contextualLaunchHref = $derived(workflowLaunchHref(launchSurface, slug));
+
+	function openExecutionSurface() {
+		if (contextualLaunchHref) {
+			void goto(contextualLaunchHref);
+			return true;
+		}
+		showExecuteDialog = true;
+		return false;
+	}
 
 	// Deep-link from the Run Cockpit's "Submit new run" button:
 	// /workspaces/[slug]/workflows/[id]?execute=1 → auto-opens the Execute
 	// dialog. Strip the param once consumed so reloads don't reopen.
 	$effect(() => {
 		if (!page.url.searchParams.has('execute')) return;
-		showExecuteDialog = true;
+		if (openExecutionSurface()) return;
 		if (typeof window !== 'undefined') {
 			const next = new URL(window.location.href);
 			next.searchParams.delete('execute');
@@ -251,10 +263,13 @@
 		<Button
 			size="sm"
 			class="h-7 gap-1.5 px-3 text-xs"
-			onclick={() => (showExecuteDialog = true)}
+			onclick={openExecutionSurface}
+			title={contextualLaunchHref
+				? 'Open the target-aware Dev launcher'
+				: 'Execute workflow'}
 		>
 			<Play size={12} />
-			Execute
+			{contextualLaunchHref ? 'Start in Dev' : 'Execute'}
 		</Button>
 	</div>
 </div>
