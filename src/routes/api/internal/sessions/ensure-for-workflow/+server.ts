@@ -334,7 +334,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			);
 		}
 		effectiveAgentId = resolvedBySlug.id;
-		effectiveAgentVersion = null; // latest registered version
+		// Version pin (evals): honored when the caller sends one; otherwise the
+		// latest registered version.
+		const resolveAgentVersionRaw =
+			typeof body.resolveAgentVersion === "number" &&
+			Number.isFinite(body.resolveAgentVersion) &&
+			body.resolveAgentVersion > 0
+				? Math.trunc(body.resolveAgentVersion)
+				: null;
+		effectiveAgentVersion = resolveAgentVersionRaw;
 		resolvedAgentSlug = resolveAgentSlugRaw;
 	}
 

@@ -83,6 +83,8 @@ export interface TaskOpts {
 	 * the ensure-for-workflow bridge — unknown slugs journal null, never fall
 	 * back to the metered default runtime. */
 	agent?: string | null;
+	/** Named-agent version pin (evals): absent = latest registered version. */
+	agentVersion?: number | null;
 }
 
 export interface EvaluateTask {
@@ -1388,6 +1390,7 @@ function toTask(p: Pending): EvaluateTask {
 			isolation: (o.isolation as string | undefined) ?? null,
 			agentType: (o.agentType as string | undefined) ?? null,
 			agent: (o.agent as string | undefined) ?? null,
+			agentVersion: typeof o.agentVersion === "number" ? o.agentVersion : null,
 		},
 		baseHash: p.baseHash,
 		occurrence: p.occurrence,

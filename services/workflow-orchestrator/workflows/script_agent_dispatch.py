@@ -468,6 +468,9 @@ def _start_script_call(
     agent_slug_opt = str(opts.get("agent") or "").strip()
     if agent_slug_opt:
         bridge_payload["resolveAgentSlug"] = agent_slug_opt
+        agent_version_opt = opts.get("agentVersion")
+        if isinstance(agent_version_opt, int) and agent_version_opt > 0:
+            bridge_payload["resolveAgentVersion"] = agent_version_opt
 
     # Durable-timer readiness wait (concurrency plan P2) — see
     # workflows/session_host_wait.py.

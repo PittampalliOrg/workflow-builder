@@ -167,6 +167,9 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     agent_slug_opt = str(opts.get("agent") or "").strip()
     if agent_slug_opt:
         bridge_payload["resolveAgentSlug"] = agent_slug_opt
+        agent_version_opt = opts.get("agentVersion")
+        if isinstance(agent_version_opt, int) and agent_version_opt > 0:
+            bridge_payload["resolveAgentVersion"] = agent_version_opt
     # Non-blocking (concurrency plan P2): one ensure POST; the pump owns the
     # durable-timer readiness wait via wait_for_prepared_agent_hosts, keyed on
     # the bridgePayload/agentHostStatus this descriptor carries back.
