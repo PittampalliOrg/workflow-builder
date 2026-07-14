@@ -121,6 +121,32 @@
 		calls.filter((c) => typeof c.callSite?.line !== 'number').length
 	);
 
+	/** Approve a parked gate directly from its graph node (dynamic-script gates
+	 * are journal-driven; callId disambiguates when several are waiting). */
+	async function approveCallById(callId: string) {
+		try {
+			await fetch(`/api/workflows/executions/${executionId}/approve`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ callId, approved: true, source: 'run-canvas' })
+			});
+		} catch {
+			/* the 3s poll reflects the outcome either way */
+		}
+	}
+
+	/** Graph→rail sync: clicking a node pins the newest call at that source
+	 * line, so its transcript opens in the right pane. */
+	function selectByLine(line: number) {
+		const at = calls.filter((c) => c.callSite?.line === line);
+		if (at.length === 0) return;
+		const preferred =
+			at.find((c) => c.status === 'running' && c.sessionId) ??
+			[...at].reverse().find((c) => c.sessionId) ??
+			at[at.length - 1];
+		selectCall(preferred);
+	}
+
 	async function killSessionById(sessionId: string) {
 		try {
 			await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stop`, {
@@ -393,13 +419,15 @@
 					{/if}
 				</div>
 				{#if view === 'graph' && scriptSource}
-					<div class="h-[520px] overflow-hidden rounded-lg border border-border/60">
+					<div class="h-[min(72vh,820px)] overflow-hidden rounded-lg border border-border/60">
 						<ScriptCanvas
 							{scriptSource}
 							scriptMeta={meta}
 							{callStates}
 							onKillSession={killSessionById}
 							onSkipCall={skipCallById}
+							onApproveCall={approveCallById}
+							onNodeLine={selectByLine}
 						/>
 					</div>
 				{:else}

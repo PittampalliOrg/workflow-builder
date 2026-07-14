@@ -29,6 +29,8 @@
 		callStates?: Record<number, CallLineState> | null;
 		onKillSession?: (sessionId: string) => void;
 		onSkipCall?: (callId: string) => void;
+		/** Run page: approve a parked gate (event-kind node) by callId. */
+		onApproveCall?: (callId: string) => void;
 		/** Code⇄canvas sync: a node with a source line was clicked. */
 		onNodeLine?: (line: number) => void;
 		/** Code⇄canvas sync: highlight the node nearest this source line. */
@@ -40,6 +42,7 @@
 		callStates = null,
 		onKillSession = undefined,
 		onSkipCall = undefined,
+		onApproveCall = undefined,
 		onNodeLine = undefined,
 		activeLine = null
 	}: Props = $props();
@@ -110,7 +113,7 @@
 				data: {
 					...n.data,
 					codeActive: isActive,
-					...(callState ? { callState, onKillSession, onSkipCall } : {})
+					...(callState ? { callState, onKillSession, onSkipCall, onApproveCall } : {})
 				}
 			};
 		});

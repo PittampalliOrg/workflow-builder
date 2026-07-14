@@ -95,6 +95,8 @@
 	const codeActive = $derived(Boolean(data.codeActive));
 	const onKillSession = $derived(data.onKillSession as ((sessionId: string) => void) | undefined);
 	const onSkipCall = $derived(data.onSkipCall as ((callId: string) => void) | undefined);
+	const onApproveCall = $derived(data.onApproveCall as ((callId: string) => void) | undefined);
+	let approving = $state(false);
 </script>
 
 <div class="relative" style="width: {width}px">
@@ -298,7 +300,19 @@
 						{#if callState.skipped > 0}
 							<span class="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{callState.skipped} skipped</span>
 						{/if}
-						{#if callState.running > 0 && (onKillSession || onSkipCall)}
+						{#if variant === 'event' && callState.running > 0 && onApproveCall && callState.runningCallIds[0]}
+							<button
+								class="ml-auto inline-flex items-center gap-1 rounded bg-emerald-500/90 px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-60"
+								title="Approve this gate — the run continues immediately"
+								disabled={approving}
+								onclick={(e) => {
+									e.stopPropagation();
+									approving = true;
+									onApproveCall(callState.runningCallIds[0]);
+								}}
+							>✓ Approve</button>
+						{/if}
+						{#if callState.running > 0 && (onKillSession || onSkipCall) && variant !== 'event'}
 							<span class="ml-auto inline-flex items-center gap-1">
 								{#if onSkipCall && callState.runningCallIds[0]}
 									<button
