@@ -33,7 +33,13 @@ from activities.script_call_journal import record_script_call_pause
 
 # The AP durability knobs are defined next to the SW interpreter's AP path —
 # reuse them so scripts and SW specs keep ONE retry/pause contract.
-from workflows.sw_workflow import _AP_MAX_PAUSE_ROUNDS, _AP_RETRY_POLICY, _freeze
+from workflows.sw_workflow import (
+    _AP_MAX_PAUSE_ROUNDS,
+    _AP_RETRY_POLICY,
+    _expects_durable_dev_preview_activation,
+    _freeze,
+    _run_durable_dev_preview_activation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +55,34 @@ def action_runner_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> Any
     )
     journal = input_data.get("journal") if isinstance(input_data.get("journal"), dict) else {}
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else {}
+
+    # dev/preview activation (cutover P3 / blocker B1): preview-native adopt
+    # runs are NOT single-shot — the SW interpreter polls a strict batch/ready
+    # set with durable timers before continuing. Reuse that exact generator here
+    # so a script's action('dev/preview', {mode:'preview-native', services:[…]})
+    # gets the same readiness contract (the GAN / preview / dev-session producer
+    # ports depend on it).
+    node_config = (
+        activity_input.get("node", {}).get("config")
+        if isinstance(activity_input.get("node"), dict)
+        else None
+    )
+    action_type = node_config.get("actionType") if isinstance(node_config, dict) else None
+    if isinstance(action_type, str) and _expects_durable_dev_preview_activation(
+        action_type, node_config
+    ):
+        return (
+            yield from _run_durable_dev_preview_activation(
+                ctx,
+                activity_input=_freeze({**activity_input, "executionType": "BEGIN"}),
+                call_kwargs={},
+                config=node_config,
+                execution_id=str(
+                    (journal.get("executionId") if isinstance(journal, dict) else "") or ""
+                ),
+                task_name=str(journal.get("callId") or "action") if isinstance(journal, dict) else "action",
+            )
+        )
 
     result = yield ctx.call_activity(
         execute_action,

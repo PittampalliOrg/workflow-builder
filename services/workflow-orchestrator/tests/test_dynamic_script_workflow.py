@@ -1830,3 +1830,39 @@ def test_call_site_position_threads_to_journal_rows():
     r_spec = next(i["spec"] for i in ctx.record_inputs if i["callId"] == cid)
     assert d_spec["callSite"] == {"line": 7, "column": 23}
     assert r_spec["callSite"] == {"line": 7, "column": 23}
+
+
+def test_dev_preview_activation_routes_to_runner_child_with_durable_poll():
+    """Blocker B1 (cutover P3): action('dev/preview', {mode:'preview-native',
+    services:[…]}) is NOT single-shot — it must dispatch through the runner
+    child, which reuses the SW interpreter's durable activation poll."""
+    cid = "b1" * 20 + "_0"
+    task = action_task(
+        cid,
+        "dev/preview",
+        {
+            "mode": "preview-native",
+            "adopt": True,
+            "services": ["workflow-builder"],
+            "activationPollSeconds": 2,
+        },
+        label="dev_preview",
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete_runner(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "data": {"ready": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_runner]
+    )
+    assert result["success"] is True
+    # Dispatched as a CHILD (the runner), not a bare activity.
+    assert len([a for a in ctx.action_log if a[0] == "child"]) == 1
+    assert ctx.execute_action_inputs == []
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    cfg = child_input["activityInput"]["node"]["config"]
+    assert cfg["actionType"] == "dev/preview" and cfg["mode"] == "preview-native"
+    # AP-only retry semantics must NOT be stamped on an activation call.
+    assert "raiseOnRetryable" not in child_input["activityInput"]

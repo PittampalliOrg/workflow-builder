@@ -38,6 +38,7 @@ from activities.team_ops import execute_team_op
 # stay byte-compatible with the SW interpreter (avoids churn / drift).
 from workflows.sw_workflow import (
     _call_child_workflow_with_history_propagation,
+    _expects_durable_dev_preview_activation,
     _is_ap_piece_action,
     _resolve_native_agent_runtime,
     _freeze,
@@ -704,11 +705,15 @@ def start_action_call(
     if action_opts.get("idempotent") is True:
         activity_input["skipIdempotencyGate"] = True
 
-    if _is_ap_piece_action(slug):
+    # dev/preview activation needs the runner child's durable poll (blocker B1).
+    needs_activation = _expects_durable_dev_preview_activation(slug, config)
+
+    if _is_ap_piece_action(slug) or needs_activation:
         # AP durability contract: the runner child owns BEGIN/RESUME rounds,
         # _AP_RETRY_POLICY, and the DELAY/WEBHOOK pause waits; its instance id
         # (deterministic, already stamped by the pump) is the resume target.
-        activity_input["raiseOnRetryable"] = True
+        if not needs_activation:
+            activity_input["raiseOnRetryable"] = True
         return ctx.call_child_workflow(
             action_runner_workflow,
             input=_freeze(

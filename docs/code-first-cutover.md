@@ -211,17 +211,15 @@ transcript). Keep this list in sync with the active `/goal`.
 
 ## Blockers
 
-**B1 — `dev/preview` durable activation is not expressible via `action()` (blocks the GAN
-/ preview / dev-session producer ports).** The SW interpreter has a bespoke handler
-(`_run_durable_dev_preview_activation`, ~260 lines) that starts a preview and then polls
-a strict batch/ready-set with durable timers before continuing. `action('dev/preview')`
-currently dispatches as a plain single-shot activity — no readiness poll — so the ported
-fixtures would race their preview. **Fix (designed, not built):** port the activation
-poll into the existing `action_runner_workflow_v1` child (it already owns timer-based
-pause rounds for AP pieces) and route `dev/*` slugs to it, mirroring the AP DELAY branch.
-Estimated S–M. Until then the GAN generator, `preview-gan-*`, `preview-dev-gan`, and
-`microservice-dev-session` ports stay unstarted and their guard rewrites (item 17's second
-half) stay gated.
+**B1 — RESOLVED (2026-07-14).** `dev/preview` durable activation is now expressible from a
+script: `action('dev/preview', {mode:'preview-native', services:[…]})` dispatches through
+`action_runner_workflow_v1`, which reuses the SW interpreter's own
+`_run_durable_dev_preview_activation` generator verbatim (strict batch/ready-set poll with
+durable timers + deadline). AP-only retry semantics are not stamped on activation calls.
+Regression test:
+`test_dev_preview_activation_routes_to_runner_child_with_durable_poll`; orchestrator suite
+356 passed. The GAN / preview / dev-session fixture ports are unblocked (still to be
+written).
 
 **B2 — the shadow-parity gates need real eval/benchmark spend and multi-hour runtime.**
 The code-eval 20-item and SWE-bench ≥5-instance canaries (and the one live GAN run) are
