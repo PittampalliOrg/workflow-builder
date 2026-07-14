@@ -679,6 +679,9 @@ def start_action_call(
                             "baseHash": spec.get("baseHash"),
                             "occurrence": spec.get("occurrence"),
                             "retries": int(spec.get("retries") or 0),
+                            # Keep the call-site on pause-marker rewrites of the
+                            # running row (they clobbered it to NULL otherwise).
+                            "callSite": spec.get("position"),
                         },
                     },
                     "_otel": otel,
@@ -727,6 +730,9 @@ def start_event_wait_call(
                         "baseHash": spec.get("baseHash"),
                         "occurrence": spec.get("occurrence"),
                         "retries": int(spec.get("retries") or 0),
+                        # Keep the call-site on pause-marker rewrites of the
+                        # running row (they clobbered it to NULL otherwise).
+                        "callSite": spec.get("position"),
                     },
                 },
                 "_otel": otel,
