@@ -26,6 +26,7 @@ export const SEMANTIC_OPT_KEYS = [
 	"label",
 	"agent",
 	"agentVersion",
+	"sandbox",
 ] as const;
 
 /** NUL (U+0000) separator between prompt and canonicalized semantic opts. */

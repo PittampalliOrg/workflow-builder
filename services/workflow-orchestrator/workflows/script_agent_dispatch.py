@@ -433,7 +433,17 @@ def _start_script_call(
     agent_config["runtime"] = _name
 
     label = str(opts.get("label") or "").strip() or str(call_id)[:8]
-    workspace_ref = f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None
+    # Workspace/sandbox binding (contract 1.2.0, cutover P3): opts.sandbox lets a
+    # script bind the agent to a workspace it created via
+    # action('workspace/profile', …) — the capability the code-eval / SWE-bench /
+    # GAN producers need. isolation:'shared' remains the simple path.
+    sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
+    sandbox_opt = _substitute_workspace(sandbox_opt, f"ws_script_{exec_id}")
+    workspace_ref = (
+        str(sandbox_opt.get("workspaceRef"))
+        if sandbox_opt.get("workspaceRef")
+        else (f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None)
+    )
     timeout_minutes = None
     try:
         timeout_minutes = int(defaults.get("timeoutMinutes")) if defaults.get("timeoutMinutes") else 30
@@ -456,8 +466,25 @@ def _start_script_call(
         "title": f"{meta.get('name') or 'script'} · {label}",
         "workspaceRef": workspace_ref,
         # Single auto-turn per corrective session (structured retry = NEW session).
-        "timeoutMinutes": timeout_minutes,
-        "maxIterations": None,
+        "timeoutMinutes": (
+            int(sandbox_opt["timeoutMinutes"])
+            if isinstance(sandbox_opt.get("timeoutMinutes"), int)
+            else timeout_minutes
+        ),
+        "maxIterations": (
+            int(sandbox_opt["maxTurns"]) if isinstance(sandbox_opt.get("maxTurns"), int) else None
+        ),
+        **(
+            {"sandboxName": sandbox_opt["sandboxName"]}
+            if isinstance(sandbox_opt.get("sandboxName"), str)
+            else {}
+        ),
+        **({"cwd": sandbox_opt["cwd"]} if isinstance(sandbox_opt.get("cwd"), str) else {}),
+        **(
+            {"sandboxPolicy": sandbox_opt["policy"]}
+            if isinstance(sandbox_opt.get("policy"), dict)
+            else {}
+        ),
         "userId": user_id,
         "projectId": project_id,
         "_otel": otel,
@@ -579,6 +606,24 @@ def start_team_call(
     )
 
 
+#: The `workspace` global's sentinel (script-evaluator WORKSPACE_SENTINEL).
+#: Substituted with the run's real shared workspace ref at dispatch so the
+#: script's action() input hashes stay stable across executions (resume reuse).
+WORKSPACE_SENTINEL = "@workspace"
+
+
+def _substitute_workspace(value: Any, workspace_ref: str) -> Any:
+    """Deep-replace the workspace sentinel with the run's real ref. Pure +
+    deterministic (replay-safe)."""
+    if isinstance(value, str):
+        return workspace_ref if value == WORKSPACE_SENTINEL else value
+    if isinstance(value, list):
+        return [_substitute_workspace(v, workspace_ref) for v in value]
+    if isinstance(value, dict):
+        return {k: _substitute_workspace(v, workspace_ref) for k, v in value.items()}
+    return value
+
+
 def start_action_call(
     ctx,
     *,
@@ -621,7 +666,9 @@ def start_action_call(
         }
 
     action_opts = spec.get("actionOpts") if isinstance(spec.get("actionOpts"), dict) else {}
-    raw_input = spec.get("args")
+    # The run's shared workspace (same key agent(isolation:'shared') binds), so
+    # workspace/* actions and agents operate on ONE filesystem.
+    raw_input = _substitute_workspace(spec.get("args"), f"ws_script_{exec_id}")
     if isinstance(raw_input, dict):
         config: dict[str, Any] = dict(raw_input)
     elif raw_input is None:

@@ -85,7 +85,8 @@
 						"isolation": null,
 						"agentType": null,
 						"agent": null,
-						"agentVersion": null
+						"agentVersion": null,
+						"sandbox": null
 					},
 					"baseHash": "<64 hex>",
 					"occurrence": 0

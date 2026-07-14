@@ -14,6 +14,39 @@ const WORKFLOW_JSON_PATH = path.resolve(
 	process.cwd(),
 	'services/code-eval-runner/code-eval-item.workflow.json'
 );
+// Cutover P3 (item 15): with CODE_EVAL_SCRIPT_PRODUCER=true the SAME workflow
+// id is seeded as a dynamic-script (spec = {engine, script, meta}) instead of
+// the SW 1.0 document — so CODE_EVAL_WORKFLOW_ID and the humaneval/mbpp/
+// bigcodebench template routes need zero changes. Flip the flag off + re-run
+// to fall back to the SW spec while shadow parity is in flight.
+const SCRIPT_PATH = path.resolve(
+	process.cwd(),
+	'scripts/fixtures/dynamic-scripts/code-eval-item.js'
+);
+function scriptProducerEnabled() {
+	const raw = String(process.env.CODE_EVAL_SCRIPT_PRODUCER ?? '').trim().toLowerCase();
+	return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+function extractMetaLiteral(source) {
+	const m = /export\s+const\s+meta\s*=\s*\{/.exec(source);
+	if (!m) throw new Error('code-eval script is missing `export const meta = {…}`');
+	let i = source.indexOf('{', m.index);
+	let depth = 0;
+	let end = -1;
+	for (let j = i; j < source.length; j += 1) {
+		if (source[j] === '{') depth += 1;
+		else if (source[j] === '}') {
+			depth -= 1;
+			if (depth === 0) {
+				end = j + 1;
+				break;
+			}
+		}
+	}
+	if (end < 0) throw new Error('unterminated meta literal in the code-eval script');
+	// eslint-disable-next-line no-new-func
+	return Function(`return (${source.slice(i, end)})`)();
+}
 
 function parseArgs(argv) {
 	let userEmail = '';
@@ -85,6 +118,19 @@ async function main() {
 	const { userEmail } = parseArgs(process.argv.slice(2));
 	const raw = await fs.readFile(WORKFLOW_JSON_PATH, 'utf8');
 	const workflow = JSON.parse(raw);
+
+	if (scriptProducerEnabled()) {
+		// Same id/name/description; the SPEC becomes the dynamic-script envelope.
+		const script = await fs.readFile(SCRIPT_PATH, 'utf8');
+		const meta = extractMetaLiteral(script);
+		workflow.engineType = 'dynamic-script';
+		workflow.spec = { engine: 'dynamic-script', script, meta };
+		workflow.nodes = [];
+		workflow.edges = [];
+		console.log(`[code-eval] seeding DYNAMIC-SCRIPT producer (${script.length} bytes)`);
+	} else {
+		console.log('[code-eval] seeding SW 1.0 spec (set CODE_EVAL_SCRIPT_PRODUCER=true for the script port)');
+	}
 
 	const sql = postgres(DATABASE_URL, { max: 1, prepare: false });
 	try {

@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     # Import inside the activity to keep activities package auto-discovery from
     # creating an import cycle at module load time.
-    from workflows.script_agent_dispatch import (  # noqa: PLC0415
+    from workflows.script_agent_dispatch import (
+        _substitute_workspace,  # noqa: PLC0415
         DYNAMIC_SCRIPT_WORKFLOW_NAME,
         SESSION_WORKFLOW_NAME,
         _build_agent_config,
@@ -132,7 +133,17 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     agent_config["runtime"] = resolved_runtime
     label = str(opts.get("label") or "").strip() or str(call_id)[:8]
-    workspace_ref = f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None
+    # Workspace/sandbox binding (contract 1.2.0, cutover P3): opts.sandbox lets a
+    # script bind the agent to a workspace it created via
+    # action('workspace/profile', …) — the capability the code-eval / SWE-bench /
+    # GAN producers need. isolation:'shared' remains the simple path.
+    sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
+    sandbox_opt = _substitute_workspace(sandbox_opt, f"ws_script_{exec_id}")
+    workspace_ref = (
+        str(sandbox_opt.get("workspaceRef"))
+        if sandbox_opt.get("workspaceRef")
+        else (f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None)
+    )
     try:
         timeout_minutes = (
             int(defaults.get("timeoutMinutes")) if defaults.get("timeoutMinutes") else 30
@@ -155,8 +166,25 @@ def prepare_script_call(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         ),
         "title": f"{meta.get('name') or 'script'} · {label}",
         "workspaceRef": workspace_ref,
-        "timeoutMinutes": timeout_minutes,
-        "maxIterations": None,
+        "timeoutMinutes": (
+            int(sandbox_opt["timeoutMinutes"])
+            if isinstance(sandbox_opt.get("timeoutMinutes"), int)
+            else timeout_minutes
+        ),
+        "maxIterations": (
+            int(sandbox_opt["maxTurns"]) if isinstance(sandbox_opt.get("maxTurns"), int) else None
+        ),
+        **(
+            {"sandboxName": sandbox_opt["sandboxName"]}
+            if isinstance(sandbox_opt.get("sandboxName"), str)
+            else {}
+        ),
+        **({"cwd": sandbox_opt["cwd"]} if isinstance(sandbox_opt.get("cwd"), str) else {}),
+        **(
+            {"sandboxPolicy": sandbox_opt["policy"]}
+            if isinstance(sandbox_opt.get("policy"), dict)
+            else {}
+        ),
         "userId": user_id,
         "projectId": project_id,
         "_otel": otel,
