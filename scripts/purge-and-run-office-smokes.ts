@@ -12,6 +12,12 @@ const DATABASE_URL = process.env.DATABASE_URL!;
 const ORCH =
 	process.env.GENERIC_ORCHESTRATOR_URL ??
 	"http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080";
+// Smokes start through the BFF's canonical start path (engine-agnostic:
+// SW today, dynamic-script after the cutover port) — never by fabricating
+// workflow_executions rows + posting specs at the orchestrator directly
+// (cutover P3, docs/code-first-cutover.md item 15).
+const BFF = process.env.WORKFLOW_BUILDER_URL ?? "http://localhost:3000";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN!;
 
 type RunRow = {
 	id: string;
@@ -60,47 +66,25 @@ async function terminate(sql: postgres.Sql, row: RunRow) {
 	`;
 }
 
-async function trigger(sql: postgres.Sql, workflowId: string): Promise<string> {
-	const w = await sql<{
-		id: string;
-		spec: unknown;
-		user_id: string;
-		project_id: string | null;
-	}[]>`SELECT id, spec, user_id, project_id FROM workflows WHERE id = ${workflowId}`;
-	if (!w[0]) throw new Error(`workflow ${workflowId} not found`);
-	const alphabet =
-		"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
-	const bytes = new Uint8Array(21);
-	crypto.getRandomValues(bytes);
-	const execId = Array.from(bytes, (b) => alphabet[b & 63]).join("");
-	const [exec] = await sql<{ id: string }[]>`
-		INSERT INTO workflow_executions (id, workflow_id, user_id, status, input, project_id, started_at)
-		VALUES (${execId}, ${workflowId}, ${w[0].user_id}, 'running', '{}', ${w[0].project_id}, NOW())
-		RETURNING id
-	`;
-	const res = await fetch(`${ORCH}/api/v2/sw-workflows`, {
+async function trigger(workflowId: string): Promise<string> {
+	const res = await fetch(`${BFF}/api/internal/agent/workflows/execute`, {
 		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({
-			workflow: w[0].spec,
-			workflowId,
-			triggerData: {},
-			dbExecutionId: exec.id,
-		}),
+		headers: {
+			"content-type": "application/json",
+			"x-internal-token": INTERNAL_API_TOKEN,
+		},
+		body: JSON.stringify({ workflowId, triggerData: {} }),
+		signal: AbortSignal.timeout(30_000),
 	});
 	const body = await res.text();
 	if (!res.ok) {
-		await sql`UPDATE workflow_executions SET status = 'error', error = ${body.slice(0, 500)} WHERE id = ${exec.id}`;
-		throw new Error(`orchestrator ${res.status}: ${body}`);
+		throw new Error(`execute ${workflowId}: HTTP ${res.status}: ${body.slice(0, 300)}`);
 	}
-	const j = JSON.parse(body) as { instanceId: string };
-	await sql`
-		UPDATE workflow_executions
-		SET dapr_instance_id = ${j.instanceId}, workflow_session_id = ${exec.id}
-		WHERE id = ${exec.id}
-	`;
-	console.log(`TRIGGERED ${workflowId}: exec=${exec.id} instance=${j.instanceId}`);
-	return exec.id;
+	const j = JSON.parse(body) as { executionId: string; instanceId?: string };
+	console.log(
+		`TRIGGERED ${workflowId}: exec=${j.executionId} instance=${j.instanceId ?? "-"}`,
+	);
+	return j.executionId;
 }
 
 async function main() {
@@ -120,8 +104,8 @@ async function main() {
 		}
 		console.log("=== triggering smokes ===");
 		const ids = await Promise.all([
-			trigger(sql, "excel-agent-smoke"),
-			trigger(sql, "powerpoint-agent-smoke"),
+			trigger("excel-agent-smoke"),
+			trigger("powerpoint-agent-smoke"),
 		]);
 		console.log("DONE. exec ids:", ids.join(" "));
 	} finally {
