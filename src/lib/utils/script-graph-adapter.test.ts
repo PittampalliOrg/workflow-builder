@@ -251,3 +251,101 @@ describe("call-site lines (P2b overlay join key)", () => {
 		expect((agentNode?.data as { line?: number }).line).toBe(2);
 	});
 });
+
+// ── Adapter v2: full dialect coverage (code-first canvas redesign) ───────────
+
+describe('full dialect kinds (action/sleep/event/team)', () => {
+	const script = [
+		"export const meta = { name: 'full', phases: [{ title: 'Main' }], input: { type: 'object', properties: { url: {}, depth: {} } } }",
+		"phase('Main')",
+		"const crawl = await action('web/crawl', { url: args.url }, { label: 'crawl', allowFailure: true })",
+		'await sleep(30)',
+		"const gate = await approve({ message: 'Ship the crawl summary?', timeoutMinutes: 60 })",
+		"const evt = await waitForEvent('deploy-finished')",
+		"const t = await team.spawn({ name: 'reviewers' })",
+		"await team.task('reviewer', 'Review the crawl output')",
+		"const res = await agent('Summarize', { agent: 'trace-analyst', agentVersion: 3, model: 'zai/glm-5.2', sandbox: { workspaceRef: 'x' } })",
+		'return { res }'
+	].join('\n');
+
+	it('detects every call kind with its specifics', () => {
+		const m = parseScriptStructure(script, { name: 'full', input: { properties: { url: {}, depth: {} } } });
+		const kinds = m.calls.map((c) => c.kind);
+		expect(kinds).toEqual(['action', 'sleep', 'event', 'event', 'team', 'team', 'agent']);
+
+		const [act, slp, appr, evt, spawn, task, ag] = m.calls;
+		expect(act.actionSlug).toBe('web/crawl');
+		expect(act.allowFailure).toBe(true);
+		expect(act.label).toBe('crawl');
+		expect(slp.sleepSeconds).toBe(30);
+		expect(appr.eventName).toBe('approval');
+		expect(appr.label).toContain('Ship the crawl');
+		expect(evt.eventName).toBe('deploy-finished');
+		expect(spawn.teamOp).toBe('spawn');
+		expect(task.teamOp).toBe('task');
+		expect(ag.agentRef).toBe('trace-analyst');
+		expect(ag.model).toBe('zai/glm-5.2');
+		expect(ag.hasSandbox).toBe(true);
+	});
+
+	it('exposes meta.input property names on the model', () => {
+		const m = parseScriptStructure(script, { input: { properties: { url: {}, depth: {} } } });
+		expect(m.inputProps).toEqual(['url', 'depth']);
+	});
+
+	it('graph emits nodes for the new kinds with call data', () => {
+		const { nodes } = scriptToGraph(script, { name: 'full' });
+		const byKind = (k: string) => nodes.filter((n) => n.data.kind === k);
+		expect(byKind('action')).toHaveLength(1);
+		expect(byKind('sleep')).toHaveLength(1);
+		expect(byKind('event')).toHaveLength(2);
+		expect(byKind('team')).toHaveLength(2);
+		const action = byKind('action')[0];
+		expect(action.data.actionSlug).toBe('web/crawl');
+		expect(action.data.allowFailure).toBe(true);
+		expect(typeof action.data.line).toBe('number');
+	});
+});
+
+describe('loop containers + loop-back edges', () => {
+	const script = [
+		"phase('Refine')",
+		'let ok = false',
+		'let i = 0',
+		'while (!ok && i < 5) {',
+		"  await agent('Generate', { label: 'generate' })",
+		"  const gate = await action('workspace/command', { command: 'test' }, { label: 'gate', allowFailure: true })",
+		"  const verdict = await agent('Critique', { label: 'critique', schema: { type: \"object\" } })",
+		'  ok = verdict?.accepted === true',
+		'  i += 1',
+		'}',
+		'return { ok }'
+	].join('\n');
+
+	it('identifies the loop and its member calls', () => {
+		const m = parseScriptStructure(script);
+		expect(m.loops).toHaveLength(1);
+		expect(m.loops[0].kind).toBe('while');
+		const inLoop = m.calls.filter((c) => c.loopId === m.loops[0].id);
+		expect(inLoop.map((c) => c.label)).toEqual(['generate', 'gate', 'critique']);
+	});
+
+	it('emits ONE loop-back edge from the last member to the first', () => {
+		const { edges, model } = scriptToGraph(script);
+		const loopEdges = edges.filter((e) => (e.data as { loop?: boolean } | undefined)?.loop);
+		expect(loopEdges).toHaveLength(1);
+		const members = model.calls.filter((c) => c.loopId === model.loops[0].id);
+		expect(loopEdges[0].source).toBe(`call-${members[members.length - 1].order}`);
+		expect(loopEdges[0].target).toBe(`call-${members[0].order}`);
+	});
+});
+
+describe('prompt strings cannot fake the new kinds', () => {
+	it('action(/sleep( inside a prompt string are NOT calls', () => {
+		const m = parseScriptStructure(
+			"await agent('Explain how action(\\'x\\') and sleep(5) work in scripts')"
+		);
+		expect(m.calls).toHaveLength(1);
+		expect(m.calls[0].kind).toBe('agent');
+	});
+});
