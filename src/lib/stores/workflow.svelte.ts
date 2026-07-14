@@ -174,6 +174,13 @@ export function createWorkflowStore() {
 
   // Workflow metadata
   let workflowId = $state<string | null>(null);
+  // ── Code-first authoring (dynamic-script): shared draft + code⇄canvas sync ─
+  // The DRAFT is the single unsaved edit buffer shared by the code panel and
+  // the canvas projection; null = clean (canvas renders the saved source).
+  let scriptDraft = $state<string | null>(null);
+  let scriptCursorLine = $state<number | null>(null);
+  let scriptRevealRequest = $state<{ line: number; nonce: number } | null>(null);
+  let scriptRevealNonce = 0;
   let workflowName = $state("Untitled Workflow");
   let engineType = $state<string | null>(null);
   let isSaving = $state(false);
@@ -452,6 +459,8 @@ export function createWorkflowStore() {
   ) {
     workflowId = id;
     workflowName = name;
+    scriptDraft = null;
+    scriptCursorLine = null;
     spec = loadedSpec || null;
     engineType =
       loadedEngineType ??
@@ -654,6 +663,32 @@ export function createWorkflowStore() {
     get scriptSource() {
       const s = spec as { script?: unknown } | null;
       return s && typeof s.script === "string" ? s.script : "";
+    },
+    /** Unsaved dynamic-script edit buffer (null = clean). Shared by the code
+     * panel (writer) and the canvas (renders draft ?? saved source). */
+    get scriptDraft() {
+      return scriptDraft;
+    },
+    set scriptDraft(v: string | null) {
+      scriptDraft = v;
+    },
+    get scriptDirty() {
+      return scriptDraft !== null;
+    },
+    /** Editor cursor line (1-based) — the canvas highlights the matching node. */
+    get scriptCursorLine() {
+      return scriptCursorLine;
+    },
+    set scriptCursorLine(v: number | null) {
+      scriptCursorLine = v;
+    },
+    /** Canvas→code jump channel: a node click asks the code panel to reveal a
+     * line (nonce so repeat clicks on the same line still fire). */
+    get scriptRevealRequest() {
+      return scriptRevealRequest;
+    },
+    requestScriptReveal(line: number) {
+      scriptRevealRequest = { line, nonce: ++scriptRevealNonce };
     },
     /** The dynamic-script meta block (spec.meta), or null. */
     get scriptMeta() {

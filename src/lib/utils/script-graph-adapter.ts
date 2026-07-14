@@ -811,11 +811,27 @@ const VARIANT_ICON: Record<ScriptNodeVariant, string> = {
 };
 
 // Layout geometry — a layered top-to-bottom flow. Every CALL node is a uniform
-// NODE_W-wide card; parallel members spread across centered columns.
+// NODE_W-wide card; parallel members spread across centered columns. Vertical
+// rhythm is CONTENT-AWARE: each node advances by its estimated height + gap,
+// so dense cards get room and capsules (sleep, junctions) sit tight.
 const NODE_W = 264;
 const COL_GAP = 296;
-const ROW_H = 176;
 const CENTER = 560;
+const ROW_GAP = 46;
+
+/** Estimated rendered height per call card (matches script-node's rows). */
+function estimateCallHeight(c: ScriptGraphCall | null): number {
+  if (!c) return 96;
+  if (c.kind === "sleep") return 34; // capsule
+  if (c.kind === "parallel" || c.kind === "pipeline") return 32; // junction chip
+  let h = 62; // header + title
+  if (c.promptPreview) h += 20;
+  if (c.hasSchema) h += 22;
+  if (c.actionSlug && c.actionSlug !== c.label) h += 18;
+  if (c.eventName) h += 18;
+  if (c.agentRef || c.model || c.hasSandbox) h += 22;
+  return h;
+}
 
 /**
  * Convert a dynamic-script source into a read-only SvelteFlow graph: Start →
@@ -874,7 +890,7 @@ export function scriptToGraph(
     inputProps: model.inputProps,
   });
   let prev: string[] = ["__start__"];
-  y += 120;
+  y += (model.inputProps.length > 0 ? 64 : 36) + ROW_GAP;
 
   // Group calls by phase (declared order first); unphased collect under a lane.
   const laneOrder: string[] = [...model.phases];
@@ -963,7 +979,7 @@ export function scriptToGraph(
         });
         trackLoop(c, jid);
         for (const p of prev) link(p, jid);
-        y += 132;
+        y += 32 + ROW_GAP;
 
         // Member columns (fan out from the junction).
         const m = Math.max(1, cols.length);
@@ -989,7 +1005,8 @@ export function scriptToGraph(
         // Fan-in: the next node depends on all leaf columns (parallel) or the
         // last stage (pipeline).
         prev = isPipeline && colIds.length ? [colIds[colIds.length - 1]] : colIds;
-        y += ROW_H;
+        const tallest = Math.max(96, ...cols.map((col) => estimateCallHeight(col.call)));
+        y += tallest + ROW_GAP;
         continue;
       }
 
@@ -1000,7 +1017,7 @@ export function scriptToGraph(
       trackLoop(c, id);
       for (const p of prev) link(p, id);
       prev = [id];
-      y += ROW_H;
+      y += estimateCallHeight(c) + ROW_GAP;
     }
   };
 
@@ -1010,7 +1027,7 @@ export function scriptToGraph(
     pushNode(pid, "phase", phase, y, CENTER, { callCount: phaseCalls.length });
     for (const p of prev) link(p, pid);
     prev = [pid];
-    y += 116;
+    y += 52 + ROW_GAP;
     emitPhaseCalls(phaseCalls);
   }
   if (unphased.length > 0) {
@@ -1018,7 +1035,7 @@ export function scriptToGraph(
     pushNode(pid, "phase", "(no phase)", y, CENTER, { callCount: unphased.length });
     for (const p of prev) link(p, pid);
     prev = [pid];
-    y += 116;
+    y += 52 + ROW_GAP;
     emitPhaseCalls(unphased);
   }
 
