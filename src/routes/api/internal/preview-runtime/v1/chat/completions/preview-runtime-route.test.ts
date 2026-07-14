@@ -5,6 +5,7 @@ const complete = vi.hoisted(() =>
     status: 200,
     contentType: "application/json",
     requestId: "gateway-1",
+    retryAfter: "2",
     body: new Response('{"id":"completion-1"}').body,
   })),
 );
@@ -57,6 +58,7 @@ describe("preview runtime route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ id: "completion-1" });
     expect(response.headers.get("x-upstream-request-id")).toBe("gateway-1");
+    expect(response.headers.get("retry-after")).toBe("2");
     expect(complete).toHaveBeenCalledWith({
       identity: {
         previewName: "feature-one",

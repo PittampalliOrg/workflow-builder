@@ -10,6 +10,7 @@ export type PreviewRuntimeCompletionResponse = Readonly<{
   status: number;
   contentType: string;
   requestId: string | null;
+  retryAfter?: string | null;
   body: ReadableStream<Uint8Array> | null;
 }>;
 

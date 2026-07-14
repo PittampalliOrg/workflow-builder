@@ -54,8 +54,7 @@ describe("preview runtime HTTP adapter", () => {
         }),
     );
     const adapter = new HttpPreviewRuntimeUpstreamAdapter({
-      url: () =>
-        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+      url: () => "https://api.z.ai/api/paas/v4/chat/completions",
       token: () => "provider-token",
       fetchImpl: fetchImpl as typeof fetch,
     });
@@ -73,18 +72,105 @@ describe("preview runtime HTTP adapter", () => {
       requestId: "zai-1",
     });
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe(
-      "https://api.z.ai/api/coding/paas/v4/chat/completions",
-    );
+    expect(url).toBe("https://api.z.ai/api/paas/v4/chat/completions");
     expect(JSON.parse(String(init?.body))).toMatchObject({
       model: "glm-5.2",
       url: "https://attacker.example/v1/chat/completions",
     });
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe("Bearer provider-token");
+    expect(headers.get("accept-language")).toBe("en-US,en");
+    expect(headers.get("user-agent")).toBe(
+      "workflow-builder-preview-runtime/1.0",
+    );
     expect(headers.get("cookie")).toBeNull();
     expect(headers.get("proxy-authorization")).toBeNull();
     expect(headers.get("x-preview-environment-request-id")).toBe("request-1");
+  });
+
+  it("preserves a JSON upstream error that omits content-type", async () => {
+    const upstreamBody = new TextEncoder().encode(
+      JSON.stringify({
+        error: {
+          code: "1305",
+          message: "The service may be temporarily overloaded",
+        },
+      }),
+    );
+    const adapter = new HttpPreviewRuntimeUpstreamAdapter({
+      url: () => "https://api.z.ai/api/paas/v4/chat/completions",
+      token: () => "provider-token",
+      fetchImpl: vi.fn(async () =>
+        new Response(upstreamBody, {
+          status: 429,
+          headers: { "retry-after": "3" },
+        }),
+      ) as typeof fetch,
+    });
+
+    const result = await adapter.complete({
+      identity,
+      payload: { model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+    });
+
+    expect(result).toMatchObject({
+      status: 429,
+      contentType: "application/json",
+      retryAfter: "3",
+    });
+    await expect(new Response(result.body).json()).resolves.toEqual({
+      error: {
+        code: "1305",
+        message: "The service may be temporarily overloaded",
+      },
+    });
+  });
+
+  it("sanitizes a non-JSON upstream error while preserving its status", async () => {
+    const adapter = new HttpPreviewRuntimeUpstreamAdapter({
+      url: () => "https://api.z.ai/api/paas/v4/chat/completions",
+      token: () => "provider-token",
+      fetchImpl: vi.fn(async () =>
+        new Response("<html>edge failure</html>", {
+          status: 503,
+          headers: { "content-type": "text/html" },
+        }),
+      ) as typeof fetch,
+    });
+
+    const result = await adapter.complete({
+      identity,
+      payload: { model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+    });
+
+    expect(result).toMatchObject({ status: 503, contentType: "application/json" });
+    await expect(new Response(result.body).json()).resolves.toEqual({
+      error: {
+        message: "preview runtime upstream returned HTTP 503",
+        type: "upstream_error",
+        code: "upstream_http_503",
+      },
+    });
+  });
+
+  it("rejects an unsupported content type on a successful response", async () => {
+    const adapter = new HttpPreviewRuntimeUpstreamAdapter({
+      url: () => "https://api.z.ai/api/paas/v4/chat/completions",
+      token: () => "provider-token",
+      fetchImpl: vi.fn(async () =>
+        new Response("not a completion", {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      ) as typeof fetch,
+    });
+
+    await expect(
+      adapter.complete({
+        identity,
+        payload: { model: "glm-5.2", messages: [{ role: "user", content: "hi" }] },
+      }),
+    ).rejects.toMatchObject({ code: "unavailable" });
   });
 
   it.each([

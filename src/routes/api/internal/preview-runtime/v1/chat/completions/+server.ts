@@ -73,6 +73,9 @@ export const POST: RequestHandler = async ({ request }) => {
     if (result.requestId && /^[\x21-\x7e]{1,256}$/.test(result.requestId)) {
       headers.set("x-upstream-request-id", result.requestId);
     }
+    if (result.retryAfter && /^\d{1,10}$/.test(result.retryAfter)) {
+      headers.set("retry-after", result.retryAfter);
+    }
     return new Response(result.body, { status: result.status, headers });
   } catch (cause) {
     if (cause instanceof PreviewRuntimeBrokerError) {
