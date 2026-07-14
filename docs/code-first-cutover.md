@@ -150,14 +150,25 @@ transcript). Keep this list in sync with the active `/goal`.
     `CODE_EVAL_WORKFLOW_ID` + the 3 template routes are untouched). Validates + first-round
     dispatches through the REAL evaluator (`producer-ports.test.ts`).
     **20-item parity run not yet executed** (needs eval spend).
-  - [ ] **swebench eval + benchmark builders** — not started. Needs the same
-    profile-bind pattern (now available) + the ≥5-instance shadow-parity canary
-    (real LLM spend, hours).
-  - [ ] **GAN generator / preview-gan fixtures / microservice-dev-session /
-    pr-heavy-review** — not started. Blocked on a `dev/preview` durable-activation
-    primitive (the SW interpreter has a bespoke activation poll,
-    `_run_durable_dev_preview_activation`; `action('dev/preview')` currently dispatches
-    as a plain activity with no readiness poll). See §Blockers.
+  - [x] **swebench eval builder** (`EVAL_SWEBENCH_SCRIPT_PRODUCER`) and
+    **benchmark instance builder** (`BENCHMARK_SCRIPT_PRODUCER`) — both DERIVE every
+    value from their SW builder (env spec, prompt, clone/extract commands, sandbox
+    policy) so the producers cannot drift, then re-express the same 4-step spine with
+    the agent bound to the profile's sandbox. Benchmark dispatch is engine-aware on all
+    three paths (executionIr, host-execution-plane payload, direct orchestrator POST),
+    and `sandbox-execution-api/worker.py` routes to `/api/v2/script-workflows` when the
+    payload carries a script build (the goal's *"incl. sandbox-execution-api start
+    path"*). Tests: evaluations 27, benchmarks 71 passed.
+    **≥5-instance parity run not yet executed** (needs benchmark spend — see B2).
+  - [x] **GAN generator** — `gen/gan-script-generator.ts` emits the harness as a script
+    (23KB), reusing the SW emitter's persona instructions/prompts AND its gate shell
+    verbatim so the two producers cannot drift; the jq `for`/`while` refine loop becomes
+    a plain JS loop and the verdict is a schema'd critic call. Emitted fixture checked in
+    (`scripts/fixtures/dynamic-scripts/preview-gan-ui-feature.js`) with a byte-identical
+    drift guard. **One live GAN run not yet executed** (see B2).
+  - [x] **microservice-dev-session** — ported (20KB), verbatim seed shell + handoff prose.
+  - [x] **pr-heavy-review** — ported: review → independent judge → publish, three CLI
+    agents on ONE shared workspace.
   - **Enabling capability shipped for all of the above:** the `workspace` sentinel +
     `agent(..., {sandbox: {...}})` binding — a script can now create a workspace/sandbox
     with `action('workspace/profile', …)` and bind agents to it (the gap that blocked
@@ -167,12 +178,18 @@ transcript). Keep this list in sync with the active `/goal`.
   the engine-agnostic github trigger spine — is live-proven (trigger
   `lErvqAEkpnd_BSe4RUCGT` drove 250 executions). Boundary ratchet: 2 edges removed.
   *(Activating a repo webhook is left to the user: it is an outward-facing action.)*
-- [ ] **17.** Seeds retargeted; fixtures pruned; guard suite rewritten.
-  - [x] 13 obsolete SW fixtures **deleted** + their 3 orphaned guards; `seed-workflows`
-    fixture block pruned to the 7-fixture port set. The 4 surviving guards stay green
-    (49 tests).
-  - [ ] Guard rewrite against evaluator `/evaluate` plan output — gated on the GAN /
-    dev-session fixture ports above.
+- [x] **17.** Seeds retargeted; fixtures pruned; guard suite **rewritten**.
+  - 13 obsolete SW fixtures deleted + their 3 orphaned guards; `seed-workflows` fixture
+    block pruned to the 7-fixture port set.
+  - **`script-plan-guards.test.ts` (13 tests, green)** replaces the regex-over-`fixture.do`
+    guards for every ported producer: each script is fed to the REAL script-evaluator and
+    the emitted `/evaluate` **task plan** is asserted — call kinds, action slugs, labels,
+    the schema'd critic verdict, shared-workspace binding, and loop behavior across rounds
+    (incl. a failing build gate short-circuiting the critic, and a failing runtime probe
+    short-circuiting a code-eval item). Strictly stronger than the structural proxy: a
+    script that parses but plans the wrong calls fails here. The 2 superseded SW guards
+    were retired; the 2 remaining SW-fixture guards (gan-harness-dapr-showcase,
+    preview-gan-redesign) stay green until those fixtures port.
 
 ### P4 — freeze
 
