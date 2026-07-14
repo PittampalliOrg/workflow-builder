@@ -54,6 +54,10 @@ export const PREVIEW_CONTROL_BROKER_ROUTES = Object.freeze([
 const PREVIEW_CONTROL_BROKER_DYNAMIC_ROUTES = Object.freeze([
   [
     "POST",
+    /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/headlamp$/,
+  ],
+  [
+    "POST",
     /^\/api\/internal\/preview-control\/environment\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/teardown$/,
   ],
   [

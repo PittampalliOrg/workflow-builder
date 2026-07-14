@@ -88,6 +88,31 @@ describe("preview-control broker edge", () => {
         true,
       ),
     ).toBeNull();
+    expect(
+      previewControlBrokerModeResponse(
+        "/api/internal/preview-control/environment/feature-one/headlamp",
+        "POST",
+        true,
+      ),
+    ).toBeNull();
+    for (const [path, method] of [
+      [
+        "/api/internal/preview-control/environment/feature-one/headlamp",
+        "GET",
+      ],
+      [
+        "/api/internal/preview-control/environment/Feature-one/headlamp",
+        "POST",
+      ],
+      [
+        "/api/internal/preview-control/environment/feature-one/headlamp/extra",
+        "POST",
+      ],
+    ] as const) {
+      expect(previewControlBrokerModeResponse(path, method, true)?.status).toBe(
+        404,
+      );
+    }
     expect(PREVIEW_CONTROL_BROKER_ROUTES).not.toContainEqual([
       "POST",
       "/api/internal/preview-control/pr-adoption",
