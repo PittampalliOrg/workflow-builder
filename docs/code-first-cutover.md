@@ -178,18 +178,25 @@ transcript). Keep this list in sync with the active `/goal`.
   the engine-agnostic github trigger spine — is live-proven (trigger
   `lErvqAEkpnd_BSe4RUCGT` drove 250 executions). Boundary ratchet: 2 edges removed.
   *(Activating a repo webhook is left to the user: it is an outward-facing action.)*
-- [x] **17.** Seeds retargeted; fixtures pruned; guard suite **rewritten**.
+- [x] **17.** Seeds retargeted; fixtures pruned; guard suite **fully rewritten**.
   - 13 obsolete SW fixtures deleted + their 3 orphaned guards; `seed-workflows` fixture
-    block pruned to the 7-fixture port set.
-  - **`script-plan-guards.test.ts` (13 tests, green)** replaces the regex-over-`fixture.do`
-    guards for every ported producer: each script is fed to the REAL script-evaluator and
-    the emitted `/evaluate` **task plan** is asserted — call kinds, action slugs, labels,
-    the schema'd critic verdict, shared-workspace binding, and loop behavior across rounds
-    (incl. a failing build gate short-circuiting the critic, and a failing runtime probe
-    short-circuiting a code-eval item). Strictly stronger than the structural proxy: a
-    script that parses but plans the wrong calls fails here. The 2 superseded SW guards
-    were retired; the 2 remaining SW-fixture guards (gan-harness-dapr-showcase,
-    preview-gan-redesign) stay green until those fixtures port.
+    block pruned to the port set.
+  - **Every remaining fixture is ported**, including the last two: `preview-gan-redesign`
+    and `gan-harness-dapr-showcase` (the 12-step harness — its SW `listen` gate becomes a
+    first-class `approve()`, and all three jq `for`/`while` loops become plain JS loops
+    whose exits read **schema'd** critic verdicts instead of parsing free-form JSON out of
+    stdout — the exact failure mode `docs/gan-run-analysis-2026-06-30.md` recorded).
+  - **`producer-plan-guards.test.ts` (19 tests, green)** replaces the entire
+    regex-over-`fixture.do` suite: every script is fed to the REAL script-evaluator and the
+    emitted `/evaluate` **task plan** is asserted — call kinds, action slugs, labels, the
+    schema'd critic, shared-workspace + profile-sandbox binding, and loop behavior across
+    rounds (a failing build gate short-circuits the critic; a failing runtime probe
+    short-circuits a code-eval item; a DENIED/timed-out approval gate short-circuits before
+    any design work; the paired UI/code critics run in the same round). Strictly stronger
+    than the structural proxy: a script that parses but plans the wrong calls fails here.
+  - **ZERO SW-era guard files remain.** (They live in the evaluator's own vitest lane —
+    the root runner does not set `--experimental-vm-modules`, which `vm.SourceTextModule`
+    needs.) Evaluator lane: **118 passed**.
 
 ### P4 — freeze
 
