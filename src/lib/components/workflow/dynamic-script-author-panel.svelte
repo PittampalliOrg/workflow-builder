@@ -43,6 +43,36 @@
 	const slug = $derived(page.params.slug as string);
 	const workflowId = $derived(store.workflowId);
 
+	/** Selectable authors: the platform GLM loop (instant) or a CLI agent
+	 * (user's own subscription auth, stronger coding model, pod cold-start). */
+	const AUTHORS = [
+		{
+			runtime: 'dapr-agent-py',
+			label: 'GLM 5.2',
+			hint: 'instant · platform-metered'
+		},
+		{
+			runtime: 'claude-code-cli',
+			label: 'Claude Code',
+			hint: 'your subscription · ~1–2 min cold start'
+		},
+		{
+			runtime: 'codex-cli',
+			label: 'Codex',
+			hint: 'your subscription · ~1–2 min cold start'
+		},
+		{
+			runtime: 'agy-cli',
+			label: 'Agy',
+			hint: 'your subscription · ~1–2 min cold start'
+		}
+	] as const;
+	type AuthorRuntime = (typeof AUTHORS)[number]['runtime'];
+	let authorRuntime = $state<AuthorRuntime>('dapr-agent-py');
+	const activeAuthor = $derived(
+		AUTHORS.find((a) => a.runtime === authorRuntime) ?? AUTHORS[0]
+	);
+
 	let sessionId = $state<string | null>(null);
 	let starting = $state(false);
 	let sending = $state(false);
@@ -51,6 +81,14 @@
 	let intent = $state('');
 
 	const storageKey = $derived(workflowId ? `wb-author-session:${workflowId}` : null);
+	const runtimeKey = $derived(workflowId ? `wb-author-runtime:${workflowId}` : null);
+	$effect(() => {
+		if (!runtimeKey || typeof localStorage === 'undefined') return;
+		const saved = localStorage.getItem(runtimeKey);
+		if (saved && AUTHORS.some((a) => a.runtime === saved)) {
+			authorRuntime = saved as AuthorRuntime;
+		}
+	});
 
 	// ── Starter patterns: proven workflow shapes as one-tap intents ────────────
 	const STARTERS: Array<{ title: string; Icon: typeof Bot; prompt: string }> = [
@@ -157,7 +195,9 @@
 		errorMessage = null;
 		try {
 			const res = await fetch(`/api/workflows/${workflowId}/author-session`, {
-				method: 'POST'
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ runtime: authorRuntime })
 			});
 			const body = (await res.json().catch(() => ({}))) as {
 				sessionId?: string;
@@ -169,6 +209,7 @@
 			}
 			sessionId = body.sessionId;
 			if (storageKey) localStorage.setItem(storageKey, body.sessionId);
+			if (runtimeKey) localStorage.setItem(runtimeKey, authorRuntime);
 			if (firstMessage?.trim()) {
 				await postMessage(firstMessage.trim());
 				intent = '';
@@ -258,6 +299,21 @@
 					placeholder="e.g. Crawl the docs site from args.url, have three agents review different sections in parallel, gate on my approval, then publish a summary…"
 					class="mt-2.5 w-full resize-none rounded-lg border border-input bg-background/70 px-2.5 py-2 text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-fuchsia-400/50"
 				></textarea>
+				<div class="mt-2 flex flex-wrap items-center gap-1">
+					{#each AUTHORS as a (a.runtime)}
+						<button
+							class="rounded-full border px-2 py-0.5 text-[10px] font-medium transition
+								{authorRuntime === a.runtime
+								? 'border-fuchsia-400/50 bg-fuchsia-500/15 text-fuchsia-200'
+								: 'border-border/60 bg-card/40 text-muted-foreground hover:text-foreground'}"
+							onclick={() => (authorRuntime = a.runtime)}
+							title={a.hint}
+						>
+							{a.label}
+						</button>
+					{/each}
+					<span class="ml-1 text-[9.5px] text-muted-foreground/60">{activeAuthor.hint}</span>
+				</div>
 				<div class="mt-2 flex items-center justify-between">
 					<span class="text-[10px] text-muted-foreground/70">⌘↵ to start</span>
 					<button
@@ -304,7 +360,8 @@
 	{:else}
 		<div class="flex items-center justify-between border-b border-border px-2.5 py-1 text-[10px] text-muted-foreground">
 			<span class="inline-flex items-center gap-1">
-				<span class="size-1.5 animate-pulse rounded-full bg-fuchsia-400"></span> GLM 5.2 author
+				<span class="size-1.5 animate-pulse rounded-full bg-fuchsia-400"></span>
+				{activeAuthor.label} author
 			</span>
 			<div class="flex items-center gap-1">
 				<a
