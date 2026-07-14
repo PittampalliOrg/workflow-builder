@@ -329,3 +329,152 @@ describe("code-eval-item: emitted plan", () => {
 		expect(sandbox.cwd).toBe("/sandbox");
 	});
 });
+
+// ── preview-gan-redesign ─────────────────────────────────────────────────────
+
+describe("preview-gan-redesign: emitted plan", () => {
+	const script = read("scripts/fixtures/dynamic-scripts/preview-gan-redesign.js");
+
+	it("validates and plans dev/preview (adopt:false) → plan → design_review", async () => {
+		const v = await validateScript(script);
+		expect(v.ok, v.error).toBe(true);
+		const first = await plan(script, { intent: "redesign" });
+		const preview = first.tasks[0];
+		expect(preview.actionSlug).toBe("dev/preview");
+		expect((preview.args as Record<string, unknown>).adopt).toBe(false);
+	});
+
+	it("refine loop: generate → snapshot → SCHEMA'D critic; exits on meets_criteria + score", async () => {
+		const { tasks, final } = await drive(
+			script,
+			{ intent: "redesign" },
+			(task) =>
+				task.kind === "action"
+					? { url: "https://p", ready: true }
+					: task.opts.schema
+						? { meets_criteria: true, score: 9, failing: [] }
+						: "generator text",
+			10,
+		);
+		const labels = tasks.map((t) => String(t.opts.label ?? t.actionSlug));
+		expect(labels).toContain("plan");
+		expect(labels).toContain("design_review");
+		expect(labels.some((l) => l.startsWith("generate #"))).toBe(true);
+		expect(labels.some((l) => l.startsWith("snapshot #"))).toBe(true);
+		const critic = tasks.find((t) => String(t.opts.label).startsWith("critique #"));
+		expect(critic?.opts.schema).toBeTruthy();
+		expect(final.status).toBe("done");
+		expect((final.returnValue as Record<string, unknown>).accepted).toBe(true);
+	});
+
+	it("a LOW score keeps looping (the SW while-gate semantics)", async () => {
+		const { tasks } = await drive(
+			script,
+			{ intent: "redesign" },
+			(task) =>
+				task.kind === "action"
+					? { url: "https://p" }
+					: task.opts.schema
+						? { meets_criteria: true, score: 3, failing: ["contrast"] } // score < 8
+						: "generator text",
+			14,
+		);
+		const generates = tasks.filter((t) => String(t.opts.label).startsWith("generate #"));
+		expect(generates.length).toBeGreaterThan(1);
+	});
+});
+
+// ── gan-harness-dapr-showcase ────────────────────────────────────────────────
+
+describe("gan-harness-dapr-showcase: emitted plan", () => {
+	const script = read("scripts/fixtures/dynamic-scripts/gan-harness-dapr-showcase.js");
+
+	it("validates; plans profile → clone → plan → init_state → approval GATE", async () => {
+		const v = await validateScript(script);
+		expect(v.ok, v.error).toBe(true);
+
+		const results: Record<string, { status: string; value: unknown }> = {};
+		const known: string[] = [];
+		let res = await plan(script, {});
+		const seen: EvaluateTask[] = [];
+		for (let round = 0; round < 5 && res.status === "need"; round += 1) {
+			for (const task of res.tasks) {
+				seen.push(task);
+				// Stop right before resolving the gate so we can assert on it.
+				if (task.kind === "event") continue;
+				results[task.callId] = {
+					status: "done",
+					value:
+						task.actionSlug === "workspace/profile"
+							? { result: { workspaceRef: "ws-1", sandbox: { details: { sandboxName: "sb-1" } } } }
+							: task.kind === "agent"
+								? "text"
+								: { result: { exitCode: 0, stdout: "" } },
+				};
+				known.push(task.callId);
+			}
+			if (seen.some((t) => t.kind === "event")) break;
+			res = await plan(script, {}, results, known);
+		}
+		const labels = seen.map((t) => String(t.opts.label ?? t.actionSlug ?? t.kind));
+		expect(labels).toContain("workspace_profile");
+		expect(labels).toContain("clone_repo");
+		expect(labels).toContain("plan");
+		expect(labels).toContain("init_state");
+		// The SW `listen` gate became a first-class event call.
+		const gate = seen.find((t) => t.kind === "event");
+		expect(gate).toBeTruthy();
+		expect(gate?.eventName).toBe("approval");
+	});
+
+	it("a DENIED/timed-out gate short-circuits before the design loop", async () => {
+		const { tasks, final } = await drive(
+			script,
+			{},
+			(task) =>
+				task.kind === "event"
+					? { approved: false, timedOut: true }
+					: task.actionSlug === "workspace/profile"
+						? { result: { workspaceRef: "ws-1", sandbox: { details: { sandboxName: "sb-1" } } } }
+						: task.kind === "agent"
+							? "text"
+							: { result: { exitCode: 0, stdout: "" } },
+			8,
+		);
+		expect(final.status).toBe("done");
+		const out = final.returnValue as Record<string, unknown>;
+		expect(out.approved).toBe(false);
+		expect(out.timedOut).toBe(true);
+		// No design/negotiate/refine work ran.
+		expect(tasks.some((t) => String(t.opts.label).startsWith("design_propose"))).toBe(false);
+	});
+
+	it("approved: design → negotiate → refine loops run, with schema'd verdicts and paired critics", async () => {
+		const { tasks, final } = await drive(
+			script,
+			{ maxIterations: 1 },
+			(task) =>
+				task.kind === "event"
+					? { approved: true }
+					: task.actionSlug === "workspace/profile"
+						? { result: { workspaceRef: "ws-1", sandbox: { details: { sandboxName: "sb-1" } } } }
+						: task.opts.schema
+							? { meets_criteria: true, score: 9, failing: [] }
+							: task.kind === "agent"
+								? "text"
+								: { result: { exitCode: 0, stdout: "OBJECTIVE PASS" } },
+			16,
+		);
+		const labels = tasks.map((t) => String(t.opts.label ?? t.actionSlug));
+		expect(labels.some((l) => l.startsWith("design_propose"))).toBe(true);
+		expect(labels.some((l) => l.startsWith("propose"))).toBe(true);
+		expect(labels.some((l) => l.startsWith("generate #"))).toBe(true);
+		expect(labels.some((l) => l.startsWith("gate #"))).toBe(true);
+		// The two independent critics run in the SAME round (Promise.all).
+		expect(labels.some((l) => l.startsWith("evaluate_ui #"))).toBe(true);
+		expect(labels.some((l) => l.startsWith("evaluate_code #"))).toBe(true);
+		expect(labels).toContain("pr");
+		expect(final.status).toBe("done");
+		expect((final.returnValue as Record<string, unknown>).accepted).toBe(true);
+	});
+});
