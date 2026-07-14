@@ -216,3 +216,38 @@ describe("scriptToGraph", () => {
     expect(start?.selectable).toBe(false);
   });
 });
+
+describe("call-site lines (P2b overlay join key)", () => {
+	it("calls carry 1-based source lines matching the stored source", () => {
+		const script = [
+			"export const meta = { name: 'l', description: 'd', phases: [] }",
+			"// comment",
+			"const a = await agent('one')",
+			"const r = await parallel([() => agent('two'), () => agent('three')])",
+			"return { a, r }",
+		].join("\n");
+		const model = parseScriptStructure(script, { name: "l" });
+		const byLabel = Object.fromEntries(model.calls.map((c) => [c.label, c.line]));
+		expect(byLabel.one).toBe(3);
+		expect(model.calls.find((c) => c.kind === "parallel")?.line).toBe(4);
+		expect(byLabel.two).toBe(4);
+	});
+
+	it("line survives comment stripping (newlines preserved)", () => {
+		const script =
+			"export const meta = { name: 'c', description: 'd', phases: [] }\n" +
+			"/* block\ncomment\n*/\n" +
+			"const a = await agent('after-block')\nreturn { a }";
+		const model = parseScriptStructure(script, { name: "c" });
+		expect(model.calls[0].line).toBe(5);
+	});
+
+	it("node data carries the line for the overlay join", () => {
+		const script =
+			"export const meta = { name: 'n', description: 'd', phases: [] }\n" +
+			"const a = await agent('solo')\nreturn { a }";
+		const { nodes } = scriptToGraph(script, { name: "n" });
+		const agentNode = nodes.find((n) => (n.data as { variant?: string }).variant === "agent");
+		expect((agentNode?.data as { line?: number }).line).toBe(2);
+	});
+});

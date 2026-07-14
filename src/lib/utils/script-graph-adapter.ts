@@ -33,6 +33,18 @@ export type ScriptNodeVariant =
   | "workflow"
   | "end";
 
+/** Live-overlay aggregation for ONE source line (cutover P2b): journal rows
+ * joined to static nodes by the evaluator-captured call_site.line. */
+export interface CallLineState {
+  total: number;
+  running: number;
+  done: number;
+  error: number;
+  skipped: number;
+  runningSessionIds: string[];
+  runningCallIds: string[];
+}
+
 export interface ScriptGraphCall {
   kind: ScriptGraphCallKind;
   /** Short human label — an opts.label / workflow name / prompt preview. */
@@ -55,6 +67,10 @@ export interface ScriptGraphCall {
   hasSchema: boolean;
   /** Top-level output-schema property names, if statically resolvable. */
   schemaProps: string[];
+  /** 1-based source line of the call token (comment-stripping preserves
+   * newlines, so this matches the STORED source — and the journal's
+   * call_site.line join key from the evaluator's runtime capture). */
+  line: number;
 }
 
 export interface ScriptGraphModel {
@@ -502,6 +518,17 @@ export function parseScriptStructure(
   const inLoopAt = (pos: number) =>
     loopSpans.some(([a, b]) => pos >= a && pos < b);
 
+  // Ordered line cursor: the token scan advances monotonically, so counting
+  // newlines incrementally is O(n) total.
+  let lineCursorIdx = 0;
+  let lineCursorLine = 1;
+  const lineOf = (idx: number): number => {
+    for (; lineCursorIdx < idx; lineCursorIdx += 1) {
+      if (masked.charCodeAt(lineCursorIdx) === 10) lineCursorLine += 1;
+    }
+    return lineCursorLine;
+  };
+
   // Single ordered scan for phase()/agent()/parallel()/pipeline()/workflow().
   const tokenRe = /\b(phase|agent|parallel|pipeline|workflow)\s*\(/g;
   const discoveredPhases: string[] = [];
@@ -569,6 +596,7 @@ export function parseScriptStructure(
       promptPreview: promptText,
       hasSchema: schema.hasSchema,
       schemaProps: schema.props,
+      line: lineOf(tm.index),
     });
   }
 
@@ -695,6 +723,7 @@ export function scriptToGraph(
 
   const emitCallData = (c: ScriptGraphCall | null, labelOverride?: string) => ({
     kind: c?.kind ?? "agent",
+    line: c?.line ?? null,
     inLoop: c?.inLoop ?? false,
     phase: c?.phase ?? null,
     promptPreview: c?.promptPreview ?? null,
@@ -719,6 +748,7 @@ export function scriptToGraph(
         const jid = `call-${c.order}`;
         pushNode(jid, c.kind, c.label, y, CENTER, {
           kind: c.kind,
+          line: c.line,
           fanCount,
           fanOut: Boolean(c.fanOut),
           inLoop: c.inLoop,
