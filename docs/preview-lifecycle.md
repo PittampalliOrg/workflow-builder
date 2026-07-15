@@ -20,6 +20,12 @@ set, reconciliation result, and capability generation required by a launch.
 before Kubernetes access. Agent-runtime `SandboxWarmPool` resources are separate
 and remain supported.
 
+The remaining vCluster pool labels, counters, claim tombstone, and recycler
+helpers in `sandbox-execution-api` are migration compatibility, not an active
+allocation path. Remove them only after the preview list and sleep/reaper code no
+longer parse legacy pool records; this cleanup must not change the
+`agents.x-k8s.io` `SandboxWarmPool` path used by browser-backed agent runtimes.
+
 ## Coordination
 
 Bounded preview runners and coordination objects live in

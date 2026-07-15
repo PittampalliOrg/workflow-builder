@@ -85,9 +85,6 @@ export type WorkflowTargetInfo = {
 	name: string;
 	namespace: string;
 	alias?: string;
-	poolState?: string;
-	claimedBy?: string;
-	claimedAt?: string;
 	lastActive?: string;
 	createdAt?: string;
 	urls: {
@@ -346,15 +343,6 @@ function buildPreviewTarget(
 		name,
 		namespace: namespaceName,
 		...(alias ? { alias } : {}),
-		...(labels["vcluster-preview-pool"]
-			? { poolState: labels["vcluster-preview-pool"] }
-			: {}),
-		...(annotations["vcluster-preview-claimed-by"]
-			? { claimedBy: annotations["vcluster-preview-claimed-by"] }
-			: {}),
-		...(annotations["vcluster-preview-claimed-at"]
-			? { claimedAt: annotations["vcluster-preview-claimed-at"] }
-			: {}),
 		...(annotations["vcluster-preview-last-active"]
 			? { lastActive: annotations["vcluster-preview-last-active"] }
 			: {}),
