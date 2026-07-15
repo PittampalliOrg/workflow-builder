@@ -2368,7 +2368,7 @@ def _preview_storage_logical_key(value: str | None, *, field: str) -> str:
         or "/" in key
         or "\\" in key
         or key.lower().startswith("previews")
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,255}", key)
+        or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.:@-]{0,255}", key)
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
