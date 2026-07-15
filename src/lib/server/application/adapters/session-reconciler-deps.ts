@@ -258,10 +258,12 @@ export const RECONCILER_JOB_NAME = "session-liveness-reconcile";
 
 /**
  * Schedule the recurring liveness-reconcile job on the BFF's own Dapr sidecar
- * (Dapr Jobs API — durable, etcd-backed, replica-deduplicated, so exactly one
- * tick per interval fires across replicas and it survives a BFF restart). The
- * Scheduler upserts by name so re-scheduling on every replica's boot is
- * idempotent. Env-gated: no-op unless enabled AND SESSION_RECONCILER_TICK=dapr-job.
+ * (Dapr Jobs API — durable, etcd-backed, and replica-deduplicated, so one
+ * scheduler record drives ticks across replicas and survives BFF restarts). The
+ * explicit Dapr `overwrite` flag makes re-scheduling on every replica's
+ * boot a single-record upsert. Without it, Dapr rejects the second replica with
+ * AlreadyExists instead of treating the duplicate name as idempotent.
+ * Env-gated: no-op unless enabled AND SESSION_RECONCILER_TICK=dapr-job.
  *
  * The job `data` carries INTERNAL_API_TOKEN — Dapr delivers `data` back to the
  * `POST /job/<name>` callback, which is otherwise an unauthenticated endpoint, so
@@ -284,6 +286,7 @@ export async function scheduleSessionReconcilerJob(): Promise<void> {
 		schedule: "@every 10m",
 		dueTime: "2m",
 		data: { reconcile: true, ...(token ? { token } : {}) },
+		overwrite: true,
 	});
 	const attempts = 5;
 	const spacingMs = 20_000;
