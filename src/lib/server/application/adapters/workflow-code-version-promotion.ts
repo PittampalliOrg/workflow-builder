@@ -179,19 +179,19 @@ export function buildPromotionCommand(
     input.tier === "tar-overlay-set"
       ? buildTarOverlaySetCloneStep()
       : input.tier === "tar-overlay"
-        ? `git clone -q --depth 1 -b "$PR_BASE" "https://x-access-token:$GH@github.com/${input.repo}.git" /tmp/promote && ` +
-          `cd /tmp/promote && git checkout -q -b "$BR" && ` +
-          `DEST="/tmp/promote${destSub}" && mkdir -p "$DEST" && ` +
+        ? `git clone -q --depth 1 -b "$PR_BASE" "https://x-access-token:$GH@github.com/${input.repo}.git" "$PROMOTE" && ` +
+          `cd "$PROMOTE" && git checkout -q -b "$BR" && ` +
+          `DEST="$PROMOTE${destSub}" && mkdir -p "$DEST" && ` +
           `for p in ${overlayPaths}; do rm -rf "$DEST/$p"; done && ` +
-          `tar -xzf /tmp/v.bundle -C "$DEST" && ` +
+          `tar -xzf "$BUNDLE" -C "$DEST" && ` +
           `git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder' && ` +
           `git add -A && git commit -q -m "$TITLE" || { echo "ERR=no_changes"; exit 0; }`
         : input.tier === "thin"
-          ? `git clone -q "https://x-access-token:$GH@github.com/${input.repo}.git" /tmp/promote && cd /tmp/promote && ` +
-            `git fetch -q /tmp/v.bundle 'refs/*:refs/wfb-bundle/*' >/dev/null 2>&1 || git fetch -q /tmp/v.bundle >/dev/null 2>&1; ` +
-            `TGT=$(git bundle list-heads /tmp/v.bundle 2>/dev/null | head -1 | awk '{print $1}'); ` +
+          ? `git clone -q "https://x-access-token:$GH@github.com/${input.repo}.git" "$PROMOTE" && cd "$PROMOTE" && ` +
+            `git fetch -q "$BUNDLE" 'refs/*:refs/wfb-bundle/*' >/dev/null 2>&1 || git fetch -q "$BUNDLE" >/dev/null 2>&1; ` +
+            `TGT=$(git bundle list-heads "$BUNDLE" 2>/dev/null | head -1 | awk '{print $1}'); ` +
             `git checkout -q -b "$BR" "$TGT"`
-          : `git clone -q /tmp/v.bundle /tmp/promote && cd /tmp/promote && git checkout -q -b "$BR"`;
+          : `git clone -q "$BUNDLE" "$PROMOTE" && cd "$PROMOTE" && git checkout -q -b "$BR"`;
 
   // The preview-control broker supplies an exact broker-owned branch.
   // Other callers retain the legacy timestamped-prefix behavior.
@@ -224,8 +224,10 @@ export function buildPromotionCommand(
     `PR_TITLE=${shQuote(prTitleJson)}; PR_BODY=${shQuote(prBodyJson)}`,
     `GH="$GITHUB_TOKEN"`,
     `[ -n "$GH" ] || { echo "ERR=no_github_token"; exit 0; }`,
-    `rm -rf /tmp/promote /tmp/v.bundle`,
-    `curl -fsS -H "X-Internal-Token: $TOK" ${shQuote(bundleUrl)} -o /tmp/v.bundle || { echo "ERR=bundle_fetch_failed"; exit 0; }`,
+    `WORK=$(mktemp -d /tmp/wfb-promote.XXXXXX) || { echo "ERR=scratch_unavailable"; exit 0; }`,
+    `trap 'rm -rf "$WORK"' EXIT`,
+    `BUNDLE="$WORK/v.bundle"; PROMOTE="$WORK/promote"`,
+    `curl -fsS -H "X-Internal-Token: $TOK" ${shQuote(bundleUrl)} -o "$BUNDLE" || { echo "ERR=bundle_fetch_failed"; exit 0; }`,
     `git config --global --add safe.directory '*' 2>/dev/null || true`,
     `BR=${shQuote(exactBranch)}`,
     `[ -n "$BR" ] || BR="${branchPrefix}-$(date +%s)"`,
@@ -266,7 +268,13 @@ export function buildPromotionCommand(
     `    PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$PR_TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$PR_BASE\\",\\"body\\":\\"$PR_BODY\\"${draftFrag}}" || echo '{}')`,
     `  fi`,
     `  if [ -z "$URL" ]; then URL=$(printf '%s' "$PR" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1); fi`,
-    `  if [ -z "$URL" ]; then OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode "state=$PR_STATE" --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]'); URL=$(printf '%s' "$OPEN" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1); fi`,
+    `  LOOKUP_ATTEMPT=0`,
+    `  while [ -z "$URL" ] && [ "$LOOKUP_ATTEMPT" -lt 5 ]; do`,
+    `    LOOKUP_ATTEMPT=$((LOOKUP_ATTEMPT + 1))`,
+    `    sleep 1`,
+    `    OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode "state=$PR_STATE" --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]')`,
+    `    URL=$(printf '%s' "$OPEN" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1)`,
+    `  done`,
     `  if [ -n "$URL" ]; then echo "PR_URL=$URL"; else echo "PR_ERR=$(printf '%s' "$PR" | grep -oE '"message"[^,}]*' | head -1)"; fi`,
     // D2 (flagged): label the fresh PR `preview` so the label-gated Tekton
     // pull_request trigger auto-provisions a preview. Best-effort — a label
@@ -309,14 +317,14 @@ raise SystemExit(0 if valid else 1)`;
 
 function buildTarOverlaySetCloneStep(): string {
   return [
-    `git clone -q --no-checkout "https://x-access-token:$GH@github.com/$REPO.git" /tmp/promote`,
-    `cd /tmp/promote`,
+    `git clone -q --no-checkout "https://x-access-token:$GH@github.com/$REPO.git" "$PROMOTE"`,
+    `cd "$PROMOTE"`,
     `git rev-parse --verify "origin/$PR_BASE^{commit}" >/dev/null 2>&1 || { echo "ERR=pr_base_unavailable"; exit 0; }`,
     `git cat-file -e "$BASE_REVISION^{commit}" 2>/dev/null || { echo "ERR=base_revision_unavailable"; exit 0; }`,
     `git merge-base --is-ancestor "$BASE_REVISION" "origin/$PR_BASE" || { echo "ERR=base_revision_not_ancestor"; exit 0; }`,
     `git checkout -q -b "$BR" "$BASE_REVISION"`,
     `[ "$(git rev-parse HEAD)" = "$BASE_REVISION" ] || { echo "ERR=base_revision_checkout_mismatch"; exit 0; }`,
-    `python3 - /tmp/v.bundle /tmp/promote <<'PY'`,
+    `python3 - "$BUNDLE" "$PROMOTE" <<'PY'`,
     TAR_OVERLAY_SET_APPLIER,
     `PY`,
     `git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder'`,

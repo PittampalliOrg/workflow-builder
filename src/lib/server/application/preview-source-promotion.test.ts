@@ -10,10 +10,12 @@ import type {
   PreviewImportedArtifactIdentity,
   PreviewSourcePromotionBrokerRequest,
 } from "$lib/server/application/ports";
+import { PreviewSourcePromotionExclusivityBusyError } from "$lib/server/application/ports";
 
 const PLATFORM = "a".repeat(40) as ImmutableGitSha;
 const SOURCE = "b".repeat(40) as ImmutableGitSha;
 const COMMIT = "c".repeat(40) as ImmutableGitSha;
+const COMMIT_2 = "9".repeat(40) as ImmutableGitSha;
 const ADVANCED_BASE = "f".repeat(40) as ImmutableGitSha;
 const CATALOG = `sha256:${"d".repeat(64)}` as const;
 const FILE = `sha256:${"e".repeat(64)}` as const;
@@ -121,8 +123,35 @@ function promotionHttpHarness(body: unknown) {
   return { adapter, fetchImpl };
 }
 
+function testExclusivity() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    runExclusive: vi.fn(
+      async <T>(
+        scope: Record<string, unknown>,
+        operation: () => Promise<T>,
+      ): Promise<T> => {
+        const key = JSON.stringify(scope);
+        const previous = tails.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const current = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        tails.set(key, previous.then(() => current));
+        await previous;
+        try {
+          return await operation();
+        } finally {
+          release();
+        }
+      },
+    ),
+  };
+}
+
 function brokerHarness() {
   let storedReceipt: Record<string, unknown> | null = null;
+  let pullRequestHead: ImmutableGitSha = COMMIT;
   const authority = {
     authorize: vi.fn(async () => ({
       previewName: "preview-one",
@@ -137,12 +166,17 @@ function brokerHarness() {
     authorizeCurrent: vi.fn(),
   };
   const trust = {
-    preparePromotion: vi.fn(async () => ({
-      artifactId: "central-artifact-1",
-      artifactIdentity: identity,
-      fileId: "file-1",
-      fileDigest: FILE,
-      services: ["workflow-builder"],
+    preparePromotion: vi.fn(async (input: {
+      artifact: {
+        artifactId: string;
+        identity: PreviewImportedArtifactIdentity;
+      };
+    }) => ({
+      artifactId: input.artifact.artifactId,
+      artifactIdentity: input.artifact.identity,
+      fileId: `file-${input.artifact.artifactId}`,
+      fileDigest: input.artifact.identity.fileDigest,
+      services: input.artifact.identity.services,
       catalogDigest: CATALOG,
       repo: "PittampalliOrg/workflow-builder",
       base: "main",
@@ -170,7 +204,7 @@ function brokerHarness() {
     draft: true,
     baseSha: SOURCE,
     headRef: BRANCH,
-    headSha: COMMIT,
+    headSha: pullRequestHead,
     changedPaths: ["src/routes/feature.ts"],
   }));
   const pullRequests = {
@@ -223,6 +257,7 @@ function brokerHarness() {
       unmappedRuntimePaths: [],
     })),
   };
+  const exclusivity = testExclusivity();
   return {
     authority,
     trust,
@@ -230,7 +265,11 @@ function brokerHarness() {
     git,
     pullRequests,
     receipts,
+    exclusivity,
     catalog,
+    setPullRequestHead: (head: ImmutableGitSha) => {
+      pullRequestHead = head;
+    },
     service: new ApplicationPreviewSourcePromotionBrokerService({
       authority: authority as never,
       trust,
@@ -238,6 +277,7 @@ function brokerHarness() {
       git,
       pullRequests,
       receipts: receipts as never,
+      exclusivity: exclusivity as never,
       catalog,
       sourceRepository: "PittampalliOrg/workflow-builder",
       baseBranch: "main",
@@ -346,6 +386,108 @@ describe("preview source promotion", () => {
       baseSha: SOURCE,
       headSha: COMMIT,
     });
+  });
+
+  it("single-flights concurrent retries before the Git and receipt mutation", async () => {
+    const h = brokerHarness();
+    let releasePromotion!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releasePromotion = resolve;
+    });
+    const result = await h.promotions.promoteSourceBundle();
+    h.promotions.promoteSourceBundle.mockClear();
+    h.promotions.promoteSourceBundle.mockImplementationOnce(async () => {
+      await blocked;
+      return result;
+    });
+
+    const first = h.service.promote(command);
+    await vi.waitFor(() => {
+      expect(h.promotions.promoteSourceBundle).toHaveBeenCalledOnce();
+    });
+    const second = h.service.promote(command);
+    await vi.waitFor(() => {
+      expect(h.exclusivity.runExclusive).toHaveBeenCalledTimes(2);
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledOnce();
+    releasePromotion();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(secondResult).toEqual(firstResult);
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledOnce();
+    expect(h.receipts.put).toHaveBeenCalledTimes(1);
+    expect(h.exclusivity.runExclusive).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps lock contention to a retryable promotion response", async () => {
+    const h = brokerHarness();
+    h.exclusivity.runExclusive.mockRejectedValueOnce(
+      new PreviewSourcePromotionExclusivityBusyError(),
+    );
+
+    await expect(h.service.promote(command)).rejects.toMatchObject({
+      code: "promotion-busy",
+      statusCode: 409,
+      message: "preview source promotion is busy; retry the checkpoint",
+    });
+    expect(h.promotions.promoteSourceBundle).not.toHaveBeenCalled();
+  });
+
+  it("leases the first receipt when a later generation queues for the same PR", async () => {
+    const h = brokerHarness();
+    const laterIdentity: PreviewImportedArtifactIdentity = {
+      ...identity,
+      sourceArtifactId: "source-artifact-2",
+      captureId: "capture-2",
+      generation: "generation-2",
+      fileDigest: `sha256:${"1".repeat(64)}`,
+    };
+    const laterCommand: PreviewSourcePromotionBrokerRequest = {
+      ...command,
+      operationId: "central-artifact-2",
+      artifactId: "central-artifact-2",
+      artifactIdentity: laterIdentity,
+    };
+    const firstPromotion = await h.promotions.promoteSourceBundle();
+    h.promotions.promoteSourceBundle.mockClear();
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    h.promotions.promoteSourceBundle
+      .mockImplementationOnce(async () => {
+        await firstBlocked;
+        return firstPromotion;
+      })
+      .mockImplementationOnce(async () => {
+        h.setPullRequestHead(COMMIT_2);
+        return { ...firstPromotion, commitSha: COMMIT_2 };
+      });
+
+    const first = h.service.promote(command);
+    await vi.waitFor(() => {
+      expect(h.promotions.promoteSourceBundle).toHaveBeenCalledOnce();
+    });
+    const second = h.service.promote(laterCommand);
+    await vi.waitFor(() => {
+      expect(h.exclusivity.runExclusive).toHaveBeenCalledTimes(2);
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledOnce();
+    releaseFirst();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.commitSha).toBe(COMMIT);
+    expect(secondResult.commitSha).toBe(COMMIT_2);
+    expect(h.promotions.promoteSourceBundle).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        branchLease: {
+          expectedHeadSha: COMMIT,
+          existingPullRequestNumber: 42,
+        },
+      }),
+    );
+    expect(h.receipts.put).toHaveBeenCalledTimes(2);
   });
 
   it("does not persist a PR base that moves after ancestry verification", async () => {

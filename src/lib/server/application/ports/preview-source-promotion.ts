@@ -89,6 +89,25 @@ export interface PreviewSourcePromotionReceiptStorePort {
   ): Promise<PreviewSourcePromotionReceipt | null>;
 }
 
+/** The promotion scope is already being materialized by another broker request. */
+export class PreviewSourcePromotionExclusivityBusyError extends Error {
+  constructor() {
+    super("preview source promotion is busy; retry the checkpoint");
+    this.name = "PreviewSourcePromotionExclusivityBusyError";
+  }
+}
+
+/**
+ * Cross-replica single-flight boundary for every generation of one stable
+ * preview PR.
+ */
+export interface PreviewSourcePromotionExclusivityPort {
+  runExclusive<T>(
+    scope: PreviewSourcePromotionReceiptScope,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+}
+
 export interface PreviewSourcePromotionBrokerPort {
   promote(
     input: PreviewSourcePromotionBrokerRequest,
