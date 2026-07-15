@@ -210,6 +210,139 @@ export function registerWorkflowTools(
 		description: "Browse action catalog",
 	});
 
+	// ── create_agent ───────────────────────────────────────
+	(server as any).registerTool(
+		"create_agent",
+		{
+			title: "Create Agent",
+			description:
+				"Register a new agent in the catalog so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (e.g. 'zai/glm-5.2' for GLM 5.2). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Use `skills` to attach agent skills. Returns the created agent's id and slug. Owner is resolved from the MCP connection (X-User-Id) or the active session (X-Wfb-Session-Id) — you cannot create an agent for another user.",
+			inputSchema: {
+				name: z.string().describe("Human-readable agent name."),
+				slug: z
+					.string()
+					.optional()
+					.describe("Stable slug (auto-derived from name if omitted)."),
+				description: z.string().optional(),
+				model: z
+					.string()
+					.optional()
+					.describe(
+						"modelSpec, e.g. 'zai/glm-5.2'. Ignored for CLI runtimes (native subscription auth).",
+					),
+				runtime: z
+					.string()
+					.optional()
+					.describe(
+						"Agent runtime (default 'dapr-agent-py'). Other non-CLI options: 'dapr-agent-py-juicefs'.",
+					),
+				system_prompt: z
+					.string()
+					.optional()
+					.describe("System prompt / persona for the agent."),
+				mcp_servers: z
+					.array(
+						z.object({
+							name: z.string(),
+							transport: z.string().optional(),
+							url: z.string().optional(),
+							command: z.string().optional(),
+							args: z.array(z.string()).optional(),
+						}),
+					)
+					.optional()
+					.describe("MCP servers that provide the agent's tools."),
+				tools: z.array(z.string()).optional(),
+				skills: z.array(z.string()).optional(),
+				tags: z.array(z.string()).optional(),
+				project_id: z
+					.string()
+					.optional()
+					.describe("Owning project (defaults to the session's project)."),
+			},
+		},
+		async (args: {
+			name: string;
+			slug?: string;
+			description?: string;
+			model?: string;
+			runtime?: string;
+			system_prompt?: string;
+			mcp_servers?: Array<Record<string, unknown>>;
+			tools?: string[];
+			skills?: string[];
+			tags?: string[];
+			project_id?: string;
+		}) => {
+			try {
+				if (!INTERNAL_API_TOKEN) {
+					return errorResult(
+						"INTERNAL_API_TOKEN is not configured for agent creation",
+					);
+				}
+				// Resolve the owner server-side: the connection's X-User-Id, else the
+				// active session's owner. Never trust a client-supplied user id.
+				const sessionId = currentGoalSessionId();
+				let userId = effectiveUserId;
+				let projectId = args.project_id ?? null;
+				if ((!userId || !projectId) && sessionId) {
+					const owner = await db.getSessionOwner(sessionId);
+					userId = userId ?? owner?.userId ?? undefined;
+					projectId = projectId ?? owner?.projectId ?? null;
+				}
+				if (!userId) {
+					return errorResult(
+						"No user context: create_agent needs an authenticated MCP connection (X-User-Id) or a session (X-Wfb-Session-Id).",
+					);
+				}
+
+				const runtime = args.runtime ?? "dapr-agent-py";
+				const config: Record<string, unknown> = { runtime };
+				if (args.model) config.modelSpec = args.model;
+				if (args.system_prompt) config.systemPrompt = args.system_prompt;
+				if (args.mcp_servers) config.mcpServers = args.mcp_servers;
+				if (args.tools) config.tools = args.tools;
+				if (args.skills) config.skills = args.skills;
+
+				const agentBody: Record<string, unknown> = {
+					name: args.name,
+					runtime,
+					config,
+				};
+				if (args.slug) agentBody.slug = args.slug;
+				if (args.description) agentBody.description = args.description;
+				if (args.tags) agentBody.tags = args.tags;
+				if (projectId) agentBody.projectId = projectId;
+
+				const resp = await fetch(`${WORKFLOW_BUILDER_URL}/api/internal/agents`, {
+					method: "POST",
+					headers: internalHeaders(userId),
+					body: JSON.stringify({ userId, projectId, agent: agentBody }),
+				});
+				const data = (await resp.json().catch(() => ({}))) as {
+					agent?: { id?: string; slug?: string; name?: string };
+					message?: string;
+				};
+				if (!resp.ok) {
+					return errorResult(
+						`create_agent failed (${resp.status}): ${data.message ?? JSON.stringify(data)}`,
+					);
+				}
+				return textResult({
+					ok: true,
+					agent: data.agent,
+					hint: "Reference this agent by slug in a workflow (opts.agent) or a run's x-wfb agent input.",
+				});
+			} catch (err) {
+				return errorResult(`Failed to create agent: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "create_agent",
+		description: "Register a new catalog agent",
+	});
+
 	// ── execute_workflow ───────────────────────────────────
 	(server as any).registerTool(
 		"execute_workflow",
