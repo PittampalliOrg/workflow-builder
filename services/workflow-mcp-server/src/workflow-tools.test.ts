@@ -22,10 +22,12 @@ describe("workflow tools registration", () => {
 			"list_workflows",
 			"get_workflow",
 			"list_available_actions",
+			"create_agent",
 			"execute_workflow",
 			"get_execution_status",
 			"get_execution_results",
 		]);
+		expect(names).toContain("create_agent");
 		expect(names).not.toContain("create_workflow");
 		expect(names).not.toContain("add_node");
 		expect(names).not.toContain("approve_workflow");
