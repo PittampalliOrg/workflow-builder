@@ -110,6 +110,15 @@
 		return 'text-muted-foreground/50';
 	}
 
+	function updateServiceCheckpointState(
+		service: string,
+		state: 'unknown' | 'writable' | 'preparing' | 'frozen'
+	) {
+		const current = untrack(() => serviceCheckpointStates);
+		if (current[service] === state) return;
+		serviceCheckpointStates = { ...current, [service]: state };
+	}
+
 	$effect(() => {
 		if (typeof document === 'undefined') return;
 		let timer: ReturnType<typeof setInterval> | null = null;
@@ -354,9 +363,7 @@
 					<DevServiceCard
 						service={svc}
 						{sourceReadOnly}
-						oncheckpointstate={(service, state) => {
-							serviceCheckpointStates = { ...serviceCheckpointStates, [service]: state };
-						}}
+						oncheckpointstate={updateServiceCheckpointState}
 					/>
 				{/each}
 			</section>
