@@ -156,8 +156,8 @@ export async function listWorkflows(
   const userIdFilter = userId ?? process.env.USER_ID;
   let query = `
 		SELECT id, name, description, visibility, engine_type, spec_version, created_at, updated_at,
-			jsonb_array_length(coalesce(nodes, '[]'::jsonb)) as node_count,
-			jsonb_array_length(coalesce(edges, '[]'::jsonb)) as edge_count
+			case when jsonb_typeof(nodes) = 'array' then jsonb_array_length(nodes) else 0 end as node_count,
+			case when jsonb_typeof(edges) = 'array' then jsonb_array_length(edges) else 0 end as edge_count
 		FROM workflows
 	`;
   const params: string[] = [];
@@ -185,7 +185,8 @@ export async function listWorkflows(
 export async function getWorkflow(id: string): Promise<WorkflowRow | null> {
   const result = await pool.query(
     `SELECT id, name, description, nodes, edges, visibility, engine_type, spec_version, spec, created_at, updated_at
-		 FROM workflows WHERE id = $1`,
+		 FROM workflows WHERE id = $1 OR name = $1
+		 ORDER BY (id = $1) DESC LIMIT 1`,
     [id],
   );
   if (result.rows.length === 0) return null;
