@@ -11220,7 +11220,12 @@ def _vcluster_preview_phase(
     if ns_exists:
         try:
             pods = core.list_namespaced_pod(
-                namespace=f"vcluster-{name}", _request_timeout=request_timeout
+                namespace=f"vcluster-{name}",
+                label_selector=(
+                    "app=workflow-builder,"
+                    "vcluster.loft.sh/namespace=workflow-builder"
+                ),
+                _request_timeout=request_timeout,
             )
             for p in pods.items:
                 labels = (

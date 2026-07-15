@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { untrack } from 'svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -48,7 +49,10 @@
 
 	// SSR-seeded so there's no blank flash; the query hydrates and a single
 	// visibility-gated 5s tick keeps it fresh (replacing the old 4s interval).
-	const envQuery = $derived(getDevEnvironment(data.environment.executionId));
+	// Keep the remote query handle stable; its `current` property is reactive and
+	// updates the derived environment and services after every refresh.
+	const initialExecutionId = untrack(() => data.environment.executionId);
+	const envQuery = getDevEnvironment(initialExecutionId);
 	const environment = $derived<DevEnvironmentSummary>(
 		envQuery.current?.environment ?? data.environment
 	);
