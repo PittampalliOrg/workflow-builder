@@ -1202,6 +1202,9 @@ export interface WorkflowDataService {
 	listDevEnvironments(input: {
 		projectId?: string | null;
 	}): Promise<DevEnvironmentSummaryReadModel[]>;
+	listDevEnvironmentGroups(input: {
+		projectId?: string | null;
+	}): Promise<DevEnvironmentGroupReadModel[]>;
 	getDevEnvironmentOrPending(input: {
 		executionId: string;
 		projectId?: string | null;
@@ -1615,6 +1618,12 @@ export interface WorkflowDataService {
 		executionId: string;
 		artifactId: string;
 		metadata: Record<string, unknown> | null;
+		ifAbsentMetadataKey?: string;
+	}): Promise<WorkflowArtifactRecord | null>;
+	mergeWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		patch: Record<string, unknown>;
 		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null>;
 	createWorkflowFile(input: CreateWorkflowFileInput): Promise<{

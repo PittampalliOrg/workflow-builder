@@ -29,6 +29,11 @@ export type SidecarStatus = {
 	lastSyncAt?: string | null;
 	lastSyncBytes?: number | null;
 	lastSyncTimingsMs?: SidecarSyncTimings | null;
+	frozen?: boolean;
+	prepared?: boolean;
+	preparedOperationId?: string | null;
+	preparedAt?: string | null;
+	frozenOperationId?: string | null;
 	lastRun?: unknown;
 	commands?: string[];
 };
@@ -183,6 +188,13 @@ export async function fetchSidecarStatus(input: {
 				lastSyncAt: typeof body.lastSyncAt === 'string' ? body.lastSyncAt : null,
 				lastSyncBytes: typeof body.lastSyncBytes === 'number' ? body.lastSyncBytes : null,
 				lastSyncTimingsMs: parseSyncTimings(body.lastSyncTimingsMs),
+				frozen: body.frozen === true,
+				prepared: body.prepared === true,
+				preparedOperationId:
+					typeof body.preparedOperationId === 'string' ? body.preparedOperationId : null,
+				preparedAt: typeof body.preparedAt === 'string' ? body.preparedAt : null,
+				frozenOperationId:
+					typeof body.frozenOperationId === 'string' ? body.frozenOperationId : null,
 				lastRun: body.lastRun ?? null,
 				commands: Array.isArray(body.commands)
 					? body.commands.filter((c): c is string => typeof c === 'string')

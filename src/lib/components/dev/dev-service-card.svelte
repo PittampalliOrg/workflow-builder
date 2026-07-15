@@ -3,7 +3,16 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/components/ui/collapsible';
 	import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '$lib/components/ui/tooltip';
-	import { ChevronDown, Cpu, ExternalLink, Loader2, Play, RefreshCw, Server } from '@lucide/svelte';
+	import {
+		ChevronDown,
+		Cpu,
+		ExternalLink,
+		Loader2,
+		LockKeyhole,
+		Play,
+		RefreshCw,
+		Server
+	} from '@lucide/svelte';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import { relativeTime } from '$lib/components/dev/preview-lifecycle';
 	import type { SidecarLastRunView } from '$lib/types/dev-previews';
@@ -17,7 +26,18 @@
 	// the registry's allowlisted named commands. Fetched via remote functions;
 	// status refreshes on demand and after each run (no blanket polling).
 
-	let { service }: { service: DevEnvironmentSummary } = $props();
+	let {
+		service,
+		sourceReadOnly = false,
+		oncheckpointstate
+	}: {
+		service: DevEnvironmentSummary;
+		sourceReadOnly?: boolean;
+		oncheckpointstate?: (
+			service: string,
+			state: 'unknown' | 'writable' | 'preparing' | 'frozen'
+		) => void;
+	} = $props();
 
 	const statusQuery = getSidecarStatus({
 		executionId: service.executionId,
@@ -36,6 +56,19 @@
 		statusData?.commands?.length ? statusData.commands : (view?.allowedCommands ?? [])
 	);
 	const lastRun = $derived<SidecarLastRunView | null>(statusData?.lastRun ?? null);
+	const checkpointState = $derived<'unknown' | 'writable' | 'preparing' | 'frozen'>(
+		statusData?.frozen
+			? 'frozen'
+			: statusData?.prepared
+				? 'preparing'
+				: statusData
+					? 'writable'
+					: 'unknown'
+	);
+
+	$effect(() => {
+		oncheckpointstate?.(service.service, checkpointState);
+	});
 
 	let runningCmd = $state<string | null>(null);
 	let runOutput = $state<{
@@ -48,7 +81,7 @@
 	let outputOpen = $state(false);
 
 	async function run(cmd: string) {
-		if (runningCmd) return;
+		if (runningCmd || sourceReadOnly) return;
 		runningCmd = cmd;
 		runOutput = null;
 		try {
@@ -106,6 +139,17 @@
 			{/if}
 		</div>
 		<div class="flex items-center gap-1 shrink-0">
+			{#if checkpointState === 'frozen' || checkpointState === 'preparing'}
+				<Badge
+					variant="outline"
+					class="gap-1 text-[10px] {checkpointState === 'frozen'
+						? 'border-amber-500/40 text-amber-700 dark:text-amber-300'
+						: 'text-muted-foreground'}"
+				>
+					<LockKeyhole class="size-3" />
+					{checkpointState === 'frozen' ? 'checkpoint recovery' : 'checkpoint preparing'}
+				</Badge>
+			{/if}
 			{#if service.browseUrl}
 				<a
 					href={service.browseUrl}
@@ -131,7 +175,11 @@
 	<div class="text-xs text-muted-foreground space-y-0.5">
 		{#if statusData}
 			<p>
-				sidecar ok
+				{checkpointState === 'frozen'
+					? 'source frozen'
+					: checkpointState === 'preparing'
+						? 'source writes paused'
+						: 'sidecar ok'}
 				{#if statusData.lastSyncAt}
 					· last sync {new Date(statusData.lastSyncAt).toLocaleTimeString()}
 					{#if statusData.lastSyncBytes != null}({Math.round(statusData.lastSyncBytes / 1024)} KiB){/if}
@@ -196,7 +244,13 @@
 					size="sm"
 					variant="outline"
 					class="h-7 text-xs"
-					disabled={runningCmd !== null || !service.ready}
+					disabled={
+						runningCmd !== null ||
+						!service.ready ||
+						sourceReadOnly ||
+						checkpointState === 'preparing' ||
+						checkpointState === 'frozen'
+					}
 					onclick={() => void run(cmd)}
 				>
 					{#if runningCmd === cmd}<Loader2 class="size-3 animate-spin" />{:else}<Play

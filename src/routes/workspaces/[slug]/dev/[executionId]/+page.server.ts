@@ -1,8 +1,10 @@
 import { error } from "@sveltejs/kit";
 import { getApplicationAdapters } from "$lib/server/application";
 import type { PageServerLoad } from "./$types";
+import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
 export const load: PageServerLoad = async ({ params, locals }) => {
+	await requirePlatformAdmin(locals);
 	const workflowData = getApplicationAdapters().workflowData;
 	const environment = await workflowData.getDevEnvironmentOrPending({
 		executionId: params.executionId,

@@ -15,6 +15,11 @@ export type DevSidecarStatusData = {
 	lastSyncAt: string | null;
 	lastSyncBytes: number | null;
 	lastSyncTimingsMs: DevPreviewSyncTimings | null;
+	frozen: boolean;
+	prepared: boolean;
+	preparedOperationId: string | null;
+	preparedAt: string | null;
+	frozenOperationId: string | null;
 	commands: string[];
 	lastRun: SidecarLastRunView | null;
 };
@@ -126,6 +131,11 @@ export class ApplicationDevPreviewSidecarService {
 					lastSyncAt: d.lastSyncAt ?? null,
 					lastSyncBytes: d.lastSyncBytes ?? null,
 					lastSyncTimingsMs: d.lastSyncTimingsMs ?? null,
+					frozen: d.frozen === true,
+					prepared: d.prepared === true,
+					preparedOperationId: d.preparedOperationId ?? null,
+					preparedAt: d.preparedAt ?? null,
+					frozenOperationId: d.frozenOperationId ?? null,
 					commands: d.commands ?? [],
 					lastRun: parseSidecarLastRun(d.lastRun)
 				}

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("preview session continuation hexagonal boundary", () => {
-  it("keeps public continuation orchestration dependent on application ports", () => {
+  it("keeps public continuation orchestration inside the application core", () => {
     const source = readFileSync(
       resolve(
         process.cwd(),
@@ -15,7 +15,10 @@ describe("preview session continuation hexagonal boundary", () => {
       (match) => match[1],
     );
 
-    expect(imports).toEqual(["$lib/server/application/ports"]);
+    expect(imports).toEqual([
+      "$lib/server/application/ports",
+      "$lib/server/application/workflow-code-version-order",
+    ]);
     expect(source).not.toContain("$lib/server/application/adapters");
     expect(source).not.toContain("$lib/server/workflows");
     expect(source).not.toContain("$lib/server/db");

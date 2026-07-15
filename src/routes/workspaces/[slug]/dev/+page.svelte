@@ -295,7 +295,9 @@
 		<AlertDialogHeader>
 			<AlertDialogTitle>Tear down {toTeardown?.service}?</AlertDialogTitle>
 			<AlertDialogDescription>
-				Deletes the preview pod and purges the interactive session. This can't be undone.
+				Captures one coherent live-sync generation into the environment's stable draft pull
+				request before deleting the preview workload and purging the interactive session. A failed
+				checkpoint leaves the environment intact for recovery from its detail page.
 			</AlertDialogDescription>
 		</AlertDialogHeader>
 		<AlertDialogFooter>

@@ -22,6 +22,7 @@ export type CaptureDevPreviewSourcesResult = {
 	skipped?: string;
 	captureId?: string;
 	generation?: string | null;
+	reused?: boolean;
 	services: CaptureDevPreviewServiceResult[];
 };
 

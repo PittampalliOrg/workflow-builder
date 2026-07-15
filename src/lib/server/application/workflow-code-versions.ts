@@ -3,6 +3,10 @@ import type {
   WorkflowArtifactRecord,
   WorkflowDataService,
 } from "$lib/server/application/ports";
+import {
+  compareWorkflowArtifactChronology,
+  latestWorkflowArtifact,
+} from "$lib/server/application/workflow-code-version-order";
 
 export type WorkflowCodeVersionListInput = {
   executionId: string;
@@ -22,6 +26,7 @@ export type WorkflowCodeVersionReadModel = {
     SourceBundlePromotionGatePort["evaluatePromotionGate"]
   >;
   promotion: unknown;
+  acceptance: unknown;
   createdAt: string;
 };
 
@@ -31,6 +36,9 @@ export type WorkflowCodeVersionListResult =
       body: {
         versions: WorkflowCodeVersionReadModel[];
         outstanding: boolean;
+        unpromotedCount: number;
+        canManageStrictCheckpoints: boolean;
+        latestStrictArtifactId: string | null;
       };
     }
   | { status: "error"; httpStatus: number; message: string };
@@ -42,7 +50,9 @@ export class ApplicationWorkflowCodeVersionService {
     private readonly deps: {
       workflowData: Pick<
         WorkflowDataService,
-        "getScopedExecutionById" | "listWorkflowArtifactsByExecutionId"
+        | "getScopedExecutionById"
+        | "listWorkflowArtifactsByExecutionId"
+        | "isPlatformAdmin"
       >;
       promotionGate: SourceBundlePromotionGatePort;
     },
@@ -64,23 +74,36 @@ export class ApplicationWorkflowCodeVersionService {
       };
     }
 
-    const versions = (
-      await this.deps.workflowData.listWorkflowArtifactsByExecutionId(
+    const [artifacts, canManageStrictCheckpoints] = await Promise.all([
+      this.deps.workflowData.listWorkflowArtifactsByExecutionId(
         input.executionId,
-      )
-    )
+      ),
+      this.deps.workflowData.isPlatformAdmin(input.userId),
+    ]);
+    const sourceArtifacts = artifacts
       .filter((artifact) => artifact.kind === SOURCE_BUNDLE_KIND)
-      .map((artifact) =>
-        this.toReadModel(artifact, execution.output, execution.summaryOutput),
-      );
+      .sort(compareWorkflowArtifactChronology);
+    const latestStrictArtifactId =
+      latestWorkflowArtifact(sourceArtifacts, (artifact) =>
+        isStrictAtomicSnapshot(artifact.inlinePayload),
+      )?.id ?? null;
+    const versions = sourceArtifacts.map((artifact) =>
+      this.toReadModel(artifact, execution.output, execution.summaryOutput),
+    );
+
+    const unpromotedCount = countUnpromotedVersions(
+      versions,
+      latestStrictArtifactId,
+    );
 
     return {
       status: "ok",
       body: {
         versions,
-        outstanding:
-          versions.length > 0 &&
-          versions.every((version) => !version.promotion),
+        outstanding: unpromotedCount > 0,
+        unpromotedCount,
+        canManageStrictCheckpoints,
+        latestStrictArtifactId,
       },
     };
   }
@@ -105,9 +128,62 @@ export class ApplicationWorkflowCodeVersionService {
         summaryOutput,
       }),
       promotion: artifact.metadata?.promotion ?? null,
+      acceptance: artifact.metadata?.acceptance ?? null,
       createdAt: artifact.createdAt.toISOString(),
     };
   }
+}
+
+/** Strict atomic captures are whole-state snapshots; only the newest can be debt. */
+function countUnpromotedVersions(
+  versions: readonly WorkflowCodeVersionReadModel[],
+  latestStrictArtifactId: string | null,
+): number {
+  let unpromotedCount = 0;
+
+  for (const version of versions) {
+    if (isStrictAtomicSnapshot(version.payload)) {
+      if (
+        version.artifactId === latestStrictArtifactId &&
+        !hasPullRequest(version.promotion)
+      ) {
+        unpromotedCount += 1;
+      }
+    } else if (!hasPullRequest(version.promotion)) {
+      unpromotedCount += 1;
+    }
+  }
+  return unpromotedCount;
+}
+
+function isStrictAtomicSnapshot(value: unknown): boolean {
+  const payload = asRecord(value);
+  return (
+    payload.tier === "tar-overlay-set" &&
+    (payload.captureProtocol === "atomic-generation-v2" ||
+      payload.acceptanceEligible === true)
+  );
+}
+
+function hasPullRequest(value: unknown): boolean {
+  const promotion = asRecord(value);
+  if (typeof promotion.prUrl === "string" && promotion.prUrl.trim()) return true;
+  const pullRequest = asRecord(promotion.pullRequest);
+  const repository =
+    typeof promotion.repository === "string"
+      ? promotion.repository
+      : pullRequest.repository;
+  const number =
+    typeof promotion.pullRequestNumber === "number"
+      ? promotion.pullRequestNumber
+      : pullRequest.number;
+  return (
+    typeof repository === "string" &&
+    Boolean(repository.trim()) &&
+    typeof number === "number" &&
+    Number.isSafeInteger(number) &&
+    number > 0
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

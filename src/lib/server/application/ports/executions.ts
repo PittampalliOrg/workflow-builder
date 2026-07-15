@@ -524,6 +524,14 @@ export interface ArtifactStore {
 		/** Atomic compare-and-set: update only while this top-level key is absent. */
 		ifAbsentMetadataKey?: string;
 	}): Promise<WorkflowArtifactRecord | null>;
+	/** Atomically merges top-level JSON metadata without replacing concurrent keys. */
+	mergeWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		patch: Record<string, unknown>;
+		/** Atomic compare-and-set: merge only while this top-level key is absent. */
+		ifAbsentMetadataKey?: string;
+	}): Promise<WorkflowArtifactRecord | null>;
 }
 
 export type WorkflowExecutionAgentRunRecord = {

@@ -39,7 +39,7 @@ export const getDevEnvironment = query(
 	},
 );
 
-/** One service's dev-sync-sidecar `/__status` (on demand — never blanket-polled). */
+/** One service's dev-sync-sidecar `/__status`, polled only by its open detail page. */
 export const getSidecarStatus = query(
 	"unchecked",
 	async (input: { executionId: string; service: string }): Promise<DevSidecarStatusView> => {

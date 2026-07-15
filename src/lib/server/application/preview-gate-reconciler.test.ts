@@ -120,6 +120,7 @@ function harness(
     inspectOpen: vi.fn(),
     inspect: vi.fn(async () => ({
       ...tuple,
+      draft: true,
       headRef: "feature/preview",
       changedPaths,
     })),
@@ -222,6 +223,7 @@ describe("ApplicationPreviewGateReconcilerService", () => {
     );
     h.pullRequests.inspect.mockResolvedValue({
       ...tuple,
+      draft: true,
       headRef: "feature/preview",
       changedPaths,
     });
@@ -248,6 +250,7 @@ describe("ApplicationPreviewGateReconcilerService", () => {
     );
     h.pullRequests.inspect.mockResolvedValue({
       ...tuple,
+      draft: true,
       headRef: "feature/preview",
       changedPaths,
     });
@@ -268,6 +271,7 @@ describe("ApplicationPreviewGateReconcilerService", () => {
     h.pullRequests.inspect
       .mockResolvedValueOnce({
         ...tuple,
+        draft: true,
         headRef: "feature/preview",
         changedPaths: ["src/feature.ts"],
       })

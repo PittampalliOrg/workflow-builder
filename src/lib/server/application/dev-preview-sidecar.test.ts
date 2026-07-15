@@ -98,6 +98,11 @@ describe('ApplicationDevPreviewSidecarService', () => {
 					commit: 1,
 					total: 62
 				},
+				frozen: true,
+				prepared: false,
+				preparedOperationId: null,
+				preparedAt: null,
+				frozenOperationId: 'teardown-abc',
 				commands: ['deps', 'test'],
 				lastRun: {
 					name: 'test',
@@ -142,6 +147,12 @@ describe('ApplicationDevPreviewSidecarService', () => {
 				finishedAt: null
 			});
 			expect(result.status.data.commands).toEqual(['deps', 'test']);
+			expect(result.status.data).toMatchObject({
+				frozen: true,
+				prepared: false,
+				preparedOperationId: null,
+				frozenOperationId: 'teardown-abc'
+			});
 		}
 		expect(result?.allowedCommands).toEqual(['deps', 'test']);
 	});

@@ -8,6 +8,7 @@ import { RetryableDevPreviewActivationError } from "$lib/server/application/port
 import type { PreviewDatabaseProvisioner } from "$lib/server/application/ports";
 import {
   captureAllDevPreviewSources,
+  freezeDevPreviewSourcesForTeardown,
   provisionDevPreview,
   provisionDevPreviews,
   replaceDevPreviewImages,
@@ -24,6 +25,14 @@ function fakePersistence(
     workspaceRef: string;
     sandboxState: Record<string, unknown> | null;
   }> = [],
+  artifacts: Array<{
+    id: string;
+    kind: string;
+    inlinePayload: unknown;
+    fileId: string | null;
+    sizeBytes: number | null;
+    createdAt: Date;
+  }> = [],
 ): DevPreviewPersistence {
   return {
     upsertWorkflowWorkspaceSession: vi.fn(async (input) => ({
@@ -36,6 +45,7 @@ function fakePersistence(
       userId: "user-1",
       projectId: "project-1",
     })),
+    listWorkflowArtifactsByExecutionId: vi.fn(async () => artifacts),
     persistSourceBundleArtifact: vi.fn(async () => ({
       id: "artifact-1",
       fileId: "file-1",
@@ -2005,6 +2015,516 @@ describe("dev-preview portability boundary", () => {
   });
 });
 
+describe("dev-preview teardown source freeze", () => {
+  const generation = "freeze-generation-1";
+  const contentSha256 = `sha256:${"a".repeat(64)}`;
+
+  beforeEach(() => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sandbox-api");
+    vi.stubEnv("SANDBOX_EXECUTION_API_TOKEN", "sandbox-internal-token");
+    vi.stubEnv("PREVIEW_DEV_SYNC_MINT_TOKEN", "");
+    vi.stubEnv("WFB_DEV_SYNC_TOKEN", "1".repeat(64));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function receiverRows(services = [
+    "workflow-builder",
+    "workflow-orchestrator",
+  ]) {
+    return services.map((service, index) => {
+      const descriptor = resolveDevPreviewDescriptor(service);
+      return {
+        workspaceRef: `wfb-dev-preview-${service}-exec-1`,
+        sandboxState: {
+          details: {
+            sandboxName: `wfb-dev-preview-${service}-exec-1`,
+            service,
+            podIP: `10.0.0.${index + 11}`,
+            syncPort: descriptor.syncPort,
+          },
+        },
+      };
+    });
+  }
+
+  function receipt(
+    service: string,
+    operationId = "teardown:exec-1:0123456789abcdef",
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      ok: true,
+      prepared: false,
+      frozen: true,
+      idempotent: false,
+      operationId,
+      service,
+      generation,
+      contentSha256,
+      ...overrides,
+    };
+  }
+
+  function preparedReceipt(
+    service: string,
+    operationId: string,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      ok: true,
+      prepared: true,
+      frozen: false,
+      idempotent: false,
+      operationId,
+      service,
+      generation,
+      contentSha256,
+      ...overrides,
+    };
+  }
+
+  function freezeRequest(target: string): {
+    phase: string | null;
+    operationId: string | null;
+  } {
+    const url = new URL(target);
+    return {
+      phase: url.searchParams.get("phase"),
+      operationId: url.searchParams.get("operationId"),
+    };
+  }
+
+  it("establishes teardown intent, prepares every receiver, then commits one generation", async () => {
+    const rows = receiverRows();
+    const receiverTokens = new Map([
+      ["workflow-builder", "2".repeat(64)],
+      ["workflow-orchestrator", "3".repeat(64)],
+    ]);
+    const agentTokens = new Map([
+      ["workflow-builder", "4".repeat(64)],
+      ["workflow-orchestrator", "5".repeat(64)],
+    ]);
+    const broker = {
+      mint: vi.fn(async (input: { service: string }) => ({
+        receiverToken: receiverTokens.get(input.service)!,
+        agentActionToken: agentTokens.get(input.service)!,
+      })),
+    };
+    const events: string[] = [];
+    let operationId: string | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          events.push("intent");
+          expect(init).toMatchObject({
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: "Bearer sandbox-internal-token",
+            },
+          });
+          expect(JSON.parse(String(init?.body))).toEqual({ executionId: "exec-1" });
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        const row = rows.find(({ sandboxState }) => {
+          const details = sandboxState.details as {
+            podIP: string;
+            syncPort: number;
+          };
+          const targetUrl = new URL(target);
+          return (
+            targetUrl.origin === `http://${details.podIP}:${details.syncPort}` &&
+            targetUrl.pathname === "/__freeze"
+          );
+        });
+        if (!row) throw new Error(`unexpected request ${target}`);
+        const service = String(row.sandboxState.details.service);
+        const request = freezeRequest(target);
+        expect(request.phase).toMatch(/^(prepare|commit)$/);
+        expect(request.operationId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+        operationId ??= request.operationId;
+        expect(request.operationId).toBe(operationId);
+        events.push(`${request.phase}:${service}`);
+        expect(init?.method).toBe("POST");
+        expect(init?.headers).toEqual({
+          "x-sync-token": receiverTokens.get(service),
+        });
+        expect(init?.headers).not.toEqual({
+          "x-sync-token": agentTokens.get(service),
+        });
+        return Response.json(
+          request.phase === "prepare"
+            ? preparedReceipt(service, request.operationId!)
+            : receipt(service, request.operationId!),
+        );
+      }),
+    );
+
+    const result = await freezeDevPreviewSourcesForTeardown(
+      {
+        executionId: "exec-1",
+        services: ["workflow-orchestrator", "workflow-builder"],
+      },
+      fakePersistence(rows),
+      {
+        mintToken: () => "f".repeat(64),
+        identity: () => ({
+          previewName: "preview-one",
+          environmentRequestId: "request-one",
+          environmentPlatformRevision: "b".repeat(40),
+          environmentSourceRevision: "c".repeat(40),
+          catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+        }),
+        broker,
+      },
+    );
+
+    expect(events[0]).toBe("intent");
+    expect(events.slice(1)).toEqual([
+      "prepare:workflow-builder",
+      "prepare:workflow-orchestrator",
+      "commit:workflow-builder",
+      "commit:workflow-orchestrator",
+    ]);
+    expect(operationId).not.toBeNull();
+    expect(result).toEqual({
+      executionId: "exec-1",
+      generation,
+      services: [
+        { service: "workflow-builder", generation, contentSha256 },
+        { service: "workflow-orchestrator", generation, contentSha256 },
+      ],
+    });
+    expect(broker.mint).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts prepared peers when any receiver is busy and never commits", async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        const request = freezeRequest(target);
+        const service = target.includes("10.0.0.11")
+          ? "workflow-builder"
+          : "workflow-orchestrator";
+        events.push(`${request.phase}:${service}`);
+        if (request.phase === "prepare" && service === "workflow-orchestrator") {
+          return Response.json(
+            { ok: false, error: "source sync in progress" },
+            { status: 409 },
+          );
+        }
+        if (request.phase === "prepare") {
+          return Response.json(preparedReceipt(service, request.operationId!));
+        }
+        if (request.phase === "abort") {
+          return Response.json({
+            ok: true,
+            prepared: false,
+            frozen: false,
+            idempotent: false,
+            operationId: request.operationId,
+          });
+        }
+        throw new Error(`commit must not be attempted after a busy prepare: ${target}`);
+      }),
+    );
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        {
+          executionId: "exec-1",
+          services: ["workflow-builder", "workflow-orchestrator"],
+        },
+        fakePersistence(receiverRows()),
+      ),
+    ).rejects.toThrow(/busy|prepare|quiesce/i);
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "prepare:workflow-builder",
+        "prepare:workflow-orchestrator",
+        "abort:workflow-builder",
+      ]),
+    );
+    expect(events.some((event) => event.startsWith("commit:"))).toBe(false);
+  });
+
+  it("does not contact a receiver when the teardown intent is rejected", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ accepted: false, detail: "intent denied" }, { status: 409 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        { executionId: "exec-1", services: ["workflow-builder"] },
+        fakePersistence(receiverRows(["workflow-builder"])),
+      ),
+    ).rejects.toThrow("intent denied");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://sandbox-api/internal/dev-previews/teardown-intent",
+    );
+  });
+
+  it.each([
+    ["missing service", { service: undefined }],
+    ["mismatched service", { service: "workflow-orchestrator" }],
+    ["missing generation", { generation: undefined }],
+    ["malformed generation", { generation: "not a generation" }],
+    ["missing digest", { contentSha256: undefined }],
+    ["malformed digest", { contentSha256: `sha256:${"g".repeat(64)}` }],
+  ])("rejects a receiver receipt with %s", async (_label, overrides) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        const request = freezeRequest(target);
+        return Response.json(
+          request.phase === "prepare"
+            ? preparedReceipt("workflow-builder", request.operationId!, overrides)
+            : receipt("workflow-builder", request.operationId!, overrides),
+        );
+      }),
+    );
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        { executionId: "exec-1", services: ["workflow-builder"] },
+        fakePersistence(receiverRows(["workflow-builder"])),
+      ),
+    ).rejects.toThrow(/busy|not proven/);
+  });
+
+  it("aborts every prepared receiver when generations differ and never commits", async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        const service = target.includes("10.0.0.11")
+          ? "workflow-builder"
+          : "workflow-orchestrator";
+        const request = freezeRequest(target);
+        events.push(`${request.phase}:${service}`);
+        if (request.phase === "prepare") {
+          return Response.json(
+            preparedReceipt(service, request.operationId!, {
+              generation:
+                service === "workflow-builder"
+                  ? "generation-one"
+                  : "generation-two",
+            }),
+          );
+        }
+        if (request.phase === "abort") {
+          return Response.json({
+            ok: true,
+            prepared: false,
+            frozen: false,
+            idempotent: false,
+            operationId: request.operationId,
+          });
+        }
+        return Response.json(
+          receipt(service, request.operationId!, {
+            generation:
+              service === "workflow-builder" ? "generation-one" : "generation-two",
+          }),
+        );
+      }),
+    );
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        {
+          executionId: "exec-1",
+          services: ["workflow-builder", "workflow-orchestrator"],
+        },
+        fakePersistence(receiverRows()),
+      ),
+    ).rejects.toThrow(/different .*generations/);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "prepare:workflow-builder",
+        "prepare:workflow-orchestrator",
+        "abort:workflow-builder",
+        "abort:workflow-orchestrator",
+      ]),
+    );
+    expect(events.some((event) => event.startsWith("commit:"))).toBe(false);
+  });
+
+  it("replays one deterministic operation to converge after a partial commit", async () => {
+    type ReceiverState = "open" | "prepared" | "frozen";
+    const states = new Map<string, ReceiverState>([
+      ["workflow-builder", "open"],
+      ["workflow-orchestrator", "open"],
+    ]);
+    const operationIds = new Set<string>();
+    const commitAttempts = new Map<string, number>();
+    let failOrchestratorCommit = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        const request = freezeRequest(target);
+        const service = target.includes("10.0.0.11")
+          ? "workflow-builder"
+          : "workflow-orchestrator";
+        operationIds.add(request.operationId!);
+        const state = states.get(service)!;
+        if (request.phase === "prepare") {
+          if (state === "frozen") {
+            return Response.json(
+              receipt(service, request.operationId!, { idempotent: true }),
+            );
+          }
+          states.set(service, "prepared");
+          return Response.json(
+            preparedReceipt(service, request.operationId!, {
+              idempotent: state === "prepared",
+            }),
+          );
+        }
+        if (request.phase === "commit") {
+          commitAttempts.set(service, (commitAttempts.get(service) ?? 0) + 1);
+          if (service === "workflow-orchestrator" && failOrchestratorCommit) {
+            failOrchestratorCommit = false;
+            return Response.json(
+              { ok: false, error: "transient receiver failure" },
+              { status: 503 },
+            );
+          }
+          if (state !== "frozen") states.set(service, "frozen");
+          return Response.json(
+            receipt(service, request.operationId!, {
+              idempotent: state === "frozen",
+            }),
+          );
+        }
+        if (request.phase === "abort") {
+          if (state === "prepared") states.set(service, "open");
+          return Response.json({
+            ok: true,
+            prepared: false,
+            frozen: state === "frozen",
+            idempotent: state !== "prepared",
+            operationId: request.operationId,
+          });
+        }
+        throw new Error(`unexpected freeze phase ${request.phase}`);
+      }),
+    );
+
+    const invoke = () =>
+      freezeDevPreviewSourcesForTeardown(
+        {
+          executionId: "exec-1",
+          services: ["workflow-builder", "workflow-orchestrator"],
+        },
+        fakePersistence(receiverRows()),
+      );
+    let result;
+    try {
+      result = await invoke();
+    } catch {
+      result = await invoke();
+    }
+
+    expect(result).toMatchObject({ executionId: "exec-1", generation });
+    expect(states).toEqual(
+      new Map([
+        ["workflow-builder", "frozen"],
+        ["workflow-orchestrator", "frozen"],
+      ]),
+    );
+    expect(operationIds.size).toBe(1);
+    expect(commitAttempts.get("workflow-builder")).toBeGreaterThanOrEqual(1);
+    expect(commitAttempts.get("workflow-orchestrator")).toBe(2);
+  });
+
+  it("rejects a missing requested persisted receiver", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ accepted: true, executionId: "exec-1" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        { executionId: "exec-1", services: ["workflow-builder"] },
+        fakePersistence([]),
+      ),
+    ).rejects.toThrow("dev-preview receiver is unavailable for workflow-builder");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not expand fanout to an extra persisted receiver", async () => {
+    const frozenUrls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/internal/dev-previews/teardown-intent")) {
+          return Response.json({ accepted: true, executionId: "exec-1" });
+        }
+        frozenUrls.push(target);
+        const request = freezeRequest(target);
+        return Response.json(
+          request.phase === "prepare"
+            ? preparedReceipt("workflow-builder", request.operationId!)
+            : receipt("workflow-builder", request.operationId!),
+        );
+      }),
+    );
+
+    await expect(
+      freezeDevPreviewSourcesForTeardown(
+        { executionId: "exec-1", services: ["workflow-builder"] },
+        fakePersistence(receiverRows()),
+      ),
+    ).resolves.toMatchObject({ generation });
+    expect(frozenUrls).toHaveLength(2);
+    expect(
+      frozenUrls.every((target) => {
+        const url = new URL(target);
+        return (
+          url.origin ===
+            `http://10.0.0.11:${resolveDevPreviewDescriptor("workflow-builder").syncPort}` &&
+          url.pathname === "/__freeze"
+        );
+      }),
+    ).toBe(true);
+    expect(frozenUrls.map((target) => freezeRequest(target).phase)).toEqual([
+      "prepare",
+      "commit",
+    ]);
+  });
+});
+
 describe("atomic multi-service dev-preview capture", () => {
   beforeEach(() => {
     vi.stubEnv("PREVIEW_DEV_SYNC_MINT_TOKEN", "");
@@ -2236,6 +2756,140 @@ describe("atomic multi-service dev-preview capture", () => {
         }),
       ]),
     );
+  });
+
+  it("reuses the latest strict artifact when the live generation and content are unchanged", async () => {
+    const builderTar = gzipSync(Buffer.from("builder-v2"));
+    const orchestratorTar = gzipSync(Buffer.from("orchestrator-v2"));
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) =>
+        String(url).includes("10.0.0.11")
+          ? atomicExport("workflow-builder", builderTar)
+          : atomicExport("workflow-orchestrator", orchestratorTar),
+      ),
+    );
+    const platformRevision = "a".repeat(40);
+    const sourceRevision = "b".repeat(40);
+    const overlayDigests = {
+      "workflow-builder": `sha256:${createHash("sha256").update(builderTar).digest("hex")}`,
+      "workflow-orchestrator": `sha256:${createHash("sha256").update(orchestratorTar).digest("hex")}`,
+    };
+    const persistence = fakePersistence(rows(), [
+      {
+        id: "artifact-existing",
+        kind: "source-bundle",
+        fileId: "file-existing",
+        inlinePayload: {
+          tier: "tar-overlay-set",
+          captureProtocol: "atomic-generation-v2",
+          acceptanceEligible: true,
+          captureId: "capture-existing",
+          generation: "generation-1",
+          repoUrl: "PittampalliOrg/workflow-builder",
+          base: "main",
+          services: ["workflow-builder", "workflow-orchestrator"],
+          overlayDigests,
+          catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+          platformRevision,
+          sourceRevision,
+        },
+        sizeBytes: 1234,
+        createdAt: new Date("2026-07-14T00:00:00.000Z"),
+      },
+    ]);
+
+    const result = await captureAllDevPreviewSources(
+      "exec-1",
+      {
+        nodeId: "snapshot",
+        expectedServices: ["workflow-builder", "workflow-orchestrator"],
+        requireImmutableProvenance: true,
+        platformRevision,
+        sourceRevision,
+        catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+      },
+      persistence,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      artifactId: "artifact-existing",
+      captureId: "capture-existing",
+      generation: "generation-1",
+      bytes: 1234,
+      reused: true,
+    });
+    expect(persistence.persistSourceBundleArtifact).not.toHaveBeenCalled();
+  });
+
+  it("uses artifact identity to select the reusable strict capture when timestamps tie", async () => {
+    const builderTar = gzipSync(Buffer.from("builder-v2"));
+    const orchestratorTar = gzipSync(Buffer.from("orchestrator-v2"));
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) =>
+        String(url).includes("10.0.0.11")
+          ? atomicExport("workflow-builder", builderTar)
+          : atomicExport("workflow-orchestrator", orchestratorTar),
+      ),
+    );
+    const platformRevision = "a".repeat(40);
+    const sourceRevision = "b".repeat(40);
+    const overlayDigests = {
+      "workflow-builder": `sha256:${createHash("sha256").update(builderTar).digest("hex")}`,
+      "workflow-orchestrator": `sha256:${createHash("sha256").update(orchestratorTar).digest("hex")}`,
+    };
+    const createdAt = new Date("2026-07-14T00:00:00.000Z");
+    const strictArtifact = (id: string) => ({
+      id,
+      kind: "source-bundle",
+      fileId: `file-${id}`,
+      inlinePayload: {
+        tier: "tar-overlay-set",
+        captureProtocol: "atomic-generation-v2",
+        acceptanceEligible: true,
+        captureId: `capture-${id}`,
+        generation: "generation-1",
+        repoUrl: "PittampalliOrg/workflow-builder",
+        base: "main",
+        services: ["workflow-builder", "workflow-orchestrator"],
+        overlayDigests,
+        catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+        platformRevision,
+        sourceRevision,
+      },
+      sizeBytes: id === "artifact-z" ? 222 : 111,
+      createdAt,
+    });
+    const persistence = fakePersistence(rows(), [
+      strictArtifact("artifact-a"),
+      strictArtifact("artifact-z"),
+    ]);
+
+    const result = await captureAllDevPreviewSources(
+      "exec-1",
+      {
+        nodeId: "snapshot",
+        expectedServices: ["workflow-builder", "workflow-orchestrator"],
+        requireImmutableProvenance: true,
+        platformRevision,
+        sourceRevision,
+        catalogDigest: DEV_PREVIEW_CATALOG_DIGEST,
+      },
+      persistence,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      artifactId: "artifact-z",
+      captureId: "capture-artifact-z",
+      bytes: 222,
+      reused: true,
+    });
+    expect(persistence.persistSourceBundleArtifact).not.toHaveBeenCalled();
   });
 
   it("persists nothing when strict exports report different generations", async () => {

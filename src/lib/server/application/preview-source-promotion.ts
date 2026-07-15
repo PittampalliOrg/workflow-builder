@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ImmutableGitSha,
   PreviewAcceptanceChangedServiceCatalogPort,
@@ -12,6 +13,10 @@ import type {
   PreviewSourcePromotionBrokerPort,
   PreviewSourcePromotionBrokerRequest,
   PreviewSourcePromotionPort,
+  PreviewSourcePromotionReceipt,
+  PreviewSourcePromotionReceiptScope,
+  PreviewSourcePromotionReceiptStorePort,
+  PreviewSourcePromotionResult,
   SourceBundlePromotionRunnerPort,
 } from "$lib/server/application/ports";
 
@@ -90,7 +95,7 @@ export class ApplicationPreviewSourcePromotionService implements PreviewSourcePr
       artifactIdentity: imported,
       title: cleanOptional(input.title),
       bodyMarkdown: cleanOptional(input.bodyMarkdown),
-      draft: input.draft === true,
+      draft: true,
     });
   }
 }
@@ -101,6 +106,7 @@ type BrokerDeps = Readonly<{
   promotions: SourceBundlePromotionRunnerPort;
   git: PreviewControlGitSourceVerificationPort;
   pullRequests: PreviewControlPullRequestInspectionPort;
+  receipts: PreviewSourcePromotionReceiptStorePort;
   catalog: PreviewEnvironmentVersionedServiceCatalogPort &
     PreviewAcceptanceChangedServiceCatalogPort;
   sourceRepository: string;
@@ -118,7 +124,8 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
     const services = this.deps.catalog.assertPreviewNativeServices(
       input.artifactIdentity.services,
     );
-    const branchName = sourcePromotionBranch(input.operationId);
+    const receiptScope = sourcePromotionReceiptScope(input, this.deps);
+    const branchName = previewSourcePromotionBranch(receiptScope);
     if (input.catalogDigest !== this.deps.catalog.currentDigest()) {
       throw new PreviewSourcePromotionError(
         "authority-mismatch",
@@ -188,6 +195,19 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
       );
     }
 
+    const replay = await this.deps.receipts.getByArtifact(input.artifactId);
+    if (replay) {
+      assertReceiptScope(replay, receiptScope, input.artifactId, branchName);
+      await verifyStoredReceipt(this.deps, replay);
+      return promotionResult(replay);
+    }
+    const latest =
+      await this.deps.receipts.getLatestForExecution(receiptScope);
+    if (latest) {
+      assertReceiptScope(latest, receiptScope, null, branchName);
+      await verifyLeaseReceipt(this.deps, latest);
+    }
+
     const result = await this.deps.promotions.promoteSourceBundle({
       executionId: input.executionId,
       fileId: prepared.fileId,
@@ -201,7 +221,13 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
       syncPaths: [],
       branchPrefix: "preview-feature",
       branchName,
-      draft: input.draft,
+      branchLease: {
+        expectedHeadSha: latest?.commitSha ?? null,
+        ...(latest
+          ? { existingPullRequestNumber: latest.pullRequestNumber }
+          : {}),
+      },
+      draft: true,
       prBody: input.bodyMarkdown ?? undefined,
     });
     if (result.status !== "ok") {
@@ -249,7 +275,10 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
     if (
       pullRequest.repository !== this.deps.sourceRepository ||
       pullRequest.number !== pullRequestNumber ||
-      pullRequest.baseSha !== prepared.capturedSourceRevision ||
+      (latest !== null && pullRequest.number !== latest.pullRequestNumber) ||
+      pullRequest.draft !== true ||
+      !FULL_SHA.test(pullRequest.baseSha) ||
+      pullRequest.baseSha === commitSha ||
       pullRequest.headRef !== branchName ||
       pullRequest.headSha !== commitSha
     ) {
@@ -266,12 +295,46 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
         commitSha,
         baseBranch: this.deps.baseBranch,
         baseRevision: prepared.capturedSourceRevision as ImmutableGitSha,
+        expectedBaseHead: pullRequest.baseSha,
         expectedChangedPaths: result.changedPaths,
       }))
     ) {
       throw new PreviewSourcePromotionError(
         "materialization-failed",
         "GitHub branch does not match the promoted artifact",
+        409,
+      );
+    }
+    // Bind the receipt to the exact base/head tuple whose ancestry was verified.
+    // A target-branch move must retry the whole promotion instead of recording
+    // an unverified newer base in an immutable receipt.
+    try {
+      pullRequest = await this.deps.pullRequests.inspect({
+        repository: this.deps.sourceRepository,
+        number: pullRequestNumber,
+        baseSha: pullRequest.baseSha,
+        headSha: commitSha,
+      });
+    } catch (cause) {
+      throw new PreviewSourcePromotionError(
+        "materialization-failed",
+        `GitHub pull request post-verification failed: ${message(cause)}`,
+        409,
+      );
+    }
+    if (
+      pullRequest.repository !== this.deps.sourceRepository ||
+      pullRequest.number !== pullRequestNumber ||
+      (latest !== null && pullRequest.number !== latest.pullRequestNumber) ||
+      pullRequest.draft !== true ||
+      !FULL_SHA.test(pullRequest.baseSha) ||
+      pullRequest.baseSha === commitSha ||
+      pullRequest.headRef !== branchName ||
+      pullRequest.headSha !== commitSha
+    ) {
+      throw new PreviewSourcePromotionError(
+        "materialization-failed",
+        "GitHub pull request changed after branch verification",
         409,
       );
     }
@@ -298,24 +361,35 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
         409,
       );
     }
-    return Object.freeze({
-      ok: true,
-      previewName: input.previewName,
-      requestId: input.environmentRequestId,
-      executionId: input.executionId,
-      artifactId: input.artifactId,
-      services: Object.freeze([...affected]),
-      branch: result.branch,
-      commitSha,
-      prUrl,
-      pullRequest: Object.freeze({
-        repository: pullRequest.repository,
-        number: pullRequest.number,
+    let receipt;
+    try {
+      receipt = await this.deps.receipts.put({
+        artifactId: input.artifactId,
+        previewName: input.previewName,
+        requestId: input.environmentRequestId,
+        executionId: input.executionId,
+        platformRevision: authorized.platformRevision,
+        sourceRevision: authorized.sourceRevision,
+        catalogDigest: authorized.catalogDigest,
+        repository: this.deps.sourceRepository,
+        baseBranch: this.deps.baseBranch,
         baseSha: pullRequest.baseSha,
-        headSha: pullRequest.headSha,
-      }),
-      draft: input.draft,
-    });
+        branch: result.branch,
+        commitSha,
+        prUrl,
+        pullRequestNumber: pullRequest.number,
+        draft: true,
+        services: affected,
+        changedPaths: result.changedPaths,
+      });
+    } catch (cause) {
+      throw new PreviewSourcePromotionError(
+        "materialization-failed",
+        `source promotion receipt could not be persisted: ${message(cause)}`,
+        502,
+      );
+    }
+    return promotionResult(receipt);
   }
 }
 
@@ -341,6 +415,7 @@ function validateBrokerInput(input: PreviewSourcePromotionBrokerRequest): void {
   if (
     !SAFE_ID.test(input.operationId) ||
     input.operationId !== input.artifactId ||
+    input.draft !== true ||
     !PREVIEW_NAME.test(input.previewName) ||
     !FULL_SHA.test(input.environmentPlatformRevision) ||
     !FULL_SHA.test(input.environmentSourceRevision) ||
@@ -362,8 +437,41 @@ function validateBrokerInput(input: PreviewSourcePromotionBrokerRequest): void {
   }
 }
 
-function sourcePromotionBranch(operationId: string): string {
-  const branch = `preview-feature-${operationId}`;
+function sourcePromotionReceiptScope(
+  input: PreviewSourcePromotionBrokerRequest,
+  deps: Pick<BrokerDeps, "sourceRepository" | "baseBranch">,
+): PreviewSourcePromotionReceiptScope {
+  return Object.freeze({
+    previewName: input.previewName,
+    requestId: input.environmentRequestId,
+    executionId: input.executionId,
+    platformRevision: input.environmentPlatformRevision as ImmutableGitSha,
+    sourceRevision: input.environmentSourceRevision as ImmutableGitSha,
+    catalogDigest: input.catalogDigest,
+    repository: deps.sourceRepository,
+    baseBranch: deps.baseBranch,
+  });
+}
+
+export function previewSourcePromotionBranch(
+  scope: PreviewSourcePromotionReceiptScope,
+): string {
+  const digest = createHash("sha256")
+    .update(
+      [
+        scope.previewName,
+        scope.requestId,
+        scope.executionId,
+        scope.platformRevision,
+        scope.sourceRevision,
+        scope.catalogDigest,
+        scope.repository,
+        scope.baseBranch,
+      ].join("\0"),
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const branch = `preview-feature-${digest}`;
   if (
     !SAFE_BRANCH.test(branch) ||
     branch.includes("..") ||
@@ -378,6 +486,160 @@ function sourcePromotionBranch(operationId: string): string {
     );
   }
   return branch;
+}
+
+function assertReceiptScope(
+  receipt: PreviewSourcePromotionReceipt,
+  scope: PreviewSourcePromotionReceiptScope,
+  artifactId: string | null,
+  branch: string,
+): void {
+  if (
+    (artifactId !== null && receipt.artifactId !== artifactId) ||
+    receipt.previewName !== scope.previewName ||
+    receipt.requestId !== scope.requestId ||
+    receipt.executionId !== scope.executionId ||
+    receipt.platformRevision !== scope.platformRevision ||
+    receipt.sourceRevision !== scope.sourceRevision ||
+    receipt.catalogDigest !== scope.catalogDigest ||
+    receipt.repository !== scope.repository ||
+    receipt.baseBranch !== scope.baseBranch ||
+    !FULL_SHA.test(receipt.baseSha) ||
+    receipt.baseSha === receipt.commitSha ||
+    receipt.branch !== branch ||
+    receipt.draft !== true ||
+    !validChangedPaths(receipt.changedPaths)
+  ) {
+    throw new PreviewSourcePromotionError(
+      "authority-mismatch",
+      "stored source promotion receipt is outside the authorized preview session",
+      409,
+    );
+  }
+}
+
+async function verifyStoredReceipt(
+  deps: Pick<BrokerDeps, "git" | "pullRequests" | "sourceRepository" | "baseBranch">,
+  receipt: PreviewSourcePromotionReceipt,
+): Promise<void> {
+  let pullRequest;
+  try {
+    pullRequest = await deps.pullRequests.inspectOpen({
+      repository: deps.sourceRepository,
+      number: receipt.pullRequestNumber,
+    });
+  } catch (cause) {
+    throw new PreviewSourcePromotionError(
+      "materialization-failed",
+      `stored draft pull request is unavailable: ${message(cause)}`,
+      409,
+    );
+  }
+  if (
+    pullRequest.repository !== receipt.repository ||
+    pullRequest.number !== receipt.pullRequestNumber ||
+    pullRequest.draft !== true ||
+    !FULL_SHA.test(pullRequest.baseSha) ||
+    pullRequest.baseSha === receipt.commitSha ||
+    pullRequest.headRef !== receipt.branch ||
+    pullRequest.headSha !== receipt.commitSha ||
+    !(await deps.git.verifyBranch({
+      repository: receipt.repository,
+      branch: receipt.branch,
+      commitSha: receipt.commitSha,
+      baseBranch: receipt.baseBranch,
+      baseRevision: receipt.sourceRevision,
+      expectedBaseHead: pullRequest.baseSha,
+      expectedChangedPaths: receipt.changedPaths,
+    }))
+  ) {
+    throw new PreviewSourcePromotionError(
+      "materialization-failed",
+      "stored source promotion receipt no longer matches GitHub",
+      409,
+    );
+  }
+}
+
+/**
+ * Verify the draft PR identity before a leased update. A different live head is
+ * allowed through only so the runner can recover a deterministic candidate
+ * pushed before its receipt write failed; force-with-lease and post-push GitHub
+ * verification remain authoritative for that recovery.
+ */
+async function verifyLeaseReceipt(
+  deps: Pick<BrokerDeps, "git" | "pullRequests" | "sourceRepository" | "baseBranch">,
+  receipt: PreviewSourcePromotionReceipt,
+): Promise<void> {
+  let pullRequest;
+  try {
+    pullRequest = await deps.pullRequests.inspectOpen({
+      repository: deps.sourceRepository,
+      number: receipt.pullRequestNumber,
+    });
+  } catch (cause) {
+    throw new PreviewSourcePromotionError(
+      "materialization-failed",
+      `stored draft pull request is unavailable: ${message(cause)}`,
+      409,
+    );
+  }
+  if (
+    pullRequest.repository !== receipt.repository ||
+    pullRequest.number !== receipt.pullRequestNumber ||
+    pullRequest.draft !== true ||
+    !FULL_SHA.test(pullRequest.baseSha) ||
+    pullRequest.baseSha === pullRequest.headSha ||
+    pullRequest.headRef !== receipt.branch
+  ) {
+    throw new PreviewSourcePromotionError(
+      "materialization-failed",
+      "stored source promotion lease no longer matches its draft pull request",
+      409,
+    );
+  }
+  if (
+    pullRequest.headSha === receipt.commitSha &&
+    !(await deps.git.verifyBranch({
+      repository: receipt.repository,
+      branch: receipt.branch,
+      commitSha: receipt.commitSha,
+      baseBranch: receipt.baseBranch,
+      baseRevision: receipt.sourceRevision,
+      expectedBaseHead: pullRequest.baseSha,
+      expectedChangedPaths: receipt.changedPaths,
+    }))
+  ) {
+    throw new PreviewSourcePromotionError(
+      "materialization-failed",
+      "stored source promotion lease no longer matches GitHub",
+      409,
+    );
+  }
+}
+
+function promotionResult(
+  receipt: PreviewSourcePromotionReceipt,
+): PreviewSourcePromotionResult {
+  return Object.freeze({
+    ok: true,
+    receiptId: receipt.receiptId,
+    previewName: receipt.previewName,
+    requestId: receipt.requestId,
+    executionId: receipt.executionId,
+    artifactId: receipt.artifactId,
+    services: Object.freeze([...receipt.services]),
+    branch: receipt.branch,
+    commitSha: receipt.commitSha,
+    prUrl: receipt.prUrl,
+    pullRequest: Object.freeze({
+      repository: receipt.repository,
+      number: receipt.pullRequestNumber,
+      baseSha: receipt.baseSha,
+      headSha: receipt.commitSha,
+    }),
+    draft: true,
+  });
 }
 
 function sameArtifactIdentity(

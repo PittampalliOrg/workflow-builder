@@ -67,6 +67,8 @@ export interface PreviewControlGitSourceVerificationPort {
       commitSha: ImmutableGitSha;
       baseBranch: string;
       baseRevision: ImmutableGitSha;
+      /** When present, bind ancestry proof to the exact live PR base head. */
+      expectedBaseHead?: ImmutableGitSha;
       /** When present, GitHub's complete immutable commit diff must match exactly. */
       expectedChangedPaths?: readonly string[];
     }>,
@@ -144,6 +146,7 @@ export interface PreviewDevSyncCredentialBrokerPort {
 export type PreviewControlPullRequest = Readonly<{
   repository: string;
   number: number;
+  draft: boolean;
   baseSha: ImmutableGitSha;
   headRef: string;
   headSha: ImmutableGitSha;

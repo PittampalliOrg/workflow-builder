@@ -1,31 +1,59 @@
 <!--
-	Code versions → Promote to PR (docs/code-version-persistence.md).
-
-	Lists the durable, promotable `source-bundle` versions a run produced — for a
-	dev-pod-as-source GAN run, one `tar-overlay` version per loop iteration — and
-	offers a MANUAL "Promote → PR" per version (the human picks; nothing
-	auto-merges). Promote provisions a helper pod, reconstructs the code onto the
-	base repo, pushes a branch and opens a PR, then renders the PR link.
+	Code checkpoints for one dev execution. Strict atomic preview captures cross the
+	preview-session continuation boundary; legacy bundles retain the generic
+	version promotion path used by non-preview workflows.
 -->
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { GitPullRequest, RefreshCw, ExternalLink, Loader2 } from '@lucide/svelte';
+	import {
+		CheckCircle2,
+		ExternalLink,
+		GitPullRequest,
+		Loader2,
+		RefreshCw,
+		Save,
+		ShieldCheck
+	} from '@lucide/svelte';
 	import CodePromotionChain from '../workflow/code/code-promotion-chain.svelte';
 
+	type PullRequestReceipt = {
+		repository?: string | null;
+		number?: number | null;
+	};
 	type VersionPayload = {
 		tier?: string;
 		iteration?: number | null;
 		repoUrl?: string | null;
 		repoSubdir?: string | null;
 		syncPaths?: string[] | null;
+		services?: string[] | null;
+		serviceCount?: number | null;
+		generation?: string | null;
+		captureProtocol?: string | null;
+		acceptanceEligible?: boolean | null;
 	} | null;
 	type Promotion = {
 		prUrl?: string | null;
 		branch?: string | null;
+		commitSha?: string | null;
+		baseSha?: string | null;
+		headSha?: string | null;
 		mode?: string;
 		promotedAt?: string;
+		receiptId?: string | null;
+		repository?: string | null;
+		pullRequestNumber?: number | null;
+		pullRequest?: PullRequestReceipt | null;
+	} | null;
+	type Acceptance = {
+		ok?: boolean;
+		acceptedAt?: string | null;
+		receiptId?: string | null;
+		stage?: string | null;
+		message?: string | null;
+		evidenceReceiptDigest?: string | null;
 	} | null;
 	type Version = {
 		artifactId: string;
@@ -36,30 +64,72 @@
 		title: string | null;
 		payload: VersionPayload;
 		promotion: Promotion;
+		acceptance: Acceptance;
 		createdAt: string;
+	};
+	type ContinuationResponse = {
+		action?: string;
+		ok?: boolean;
+		artifactId?: string;
+		receiptId?: string;
+		generation?: string | null;
+		captureId?: string;
+		bytes?: number;
+		skipped?: string;
+		services?: Array<{ service?: string | null; ok?: boolean } | string>;
+		prUrl?: string | null;
+		branch?: string | null;
+		pullRequest?: PullRequestReceipt | null;
+		prError?: string | null;
+		stage?: string | null;
+		evidenceReceiptDigest?: string | null;
+		error?: string;
+		message?: string;
+	};
+	type VersionResult = {
+		prUrl?: string | null;
+		branch?: string | null;
+		receiptId?: string | null;
+		accepted?: boolean;
+		stage?: string | null;
+		evidenceReceiptDigest?: string | null;
+		error?: string;
 	};
 
 	let {
 		executionId,
+		services,
 		live = false,
-		onoutstanding
+		sourceReadOnly = false,
+		onoutstanding,
+		oncapability
 	}: {
 		executionId: string;
+		/** Complete service set for one coherent strict capture. */
+		services: string[];
 		live?: boolean;
-		/** Called after each load with the count of versions not yet pushed to a GitHub PR. */
+		sourceReadOnly?: boolean;
+		/** Current strict-snapshot debt plus independent legacy version debt. */
 		onoutstanding?: (count: number) => void;
+		oncapability?: (allowed: boolean) => void;
 	} = $props();
 
 	let versions = $state<Version[]>([]);
 	let loading = $state(true);
+	let loadError = $state<string | null>(null);
+	let capturing = $state(false);
 	let promoting = $state<string | null>(null);
-	let results = $state<Record<string, { prUrl?: string | null; branch?: string | null; error?: string }>>(
-		{}
-	);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-	/** Versions with no GitHub PR yet — un-pushed work to promote before teardown. */
-	const outstandingCount = $derived(versions.filter((v) => !v.promotion?.prUrl).length);
+	let accepting = $state<string | null>(null);
+	let captureState = $state<{
+		ok: boolean;
+		artifactId?: string;
+		generation?: string | null;
+		error?: string;
+	} | null>(null);
+	let results = $state<Record<string, VersionResult>>({});
+	let outstandingCount = $state(0);
+	let canManageStrictCheckpoints = $state(false);
+	let latestStrictArtifactId = $state<string | null>(null);
 
 	function fmtBytes(n: number | null): string {
 		if (!n) return '—';
@@ -68,166 +138,455 @@
 		return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
+	function isStrictPreviewVersion(version: Version): boolean {
+		return (
+			version.payload?.tier === 'tar-overlay-set' &&
+			(version.payload.captureProtocol === 'atomic-generation-v2' ||
+				version.payload.acceptanceEligible === true)
+		);
+	}
+
+	function pullRequestUrl(receipt: PullRequestReceipt | null | undefined): string | null {
+		const repository = receipt?.repository?.trim();
+		const number = receipt?.number;
+		if (
+			!repository ||
+			typeof number !== 'number' ||
+			!Number.isSafeInteger(number) ||
+			number < 1
+		) {
+			return null;
+		}
+		return `https://github.com/${repository}/pull/${number}`;
+	}
+
+	function prUrlFor(version: Version): string | null {
+		const storedUrl = version.promotion?.prUrl?.trim();
+		if (storedUrl) return storedUrl;
+		return (
+			pullRequestUrl(
+				version.promotion?.pullRequest ?? {
+					repository: version.promotion?.repository,
+					number: version.promotion?.pullRequestNumber
+				}
+			) ??
+			results[version.artifactId]?.prUrl?.trim() ??
+			null
+		);
+	}
+
+	function responseError(body: ContinuationResponse, fallback: string): string {
+		return body.error || body.message || body.prError || body.skipped || fallback;
+	}
+
+	function updateResult(artifactId: string, result: VersionResult) {
+		results = { ...results, [artifactId]: result };
+	}
+
 	async function load() {
 		try {
 			const res = await fetch(`/api/workflows/executions/${executionId}/versions`);
-			if (!res.ok) return;
-			const body = (await res.json()) as { versions: Version[] };
-			versions = body.versions ?? [];
-			onoutstanding?.(versions.filter((v) => !v.promotion?.prUrl).length);
-		} catch {
-			/* transient */
+			if (!res.ok) throw new Error(`Checkpoint history request failed (${res.status})`);
+			const body = (await res.json()) as {
+				versions?: Version[];
+				unpromotedCount?: unknown;
+				canManageStrictCheckpoints?: unknown;
+				latestStrictArtifactId?: unknown;
+			};
+			if (
+				!Array.isArray(body.versions) ||
+				typeof body.unpromotedCount !== 'number' ||
+				!Number.isSafeInteger(body.unpromotedCount) ||
+				body.unpromotedCount < 0 ||
+				(body.latestStrictArtifactId !== null &&
+					typeof body.latestStrictArtifactId !== 'string')
+			) {
+				throw new Error('Checkpoint history response was invalid');
+			}
+			versions = body.versions;
+			latestStrictArtifactId = body.latestStrictArtifactId;
+			outstandingCount = body.unpromotedCount;
+			canManageStrictCheckpoints = body.canManageStrictCheckpoints === true;
+			oncapability?.(canManageStrictCheckpoints);
+			onoutstanding?.(outstandingCount);
+			loadError = null;
+		} catch (error) {
+			loadError = error instanceof Error ? error.message : 'Checkpoint history is unavailable';
 		} finally {
 			loading = false;
 		}
 	}
 
-	async function promote(v: Version) {
-		if (promoting) return;
-		promoting = v.artifactId;
+	async function captureCheckpoint() {
+		if (capturing || promoting || accepting || services.length === 0 || sourceReadOnly) return;
+		capturing = true;
+		captureState = null;
+		try {
+			const res = await fetch(`/api/dev-environments/${executionId}/preview-continuation`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'capture', services })
+			});
+			const body = (await res.json().catch(() => ({}))) as ContinuationResponse;
+			if (!res.ok || body.action !== 'capture' || body.ok !== true || !body.artifactId) {
+				captureState = {
+					ok: false,
+					error: responseError(body, `Capture failed (${res.status})`)
+				};
+				return;
+			}
+			captureState = {
+				ok: true,
+				artifactId: body.artifactId,
+				generation: body.generation ?? null
+			};
+			await load();
+		} catch (error) {
+			captureState = {
+				ok: false,
+				error: error instanceof Error ? error.message : String(error)
+			};
+		} finally {
+			capturing = false;
+		}
+	}
+
+	async function promote(version: Version) {
+		if (capturing || promoting || accepting) return;
+		const strict = isStrictPreviewVersion(version);
+		if (
+			strict &&
+			(!canManageStrictCheckpoints || version.artifactId !== latestStrictArtifactId)
+		) {
+			return;
+		}
+		promoting = version.artifactId;
 		try {
 			const res = await fetch(
-				`/api/workflows/executions/${executionId}/versions/${v.artifactId}/promote`,
+				strict
+					? `/api/dev-environments/${executionId}/preview-continuation`
+					: `/api/workflows/executions/${executionId}/versions/${version.artifactId}/promote`,
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ mode: 'pr' })
+					body: JSON.stringify(
+						strict
+							? {
+									action: 'promote',
+									artifactId: version.artifactId,
+									title: version.title ?? undefined,
+									draft: true
+								}
+							: { mode: 'pr' }
+					)
 				}
 			);
-			const body = (await res.json().catch(() => ({}))) as {
-				ok?: boolean;
-				prUrl?: string | null;
-				branch?: string | null;
-				prError?: string | null;
-				error?: string;
-			};
-			if (!res.ok || body.ok === false) {
-				results[v.artifactId] = { error: body.error || body.prError || `Promote failed (${res.status})` };
-			} else {
-				results[v.artifactId] = {
-					prUrl: body.prUrl,
-					branch: body.branch,
-					error: body.prError ?? undefined
-				};
+			const body = (await res.json().catch(() => ({}))) as ContinuationResponse;
+			const prUrl = body.prUrl?.trim() || pullRequestUrl(body.pullRequest);
+			if (
+				!res.ok ||
+				(strict
+					? body.action !== 'promote' ||
+						body.ok !== true ||
+						body.artifactId !== version.artifactId
+					: body.ok === false) ||
+				!prUrl
+			) {
+				updateResult(version.artifactId, {
+					error: responseError(body, `Promotion failed (${res.status})`)
+				});
+				return;
 			}
-			// Refresh so the durable promotion status (PR link, outstanding count) updates
-			// immediately rather than waiting for the next poll.
+			updateResult(version.artifactId, {
+				prUrl,
+				branch: body.branch,
+				receiptId: body.receiptId
+			});
 			await load();
-		} catch (err) {
-			results[v.artifactId] = { error: err instanceof Error ? err.message : String(err) };
+		} catch (error) {
+			updateResult(version.artifactId, {
+				error: error instanceof Error ? error.message : String(error)
+			});
 		} finally {
 			promoting = null;
 		}
 	}
 
-	onMount(() => {
-		void load();
-		if (live) pollTimer = setInterval(load, 6000);
-	});
-	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
+	async function runAcceptance(version: Version) {
+		if (
+			capturing ||
+			promoting ||
+			accepting ||
+			!isStrictPreviewVersion(version) ||
+			!canManageStrictCheckpoints ||
+			version.artifactId !== latestStrictArtifactId
+		) {
+			return;
+		}
+		accepting = version.artifactId;
+		try {
+			const res = await fetch(`/api/dev-environments/${executionId}/preview-continuation`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'acceptance', artifactId: version.artifactId })
+			});
+			const body = (await res.json().catch(() => ({}))) as ContinuationResponse;
+			if (!res.ok || body.action !== 'acceptance' || body.ok !== true) {
+				updateResult(version.artifactId, {
+					...results[version.artifactId],
+					accepted: false,
+					stage: body.stage,
+					evidenceReceiptDigest: body.evidenceReceiptDigest,
+					error: responseError(body, `Acceptance failed (${res.status})`)
+				});
+				return;
+			}
+			updateResult(version.artifactId, {
+				...results[version.artifactId],
+				accepted: true,
+				receiptId: body.receiptId ?? results[version.artifactId]?.receiptId,
+				stage: body.stage,
+				evidenceReceiptDigest: body.evidenceReceiptDigest,
+				error: undefined
+			});
+			await load();
+		} catch (error) {
+			updateResult(version.artifactId, {
+				...results[version.artifactId],
+				accepted: false,
+				error: error instanceof Error ? error.message : String(error)
+			});
+		} finally {
+			accepting = null;
+		}
+	}
+
+	onMount(() => void load());
+	$effect(() => {
+		if (!live) return;
+		const timer = setInterval(() => void load(), 6000);
+		return () => clearInterval(timer);
 	});
 </script>
 
 <div class="space-y-2">
-	<div class="flex items-center justify-between">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div class="flex items-center gap-2">
-			<h3 class="text-sm font-medium">Code versions</h3>
+			<h3 class="text-sm font-medium">Code checkpoints</h3>
 			{#if !loading && versions.length > 0}
 				{#if outstandingCount > 0}
 					<Badge
 						variant="outline"
 						class="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-						title="Not yet pushed to a GitHub PR — promote before tearing down this preview"
+						title="Not yet represented by a GitHub pull request"
 					>
 						{outstandingCount} not pushed
 					</Badge>
 				{:else}
 					<Badge variant="outline" class="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
-						all pushed
+						current state pushed
 					</Badge>
 				{/if}
 			{/if}
 		</div>
-		<Button variant="ghost" size="sm" onclick={load} title="Refresh">
-			<RefreshCw class="size-3.5" />
-		</Button>
+		<div class="flex items-center gap-1">
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-8"
+				disabled={
+					capturing ||
+					Boolean(promoting) ||
+					Boolean(accepting) ||
+					services.length === 0 ||
+					sourceReadOnly
+				}
+				onclick={() => void captureCheckpoint()}
+			>
+				{#if capturing}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+				{capturing ? 'Capturing…' : 'Capture checkpoint'}
+			</Button>
+			<Button variant="ghost" size="icon" class="size-8" onclick={() => void load()} title="Refresh">
+				<RefreshCw class="size-3.5" />
+			</Button>
+		</div>
 	</div>
 
+	{#if loadError}
+		<div
+			class="rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
+			role="alert"
+		>
+			{loadError}{versions.length > 0 ? ' Showing the last successfully loaded checkpoint data.' : ''}
+		</div>
+	{/if}
+
+	{#if captureState}
+		<div
+			class="rounded-md border px-2.5 py-2 text-xs {captureState.ok
+				? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
+				: 'border-destructive/30 bg-destructive/5 text-destructive'}"
+			role="status"
+			aria-live="polite"
+		>
+			{#if captureState.ok}
+				<span class="inline-flex items-center gap-1.5">
+					<CheckCircle2 class="size-3.5" /> Checkpoint captured
+					{#if captureState.generation}
+						<code title={captureState.generation}>{captureState.generation.slice(0, 8)}</code>
+					{/if}
+				</span>
+			{:else}
+				{captureState.error}
+			{/if}
+		</div>
+	{/if}
+
 	{#if loading}
-		<p class="text-xs text-muted-foreground">Loading versions…</p>
-	{:else if versions.length === 0}
-		<p class="text-xs text-muted-foreground">
-			No code versions captured yet. Each design iteration is snapshotted as it's produced.
-		</p>
-	{:else}
+		<p class="text-xs text-muted-foreground">Loading checkpoints…</p>
+	{:else if versions.length === 0 && !loadError}
+		<p class="text-xs text-muted-foreground">No code checkpoints captured yet.</p>
+	{:else if versions.length > 0}
 		<ul class="space-y-2">
-			{#each versions as v (v.artifactId)}
-				{@const r = results[v.artifactId]}
-				{@const prUrl = v.promotion?.prUrl ?? r?.prUrl ?? null}
-				<li class="rounded-md border p-2.5 text-xs space-y-1.5">
-					<div class="flex items-center gap-2 flex-wrap">
-						{#if v.payload?.iteration != null}
-							<Badge variant="secondary">iter {v.payload.iteration}</Badge>
+			{#each versions as version (version.artifactId)}
+				{@const result = results[version.artifactId]}
+				{@const prUrl = prUrlFor(version)}
+				{@const strict = isStrictPreviewVersion(version)}
+				{@const historical = strict && version.artifactId !== latestStrictArtifactId}
+				{@const snapshotSha = version.promotion?.commitSha ?? version.promotion?.headSha ?? null}
+				{@const accepted = version.acceptance?.ok === true || result?.accepted === true}
+				{@const receiptId =
+					result?.receiptId ?? version.promotion?.receiptId ?? version.acceptance?.receiptId}
+				<li class="space-y-1.5 rounded-md border p-2.5 text-xs">
+					<div class="flex flex-wrap items-center gap-2">
+						{#if version.payload?.iteration != null}
+							<Badge variant="secondary">iter {version.payload.iteration}</Badge>
 						{/if}
-						<Badge variant="outline">{v.payload?.tier ?? 'full'}</Badge>
-						<span class="text-muted-foreground">{fmtBytes(v.sizeBytes)}</span>
-						<span class="text-muted-foreground ml-auto">
-							{new Date(v.createdAt).toLocaleTimeString()}
+						<Badge variant="outline">{version.payload?.tier ?? 'full'}</Badge>
+						{#if strict}<Badge variant="outline">atomic</Badge>{/if}
+						{#if historical}<Badge variant="secondary">history</Badge>{/if}
+						{#if version.payload?.serviceCount}
+							<span class="text-muted-foreground">{version.payload.serviceCount} services</span>
+						{/if}
+						<span class="text-muted-foreground">{fmtBytes(version.sizeBytes)}</span>
+						<span class="ml-auto text-muted-foreground">
+							{new Date(version.createdAt).toLocaleString()}
 						</span>
 					</div>
-					<div class="flex items-center gap-2">
-						{#if prUrl}
+					{#if version.payload?.generation}
+						<p class="truncate text-muted-foreground" title={version.payload.generation}>
+							generation <code>{version.payload.generation}</code>
+						</p>
+					{/if}
+					<div class="flex flex-wrap items-center gap-2">
+						{#if historical}
+							<span class="text-muted-foreground" title={snapshotSha ?? undefined}>
+								{#if snapshotSha}
+									snapshot <code>{snapshotSha.slice(0, 12)}</code>
+								{:else}
+									historical snapshot · read-only
+								{/if}
+							</span>
+						{:else if prUrl}
 							<a
 								href={prUrl}
 								target="_blank"
 								rel="noopener noreferrer"
 								class="inline-flex items-center gap-1 font-medium text-emerald-600 hover:underline dark:text-emerald-400"
 							>
-								<GitPullRequest class="size-3.5" /> Pushed → PR <ExternalLink class="size-3" />
+								<GitPullRequest class="size-3.5" /> {strict ? 'Stable draft PR' : 'Pull request'}
+								<ExternalLink class="size-3" />
 							</a>
-							<Button
-								variant="ghost"
-								size="sm"
-								class="h-7 text-muted-foreground"
-								disabled={promoting === v.artifactId || !v.fileId}
-								onclick={() => promote(v)}
-							>
-								{#if promoting === v.artifactId}
-									<Loader2 class="size-3.5 animate-spin" /> …
-								{:else}
-									Promote again
+							{#if strict}
+								{#if historical}
+									<span class="text-muted-foreground">read-only history</span>
+								{:else if canManageStrictCheckpoints}
+									<Button
+										variant="outline"
+										size="sm"
+										class="h-7"
+										disabled={capturing || Boolean(promoting) || Boolean(accepting) || accepted}
+										onclick={() => void runAcceptance(version)}
+									>
+										{#if accepting === version.artifactId}
+											<Loader2 class="size-3.5 animate-spin" /> Checking…
+										{:else if accepted}
+											<CheckCircle2 class="size-3.5" /> Accepted
+										{:else}
+											<ShieldCheck class="size-3.5" /> Run acceptance
+										{/if}
+									</Button>
+								{:else if !accepted}
+									<Badge variant="secondary">Admin required</Badge>
 								{/if}
-							</Button>
+							{:else}
+								<Button
+									variant="ghost"
+									size="sm"
+									class="h-7 text-muted-foreground"
+									disabled={capturing || Boolean(promoting) || Boolean(accepting) || !version.fileId}
+									onclick={() => void promote(version)}
+								>
+									{promoting === version.artifactId ? 'Promoting…' : 'Promote again'}
+								</Button>
+							{/if}
+						{:else if strict && historical}
+							<span class="text-muted-foreground">historical snapshot · read-only</span>
+						{:else if strict && !canManageStrictCheckpoints}
+							<Badge variant="secondary">Admin required</Badge>
+							<span class="text-amber-600 dark:text-amber-400">not pushed to GitHub</span>
 						{:else}
 							<Button
 								variant="outline"
 								size="sm"
 								class="h-7"
-								disabled={promoting === v.artifactId || !v.fileId}
-								onclick={() => promote(v)}
+								disabled={capturing || Boolean(promoting) || Boolean(accepting) || !version.fileId}
+								onclick={() => void promote(version)}
 							>
-								{#if promoting === v.artifactId}
+								{#if promoting === version.artifactId}
 									<Loader2 class="size-3.5 animate-spin" /> Promoting…
 								{:else}
-									<GitPullRequest class="size-3.5" /> Promote → PR
+									<GitPullRequest class="size-3.5" />
+									{strict ? 'Create draft PR' : 'Create pull request'}
 								{/if}
 							</Button>
 							<span class="text-amber-600 dark:text-amber-400">not pushed to GitHub</span>
 						{/if}
-						{#if r?.branch && !prUrl}
-							<span class="text-muted-foreground">branch <code>{r.branch}</code></span>
+						{#if accepted}
+							<Badge variant="outline" class="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+								acceptance passed
+							</Badge>
+						{:else if version.acceptance?.ok === false || result?.accepted === false}
+							<Badge variant="outline" class="border-destructive/40 text-destructive">acceptance failed</Badge>
 						{/if}
 					</div>
-					{#if prUrl}
+					{#if prUrl && !historical}
 						<CodePromotionChain
 							{prUrl}
-							version={v.payload?.tier ??
-								(v.payload?.iteration != null ? `iter ${v.payload.iteration}` : null)}
+							version={version.payload?.tier ??
+								(version.payload?.iteration != null ? `iter ${version.payload.iteration}` : null)}
 						/>
 					{/if}
-					{#if r?.error}
-						<p class="text-destructive">{r.error}</p>
+					{#if receiptId}
+						<p class="truncate text-muted-foreground" title={receiptId}>
+							receipt <code>{receiptId}</code>
+						</p>
+					{/if}
+					{#if result?.error}<p class="text-destructive">{result.error}</p>{/if}
+					{#if result?.stage || version.acceptance?.stage}
+						<p class="text-muted-foreground">
+							acceptance stage <code>{result?.stage ?? version.acceptance?.stage}</code>
+						</p>
+					{/if}
+					{#if version.acceptance?.message && !result?.error}
+						<p class="text-destructive">{version.acceptance.message}</p>
+					{/if}
+					{#if result?.evidenceReceiptDigest || version.acceptance?.evidenceReceiptDigest}
+						{@const evidence =
+							result?.evidenceReceiptDigest ?? version.acceptance?.evidenceReceiptDigest}
+						<p class="truncate text-muted-foreground" title={evidence ?? undefined}>
+							evidence <code>{evidence}</code>
+						</p>
 					{/if}
 				</li>
 			{/each}

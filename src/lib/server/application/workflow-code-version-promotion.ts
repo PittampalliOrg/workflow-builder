@@ -62,6 +62,12 @@ export class ApplicationWorkflowCodeVersionPromotionService {
     const payload = asRecord(artifact.inlinePayload);
     const tier =
       typeof payload.tier === "string" && payload.tier ? payload.tier : "full";
+    if (isStrictAtomicPreviewCapture(payload, tier)) {
+      return promotionError(
+        409,
+        "Strict preview captures must be promoted through preview continuation",
+      );
+    }
     const repo =
       normalizeRepo(body.repo) ??
       normalizeRepo(payload.repoUrl) ??
@@ -167,6 +173,17 @@ export class ApplicationWorkflowCodeVersionPromotionService {
       },
     };
   }
+}
+
+function isStrictAtomicPreviewCapture(
+  payload: Record<string, unknown>,
+  tier: string,
+): boolean {
+  return (
+    tier === "tar-overlay-set" &&
+    (payload.captureProtocol === "atomic-generation-v2" ||
+      payload.acceptanceEligible === true)
+  );
 }
 
 function normalizeRepo(raw: unknown): string | null {

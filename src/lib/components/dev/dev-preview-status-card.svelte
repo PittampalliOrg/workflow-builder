@@ -9,10 +9,12 @@
 	let {
 		environment,
 		busy = false,
+		canTeardown = false,
 		onteardown
 	}: {
 		environment: DevEnvironmentSummary;
 		busy?: boolean;
+		canTeardown?: boolean;
 		onteardown: () => void;
 	} = $props();
 
@@ -79,7 +81,8 @@
 				size="sm"
 				variant="ghost"
 				class="ml-auto text-muted-foreground hover:text-red-600"
-				disabled={busy}
+				disabled={busy || !canTeardown}
+				title={canTeardown ? 'Teardown environment' : 'Platform administrator required'}
 				onclick={onteardown}
 			>
 				<Trash2 class="size-3.5" /> Teardown

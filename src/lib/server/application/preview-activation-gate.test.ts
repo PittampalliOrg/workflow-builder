@@ -28,6 +28,7 @@ function harness() {
     inspectOpen: vi.fn(),
     inspect: vi.fn(async () => ({
       ...tuple,
+      draft: true,
       headRef: "feature/activation",
       changedPaths: ["services/dev-sync-sidecar/server.mjs"],
     })),
@@ -229,11 +230,13 @@ describe("ApplicationPreviewActivationGateService", () => {
     h.pullRequests.inspect
       .mockResolvedValueOnce({
         ...tuple,
+        draft: true,
         headRef: "feature/activation",
         changedPaths: ["services/dev-sync-sidecar/server.mjs"],
       })
       .mockResolvedValueOnce({
         ...tuple,
+        draft: true,
         headRef: "feature/activation",
         changedPaths: ["services/dev-sync-sidecar/server.mjs"],
       })

@@ -20,6 +20,7 @@ import {
 const DEV_SYNC_STATE_FILE = '.dev-sync-state.json';
 const DEV_SYNC_GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DEV_SYNC_SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const DEV_SYNC_FREEZE_OPERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 type DevSyncState = {
 	generation: string | null;
@@ -27,6 +28,10 @@ type DevSyncState = {
 	lastSyncAt: string | null;
 	lastSyncBytes: number;
 	contentSha256: string | null;
+	frozen: boolean;
+	preparedOperationId: string | null;
+	preparedAt: string | null;
+	frozenOperationId: string | null;
 };
 
 function headerText(value: string | string[] | undefined): string {
@@ -73,6 +78,18 @@ function readDevSyncState(root: string): DevSyncState {
 				typeof parsed.contentSha256 === 'string' &&
 				/^sha256:[0-9a-f]{64}$/.test(parsed.contentSha256)
 					? parsed.contentSha256
+					: null,
+			frozen: parsed.frozen === true,
+			preparedOperationId:
+				typeof parsed.preparedOperationId === 'string' &&
+				DEV_SYNC_FREEZE_OPERATION_PATTERN.test(parsed.preparedOperationId)
+					? parsed.preparedOperationId
+					: null,
+			preparedAt: typeof parsed.preparedAt === 'string' ? parsed.preparedAt : null,
+			frozenOperationId:
+				typeof parsed.frozenOperationId === 'string' &&
+				DEV_SYNC_FREEZE_OPERATION_PATTERN.test(parsed.frozenOperationId)
+					? parsed.frozenOperationId
 					: null
 		};
 	} catch {
@@ -81,7 +98,11 @@ function readDevSyncState(root: string): DevSyncState {
 			service: null,
 			lastSyncAt: null,
 			lastSyncBytes: 0,
-			contentSha256: null
+			contentSha256: null,
+			frozen: false,
+			preparedOperationId: null,
+			preparedAt: null,
+			frozenOperationId: null
 		};
 	}
 }
@@ -149,17 +170,21 @@ function devLiveSyncPlugin(): Plugin {
 		service: null,
 		lastSyncAt: null,
 		lastSyncBytes: 0,
-		contentSha256: null
+		contentSha256: null,
+		frozen: false,
+		preparedOperationId: null,
+		preparedAt: null,
+		frozenOperationId: null
 	};
 	let lastSyncTimingsMs: AtomicDevSyncTimings | null = null;
 	let lastExportSha256: string | null = null;
-	let sourceOperation: 'sync' | 'export' | null = null;
-	const beginSourceOperation = (operation: 'sync' | 'export') => {
+	let sourceOperation: string | null = null;
+	const beginSourceOperation = (operation: string) => {
 		if (sourceOperation) return false;
 		sourceOperation = operation;
 		return true;
 	};
-	const endSourceOperation = (operation: 'sync' | 'export') => {
+	const endSourceOperation = (operation: string) => {
 		if (sourceOperation === operation) sourceOperation = null;
 	};
 	return {
@@ -214,6 +239,157 @@ function devLiveSyncPlugin(): Plugin {
 			}
 			syncState = readDevSyncState(root);
 			if (!syncState.service) syncState.service = configuredService;
+			if (syncState.frozen) {
+				syncState.preparedOperationId = null;
+				syncState.preparedAt = null;
+			} else {
+				syncState.frozenOperationId = null;
+			}
+			server.middlewares.use('/__freeze', (req, res) => {
+				let replied = false;
+				const json = (code: number, body: Record<string, unknown>) => {
+					if (replied) return;
+					replied = true;
+					res.statusCode = code;
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify(body));
+				};
+				if (req.method !== 'POST') return json(405, { ok: false, error: 'POST only' });
+				req.resume();
+				if (!devSyncTokenEquals(headerText(req.headers['x-sync-token']), token)) {
+					return json(401, { ok: false, error: 'unauthorized' });
+				}
+				const url = new URL(req.url ?? '/__freeze', 'http://localhost');
+				const phase = (url.searchParams.get('phase') ?? '').trim();
+				const operationId = (url.searchParams.get('operationId') ?? '').trim();
+				if (!['prepare', 'commit', 'abort'].includes(phase)) {
+					return json(400, { ok: false, error: 'valid freeze phase required' });
+				}
+				if (!DEV_SYNC_FREEZE_OPERATION_PATTERN.test(operationId)) {
+					return json(400, { ok: false, error: 'valid operationId required' });
+				}
+				const sourceOperationName = `freeze-${phase}`;
+				if (!beginSourceOperation(sourceOperationName)) {
+					return json(409, {
+						ok: false,
+						error: `source ${sourceOperation} in progress`
+					});
+				}
+				const proof = (idempotent: boolean) => ({
+					ok: true,
+					prepared: !syncState.frozen && syncState.preparedOperationId === operationId,
+					frozen: syncState.frozen,
+					idempotent,
+					operationId,
+					service: syncState.service,
+					generation: syncState.generation,
+					contentSha256: syncState.contentSha256
+				});
+				try {
+					if (phase === 'prepare') {
+						if (syncState.frozen) {
+							if (
+								syncState.frozenOperationId &&
+								syncState.frozenOperationId !== operationId
+							) {
+								return json(409, {
+									ok: false,
+									error: 'receiver frozen by another operation'
+								});
+							}
+							return json(200, proof(true));
+						}
+						if (
+							syncState.preparedOperationId &&
+							syncState.preparedOperationId !== operationId
+						) {
+							return json(409, {
+								ok: false,
+								error: 'receiver prepared by another operation'
+							});
+						}
+						const idempotent = syncState.preparedOperationId === operationId;
+						if (!idempotent) {
+							const nextState: DevSyncState = {
+								...syncState,
+								preparedOperationId: operationId,
+								preparedAt: new Date().toISOString()
+							};
+							persistDevSyncState(root, nextState);
+							syncState = nextState;
+						}
+						return json(200, proof(idempotent));
+					}
+
+					if (phase === 'abort') {
+						if (syncState.frozen) {
+							return json(409, {
+								ok: false,
+								error: 'receiver freeze is already committed'
+							});
+						}
+						if (
+							syncState.preparedOperationId &&
+							syncState.preparedOperationId !== operationId
+						) {
+							return json(409, {
+								ok: false,
+								error: 'receiver prepared by another operation'
+							});
+						}
+						const idempotent = syncState.preparedOperationId === null;
+						if (!idempotent) {
+							const nextState: DevSyncState = {
+								...syncState,
+								preparedOperationId: null,
+								preparedAt: null
+							};
+							persistDevSyncState(root, nextState);
+							syncState = nextState;
+						}
+						return json(200, {
+							ok: true,
+							prepared: false,
+							frozen: false,
+							idempotent,
+							operationId
+						});
+					}
+
+					if (syncState.frozen) {
+						if (
+							syncState.frozenOperationId &&
+							syncState.frozenOperationId !== operationId
+						) {
+							return json(409, {
+								ok: false,
+								error: 'receiver frozen by another operation'
+							});
+						}
+						return json(200, proof(true));
+					}
+					if (syncState.preparedOperationId !== operationId) {
+						return json(409, { ok: false, error: 'matching freeze preparation required' });
+					}
+					const nextState: DevSyncState = {
+						...syncState,
+						frozen: true,
+						preparedOperationId: null,
+						preparedAt: null,
+						frozenOperationId: operationId
+					};
+					persistDevSyncState(root, nextState);
+					syncState = nextState;
+					return json(200, proof(false));
+				} catch (error) {
+					return json(500, {
+						ok: false,
+						error: `freeze state write: ${error instanceof Error ? error.message : String(error)}`
+					});
+				} finally {
+					endSourceOperation(sourceOperationName);
+				}
+			});
 			server.middlewares.use('/__sync', (req, res) => {
 				let replied = false;
 				const json = (code: number, body: Record<string, unknown>) => {
@@ -230,6 +406,17 @@ function devLiveSyncPlugin(): Plugin {
 				if (req.method !== 'POST') return json(405, { ok: false, error: 'POST only' });
 				if (!acceptsDevSyncToken(req.headers['x-sync-token'], token, agentTokenSha256))
 					return json(401, { ok: false, error: 'unauthorized' });
+				if (syncState.frozen || syncState.preparedOperationId) {
+					req.resume();
+					return json(409, {
+						ok: false,
+						error: syncState.frozen
+							? 'source receiver is frozen'
+							: 'source receiver is prepared for checkpoint',
+						frozen: syncState.frozen,
+						prepared: Boolean(syncState.preparedOperationId)
+					});
+				}
 				if (allowedRootsError) {
 					req.resume();
 					return json(503, {
@@ -363,7 +550,11 @@ function devLiveSyncPlugin(): Plugin {
 						service,
 						lastSyncAt: new Date().toISOString(),
 						lastSyncBytes: buf.length,
-						contentSha256
+						contentSha256,
+						frozen: false,
+						preparedOperationId: null,
+						preparedAt: null,
+						frozenOperationId: null
 					};
 					let addedRoutes: string[] = [];
 					void applyAtomicDevSync({
@@ -450,6 +641,11 @@ function devLiveSyncPlugin(): Plugin {
 						lastSyncBytes: syncState.lastSyncBytes,
 						lastSyncTimingsMs,
 						contentSha256: syncState.contentSha256,
+						frozen: syncState.frozen,
+						prepared: Boolean(syncState.preparedOperationId),
+						preparedOperationId: syncState.preparedOperationId,
+						preparedAt: syncState.preparedAt,
+						frozenOperationId: syncState.frozenOperationId,
 						allowedRoots,
 						lastExportSha256
 					})

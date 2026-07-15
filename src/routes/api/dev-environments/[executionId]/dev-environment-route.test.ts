@@ -1,251 +1,202 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
 	const environment = {
 		executionId: "exec-1",
+		workspaceRef: "workspace-1",
+		service: "workflow-builder",
+		browseUrl: "https://workflow-builder.example.test",
+		podIP: "10.0.0.10",
+		port: 3000,
+		syncUrl: "http://10.0.0.10:3001",
+		ready: true,
+		needsDapr: false,
+		daprAppId: null,
+		sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
 		sessionId: "session-1",
+		sessionUrl: "/sessions/session-1",
 		runStatus: "running",
+		createdAt: "2026-07-14T00:00:00.000Z",
+	};
+	const sibling = {
+		...environment,
+		service: "workflow-orchestrator",
+		browseUrl: "https://workflow-orchestrator.example.test",
 	};
 	const workflowData = {
-		getDevEnvironmentOrPending: vi.fn(
-			async (): Promise<typeof environment | null> => environment,
-		),
-		getDevEnvironmentTeardownTarget: vi.fn(
-			async (): Promise<typeof environment | null> => null,
-		),
+		getDevEnvironmentOrPending: vi.fn(async () => environment),
+		listDevEnvironmentGroups: vi.fn(async () => [
+			{
+				executionId: "exec-1",
+				services: [environment, sibling],
+				primary: environment,
+				ready: true,
+				sessionId: "session-1",
+				sessionUrl: "/sessions/session-1",
+				runStatus: "running",
+				createdAt: "2026-07-14T00:00:00.000Z",
+			},
+		]),
 	};
-	const previewEnvironmentProvisioner = {
-		teardown: vi.fn(async () => ({
-			ok: true,
-			complete: false,
-			pending: true,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+	const devEnvironmentTeardown = {
+		teardown: vi.fn(async (): Promise<any> => ({
+			status: "ok" as const,
+			httpStatus: 202 as const,
+			body: {
+				ok: true,
+				complete: false,
+				pending: true,
+				executionId: "exec-1",
+				sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+			},
 		})),
 	};
-	const stopDurableRun = vi.fn(async () => ({ state: "confirmed" }));
+	const getApplicationAdapters = vi.fn(() => ({
+		workflowData,
+		devEnvironmentTeardown,
+	}));
 	return {
 		environment,
+		sibling,
 		workflowData,
-		previewEnvironmentProvisioner,
-		stopDurableRun,
+		devEnvironmentTeardown,
+		getApplicationAdapters,
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({
-		workflowData: mocks.workflowData,
-		previewEnvironmentProvisioner: mocks.previewEnvironmentProvisioner,
-	}),
+	getApplicationAdapters: mocks.getApplicationAdapters,
 }));
 
-vi.mock("$lib/server/lifecycle", () => ({
-	stopDurableRun: mocks.stopDurableRun,
-}));
+import { DELETE, GET } from "./+server";
 
-import { DELETE } from "./+server";
-
-function event() {
+function event(options: {
+	query?: string;
+	session?: { userId: string; projectId: string | null } | null;
+} = {}) {
 	return {
 		params: { executionId: "exec-1" },
-		locals: { session: { userId: "user-1", projectId: "project-1" } },
+		locals: {
+			session:
+				options.session === undefined
+					? { userId: "user-1", projectId: "project-1" }
+					: options.session,
+		},
+		url: new URL(
+			`http://localhost/api/dev-environments/exec-1${options.query ?? ""}`,
+		),
 	};
 }
 
-describe("dev environment detail route", () => {
+describe("dev environment detail transport", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.workflowData.getDevEnvironmentOrPending.mockResolvedValue(
 			mocks.environment,
 		);
-		mocks.workflowData.getDevEnvironmentTeardownTarget.mockResolvedValue(
-			null,
-		);
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValue({
-			ok: true,
-			complete: false,
-			pending: true,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+		mocks.workflowData.listDevEnvironmentGroups.mockResolvedValue([
+			{
+				executionId: "exec-1",
+				services: [mocks.environment, mocks.sibling],
+				primary: mocks.environment,
+				ready: true,
+				sessionId: "session-1",
+				sessionUrl: "/sessions/session-1",
+				runStatus: "running",
+				createdAt: "2026-07-14T00:00:00.000Z",
+			},
+		]);
+		mocks.devEnvironmentTeardown.teardown.mockResolvedValue({
+			status: "ok",
+			httpStatus: 202,
+			body: {
+				ok: true,
+				complete: false,
+				pending: true,
+				executionId: "exec-1",
+				sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+			},
 		});
-		mocks.stopDurableRun.mockResolvedValue({ state: "confirmed" });
 	});
 
-	it("scopes environment lookup through workflow-data", () => {
-		const source = readFileSync(
-			join(dirname(fileURLToPath(import.meta.url)), "+server.ts"),
-			"utf8",
-		);
-
-		expect(source).toContain("getApplicationAdapters");
-		expect(source).toContain("workflowData.getDevEnvironmentOrPending");
-		expect(source).toContain(
-			"workflowData.getDevEnvironmentTeardownTarget",
-		);
-		expect(source).toContain(
-			"const complete = preview.complete && ok && !pending",
-		);
-		expect(source).toContain(
-			"const pending = preview.pending || lifecyclePending",
-		);
-		expect(source).toContain("preview.complete && environment.sessionId");
-		expect(source).toContain(
-			"!ok ? 503 : pending ? 202 : complete ? 200 : 503",
-		);
-		expect(source).not.toContain("$lib/server/workflows/dev-environments");
-		expect(source).not.toContain("$lib/server/db");
-		expect(source).not.toContain("drizzle-orm");
+	it("rejects unauthenticated GET and DELETE requests before composition", async () => {
+		await expect(GET(event({ session: null }) as never)).rejects.toMatchObject({
+			status: 401,
+		});
+		await expect(
+			DELETE(event({ session: null }) as never),
+		).rejects.toMatchObject({ status: 401 });
+		expect(mocks.getApplicationAdapters).not.toHaveBeenCalled();
 	});
 
-	it("returns 202 before lifecycle stops when response-path cleanup is pending", async () => {
-		const response = (await DELETE(event() as never)) as Response;
-
-		expect(response.status).toBe(202);
-		await expect(response.json()).resolves.toMatchObject({
-			ok: true,
-			complete: false,
-			pending: true,
-			sessionStopped: null,
-			runStopped: null,
-		});
-		expect(mocks.stopDurableRun).not.toHaveBeenCalled();
-	});
-
-	it("performs lifecycle stops only after a later teardown proves completion", async () => {
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValueOnce({
-			ok: true,
-			complete: true,
-			pending: false,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
-		});
-
-		const response = (await DELETE(event() as never)) as Response;
+	it("reads the environment and grouped services in the caller project scope", async () => {
+		const response = (await GET(event() as never)) as Response;
 
 		expect(response.status).toBe(200);
-		expect(mocks.stopDurableRun).toHaveBeenNthCalledWith(
-			1,
-			{ kind: "session", id: "session-1" },
-			{ mode: "purge", reason: "Dev environment torn down by user" },
-		);
-		expect(mocks.stopDurableRun).toHaveBeenNthCalledWith(
-			2,
-			{ kind: "workflowExecution", id: "exec-1" },
-			{ mode: "purge", reason: "Dev environment torn down by user" },
-		);
-	});
-
-	it("returns 503 incomplete when lifecycle cleanup throws", async () => {
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValueOnce({
-			ok: true,
-			complete: true,
-			pending: false,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+		await expect(response.json()).resolves.toEqual({
+			environment: mocks.environment,
+			services: [mocks.environment, mocks.sibling],
 		});
-		mocks.stopDurableRun.mockRejectedValue(new Error("Dapr unavailable"));
-
-		const response = (await DELETE(event() as never)) as Response;
-
-		expect(response.status).toBe(503);
-		await expect(response.json()).resolves.toMatchObject({
-			ok: false,
-			complete: false,
-			pending: false,
-			error: expect.stringContaining("Dapr unavailable"),
-		});
-	});
-
-	it("returns 202 incomplete while lifecycle cleanup is still converging", async () => {
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValueOnce({
-			ok: true,
-			complete: true,
-			pending: false,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
-		});
-		mocks.stopDurableRun.mockResolvedValue({ state: "stopping" });
-
-		const response = (await DELETE(event() as never)) as Response;
-
-		expect(response.status).toBe(202);
-		await expect(response.json()).resolves.toMatchObject({
-			ok: true,
-			complete: false,
-			pending: true,
-			sessionStopped: "stopping",
-			runStopped: "stopping",
-		});
-	});
-
-	it("resumes lifecycle cleanup from a cleaned-row tombstone after a 202", async () => {
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValue({
-			ok: true,
-			complete: true,
-			pending: false,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
-		});
-		mocks.stopDurableRun.mockResolvedValue({ state: "stopping" });
-
-		const first = (await DELETE(event() as never)) as Response;
-		expect(first.status).toBe(202);
-
-		mocks.workflowData.getDevEnvironmentOrPending.mockResolvedValue(null);
-		mocks.workflowData.getDevEnvironmentTeardownTarget.mockResolvedValue({
-			...mocks.environment,
-			runStatus: "cancelled",
-		});
-		mocks.stopDurableRun.mockResolvedValue({ state: "confirmed" });
-		const second = (await DELETE(event() as never)) as Response;
-
-		expect(second.status).toBe(200);
 		expect(
-			mocks.workflowData.getDevEnvironmentTeardownTarget,
-		).toHaveBeenCalledWith({
+			mocks.workflowData.getDevEnvironmentOrPending,
+		).toHaveBeenCalledExactlyOnceWith({
 			executionId: "exec-1",
 			projectId: "project-1",
 		});
-		expect(mocks.stopDurableRun).toHaveBeenLastCalledWith(
-			{ kind: "session", id: "session-1" },
-			{ mode: "purge", reason: "Dev environment torn down by user" },
+		expect(mocks.workflowData.listDevEnvironmentGroups).toHaveBeenCalledExactlyOnceWith(
+			{ projectId: "project-1" },
 		);
 	});
 
-	it("replays a final 200 from the tombstone after the prior response is lost", async () => {
-		mocks.workflowData.getDevEnvironmentOrPending.mockResolvedValue(null);
-		mocks.workflowData.getDevEnvironmentTeardownTarget.mockResolvedValue({
-			...mocks.environment,
-			runStatus: "success",
+	it.each([
+		["", false],
+		["?discardUncaptured=true", true],
+		["?discardUncaptured=TRUE", false],
+	])("delegates DELETE with the exact command for %s", async (query, discardUncaptured) => {
+		await DELETE(event({ query }) as never);
+
+		expect(mocks.devEnvironmentTeardown.teardown).toHaveBeenCalledExactlyOnceWith({
+			executionId: "exec-1",
+			userId: "user-1",
+			projectId: "project-1",
+			discardUncaptured,
 		});
-		mocks.previewEnvironmentProvisioner.teardown.mockResolvedValue({
-			ok: true,
-			complete: true,
+	});
+
+	it("passes the application status and body through unchanged", async () => {
+		const body = {
+			ok: false,
+			complete: false,
 			pending: false,
-			sandboxName: "wfb-dev-preview-workflow-builder-exec-1",
+			executionId: "exec-1",
+			error: "The frozen checkpoint could not be promoted",
+		};
+		mocks.devEnvironmentTeardown.teardown.mockResolvedValueOnce({
+			status: "error",
+			httpStatus: 409,
+			body,
 		});
-		mocks.stopDurableRun.mockResolvedValue({ state: "notFound" });
 
 		const response = (await DELETE(event() as never)) as Response;
 
-		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toMatchObject({
-			ok: true,
-			complete: true,
-			pending: false,
-			sessionStopped: "notFound",
-			runStopped: null,
-		});
+		expect(response.status).toBe(409);
+		await expect(response.json()).resolves.toEqual(body);
 	});
 
-	it("returns 404 when neither an active environment nor scoped tombstone exists", async () => {
-		mocks.workflowData.getDevEnvironmentOrPending.mockResolvedValue(null);
-		mocks.workflowData.getDevEnvironmentTeardownTarget.mockResolvedValue(
-			null,
-		);
+	it("keeps teardown policy behind the application port", () => {
+		const source = readFileSync(new URL("./+server.ts", import.meta.url), "utf8");
+		const deleteSource = source.slice(source.indexOf("export const DELETE"));
 
-		await expect(DELETE(event() as never)).rejects.toMatchObject({
-			status: 404,
-		});
-		expect(
-			mocks.previewEnvironmentProvisioner.teardown,
-		).not.toHaveBeenCalled();
+		expect(deleteSource).toContain("devEnvironmentTeardown.teardown");
+		expect(source).not.toContain("$lib/server/lifecycle");
+		expect(source).not.toContain("$lib/server/workflows/dev-preview");
+		expect(deleteSource).not.toContain("stopDurableRun");
+		expect(deleteSource).not.toContain("previewSessionContinuation");
+		expect(deleteSource).not.toContain("previewEnvironmentProvisioner");
+		expect(deleteSource).not.toContain('action: "capture"');
+		expect(deleteSource).not.toContain('action: "promote"');
+		expect(deleteSource).not.toContain("freezeSourcesForTeardown");
+		expect(deleteSource).not.toContain("mergeWorkflowArtifactMetadata");
 	});
 });

@@ -54,6 +54,15 @@ function dependencies() {
     })),
   };
   const provisioner: PreviewEnvironmentProvisioner = {
+		freezeSourcesForTeardown: vi.fn(async (input) => ({
+			executionId: input.executionId,
+			generation: "generation-1",
+			services: input.services.map((service: string) => ({
+				service,
+				generation: "generation-1",
+				contentSha256: `sha256:${"a".repeat(64)}`,
+			})),
+		})),
     provision: vi.fn(async (input) => ({
       sandboxName: `sandbox-${input.service}`,
       executionId: input.executionId,

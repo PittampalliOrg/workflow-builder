@@ -1,6 +1,8 @@
 import type {
   DevPreviewInfo,
+  DevPreviewSourceFreezeResult,
   DevPreviewsResult,
+  FreezeDevPreviewSourcesParams,
   ProvisionDevPreviewParams,
   ProvisionDevPreviewsParams,
   PreviewDevSyncCredentialBrokerPort,
@@ -15,6 +17,7 @@ import { HttpPreviewDevSyncCredentialBrokerAdapter } from "$lib/server/applicati
 import {
   provisionDevPreview,
   provisionDevPreviews,
+  freezeDevPreviewSourcesForTeardown,
   replaceDevPreviewImages,
   type DevPreviewPersistence,
   teardownDevPreview,
@@ -62,6 +65,16 @@ export class SandboxExecutionPreviewEnvironmentProvisioner implements PreviewEnv
     );
   }
 
+  freezeSourcesForTeardown(
+    input: FreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourceFreezeResult> {
+    return freezeDevPreviewSourcesForTeardown(
+      input,
+      this.persistence?.(),
+      { broker: this.credentialBroker },
+    );
+  }
+
   teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult> {
     return teardownDevPreview(
       input,
@@ -94,6 +107,14 @@ export class KroPreviewEnvironmentProvisioner implements PreviewEnvironmentProvi
   ): Promise<ReplaceDevPreviewImagesResult> {
     throw new Error(
       "PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but atomic WorkflowBuilderPreviewEnvironment image replacement is not wired in the BFF yet",
+    );
+  }
+
+  async freezeSourcesForTeardown(
+    _input: FreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourceFreezeResult> {
+    throw new Error(
+      "PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but source freeze is not wired in the BFF yet",
     );
   }
 
