@@ -751,6 +751,8 @@ export type DevEnvironmentSummaryReadModel = {
 	sessionUrl: string | null;
 	runStatus: string | null;
 	createdAt: string;
+	/** Canonical launch order from the execution input, including services still pending persistence. */
+	requestedServices?: string[];
 };
 
 export type DevPreviewHubReadModel = {

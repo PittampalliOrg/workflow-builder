@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import { mergePendingDevEnvironmentServices } from "$lib/server/application/dev-environment-grouping";
 
 /** Single dev environment detail (project-scoped). Tolerates the provisioning gap.
  * B5 additive: `services` lists EVERY per-service preview row for the execution
@@ -17,8 +18,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const groups = await workflowData.listDevEnvironmentGroups({
 		projectId: locals.session.projectId,
 	});
-	const services = groups.find((group) => group.executionId === executionId)
-		?.services ?? [environment];
+	const services = mergePendingDevEnvironmentServices(
+		environment,
+		groups.find((group) => group.executionId === executionId)?.services ?? [],
+	);
 	return json({ environment, services });
 };
 

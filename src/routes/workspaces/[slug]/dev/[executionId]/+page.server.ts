@@ -2,6 +2,7 @@ import { error } from "@sveltejs/kit";
 import { getApplicationAdapters } from "$lib/server/application";
 import type { PageServerLoad } from "./$types";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
+import { mergePendingDevEnvironmentServices } from "$lib/server/application/dev-environment-grouping";
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	await requirePlatformAdmin(locals);
@@ -15,7 +16,9 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	const groups = await workflowData.listDevEnvironmentGroups({
 		projectId: locals.session?.projectId ?? null,
 	});
-	const services =
-		groups.find((g) => g.executionId === params.executionId)?.services ?? [environment];
+	const services = mergePendingDevEnvironmentServices(
+		environment,
+		groups.find((g) => g.executionId === params.executionId)?.services ?? [],
+	);
 	return { environment, services };
 };

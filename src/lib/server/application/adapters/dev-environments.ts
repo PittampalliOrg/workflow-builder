@@ -29,12 +29,36 @@ type Database = typeof defaultDb;
 
 const TERMINAL_RUN_STATUSES = new Set(["success", "error", "cancelled"]);
 
-function devPreviewServiceFromInput(input: unknown): string {
-	if (!input || typeof input !== "object") return "workflow-builder";
-	const service = (input as { service?: unknown }).service;
-	return typeof service === "string" && service
-		? service
-		: "workflow-builder";
+function canonicalRequestedServices(input: unknown): string[] {
+	const record =
+		input && typeof input === "object"
+			? (input as { service?: unknown; services?: unknown })
+			: {};
+	const requested = Array.isArray(record.services) ? record.services : [];
+	const candidates = requested.length > 0 ? requested : [record.service];
+	const services: string[] = [];
+	const seen = new Set<string>();
+	for (const candidate of candidates) {
+		if (typeof candidate !== "string" || !candidate.trim()) continue;
+		try {
+			const service = resolveDevPreviewDescriptor(candidate).service;
+			if (!seen.has(service)) {
+				seen.add(service);
+				services.push(service);
+			}
+		} catch {
+			// Execution input is historical data; ignore services absent from today's catalog.
+		}
+	}
+	if (services.length > 0) return services;
+	if (requested.length > 0 && typeof record.service === "string") {
+		try {
+			return [resolveDevPreviewDescriptor(record.service).service];
+		} catch {
+			// Fall through to the legacy default.
+		}
+	}
+	return [resolveDevPreviewDescriptor(null).service];
 }
 
 export class PostgresDevEnvironmentReadRepository implements DevEnvironmentReadRepository {
@@ -154,7 +178,6 @@ export class PostgresDevEnvironmentReadRepository implements DevEnvironmentReadR
 			input.executionId,
 			input.projectId,
 		);
-		if (found) return found;
 		if (!input.projectId) return null;
 
 		const [exec] = await this.database
@@ -177,10 +200,13 @@ export class PostgresDevEnvironmentReadRepository implements DevEnvironmentReadR
 				),
 			)
 			.limit(1);
-		// No run, or a terminal run with no active preview, means it is truly gone.
-		if (!exec || TERMINAL_RUN_STATUSES.has(exec.status)) return null;
+		if (!exec) return found;
+		const requestedServices = canonicalRequestedServices(exec.input);
+		if (found) return { ...found, requestedServices };
+		// A terminal run with no active preview means it is truly gone.
+		if (TERMINAL_RUN_STATUSES.has(exec.status)) return null;
 
-		const service = devPreviewServiceFromInput(exec.input);
+		const service = requestedServices[0];
 		const [boundSession] = await this.database
 			.select({ id: sessions.id })
 			.from(sessions)
@@ -206,6 +232,7 @@ export class PostgresDevEnvironmentReadRepository implements DevEnvironmentReadR
 				: null,
 			runStatus: exec.status,
 			createdAt: exec.createdAt.toISOString(),
+			requestedServices,
 		};
 	}
 
