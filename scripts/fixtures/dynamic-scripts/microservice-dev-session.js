@@ -104,7 +104,7 @@ const preview = await action('dev/preview', {
   "services": services,
   "mode": mode,
   "origin": t.previewOrigin,
-  "timeoutSeconds": "${ if (.trigger.keepPreview // \"true\") == \"true\" then 86400 else 3600 end }",
+  "timeoutSeconds": (t.keepPreview ?? 'true') === 'true' ? 86400 : 3600,
   "waitReadySeconds": 180,
   "timeoutMs": 600000,
   "activationTimeoutSeconds": 300,

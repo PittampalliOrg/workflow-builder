@@ -635,10 +635,16 @@ async function executeGoalPlan(
  */
 async function executeSessionSpawn(
   input: Record<string, unknown>,
+  trustedExecutionId?: string,
 ): Promise<ExecuteResponse> {
   const started = Date.now();
+  // SW-1.0 nodes pass `executionId: ${ .runtime.executionId }`, but a dynamic
+  // script has no execution-id global, so fall back to the trusted activity
+  // context (body.db_execution_id ?? body.execution_id) the router already
+  // holds — same source workspace/* and dev/preview use.
   const executionId =
-    typeof input.executionId === "string" ? input.executionId.trim() : "";
+    (typeof input.executionId === "string" && input.executionId.trim()) ||
+    (trustedExecutionId ?? "").trim();
   const instructions =
     typeof input.instructions === "string" ? input.instructions : "";
   if (!executionId || !instructions.trim()) {
@@ -1835,6 +1841,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     if (functionSlug === "session/spawn") {
       const sessionResponse = await executeSessionSpawn(
         body.input as Record<string, unknown>,
+        body.db_execution_id ?? body.execution_id ?? undefined,
       );
       return reply
         .status(sessionResponse.success ? 200 : 502)
