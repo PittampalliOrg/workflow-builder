@@ -59,10 +59,12 @@ function isAuthorRuntime(value: unknown): value is AuthorRuntime {
 	return typeof value === 'string' && value in AUTHOR_RUNTIMES;
 }
 
-function authorSystemPrompt(workflowName: string): string {
+function authorSystemPrompt(): string {
 	return [
 		'You are the workflow authoring assistant embedded in the workflow-builder canvas.',
-		`You are editing the DYNAMIC-SCRIPT workflow named "${workflowName}".`,
+		'The FIRST user message names the workflow you are editing and includes an',
+		'ENVIRONMENT block (current script state, available agents, models) — use it',
+		'instead of rediscovering via tools.',
 		'',
 		'The user describes what they want in natural language. You author a workflow',
 		'script in the dynamic-script dialect (your Workflow tool + get_workflow_script_spec',
@@ -72,8 +74,8 @@ function authorSystemPrompt(workflowName: string): string {
 		'Your loop:',
 		'1. Read get_workflow_script_spec if unsure of the dialect.',
 		'2. Author the script, then validate_workflow_script; fix any error it reports.',
-		`3. Save with save_workflow_script using name "${workflowName}" (so it updates THIS`,
-		'   workflow, not a new one). The canvas will render the new structure.',
+		'3. Save with save_workflow_script using the EXACT workflow name from the first',
+		'   user message (so it updates THAT workflow, not a new one).',
 		'4. Only run it (your Workflow tool) if the user asks to try it; then digest the result.',
 		'',
 		'Keep scripts small and well-phased. Declare anything the user may want to change per',
@@ -92,7 +94,7 @@ const AUTHOR_MCP_SERVERS = [
 	}
 ];
 
-function authorConfig(workflowName: string, runtime: AuthorRuntime) {
+function authorConfig(runtime: AuthorRuntime) {
 	if (runtime === 'dapr-agent-py') {
 		return {
 			model: 'zai/glm-5.2',
@@ -102,7 +104,7 @@ function authorConfig(workflowName: string, runtime: AuthorRuntime) {
 			timeoutMinutes: 60,
 			tools: [],
 			skills: [],
-			systemPrompt: authorSystemPrompt(workflowName),
+			systemPrompt: authorSystemPrompt(),
 			mcpServers: AUTHOR_MCP_SERVERS
 		};
 	}
@@ -115,9 +117,62 @@ function authorConfig(workflowName: string, runtime: AuthorRuntime) {
 		timeoutMinutes: 45,
 		tools: [],
 		skills: [],
-		instructions: authorSystemPrompt(workflowName),
+		instructions: authorSystemPrompt(),
 		mcpServers: AUTHOR_MCP_SERVERS
 	};
+}
+
+/** The per-session context block. SUFFIX content (a user message), so the
+ * static system prompt stays byte-identical across sessions (provider prefix
+ * cache) while this caches across turns WITHIN the session. Deterministic:
+ * sorted, no timestamps. */
+async function buildInitialMessage(
+	app: ReturnType<typeof getApplicationAdapters>,
+	projectId: string,
+	workflow: { id: string; name: string }
+): Promise<string> {
+	let agentLines = '(agent list unavailable — use list_workflows/get_workflow tools)';
+	try {
+		const agents = await app.agentCatalog.listAgents({
+			query: { projectId },
+			currentProjectId: projectId
+		});
+		agentLines =
+			agents
+				.filter(
+					(a: { slug?: string }) =>
+						a.slug && !a.slug.startsWith('wf-') && !a.slug.startsWith('exp-')
+				)
+				.map(
+					(a: { slug?: string; name?: string; runtime?: string | null }) =>
+						`${a.slug} | ${a.name ?? a.slug} | ${a.runtime ?? '?'}`
+				)
+				.sort()
+				.slice(0, 60)
+				.join('\n') || '(none registered)';
+	} catch {
+		/* keep fallback line */
+	}
+	const row = (await app.workflowData.getWorkflowByRef({
+		workflowId: workflow.id,
+		lookup: 'id'
+	})) as { spec?: { script?: unknown } } | null;
+	const script = typeof row?.spec?.script === 'string' ? row.spec.script : '';
+	const scriptBlock = script
+		? `CURRENT SCRIPT (${script.length} chars):\n\`\`\`js\n${script.slice(0, 6000)}\n\`\`\``
+		: 'CURRENT SCRIPT: (empty — you are authoring from scratch)';
+	return [
+		`I want to author the dynamic-script workflow "${workflow.name}".`,
+		'',
+		'=== ENVIRONMENT ===',
+		'AVAILABLE AGENTS (slug | name | runtime) — for opts.agent and x-wfb agent inputs:',
+		agentLines,
+		'',
+		scriptBlock,
+		'=== END ENVIRONMENT ===',
+		'',
+		"I'll describe what I want in my next message."
+	].join('\n');
 }
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
@@ -163,7 +218,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				runtime,
 				tags: ['workflow-author'],
 				projectId,
-				config: authorConfig(workflow.name, runtime)
+				config: authorConfig(runtime)
 			}
 		});
 		if (created.status === 'invalid') return error(400, created.message);
@@ -178,9 +233,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		projectId,
 		body: {
 			agentId,
-			agentConfig: authorConfig(workflow.name, runtime),
+			agentConfig: authorConfig(runtime),
 			title: `Author · ${workflow.name}`,
-			initialMessage: `I want to author the dynamic-script workflow "${workflow.name}". I'll describe what it should do in my next message.`
+			initialMessage: await buildInitialMessage(app, projectId, workflow)
 		}
 	});
 
