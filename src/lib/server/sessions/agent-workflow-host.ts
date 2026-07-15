@@ -579,6 +579,7 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 async function probeAgentWorkflowHostAppReadyOnce(params: {
 	agentAppId: string;
 	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
 }): Promise<AgentWorkflowHostAppProbeAttempt> {
 	try {
 		const pod = await getAgentWorkflowHostPod(params.agentAppId);
@@ -586,6 +587,7 @@ async function probeAgentWorkflowHostAppReadyOnce(params: {
 		const baseUrl = `http://${pod.podIP}:8002`;
 		const res = await (params.fetchImpl ?? fetch)(`${baseUrl}/healthz`, {
 			method: "GET",
+			signal: AbortSignal.timeout(Math.max(1, params.timeoutMs ?? 1_500)),
 		});
 		if (res.ok) {
 			return {
@@ -621,8 +623,12 @@ async function probeAgentWorkflowHostAppReadyOnce(params: {
 export async function probeAgentWorkflowHostAppReady(params: {
 	agentAppId: string;
 	fetchImpl?: typeof fetch;
+	probeTimeoutMs?: number;
 }): Promise<AgentWorkflowHostAppReadyResult | null> {
-	const attempt = await probeAgentWorkflowHostAppReadyOnce(params);
+	const attempt = await probeAgentWorkflowHostAppReadyOnce({
+		...params,
+		timeoutMs: params.probeTimeoutMs,
+	});
 	return attempt.ready ? attempt.result : null;
 }
 
@@ -631,6 +637,7 @@ export async function waitForAgentWorkflowHostAppReady(params: {
 	timeoutSeconds?: number;
 	pollMs?: number;
 	fetchImpl?: typeof fetch;
+	probeTimeoutMs?: number;
 }): Promise<AgentWorkflowHostAppReadyResult> {
 	const timeoutSeconds =
 		params.timeoutSeconds ??
@@ -655,6 +662,10 @@ export async function waitForAgentWorkflowHostAppReady(params: {
 		const attempt = await probeAgentWorkflowHostAppReadyOnce({
 			agentAppId: params.agentAppId,
 			fetchImpl,
+			timeoutMs: Math.min(
+				Math.max(1, params.probeTimeoutMs ?? 1_500),
+				Math.max(1, deadline - Date.now()),
+			),
 		});
 		if (attempt.ready) {
 			return { ...attempt.result, attempts };
@@ -662,7 +673,9 @@ export async function waitForAgentWorkflowHostAppReady(params: {
 		lastError = attempt.error;
 
 		if (Date.now() > deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, pollMs));
+		await new Promise((resolve) =>
+			setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))),
+		);
 	}
 
 	throw new Error(

@@ -30,7 +30,6 @@
 		/^\/workspaces\/[^/]+\/(?:kubernetes|argocd)(\/|$)/.test(page.url.pathname)
 	);
 	let routeKey = $derived(page.url.pathname);
-	let stopRuntimeHandoffWatcher: () => void = () => undefined;
 
 	// Initialize theme from server data (cookie) or system preference.
 	// Also install the X-Workspace fetch wrapper so workspace-scoped URL
@@ -79,19 +78,19 @@
 		if (data.platformRole === 'ADMIN') {
 			deploymentNotifications.start();
 		}
+	});
 
-		stopRuntimeHandoffWatcher = startRuntimeHandoffWatcher({
+	// The root layout survives client navigation. Rebind the preview watcher when
+	// authentication or the server generation changes and let Svelte stop the old one.
+	$effect(() => {
+		if (!data.session?.userId) return;
+		return startRuntimeHandoffWatcher({
 			baseline: data.runtimeHandoff,
 			reload: () => window.location.reload()
 		});
 	});
 
-	// The root layout only unmounts on full teardown (logout / tab close); stop
-	// the watcher so its timer does not linger.
-	onDestroy(() => {
-		deploymentNotifications.stop();
-		stopRuntimeHandoffWatcher();
-	});
+	onDestroy(() => deploymentNotifications.stop());
 
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		const mod = e.metaKey || e.ctrlKey;

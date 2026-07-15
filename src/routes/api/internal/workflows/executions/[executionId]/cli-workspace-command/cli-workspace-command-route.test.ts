@@ -34,9 +34,11 @@ const mocks = vi.hoisted(() => {
 	const waitForAgentWorkflowHostAppReady = vi.fn(async () => ({
 		baseUrl: "http://127.0.0.1:1",
 	}));
-	const probeAgentWorkflowHostAppReady = vi.fn(async () => ({
-		baseUrl: "http://127.0.0.1:1",
-	}));
+	const probeAgentWorkflowHostAppReady = vi.fn(
+		async (): Promise<{ baseUrl: string } | null> => ({
+			baseUrl: "http://127.0.0.1:1",
+		}),
+	);
 	const maybeProvisionAgentWorkflowHost = vi.fn(async () => ({
 		agentAppId: "helper-exec-1__cliws",
 	}));
