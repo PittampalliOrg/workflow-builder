@@ -27,9 +27,15 @@
 //     models stall exactly there.
 //  3. CURATED TOOL SURFACE: the child runs with the full core,network,debug
 //     profiles (so the bridge can call capture tools), but tools/list shown to
-//     the LLM is filtered to a small action set with pruned schemas. 77 tools ×
-//     a dozen restore/namespace/session props each was measurable context bloat
-//     and provoked tool-choice loops.
+//     the LLM is filtered to a navigation-oriented action set with pruned
+//     schemas. 77+ tools × a dozen restore/namespace/session props each was
+//     measurable context bloat and provoked tool-choice loops.
+//  4. DEMO SCENES + AUTO-EDITOR: a bridge-implemented virtual tool `demo_scene`
+//     lets the agent mark scene boundaries with ONE semantic call (the bridge
+//     translates it to record_restart + metadata — no start/stop pairing).
+//     When the run closes, titled scene clips are auto-edited (render.mjs:
+//     dead-time cuts, captions, title/end cards) into one demo MP4 persisted
+//     to the run. Untitled footage (recon wandering) never ships in a demo.
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -41,6 +47,7 @@ import {
 	ListToolsRequestSchema,
 	CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { renderDemo, readAndRm } from "./render.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 const TOOLS = process.env.AGENT_BROWSER_TOOLS || "core,network,debug";
@@ -59,7 +66,15 @@ const EXPOSED_TOOLS = (
 		"agent_browser_snapshot",
 		"agent_browser_click",
 		"agent_browser_fill",
+		"agent_browser_type",
+		"agent_browser_press",
+		"agent_browser_hover",
+		"agent_browser_select",
+		"agent_browser_highlight",
 		"agent_browser_scroll",
+		"agent_browser_back",
+		"agent_browser_wait_for_selector",
+		"agent_browser_wait_for_load",
 		"agent_browser_screenshot",
 		"agent_browser_get_text",
 		"agent_browser_get_url",
@@ -78,6 +93,9 @@ const EXPOSED_PROPS = new Set([
 	"url",
 	"selector",
 	"text",
+	"key",
+	"value",
+	"state",
 	"path",
 	"fullPage",
 	"format",
@@ -96,7 +114,33 @@ const AUTO_CAPTURE = (process.env.AGENT_BROWSER_AUTO_CAPTURE ?? "video,har")
 	.map((s) => s.trim())
 	.filter(Boolean);
 // If the agent abandons the run without close, stop+persist after this idle gap.
-const AUTO_CAPTURE_IDLE_MS = Number(process.env.AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS || 180000);
+// Multi-agent-call demo runs have real gaps between scene sessions — keep this
+// comfortably above orchestrator scheduling latency.
+const AUTO_CAPTURE_IDLE_MS = Number(process.env.AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS || 300000);
+
+// Bridge-implemented tools (not proxied to agent-browser).
+const DEMO_SCENE_TOOL = {
+	name: "demo_scene",
+	description:
+		"Start the next scene of the demo recording. Call ONCE at the beginning of " +
+		"each demo scene, BEFORE performing the scene's browser actions. The platform " +
+		"handles all recording — never try to start or stop recordings yourself.",
+	inputSchema: {
+		type: "object",
+		properties: {
+			title: { type: "string", description: "Short scene title shown in the video (max ~40 chars)" },
+			caption: {
+				type: "string",
+				description: "One-line caption explaining what this scene demonstrates (max ~90 chars)",
+			},
+			focus: {
+				type: "string",
+				description: "Optional: the overall demo focus/theme (set it on the first scene)",
+			},
+		},
+		required: ["title"],
+	},
+};
 
 // Map an artifact-producing tool to how its output is persisted.
 // bucket 'screenshots' → inline <img>; bucket 'assets' kind 'video' → inline
@@ -127,6 +171,33 @@ function pathFromResult(result) {
 	return m ? m[0] : null;
 }
 
+async function persistBlob(ctx, { bucket, kind, payloadBase64, contentType, fileName }) {
+	if (!ctx?.executionId || !TOKEN) return;
+	const body = {
+		workflowExecutionId: ctx.executionId,
+		workflowId: ctx.workflowId,
+		nodeId: ctx.nodeId,
+		status: "ok",
+	};
+	if (bucket === "screenshots") {
+		body.screenshots = [{ payloadBase64, contentType, label: fileName }];
+	} else {
+		body.assets = [{ kind, payloadBase64, contentType, fileName, label: fileName }];
+	}
+	try {
+		const resp = await fetch(`${BFF}/api/internal/browser-artifacts`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Internal-Token": TOKEN },
+			body: JSON.stringify(body),
+		});
+		console.error(
+			`[artifact] ${fileName} (${contentType}) exec=${ctx.executionId} http=${resp.status}`,
+		);
+	} catch (err) {
+		console.error(`[artifact] POST failed for ${fileName}: ${err?.message}`);
+	}
+}
+
 async function persistArtifact(ctx, seen, toolName, result) {
 	const spec = ARTIFACT_TOOLS[toolName];
 	if (!spec || !ctx?.executionId || !TOKEN) return;
@@ -154,30 +225,13 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		}
 		fileName = p.split("/").pop();
 	}
-
-	const body = {
-		workflowExecutionId: ctx.executionId,
-		workflowId: ctx.workflowId,
-		nodeId: ctx.nodeId,
-		status: "ok",
-	};
-	if (spec.bucket === "screenshots") {
-		body.screenshots = [{ payloadBase64, contentType, label: fileName }];
-	} else {
-		body.assets = [{ kind: spec.kind, payloadBase64, contentType, fileName, label: fileName }];
-	}
-	try {
-		const resp = await fetch(`${BFF}/api/internal/browser-artifacts`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", "X-Internal-Token": TOKEN },
-			body: JSON.stringify(body),
-		});
-		console.error(
-			`[artifact] ${toolName} → ${fileName} (${contentType}) exec=${ctx.executionId} http=${resp.status}`,
-		);
-	} catch (err) {
-		console.error(`[artifact] POST failed for ${toolName}: ${err?.message}`);
-	}
+	await persistBlob(ctx, {
+		bucket: spec.bucket,
+		kind: spec.kind,
+		payloadBase64,
+		contentType,
+		fileName,
+	});
 }
 
 function pruneToolForLlm(tool) {
@@ -217,12 +271,28 @@ function spawnChild(browserSession) {
 // timeout, or process exit — never on transport close.
 // ---------------------------------------------------------------------------
 const captures = new Map(); // browserSession -> capture entry
+const pendingScenes = new Map(); // browserSession -> scene declared before first open
+
+function newClipPath() {
+	return `/tmp/clip-${randomUUID().slice(0, 8)}.webm`;
+}
 
 async function startCapture(browserSession, ctx, child, openedUrl) {
 	if (captures.has(browserSession)) return;
+	const pending = pendingScenes.get(browserSession);
+	pendingScenes.delete(browserSession);
 	const entry = {
 		ctx,
 		seen: new Set(),
+		clips: [], // [{path, title, caption}] — title null = not part of a demo
+		site: (() => {
+			try {
+				return openedUrl ? new URL(openedUrl).host : "";
+			} catch {
+				return "";
+			}
+		})(),
+		focus: pending?.focus || "",
 		videoActive: false,
 		harActive: false,
 		idleTimer: null,
@@ -240,13 +310,17 @@ async function startCapture(browserSession, ctx, child, openedUrl) {
 	}
 	if (AUTO_CAPTURE.includes("video")) {
 		try {
-			const path = `/tmp/session-recording-${randomUUID().slice(0, 8)}.webm`;
+			const path = newClipPath();
 			// record_start swaps to a fresh (cookie-preserving) context and
 			// re-navigates, so pass the URL the agent just opened explicitly.
 			const args = openedUrl ? { path, url: openedUrl } : { path };
 			await child.callTool({ name: "agent_browser_record_start", arguments: args });
 			entry.videoActive = true;
-			console.error(`[auto-capture] video recording started → ${path} exec=${ctx.executionId}`);
+			entry.clips.push({ path, title: pending?.title ?? null, caption: pending?.caption ?? "" });
+			console.error(
+				`[auto-capture] video recording started → ${path} exec=${ctx.executionId}` +
+					(pending?.title ? ` scene="${pending.title}"` : ""),
+			);
 		} catch (err) {
 			console.error(`[auto-capture] record_start failed: ${err?.message}`);
 		}
@@ -258,11 +332,66 @@ async function startCapture(browserSession, ctx, child, openedUrl) {
 	armIdleStop(browserSession);
 }
 
+async function beginScene(browserSession, ctx, child, args) {
+	const title = String(args?.title || "").slice(0, 60).trim() || "Untitled scene";
+	const caption = String(args?.caption || "").slice(0, 120).trim();
+	const focus = String(args?.focus || "").trim();
+	const entry = captures.get(browserSession);
+	if (!entry || entry.stopped || !entry.videoActive) {
+		// Browser not open yet — remember the scene; it applies when capture starts.
+		pendingScenes.set(browserSession, { title, caption, focus });
+		return `Scene queued: "${title}" (it starts with the first page you open).`;
+	}
+	if (focus) entry.focus = focus;
+	const path = newClipPath();
+	await child.callTool({ name: "agent_browser_record_restart", arguments: { path } });
+	entry.clips.push({ path, title, caption });
+	armIdleStop(browserSession);
+	const n = entry.clips.filter((c) => c.title).length;
+	console.error(`[demo] scene ${n} "${title}" started exec=${entry.ctx.executionId}`);
+	return `Scene ${n} started: "${title}". Perform the scene's actions now.`;
+}
+
+async function renderAndPersistDemo(entry) {
+	const titled = entry.clips.filter((c) => c.title);
+	try {
+		const demo = await renderDemo(titled, { site: entry.site, focus: entry.focus });
+		const buf = await readAndRm(demo.path);
+		await persistBlob(entry.ctx, {
+			bucket: "assets",
+			kind: "video",
+			payloadBase64: buf.toString("base64"),
+			contentType: "video/mp4",
+			fileName: "demo.mp4",
+		});
+		console.error(
+			`[demo] rendered ${demo.seconds.toFixed(1)}s (${titled.length} scene(s), speedup ${demo.speedup.toFixed(2)}x) exec=${entry.ctx.executionId}`,
+		);
+	} catch (err) {
+		console.error(`[demo] render failed (${err?.message}) — persisting raw scene clips`);
+		for (const clip of titled) {
+			try {
+				const buf = await readFile(clip.path);
+				await persistBlob(entry.ctx, {
+					bucket: "assets",
+					kind: "video",
+					payloadBase64: buf.toString("base64"),
+					contentType: "video/webm",
+					fileName: clip.path.split("/").pop(),
+				});
+			} catch {
+				/* clip unreadable — skip */
+			}
+		}
+	}
+}
+
 async function stopCapture(browserSession, reason, liveChild) {
 	const entry = captures.get(browserSession);
 	if (!entry || entry.stopped) return;
 	entry.stopped = true;
 	captures.delete(browserSession);
+	pendingScenes.delete(browserSession);
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 
 	// Prefer the child that carried the triggering call (alive for the duration
@@ -281,15 +410,27 @@ async function stopCapture(browserSession, reason, liveChild) {
 	}
 	try {
 		if (entry.videoActive) {
+			entry.videoActive = false;
 			try {
 				const result = await child.callTool({ name: "agent_browser_record_stop", arguments: {} });
-				await persistArtifact(entry.ctx, entry.seen, "agent_browser_record_stop", result);
-				console.error(`[auto-capture] video stopped+persisted (${reason})`);
+				const hasDemoScenes = entry.clips.some((c) => c.title);
+				if (hasDemoScenes) {
+					// Edit in the background: the close call must return promptly, and
+					// ffmpeg over several clips can take tens of seconds.
+					console.error(`[auto-capture] video stopped (${reason}) — demo render queued`);
+					renderAndPersistDemo(entry).catch((err) =>
+						console.error(`[demo] background render error: ${err?.message}`),
+					);
+				} else {
+					await persistArtifact(entry.ctx, entry.seen, "agent_browser_record_stop", result);
+					console.error(`[auto-capture] video stopped+persisted (${reason})`);
+				}
 			} catch (err) {
 				console.error(`[auto-capture] record_stop failed (${reason}): ${err?.message}`);
 			}
 		}
 		if (entry.harActive) {
+			entry.harActive = false;
 			try {
 				const result = await child.callTool({
 					name: "agent_browser_network_har_stop",
@@ -332,7 +473,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.2.0" },
+		{ name: "agent-browser-mcp", version: "1.3.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -348,10 +489,22 @@ async function makeProxy(ctxRef, browserSession) {
 			const allow = new Set(EXPOSED_TOOLS);
 			tools = tools.filter((t) => allow.has(t.name)).map(pruneToolForLlm);
 		}
+		if (AUTO_CAPTURE.includes("video")) tools.push(DEMO_SCENE_TOOL);
 		return { tools };
 	});
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		const { name, arguments: args } = req.params;
+		if (name === DEMO_SCENE_TOOL.name) {
+			try {
+				const message = await beginScene(browserSession, ctxRef.value, child, args);
+				return { content: [{ type: "text", text: message }] };
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `demo_scene failed: ${err?.message}` }],
+					isError: true,
+				};
+			}
+		}
 		// The agent is done with the browser — capture must be finalized while
 		// the browser session still exists.
 		if (name === "agent_browser_close" && captures.has(browserSession)) {
