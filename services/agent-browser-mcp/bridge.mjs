@@ -440,12 +440,19 @@ async function stopCapture(browserSession, reason, liveChild) {
 				const result = await child.callTool({ name: "agent_browser_record_stop", arguments: {} });
 				const hasDemoScenes = entry.clips.some((c) => c.title);
 				if (hasDemoScenes) {
-					// Edit in the background: the close call must return promptly, and
-					// ffmpeg over several clips can take tens of seconds.
-					console.error(`[auto-capture] video stopped (${reason}) — demo render queued`);
-					renderAndPersistDemo(entry).catch((err) =>
-						console.error(`[demo] background render error: ${err?.message}`),
-					);
+					// When the AGENT explicitly closes, the run finalizes right after this returns —
+					// render+persist SYNCHRONOUSLY, or demo.mp4 lands after the run snapshot is frozen
+					// and the viewer must hard-refresh to see it. Idle/teardown paths have nobody
+					// waiting, so background them (don't block timers/exit).
+					if (reason === "close") {
+						console.error(`[auto-capture] video stopped (${reason}) — rendering demo inline`);
+						await renderAndPersistDemo(entry);
+					} else {
+						console.error(`[auto-capture] video stopped (${reason}) — demo render queued`);
+						renderAndPersistDemo(entry).catch((err) =>
+							console.error(`[demo] background render error: ${err?.message}`),
+						);
+					}
 				} else {
 					await persistArtifact(entry.ctx, entry.seen, "agent_browser_record_stop", result);
 					console.error(`[auto-capture] video stopped+persisted (${reason})`);
@@ -539,7 +546,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.4.0" },
+		{ name: "agent-browser-mcp", version: "1.5.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
