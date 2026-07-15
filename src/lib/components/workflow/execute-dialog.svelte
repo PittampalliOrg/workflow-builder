@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, untrack } from 'svelte';
 	import { Play, Loader2, CircleAlert } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Label } from '$lib/components/ui/label';
@@ -240,19 +240,31 @@
 	let scriptFieldValues = $state<Record<string, string>>({});
 	$effect(() => {
 		if (!open || !scriptInputSchema) return;
-		const next: Record<string, string> = {};
-		for (const f of scriptInputFields) {
-			const existing = scriptFieldValues[f.key];
-			next[f.key] =
-				existing !== undefined && existing !== ''
-					? existing
-					: f.defaultValue === undefined || f.defaultValue === null
-						? ''
-						: typeof f.defaultValue === 'object'
-							? JSON.stringify(f.defaultValue)
-							: String(f.defaultValue);
-		}
-		scriptFieldValues = next;
+		const fields = scriptInputFields;
+		// untrack: this effect SEEDS the field values from schema defaults. It must
+		// react only to open/schema — reading AND writing scriptFieldValues while
+		// subscribed to it is an infinite effect loop (a fresh object every pass)
+		// that freezes the dialog the moment it opens.
+		untrack(() => {
+			const next: Record<string, string> = {};
+			let changed = false;
+			for (const f of fields) {
+				const existing = scriptFieldValues[f.key];
+				const seeded =
+					existing !== undefined && existing !== ''
+						? existing
+						: f.defaultValue === undefined || f.defaultValue === null
+							? ''
+							: typeof f.defaultValue === 'object'
+								? JSON.stringify(f.defaultValue)
+								: String(f.defaultValue);
+				next[f.key] = seeded;
+				if (seeded !== existing) changed = true;
+			}
+			if (changed || Object.keys(scriptFieldValues).length !== fields.length) {
+				scriptFieldValues = next;
+			}
+		});
 	});
 	function scriptArgsFromFields(): Record<string, unknown> {
 		const out: Record<string, unknown> = {};
