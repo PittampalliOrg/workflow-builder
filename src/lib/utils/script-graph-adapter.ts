@@ -120,6 +120,9 @@ export interface ScriptGraphModel {
   loops: ScriptGraphLoop[];
   /** Top-level meta.input property names (the run's expected arguments). */
   inputProps: string[];
+  /** args.X → labels of the calls whose argument spans reference it (the
+   * execute dialog captions each input with where it lands). */
+  argUsage: Record<string, string[]>;
   /** agent() call sites (matches the evaluator's estimatedAgentCalls intent). */
   estimatedAgentCalls: number;
 }
@@ -639,6 +642,7 @@ export function parseScriptStructure(
     /\b(phase|agent|parallel|pipeline|workflow|action|sleep|approve|waitForEvent)\s*\(|\bteam\s*\.\s*(spawn|task|send|broadcast|status|join|shutdown)\s*\(/g;
   const discoveredPhases: string[] = [];
   const calls: ScriptGraphCall[] = [];
+  const argUsage: Record<string, string[]> = {};
   let currentPhase: string | null = null;
   let order = 0;
   let tm: RegExpExecArray | null;
@@ -737,6 +741,20 @@ export function parseScriptStructure(
         stringOptFromSpan(masked, src, open, "isolation") === "shared";
     }
 
+    {
+      // args.X references inside THIS call's argument span. Scanned on the
+      // REAL source (not masked) so template interpolations — the common way
+      // prompts consume args — are counted; captions are advisory, so a prose
+      // mention costing a stray caption is the right tradeoff.
+      const close = matchParen(masked, open);
+      const span = src.slice(open, close + 1);
+      let am: RegExpExecArray | null;
+      const argRe = /\bargs\s*[.?]\.?\s*([A-Za-z_$][\w$]*)/g;
+      while ((am = argRe.exec(span))) {
+        const arr = (argUsage[am[1]] ??= []);
+        if (!arr.includes(label)) arr.push(label);
+      }
+    }
     calls.push({
       kind,
       label,
@@ -792,6 +810,7 @@ export function parseScriptStructure(
     calls,
     loops,
     inputProps,
+    argUsage,
     estimatedAgentCalls: calls.filter((c) => c.kind === "agent").length,
   };
 }
