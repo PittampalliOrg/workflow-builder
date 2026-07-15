@@ -49,6 +49,17 @@ persists across calls within the session). On top of plain proxying it adds:
    stall-looping). Calls to unlisted tools still pass through — filtering only trims
    discovery.
 
+4. **Demo scenes + auto-editor.** A bridge-implemented virtual tool `demo_scene`
+   ({title, caption, focus?}) lets the agent mark scene boundaries with ONE semantic
+   call — the bridge translates it to `record_restart` + scene metadata. When the run
+   closes, the titled scene clips are auto-edited into a single **demo MP4**
+   (`render.mjs`): freezedetect cuts the dead time between actions, footage is sped up
+   (capped 2.5×) to fit `DEMO_TARGET_SECONDS` (default 75s), every scene gets a
+   lower-third title/caption band and a Scene N/M badge, and a title card + end card
+   frame the video. Untitled footage (e.g. recon wandering before the first
+   `demo_scene`) never ships in a demo. Runs that never call `demo_scene` keep the
+   plain raw session video (previous behavior).
+
 ## Endpoint
 
 - MCP endpoint: `http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp`
@@ -76,10 +87,13 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | `AGENT_BROWSER_TOOLS` | `core,network,debug` | tool profiles the **child** runs (record/HAR live in debug/network) |
 | `AGENT_BROWSER_EXPOSED_TOOLS` | 11 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
-| `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `180000` | stop+persist recordings after this idle gap (agent abandoned the session) |
+| `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
 | `WORKFLOW_BUILDER_URL` | in-cluster BFF | artifact sink base URL |
 | `INTERNAL_API_TOKEN` | _(unset)_ | internal token for `/api/internal/browser-artifacts` |
 | `AGENT_BROWSER_ENCRYPTION_KEY` | _(unset)_ | optional; encrypts saved auth state |
+| `DEMO_TARGET_SECONDS` | `75` | target length of the rendered demo video |
+| `DEMO_MAX_SPEEDUP` | `2.5` | cap on the uniform speed-up used to fit the target |
+| `DEMO_FREEZE_MIN_S` | `1.4` | static span length that counts as dead time |
 
 ## Related: the agent-browser skill
 
