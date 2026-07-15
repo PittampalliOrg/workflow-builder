@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -16,7 +16,17 @@
 		AlertDialogHeader,
 		AlertDialogTitle
 	} from '$lib/components/ui/alert-dialog';
-	import { Activity, Boxes, Container, GitPullRequest, Plus, Radio, Workflow } from '@lucide/svelte';
+	import {
+		Activity,
+		Boxes,
+		CheckCircle2,
+		Container,
+		GitPullRequest,
+		Loader2,
+		Plus,
+		Radio,
+		Workflow
+	} from '@lucide/svelte';
 	import DevContextHeader from '$lib/components/dev/dev-context-header.svelte';
 	import DevEnvironmentCard, {
 		type DevEnvironmentSummary
@@ -25,7 +35,11 @@
 	import VclusterPreviewPanel from '$lib/components/dev/vcluster-preview-panel.svelte';
 	import PrPreviewsPanel from '$lib/components/dev/pr-previews-panel.svelte';
 	import PreviewRunFeedPanel from '$lib/components/dev/preview-run-feed-panel.svelte';
-	import { teardownDevEnvironmentUntilComplete } from '$lib/dev-environment-teardown';
+	import {
+		pendingDevEnvironmentTeardowns,
+		teardownDevEnvironmentUntilComplete,
+		type DevEnvironmentTeardownProgress
+	} from '$lib/dev-environment-teardown';
 	import {
 		getDevEnvironmentGroups,
 		getPrPreviews,
@@ -63,6 +77,8 @@
 	let activeTab = $state<'environments' | 'activity' | 'pull-requests'>('environments');
 	let toTeardown = $state<DevEnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
+	let teardownProgress = $state<DevEnvironmentTeardownProgress | null>(null);
+	let teardownDiscardUncaptured = $state(false);
 
 	$effect(() => {
 		if (!page.url.searchParams.has('launch')) return;
@@ -74,6 +90,7 @@
 		}
 	});
 	let errorMessage = $state<string | null>(null);
+	let operationNotice = $state<string | null>(null);
 	let refreshErrorMessage = $state<string | null>(null);
 	let refreshing = $state(false);
 	let lastRefreshedAt = $state<number | null>(null);
@@ -128,21 +145,73 @@
 		goto(`/workspaces/${slug}/dev/${env.executionId}`);
 	}
 
+	function teardownProgressMessage(
+		progress: DevEnvironmentTeardownProgress,
+		discardUncaptured: boolean
+	): string {
+		switch (progress) {
+			case 'submitting':
+				return discardUncaptured
+					? 'Discarding uncaptured changes and starting cleanup…'
+					: 'Preserving the latest live-sync generation…';
+			case 'reconciling':
+				return 'Connection changed. Verifying the durable teardown receipt…';
+			case 'pending':
+				return discardUncaptured
+					? 'Discard accepted. Finalizing cleanup…'
+					: 'Checkpoint accepted. Finalizing cleanup…';
+			case 'complete':
+				return 'Cleanup confirmed. Refreshing environments…';
+		}
+	}
+
+	async function runTeardown(executionId: string, discardUncaptured = false) {
+		if (busyId) return;
+		busyId = executionId;
+		teardownProgress = null;
+		teardownDiscardUncaptured = discardUncaptured;
+		errorMessage = null;
+		operationNotice = null;
+		let completed = false;
+		try {
+			await teardownDevEnvironmentUntilComplete(executionId, {
+				discardUncaptured,
+				onProgress: (progress) => (teardownProgress = progress)
+			});
+			completed = true;
+			errorMessage = null;
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		}
+
+		if (completed) {
+			operationNotice = 'Cleanup is confirmed. Refreshing the environment list…';
+			try {
+				await groupsQuery.refresh();
+				operationNotice = null;
+			} catch {
+				operationNotice =
+					'Cleanup is confirmed, but this view could not refresh. Use Refresh to load the current environment list.';
+			}
+		}
+		busyId = null;
+		teardownProgress = null;
+	}
+
 	async function confirmTeardown() {
 		if (!toTeardown) return;
 		const env = toTeardown;
-		busyId = env.executionId;
 		toTeardown = null;
-		try {
-			await teardownDevEnvironmentUntilComplete(env.executionId);
-			errorMessage = null;
-			await groupsQuery.refresh();
-		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : String(error);
-		} finally {
-			busyId = null;
-		}
+		await runTeardown(env.executionId);
 	}
+
+	onMount(() => {
+		void (async () => {
+			for (const pending of pendingDevEnvironmentTeardowns()) {
+				await runTeardown(pending.executionId, pending.discardUncaptured);
+			}
+		})();
+	});
 
 	function onLaunched(executionId: string) {
 		goto(`/workspaces/${slug}/dev/${executionId}`);
@@ -171,6 +240,26 @@
 		<div class="px-5 pt-3 lg:px-6">
 			<Alert variant="destructive">
 				<AlertDescription>{surfaceError}</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+	{#if operationNotice}
+		<div class="px-5 pt-3 lg:px-6">
+			<Alert>
+				<CheckCircle2 class="size-4 text-emerald-600 dark:text-emerald-400" />
+				<AlertDescription role="status" aria-live="polite">
+					{operationNotice}
+				</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+	{#if busyId && teardownProgress}
+		<div class="px-5 pt-3 lg:px-6">
+			<Alert>
+				<Loader2 class="size-4 motion-safe:animate-spin" />
+				<AlertDescription role="status" aria-live="polite" aria-atomic="true">
+					{teardownProgressMessage(teardownProgress, teardownDiscardUncaptured)}
+				</AlertDescription>
 			</Alert>
 		</div>
 	{/if}
@@ -244,6 +333,12 @@
 									services={group.services}
 									{slug}
 									busy={busyId === group.executionId}
+									busyLabel={busyId === group.executionId && teardownProgress
+											? teardownProgressMessage(
+													teardownProgress,
+													teardownDiscardUncaptured
+												)
+											: null}
 									onopen={openEnv}
 									onteardown={(e) => (toTeardown = e)}
 								/>

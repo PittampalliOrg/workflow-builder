@@ -33,7 +33,7 @@ describe("dev environment detail data remote", () => {
 		expect(pageSource).toContain("if (epoch !== sourceProbeEpoch) return");
 		expect(pageSource.match(/sourceProbeEpoch \+= 1/g)).toHaveLength(2);
 		expect(pageSource).toContain(
-			"if (teardownSourceLocked) await probeSourceCheckpointState()",
+			"if (!completed && teardownSourceLocked) await probeSourceCheckpointState()",
 		);
 	});
 });

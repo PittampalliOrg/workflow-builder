@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -38,7 +38,9 @@
 	} from '$lib/dev/dev-execution-lifecycle';
 	import {
 		DevEnvironmentTeardownBlockedError,
-		teardownDevEnvironmentUntilComplete
+		pendingDevEnvironmentTeardowns,
+		teardownDevEnvironmentUntilComplete,
+		type DevEnvironmentTeardownProgress
 	} from '$lib/dev-environment-teardown';
 	import { getDevEnvironment, getSidecarStatus } from './data.remote';
 	import type { PageData } from './$types';
@@ -64,6 +66,10 @@
 	let confirmTeardown = $state(false);
 	let captureBlockedMessage = $state<string | null>(null);
 	let busy = $state(false);
+	let teardownProgress = $state<DevEnvironmentTeardownProgress | null>(null);
+	let teardownDiscardUncaptured = $state(false);
+	let operationNotice = $state<string | null>(null);
+	let teardownReloadReturnUrl: string | null = null;
 	// Code versions this run produced that haven't been pushed to a GitHub PR yet.
 	let outstandingVersions = $state(0);
 	let canManageStrictCheckpoints = $state(false);
@@ -108,6 +114,38 @@
 		if (state === 'active') return 'text-amber-600 dark:text-amber-400';
 		if (state === 'failed') return 'text-destructive';
 		return 'text-muted-foreground/50';
+	}
+
+	function teardownProgressMessage(
+		progress: DevEnvironmentTeardownProgress,
+		discardUncaptured: boolean
+	): string {
+		switch (progress) {
+			case 'submitting':
+				return discardUncaptured
+					? 'Discarding uncaptured changes and starting cleanup…'
+					: 'Preserving the latest live-sync generation in the stable draft PR…';
+			case 'reconciling':
+				return 'Connection changed. Verifying the durable teardown receipt…';
+			case 'pending':
+				return discardUncaptured
+					? 'Discard accepted. Finalizing workload and session cleanup…'
+					: 'Checkpoint accepted. Finalizing workload and session cleanup…';
+			case 'complete':
+				return 'Cleanup confirmed. Returning to Development…';
+		}
+	}
+
+	function armTeardownReloadFallback() {
+		if (typeof window === 'undefined' || teardownReloadReturnUrl) return;
+		teardownReloadReturnUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+		window.history.replaceState(window.history.state, '', `/workspaces/${slug}/dev`);
+	}
+
+	function restoreTeardownDetailUrl() {
+		if (typeof window === 'undefined' || !teardownReloadReturnUrl) return;
+		window.history.replaceState(window.history.state, '', teardownReloadReturnUrl);
+		teardownReloadReturnUrl = null;
 	}
 
 	function updateServiceCheckpointState(
@@ -235,21 +273,33 @@
 	}
 
 	async function teardown(discardUncaptured = false) {
+		if (busy) return;
 		confirmTeardown = false;
+		errorMessage = null;
+		operationNotice = null;
+		teardownProgress = null;
+		teardownDiscardUncaptured = discardUncaptured;
 		sourceProbeEpoch += 1;
 		teardownSourceLocked = true;
 		serviceCheckpointStates = Object.fromEntries(
 			services.map((service) => [service.service, 'unknown'] as const)
 		);
 		busy = true;
+		let completed = false;
 		try {
 			await teardownDevEnvironmentUntilComplete(environment.executionId, {
-				discardUncaptured
+				discardUncaptured,
+				onProgress: (progress) => {
+					teardownProgress = progress;
+					if (progress === 'submitting') armTeardownReloadFallback();
+				}
 			});
+			completed = true;
 			errorMessage = null;
-			await goto(`/workspaces/${slug}/dev`);
+			operationNotice = 'Cleanup is confirmed. Returning to Development…';
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
+			if (teardownProgress === 'submitting') restoreTeardownDetailUrl();
 			if (error instanceof DevEnvironmentTeardownBlockedError) {
 				captureBlockedMessage = error.message;
 				confirmTeardown = true;
@@ -257,9 +307,30 @@
 		} finally {
 			sourceProbeEpoch += 1;
 			busy = false;
-			if (teardownSourceLocked) await probeSourceCheckpointState();
+			teardownProgress = null;
+			if (!completed && teardownSourceLocked) await probeSourceCheckpointState();
+		}
+
+		if (completed) {
+			if (typeof window !== 'undefined' && teardownReloadReturnUrl) {
+				window.location.replace(`/workspaces/${slug}/dev`);
+				return;
+			}
+			try {
+				await goto(`/workspaces/${slug}/dev`);
+			} catch {
+				operationNotice =
+					'Cleanup is confirmed, but Development could not load. Reload this page to continue.';
+			}
 		}
 	}
+
+	onMount(() => {
+		const pending = pendingDevEnvironmentTeardowns().find(
+			(item) => item.executionId === initialExecutionId
+		);
+		if (pending) void teardown(pending.discardUncaptured);
+	});
 </script>
 
 <svelte:head>
@@ -288,6 +359,26 @@
 		<div class="px-5 pt-3">
 			<Alert variant="destructive">
 				<AlertDescription>{errorMessage}</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+	{#if operationNotice}
+		<div class="px-5 pt-3">
+			<Alert>
+				<CheckCircle2 class="size-4 text-emerald-600 dark:text-emerald-400" />
+				<AlertDescription role="status" aria-live="polite">
+					{operationNotice}
+				</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+	{#if busy && teardownProgress}
+		<div class="px-5 pt-3">
+			<Alert>
+				<Loader2 class="size-4 motion-safe:animate-spin" />
+				<AlertDescription role="status" aria-live="polite" aria-atomic="true">
+					{teardownProgressMessage(teardownProgress, teardownDiscardUncaptured)}
+				</AlertDescription>
 			</Alert>
 		</div>
 	{/if}

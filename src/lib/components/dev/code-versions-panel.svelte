@@ -16,6 +16,11 @@
 		Save,
 		ShieldCheck
 	} from '@lucide/svelte';
+	import {
+		promoteStrictCheckpointUntilConfirmed,
+		strictCheckpointPromotionReceiptFromVersion,
+		type StrictCheckpointPromotionProgress
+	} from '$lib/dev-preview-checkpoint-promotion';
 	import CodePromotionChain from '../workflow/code/code-promotion-chain.svelte';
 
 	type PullRequestReceipt = {
@@ -90,10 +95,12 @@
 		prUrl?: string | null;
 		branch?: string | null;
 		receiptId?: string | null;
+		promotionProgress?: StrictCheckpointPromotionProgress;
+		promotionError?: string;
 		accepted?: boolean;
 		stage?: string | null;
 		evidenceReceiptDigest?: string | null;
-		error?: string;
+		acceptanceError?: string;
 	};
 
 	let {
@@ -183,6 +190,38 @@
 		results = { ...results, [artifactId]: result };
 	}
 
+	function reconcilePersistedPromotions(nextVersions: Version[]) {
+		let changed = false;
+		const nextResults = { ...results };
+		for (const version of nextVersions) {
+			const receipt = strictCheckpointPromotionReceiptFromVersion(
+				version,
+				version.artifactId
+			);
+			if (!receipt) continue;
+			const current = nextResults[version.artifactId] ?? {};
+			if (
+				current.prUrl === receipt.prUrl &&
+				current.branch === receipt.branch &&
+				current.receiptId === receipt.receiptId &&
+				current.promotionProgress === undefined &&
+				current.promotionError === undefined
+			) {
+				continue;
+			}
+			nextResults[version.artifactId] = {
+				...current,
+				prUrl: receipt.prUrl,
+				branch: receipt.branch,
+				receiptId: receipt.receiptId,
+				promotionProgress: undefined,
+				promotionError: undefined
+			};
+			changed = true;
+		}
+		if (changed) results = nextResults;
+	}
+
 	async function load() {
 		try {
 			const res = await fetch(`/api/workflows/executions/${executionId}/versions`);
@@ -203,6 +242,7 @@
 			) {
 				throw new Error('Checkpoint history response was invalid');
 			}
+			reconcilePersistedPromotions(body.versions);
 			versions = body.versions;
 			latestStrictArtifactId = body.latestStrictArtifactId;
 			outstandingCount = body.unpromotedCount;
@@ -261,53 +301,82 @@
 			return;
 		}
 		promoting = version.artifactId;
+		updateResult(version.artifactId, {
+			...results[version.artifactId],
+			promotionProgress: 'submitting',
+			promotionError: undefined
+		});
 		try {
+			if (strict) {
+				const receipt = await promoteStrictCheckpointUntilConfirmed(
+					executionId,
+					version.artifactId,
+					version.title,
+					{
+						onProgress: (promotionProgress) =>
+							updateResult(version.artifactId, {
+								...results[version.artifactId],
+								promotionProgress:
+									promotionProgress === 'complete' ? undefined : promotionProgress,
+								promotionError: undefined
+							})
+					}
+				);
+				updateResult(version.artifactId, {
+					...results[version.artifactId],
+					prUrl: receipt.prUrl,
+					branch: receipt.branch,
+					receiptId: receipt.receiptId,
+					promotionProgress: undefined,
+					promotionError: undefined
+				});
+				await load();
+				return;
+			}
 			const res = await fetch(
-				strict
-					? `/api/dev-environments/${executionId}/preview-continuation`
-					: `/api/workflows/executions/${executionId}/versions/${version.artifactId}/promote`,
+				`/api/workflows/executions/${executionId}/versions/${version.artifactId}/promote`,
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(
-						strict
-							? {
-									action: 'promote',
-									artifactId: version.artifactId,
-									title: version.title ?? undefined,
-									draft: true
-								}
-							: { mode: 'pr' }
-					)
+					body: JSON.stringify({ mode: 'pr' })
 				}
 			);
 			const body = (await res.json().catch(() => ({}))) as ContinuationResponse;
 			const prUrl = body.prUrl?.trim() || pullRequestUrl(body.pullRequest);
 			if (
 				!res.ok ||
-				(strict
-					? body.action !== 'promote' ||
-						body.ok !== true ||
-						body.artifactId !== version.artifactId
-					: body.ok === false) ||
+				body.ok === false ||
 				!prUrl
 			) {
 				updateResult(version.artifactId, {
-					error: responseError(body, `Promotion failed (${res.status})`)
+					...results[version.artifactId],
+					promotionProgress: undefined,
+					promotionError: responseError(body, `Promotion failed (${res.status})`)
 				});
 				return;
 			}
 			updateResult(version.artifactId, {
+				...results[version.artifactId],
 				prUrl,
 				branch: body.branch,
-				receiptId: body.receiptId
+				receiptId: body.receiptId,
+				promotionProgress: undefined,
+				promotionError: undefined
 			});
 			await load();
 		} catch (error) {
 			updateResult(version.artifactId, {
-				error: error instanceof Error ? error.message : String(error)
+				...results[version.artifactId],
+				promotionProgress: undefined,
+				promotionError: error instanceof Error ? error.message : String(error)
 			});
 		} finally {
+			if (results[version.artifactId]?.promotionProgress) {
+				updateResult(version.artifactId, {
+					...results[version.artifactId],
+					promotionProgress: undefined
+				});
+			}
 			promoting = null;
 		}
 	}
@@ -337,7 +406,7 @@
 					accepted: false,
 					stage: body.stage,
 					evidenceReceiptDigest: body.evidenceReceiptDigest,
-					error: responseError(body, `Acceptance failed (${res.status})`)
+					acceptanceError: responseError(body, `Acceptance failed (${res.status})`)
 				});
 				return;
 			}
@@ -347,14 +416,14 @@
 				receiptId: body.receiptId ?? results[version.artifactId]?.receiptId,
 				stage: body.stage,
 				evidenceReceiptDigest: body.evidenceReceiptDigest,
-				error: undefined
+				acceptanceError: undefined
 			});
 			await load();
 		} catch (error) {
 			updateResult(version.artifactId, {
 				...results[version.artifactId],
 				accepted: false,
-				error: error instanceof Error ? error.message : String(error)
+				acceptanceError: error instanceof Error ? error.message : String(error)
 			});
 		} finally {
 			accepting = null;
@@ -544,7 +613,8 @@
 								onclick={() => void promote(version)}
 							>
 								{#if promoting === version.artifactId}
-									<Loader2 class="size-3.5 animate-spin" /> Promoting…
+									<Loader2 class="size-3.5 animate-spin" />
+									{result?.promotionProgress === 'confirming' ? 'Confirming…' : 'Promoting…'}
 								{:else}
 									<GitPullRequest class="size-3.5" />
 									{strict ? 'Create draft PR' : 'Create pull request'}
@@ -572,13 +642,30 @@
 							receipt <code>{receiptId}</code>
 						</p>
 					{/if}
-					{#if result?.error}<p class="text-destructive">{result.error}</p>{/if}
+					{#if result?.promotionProgress}
+						<p
+							class="inline-flex items-center gap-1.5 text-muted-foreground"
+							role="status"
+							aria-live="polite"
+						>
+							<Loader2 class="size-3.5 motion-safe:animate-spin" />
+							{result.promotionProgress === 'confirming'
+								? 'Connection changed. Verifying the exact GitHub receipt…'
+								: 'Submitting this checkpoint to the stable draft PR…'}
+						</p>
+					{/if}
+					{#if result?.promotionError}
+						<p class="text-destructive">{result.promotionError}</p>
+					{/if}
+					{#if result?.acceptanceError}
+						<p class="text-destructive">{result.acceptanceError}</p>
+					{/if}
 					{#if result?.stage || version.acceptance?.stage}
 						<p class="text-muted-foreground">
 							acceptance stage <code>{result?.stage ?? version.acceptance?.stage}</code>
 						</p>
 					{/if}
-					{#if version.acceptance?.message && !result?.error}
+					{#if version.acceptance?.message && !result?.acceptanceError}
 						<p class="text-destructive">{version.acceptance.message}</p>
 					{/if}
 					{#if result?.evidenceReceiptDigest || version.acceptance?.evidenceReceiptDigest}
