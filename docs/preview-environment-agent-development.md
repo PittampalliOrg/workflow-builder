@@ -307,16 +307,26 @@ cd /sandbox/work/repo
 /sandbox/work/sync.sh
 ```
 
-One invocation creates one logical generation and sends it to every selected
-service with `x-sync-generation` and `x-sync-service`. UI source reaches Vite
-HMR; Python and Node backends reload through their cataloged sidecar/plugin
-adapter. The client also stages each service's `extraSync` mappings, including
-shared contract fixtures.
+One invocation first freezes an immutable archive for every selected service,
+then sends one logical generation to every receiver with `x-sync-generation` and
+`x-sync-service`. UI source reaches Vite HMR; Python and Node backends reload
+through their cataloged sidecar/plugin adapter. The client also stages each
+service's `extraSync` mappings, including shared contract fixtures.
 
-The live transport is not a distributed transaction. If one POST fails, earlier
-services may already contain that generation and `sync.sh` exits nonzero. Fix the
-failure and rerun the complete fan-out. Strict capture rejects an incomplete or
-mixed-generation set, so a partial sync cannot become acceptance evidence.
+The live transport is not a distributed transaction. If a POST fails or the
+client is interrupted, earlier services may already contain the pending
+generation, but `sync.sh` retains the complete archive set and replays that exact
+generation on the next invocation. Receivers treat the same generation plus
+archive digest as idempotent. Edits made after the pending snapshot are deferred
+until recovery completes and a subsequent invocation creates a new generation.
+Strict capture rejects the temporary mixed-generation set, and only the final
+global `SYNCED ... convergence=healthy` line is a success event; per-service
+`APPLIED` lines are receipts, not fan-out completion.
+
+Recovery is bounded by `DEV_SYNC_FANOUT_ATTEMPTS` and the upload timeout settings.
+Normally, rerun `sync.sh`. If the saved receiver contract intentionally changed,
+`DEV_SYNC_REBASE_PENDING=1 sync.sh` discards the local pending snapshot and
+converges the current checkout as a fresh generation.
 
 Check the generated mappings and the last generation when debugging:
 

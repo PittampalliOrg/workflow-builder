@@ -53,6 +53,14 @@ stable. A fresh dev-vCluster canary remains the authoritative HMR measurement.
 - Preview provisioning, vCluster isolation, capture, and GitOps promotion do
   not own or implement filesystem reconciliation.
 
+The producer serializes invocations per checkout and prepares the complete
+multi-service archive set before the first POST. It retains a failed generation
+for exact replay, using each receiver's `(generation, archive digest)`
+idempotency contract. Per-service `APPLIED` output is only a receipt; the producer
+emits `SYNCED` after every selected receiver reports the same generation and the
+application health barrier passes. Strict capture remains the server-side guard
+that rejects any temporary mixed set.
+
 The architecture deliberately does not give preview agents `kubectl`,
 `pods/exec`, or deployment ownership. The scoped sync capability remains the
 only write port into the throwaway runtime.

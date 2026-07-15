@@ -226,6 +226,7 @@ def create_restricted_tool_path(root: Path, origin: Path) -> Path:
     fake_curl = tool_dir / "curl"
     fake_curl.write_text(
         f"#!{sys.executable}\n"
+        "import hashlib\n"
         "import json\n"
         "import os\n"
         "import subprocess\n"
@@ -250,10 +251,13 @@ def create_restricted_tool_path(root: Path, origin: Path) -> Path:
         "status_path = status_dir / f'{service}.json'\n"
         "if archive:\n"
         "    listed = subprocess.run(['tar', '-tzf', archive], capture_output=True, text=True, check=False)\n"
+        "    content_sha256 = f\"sha256:{hashlib.sha256(Path(archive).read_bytes()).hexdigest()}\"\n"
         "    with open(os.environ['SYNC_CAPTURE'], 'a', encoding='utf-8') as handle: handle.write(listed.stdout)\n"
         "    status_path.write_text(json.dumps({'ok': True, 'generation': headers.get('x-sync-generation'), 'syncService': service}), encoding='utf-8')\n"
         "if output and url.endswith('/__status'):\n"
         "    Path(output).write_text(status_path.read_text(encoding='utf-8'), encoding='utf-8')\n"
+        "elif output and output != '/dev/null' and archive:\n"
+        "    Path(output).write_text(json.dumps({'ok': True, 'generation': headers.get('x-sync-generation'), 'service': service, 'contentSha256': content_sha256, 'changedPathCount': 1}), encoding='utf-8')\n"
         "elif output and output != '/dev/null':\n"
         "    Path(output).write_text('{\"ok\":true}', encoding='utf-8')\n"
         "sys.stdout.write('200')\n",

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -33,6 +34,7 @@ const REQUIRED_SYNC_TOOLS = [
 	'ls',
 	'mkdir',
 	'mktemp',
+	'mv',
 	'python3',
 	'rm',
 	'sed',
@@ -123,6 +125,8 @@ function runSync(work, extraEnv = {}) {
 			DEV_SYNC_CONVERGENCE_SETTLE_SECONDS: '0',
 			DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS: '0',
 			DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS: '1',
+			DEV_SYNC_FANOUT_ATTEMPTS: '1',
+			DEV_SYNC_FANOUT_RETRY_DELAY_SECONDS: '0',
 			PATH: syncToolPath(work),
 			...extraEnv
 		},
@@ -137,10 +141,12 @@ function runSyncAsync(work, extraEnv = {}) {
 				...process.env,
 				DEV_SYNC_WORK: work,
 				DEV_SYNC_REPO: path.join(work, 'repo'),
-				DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS: '1',
+				DEV_SYNC_CONVERGENCE_TIMEOUT_SECONDS: '2',
 				DEV_SYNC_CONVERGENCE_SETTLE_SECONDS: '0',
 				DEV_SYNC_CONVERGENCE_POLL_INTERVAL_SECONDS: '0',
 				DEV_SYNC_CONVERGENCE_REQUEST_TIMEOUT_SECONDS: '1',
+				DEV_SYNC_FANOUT_ATTEMPTS: '1',
+				DEV_SYNC_FANOUT_RETRY_DELAY_SECONDS: '0',
 				PATH: syncToolPath(work),
 				...extraEnv
 			},
@@ -169,10 +175,19 @@ async function startConvergenceStub({
 		if (req.method === 'POST' && req.url === '/__sync') {
 			generation = req.headers['x-sync-generation'] ?? null;
 			syncService = req.headers['x-sync-service'] ?? null;
-			req.resume();
+			const chunks = [];
+			req.on('data', (chunk) => chunks.push(chunk));
 			req.once('end', () => {
 				res.writeHead(200, { 'content-type': 'application/json' });
-				res.end('{"ok":true}');
+				res.end(
+					JSON.stringify({
+						ok: true,
+						generation,
+						service: syncService,
+						contentSha256: `sha256:${createHash('sha256').update(Buffer.concat(chunks)).digest('hex')}`,
+						changedPathCount: 0
+					})
+				);
 			});
 			return;
 		}
@@ -277,8 +292,9 @@ test('sync.sh syncs source, stages extraSync, and proves dependency state before
 		'capture-only Dockerfile is not applied to its repository path'
 	);
 	assert.ok(fs.existsSync(path.join(dest, '.deps-ran')), 'deps install on first sync');
-	assert.match(r.stdout, /SYNCED services\/svc → HTTP 200/);
-	assert.match(r.stdout, /sync> changed=3 apply=\d+ms paths=/);
+	assert.match(r.stdout, /APPLIED services\/svc → HTTP 200/);
+	assert.match(r.stdout, /SYNCED generation=.* services=1 convergence=healthy/);
+	assert.match(r.stdout, /sync> idempotent=false changed=3 apply=\d+ms paths=/);
 
 	// Run 2: edit source + BUMP the manifest → deps fires.
 	fs.rmSync(path.join(dest, '.deps-ran'));
@@ -400,6 +416,96 @@ test('sync.sh uses one generated generation for every service in a fanout', asyn
 	assert.equal(oneStatus.syncService, 'one');
 	assert.equal(twoStatus.syncService, 'two');
 	assert.match(result.stdout, /all=2 healthy \(2\/2\)/);
+
+	const noOp = runSync(work, { DEV_SYNC_GENERATION: 'no-op-fanout-generation' });
+	assert.equal(noOp.status, 0, noOp.stderr + noOp.stdout);
+	const oneNoOpStatus = await (await fetch(`${one.base}/__status`, { headers })).json();
+	const twoNoOpStatus = await (await fetch(`${two.base}/__status`, { headers })).json();
+	assert.equal(oneNoOpStatus.generation, 'no-op-fanout-generation');
+	assert.equal(twoNoOpStatus.generation, 'no-op-fanout-generation');
+	assert.equal((noOp.stdout.match(/changed=0/g) ?? []).length, 2);
+});
+
+test('sync.sh replays one immutable generation after a partial fanout', async (t) => {
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
+	const destOne = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-pod-one-'));
+	const destTwo = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-pod-two-'));
+	const one = await startSidecar(destOne, '');
+	const two = await startSidecar(destTwo, '');
+	t.after(() => {
+		one.stop();
+		two.stop();
+		fs.rmSync(work, { recursive: true, force: true });
+		fs.rmSync(destOne, { recursive: true, force: true });
+		fs.rmSync(destTwo, { recursive: true, force: true });
+	});
+
+	write(path.join(work, 'repo/services/one/src/index.ts'), 'one-before');
+	write(path.join(work, 'repo/services/two/src/index.ts'), 'two-before');
+	for (const [service, sidecar] of [
+		['one', one],
+		['two', two]
+	]) {
+		write(
+			path.join(work, `.syncenv.d/${service}`),
+			[
+				`SERVICE=${service}`,
+				`SUBDIR=services/${service}`,
+				'PATHS="src"',
+				`SYNCURL=${sidecar.base}/__sync`,
+				`HEALTHURL=${sidecar.base}/healthz`,
+				`SYNC_TOKEN=${TOKEN}`,
+				''
+			].join('\n')
+		);
+	}
+	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
+
+	const freeze = await fetch(`${two.base}/__freeze?phase=prepare&operationId=block-two`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(freeze.status, 200);
+
+	const first = runSync(work, { DEV_SYNC_GENERATION: 'recoverable-generation' });
+	assert.notEqual(first.status, 0, first.stderr + first.stdout);
+	assert.match(first.stdout, /APPLIED services\/one/);
+	assert.match(first.stderr, /APPLY FAILED services\/two/);
+	assert.doesNotMatch(first.stdout, /^SYNCED /m);
+	assert.match(first.stderr, /sync transaction pending: generation=recoverable-generation/);
+	assert.ok(fs.existsSync(path.join(work, '.syncdeps.dev-sync-transaction')));
+
+	const headers = { 'x-sync-token': TOKEN };
+	const splitOne = await (await fetch(`${one.base}/__status`, { headers })).json();
+	const splitTwo = await (await fetch(`${two.base}/__status`, { headers })).json();
+	assert.equal(splitOne.generation, 'recoverable-generation');
+	assert.equal(splitTwo.generation, null);
+
+	// Edits made after the interrupted fanout must not alter the pending payload.
+	write(path.join(work, 'repo/services/one/src/index.ts'), 'one-after');
+	write(path.join(work, 'repo/services/two/src/index.ts'), 'two-after');
+	const abort = await fetch(`${two.base}/__freeze?phase=abort&operationId=block-two`, {
+		method: 'POST',
+		headers
+	});
+	assert.equal(abort.status, 200);
+
+	const recovered = runSync(work);
+	assert.equal(recovered.status, 0, recovered.stderr + recovered.stdout);
+	assert.match(recovered.stdout, /sync transaction: recovering generation=recoverable-generation/);
+	assert.match(recovered.stdout, /idempotent=true/);
+	assert.match(
+		recovered.stdout,
+		/SYNCED generation=recoverable-generation services=2 convergence=healthy/
+	);
+	assert.ok(!fs.existsSync(path.join(work, '.syncdeps.dev-sync-transaction')));
+	assert.equal(fs.readFileSync(path.join(destOne, 'src/index.ts'), 'utf8'), 'one-before');
+	assert.equal(fs.readFileSync(path.join(destTwo, 'src/index.ts'), 'utf8'), 'two-before');
+
+	const next = runSync(work, { DEV_SYNC_GENERATION: 'next-generation' });
+	assert.equal(next.status, 0, next.stderr + next.stdout);
+	assert.equal(fs.readFileSync(path.join(destOne, 'src/index.ts'), 'utf8'), 'one-after');
+	assert.equal(fs.readFileSync(path.join(destTwo, 'src/index.ts'), 'utf8'), 'two-after');
 });
 
 test('sync.sh never runs dependency actions after a failed source upload', (t) => {
@@ -436,6 +542,33 @@ test('sync.sh never runs dependency actions after a failed source upload', (t) =
 	assert.equal(requests.length, 1);
 	assert.match(requests[0], /preview\.invalid\/__sync/);
 	assert.doesNotMatch(requests[0], /__run/);
+});
+
+test('sync.sh rejects a concurrent producer before mutating a receiver', (t) => {
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-work-'));
+	t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+	write(path.join(work, 'repo/services/svc/src/index.ts'), 'source');
+	write(
+		path.join(work, '.syncenv'),
+		[
+			'SERVICE=svc',
+			'SUBDIR=services/svc',
+			'PATHS="src"',
+			'SYNCURL=http://preview.invalid/__sync',
+			'HEALTHURL=http://preview.invalid/healthz',
+			`SYNC_TOKEN=${TOKEN}`,
+			''
+		].join('\n')
+	);
+	fs.copyFileSync(SYNC_SH, path.join(work, 'sync.sh'));
+	const lock = path.join(work, '.syncdeps.dev-sync-transaction.lock');
+	fs.mkdirSync(lock);
+	fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}\n`);
+
+	const result = runSync(work);
+	assert.notEqual(result.status, 0, result.stderr + result.stdout);
+	assert.match(result.stderr, new RegExp(`sync transaction already active \\(pid=${process.pid}\\)`));
+	assert.ok(fs.existsSync(lock), 'a rejected client must not remove the active owner lock');
 });
 
 test('sync.sh retries a dependency change until the in-pod action succeeds', async (t) => {
