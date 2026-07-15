@@ -1123,6 +1123,32 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             rec = rec if isinstance(rec, dict) else {}
             rec_status = rec.get("status")
             run_id = spec.get("_instance_id")
+            # SW parity (sw_workflow.py ~:3086): a retained workspace/profile
+            # records a workflow_workspace_sessions row — the runtime-preview
+            # page (and everything else keyed on retained sandboxes) resolves
+            # the execution's sandbox through it. Without this, script runs'
+            # previews 404 with "Retained sandbox not found".
+            if (
+                rec_status == "done"
+                and (spec.get("kind") or "agent") == "action"
+                and str(spec.get("actionSlug") or "").strip().lower() == "workspace/profile"
+            ):
+                action_args = spec.get("args") if isinstance(spec.get("args"), dict) else {}
+                if bool(action_args.get("keepAfterRun")):
+                    yield ctx.call_activity(
+                        "persist_workspace_session",
+                        input=_freeze(
+                            {
+                                "workflowExecutionId": exec_id,
+                                "actionType": "workspace/profile",
+                                "keepAfterRun": True,
+                                "taskName": spec.get("label") or "workspace_profile",
+                                "result": raw if isinstance(raw, dict) else {},
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
             if rec_status == "retry_structured":
                 spec["retries"] = _as_int(spec.get("retries"), 0) + 1
                 spec["feedback"] = rec.get("feedback")
