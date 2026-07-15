@@ -146,7 +146,7 @@ it("fails closed before helper provisioning without the broker write token", asy
 
 function pythonApplier(shell: string): string {
   const match = shell.match(
-    /python3 - \/tmp\/v\.bundle \/tmp\/promote <<'PY'\n([\s\S]*?)\nPY/,
+    /python3 - "\$BUNDLE" "\$PROMOTE" <<'PY'\n([\s\S]*?)\nPY/,
   );
   if (!match?.[1]) throw new Error("overlay-set Python applier missing");
   return match[1];
@@ -199,6 +199,18 @@ function git(cwd: string, args: string[]): string {
 }
 
 describe("tar-overlay-set promotion shell", () => {
+  it("isolates concurrent helper invocations and converges on a raced PR", () => {
+    const shell = command();
+
+    expect(shell).toContain("WORK=$(mktemp -d /tmp/wfb-promote.XXXXXX)");
+    expect(shell).toContain('BUNDLE="$WORK/v.bundle"; PROMOTE="$WORK/promote"');
+    expect(shell).toContain("trap 'rm -rf \"$WORK\"' EXIT");
+    expect(shell).not.toContain("rm -rf /tmp/promote /tmp/v.bundle");
+    expect(shell).not.toContain("cd /tmp/promote");
+    expect(shell).toContain('[ "$LOOKUP_ATTEMPT" -lt 5 ]');
+    expect(shell).toContain("LOOKUP_ATTEMPT=$((LOOKUP_ATTEMPT + 1))");
+  });
+
   it("validates and applies every overlay before one commit and push", () => {
     const root = mkdtempSync(join(tmpdir(), "wfb-overlay-set-"));
     roots.push(root);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { PreviewSourcePromotionExclusivityBusyError } from "$lib/server/application/ports";
 import type {
   ImmutableGitSha,
   PreviewAcceptanceChangedServiceCatalogPort,
@@ -12,6 +13,7 @@ import type {
   PreviewLocalControlIdentityPort,
   PreviewSourcePromotionBrokerPort,
   PreviewSourcePromotionBrokerRequest,
+  PreviewSourcePromotionExclusivityPort,
   PreviewSourcePromotionPort,
   PreviewSourcePromotionReceipt,
   PreviewSourcePromotionReceiptScope,
@@ -34,6 +36,7 @@ export class PreviewSourcePromotionError extends Error {
       | "invalid-request"
       | "authority-mismatch"
       | "artifact-rejected"
+      | "promotion-busy"
       | "materialization-failed",
     message: string,
     public readonly statusCode: 400 | 409 | 502,
@@ -107,6 +110,7 @@ type BrokerDeps = Readonly<{
   git: PreviewControlGitSourceVerificationPort;
   pullRequests: PreviewControlPullRequestInspectionPort;
   receipts: PreviewSourcePromotionReceiptStorePort;
+  exclusivity: PreviewSourcePromotionExclusivityPort;
   catalog: PreviewEnvironmentVersionedServiceCatalogPort &
     PreviewAcceptanceChangedServiceCatalogPort;
   sourceRepository: string;
@@ -121,10 +125,30 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
     input: PreviewSourcePromotionBrokerRequest,
   ): Promise<Awaited<ReturnType<PreviewSourcePromotionBrokerPort["promote"]>>> {
     validateBrokerInput(input);
+    const receiptScope = sourcePromotionReceiptScope(input, this.deps);
+    try {
+      return await this.deps.exclusivity.runExclusive(receiptScope, () =>
+        this.promoteExclusive(input, receiptScope),
+      );
+    } catch (cause) {
+      if (cause instanceof PreviewSourcePromotionExclusivityBusyError) {
+        throw new PreviewSourcePromotionError(
+          "promotion-busy",
+          cause.message,
+          409,
+        );
+      }
+      throw cause;
+    }
+  }
+
+  private async promoteExclusive(
+    input: PreviewSourcePromotionBrokerRequest,
+    receiptScope: PreviewSourcePromotionReceiptScope,
+  ): Promise<Awaited<ReturnType<PreviewSourcePromotionBrokerPort["promote"]>>> {
     const services = this.deps.catalog.assertPreviewNativeServices(
       input.artifactIdentity.services,
     );
-    const receiptScope = sourcePromotionReceiptScope(input, this.deps);
     const branchName = previewSourcePromotionBranch(receiptScope);
     if (input.catalogDigest !== this.deps.catalog.currentDigest()) {
       throw new PreviewSourcePromotionError(

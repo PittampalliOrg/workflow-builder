@@ -492,6 +492,7 @@ import {
   WorkflowDataPreviewArtifactExportAdapter,
 } from "$lib/server/application/adapters/preview-control-artifacts";
 import { PostgresPreviewSourcePromotionReceiptStore } from "$lib/server/application/adapters/preview-source-promotion-receipts";
+import { PostgresPreviewSourcePromotionExclusivityAdapter } from "$lib/server/application/adapters/preview-source-promotion-exclusivity";
 import { HttpPreviewSourcePromotionAcceptanceAdapter } from "$lib/server/application/adapters/preview-source-promotion-acceptance";
 import { TektonPreviewDevelopmentBuildAdapter } from "$lib/server/application/adapters/preview-development-build";
 import { TektonPreviewActivationBuildAdapter } from "$lib/server/application/adapters/preview-activation-build";
@@ -2299,6 +2300,7 @@ export function getApplicationAdapters(
           baseBranch: config.previewSourceRef,
         }),
         receipts: getPreviewSourcePromotionReceipts(),
+        exclusivity: new PostgresPreviewSourcePromotionExclusivityAdapter(),
         catalog: new DevPreviewServiceCatalogAdapter(),
         sourceRepository: config.previewSourceRepository,
         baseBranch: config.previewSourceRef,
