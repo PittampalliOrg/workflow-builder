@@ -212,7 +212,7 @@
 						<div>
 							<div class="flex items-center gap-2">
 								<Workflow class="size-4 text-violet-500" />
-								<h2 id="live-sessions-heading" class="text-sm font-semibold">Hot-reload sessions</h2>
+								<h2 id="live-sessions-heading" class="text-sm font-semibold">Hot-reload sessions - HMR wet test 2</h2>
 							</div>
 							<p class="mt-1 text-xs text-muted-foreground">Workflow-owned workspaces and their interactive agent sessions.</p>
 						</div>
