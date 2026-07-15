@@ -197,7 +197,7 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
       commitSha: HEAD_SHA,
       baseBranch: "main",
       baseRevision: BASE_SHA,
-      expectedBaseHead: BASE_SHA,
+      expectedBaseSnapshot: BASE_SHA,
       expectedChangedPaths: [
         "src/routes/new-feature.ts",
         "docs/preview.md",

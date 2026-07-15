@@ -67,8 +67,8 @@ export interface PreviewControlGitSourceVerificationPort {
       commitSha: ImmutableGitSha;
       baseBranch: string;
       baseRevision: ImmutableGitSha;
-      /** When present, bind ancestry proof to the exact live PR base head. */
-      expectedBaseHead?: ImmutableGitSha;
+      /** When present, prove the PR base snapshot is on the live base ancestry chain. */
+      expectedBaseSnapshot?: ImmutableGitSha;
       /** When present, GitHub's complete immutable commit diff must match exactly. */
       expectedChangedPaths?: readonly string[];
     }>,

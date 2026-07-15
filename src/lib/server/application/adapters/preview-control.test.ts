@@ -10,10 +10,11 @@ import {
 
 const SHA = "a".repeat(40);
 const BASE_SHA = "b".repeat(40);
-const ADVANCED_MAIN_SHA = "c".repeat(40);
+const PR_BASE_SHA = "c".repeat(40);
+const ADVANCED_MAIN_SHA = "d".repeat(40);
 
 describe("GithubPreviewControlSourceAdapter", () => {
-  it("verifies the exact parent while allowing main to advance", async () => {
+  it("allows main to advance beyond a PR's frozen base snapshot", async () => {
     const fetch = vi.fn(
       async (url: string | URL | Request, _init?: RequestInit) => {
         const value = String(url);
@@ -38,13 +39,27 @@ describe("GithubPreviewControlSourceAdapter", () => {
             },
           );
         }
-        return new Response(
-          JSON.stringify({
-            status: "ahead",
-            merge_base_commit: { sha: BASE_SHA },
-          }),
-          { status: 200 },
-        );
+        if (value.includes(`/compare/${BASE_SHA}...${PR_BASE_SHA}`)) {
+          return new Response(
+            JSON.stringify({
+              status: "ahead",
+              merge_base_commit: { sha: BASE_SHA },
+            }),
+            { status: 200 },
+          );
+        }
+        if (
+          value.includes(`/compare/${PR_BASE_SHA}...${ADVANCED_MAIN_SHA}`)
+        ) {
+          return new Response(
+            JSON.stringify({
+              status: "ahead",
+              merge_base_commit: { sha: PR_BASE_SHA },
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected URL ${value}`);
       },
     );
     const adapter = new GithubPreviewControlSourceAdapter({
@@ -58,14 +73,87 @@ describe("GithubPreviewControlSourceAdapter", () => {
         commitSha: SHA as never,
         baseBranch: "main",
         baseRevision: BASE_SHA as never,
-        expectedBaseHead: ADVANCED_MAIN_SHA as never,
+        expectedBaseSnapshot: PR_BASE_SHA as never,
       }),
     ).resolves.toBe(true);
-    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(fetch).toHaveBeenCalledTimes(7);
     for (const [, init] of fetch.mock.calls) {
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBeUndefined();
     }
+  });
+
+  it("rejects a live base that diverges from the PR base snapshot", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes("/git/ref/heads/preview-development-1")) {
+        return new Response(JSON.stringify({ object: { sha: SHA } }));
+      }
+      if (value.includes("/git/ref/heads/main")) {
+        return new Response(
+          JSON.stringify({ object: { sha: ADVANCED_MAIN_SHA } }),
+        );
+      }
+      if (value.includes(`/git/commits/${SHA}`)) {
+        return new Response(JSON.stringify({ parents: [{ sha: BASE_SHA }] }));
+      }
+      return new Response(
+        JSON.stringify({
+          status: "diverged",
+          merge_base_commit: { sha: "e".repeat(40) },
+        }),
+      );
+    });
+    const adapter = new GithubPreviewControlSourceAdapter({ fetch });
+
+    await expect(
+      adapter.verifyBranch({
+        repository: "PittampalliOrg/workflow-builder",
+        branch: "preview-development-1",
+        commitSha: SHA as never,
+        baseBranch: "main",
+        baseRevision: BASE_SHA as never,
+        expectedBaseSnapshot: BASE_SHA as never,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects a PR base snapshot outside the captured source ancestry", async () => {
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes("/git/ref/heads/preview-development-1")) {
+        return new Response(JSON.stringify({ object: { sha: SHA } }));
+      }
+      if (value.includes("/git/ref/heads/main")) {
+        return new Response(
+          JSON.stringify({ object: { sha: ADVANCED_MAIN_SHA } }),
+        );
+      }
+      if (value.includes(`/git/commits/${SHA}`)) {
+        return new Response(JSON.stringify({ parents: [{ sha: BASE_SHA }] }));
+      }
+      if (value.includes(`/compare/${BASE_SHA}...${PR_BASE_SHA}`)) {
+        return new Response(
+          JSON.stringify({
+            status: "diverged",
+            merge_base_commit: { sha: "f".repeat(40) },
+          }),
+        );
+      }
+      throw new Error(`unexpected URL ${value}`);
+    });
+    const adapter = new GithubPreviewControlSourceAdapter({ fetch });
+
+    await expect(
+      adapter.verifyBranch({
+        repository: "PittampalliOrg/workflow-builder",
+        branch: "preview-development-1",
+        commitSha: SHA as never,
+        baseBranch: "main",
+        baseRevision: BASE_SHA as never,
+        expectedBaseSnapshot: PR_BASE_SHA as never,
+      }),
+    ).resolves.toBe(false);
   });
 
   it("rejects when the observed base head moves during verification", async () => {
@@ -80,7 +168,7 @@ describe("GithubPreviewControlSourceAdapter", () => {
         return new Response(
           JSON.stringify({
             object: {
-              sha: baseReads === 1 ? ADVANCED_MAIN_SHA : "d".repeat(40),
+              sha: baseReads === 1 ? ADVANCED_MAIN_SHA : "e".repeat(40),
             },
           }),
         );
@@ -104,7 +192,7 @@ describe("GithubPreviewControlSourceAdapter", () => {
         commitSha: SHA as never,
         baseBranch: "main",
         baseRevision: BASE_SHA as never,
-        expectedBaseHead: ADVANCED_MAIN_SHA as never,
+        expectedBaseSnapshot: BASE_SHA as never,
       }),
     ).resolves.toBe(false);
   });
