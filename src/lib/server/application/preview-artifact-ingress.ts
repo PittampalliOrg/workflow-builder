@@ -11,8 +11,9 @@ import {
 	PreviewArtifactBundleError,
 	validatePreviewArtifactBundle,
 } from "$lib/server/application/preview-artifact-bundle";
+import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_ARTIFACT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 export class PreviewArtifactIngressError extends Error {
 	constructor(message: string, public readonly statusCode: 400 | 409 = 400) {
@@ -35,8 +36,8 @@ export class ApplicationPreviewArtifactIngressService
 
 	async ingest(envelope: PreviewArtifactTransferEnvelope, bytes: Buffer) {
 		if (
-			!SAFE_ID.test(envelope.executionId) ||
-			!SAFE_ID.test(envelope.artifactId) ||
+			!isPreviewResourceId(envelope.executionId) ||
+			!SAFE_ARTIFACT_ID.test(envelope.artifactId) ||
 			envelope.artifact.id !== envelope.artifactId ||
 			envelope.artifact.executionId !== envelope.executionId ||
 			!envelope.artifact.fileId

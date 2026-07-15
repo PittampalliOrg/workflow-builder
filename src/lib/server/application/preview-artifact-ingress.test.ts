@@ -39,6 +39,7 @@ async function tarGzip(entries: Record<string, string | Buffer>): Promise<Buffer
 
 async function strictEnvelope(
 	entries: Record<string, string | Buffer>,
+	executionId = "execution-1",
 ): Promise<{ envelope: PreviewArtifactTransferEnvelope; bytes: Buffer }> {
 	const contract = catalog.captureContract("workflow-builder");
 	if (!contract) throw new Error("workflow-builder capture contract missing");
@@ -73,7 +74,7 @@ async function strictEnvelope(
 	const bytes = gzipSync(Buffer.from(JSON.stringify(manifest), "utf8"));
 	const artifact = {
 		id: "artifact-1",
-		executionId: "execution-1",
+		executionId,
 		kind: "source-bundle",
 		fileId: "preview-file-1",
 		inlinePayload: {
@@ -184,6 +185,20 @@ describe("ApplicationPreviewArtifactIngressService", () => {
 		await expect(h.service.ingest(input.envelope, input.bytes)).resolves.toMatchObject({
 			id: "central-artifact-1",
 			importIdentity: { services: ["workflow-builder"] },
+		});
+		expect(h.store.put).toHaveBeenCalledOnce();
+	});
+
+	it("ingests a strict capture for a URL-safe Nanoid workflow execution", async () => {
+		const h = harness();
+		const executionId = "_O-r4CT3dAp9CRUi7ImCA";
+		const input = await strictEnvelope(
+			{ "src/index.ts": "export const ok = true;" },
+			executionId,
+		);
+
+		await expect(h.service.ingest(input.envelope, input.bytes)).resolves.toMatchObject({
+			importIdentity: { executionId },
 		});
 		expect(h.store.put).toHaveBeenCalledOnce();
 	});

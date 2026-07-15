@@ -7,8 +7,9 @@ import type {
   PreviewSourcePromotionAcceptanceRequest,
   PreviewSourcePromotionReceiptStorePort,
 } from "$lib/server/application/ports";
+import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 export class PreviewSourcePromotionAcceptanceError extends Error {
@@ -39,9 +40,9 @@ export class ApplicationPreviewSourcePromotionAcceptanceService
     input: PreviewSourcePromotionAcceptanceRequest,
   ): Promise<PreviewAcceptanceBrokerResult> {
     if (
-      !SAFE_ID.test(input.requestId) ||
-      !SAFE_ID.test(input.executionId) ||
-      !SAFE_ID.test(input.receiptId)
+      !SAFE_COORDINATE.test(input.requestId) ||
+      !isPreviewResourceId(input.executionId) ||
+      !SAFE_COORDINATE.test(input.receiptId)
     ) {
       throw new PreviewSourcePromotionAcceptanceError(
         "promotion acceptance command is invalid",

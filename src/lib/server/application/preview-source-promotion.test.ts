@@ -286,6 +286,37 @@ function brokerHarness() {
 }
 
 describe("preview source promotion", () => {
+  it("passes a URL-safe Nanoid execution through the preview-side port", async () => {
+    const executionId = "_O-r4CT3dAp9CRUi7ImCA";
+    const artifacts = {
+      transfer: vi.fn(async () => {
+        throw new Error("artifact transfer reached");
+      }),
+    };
+    const service = new ApplicationPreviewSourcePromotionService({
+      identity: {
+        current: () => ({
+          previewName: "preview-one",
+          environmentRequestId: "request-1",
+          environmentPlatformRevision: PLATFORM,
+          environmentSourceRevision: SOURCE,
+          catalogDigest: CATALOG,
+        }),
+      },
+      artifacts,
+      broker: { promote: vi.fn() },
+    });
+
+    await expect(
+      service.promote({ executionId, artifactId: "source-artifact-1" }),
+    ).rejects.toThrow("artifact transfer reached");
+    expect(artifacts.transfer).toHaveBeenCalledWith({
+      identity: expect.objectContaining({ previewName: "preview-one" }),
+      executionId,
+      artifactId: "source-artifact-1",
+    });
+  });
+
   it("transfers the local artifact before invoking the physical broker", async () => {
     const artifacts = {
       transfer: vi.fn(async () => ({
@@ -386,6 +417,21 @@ describe("preview source promotion", () => {
       baseSha: SOURCE,
       headSha: COMMIT,
     });
+  });
+
+  it("passes a URL-safe Nanoid execution through the physical broker boundary", async () => {
+    const h = brokerHarness();
+    const executionId = "_O-r4CT3dAp9CRUi7ImCA";
+    const nanoCommand = {
+      ...command,
+      executionId,
+      artifactIdentity: { ...identity, executionId },
+    };
+    h.authority.authorize.mockRejectedValueOnce(new Error("authority reached"));
+
+    await expect(h.service.promote(nanoCommand)).rejects.toThrow("authority reached");
+    expect(h.authority.authorize).toHaveBeenCalledOnce();
+    expect(h.trust.preparePromotion).not.toHaveBeenCalled();
   });
 
   it("single-flights concurrent retries before the Git and receipt mutation", async () => {

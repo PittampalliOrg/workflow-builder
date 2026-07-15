@@ -117,6 +117,18 @@ describe("ApplicationPreviewSourcePromotionAcceptanceService", () => {
     });
   });
 
+  it("accepts a URL-safe Nanoid workflow execution identity", async () => {
+    const h = harness();
+    const executionId = "_O-r4CT3dAp9CRUi7ImCA";
+
+    await expect(
+      h.service.replay({ ...command(), executionId }),
+    ).resolves.toMatchObject({ ok: true, previewName: "app-live" });
+    expect(h.receipts.getScoped).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId }),
+    );
+  });
+
   it.each([
     ["head", { headSha: "9".repeat(40) }],
     ["branch", { headRef: "preview/other" }],
