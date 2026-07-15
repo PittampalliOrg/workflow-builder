@@ -251,7 +251,9 @@ export function registerWorkflowTools(
 						}),
 					)
 					.optional()
-					.describe("MCP servers that provide the agent's tools."),
+					.describe(
+						"MCP servers that provide the agent's tools. NOTE: a non-CLI agent sees each tool as `<serverName>_<toolName>` — reference tools by that prefixed name in the system prompt. Server names are normalized to [A-Za-z0-9_].",
+					),
 				tools: z.array(z.string()).optional(),
 				skills: z.array(z.string()).optional(),
 				tags: z.array(z.string()).optional(),
@@ -300,7 +302,19 @@ export function registerWorkflowTools(
 				const config: Record<string, unknown> = { runtime };
 				if (args.model) config.modelSpec = args.model;
 				if (args.system_prompt) config.systemPrompt = args.system_prompt;
-				if (args.mcp_servers) config.mcpServers = args.mcp_servers;
+				if (args.mcp_servers) {
+					// dapr-agent-py exposes each MCP tool to the model as
+					// `<serverName>_<toolName>`. LLM function-calling only accepts
+					// [A-Za-z0-9_], so a hyphen/dot in the server name makes the tool
+					// name the model sees diverge from the executor's key — the model
+					// calls it and gets "tool not found". Normalize server names to a
+					// safe charset so the tools stay callable.
+					config.mcpServers = args.mcp_servers.map((s) => {
+						const raw = typeof s.name === "string" ? s.name : "";
+						const safe = raw.replace(/[^A-Za-z0-9_]/g, "_");
+						return safe !== raw ? { ...s, name: safe } : s;
+					});
+				}
 				if (args.tools) config.tools = args.tools;
 				if (args.skills) config.skills = args.skills;
 
