@@ -114,7 +114,7 @@
 			{variant === 'pipelineGroup' ? 'border-sky-400/45 bg-sky-500/[0.045]' : ''}"
 		style="width: {containerW}px; height: {containerH}px"
 	>
-		<div class="flex items-center gap-1.5 px-3 pt-2">
+		<div class="flex items-center justify-center gap-1.5 px-3 pt-2">
 			{#if variant === 'loopGroup'}
 				<Repeat class="size-3.5 text-rose-500 dark:text-rose-300" />
 				<span class="text-[11px] font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-300">{label}</span>
@@ -127,7 +127,7 @@
 			{/if}
 		</div>
 		{#if caption}
-			<div class="px-3 pt-0.5 text-[10px] italic text-muted-foreground/80">{caption}</div>
+			<div class="px-3 pt-0.5 text-center text-[10px] italic text-muted-foreground/80">{caption}</div>
 		{/if}
 	</div>
 {:else}
