@@ -138,7 +138,10 @@
 		workflow: 'oklch(0.68 0.14 275)',
 		parallel: 'oklch(0.78 0.15 75)',
 		pipeline: 'oklch(0.72 0.13 235)',
-		phase: 'oklch(0.72 0.18 328)'
+		phase: 'oklch(0.72 0.18 328)',
+		loopGroup: 'oklch(0.72 0.17 15 / 0.12)',
+		parallelGroup: 'oklch(0.78 0.15 75 / 0.12)',
+		pipelineGroup: 'oklch(0.72 0.13 235 / 0.12)'
 	};
 	function miniMapColor(node: Node): string {
 		const v = (node.data as { variant?: string } | undefined)?.variant ?? '';

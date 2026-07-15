@@ -28,7 +28,13 @@
 
 	let { data, selected = false }: Props = $props();
 
-	const variant = $derived((data.variant as ScriptNodeVariant) ?? 'agent');
+	const variant = $derived((data.variant as string) ?? 'agent');
+	const isContainer = $derived(
+		variant === 'loopGroup' || variant === 'parallelGroup' || variant === 'pipelineGroup'
+	);
+	const containerW = $derived((data.w as number) ?? 320);
+	const containerH = $derived((data.h as number) ?? 200);
+	const caption = $derived(data.caption as string | undefined);
 	const label = $derived((data.label as string) ?? '');
 	const inLoop = $derived(Boolean(data.inLoop));
 	const callCount = $derived(data.callCount as number | undefined);
@@ -67,7 +73,7 @@
 		team: { accent: 'text-cyan-600 dark:text-cyan-300', stripe: 'bg-cyan-500', chip: 'bg-cyan-500/10 text-cyan-600 dark:bg-cyan-500/15 dark:text-cyan-300', Icon: Users, kind: 'team' },
 		end: { accent: 'text-slate-600 dark:text-slate-300', stripe: 'bg-slate-400', chip: 'bg-slate-500/10 text-slate-600 dark:bg-slate-500/15 dark:text-slate-300', Icon: Square, kind: 'End' }
 	};
-	const s = $derived(STYLE[variant]);
+	const s = $derived(STYLE[(isContainer ? 'agent' : variant) as ScriptNodeVariant]);
 
 	const isPhase = $derived(variant === 'phase');
 	const isEndpoint = $derived(variant === 'start' || variant === 'end');
@@ -100,6 +106,31 @@
 	let approving = $state(false);
 </script>
 
+{#if isContainer}
+	<div
+		class="pointer-events-none rounded-2xl border-2 border-dashed
+			{variant === 'loopGroup' ? 'border-rose-400/45 bg-rose-500/[0.045]' : ''}
+			{variant === 'parallelGroup' ? 'border-amber-400/45 bg-amber-500/[0.045]' : ''}
+			{variant === 'pipelineGroup' ? 'border-sky-400/45 bg-sky-500/[0.045]' : ''}"
+		style="width: {containerW}px; height: {containerH}px"
+	>
+		<div class="flex items-center gap-1.5 px-3 pt-2">
+			{#if variant === 'loopGroup'}
+				<Repeat class="size-3.5 text-rose-500 dark:text-rose-300" />
+				<span class="text-[11px] font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-300">{label}</span>
+			{:else if variant === 'pipelineGroup'}
+				<ArrowRight class="size-3.5 text-sky-500 dark:text-sky-300" />
+				<span class="text-[11px] font-semibold uppercase tracking-wide text-sky-600 dark:text-sky-300">{label}</span>
+			{:else}
+				<GitFork class="size-3.5 text-amber-500 dark:text-amber-300" />
+				<span class="text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-300">{label}</span>
+			{/if}
+		</div>
+		{#if caption}
+			<div class="px-3 pt-0.5 text-[10px] italic text-muted-foreground/80">{caption}</div>
+		{/if}
+	</div>
+{:else}
 <div class="relative" style="width: {width}px">
 	{#if !(variant === 'start')}
 		<Handle
@@ -350,3 +381,4 @@
 		/>
 	{/if}
 </div>
+{/if}

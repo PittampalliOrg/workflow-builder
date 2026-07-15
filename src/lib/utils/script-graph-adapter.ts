@@ -334,7 +334,11 @@ function promptPreview(src: string, open: number): string | null {
 
 /** Read an `opts.label` string literal from the call's argument span.
  * `masked` bounds the span (structure); `real` supplies the label text. */
-function labelFromOpts(masked: string, real: string, open: number): string | null {
+function labelFromOpts(
+  masked: string,
+  real: string,
+  open: number,
+): string | null {
   const end = matchParen(masked, open) + 1;
   const span = real.slice(open, end);
   const m = span.match(/label\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
@@ -419,7 +423,9 @@ function topLevelElements(body: string): string[] {
 /** A short label for one array element (an object's `key`/`name`/`id`, or a
  * string literal, else null). */
 function elementLabel(el: string): string | null {
-  const key = el.match(/\b(?:key|name|id|slug|title)\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/);
+  const key = el.match(
+    /\b(?:key|name|id|slug|title)\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1/,
+  );
   if (key) return key[2];
   const str = el.match(/^\s*(['"`])((?:\\.|(?!\1).)*)\1\s*$/);
   if (str) return str[2];
@@ -439,9 +445,7 @@ function resolveFanOut(
   if (!m) return null;
   const ident = m[1];
   // Find `const IDENT = [ ... ]` (or let/var).
-  const declRe = new RegExp(
-    `\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\[`,
-  );
+  const declRe = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*=\\s*\\[`);
   const dm = declRe.exec(masked);
   if (!dm) return null;
   const bracketOpen = masked.indexOf("[", dm.index);
@@ -487,7 +491,10 @@ function extractSchema(
     if (pm) {
       const pOpen = at + (pm.index ?? 0) + pm[0].length - 1;
       const pEnd = matchBrace(src, pOpen);
-      return { hasSchema: true, props: topLevelKeys(src.slice(pOpen + 1, pEnd)) };
+      return {
+        hasSchema: true,
+        props: topLevelKeys(src.slice(pOpen + 1, pEnd)),
+      };
     }
     return { hasSchema: true, props: [] };
   }
@@ -505,7 +512,10 @@ function extractSchema(
       if (pm) {
         const pOpen = braceOpen + (pm.index ?? 0) + pm[0].length - 1;
         const pEnd = matchBrace(src, pOpen);
-        return { hasSchema: true, props: topLevelKeys(src.slice(pOpen + 1, pEnd)) };
+        return {
+          hasSchema: true,
+          props: topLevelKeys(src.slice(pOpen + 1, pEnd)),
+        };
       }
     }
     return { hasSchema: true, props: [] };
@@ -585,7 +595,13 @@ export function parseScriptStructure(
 
   // Precompute loop spans (while/for bodies): each becomes an IDENTIFIED loop
   // so the canvas can draw a repeat container + loop-back edge, not just a chip.
-  const loopSpans: Array<{ id: string; kind: string; start: number; end: number; kwIndex: number }> = [];
+  const loopSpans: Array<{
+    id: string;
+    kind: string;
+    start: number;
+    end: number;
+    kwIndex: number;
+  }> = [];
   const loopKw = /\b(while|for)\s*\(/g;
   let lm: RegExpExecArray | null;
   while ((lm = loopKw.exec(masked))) {
@@ -655,7 +671,10 @@ export function parseScriptStructure(
     const open = tm.index + tm[0].length - 1; // index of "("
 
     // Pop groups we've scanned past.
-    while (groupStack.length && groupStack[groupStack.length - 1].close <= tm.index) {
+    while (
+      groupStack.length &&
+      groupStack[groupStack.length - 1].close <= tm.index
+    ) {
       groupStack.pop();
     }
 
@@ -796,10 +815,13 @@ export function parseScriptStructure(
     .map((sp) => ({ id: sp.id, kind: sp.kind, line: lineAt(sp.kwIndex) }));
 
   // meta.input top-level property names (the run's expected arguments).
-  const metaInput = (meta as { input?: { properties?: Record<string, unknown> } } | null)
-    ?.input;
+  const metaInput = (
+    meta as { input?: { properties?: Record<string, unknown> } } | null
+  )?.input;
   const inputProps =
-    metaInput && typeof metaInput === "object" && metaInput.properties &&
+    metaInput &&
+    typeof metaInput === "object" &&
+    metaInput.properties &&
     typeof metaInput.properties === "object"
       ? Object.keys(metaInput.properties)
       : [];
@@ -925,7 +947,10 @@ export function scriptToGraph(
     byPhase.get(c.phase)!.push(c);
   }
 
-  const columnsFor = (junction: ScriptGraphCall, members: ScriptGraphCall[]) => {
+  const columnsFor = (
+    junction: ScriptGraphCall,
+    members: ScriptGraphCall[],
+  ) => {
     // Explicit thunk members win; else an ARR.map() fan-out clones the single
     // template across the resolved element labels (capped for sanity).
     if (members.length > 1) {
@@ -944,7 +969,11 @@ export function scriptToGraph(
         call: template,
       }));
     }
-    return members.map((m) => ({ id: `call-${m.order}`, label: m.label, call: m }));
+    return members.map((m) => ({
+      id: `call-${m.order}`,
+      label: m.label,
+      call: m,
+    }));
   };
 
   const emitCallData = (c: ScriptGraphCall | null, labelOverride?: string) => ({
@@ -968,6 +997,12 @@ export function scriptToGraph(
   });
 
   const loopMembers = new Map<string, string[]>();
+  const parallelGroups: Array<{
+    junction: string;
+    members: string[];
+    kind: string;
+    fanCount: number;
+  }> = [];
   const trackLoop = (c: ScriptGraphCall | null, nodeId: string) => {
     if (!c?.loopId) return;
     const arr = loopMembers.get(c.loopId) ?? [];
@@ -1013,7 +1048,8 @@ export function scriptToGraph(
             label: col.label,
             column: i,
           });
-          if (col.call && col.id === `call-${col.call.order}`) trackLoop(col.call, col.id);
+          if (col.call && col.id === `call-${col.call.order}`)
+            trackLoop(col.call, col.id);
           colIds.push(col.id);
           if (isPipeline && i > 0) {
             link(colIds[i - 1], col.id, { label: "then" });
@@ -1023,8 +1059,18 @@ export function scriptToGraph(
         });
         // Fan-in: the next node depends on all leaf columns (parallel) or the
         // last stage (pipeline).
-        prev = isPipeline && colIds.length ? [colIds[colIds.length - 1]] : colIds;
-        const tallest = Math.max(96, ...cols.map((col) => estimateCallHeight(col.call)));
+        parallelGroups.push({
+          junction: jid,
+          members: [...colIds],
+          kind: c.kind,
+          fanCount,
+        });
+        prev =
+          isPipeline && colIds.length ? [colIds[colIds.length - 1]] : colIds;
+        const tallest = Math.max(
+          96,
+          ...cols.map((col) => estimateCallHeight(col.call)),
+        );
         y += tallest + ROW_GAP;
         continue;
       }
@@ -1051,7 +1097,9 @@ export function scriptToGraph(
   }
   if (unphased.length > 0) {
     const pid = "phase-__unphased__";
-    pushNode(pid, "phase", "(no phase)", y, CENTER, { callCount: unphased.length });
+    pushNode(pid, "phase", "(no phase)", y, CENTER, {
+      callCount: unphased.length,
+    });
     for (const p of prev) link(p, pid);
     prev = [pid];
     y += 52 + ROW_GAP;
@@ -1072,6 +1120,98 @@ export function scriptToGraph(
       target: members[0],
       data: { loop: true },
       label: "repeats",
+    });
+  }
+
+  // ── Semantic containers ────────────────────────────────────────────────────
+  // A loop or parallel group becomes a PARENT node bounding its members: the
+  // canvas then shows "this region repeats" / "these run together, then join"
+  // as an area, not an inference from edge shapes. Children get parentId +
+  // positions rebased relative to the container (SvelteFlow contract).
+  // Parallel groups are contained FIRST (innermost); a loop that wraps a
+  // parallel then adopts the group node itself, so nesting composes.
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const heightOf = (n: Node): number => {
+    const d = n.data as { h?: number; variant?: string };
+    if (typeof d.h === "number") return d.h;
+    const call = model.calls.find((c) => `call-${c.order}` === n.id);
+    if (call && (call.kind === "parallel" || call.kind === "pipeline"))
+      return 32;
+    if (call) return estimateCallHeight(call);
+    return 96;
+  };
+  const containNodes = (
+    id: string,
+    memberIds: string[],
+    data: Record<string, unknown>,
+  ) => {
+    // A member already inside a container is represented by that container.
+    const resolved = [
+      ...new Set(
+        memberIds.map((m) => {
+          const n = byId.get(m) as (Node & { parentId?: string }) | undefined;
+          return n?.parentId ?? m;
+        }),
+      ),
+    ];
+    const members = resolved.map((m) => byId.get(m)).filter(Boolean) as Array<
+      Node & { parentId?: string }
+    >;
+    if (!members.length || members.every((m) => m.parentId)) return;
+    const PAD_X = 26;
+    const PAD_TOP = 44;
+    const PAD_BOT = 30;
+    const minX = Math.min(...members.map((m) => m.position.x)) - PAD_X;
+    const minY = Math.min(...members.map((m) => m.position.y)) - PAD_TOP;
+    const maxX =
+      Math.max(
+        ...members.map(
+          (m) =>
+            m.position.x +
+            (typeof (m.data as { w?: number }).w === "number"
+              ? (m.data as { w: number }).w
+              : NODE_W),
+        ),
+      ) + PAD_X;
+    const maxY =
+      Math.max(...members.map((m) => m.position.y + heightOf(m))) + PAD_BOT;
+    const group: Node = {
+      id,
+      type: SCRIPT_NODE_TYPE,
+      position: { x: minX, y: minY },
+      draggable: false,
+      selectable: false,
+      zIndex: -1,
+      data: { ...data, w: maxX - minX, h: maxY - minY, status: "idle" },
+    } as Node;
+    nodes.unshift(group);
+    byId.set(id, group);
+    for (const m of members) {
+      m.parentId = id;
+      m.position = { x: m.position.x - minX, y: m.position.y - minY };
+    }
+  };
+
+  for (let i = 0; i < parallelGroups.length; i += 1) {
+    const g = parallelGroups[i];
+    containNodes(`pargrp-${i}`, [g.junction, ...g.members], {
+      variant: g.kind === "pipeline" ? "pipelineGroup" : "parallelGroup",
+      label: g.kind === "pipeline" ? "pipeline" : `parallel ×${g.fanCount}`,
+      caption:
+        g.kind === "pipeline"
+          ? "items stream through stages — no barrier between them"
+          : "branches run concurrently — all must finish before the flow continues",
+      memberCount: g.members.length,
+    });
+  }
+  for (const loop of model.loops) {
+    const members = loopMembers.get(loop.id) ?? [];
+    if (members.length < 2) continue;
+    containNodes(`loopgrp-${loop.id}`, members, {
+      variant: "loopGroup",
+      label: `${loop.kind} loop`,
+      caption: "repeats until it exits — each round re-runs these steps",
+      memberCount: members.length,
     });
   }
 
