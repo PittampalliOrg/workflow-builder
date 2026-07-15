@@ -497,13 +497,22 @@ const authApplied = new Set();
 async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
 	const auth = ctx?.targetAuth;
 	if (!auth || authApplied.has(browserSession)) return false;
-	let host;
+	let host, hostname;
 	try {
-		host = new URL(openedUrl).host.toLowerCase();
+		const u = new URL(openedUrl);
+		host = u.host.toLowerCase();
+		hostname = u.hostname.toLowerCase();
 	} catch {
 		return false;
 	}
-	if (host !== auth.host) return false; // wrong origin — never present the credential
+	// A ported auth host (host:port) matches exactly; a port-less one matches the
+	// hostname on any port (the hostname is the trust boundary — in-cluster svc
+	// DNS ports vary and a silent mismatch cost us two runs). Never any other origin.
+	const hostMatches = auth.host.includes(":") ? host === auth.host : hostname === auth.host;
+	if (!hostMatches) {
+		console.error(`[target-auth] host mismatch: opened=${host} expected=${auth.host} — credential NOT presented`);
+		return false;
+	}
 	authApplied.add(browserSession);
 	try {
 		if (auth.kind === "cookie") {
@@ -546,7 +555,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.5.0" },
+		{ name: "agent-browser-mcp", version: "1.6.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
