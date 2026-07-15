@@ -3,6 +3,7 @@ import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import {
 	extractTraceContext,
 	maybeProvisionAgentWorkflowHost,
+	probeAgentWorkflowHostAppReady,
 	waitForAgentWorkflowHostAppReady,
 } from "./agent-workflow-host";
 
@@ -78,6 +79,20 @@ describe("agent workflow host app readiness", () => {
 			"http://10.244.1.20:8002/healthz",
 			"http://10.244.1.20:8002/healthz",
 		]);
+	});
+
+	it("probes a missing host only once", async () => {
+		vi.mocked(getAgentWorkflowHostPod).mockResolvedValue(null);
+		const fetchImpl = vi.fn();
+
+		const result = await probeAgentWorkflowHostAppReady({
+			agentAppId: "agent-session-missing",
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		expect(result).toBeNull();
+		expect(getAgentWorkflowHostPod).toHaveBeenCalledTimes(1);
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });
 

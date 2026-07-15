@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => {
 	const waitForAgentWorkflowHostAppReady = vi.fn(async () => ({
 		baseUrl: "http://127.0.0.1:1",
 	}));
+	const probeAgentWorkflowHostAppReady = vi.fn(async () => ({
+		baseUrl: "http://127.0.0.1:1",
+	}));
 	const maybeProvisionAgentWorkflowHost = vi.fn(async () => ({
 		agentAppId: "helper-exec-1__cliws",
 	}));
@@ -41,6 +44,7 @@ const mocks = vi.hoisted(() => {
 		candidate,
 		execution,
 		maybeProvisionAgentWorkflowHost,
+		probeAgentWorkflowHostAppReady,
 		requireInternal,
 		waitForAgentWorkflowHostAppReady,
 		workflowData,
@@ -57,6 +61,7 @@ vi.mock("$lib/server/internal-auth", () => ({
 
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 	waitForAgentWorkflowHostAppReady: mocks.waitForAgentWorkflowHostAppReady,
+	probeAgentWorkflowHostAppReady: mocks.probeAgentWorkflowHostAppReady,
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
 	sessionHostAppId: (sessionId: string) => `helper-${sessionId}`,
 }));
@@ -179,16 +184,51 @@ describe("CLI workspace command route", () => {
 			stderr_tail: "",
 		}));
 		mocks.workflowData.listCliWorkspaceCommandCandidates.mockResolvedValueOnce([]);
-		mocks.waitForAgentWorkflowHostAppReady.mockResolvedValue({ baseUrl });
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValue({ baseUrl });
 
 		const response = (await POST(event({ command: "npm run build" }) as never)) as Response;
 
 		expect(response.status).toBe(200);
 		expect(mocks.workflowData.getExecutionById).toHaveBeenCalledWith("exec-1");
+		expect(mocks.probeAgentWorkflowHostAppReady).toHaveBeenCalledWith({
+			agentAppId: "helper-exec-1__cliws",
+		});
+		expect(mocks.waitForAgentWorkflowHostAppReady).not.toHaveBeenCalled();
+		expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+	});
+
+	it("provisions a missing helper before entering the readiness wait", async () => {
+		const baseUrl = await startCommandServer(() => ({
+			exit_code: 0,
+			stdout_tail: "cloned",
+			stderr_tail: "",
+		}));
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValue(null);
+		mocks.waitForAgentWorkflowHostAppReady.mockResolvedValue({ baseUrl });
+
+		const response = (await POST(
+			event({ command: "git clone repo", helperPod: true }) as never,
+		)) as Response;
+
+		expect(response.status).toBe(200);
+		expect(mocks.probeAgentWorkflowHostAppReady).toHaveBeenCalledTimes(1);
+		expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "exec-1__cliws",
+				workflowExecutionId: "exec-1",
+				sharedWorkspaceKey: "sw-example-exec-exec-1",
+			}),
+		);
+		expect(mocks.waitForAgentWorkflowHostAppReady).toHaveBeenCalledTimes(1);
 		expect(mocks.waitForAgentWorkflowHostAppReady).toHaveBeenCalledWith({
 			agentAppId: "helper-exec-1__cliws",
 		});
-		expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+		expect(mocks.probeAgentWorkflowHostAppReady.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.maybeProvisionAgentWorkflowHost.mock.invocationCallOrder[0],
+		);
+		expect(mocks.maybeProvisionAgentWorkflowHost.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.waitForAgentWorkflowHostAppReady.mock.invocationCallOrder[0],
+		);
 	});
 
 	it("uploads image readFile output through workflow-data files", async () => {
