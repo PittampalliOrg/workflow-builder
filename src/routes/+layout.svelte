@@ -12,6 +12,7 @@
 	import FeedbackWidget from '$lib/components/chrome/feedback-widget.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
 	import { deploymentNotifications } from '$lib/stores/deployment-notifications.svelte';
+	import { startRuntimeHandoffWatcher } from '$lib/runtime-handoff';
 
 	let { children, data } = $props();
 
@@ -29,6 +30,7 @@
 		/^\/workspaces\/[^/]+\/(?:kubernetes|argocd)(\/|$)/.test(page.url.pathname)
 	);
 	let routeKey = $derived(page.url.pathname);
+	let stopRuntimeHandoffWatcher: () => void = () => undefined;
 
 	// Initialize theme from server data (cookie) or system preference.
 	// Also install the X-Workspace fetch wrapper so workspace-scoped URL
@@ -77,11 +79,19 @@
 		if (data.platformRole === 'ADMIN') {
 			deploymentNotifications.start();
 		}
+
+		stopRuntimeHandoffWatcher = startRuntimeHandoffWatcher({
+			baseline: data.runtimeHandoff,
+			reload: () => window.location.reload()
+		});
 	});
 
 	// The root layout only unmounts on full teardown (logout / tab close); stop
-	// the watcher so its timers + EventSource don't linger.
-	onDestroy(() => deploymentNotifications.stop());
+	// the watcher so its timer does not linger.
+	onDestroy(() => {
+		deploymentNotifications.stop();
+		stopRuntimeHandoffWatcher();
+	});
 
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		const mod = e.metaKey || e.ctrlKey;

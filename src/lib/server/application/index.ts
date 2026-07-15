@@ -395,6 +395,8 @@ import { ApplicationPreviewReadProxyService } from "$lib/server/application/prev
 import { ApplicationPreviewArchiveService } from "$lib/server/application/preview-archive";
 import { ApplicationPreviewAccessService } from "$lib/server/application/preview-access";
 import { ApplicationPreviewDeploymentScopeService } from "$lib/server/application/preview-deployment-scope";
+import { ApplicationRuntimeHandoffService } from "$lib/server/application/runtime-handoff";
+import { ViteRuntimeHandoffModeAdapter } from "$lib/server/application/adapters/runtime-handoff";
 import { ApplicationPreviewTeardownService } from "$lib/server/application/preview-teardown";
 import { ApplicationPreviewLifecycleReaperService } from "$lib/server/application/preview-lifecycle-reaper";
 import { ApplicationPreviewReadBrokerService } from "$lib/server/application/preview-read-broker";
@@ -1757,6 +1759,10 @@ export function getApplicationAdapters(
   const previewDeploymentScope = new ApplicationPreviewDeploymentScopeService(
     config.previewDeployment,
   );
+  const runtimeHandoff = new ApplicationRuntimeHandoffService({
+    scope: previewDeploymentScope,
+    mode: new ViteRuntimeHandoffModeAdapter(),
+  });
   const workflowLaunchPolicy = new ApplicationWorkflowLaunchPolicyService(
     previewDeploymentScope,
   );
@@ -2904,6 +2910,9 @@ export function getApplicationAdapters(
     },
     get previewDeploymentScope() {
       return previewDeploymentScope;
+    },
+    get runtimeHandoff() {
+      return runtimeHandoff;
     },
     get previewTeardown() {
       return getPreviewTeardown();
