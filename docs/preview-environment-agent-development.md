@@ -825,17 +825,25 @@ prepare, commit, or abort the receiver fence. Sync and allowlisted run commands
 return `409` while prepared or frozen; status and export remain readable for
 checkpoint recovery. Receiver state survives process restarts.
 
-The server then runs one strict capture through the same preview-session
-continuation port. The artifact must match the frozen generation and exact
-service set. Its per-service export digests remain independent artifact-integrity
-proofs: they intentionally differ from the freeze receipts, which hash the last
-sync uploads rather than the newly materialized export archives. It invokes the
-idempotent physical promotion continuation even when a local projection already
-exists, revalidating the append-only receipt and live draft PR before it
-materializes the broker-owned draft PR. Only after the preview-local artifact
-carries that receipt does the server atomically merge a version 2 teardown
-marker bound to the freeze receipts, artifact, central artifact, repository, PR,
-branch, and head SHA.
+The server then resolves one strict capture through the same preview-session
+continuation port. The artifact must match the frozen generation, exact service
+set, and current preview-control identity. Its per-service export digests remain
+independent artifact-integrity proofs: they intentionally differ from the freeze
+receipts, which hash the last sync uploads rather than newly materialized export
+archives. When the latest strict artifact matches the frozen generation and
+service set and carries a valid promotion projection, teardown reuses it instead
+of exporting and capturing the same frozen source again. Otherwise it performs
+a normal strict capture.
+
+In both cases the server invokes the idempotent physical promotion continuation,
+revalidating the append-only receipt and live draft PR before cleanup. The
+physical artifact store binds the complete import identity, source snapshot, and
+file digest; mutable local `promotion`, `acceptance`, and `teardownCheckpoint`
+metadata are projections over that capture and are excluded from its physical
+content identity. Only after the preview-local artifact carries the broker
+receipt does the server atomically merge a version 2 teardown marker bound to
+the freeze receipts, artifact, central artifact, repository, PR, branch, and
+head SHA.
 
 Freeze, capture, promotion, or marker failure returns HTTP `409`; preview
 resource deletion and durable-run cleanup are not invoked. A failure after

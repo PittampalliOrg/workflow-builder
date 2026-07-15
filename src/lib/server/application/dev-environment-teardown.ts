@@ -13,6 +13,7 @@ import type {
   WorkflowDataService,
   WorkflowExecutionLifecycleControllerPort,
 } from "$lib/server/application/ports";
+import { latestWorkflowArtifact } from "$lib/server/application/workflow-code-version-order";
 
 type TeardownWorkflowData = Pick<
   WorkflowDataService,
@@ -168,9 +169,17 @@ export class ApplicationDevEnvironmentTeardownService
           );
         }
 
-        const prepared = await this.captureAndPromote(input, services, freeze);
-        if (prepared.status === "error") return prepared;
-        sourceCheckpoint = prepared.checkpoint;
+        sourceCheckpoint = await findTeardownCheckpoint(
+          this.deps.workflowData,
+          input.executionId,
+          services,
+          freeze,
+        );
+        if (!sourceCheckpoint) {
+          const prepared = await this.prepareCheckpoint(input, services, freeze);
+          if (prepared.status === "error") return prepared;
+          sourceCheckpoint = prepared.checkpoint;
+        }
       }
     }
 
@@ -211,37 +220,44 @@ export class ApplicationDevEnvironmentTeardownService
     return sameStrings(requested, observed) ? [...requested].sort() : null;
   }
 
-  private async captureAndPromote(
+  private async prepareCheckpoint(
     input: DevEnvironmentTeardownInput,
     services: readonly string[],
     freeze: DevPreviewSourceFreezeResult,
   ): Promise<CheckpointPreparationResult> {
-    const capture = await this.deps.continuation.continue({
-      executionId: input.executionId,
-      userId: input.userId,
-      projectId: input.projectId ?? null,
-      action: { action: "capture", services },
-    });
-    if (
-      capture.status !== "ok" ||
-      capture.body.action !== "capture" ||
-      capture.body.ok !== true
-    ) {
-      const detail =
-        capture.status === "error"
-          ? capture.message
-          : "The frozen live-sync generation could not be captured";
-      return checkpointError(
-        input.executionId,
-        `${detail}. Retry checkpointing, or explicitly discard the frozen changes`,
-      );
-    }
-    const artifactId = capture.body.artifactId;
+    let artifactId = await latestPromotedArtifactForFreeze(
+      this.deps.workflowData,
+      input.executionId,
+      freeze,
+    );
     if (!artifactId) {
-      return checkpointError(
-        input.executionId,
-        "The captured preview checkpoint has no durable artifact identity",
-      );
+      const capture = await this.deps.continuation.continue({
+        executionId: input.executionId,
+        userId: input.userId,
+        projectId: input.projectId ?? null,
+        action: { action: "capture", services },
+      });
+      if (
+        capture.status !== "ok" ||
+        capture.body.action !== "capture" ||
+        capture.body.ok !== true
+      ) {
+        const detail =
+          capture.status === "error"
+            ? capture.message
+            : "The frozen live-sync generation could not be captured";
+        return checkpointError(
+          input.executionId,
+          `${detail}. Retry checkpointing, or explicitly discard the frozen changes`,
+        );
+      }
+      artifactId = capture.body.artifactId ?? null;
+      if (!artifactId) {
+        return checkpointError(
+          input.executionId,
+          "The captured preview checkpoint has no durable artifact identity",
+        );
+      }
     }
     let artifact =
       await this.deps.workflowData.getWorkflowArtifactForExecution({
@@ -412,6 +428,22 @@ export class ApplicationDevEnvironmentTeardownService
       ? { status: "ok", httpStatus, body }
       : { status: "error", httpStatus: 503, body };
   }
+}
+
+async function latestPromotedArtifactForFreeze(
+  workflowData: TeardownWorkflowData,
+  executionId: string,
+  freeze: DevPreviewSourceFreezeResult,
+): Promise<string | null> {
+  const artifacts = await workflowData.listWorkflowArtifactsByExecutionId(
+    executionId,
+  );
+  const latest = latestWorkflowArtifact(artifacts, isStrictSourceArtifact);
+  return latest &&
+    artifactMatchesFreeze(latest, freeze) &&
+    verifiedPromotion(latest.metadata?.promotion)
+    ? latest.id
+    : null;
 }
 
 async function findTeardownCheckpoint(

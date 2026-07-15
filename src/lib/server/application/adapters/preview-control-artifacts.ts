@@ -4,6 +4,7 @@ import { env } from "$env/dynamic/private";
 import type {
   PreviewAcceptanceArtifactPort,
   PreviewArtifactExportPort,
+  PreviewArtifactTransferEnvelope,
   PreviewArtifactTransferPort,
   PreviewControlArtifactRecord,
   PreviewControlArtifactStorePort,
@@ -81,11 +82,8 @@ export class PostgresPreviewControlArtifactStore implements PreviewControlArtifa
 
   async put(input: Parameters<PreviewControlArtifactStorePort["put"]>[0]) {
     const importIdentity = importedArtifactIdentity(input);
-    const canonical = stableJson({
-      importIdentity,
-      artifact: input.envelope.artifact,
-    });
-    const id = `pca_${createHash("sha256").update(canonical).digest("hex")}`;
+    const artifactSnapshot = immutableArtifactSnapshot(input.envelope.artifact);
+    const id = contentAddressedArtifactId(importIdentity, artifactSnapshot);
     const existing = await this.getBySourceIdentity({
       previewName: importIdentity.previewName,
       requestId: importIdentity.requestId,
@@ -130,7 +128,7 @@ export class PostgresPreviewControlArtifactStore implements PreviewControlArtifa
           sourceArtifactId: importIdentity.sourceArtifactId,
           fileId: created.file.id,
           fileDigest: importIdentity.fileDigest,
-          artifactSnapshot: input.envelope.artifact,
+          artifactSnapshot,
           platformRevision: importIdentity.platformRevision,
           sourceRevision: importIdentity.sourceRevision,
           catalogDigest: importIdentity.catalogDigest,
@@ -291,6 +289,38 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+const MUTABLE_ARTIFACT_METADATA_KEYS = new Set([
+  "promotion",
+  "acceptance",
+  "teardownCheckpoint",
+]);
+
+/**
+ * Promotion, acceptance, and teardown metadata are mutable local projections
+ * over one immutable capture. They must not change the physical artifact's
+ * content identity; every source and bundle field remains part of that identity.
+ */
+function immutableArtifactSnapshot(
+  artifact: PreviewArtifactTransferEnvelope["artifact"],
+): PreviewArtifactTransferEnvelope["artifact"] {
+  const metadataEntries = Object.entries(artifact.metadata ?? {}).filter(
+    ([key]) => !MUTABLE_ARTIFACT_METADATA_KEYS.has(key),
+  );
+  return {
+    ...artifact,
+    metadata:
+      metadataEntries.length > 0 ? Object.fromEntries(metadataEntries) : null,
+  };
+}
+
+function contentAddressedArtifactId(
+  importIdentity: PreviewImportedArtifactIdentity,
+  artifact: PreviewArtifactTransferEnvelope["artifact"],
+): string {
+  const canonical = stableJson({ importIdentity, artifact });
+  return `pca_${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
 function sameImportedIdentity(
   left: PreviewImportedArtifactIdentity,
   right: PreviewImportedArtifactIdentity,
@@ -316,13 +346,19 @@ function sameImportedArtifact(
   input: Parameters<PreviewControlArtifactStorePort["put"]>[0],
   expectedId: string,
 ): boolean {
+  const recordSnapshot = immutableArtifactSnapshot(record.artifact);
+  const inputSnapshot = immutableArtifactSnapshot(input.envelope.artifact);
+  const legacyRecordId = contentAddressedArtifactId(
+    record.importIdentity,
+    record.artifact,
+  );
   return (
-    record.id === expectedId &&
+    (record.id === expectedId || record.id === legacyRecordId) &&
     sameImportedIdentity(
       record.importIdentity,
       importedArtifactIdentity(input),
     ) &&
-    stableJson(record.artifact) === stableJson(input.envelope.artifact)
+    stableJson(recordSnapshot) === stableJson(inputSnapshot)
   );
 }
 
