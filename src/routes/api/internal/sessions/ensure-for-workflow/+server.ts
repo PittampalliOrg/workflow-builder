@@ -124,40 +124,6 @@ export const POST: RequestHandler = async ({ request }) => {
 			benchmarkExecutionClass = gate.benchmarkExecutionClass;
 		}
 	}
-	const rawAgentConfig =
-		body.agentConfig && typeof body.agentConfig === "object"
-			? (body.agentConfig as unknown as AgentConfig)
-			: null;
-	// Apply the per-agent browser sidecar MCP rewrite (same helper that
-	// src/lib/server/sessions/spawn.ts uses for direct sessions). Without
-	// this, workflow-driven sessions keep the stdio Playwright preset and
-	// `npx @playwright/mcp@latest` runs inside the dapr-agent-py container
-	// — there's no Chromium binary there. The rewrite routes tools through
-	// the in-pod playwright-mcp sidecar at http://localhost:3100/mcp,
-	// which talks to the pod's chromium container via CDP.
-	//
-	// Skip for runtime=browser-use-agent: browser-use manages its own
-	// browser via Browserstation and doesn't use an in-pod playwright-mcp
-	// sidecar, so the rewrite would mis-route any Playwright preset to a
-	// non-existent localhost:3100 endpoint. Mirrors the skip in
-	// src/lib/server/application/adapters/agent-registry-sync.ts:752-754.
-	const isBrowserUseRuntime =
-		rawAgentConfig != null &&
-		(rawAgentConfig as { runtime?: unknown }).runtime === "browser-use-agent";
-	const agentConfigAfterMcp = rawAgentConfig
-		? ({
-				...rawAgentConfig,
-				mcpServers: isBrowserUseRuntime
-					? (rawAgentConfig as { mcpServers?: unknown[] }).mcpServers
-					: rewriteMcpForBrowserSidecar(
-							(rawAgentConfig as { mcpServers?: unknown[] })
-								.mcpServers as never,
-							{
-								runtime: (rawAgentConfig as { runtime?: string }).runtime,
-							},
-						).mcpServers,
-			} as AgentConfig)
-		: null;
 	// Resolve Prompt Workbench preset bindings against the project. Workflow
 	// runs share the same projectId as the agent's workflow row (resolved
 	// above). Fail open: an unresolvable preset must never block a workflow
@@ -178,10 +144,39 @@ export const POST: RequestHandler = async ({ request }) => {
 			mlflowUri: string | null;
 		}>,
 	};
-	const compiledPresetStack =
-		agentConfigAfterMcp && projectId
+	// Prepare a raw agent config for dispatch: apply the per-agent browser
+	// sidecar MCP rewrite, then compile the Prompt Workbench preset stack.
+	//
+	// The MCP rewrite (same helper that src/lib/server/sessions/spawn.ts uses
+	// for direct sessions) routes a stdio Playwright preset through the in-pod
+	// playwright-mcp sidecar at http://localhost:3100/mcp — without it,
+	// `npx @playwright/mcp@latest` would run inside the dapr-agent-py container
+	// where there's no Chromium binary. Skipped for runtime=browser-use-agent
+	// (it manages its own browser via Browserstation; the rewrite would
+	// mis-route to a non-existent localhost:3100). Mirrors the skip in
+	// src/lib/server/application/adapters/agent-registry-sync.ts:752-754.
+	//
+	// Reused for BOTH the inline body.agentConfig and — on the named-agent
+	// (dynamic-script agent({agent})) path below — the resolved DB agent's
+	// full config.
+	const prepareAgentConfig = async (
+		raw: AgentConfig | null,
+	): Promise<AgentConfig | null> => {
+		if (!raw) return null;
+		const isBrowserUseRuntime =
+			(raw as { runtime?: unknown }).runtime === "browser-use-agent";
+		const afterMcp = {
+			...raw,
+			mcpServers: isBrowserUseRuntime
+				? (raw as { mcpServers?: unknown[] }).mcpServers
+				: rewriteMcpForBrowserSidecar(
+						(raw as { mcpServers?: unknown[] }).mcpServers as never,
+						{ runtime: (raw as { runtime?: string }).runtime },
+					).mcpServers,
+		} as AgentConfig;
+		const compiled = projectId
 			? await promptStackCompiler
-					.compilePromptStack(agentConfigAfterMcp, { projectId })
+					.compilePromptStack(afterMcp, { projectId })
 					.catch((err) => {
 						console.warn(
 							"[ensure-for-workflow] compilePromptStack failed, continuing with empty stack:",
@@ -190,19 +185,23 @@ export const POST: RequestHandler = async ({ request }) => {
 						return emptyPresetStack;
 					})
 			: emptyPresetStack;
-	const agentConfig = agentConfigAfterMcp
-		? ({
-				...agentConfigAfterMcp,
-				compiledStaticPresetSections: compiledPresetStack.static,
-				compiledDynamicPresetSections: compiledPresetStack.dynamic,
-				// Phase 3a v2: per-ref version-id + mlflow_uri manifest for
-				// trace-tag propagation in dapr-agent-py.
-				promptPresetManifest: [
-					...compiledPresetStack.staticManifest,
-					...compiledPresetStack.dynamicManifest,
-				],
-			} as AgentConfig)
-		: null;
+		return {
+			...afterMcp,
+			compiledStaticPresetSections: compiled.static,
+			compiledDynamicPresetSections: compiled.dynamic,
+			// Phase 3a v2: per-ref version-id + mlflow_uri manifest for
+			// trace-tag propagation in dapr-agent-py.
+			promptPresetManifest: [
+				...compiled.staticManifest,
+				...compiled.dynamicManifest,
+			],
+		} as AgentConfig;
+	};
+	const rawAgentConfig =
+		body.agentConfig && typeof body.agentConfig === "object"
+			? (body.agentConfig as unknown as AgentConfig)
+			: null;
+	let agentConfig = await prepareAgentConfig(rawAgentConfig);
 	const environmentConfig =
 		body.environmentConfig && typeof body.environmentConfig === "object"
 			? (body.environmentConfig as Record<string, unknown>)
@@ -246,10 +245,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			: null;
 	const bridgeCwd =
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
-	const bridgeTimeoutMinutes =
+	let bridgeTimeoutMinutes =
 		parsePositiveInteger(body.timeoutMinutes) ??
 		parsePositiveInteger(agentConfig?.timeoutMinutes);
-	const bridgeMaxIterations =
+	let bridgeMaxIterations =
 		parsePositiveInteger(body.maxIterations) ??
 		parsePositiveInteger(body.maxTurns) ??
 		parsePositiveInteger(agentConfig?.maxTurns);
@@ -355,7 +354,65 @@ export const POST: RequestHandler = async ({ request }) => {
 				: null;
 		effectiveAgentVersion = resolveAgentVersionRaw;
 		resolvedAgentSlug = resolveAgentSlugRaw;
+
+		// Dynamic-script agent({agent:'slug'}) resolves the slug at RUNTIME, so it
+		// bypasses resolveSpecAgentRefs (which inlines a STATIC durable/run node's
+		// DB agent config at workflow-start). Load the resolved agent's stored
+		// config here and use it as the dispatch base, overlaying ONLY the
+		// orchestrator's per-call fields (model/effort/schema/runtime) on top —
+		// otherwise the session loses the agent's mcpServers / systemPrompt /
+		// builtinTools / tools and runs with just the minimal per-call config plus
+		// the auto-wired wfb_goal MCP server. (Skills still need registry
+		// hydration; tracked separately.)
+		try {
+			const dbAgent = await workflowData.resolveSessionAgentByRef({
+				id: effectiveAgentId ?? undefined,
+				version: effectiveAgentVersion ?? undefined,
+			});
+			if (dbAgent?.config) {
+				const flattened = await getApplicationAdapters().capabilityBundles.flattenBundles(
+					dbAgent.config,
+					dbAgent.projectId ?? projectId,
+				);
+				const overrides = (rawAgentConfig ?? {}) as Record<string, unknown>;
+				const merged: Record<string, unknown> = { ...flattened };
+				for (const key of [
+					"runtime",
+					"model",
+					"modelSpec",
+					"reasoningEffort",
+					"responseJsonSchema",
+					"structuredOutputMode",
+				]) {
+					if (overrides[key] !== undefined && overrides[key] !== null) {
+						merged[key] = overrides[key];
+					}
+				}
+				agentConfig = await prepareAgentConfig(merged as AgentConfig);
+				// Re-derive config-sourced fallbacks from the now-full config so the
+				// session inherits the agent's own timeout / max-turns.
+				bridgeTimeoutMinutes =
+					parsePositiveInteger(body.timeoutMinutes) ??
+					parsePositiveInteger(agentConfig?.timeoutMinutes);
+				bridgeMaxIterations =
+					parsePositiveInteger(body.maxIterations) ??
+					parsePositiveInteger(body.maxTurns) ??
+					parsePositiveInteger(agentConfig?.maxTurns);
+			}
+		} catch (err) {
+			console.warn(
+				"[ensure-for-workflow] failed to load resolved agent config for slug",
+				resolvedAgentSlug,
+				err,
+			);
+		}
 	}
+
+	// The named-agent branch above may have replaced agentConfig with the
+	// resolved DB agent's full config; re-narrow to non-null for the rest of the
+	// handler (a null here means both the inline config and the resolved agent
+	// were absent).
+	if (!agentConfig) return error(400, "agentConfig is required");
 
 	// Swap-safety gate for the durable/run (workflow + SWE-bench) path — mirrors
 	// the direct-spawn gate in sessions/spawn.ts. Warn/reject when the dispatched

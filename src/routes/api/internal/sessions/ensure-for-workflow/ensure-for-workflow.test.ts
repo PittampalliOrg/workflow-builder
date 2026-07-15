@@ -81,6 +81,20 @@ const mocks = vi.hoisted(() => {
 			updateWorkflowEnsureSessionRuntime: vi.fn(async (input: unknown) => {
 				state.updates.push(input);
 			}),
+			resolveSessionAgentByRef: vi.fn(
+				async (): Promise<{
+					config: Record<string, unknown>;
+					projectId: string | null;
+				} | null> => null,
+			),
+		},
+		teamStore: {
+			resolveAgentIdBySlug: vi.fn(
+				async (): Promise<{ id: string } | null> => null,
+			),
+		},
+		capabilityBundles: {
+			flattenBundles: vi.fn(async (config: unknown) => config),
 		},
 		sessionGoals: {
 			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
@@ -132,6 +146,8 @@ vi.mock("$lib/server/application", () => ({
 		cliCredentials: mocks.cliCredentials,
 		sessionCommands: mocks.sessionCommands,
 		promptStackCompiler: mocks.promptStackCompiler,
+			teamStore: mocks.teamStore,
+			capabilityBundles: mocks.capabilityBundles,
 	}),
 }));
 
@@ -624,6 +640,61 @@ describe("dynamic-script spawn MCP wiring", () => {
 		const headers = servers[0].headers as Record<string, string>;
 		expect(headers["X-Wfb-Session-Id"]).toBe("sess-dapr-agent-py");
 		expect(headers["X-Wfb-Script-Depth"]).toBe("1");
+	});
+
+	it("loads the resolved DB agent's full config (mcpServers/systemPrompt/builtinTools) for dynamic-script agent({agent})", async () => {
+		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
+			engineType: "dynamic-script",
+		} as never);
+		// The script names a registered agent by slug; the orchestrator only sends
+		// a minimal per-call config (no mcpServers/systemPrompt/builtinTools).
+		mocks.teamStore.resolveAgentIdBySlug.mockResolvedValue({
+			id: "glm-browser-agent-id",
+		});
+		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+			config: {
+				runtime: "dapr-agent-py",
+				modelSpec: "zai/glm-5.2",
+				systemPrompt: "You are a browser automation agent.",
+				builtinTools: ["execute_command", "read_file"],
+				skills: [],
+				mcpConnectionMode: "auto",
+				mcpServers: [
+					{
+						name: "agent-browser",
+						transport: "streamable_http",
+						url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+					},
+				],
+				runtimeOverridePolicy: RUNTIME_POLICY,
+			},
+			projectId: "project-1",
+		});
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "zai/glm-5.2",
+			provider: "openai",
+			token: "unused",
+			body: { resolveAgentSlug: "glm-browser-agent" },
+		});
+		const childInput = payload.childInput as Record<string, unknown>;
+		const config = childInput.agentConfig as {
+			mcpServers?: Array<Record<string, unknown>>;
+			systemPrompt?: string;
+			builtinTools?: string[];
+		};
+		// The DB agent's own systemPrompt + builtinTools survive (were dropped before).
+		expect(config.systemPrompt).toBe("You are a browser automation agent.");
+		expect(config.builtinTools).toEqual(["execute_command", "read_file"]);
+		// The DB agent's agent-browser MCP server survives, PLUS the auto-wired goal server.
+		const servers = config.mcpServers ?? [];
+		const urls = servers.map((s) => String(s.url));
+		expect(urls.some((u) => u.includes("agent-browser-mcp"))).toBe(true);
+		expect(urls.some((u) => u.includes("workflow-mcp-server"))).toBe(true);
+		// The resolved agent id flows to the child session.
+		expect(childInput.resolvedAgentSlug ?? payload.resolvedAgentSlug).toBe(
+			"glm-browser-agent",
+		);
 	});
 
 	it("leaves single-shot SW-1.0 spawns without MCP wiring", async () => {
