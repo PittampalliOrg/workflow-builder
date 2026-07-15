@@ -1,0 +1,13 @@
+{
+  "name": "agent-browser-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel agent-browser exposed as a streamable-HTTP MCP server (Chrome-isolated) for non-CLI (dapr-agent-py) agents.",
+  "scripts": {
+    "start": "supergateway --stdio \"agent-browser mcp --tools ${AGENT_BROWSER_TOOLS:-core}\" --outputTransport streamableHttp --streamableHttpPath /mcp --port ${PORT:-8000} --stateful"
+  },
+  "dependencies": {
+    "agent-browser": "0.31.2",
+    "supergateway": "3.4.3"
+  }
+}
