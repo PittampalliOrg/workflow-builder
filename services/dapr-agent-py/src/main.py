@@ -1662,6 +1662,9 @@ class OpenShellDurableAgent(DurableAgent):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._mcp_configs_by_instance: dict[str, dict[str, dict[str, Any]]] = {}
+        # Instances whose MCP configs were written to (or read from) the state
+        # store — used to write the cross-replica hydration doc exactly once.
+        self._mcp_configs_persisted: set[str] = set()
         self._mcp_clients_by_instance: dict[str, MCPClient] = {}
         self._mcp_config_hash_by_instance: dict[str, str] = {}
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
@@ -2565,6 +2568,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_tool_sources_by_instance.pop(instance_id, None)
         self._mcp_allowed_tools_by_instance.pop(instance_id, None)
         self._mcp_configs_by_instance.pop(instance_id, None)
+        self._mcp_configs_persisted.discard(instance_id)
         self._allowed_tools_by_instance.pop(instance_id, None)
         if client is not None:
             await client.close()
@@ -2582,10 +2586,85 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception as exc:
             logger.warning("[mcp] Failed to close MCP client for %s: %s", instance_id, exc)
 
+    def _mcp_configs_state_key(self, instance_id: str) -> str:
+        return f"mcpcfg_{instance_id}".lower()
+
+    def _persist_mcp_configs_for_instance(
+        self,
+        instance_id: str,
+        mcp_configs: dict,
+        mcp_allowed_tools: dict,
+    ) -> None:
+        """Durably share this instance's MCP server configs across pool replicas.
+
+        Tool activities load-balance over every replica, but the in-memory
+        ``_mcp_configs_by_instance`` map only exists on pods that ran the seed
+        activity or a turn message for the instance. A replica that gets a tool
+        activity without that map entry cannot hydrate and fails the call with
+        "Tool not found" (observed: run yfBbJ-Kxbp9A5sjT4OQ7y — 1 of 4 replicas
+        hydrated, every browser tool call landed elsewhere). Persisting the
+        configs lets ``_ensure_mcp_client_async`` hydrate from state on ANY pod.
+        """
+        if instance_id in self._mcp_configs_persisted:
+            return
+        store = getattr(self._infra, "state_store", None)
+        if store is None:
+            return
+        try:
+            store.save(
+                key=self._mcp_configs_state_key(instance_id),
+                value={"configs": mcp_configs, "allowedTools": mcp_allowed_tools},
+                ttl_in_seconds=24 * 3600,
+            )
+            self._mcp_configs_persisted.add(instance_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[mcp] Failed to persist MCP configs for instance %s: %s",
+                instance_id,
+                exc,
+            )
+
+    def _load_mcp_configs_for_instance(self, instance_id: str) -> bool:
+        """Cross-replica fallback: hydrate the in-memory MCP config map from
+        the state store when this pod never saw the instance's seed/turn."""
+        store = getattr(self._infra, "state_store", None)
+        if store is None:
+            return False
+        try:
+            doc = store.load(key=self._mcp_configs_state_key(instance_id), default=None)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[mcp] Failed to load persisted MCP configs for instance %s: %s",
+                instance_id,
+                exc,
+            )
+            return False
+        if not isinstance(doc, dict):
+            return False
+        configs = doc.get("configs")
+        if not isinstance(configs, dict) or not configs:
+            return False
+        self._mcp_configs_by_instance[instance_id] = configs
+        allowed = doc.get("allowedTools")
+        if isinstance(allowed, dict):
+            self._mcp_allowed_tools_by_instance[instance_id] = allowed
+        self._mcp_configs_persisted.add(instance_id)
+        logger.info(
+            "[mcp] Hydrated %d MCP server config(s) for instance %s from state "
+            "store (cross-replica)",
+            len(configs),
+            instance_id,
+        )
+        return True
+
     async def _ensure_mcp_client_async(self, instance_id: str) -> None:
         configs = self._mcp_configs_by_instance.get(instance_id) or {}
         if not configs:
-            return
+            if not self._load_mcp_configs_for_instance(instance_id):
+                return
+            configs = self._mcp_configs_by_instance.get(instance_id) or {}
+            if not configs:
+                return
         config_hash = json.dumps(configs, sort_keys=True, default=str)
         if self._mcp_config_hash_by_instance.get(instance_id) == config_hash:
             return
@@ -4592,6 +4671,9 @@ class OpenShellDurableAgent(DurableAgent):
         if mcp_configs:
             self._mcp_configs_by_instance[instance_id] = mcp_configs
             self._mcp_allowed_tools_by_instance[instance_id] = mcp_allowed_tools
+            self._persist_mcp_configs_for_instance(
+                instance_id, mcp_configs, mcp_allowed_tools
+            )
             logger.info(
                 "[mcp] Registered %d MCP server config(s) for instance %s",
                 len(mcp_configs),
@@ -5763,6 +5845,9 @@ class OpenShellDurableAgent(DurableAgent):
             return result
         self._mcp_configs_by_instance[instance_id] = mcp_configs
         self._mcp_allowed_tools_by_instance[instance_id] = mcp_allowed_tools
+        self._persist_mcp_configs_for_instance(
+            instance_id, mcp_configs, mcp_allowed_tools
+        )
         # Eagerly connect so the very first call_llm on this instance finds
         # already-populated tools. _ensure_mcp_client is idempotent — it
         # short-circuits via the config-hash cache if reinvoked with the
