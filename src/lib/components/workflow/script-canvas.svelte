@@ -236,10 +236,12 @@
 </div>
 
 <style>
-	/* Node enter: a one-shot fade+rise. Runs on the SvelteFlow node wrapper so
-	 * re-layouts (draft edits) animate new nodes in without re-triggering old
-	 * ones (the keyframe restarts only when the element mounts). */
-	:global(.svelte-flow__node) {
+	/* Node enter: a one-shot fade+rise on the node's INNER content — NEVER the
+	 * .svelte-flow__node wrapper: SvelteFlow positions nodes via an inline
+	 * `transform`, and a keyframe animating transform there overrides the
+	 * positioning for the animation's lifetime (fill-mode both = forever),
+	 * collapsing every node onto the canvas origin. */
+	:global(.svelte-flow__node > div) {
 		animation: wfb-node-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
 	}
 	@keyframes wfb-node-enter {
@@ -267,7 +269,7 @@
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {
-		:global(.svelte-flow__node) {
+		:global(.svelte-flow__node > div) {
 			animation: none;
 		}
 		:global(.wfb-node-card.wfb-node-running) {
