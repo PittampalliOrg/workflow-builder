@@ -3074,6 +3074,8 @@ class _K8s404(Exception):
 def _phase_fakes(
     *, ns_exists, job_404=True, pods=(), annotations=None, job_status=None
 ):
+    pod_list_calls = []
+
     def read_namespace(*, name, _request_timeout=None):
         if not ns_exists:
             raise _K8s404()
@@ -3081,8 +3083,17 @@ def _phase_fakes(
             metadata=SimpleNamespace(name=name, annotations=annotations or {})
         )
 
-    def list_namespaced_pod(*, namespace, _request_timeout=None):
+    def list_namespaced_pod(
+        *, namespace, label_selector=None, _request_timeout=None
+    ):
         # K8s semantics: empty 200 even for a namespace that does not exist.
+        pod_list_calls.append(
+            {
+                "namespace": namespace,
+                "label_selector": label_selector,
+                "request_timeout": _request_timeout,
+            }
+        )
         return SimpleNamespace(items=list(pods))
 
     def read_namespaced_job_status(*, name, namespace, _request_timeout=None):
@@ -3094,7 +3105,9 @@ def _phase_fakes(
 
     batch = SimpleNamespace(read_namespaced_job_status=read_namespaced_job_status)
     core = SimpleNamespace(
-        read_namespace=read_namespace, list_namespaced_pod=list_namespaced_pod
+        read_namespace=read_namespace,
+        list_namespaced_pod=list_namespaced_pod,
+        pod_list_calls=pod_list_calls,
     )
     return batch, core
 
@@ -3167,6 +3180,25 @@ def _ready_bff_pod():
             conditions=[SimpleNamespace(type="Ready", status="True")]
         ),
     )
+
+
+def test_phase_lists_only_preview_bff_pods():
+    batch, core = _phase_fakes(ns_exists=True, pods=[_ready_bff_pod()])
+
+    app_module._vcluster_preview_phase(
+        batch, core, "pool-1", request_timeout=2.5
+    )
+
+    assert core.pod_list_calls == [
+        {
+            "namespace": "vcluster-pool-1",
+            "label_selector": (
+                "app=workflow-builder,"
+                "vcluster.loft.sh/namespace=workflow-builder"
+            ),
+            "request_timeout": 2.5,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
