@@ -9,9 +9,13 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { FunctionRegistry, FunctionRegistryEntry } from "./types.js";
 
-// Path to ConfigMap-mounted registry file
-const REGISTRY_FILE_PATH =
-  process.env.REGISTRY_FILE_PATH || "/config/functions.json";
+const DEFAULT_REGISTRY_FILE_PATH = "/config/functions.json";
+
+export function registryFilePath(
+  value = process.env.REGISTRY_FILE_PATH,
+): string {
+  return value?.trim() || DEFAULT_REGISTRY_FILE_PATH;
+}
 
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
@@ -85,11 +89,38 @@ let cachedRegistry: FunctionRegistry | null = null;
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
+export function strictRegistryEnabled(
+  value = process.env.FUNCTION_REGISTRY_STRICT,
+): boolean {
+  return value?.trim().toLowerCase() === "true";
+}
+
+export function mergeMountedRegistry(
+  loaded: FunctionRegistry,
+  strict = strictRegistryEnabled(),
+): FunctionRegistry {
+  return strict ? loaded : { ...BUILTIN_FALLBACK_REGISTRY, ...loaded };
+}
+
+export function lookupBuiltinFallback(
+  slug: string,
+  strict = strictRegistryEnabled(),
+): FunctionRegistryEntry | undefined {
+  if (strict) return undefined;
+  const pluginId = slug.split("/")[0];
+  return (
+    BUILTIN_FALLBACK_REGISTRY[slug] ??
+    BUILTIN_FALLBACK_REGISTRY[`${pluginId}/*`]
+  );
+}
+
 /**
  * Load registry from file, environment, or use defaults
  */
 export async function loadRegistry(): Promise<FunctionRegistry> {
   const now = Date.now();
+  const mountedRegistryPath = registryFilePath();
+  const strict = strictRegistryEnabled();
 
   // Return cached if fresh
   if (cachedRegistry && now - cacheTimestamp < CACHE_TTL_MS) {
@@ -97,26 +128,33 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
   }
 
   // Try loading from file (ConfigMap mount)
-  if (existsSync(REGISTRY_FILE_PATH)) {
+  if (existsSync(mountedRegistryPath)) {
     try {
-      const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
+      const content = await readFile(mountedRegistryPath, "utf-8");
       const loaded = JSON.parse(content) as FunctionRegistry;
-      // ConfigMap is authoritative. Builtin fallbacks only fill in slugs that
-      // the ConfigMap omits — this preserves the core workspace/browser/openshell
-      // routes on sparse local-dev registries without overriding operator intent
-      // expressed via the live ConfigMap.
-      cachedRegistry = { ...BUILTIN_FALLBACK_REGISTRY, ...loaded };
+      // Strict mode makes the mounted registry complete and authoritative.
+      // Regular mode retains builtins for sparse local-development registries.
+      cachedRegistry = mergeMountedRegistry(loaded, strict);
       cacheTimestamp = now;
       console.log(
-        `[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH} (with builtin overrides)`,
+        `[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${mountedRegistryPath}${strict ? " (strict)" : " (with builtin fallbacks)"}`,
       );
       return cachedRegistry;
     } catch (error) {
       console.error(
-        `[Registry] Failed to load from ${REGISTRY_FILE_PATH}:`,
+        `[Registry] Failed to load from ${mountedRegistryPath}:`,
         error,
       );
     }
+  }
+
+  if (strict) {
+    console.error(
+      "[Registry] Strict registry mode has no readable mounted registry; failing closed",
+    );
+    cachedRegistry = {};
+    cacheTimestamp = now;
+    return cachedRegistry;
   }
 
   // Try loading from environment variable
@@ -168,13 +206,11 @@ export async function lookupFunction(
     return registry[wildcardKey];
   }
 
-  // Built-in fallbacks before the broad "_default" catch-all
-  if (BUILTIN_FALLBACK_REGISTRY[slug]) {
-    return BUILTIN_FALLBACK_REGISTRY[slug];
-  }
-  if (BUILTIN_FALLBACK_REGISTRY[wildcardKey]) {
-    return BUILTIN_FALLBACK_REGISTRY[wildcardKey];
-  }
+  // Built-in fallbacks before the broad "_default" catch-all. Preview
+  // environments disable these so every advertised route must close over a
+  // service deployed in that vCluster.
+  const builtinFallback = lookupBuiltinFallback(slug);
+  if (builtinFallback) return builtinFallback;
 
   // Fallback to default (if configured)
   if (registry._default) {
