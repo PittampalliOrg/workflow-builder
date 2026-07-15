@@ -1,28 +1,10 @@
 <script lang="ts">
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
-	import { AGENT_MODEL_OPTIONS, agentModelOptionFor } from '$lib/agents/model-options';
+	import { agentModelOptionFor } from '$lib/agents/model-options';
+	import { groupModelOptions } from '$lib/agents/model-groups';
 	import { Button } from '$lib/components/ui/button';
 	import * as ModelSelector from '$lib/components/ui/ai-elements/model-selector';
 	import { cn } from '$lib/components/ui/utils';
-
-	type ModelGroup = {
-		heading: string;
-		providers: string[];
-	};
-
-	const MODEL_GROUPS: ModelGroup[] = [
-		{ heading: 'Anthropic', providers: ['anthropic'] },
-		{ heading: 'OpenAI', providers: ['openai'] },
-		{ heading: 'Microsoft Foundry', providers: ['foundry'] },
-		{ heading: 'Together AI', providers: ['together'] },
-		{ heading: 'NVIDIA NIM', providers: ['nvidia'] },
-		{ heading: 'Google AI', providers: ['googleai'] },
-		{ heading: 'Alibaba Cloud', providers: ['alibaba'] },
-		{ heading: 'DeepSeek', providers: ['deepseek'] },
-		{ heading: 'Kimi', providers: ['kimi'] },
-		{ heading: 'Open Models', providers: ['huggingface', 'mistral'] },
-		{ heading: 'Local', providers: ['ollama', 'echo'] }
-	];
 
 	let {
 		value = null,
@@ -46,12 +28,7 @@
 	const unsupported = $derived(unsupportedValue?.trim() || null);
 	const triggerLabel = $derived(selectedOption?.label ?? unsupported ?? placeholder);
 	const triggerLogo = $derived(selectedOption?.iconProvider ?? 'generic');
-	const groupedOptions = $derived.by(() =>
-		MODEL_GROUPS.map((group) => ({
-			...group,
-			options: AGENT_MODEL_OPTIONS.filter((option) => group.providers.includes(option.provider))
-		})).filter((group) => group.options.length > 0)
-	);
+	const groupedOptions = $derived.by(() => groupModelOptions());
 
 	function choose(modelSpec: string) {
 		open = false;
