@@ -60,6 +60,18 @@ persists across calls within the session). On top of plain proxying it adds:
    `demo_scene`) never ships in a demo. Runs that never call `demo_scene` keep the
    plain raw session video (previous behavior).
 
+5. **Target-auth (authenticated demos of your own app).** To demo an app that
+   requires login, the run's owning session forwards two headers on the browser
+   MCP entry: `X-Wfb-Target-Auth` (`<cookieName>=<value>`, or `Bearer <token>`)
+   and `X-Wfb-Target-Auth-Host` (the one host it may be presented to). The first
+   time the agent opens a page on that host, the bridge plants the credential
+   (cookie via `cookies_set`, or an `Authorization` header) and re-opens so the
+   agent — and the recorder — see the authenticated app. The credential is
+   **host-scoped**: it is never attached to any other origin the browser visits,
+   never entered into a login form, and never passed through the LLM or the run
+   trace. Intended for apps the run owner controls; it is not a way past
+   third-party bot-detection or CAPTCHAs (those are respected, not bypassed).
+
 ## Endpoint
 
 - MCP endpoint: `http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp`
@@ -94,6 +106,7 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | `DEMO_TARGET_SECONDS` | `75` | target length of the rendered demo video |
 | `DEMO_MAX_SPEEDUP` | `2.5` | cap on the uniform speed-up used to fit the target |
 | `DEMO_FREEZE_MIN_S` | `1.4` | static span length that counts as dead time |
+| `AGENT_BROWSER_TOOLS` includes `state` | for the bridge's own `cookies_set` (target-auth) |  |
 
 ## Related: the agent-browser skill
 
