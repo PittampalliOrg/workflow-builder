@@ -106,7 +106,7 @@ export class ApplicationPreviewAcceptanceBrokerService implements PreviewAccepta
       commitSha: pullRequest.headSha,
       baseBranch: this.deps.baseBranch,
       baseRevision: source.sourceRevision,
-      expectedBaseHead: pullRequest.baseSha,
+      expectedBaseSnapshot: pullRequest.baseSha,
       expectedChangedPaths: pullRequest.changedPaths,
     });
     if (!verifiedBranch) {

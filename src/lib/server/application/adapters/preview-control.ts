@@ -113,7 +113,7 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
     commitSha: string;
     baseBranch: string;
     baseRevision: string;
-    expectedBaseHead?: string;
+    expectedBaseSnapshot?: string;
     expectedChangedPaths?: readonly string[];
   }): Promise<boolean> {
     const token = await previewGithubToken(this.options);
@@ -157,25 +157,25 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
     ) {
       return false;
     }
-    if (
-      input.expectedBaseHead !== undefined &&
-      baseObject.sha !== input.expectedBaseHead
-    ) {
-      return false;
-    }
-    if (baseObject.sha !== input.baseRevision) {
-      const comparison = await read(
-        `compare/${input.baseRevision}...${baseObject.sha}`,
-      );
+    const observedBaseHead = baseObject.sha;
+    const descendsFrom = async (
+      ancestor: string,
+      descendant: string,
+    ): Promise<boolean> => {
+      if (ancestor === descendant) return true;
+      const comparison = await read(`compare/${ancestor}...${descendant}`);
       const mergeBase = comparison?.merge_base_commit as
         | Record<string, unknown>
         | undefined;
-      if (
-        comparison?.status !== "ahead" ||
-        mergeBase?.sha !== input.baseRevision
-      ) {
-        return false;
-      }
+      return comparison?.status === "ahead" && mergeBase?.sha === ancestor;
+    };
+    const expectedBaseSnapshot =
+      input.expectedBaseSnapshot ?? observedBaseHead;
+    if (
+      !(await descendsFrom(input.baseRevision, expectedBaseSnapshot)) ||
+      !(await descendsFrom(expectedBaseSnapshot, observedBaseHead))
+    ) {
+      return false;
     }
     if (input.expectedChangedPaths !== undefined) {
       const expected = normalizeChangedPaths(input.expectedChangedPaths);
@@ -189,11 +189,11 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
     }
     if (
       input.expectedChangedPaths !== undefined ||
-      input.expectedBaseHead !== undefined
+      input.expectedBaseSnapshot !== undefined
     ) {
       const [finalCandidateRef, finalBaseRef] = await Promise.all([
         read(`git/ref/heads/${encodeURIComponent(input.branch)}`),
-        input.expectedBaseHead !== undefined
+        input.expectedBaseSnapshot !== undefined
           ? read(`git/ref/heads/${encodeURIComponent(input.baseBranch)}`)
           : Promise.resolve(null),
       ]);
@@ -205,8 +205,8 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
         | undefined;
       if (
         finalCandidate?.sha !== input.commitSha ||
-        (input.expectedBaseHead !== undefined &&
-          finalBase?.sha !== input.expectedBaseHead)
+        (input.expectedBaseSnapshot !== undefined &&
+          finalBase?.sha !== observedBaseHead)
       ) {
         return false;
       }

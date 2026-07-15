@@ -373,7 +373,7 @@ describe("preview source promotion", () => {
       commitSha: COMMIT,
       baseBranch: "main",
       baseRevision: SOURCE,
-      expectedBaseHead: SOURCE,
+      expectedBaseSnapshot: SOURCE,
       expectedChangedPaths: ["src/routes/feature.ts"],
     });
     expect(h.pullRequests.inspectOpen).toHaveBeenCalledWith({

@@ -319,7 +319,7 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
         commitSha,
         baseBranch: this.deps.baseBranch,
         baseRevision: prepared.capturedSourceRevision as ImmutableGitSha,
-        expectedBaseHead: pullRequest.baseSha,
+        expectedBaseSnapshot: pullRequest.baseSha,
         expectedChangedPaths: result.changedPaths,
       }))
     ) {
@@ -573,7 +573,7 @@ async function verifyStoredReceipt(
       commitSha: receipt.commitSha,
       baseBranch: receipt.baseBranch,
       baseRevision: receipt.sourceRevision,
-      expectedBaseHead: pullRequest.baseSha,
+      expectedBaseSnapshot: pullRequest.baseSha,
       expectedChangedPaths: receipt.changedPaths,
     }))
   ) {
@@ -630,7 +630,7 @@ async function verifyLeaseReceipt(
       commitSha: receipt.commitSha,
       baseBranch: receipt.baseBranch,
       baseRevision: receipt.sourceRevision,
-      expectedBaseHead: pullRequest.baseSha,
+      expectedBaseSnapshot: pullRequest.baseSha,
       expectedChangedPaths: receipt.changedPaths,
     }))
   ) {
