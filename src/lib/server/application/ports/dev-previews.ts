@@ -211,6 +211,11 @@ export type DevPreviewSidecarStatus = {
   lastSyncAt?: string | null;
   lastSyncBytes?: number | null;
   lastSyncTimingsMs?: DevPreviewSyncTimings | null;
+  frozen?: boolean;
+  prepared?: boolean;
+  preparedOperationId?: string | null;
+  preparedAt?: string | null;
+  frozenOperationId?: string | null;
   lastRun?: unknown;
   commands?: string[];
 };

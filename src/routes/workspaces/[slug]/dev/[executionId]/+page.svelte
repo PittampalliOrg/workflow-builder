@@ -19,6 +19,7 @@
 		ArrowLeft,
 		CheckCircle2,
 		Circle,
+		GitPullRequest,
 		Loader2,
 		SendHorizontal,
 		XCircle
@@ -34,8 +35,11 @@
 		deriveDevExecutionLifecycle,
 		type DevExecutionLifecycleState
 	} from '$lib/dev/dev-execution-lifecycle';
-	import { teardownDevEnvironmentUntilComplete } from '$lib/dev-environment-teardown';
-	import { getDevEnvironment } from './data.remote';
+	import {
+		DevEnvironmentTeardownBlockedError,
+		teardownDevEnvironmentUntilComplete
+	} from '$lib/dev-environment-teardown';
+	import { getDevEnvironment, getSidecarStatus } from './data.remote';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -54,9 +58,17 @@
 
 	let errorMessage = $state<string | null>(null);
 	let confirmTeardown = $state(false);
+	let captureBlockedMessage = $state<string | null>(null);
 	let busy = $state(false);
 	// Code versions this run produced that haven't been pushed to a GitHub PR yet.
 	let outstandingVersions = $state(0);
+	let canManageStrictCheckpoints = $state(false);
+	let serviceCheckpointStates = $state<
+		Record<string, 'unknown' | 'writable' | 'preparing' | 'frozen'>
+	>({});
+	let teardownSourceLocked = $state(false);
+	let sourceProbeEpoch = 0;
+	let sourceProbeInFlight: { epoch: number; task: Promise<void> } | null = null;
 
 	// Composer
 	let composer = $state('');
@@ -73,6 +85,18 @@
 			sessionId,
 			services
 		})
+	);
+	const sourceCheckpointState = $derived.by<
+		'unknown' | 'writable' | 'preparing' | 'frozen'
+	>(() => {
+		const states = services.map((service) => serviceCheckpointStates[service.service] ?? 'unknown');
+		if (states.includes('frozen')) return 'frozen';
+		if (states.includes('preparing')) return 'preparing';
+		if (states.includes('unknown')) return 'unknown';
+		return 'writable';
+	});
+	const sourceReadOnly = $derived(
+		busy || teardownSourceLocked || sourceCheckpointState !== 'writable'
 	);
 
 	function lifecycleIconClass(state: DevExecutionLifecycleState): string {
@@ -110,9 +134,64 @@
 		};
 	});
 
+	function probeSourceCheckpointState(): Promise<void> {
+		const epoch = sourceProbeEpoch;
+		if (sourceProbeInFlight?.epoch === epoch) return sourceProbeInFlight.task;
+		const task = (async () => {
+			const snapshot = [...services];
+			const entries = await Promise.all(
+				snapshot.map(async (service) => {
+					const query = getSidecarStatus({
+						executionId: environment.executionId,
+						service: service.service
+					});
+					try {
+						await query.refresh();
+					} catch {
+						return [service.service, 'unknown'] as const;
+					}
+					const view = query.current;
+					const state =
+						view?.status.ok && view.status.data.frozen
+							? 'frozen'
+							: view?.status.ok && view.status.data.prepared
+								? 'preparing'
+								: view?.status.ok
+									? 'writable'
+									: 'unknown';
+					return [service.service, state] as const;
+				})
+			);
+			if (epoch !== sourceProbeEpoch) return;
+			serviceCheckpointStates = Object.fromEntries(entries);
+			if (!busy && entries.length > 0 && entries.every(([, state]) => state === 'writable')) {
+				teardownSourceLocked = false;
+			}
+		})();
+		const probe = { epoch, task };
+		sourceProbeInFlight = probe;
+		return task.finally(() => {
+			if (sourceProbeInFlight === probe) sourceProbeInFlight = null;
+		});
+	}
+
+	$effect(() => {
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const tick = async () => {
+			await probeSourceCheckpointState();
+			if (!stopped) timer = setTimeout(tick, 1500);
+		};
+		void tick();
+		return () => {
+			stopped = true;
+			if (timer) clearTimeout(timer);
+		};
+	});
+
 	async function send() {
 		const text = composer.trim();
-		if (!text || !sessionId || sending) return;
+		if (!text || !sessionId || sending || sourceReadOnly) return;
 		sending = true;
 		try {
 			const res = await fetch(`/api/v1/sessions/${sessionId}/events`, {
@@ -142,17 +221,30 @@
 		}
 	}
 
-	async function teardown() {
+	async function teardown(discardUncaptured = false) {
 		confirmTeardown = false;
+		sourceProbeEpoch += 1;
+		teardownSourceLocked = true;
+		serviceCheckpointStates = Object.fromEntries(
+			services.map((service) => [service.service, 'unknown'] as const)
+		);
 		busy = true;
 		try {
-			await teardownDevEnvironmentUntilComplete(environment.executionId);
+			await teardownDevEnvironmentUntilComplete(environment.executionId, {
+				discardUncaptured
+			});
 			errorMessage = null;
 			await goto(`/workspaces/${slug}/dev`);
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
+			if (error instanceof DevEnvironmentTeardownBlockedError) {
+				captureBlockedMessage = error.message;
+				confirmTeardown = true;
+			}
 		} finally {
+			sourceProbeEpoch += 1;
 			busy = false;
+			if (teardownSourceLocked) await probeSourceCheckpointState();
 		}
 	}
 </script>
@@ -183,6 +275,18 @@
 		<div class="px-5 pt-3">
 			<Alert variant="destructive">
 				<AlertDescription>{errorMessage}</AlertDescription>
+			</Alert>
+		</div>
+	{/if}
+	{#if sourceCheckpointState === 'frozen' || sourceCheckpointState === 'preparing'}
+		<div class="px-5 pt-3">
+			<Alert>
+				<AlertTriangle class="size-4" />
+				<AlertDescription>
+					{sourceCheckpointState === 'frozen'
+						? 'Source writes are frozen while the stable draft PR is recovered. Retry teardown to continue the same checkpoint operation.'
+						: 'Source writes are briefly paused while every service prepares one coherent checkpoint generation.'}
+				</AlertDescription>
 			</Alert>
 		</div>
 	{/if}
@@ -228,20 +332,37 @@
 	>
 		<!-- Status / controls column -->
 		<aside class="space-y-4 border-b p-4 lg:overflow-y-auto lg:border-r lg:border-b-0">
-			<DevPreviewStatusCard {environment} {busy} onteardown={() => (confirmTeardown = true)} />
+			<DevPreviewStatusCard
+				{environment}
+				{busy}
+				canTeardown={canManageStrictCheckpoints}
+				onteardown={() => {
+					captureBlockedMessage = null;
+					confirmTeardown = true;
+				}}
+			/>
 			<!-- B5: per-service card grid (health, sidecar status, run commands). -->
 			<section class="space-y-2">
 				<h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
 					Services ({services.length})
 				</h2>
 				{#each services as svc (svc.service)}
-					<DevServiceCard service={svc} />
+					<DevServiceCard
+						service={svc}
+						{sourceReadOnly}
+						oncheckpointstate={(service, state) => {
+							serviceCheckpointStates = { ...serviceCheckpointStates, [service]: state };
+						}}
+					/>
 				{/each}
 			</section>
 			<CodeVersionsPanel
 				executionId={environment.executionId}
+				services={services.map((service) => service.service)}
 				live={!lifecycle.runTerminal}
+				sourceReadOnly={sourceReadOnly}
 				onoutstanding={(n) => (outstandingVersions = n)}
+				oncapability={(allowed) => (canManageStrictCheckpoints = allowed)}
 			/>
 		</aside>
 
@@ -256,15 +377,19 @@
 						<Textarea
 							id="agent-message"
 							class="min-h-[44px] max-h-40 resize-none"
-							placeholder="Message the coding agent…"
 							bind:value={composer}
 							onkeydown={onComposerKeydown}
-							disabled={sending}
+							disabled={sending || sourceReadOnly}
+							placeholder={sourceReadOnly
+								? sourceCheckpointState === 'unknown'
+									? 'Checking source receiver state…'
+									: 'Source writes are paused for checkpoint recovery'
+								: 'Message the coding agent…'}
 							aria-label="Message the coding agent"
 						/>
 						<Button
 							onclick={send}
-							disabled={sending || !composer.trim()}
+							disabled={sending || sourceReadOnly || !composer.trim()}
 							aria-label={sending ? 'Sending message' : 'Send message'}
 							title={sending ? 'Sending message' : 'Send message'}
 						>
@@ -294,11 +419,26 @@
 <AlertDialog open={confirmTeardown} onOpenChange={(open) => (confirmTeardown = open)}>
 	<AlertDialogContent>
 		<AlertDialogHeader>
-			<AlertDialogTitle>Tear down {environment.service}?</AlertDialogTitle>
+		<AlertDialogTitle>Tear down {environmentLabel}?</AlertDialogTitle>
 			<AlertDialogDescription>
-				Deletes the preview pod and purges the interactive session. This can't be undone.
+				Pauses source writes across every service, verifies one live-sync generation, updates this
+				execution's stable draft pull request, then stops the dev workload and interactive session.
+				If checkpoint handoff fails after the freeze commits, the environment remains read-only so
+				the same operation can be retried.
 			</AlertDialogDescription>
 		</AlertDialogHeader>
+		{#if captureBlockedMessage}
+			<div
+				class="flex gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+				role="alert"
+			>
+				<AlertTriangle class="mt-0.5 size-4 shrink-0" />
+				<p>
+					{captureBlockedMessage} Retry checkpointing to preserve the frozen source, or discard it
+					as a platform administrator.
+				</p>
+			</div>
+		{/if}
 		{#if outstandingVersions > 0}
 			<div
 				class="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300"
@@ -306,14 +446,23 @@
 				<AlertTriangle class="mt-0.5 size-4 shrink-0" />
 				<p>
 					{outstandingVersions} code version{outstandingVersions === 1 ? '' : 's'} from this run
-					{outstandingVersions === 1 ? 'has' : 'have'} not been pushed to a GitHub PR. They live only
-					in this preview and will be lost on teardown — promote them first if you want to keep them.
+					{outstandingVersions === 1 ? 'is' : 'are'} waiting for a GitHub PR. The current
+					whole-state checkpoint will be preserved in the draft pull request before teardown;
+					promote older independent bundles separately when needed.
 				</p>
 			</div>
 		{/if}
 		<AlertDialogFooter>
 			<AlertDialogCancel>Cancel</AlertDialogCancel>
-			<AlertDialogAction onclick={teardown}>Tear down</AlertDialogAction>
+			{#if captureBlockedMessage && canManageStrictCheckpoints}
+				<Button variant="destructive" onclick={() => teardown(true)}>
+					Discard changes and tear down
+				</Button>
+			{/if}
+				<AlertDialogAction onclick={() => teardown(false)}>
+					<GitPullRequest class="size-4" />
+					Checkpoint PR and tear down
+				</AlertDialogAction>
 		</AlertDialogFooter>
 	</AlertDialogContent>
 </AlertDialog>

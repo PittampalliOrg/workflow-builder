@@ -1,19 +1,21 @@
 import type {
   CaptureDevPreviewSourcesResult,
   DevPreviewAcceptanceCapturePort,
-  ImmutableGitSha,
-  PreviewAcceptanceBrokerPort,
   PreviewAcceptanceBrokerResult,
   PreviewLocalControlIdentityPort,
   PreviewSessionContinuationBody,
   PreviewSessionContinuationInput,
   PreviewSessionContinuationPort,
   PreviewSessionContinuationResult,
+  PreviewSourcePromotionAcceptancePort,
   PreviewSourcePromotionPort,
   PreviewSourcePromotionResult,
+  WorkflowArtifactRecord,
   WorkflowDataService,
 } from "$lib/server/application/ports";
+import { latestWorkflowArtifact } from "$lib/server/application/workflow-code-version-order";
 
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
 type ContinuationAction =
@@ -31,24 +33,24 @@ type ContinuationAction =
     }>
   | Readonly<{
       kind: "acceptance";
-      pullRequest: Readonly<{
-        repository: string;
-        number: number;
-        baseSha: ImmutableGitSha;
-        headSha: ImmutableGitSha;
-      }>;
+      artifactId: string;
     }>;
 
 type PreviewSessionContinuationDeps = Readonly<{
   workflowData: Pick<
     WorkflowDataService,
-    "getScopedExecutionById" | "isPlatformAdmin"
+    | "getScopedExecutionById"
+    | "isPlatformAdmin"
+    | "getWorkflowArtifactForExecution"
+    | "listWorkflowArtifactsByExecutionId"
+    | "mergeWorkflowArtifactMetadata"
   >;
   identity: PreviewLocalControlIdentityPort;
   capture: DevPreviewAcceptanceCapturePort;
   promotion: PreviewSourcePromotionPort;
-  acceptance: PreviewAcceptanceBrokerPort;
+  acceptance: PreviewSourcePromotionAcceptancePort;
   requestId?: () => string;
+  now?: () => Date;
 }>;
 
 /**
@@ -79,7 +81,10 @@ export class ApplicationPreviewSessionContinuationService
       })
       .catch(() => null);
     if (!execution) return failure(404, "Execution not found");
-    if (!(await this.deps.workflowData.isPlatformAdmin(input.userId))) {
+    if (
+      action.kind !== "capture" &&
+      !(await this.deps.workflowData.isPlatformAdmin(input.userId))
+    ) {
       return failure(403, "Admin access required");
     }
 
@@ -93,9 +98,8 @@ export class ApplicationPreviewSessionContinuationService
     try {
       switch (action.kind) {
         case "capture":
-          return success(
-            captureBody(
-              await this.deps.capture.captureAcceptanceCandidate({
+          {
+            const result = await this.deps.capture.captureAcceptanceCandidate({
                 executionId: execution.id,
                 nodeId: "preview-session-continuation",
                 iteration: action.iteration,
@@ -103,10 +107,20 @@ export class ApplicationPreviewSessionContinuationService
                 platformRevision: identity.environmentPlatformRevision,
                 sourceRevision: identity.environmentSourceRevision,
                 catalogDigest: identity.catalogDigest,
-              }),
-            ),
-          );
+              });
+            return success(captureBody(result), result.ok ? 200 : 422);
+          }
         case "promote": {
+          const checkpoint = await this.currentStrictSourceArtifact(
+            execution.id,
+            action.artifactId,
+          );
+          if (checkpoint.status === "not_found") {
+            return failure(404, "Source checkpoint not found");
+          }
+          if (checkpoint.status !== "ok") {
+            return failure(409, checkpoint.message);
+          }
           const result = await this.deps.promotion.promote({
             executionId: execution.id,
             artifactId: action.artifactId,
@@ -120,9 +134,41 @@ export class ApplicationPreviewSessionContinuationService
           if (result.executionId !== execution.id) {
             throw new Error("preview promotion result is not scoped to the execution");
           }
-          return success(promotionBody(result));
+          const promotion = promotionReceipt(
+            result,
+            input.userId,
+            this.deps.now?.() ?? new Date(),
+          );
+          const updated = await this.deps.workflowData.mergeWorkflowArtifactMetadata({
+            executionId: execution.id,
+            artifactId: action.artifactId,
+            patch: { promotion },
+          });
+          if (!updated) {
+            throw new Error("preview promotion receipt could not be persisted");
+          }
+          return success(promotionBody(result, action.artifactId));
         }
         case "acceptance": {
+          const checkpoint = await this.currentStrictSourceArtifact(
+            execution.id,
+            action.artifactId,
+          );
+          if (checkpoint.status !== "ok") {
+            return failure(
+              409,
+              checkpoint.status === "not_found"
+                ? "Source checkpoint has no verified promotion receipt"
+                : checkpoint.message,
+            );
+          }
+          const sourceArtifact = checkpoint.artifact;
+          const promotion = sourceArtifact
+            ? storedPromotion(sourceArtifact.metadata?.promotion)
+            : null;
+          if (!sourceArtifact || !promotion) {
+            return failure(409, "Source checkpoint has no verified promotion receipt");
+          }
           const result = await this.deps.acceptance.replay({
             requestId: this.requestId(),
             previewName: identity.previewName,
@@ -130,19 +176,97 @@ export class ApplicationPreviewSessionContinuationService
             environmentPlatformRevision: identity.environmentPlatformRevision,
             environmentSourceRevision: identity.environmentSourceRevision,
             catalogDigest: identity.catalogDigest,
-            pullRequest: action.pullRequest,
+            executionId: execution.id,
+            receiptId: promotion.receiptId,
           });
-          if (!matchesAcceptance(result, action, identity.previewName)) {
+          if (!matchesAcceptance(result, promotion, identity.previewName)) {
             throw new Error("preview acceptance result does not match its request");
+          }
+          const updated = await this.deps.workflowData.mergeWorkflowArtifactMetadata({
+            executionId: execution.id,
+            artifactId: action.artifactId,
+            patch: {
+              acceptance: {
+                receiptId: promotion.receiptId,
+                baseSha: result.pullRequest.baseSha,
+                headSha: result.pullRequest.headSha,
+                ok: result.ok === true,
+                services: [...result.services],
+                ...(result.evidenceReceiptDigest
+                  ? { evidenceReceiptDigest: result.evidenceReceiptDigest }
+                  : {}),
+                ...(result.stage ? { stage: result.stage } : {}),
+                ...(result.message ? { message: result.message } : {}),
+                ...(result.verification
+                  ? { verification: copyVerification(result.verification) }
+                  : {}),
+                ...(result.cleanup !== undefined
+                  ? { cleanup: copyCleanup(result.cleanup) }
+                  : {}),
+                completedAt: (this.deps.now?.() ?? new Date()).toISOString(),
+              },
+            },
+          });
+          if (!updated) {
+            throw new Error("preview acceptance receipt could not be persisted");
           }
           return success(acceptanceBody(result), result.ok ? 200 : 422);
         }
       }
     } catch {
-      // The public session API never reflects transport or broker internals.
+      // The public API preserves validated outcome evidence, not transport
+      // failures or privileged control-plane provenance.
       return failure(502, "Preview continuation could not complete");
     }
   }
+
+  private async currentStrictSourceArtifact(
+    executionId: string,
+    artifactId: string,
+  ): Promise<
+    | Readonly<{ status: "ok"; artifact: WorkflowArtifactRecord }>
+    | Readonly<{ status: "not_found" }>
+    | Readonly<{ status: "invalid"; message: string }>
+  > {
+    const artifact = await this.deps.workflowData.getWorkflowArtifactForExecution({
+      executionId,
+      artifactId,
+    });
+    if (artifact?.kind !== "source-bundle" || !artifact.fileId) {
+      return { status: "not_found" };
+    }
+    if (!isStrictAtomicSnapshot(artifact.inlinePayload)) {
+      return {
+        status: "invalid",
+        message: "Only strict source checkpoints can use preview continuation",
+      };
+    }
+
+    const artifacts =
+      await this.deps.workflowData.listWorkflowArtifactsByExecutionId(executionId);
+    const latest = latestWorkflowArtifact(
+      artifacts,
+      (candidate) =>
+        candidate.kind === "source-bundle" &&
+        isStrictAtomicSnapshot(candidate.inlinePayload),
+    );
+    if (!latest || latest.id !== artifact.id) {
+      return {
+        status: "invalid",
+        message: "Historical source checkpoints are read-only",
+      };
+    }
+    return { status: "ok", artifact };
+  }
+}
+
+function isStrictAtomicSnapshot(value: unknown): boolean {
+  const payload = record(value);
+  return (
+    payload?.tier === "tar-overlay-set" &&
+    (payload.captureProtocol === "atomic-generation-v2" ||
+      payload.acceptanceEligible === true)
+  );
 }
 
 function parseAction(value: unknown): ContinuationAction | null {
@@ -173,42 +297,27 @@ function parseAction(value: unknown): ContinuationAction | null {
     nonBlankString(body.artifactId) &&
     optionalString(body.title) &&
     optionalString(body.bodyMarkdown) &&
-    (body.draft === undefined || typeof body.draft === "boolean")
+    (body.draft === undefined || body.draft === true)
   ) {
     return {
       kind: "promote",
       artifactId: body.artifactId.trim(),
       title: optionalText(body.title),
       bodyMarkdown: optionalText(body.bodyMarkdown),
-      draft: body.draft === true,
+      draft: true,
     };
   }
 
-  if (body.action === "acceptance" && onlyKeys(body, ["action", "pullRequest"])) {
-    const pullRequest = record(body.pullRequest);
-    if (
-      pullRequest &&
-      onlyKeys(pullRequest, ["repository", "number", "baseSha", "headSha"]) &&
-      nonBlankString(pullRequest.repository) &&
-      typeof pullRequest.number === "number" &&
-      Number.isSafeInteger(pullRequest.number) &&
-      pullRequest.number > 0 &&
-      typeof pullRequest.baseSha === "string" &&
-      FULL_SHA.test(pullRequest.baseSha) &&
-      typeof pullRequest.headSha === "string" &&
-      FULL_SHA.test(pullRequest.headSha) &&
-      pullRequest.baseSha !== pullRequest.headSha
-    ) {
+  if (
+    body.action === "acceptance" &&
+    onlyKeys(body, ["action", "artifactId"]) &&
+    nonBlankString(body.artifactId) &&
+    SAFE_ID.test(body.artifactId.trim())
+  ) {
       return {
         kind: "acceptance",
-        pullRequest: {
-          repository: pullRequest.repository.trim(),
-          number: pullRequest.number,
-          baseSha: pullRequest.baseSha as ImmutableGitSha,
-          headSha: pullRequest.headSha as ImmutableGitSha,
-        },
+        artifactId: body.artifactId.trim(),
       };
-    }
   }
 
   return null;
@@ -223,21 +332,35 @@ function captureBody(
     ...(typeof result.artifactId === "string"
       ? { artifactId: result.artifactId }
       : {}),
-    services: result.services.map(({ service, ok }) => ({
+    ...(typeof result.bytes === "number" ? { bytes: result.bytes } : {}),
+    ...(typeof result.captureId === "string"
+      ? { captureId: result.captureId }
+      : {}),
+    ...(result.generation !== undefined
+      ? { generation: result.generation }
+      : {}),
+    ...(result.reused === true ? { reused: true } : {}),
+    ...(typeof result.skipped === "string" ? { skipped: result.skipped } : {}),
+    services: result.services.map(({ service, ok, skipped }) => ({
       service,
       ok: ok === true,
+      ...(typeof skipped === "string" ? { skipped } : {}),
     })),
   };
 }
 
 function promotionBody(
   result: PreviewSourcePromotionResult,
+  sourceArtifactId: string,
 ): PreviewSessionContinuationBody {
   return {
     action: "promote",
     ok: true,
-    artifactId: result.artifactId,
+    artifactId: sourceArtifactId,
+    receiptId: result.receiptId,
     services: [...result.services],
+    branch: result.branch,
+    prUrl: result.prUrl,
     pullRequest: {
       repository: result.pullRequest.repository,
       number: result.pullRequest.number,
@@ -248,16 +371,75 @@ function promotionBody(
 
 function matchesAcceptance(
   result: PreviewAcceptanceBrokerResult,
-  action: Extract<ContinuationAction, { kind: "acceptance" }>,
+  promotion: StoredPromotion,
   previewName: string,
 ): boolean {
   return (
     result.previewName === previewName &&
-    result.pullRequest.repository === action.pullRequest.repository &&
-    result.pullRequest.number === action.pullRequest.number &&
-    result.pullRequest.baseSha === action.pullRequest.baseSha &&
-    result.pullRequest.headSha === action.pullRequest.headSha
+    result.pullRequest.repository === promotion.repository &&
+    result.pullRequest.number === promotion.pullRequestNumber &&
+    FULL_SHA.test(result.pullRequest.baseSha) &&
+    result.pullRequest.headSha === promotion.headSha &&
+    result.pullRequest.baseSha !== result.pullRequest.headSha
   );
+}
+
+type StoredPromotion = Readonly<{
+  receiptId: string;
+  repository: string;
+  pullRequestNumber: number;
+  baseSha: string;
+  headSha: string;
+}>;
+
+function storedPromotion(value: unknown): StoredPromotion | null {
+  const item = record(value);
+  if (
+    !item ||
+    typeof item.receiptId !== "string" ||
+    !SAFE_ID.test(item.receiptId) ||
+    !nonBlankString(item.repository) ||
+    typeof item.pullRequestNumber !== "number" ||
+    !Number.isSafeInteger(item.pullRequestNumber) ||
+    item.pullRequestNumber <= 0 ||
+    typeof item.baseSha !== "string" ||
+    !FULL_SHA.test(item.baseSha) ||
+    typeof item.headSha !== "string" ||
+    !FULL_SHA.test(item.headSha) ||
+    item.baseSha === item.headSha
+  ) {
+    return null;
+  }
+  return {
+    receiptId: item.receiptId,
+    repository: item.repository.trim(),
+    pullRequestNumber: item.pullRequestNumber,
+    baseSha: item.baseSha,
+    headSha: item.headSha,
+  };
+}
+
+function promotionReceipt(
+  result: PreviewSourcePromotionResult,
+  promotedBy: string,
+  promotedAt: Date,
+): Record<string, unknown> {
+  return {
+    receiptId: result.receiptId,
+    centralArtifactId: result.artifactId,
+    prUrl: result.prUrl,
+    branch: result.branch,
+    commitSha: result.commitSha,
+    repository: result.pullRequest.repository,
+    pullRequestNumber: result.pullRequest.number,
+    baseSha: result.pullRequest.baseSha,
+    headSha: result.pullRequest.headSha,
+    draft: result.draft,
+    services: [...result.services],
+    mode: "pr",
+    promotedAt: promotedAt.toISOString(),
+    promotedBy,
+  };
 }
 
 function acceptanceBody(
@@ -271,7 +453,44 @@ function acceptanceBody(
       repository: result.pullRequest.repository,
       number: result.pullRequest.number,
     },
+    ...(result.stage ? { stage: result.stage } : {}),
+    ...(result.message ? { message: result.message } : {}),
+    ...(result.evidenceReceiptDigest
+      ? { evidenceReceiptDigest: result.evidenceReceiptDigest }
+      : {}),
+    ...(result.verification
+      ? { verification: copyVerification(result.verification) }
+      : {}),
+    ...(result.cleanup !== undefined
+      ? { cleanup: copyCleanup(result.cleanup) }
+      : {}),
   };
+}
+
+function copyVerification(
+  verification: NonNullable<PreviewAcceptanceBrokerResult["verification"]>,
+) {
+  return {
+    ok: verification.ok,
+    checks: verification.checks.map((check) => ({
+      name: check.name,
+      ok: check.ok,
+      ...(check.detail !== undefined ? { detail: check.detail } : {}),
+    })),
+  };
+}
+
+function copyCleanup(cleanup: PreviewAcceptanceBrokerResult["cleanup"]) {
+  return cleanup === null || cleanup === undefined
+    ? null
+    : {
+        name: cleanup.name,
+        resourceName: cleanup.resourceName,
+        complete: cleanup.complete,
+        phase: cleanup.phase,
+        checks: { ...cleanup.checks },
+        message: cleanup.message,
+      };
 }
 
 function success(
@@ -282,7 +501,7 @@ function success(
 }
 
 function failure(
-  httpStatus: 400 | 403 | 404 | 502,
+  httpStatus: 400 | 403 | 404 | 409 | 502,
   message: string,
 ): PreviewSessionContinuationResult {
   return { status: "error", httpStatus, message };

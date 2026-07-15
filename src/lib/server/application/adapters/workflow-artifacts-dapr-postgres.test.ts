@@ -203,6 +203,51 @@ describe("DaprPostgresArtifactStore", () => {
 		).resolves.toBeNull();
 		expect(client.calls).toHaveLength(1);
 	});
+
+	it("atomically merges metadata without replacing unrelated top-level keys", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("workflow_artifacts.select_by_execution_and_id", [
+			[
+				"artifact-1",
+				"exec-1",
+				"dev-preview",
+				"aux",
+				"source-bundle",
+				"Source bundle",
+				null,
+				"{}",
+				"file-1",
+				"application/gzip",
+				"42",
+				'{"existing":"kept","promotion":{"receiptId":"receipt-1"}}',
+				"2026-07-14T12:00:00.000Z",
+			],
+		]);
+
+		await artifactStore(client).mergeWorkflowArtifactMetadata({
+			executionId: "exec-1",
+			artifactId: "artifact-1",
+			patch: { promotion: { receiptId: "receipt-1" } },
+			ifAbsentMetadataKey: "promotion",
+		});
+
+		expect(client.calls[0]).toMatchObject({
+			summary: "workflow_artifacts.merge_metadata_if_absent",
+			params: [
+				"exec-1",
+				"artifact-1",
+				'{"promotion":{"receiptId":"receipt-1"}}',
+				"promotion",
+			],
+		});
+		expect(client.calls[0]?.sql).toContain(
+			"COALESCE(metadata, '{}'::jsonb) || CAST($3 AS jsonb)",
+		);
+		expect(client.calls[0]?.sql).toContain(
+			"NOT (COALESCE(metadata, '{}'::jsonb) ? $4)",
+		);
+		expect(client.calls).toHaveLength(2);
+	});
 });
 
 describe("DaprPostgresWorkflowPlanArtifactStore", () => {

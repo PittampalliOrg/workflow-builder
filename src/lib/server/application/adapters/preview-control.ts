@@ -94,6 +94,7 @@ export type GithubPreviewControlSourceOptions = Readonly<{
   token?: () => string | null | Promise<string | null>;
   credentials?: PreviewGitHubInstallationTokenPort;
   fetch?: typeof globalThis.fetch;
+  baseBranch?: string;
 }>;
 
 /** Resolve the server-created branch through GitHub before any build is admitted. */
@@ -112,6 +113,7 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
     commitSha: string;
     baseBranch: string;
     baseRevision: string;
+    expectedBaseHead?: string;
     expectedChangedPaths?: readonly string[];
   }): Promise<boolean> {
     const token = await previewGithubToken(this.options);
@@ -155,6 +157,12 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
     ) {
       return false;
     }
+    if (
+      input.expectedBaseHead !== undefined &&
+      baseObject.sha !== input.expectedBaseHead
+    ) {
+      return false;
+    }
     if (baseObject.sha !== input.baseRevision) {
       const comparison = await read(
         `compare/${input.baseRevision}...${baseObject.sha}`,
@@ -178,13 +186,30 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
         headers,
       );
       if (!actual || !sameStrings(actual, expected)) return false;
-      const finalRef = await read(
-        `git/ref/heads/${encodeURIComponent(input.branch)}`,
-      );
-      const finalObject = finalRef?.object as
+    }
+    if (
+      input.expectedChangedPaths !== undefined ||
+      input.expectedBaseHead !== undefined
+    ) {
+      const [finalCandidateRef, finalBaseRef] = await Promise.all([
+        read(`git/ref/heads/${encodeURIComponent(input.branch)}`),
+        input.expectedBaseHead !== undefined
+          ? read(`git/ref/heads/${encodeURIComponent(input.baseBranch)}`)
+          : Promise.resolve(null),
+      ]);
+      const finalCandidate = finalCandidateRef?.object as
         | Record<string, unknown>
         | undefined;
-      if (finalObject?.sha !== input.commitSha) return false;
+      const finalBase = finalBaseRef?.object as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        finalCandidate?.sha !== input.commitSha ||
+        (input.expectedBaseHead !== undefined &&
+          finalBase?.sha !== input.expectedBaseHead)
+      ) {
+        return false;
+      }
     }
     return true;
   }
@@ -314,7 +339,8 @@ export class GithubPreviewControlPullRequestAdapter implements PreviewControlPul
     const declaredChangedFiles = pull.changed_files;
     if (
       pull.state !== "open" ||
-      base?.ref !== "main" ||
+      typeof pull.draft !== "boolean" ||
+      base?.ref !== (this.options.baseBranch ?? "main") ||
       baseRepository?.full_name !== input.repository ||
       headRepository?.full_name !== input.repository
     ) {
@@ -393,6 +419,7 @@ export class GithubPreviewControlPullRequestAdapter implements PreviewControlPul
     return Object.freeze({
       repository: input.repository,
       number: input.number,
+      draft: pull.draft as boolean,
       baseSha: baseSha as never,
       headRef,
       headSha: headSha as never,
@@ -1147,18 +1174,22 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
     );
     if (
       body.ok !== true ||
+      typeof body.receiptId !== "string" ||
+      !/^pspr_[0-9a-f]{64}$/.test(body.receiptId) ||
       body.previewName !== input.previewName ||
       body.requestId !== input.environmentRequestId ||
       body.executionId !== input.executionId ||
       body.artifactId !== input.artifactId ||
-      body.branch !== `preview-feature-${input.operationId}` ||
+      typeof body.branch !== "string" ||
+      !/^preview-feature-[0-9a-f]{32}$/.test(body.branch) ||
       !FULL_SHA.test(String(body.commitSha)) ||
       typeof body.prUrl !== "string" ||
       !pullRequest ||
       pullRequest.repository !== expectedRepository ||
       !Number.isSafeInteger(pullRequest.number) ||
       Number(pullRequest.number) < 1 ||
-      pullRequest.baseSha !== input.environmentSourceRevision ||
+      !FULL_SHA.test(String(pullRequest.baseSha)) ||
+      pullRequest.baseSha === body.commitSha ||
       pullRequest.headSha !== body.commitSha ||
       body.prUrl !== expectedPullRequestUrl ||
       body.draft !== input.draft ||
@@ -1168,6 +1199,7 @@ export class HttpPreviewSourcePromotionBrokerAdapter implements PreviewSourcePro
     }
     return Object.freeze({
       ok: true,
+      receiptId: body.receiptId,
       previewName: body.previewName,
       requestId: body.requestId,
       executionId: body.executionId,
@@ -1560,7 +1592,7 @@ const CLEANUP_CHECKS = [
   "runner-identity-absent",
 ] as const;
 
-function validateAcceptanceBrokerResult(
+export function validateAcceptanceBrokerResult(
   body: Record<string, unknown>,
   input: PreviewAcceptanceBrokerRequest,
   catalog: PreviewAcceptanceResponseCatalogPort,

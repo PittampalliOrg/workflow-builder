@@ -5,6 +5,7 @@
 export * from "./ports/agents";
 export * from "./ports/benchmarks";
 export * from "./ports/connections";
+export * from "./ports/dev-environment-teardown";
 export * from "./ports/dev-preview-provisioner";
 export * from "./ports/dev-preview-source-capture";
 export * from "./ports/dev-previews";
@@ -31,6 +32,7 @@ export * from "./ports/preview-runtime";
 export * from "./ports/preview-read-broker";
 export * from "./ports/preview-session-continuation";
 export * from "./ports/preview-source-promotion";
+export * from "./ports/preview-source-promotion-acceptance";
 export * from "./ports/preview-traces";
 export * from "./ports/pr-previews";
 export * from "./ports/sandboxes";

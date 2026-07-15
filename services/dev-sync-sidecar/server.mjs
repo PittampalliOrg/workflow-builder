@@ -28,6 +28,7 @@ import {
  * for the BFF, so sidecar-mode services reach parity:
  *   - GET  /__export : pull the current workdir source as a tar.gz (version capture)
  *   - GET  /__status : last-sync + last-run diagnostics
+ *   - POST /__freeze : permanently stop source writes before version capture
  *   - POST /__run    : run an ALLOWLISTED named command (deps install / contract
  *                      tests) — the allowlist is DEV_SYNC_COMMANDS_JSON (SEA
  *                      populates it from the dev-preview registry). No new trust
@@ -61,8 +62,8 @@ import {
  *   DEV_SYNC_EXEC_HOST     (default 127.0.0.1) — bridge host (tests only)
  *   DEV_SYNC_ALLOW_LOCAL_RUN (default false) — legacy-only sidecar fallback
  *
- * Endpoints: POST /__sync (tar.gz body) · GET /__export?paths=… · GET /__status ·
- *            POST /__run?cmd=<name> · GET /healthz
+ * Endpoints: POST /__sync (tar.gz body) · POST /__freeze · GET /__export?paths=… ·
+ *            GET /__status · POST /__run?cmd=<name> · GET /healthz
  */
 
 const PORT = Number(process.env.DEV_SYNC_PORT || 8001);
@@ -92,6 +93,7 @@ const ROUTES_PREFIX = 'src/routes/';
 const SYNC_STATE_FILE = '.dev-sync-state.json';
 const MAX_REPORTED_CHANGED_PATHS = 50;
 const GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const FREEZE_OPERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
@@ -160,6 +162,18 @@ function loadSyncState() {
 			contentSha256:
 				typeof value.contentSha256 === 'string' && /^sha256:[0-9a-f]{64}$/.test(value.contentSha256)
 					? value.contentSha256
+					: null,
+			frozen: value.frozen === true,
+			preparedOperationId:
+				typeof value.preparedOperationId === 'string' &&
+				FREEZE_OPERATION_PATTERN.test(value.preparedOperationId)
+					? value.preparedOperationId
+					: null,
+			preparedAt: typeof value.preparedAt === 'string' ? value.preparedAt : null,
+			frozenOperationId:
+				typeof value.frozenOperationId === 'string' &&
+				FREEZE_OPERATION_PATTERN.test(value.frozenOperationId)
+					? value.frozenOperationId
 					: null
 		};
 	} catch {
@@ -168,7 +182,11 @@ function loadSyncState() {
 			service: null,
 			lastSyncAt: null,
 			lastSyncBytes: 0,
-			contentSha256: null
+			contentSha256: null,
+			frozen: false,
+			preparedOperationId: null,
+			preparedAt: null,
+			frozenOperationId: null
 		};
 	}
 }
@@ -201,6 +219,10 @@ let currentSyncService = initialSyncState.service || CONFIGURED_SERVICE || null;
 let lastSyncAt = initialSyncState.lastSyncAt; // ISO string of the last successful /__sync
 let lastSyncBytes = initialSyncState.lastSyncBytes; // byte size of that upload
 let currentContentSha256 = initialSyncState.contentSha256;
+let frozen = initialSyncState.frozen;
+let preparedOperationId = frozen ? null : initialSyncState.preparedOperationId;
+let preparedAt = frozen ? null : initialSyncState.preparedAt;
+let frozenOperationId = frozen ? initialSyncState.frozenOperationId : null;
 let lastSyncTimingsMs = null;
 let lastExportSha256 = null;
 let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs, executedIn }
@@ -228,6 +250,10 @@ function reply(res, code, body) {
 
 function unauthorized(req) {
 	return !acceptedSyncToken(readHeader(req, 'x-sync-token'));
+}
+
+function unauthorizedReceiver(req) {
+	return !tokenEquals(readHeader(req, 'x-sync-token'), TOKEN);
 }
 
 /**
@@ -260,10 +286,142 @@ function parsePaths(rawUrl) {
 	);
 }
 
+function receiverState(overrides = {}) {
+	return {
+		generation: currentGeneration,
+		service: currentSyncService,
+		lastSyncAt,
+		lastSyncBytes,
+		contentSha256: currentContentSha256,
+		frozen,
+		preparedOperationId,
+		preparedAt,
+		frozenOperationId,
+		...overrides
+	};
+}
+
+function freezeProof(operationId, idempotent) {
+	return {
+		ok: true,
+		prepared: !frozen && preparedOperationId === operationId,
+		frozen,
+		idempotent,
+		operationId,
+		service: currentSyncService,
+		generation: currentGeneration,
+		contentSha256: currentContentSha256
+	};
+}
+
+// ----- POST /__freeze : reversible prepare, then one-way commit -----
+function handleFreeze(req, res) {
+	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
+	req.resume();
+	if (unauthorizedReceiver(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
+	const url = new URL(req.url || '/__freeze', 'http://localhost');
+	const phase = (url.searchParams.get('phase') || '').trim();
+	const operationId = (url.searchParams.get('operationId') || '').trim();
+	if (!['prepare', 'commit', 'abort'].includes(phase)) {
+		return reply(res, 400, { ok: false, error: 'valid freeze phase required' });
+	}
+	if (!FREEZE_OPERATION_PATTERN.test(operationId)) {
+		return reply(res, 400, { ok: false, error: 'valid operationId required' });
+	}
+	const sourceOperationName = `freeze-${phase}`;
+	if (!beginSourceOperation(sourceOperationName)) {
+		return reply(res, 409, {
+			ok: false,
+			error: `source ${sourceOperation} in progress`
+		});
+	}
+	try {
+		if (phase === 'prepare') {
+			if (frozen) {
+				if (frozenOperationId && frozenOperationId !== operationId) {
+					return reply(res, 409, { ok: false, error: 'receiver frozen by another operation' });
+				}
+				return reply(res, 200, freezeProof(operationId, true));
+			}
+			if (preparedOperationId && preparedOperationId !== operationId) {
+				return reply(res, 409, { ok: false, error: 'receiver prepared by another operation' });
+			}
+			const idempotent = preparedOperationId === operationId;
+			if (!idempotent) {
+				const nextPreparedAt = new Date().toISOString();
+				persistSyncState(
+					receiverState({ preparedOperationId: operationId, preparedAt: nextPreparedAt })
+				);
+				preparedOperationId = operationId;
+				preparedAt = nextPreparedAt;
+			}
+			return reply(res, 200, freezeProof(operationId, idempotent));
+		}
+
+		if (phase === 'abort') {
+			if (frozen) {
+				return reply(res, 409, { ok: false, error: 'receiver freeze is already committed' });
+			}
+			if (preparedOperationId && preparedOperationId !== operationId) {
+				return reply(res, 409, { ok: false, error: 'receiver prepared by another operation' });
+			}
+			const idempotent = preparedOperationId === null;
+			if (!idempotent) {
+				persistSyncState(receiverState({ preparedOperationId: null, preparedAt: null }));
+				preparedOperationId = null;
+				preparedAt = null;
+			}
+			return reply(res, 200, {
+				ok: true,
+				prepared: false,
+				frozen: false,
+				idempotent,
+				operationId
+			});
+		}
+
+		if (frozen) {
+			if (frozenOperationId && frozenOperationId !== operationId) {
+				return reply(res, 409, { ok: false, error: 'receiver frozen by another operation' });
+			}
+			return reply(res, 200, freezeProof(operationId, true));
+		}
+		if (preparedOperationId !== operationId) {
+			return reply(res, 409, { ok: false, error: 'matching freeze preparation required' });
+		}
+		persistSyncState(
+			receiverState({
+				frozen: true,
+				preparedOperationId: null,
+				preparedAt: null,
+				frozenOperationId: operationId
+			})
+		);
+		frozen = true;
+		preparedOperationId = null;
+		preparedAt = null;
+		frozenOperationId = operationId;
+		return reply(res, 200, freezeProof(operationId, false));
+	} catch (error) {
+		return reply(res, 500, { ok: false, error: `freeze state write: ${error.message}` });
+	} finally {
+		endSourceOperation(sourceOperationName);
+	}
+}
+
 // ----- POST /__sync : untar an uploaded tar.gz into the shared workdir -----
 function handleSync(req, res) {
 	if (req.method !== 'POST') return reply(res, 405, { ok: false, error: 'POST only' });
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
+	if (frozen || preparedOperationId) {
+		req.resume();
+		return reply(res, 409, {
+			ok: false,
+			error: frozen ? 'source receiver is frozen' : 'source receiver is prepared for checkpoint',
+			frozen,
+			prepared: Boolean(preparedOperationId)
+		});
+	}
 	if (ALLOWED_ROOTS_ERROR) {
 		req.resume();
 		return reply(res, 503, {
@@ -392,7 +550,11 @@ function handleSync(req, res) {
 			service: syncService,
 			lastSyncAt: syncedAt,
 			lastSyncBytes: buf.length,
-			contentSha256
+			contentSha256,
+			frozen: false,
+			preparedOperationId: null,
+			preparedAt: null,
+			frozenOperationId: null
 		};
 		let addedRoutes = [];
 		void applyAtomicDevSync({
@@ -456,6 +618,10 @@ function handleSync(req, res) {
 				lastSyncAt = restored.lastSyncAt;
 				lastSyncBytes = restored.lastSyncBytes;
 				currentContentSha256 = restored.contentSha256;
+				frozen = restored.frozen;
+				preparedOperationId = restored.preparedOperationId;
+				preparedAt = restored.preparedAt;
+				frozenOperationId = restored.frozenOperationId;
 				release();
 				reply(
 					res,
@@ -583,6 +749,11 @@ function handleStatus(req, res) {
 		lastSyncBytes,
 		lastSyncTimingsMs,
 		contentSha256: currentContentSha256,
+		frozen,
+		prepared: Boolean(preparedOperationId),
+		preparedOperationId,
+		preparedAt,
+		frozenOperationId,
 		allowedRoots: ALLOWED_ROOTS,
 		allowedRootsError: ALLOWED_ROOTS_ERROR,
 		generation: currentGeneration,
@@ -610,6 +781,14 @@ function handleRun(req, res) {
 	if (unauthorized(req)) return reply(res, 401, { ok: false, error: 'unauthorized' });
 	// Drain+ignore any request body (cmd comes from the query only).
 	req.resume();
+	if (frozen || preparedOperationId) {
+		return reply(res, 409, {
+			ok: false,
+			error: frozen ? 'source receiver is frozen' : 'source receiver is prepared for checkpoint',
+			frozen,
+			prepared: Boolean(preparedOperationId)
+		});
+	}
 	const name = (new URL(req.url || '/', 'http://localhost').searchParams.get('cmd') || '').trim();
 	if (!name) return reply(res, 400, { ok: false, error: 'missing cmd' });
 	const command = COMMANDS[name];
@@ -839,6 +1018,8 @@ const server = http.createServer((req, res) => {
 		});
 	}
 	switch (url) {
+		case '/__freeze':
+			return handleFreeze(req, res);
 		case '/__sync':
 			return handleSync(req, res);
 		case '/__export':

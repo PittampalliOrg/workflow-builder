@@ -21,6 +21,7 @@ describe("ApplicationWorkflowCodeVersionService", () => {
           summaryOutput: { summary: "ok" },
         }),
       ),
+      isPlatformAdmin: vi.fn(async () => true),
       listWorkflowArtifactsByExecutionId: vi.fn(async () => [
         sourceBundleArtifact(),
         sourceBundleArtifact({
@@ -62,10 +63,14 @@ describe("ApplicationWorkflowCodeVersionService", () => {
             payload: { tier: "tar-overlay", base: "main" },
             promotionGate: { allowed: true, reason: "ok" },
             promotion: null,
+            acceptance: null,
             createdAt: "2026-01-01T00:00:00.000Z",
           },
         ],
         outstanding: true,
+        unpromotedCount: 1,
+        canManageStrictCheckpoints: true,
+        latestStrictArtifactId: null,
       },
     });
     expect(workflowData.getScopedExecutionById).toHaveBeenCalledWith({
@@ -73,6 +78,7 @@ describe("ApplicationWorkflowCodeVersionService", () => {
       userId: "user-1",
       projectId: "project-1",
     });
+    expect(workflowData.isPlatformAdmin).toHaveBeenCalledWith("user-1");
     expect(promotionGate.evaluatePromotionGate).toHaveBeenCalledWith({
       mode: "pr",
       artifactPayload: { tier: "tar-overlay", base: "main" },
@@ -81,7 +87,23 @@ describe("ApplicationWorkflowCodeVersionService", () => {
     });
   });
 
-  it("marks the run as not outstanding once any version has durable promotion metadata", async () => {
+  it("reports when the scoped user cannot manage strict checkpoints", async () => {
+    vi.mocked(workflowData.isPlatformAdmin).mockResolvedValueOnce(false);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "member-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: { canManageStrictCheckpoints: false },
+    });
+    expect(workflowData.isPlatformAdmin).toHaveBeenCalledWith("member-1");
+  });
+
+  it("keeps the run outstanding while any version lacks a durable pull request", async () => {
     vi.mocked(
       workflowData.listWorkflowArtifactsByExecutionId,
     ).mockResolvedValue([
@@ -101,7 +123,217 @@ describe("ApplicationWorkflowCodeVersionService", () => {
 
     expect(result).toMatchObject({
       status: "ok",
-      body: { outstanding: false },
+      body: { outstanding: true, unpromotedCount: 1 },
+    });
+  });
+
+  it("does not treat a branch-only promotion as a durable pull request", async () => {
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      sourceBundleArtifact({
+        metadata: { promotion: { branch: "wfb-promote-1" } },
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: { outstanding: true, unpromotedCount: 1 },
+    });
+  });
+
+  it("reports no outstanding work when every version has a pull request receipt", async () => {
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      sourceBundleArtifact({
+        metadata: {
+          promotion: {
+            receiptId: "receipt-42",
+            repository: "owner/repo",
+            pullRequestNumber: 42,
+          },
+          acceptance: { ok: true },
+        },
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: {
+        outstanding: false,
+        unpromotedCount: 0,
+        versions: [{ acceptance: { ok: true } }],
+      },
+    });
+  });
+
+  it("treats older unpromoted strict snapshots as history once the newest is promoted", async () => {
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      strictSnapshot({
+        id: "strict-older",
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+      }),
+      strictSnapshot({
+        id: "strict-newest",
+        createdAt: new Date("2026-01-01T00:00:02.000Z"),
+        metadata: {
+          promotion: {
+            repository: "owner/repo",
+            pullRequestNumber: 42,
+          },
+        },
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: {
+        outstanding: false,
+        unpromotedCount: 0,
+        versions: [{ artifactId: "strict-older" }, { artifactId: "strict-newest" }],
+      },
+    });
+  });
+
+  it("counts only the newest unpromoted strict snapshot", async () => {
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      strictSnapshot({
+        id: "strict-older",
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+        metadata: {
+          promotion: {
+            repository: "owner/repo",
+            pullRequestNumber: 41,
+          },
+        },
+      }),
+      strictSnapshot({
+        id: "strict-newest",
+        createdAt: new Date("2026-01-01T00:00:02.000Z"),
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: {
+        outstanding: true,
+        unpromotedCount: 1,
+        latestStrictArtifactId: "strict-newest",
+      },
+    });
+  });
+
+  it("orders versions and selects the latest strict snapshot deterministically when timestamps tie", async () => {
+    const createdAt = new Date("2026-01-01T00:00:02.000Z");
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      strictSnapshot({
+        id: "strict-z",
+        createdAt,
+        metadata: {
+          promotion: {
+            repository: "owner/repo",
+            pullRequestNumber: 42,
+          },
+        },
+      }),
+      strictSnapshot({ id: "strict-a", createdAt }),
+      sourceBundleArtifact({
+        id: "legacy-earlier",
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+        metadata: {
+          promotion: {
+            repository: "owner/repo",
+            pullRequestNumber: 41,
+          },
+        },
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: {
+        versions: [
+          { artifactId: "legacy-earlier" },
+          { artifactId: "strict-a" },
+          { artifactId: "strict-z" },
+        ],
+        latestStrictArtifactId: "strict-z",
+        outstanding: false,
+        unpromotedCount: 0,
+      },
+    });
+  });
+
+  it("keeps non-strict versions independent of a promoted newest strict snapshot", async () => {
+    vi.mocked(
+      workflowData.listWorkflowArtifactsByExecutionId,
+    ).mockResolvedValue([
+      sourceBundleArtifact({
+        id: "legacy-unpromoted",
+        createdAt: new Date("2026-01-01T00:00:03.000Z"),
+      }),
+      strictSnapshot({
+        id: "strict-newest",
+        createdAt: new Date("2026-01-01T00:00:02.000Z"),
+        metadata: {
+          promotion: {
+            repository: "owner/repo",
+            pullRequestNumber: 42,
+          },
+        },
+      }),
+      strictSnapshot({
+        id: "strict-history",
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
+      }),
+    ]);
+
+    const result = await service.listVersions({
+      executionId: "exec-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: { outstanding: true, unpromotedCount: 1 },
     });
   });
 
@@ -122,6 +354,7 @@ describe("ApplicationWorkflowCodeVersionService", () => {
     expect(
       workflowData.listWorkflowArtifactsByExecutionId,
     ).not.toHaveBeenCalled();
+    expect(workflowData.isPlatformAdmin).not.toHaveBeenCalled();
   });
 });
 
@@ -183,4 +416,17 @@ function sourceBundleArtifact(
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     ...overrides,
   };
+}
+
+function strictSnapshot(
+  overrides: Partial<WorkflowArtifactRecord> = {},
+): WorkflowArtifactRecord {
+  return sourceBundleArtifact({
+    inlinePayload: {
+      tier: "tar-overlay-set",
+      captureProtocol: "atomic-generation-v2",
+      acceptanceEligible: true,
+    },
+    ...overrides,
+  });
 }

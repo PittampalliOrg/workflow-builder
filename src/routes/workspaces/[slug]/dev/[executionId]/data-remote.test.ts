@@ -7,6 +7,10 @@ const source = readFileSync(
 	join(dirname(fileURLToPath(import.meta.url)), "data.remote.ts"),
 	"utf8",
 );
+const pageSource = readFileSync(
+	join(dirname(fileURLToPath(import.meta.url)), "+page.svelte"),
+	"utf8",
+);
 
 describe("dev environment detail data remote", () => {
 	it("delegates to the application services (never the DB/legacy sidecar client)", () => {
@@ -23,5 +27,13 @@ describe("dev environment detail data remote", () => {
 		expect(source).toContain("Authentication required");
 		expect(source).toContain("Dev environment not found");
 		expect(source).toContain("Dev environment service not found");
+	});
+
+	it("keeps stale pre-teardown status probes from reopening source writes", () => {
+		expect(pageSource).toContain("if (epoch !== sourceProbeEpoch) return");
+		expect(pageSource.match(/sourceProbeEpoch \+= 1/g)).toHaveLength(2);
+		expect(pageSource).toContain(
+			"if (teardownSourceLocked) await probeSourceCheckpointState()",
+		);
 	});
 });

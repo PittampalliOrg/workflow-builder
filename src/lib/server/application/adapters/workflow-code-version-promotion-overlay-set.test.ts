@@ -62,6 +62,56 @@ it("uses a deterministic commit and reuses the exact-branch pull request", () =>
   expect(create).toBeGreaterThan(lookup);
 });
 
+it("uses a compare-and-swap lease and refuses to create a replacement PR", () => {
+  const expectedHead = "b".repeat(40);
+  const shell = buildPromotionCommand(
+    input({
+      branchName: "preview-feature-session",
+      branchLease: {
+        expectedHeadSha: expectedHead,
+        existingPullRequestNumber: 42,
+      },
+    }),
+    "token",
+    "http://bff/bundle",
+  );
+
+  expect(shell).toContain(`EXPECTED_HEAD='${expectedHead}'`);
+  expect(shell).toContain("pull.get(\"draft\") is True");
+  expect(shell).toContain(
+    'head_ref.get("sha") in (expected, candidate)',
+  );
+  expect(shell).toContain(
+    '--force-with-lease="refs/heads/$BR:$EXPECTED_HEAD"',
+  );
+  expect(shell.indexOf("existing_pr_preflight_failed")).toBeLessThan(
+    shell.indexOf("git push -q --force-with-lease"),
+  );
+  expect(shell).toContain(
+    '[ "$REMOTE_HEAD" = "$CANDIDATE_SHA" ] || { echo "ERR=branch_lease_conflict";',
+  );
+  expect(shell).toContain('EXPECTED_PR_URL="https://github.com/$REPO/pull/$EXISTING_PR"');
+  expect(shell).toContain("PR_STATE='open'");
+  expect(shell).toContain('--data-urlencode "state=$PR_STATE"');
+  expect(command()).toContain("PR_STATE='all'");
+});
+
+it("rejects an existing pull request lease without an expected head", () => {
+  expect(() =>
+    buildPromotionCommand(
+      input({
+        branchName: "preview-feature-session",
+        branchLease: {
+          expectedHeadSha: null,
+          existingPullRequestNumber: 42,
+        },
+      }),
+      "token",
+      "http://bff/bundle",
+    ),
+  ).toThrow("invalid_branch_lease");
+});
+
 it("rejects unsafe exact branches and exact branches on non-atomic tiers", () => {
   expect(() =>
     buildPromotionCommand(
@@ -218,7 +268,7 @@ describe("tar-overlay-set promotion shell", () => {
     const shell = command();
     expect(shell.match(/git clone /g)).toHaveLength(1);
     expect(shell.match(/git commit -q /g)).toHaveLength(1);
-    expect(shell.match(/git push -q /g)).toHaveLength(1);
+    expect(shell.match(/git push -q /g)).toHaveLength(2);
   });
 
   it("accepts provenance-complete v2 sets and verifies each archive digest", () => {

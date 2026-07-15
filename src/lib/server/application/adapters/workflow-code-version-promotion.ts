@@ -102,7 +102,7 @@ export class HelperPodSourceBundlePromotionRunner implements SourceBundlePromoti
     const changedPathsMatch = output.match(
       /CHANGED_PATHS_B64=([A-Za-z0-9_-]+)/,
     );
-    if (errorMatch && !prMatch && !branchMatch) {
+    if (errorMatch) {
       return {
         status: "command_error",
         error: errorMatch[1],
@@ -193,11 +193,16 @@ export function buildPromotionCommand(
             `git checkout -q -b "$BR" "$TGT"`
           : `git clone -q /tmp/v.bundle /tmp/promote && cd /tmp/promote && git checkout -q -b "$BR"`;
 
-  // The preview-control broker supplies an exact content-addressed branch.
+  // The preview-control broker supplies an exact broker-owned branch.
   // Other callers retain the legacy timestamped-prefix behavior.
   const branchPrefix =
     sanitizeBranchPrefix(input.branchPrefix) || "wfb-promote";
   const exactBranch = input.branchName ?? "";
+  const branchLeaseEnabled = input.branchLease !== undefined;
+  const expectedHeadSha = input.branchLease?.expectedHeadSha ?? "";
+  const existingPullRequestNumber =
+    input.branchLease?.existingPullRequestNumber ?? "";
+  const pullRequestLookupState = branchLeaseEnabled ? "open" : "all";
   const commitTitle = exactBranch
     ? `Preview source promotion ${exactBranch}`
     : input.title;
@@ -215,6 +220,7 @@ export function buildPromotionCommand(
     `set -e`,
     `TOK=${shQuote(token)}`,
     `REPO=${shQuote(input.repo)}; PR_BASE=${shQuote(input.base)}; BASE_REVISION=${shQuote(input.baseRevision ?? "")}; MODE=${shQuote(input.mode)}; TITLE=${shQuote(input.title)}; COMMIT_TITLE=${shQuote(commitTitle)}; IDEMPOTENT_BRANCH=${exactBranch ? "1" : "0"}`,
+    `BRANCH_LEASE=${branchLeaseEnabled ? "1" : "0"}; EXPECTED_HEAD=${shQuote(expectedHeadSha)}; EXISTING_PR=${shQuote(String(existingPullRequestNumber))}; PR_STATE=${shQuote(pullRequestLookupState)}`,
     `PR_TITLE=${shQuote(prTitleJson)}; PR_BODY=${shQuote(prBodyJson)}`,
     `GH="$GITHUB_TOKEN"`,
     `[ -n "$GH" ] || { echo "ERR=no_github_token"; exit 0; }`,
@@ -233,17 +239,34 @@ export function buildPromotionCommand(
     `  echo "CHANGED_PATHS_B64=$CHANGED_PATHS_B64"`,
     `fi`,
     `echo "PULL_REQUEST_BASE=$PR_BASE"`,
-    `git push -q "https://x-access-token:$GH@github.com/$REPO.git" HEAD:"$BR" || { echo "ERR=push_failed"; exit 0; }`,
+    `REMOTE_URL="https://x-access-token:$GH@github.com/$REPO.git"`,
+    `if [ "$BRANCH_LEASE" = 1 ] && [ -n "$EXISTING_PR" ]; then`,
+    `  PREFLIGHT=$(curl -fsS -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls/$EXISTING_PR") || { echo "ERR=existing_pr_preflight_failed"; exit 0; }`,
+    `  printf '%s' "$PREFLIGHT" | python3 -c ${shQuote(LEASED_PULL_REQUEST_PREFLIGHT)} "$REPO" "$PR_BASE" "$BR" "$EXPECTED_HEAD" "$CANDIDATE_SHA" "$EXISTING_PR" || { echo "ERR=existing_pr_not_draft_or_moved"; exit 0; }`,
+    `fi`,
+    `if [ "$BRANCH_LEASE" = 1 ]; then`,
+    `  if ! git push -q --force-with-lease="refs/heads/$BR:$EXPECTED_HEAD" "$REMOTE_URL" HEAD:"$BR"; then`,
+    `    REMOTE_HEAD=$(git ls-remote "$REMOTE_URL" "refs/heads/$BR" | awk 'NR == 1 { print $1 }')`,
+    `    [ "$REMOTE_HEAD" = "$CANDIDATE_SHA" ] || { echo "ERR=branch_lease_conflict"; exit 0; }`,
+    `  fi`,
+    `else`,
+    `  git push -q "$REMOTE_URL" HEAD:"$BR" || { echo "ERR=push_failed"; exit 0; }`,
+    `fi`,
     `echo "COMMIT_SHA=$CANDIDATE_SHA"`,
     `echo "BRANCH_PUSHED=$BR"`,
     `if [ "$MODE" = pr ]; then`,
     `  OWNER=$(printf '%s' "$REPO" | cut -d/ -f1)`,
-    `  OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode 'state=all' --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]')`,
+    `  OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode "state=$PR_STATE" --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]')`,
     `  URL=$(printf '%s' "$OPEN" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1)`,
     `  PR=''`,
-    `  if [ -z "$URL" ]; then PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$PR_TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$PR_BASE\\",\\"body\\":\\"$PR_BODY\\"${draftFrag}}" || echo '{}'); fi`,
+    `  if [ -n "$EXISTING_PR" ]; then`,
+    `    EXPECTED_PR_URL="https://github.com/$REPO/pull/$EXISTING_PR"`,
+    `    [ "$URL" = "$EXPECTED_PR_URL" ] || { echo "ERR=existing_pr_unavailable"; exit 0; }`,
+    `  elif [ -z "$URL" ]; then`,
+    `    PR=$(curl -fsS -X POST -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" -d "{\\"title\\":\\"$PR_TITLE\\",\\"head\\":\\"$BR\\",\\"base\\":\\"$PR_BASE\\",\\"body\\":\\"$PR_BODY\\"${draftFrag}}" || echo '{}')`,
+    `  fi`,
     `  if [ -z "$URL" ]; then URL=$(printf '%s' "$PR" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1); fi`,
-    `  if [ -z "$URL" ]; then OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode 'state=all' --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]'); URL=$(printf '%s' "$OPEN" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1); fi`,
+    `  if [ -z "$URL" ]; then OPEN=$(curl -fsS -G -H "Authorization: Bearer $GH" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/pulls" --data-urlencode "state=$PR_STATE" --data-urlencode "head=$OWNER:$BR" --data-urlencode "base=$PR_BASE" || echo '[]'); URL=$(printf '%s' "$OPEN" | grep -oE 'https://github.com/[^"]+/pull/[0-9]+' | head -1); fi`,
     `  if [ -n "$URL" ]; then echo "PR_URL=$URL"; else echo "PR_ERR=$(printf '%s' "$PR" | grep -oE '"message"[^,}]*' | head -1)"; fi`,
     // D2 (flagged): label the fresh PR `preview` so the label-gated Tekton
     // pull_request trigger auto-provisions a preview. Best-effort — a label
@@ -260,6 +283,29 @@ export function buildPromotionCommand(
     `fi`,
   ].join("\n");
 }
+
+const LEASED_PULL_REQUEST_PREFLIGHT = `import json
+import sys
+
+repo, base, branch, expected, candidate, number = sys.argv[1:]
+pull = json.load(sys.stdin)
+
+def obj(value):
+    return value if isinstance(value, dict) else {}
+
+base_ref = obj(pull.get("base"))
+head_ref = obj(pull.get("head"))
+valid = (
+    pull.get("state") == "open"
+    and pull.get("draft") is True
+    and pull.get("number") == int(number)
+    and base_ref.get("ref") == base
+    and obj(base_ref.get("repo")).get("full_name") == repo
+    and head_ref.get("ref") == branch
+    and obj(head_ref.get("repo")).get("full_name") == repo
+    and head_ref.get("sha") in (expected, candidate)
+)
+raise SystemExit(0 if valid else 1)`;
 
 function buildTarOverlaySetCloneStep(): string {
   return [
@@ -506,6 +552,25 @@ except Exception:
 function promotionInputError(
   input: SourceBundlePromotionRunnerInput,
 ): string | null {
+  if (input.branchLease !== undefined) {
+    if (input.branchName === undefined || input.tier !== "tar-overlay-set") {
+      return "invalid_branch_lease";
+    }
+    const expected = input.branchLease.expectedHeadSha;
+    if (expected !== null && !FULL_SHA.test(expected)) {
+      return "invalid_branch_lease";
+    }
+    const existing = input.branchLease.existingPullRequestNumber;
+    if (
+      existing !== undefined &&
+      (!Number.isSafeInteger(existing) ||
+        existing < 1 ||
+        expected === null ||
+        input.mode !== "pr")
+    ) {
+      return "invalid_branch_lease";
+    }
+  }
   if (input.branchName !== undefined) {
     if (!isSafeExactBranch(input.branchName)) return "invalid_branch_name";
     if (input.tier !== "tar-overlay-set") return "invalid_idempotent_tier";

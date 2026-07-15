@@ -49,10 +49,10 @@ function freePort() {
  * Always points DEV_SYNC_EXEC_PORT at a dedicated free port so a stray local
  * listener on the default 8002 can never satisfy (or poison) the bridge probe —
  * tests that WANT a bridge start one on that port via startBridge(). */
-async function startSidecar(extraEnv = {}) {
+async function startSidecar(extraEnv = {}, existingDest = null) {
 	const port = await freePort();
 	const execPort = await freePort();
-	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
+	const dest = existingDest ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
 	const proc = spawn(process.execPath, [SERVER], {
 		env: {
 			...process.env,
@@ -87,8 +87,9 @@ async function startSidecar(extraEnv = {}) {
 		base,
 		proc,
 		log: () => log,
-		stop() {
+		stop({ preserveDest = false } = {}) {
 			proc.kill('SIGKILL');
+			if (preserveDest) return;
 			try {
 				fs.rmSync(dest, { recursive: true, force: true });
 			} catch {
@@ -245,6 +246,287 @@ test('POST /__sync accepts the preview-scoped agent capability without exposing 
 	});
 	assert.equal(response.status, 200);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/agent.txt'), 'utf8'), 'allowed');
+});
+
+test('POST /__freeze uses a receiver-only durable prepare/commit/abort protocol', async (t) => {
+	const agentToken = '2'.repeat(64);
+	const env = {
+		DEV_SYNC_AGENT_TOKEN_SHA256: createHash('sha256').update(agentToken).digest('hex'),
+		DEV_SYNC_ALLOW_LOCAL_RUN: 'true',
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ check: 'true' })
+	};
+	const operationId = 'teardown:exec-1:0123456789abcdef';
+	const otherOperationId = 'teardown:exec-2:fedcba9876543210';
+	const freezeUrl = (base, phase, operation = operationId) =>
+		`${base}/__freeze?phase=${phase}&operationId=${encodeURIComponent(operation)}`;
+	let s = await startSidecar(env);
+	t.after(() => s.stop());
+	const archive = makeTarGz({ 'src/current.txt': 'captured' });
+	const seeded = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: {
+			...syncHeaders('freeze-generation-1'),
+			'x-sync-token': agentToken
+		},
+		body: archive
+	});
+	assert.equal(seeded.status, 200);
+	const seedState = await seeded.json();
+
+	assert.equal((await fetch(freezeUrl(s.base, 'prepare'), { method: 'POST' })).status, 401);
+	assert.equal(
+		(
+			await fetch(freezeUrl(s.base, 'prepare'), {
+				method: 'POST',
+				headers: { 'x-sync-token': agentToken }
+			})
+		).status,
+		401
+	);
+	assert.equal(
+		(
+			await fetch(`${s.base}/__freeze?phase=prepare`, {
+				method: 'POST',
+				headers: { 'x-sync-token': TOKEN }
+			})
+		).status,
+		400
+	);
+	let status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': agentToken } })
+	).json();
+	assert.equal(status.frozen, false);
+	assert.equal(status.prepared, false);
+	const prematureCommit = await fetch(freezeUrl(s.base, 'commit'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(prematureCommit.status, 409);
+
+	const prepareResponse = await fetch(freezeUrl(s.base, 'prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(prepareResponse.status, 200);
+	const expectedPreparedProof = {
+		ok: true,
+		prepared: true,
+		frozen: false,
+		idempotent: false,
+		operationId,
+		service: SERVICE,
+		generation: 'freeze-generation-1',
+		contentSha256: seedState.contentSha256
+	};
+	assert.deepEqual(await prepareResponse.json(), expectedPreparedProof);
+	let persistedState = JSON.parse(fs.readFileSync(path.join(s.dest, '.dev-sync-state.json')));
+	assert.equal(persistedState.frozen, false);
+	assert.equal(persistedState.preparedOperationId, operationId);
+
+	for (const token of [TOKEN, agentToken]) {
+		const blocked = await fetch(`${s.base}/__sync`, {
+			method: 'POST',
+			headers: { ...syncHeaders('after-freeze'), 'x-sync-token': token },
+			body: makeTarGz({ 'src/current.txt': 'must-not-land' })
+		});
+		assert.equal(blocked.status, 409);
+		assert.match((await blocked.json()).error, /prepared|quiesced/);
+	}
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'captured');
+	const blockedRun = await fetch(`${s.base}/__run?cmd=check`, {
+		method: 'POST',
+		headers: { 'x-sync-token': agentToken }
+	});
+	assert.equal(blockedRun.status, 409);
+	assert.match((await blockedRun.json()).error, /prepared|quiesced/);
+	const preparedExport = await fetch(`${s.base}/__export`, {
+		headers: { 'x-sync-token': agentToken }
+	});
+	assert.equal(preparedExport.status, 200);
+	assert.equal(preparedExport.headers.get('x-sync-generation'), 'freeze-generation-1');
+	status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': agentToken } })
+	).json();
+	assert.equal(status.frozen, false);
+	assert.equal(status.prepared, true);
+	assert.equal(status.preparedOperationId, operationId);
+
+	const retry = await fetch(freezeUrl(s.base, 'prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(retry.status, 200);
+	assert.deepEqual(await retry.json(), { ...expectedPreparedProof, idempotent: true });
+	const conflictingPrepare = await fetch(freezeUrl(s.base, 'prepare', otherOperationId), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(conflictingPrepare.status, 409);
+	const wrongCommit = await fetch(freezeUrl(s.base, 'commit', otherOperationId), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(wrongCommit.status, 409);
+	const wrongAbort = await fetch(freezeUrl(s.base, 'abort', otherOperationId), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(wrongAbort.status, 409);
+
+	const dest = s.dest;
+	const stopped = new Promise((resolve) => s.proc.once('exit', resolve));
+	s.stop({ preserveDest: true });
+	await stopped;
+	s = await startSidecar(env, dest);
+	status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.frozen, false);
+	assert.equal(status.prepared, true);
+	assert.equal(status.preparedOperationId, operationId);
+	const abort = await fetch(freezeUrl(s.base, 'abort'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(abort.status, 200);
+	assert.deepEqual(await abort.json(), {
+		ok: true,
+		prepared: false,
+		frozen: false,
+		idempotent: false,
+		operationId
+	});
+	const abortReplay = await fetch(freezeUrl(s.base, 'abort'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(abortReplay.status, 200);
+	assert.equal((await abortReplay.json()).idempotent, true);
+
+	const afterAbortSync = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('freeze-generation-2'),
+		body: makeTarGz({ 'src/current.txt': 'captured-again' })
+	});
+	assert.equal(afterAbortSync.status, 200);
+	const afterAbortState = await afterAbortSync.json();
+	const secondPrepare = await fetch(freezeUrl(s.base, 'prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(secondPrepare.status, 200);
+	const commit = await fetch(freezeUrl(s.base, 'commit'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(commit.status, 200);
+	const committedProof = await commit.json();
+	assert.deepEqual(committedProof, {
+		ok: true,
+		prepared: false,
+		frozen: true,
+		idempotent: false,
+		operationId,
+		service: SERVICE,
+		generation: 'freeze-generation-2',
+		contentSha256: afterAbortState.contentSha256
+	});
+	persistedState = JSON.parse(fs.readFileSync(path.join(s.dest, '.dev-sync-state.json')));
+	assert.equal(persistedState.frozen, true);
+	assert.equal(persistedState.preparedOperationId, null);
+	assert.equal(persistedState.frozenOperationId, operationId);
+
+	for (const phase of ['prepare', 'commit']) {
+		const replay = await fetch(freezeUrl(s.base, phase), {
+			method: 'POST',
+			headers: { 'x-sync-token': TOKEN }
+		});
+		assert.equal(replay.status, 200);
+		assert.deepEqual(await replay.json(), { ...committedProof, idempotent: true });
+	}
+	for (const phase of ['prepare', 'commit', 'abort']) {
+		const conflict = await fetch(freezeUrl(s.base, phase, otherOperationId), {
+			method: 'POST',
+			headers: { 'x-sync-token': TOKEN }
+		});
+		assert.equal(conflict.status, 409);
+	}
+	assert.equal(
+		(
+			await fetch(`${s.base}/__sync`, {
+				method: 'POST',
+				headers: syncHeaders('after-restart'),
+				body: makeTarGz({ 'src/current.txt': 'must-not-land' })
+			})
+		).status,
+		409
+	);
+});
+
+test('freeze prepare returns busy while a sync is in flight, then commit freezes its proof', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	const operationId = 'teardown:freeze-race:0123456789abcdef';
+	const freezeUrl = (phase) =>
+		`${s.base}/__freeze?phase=${phase}&operationId=${encodeURIComponent(operationId)}`;
+	const archive = makeTarGz({ 'src/current.txt': 'race-winner' });
+	let releaseUpload;
+	const uploadGate = new Promise((resolve) => {
+		releaseUpload = resolve;
+	});
+	async function* delayedUpload() {
+		yield archive.subarray(0, 1);
+		await uploadGate;
+		yield archive.subarray(1);
+	}
+	const syncing = fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('freeze-race-1'),
+		body: delayedUpload(),
+		duplex: 'half'
+	});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const busy = await fetch(freezeUrl('prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(busy.status, 409);
+	assert.match((await busy.json()).error, /sync in progress/);
+	releaseUpload();
+	const synced = await syncing;
+	assert.equal(synced.status, 200);
+	const syncProof = await synced.json();
+
+	const prepared = await fetch(freezeUrl('prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(prepared.status, 200);
+	assert.deepEqual(await prepared.json(), {
+		ok: true,
+		prepared: true,
+		frozen: false,
+		idempotent: false,
+		operationId,
+		service: SERVICE,
+		generation: 'freeze-race-1',
+		contentSha256: syncProof.contentSha256
+	});
+	const frozen = await fetch(freezeUrl('commit'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(frozen.status, 200);
+	assert.deepEqual(await frozen.json(), {
+		ok: true,
+		prepared: false,
+		frozen: true,
+		idempotent: false,
+		operationId,
+		service: SERVICE,
+		generation: 'freeze-race-1',
+		contentSha256: syncProof.contentSha256
+	});
 });
 
 test('POST /__sync requires the exact receiver root contract', async (t) => {
@@ -740,27 +1022,62 @@ test('sync and export are rejected while an allowlisted run reads the source tre
 		})
 	});
 	t.after(() => s.stop());
-	fs.mkdirSync(path.join(s.dest, 'src'), { recursive: true });
-	fs.writeFileSync(path.join(s.dest, 'src/current.txt'), 'stable');
+	const operationId = 'teardown:run-freeze:0123456789abcdef';
+	const freezeUrl = (phase) =>
+		`${s.base}/__freeze?phase=${phase}&operationId=${encodeURIComponent(operationId)}`;
+	const seeded = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('run-freeze-generation'),
+		body: makeTarGz({ 'src/current.txt': 'stable' })
+	});
+	assert.equal(seeded.status, 200);
 	const running = fetch(`${s.base}/__run?cmd=hold`, {
 		method: 'POST',
 		headers: { 'x-sync-token': TOKEN }
 	});
 	await new Promise((resolve) => setTimeout(resolve, 75));
-	const [sync, exported] = await Promise.all([
+	const [sync, exported, freezeWhileRunning] = await Promise.all([
 		fetch(`${s.base}/__sync`, {
 			method: 'POST',
 			headers: syncHeaders('blocked-by-run'),
 			body: makeTarGz({ 'src/current.txt': 'changed' })
 		}),
-		fetch(`${s.base}/__export`, { headers: { 'x-sync-token': TOKEN } })
+		fetch(`${s.base}/__export`, { headers: { 'x-sync-token': TOKEN } }),
+		fetch(freezeUrl('prepare'), {
+			method: 'POST',
+			headers: { 'x-sync-token': TOKEN }
+		})
 	]);
 	assert.equal(sync.status, 409);
 	assert.equal(exported.status, 409);
+	assert.equal(freezeWhileRunning.status, 409);
 	assert.match((await sync.json()).error, /run in progress/);
 	assert.match((await exported.json()).error, /run in progress/);
+	assert.match((await freezeWhileRunning.json()).error, /run in progress/);
 	assert.equal((await running).status, 200);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/current.txt'), 'utf8'), 'stable');
+
+	const prepared = await fetch(freezeUrl('prepare'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(prepared.status, 200);
+	const frozen = await fetch(freezeUrl('commit'), {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(frozen.status, 200);
+	const blockedRun = await fetch(`${s.base}/__run?cmd=hold`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(blockedRun.status, 409);
+	assert.deepEqual(await blockedRun.json(), {
+		ok: false,
+		error: 'source receiver is frozen',
+		frozen: true,
+		prepared: false
+	});
 });
 
 test('GET /__status reflects the last sync + last run and lists commands', async (t) => {

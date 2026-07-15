@@ -978,6 +978,56 @@ export type PreviewControlArtifactRow = InferSelectModel<
   typeof previewControlArtifacts
 >;
 
+/** Broker-verified GitHub proof for one promoted immutable preview artifact. */
+export const previewSourcePromotionReceipts = pgTable(
+  "preview_source_promotion_receipts",
+  {
+    receiptId: text("receipt_id").primaryKey(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => previewControlArtifacts.id, { onDelete: "restrict" }),
+    previewName: text("preview_name").notNull(),
+    environmentRequestId: text("environment_request_id").notNull(),
+    executionId: text("execution_id").notNull(),
+    platformRevision: text("platform_revision").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    repository: text("repository").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    baseSha: text("base_sha").notNull(),
+    branch: text("branch").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    prUrl: text("pr_url").notNull(),
+    pullRequestNumber: integer("pull_request_number").notNull(),
+    draft: boolean("draft").notNull(),
+    services: jsonb("services").$type<string[]>().notNull(),
+    changedPaths: jsonb("changed_paths").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    artifactIdentity: uniqueIndex(
+      "uq_preview_source_promotion_receipt_artifact",
+    ).on(table.artifactId),
+    sessionCreatedIdx: index(
+      "idx_preview_source_promotion_receipt_session_created",
+    ).on(
+      table.previewName,
+      table.environmentRequestId,
+      table.executionId,
+      table.createdAt,
+    ),
+    prHeadIdx: index("idx_preview_source_promotion_receipt_pr_head").on(
+      table.repository,
+      table.pullRequestNumber,
+      table.commitSha,
+    ),
+  }),
+);
+
+export type PreviewSourcePromotionReceiptRow = InferSelectModel<
+  typeof previewSourcePromotionReceipts
+>;
+
 /** Content-addressed image evidence produced by physical preview acceptance. */
 export const previewAcceptedImageReceipts = pgTable(
   "preview_accepted_image_receipts",

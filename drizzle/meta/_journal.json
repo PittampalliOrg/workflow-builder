@@ -715,6 +715,13 @@
       "when": 1784145780000,
       "tag": "0107_script_call_site",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1784232180000,
+      "tag": "0108_preview_source_promotion_receipts",
+      "breakpoints": true
     }
   ]
 }

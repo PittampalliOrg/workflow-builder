@@ -22,6 +22,7 @@ function harness(
     inspectOpen: vi.fn(async (input) => ({
       repository: input.repository,
       number: input.number,
+      draft: true,
       baseSha: BASE_SHA,
       headRef: "infra/preview-change",
       headSha: HEAD_SHA,

@@ -135,6 +135,7 @@ surface without helping OTLP delivery, so it is not a prerequisite for tracing.
 | Dev services and HMR                         | Active workflow workspace rows plus brokered sidecar status                           | Workflow-data/dev-environment read port -> `DevPreviewSidecarPort`       | Every selected service is ready; last sync generation advances while pod UID and restart count stay stable                                     |
 | Workflow and agent progress                  | Durable execution/session records and ordered session events                          | Authorized `WorkflowDataService` reads and scoped status/SSE routes      | Execution state, provisioning marks, session snapshot, and monotonic event replay agree                                                        |
 | Preview identity and access                  | Persisted PreviewEnvironment contract                                                 | Owner/admin policy -> tuple-bound physical broker                        | Name, request ID, owner, platform/source SHAs, and catalog digest match exactly                                                                |
+| Source checkpoints and promotion             | Strict local artifact plus append-only physical promotion receipt                     | Preview-session continuation -> tuple-bound promotion broker             | UI artifact, stable draft PR, physical receipt, and exact branch head correlate without exposing GitHub credentials or PR tuple authority      |
 | Teardown                                     | Physical cleanup convergence proof                                                    | Preview lifecycle service -> `cleanup` snapshot                          | Terminal result proves all required application, database, stream, namespace, storage, and identity resources absent                           |
 | GitOps delivery                              | GitHub commit/PR, immutable image pins, Source Hydrator, Promoter, and live inventory | Existing GitOps application ports -> Change Journey                      | PR/head SHA, image digest, hydrated revision, promotion health, and live deployment correlate without copying preview state                    |
 | Preview traces                               | Tuple-stamping physical gateway -> dedicated ingest -> ClickHouse                     | Owner/admin policy -> `PreviewTraceQueryPort` -> physical broker adapter | A generated trace is returned only for the exact name, request ID, platform SHA, source SHA, and catalog digest; another tuple returns no rows |
@@ -574,9 +575,17 @@ root. Teardown is not complete until `storage-scope-absent` is proven.
 
 ## Strict Atomic Capture
 
-After all selected services report one generation and their tests pass, invoke
-the workflow action `dev/preview-snapshot`. The bounded POC captures all five
-canonical services, even when the edit changes only two:
+The primary operator path is the **Code versions** panel on the dev-environment
+detail page. After all selected services report one generation and their tests
+pass, choose **Capture checkpoint**. The UI submits the complete service set to
+the preview-session continuation boundary; the application derives execution,
+project, preview identity, platform revision, source revision, and catalog
+digest. A partial or mixed-generation response is displayed as a failed capture
+and does not create an acceptance-eligible checkpoint.
+
+Internal dynamic workflows may invoke the compatibility action
+`dev/preview-snapshot`. It applies the same strict-capture rules and remains
+useful for workflow automation, but it is not the product UI boundary:
 
 ```yaml
 call: dev/preview-snapshot
@@ -614,13 +623,24 @@ Treat `missing_expected_services`, `incomplete_export_set`,
 capture for acceptance.
 
 Capture each meaningful iteration if an agent is evaluating alternatives. The
-promotion action can then select the accepted iteration rather than reading
-whatever happens to be live later.
+operator can then promote the chosen checkpoint rather than reading whatever
+happens to be live later. Capture persists a source artifact; it does not by
+itself create a GitHub branch or pull request.
 
 ## Promote Through GitHub
 
-Invoke `dev/preview-promote` with the same `services[]` and a stored strict
-iteration:
+Choose **Promote** on the selected strict checkpoint in **Code versions**. A
+strict `atomic-generation-v2` artifact is promotable only through the
+preview-session continuation port. The generic
+`/versions/<artifactId>/promote` route remains available for legacy,
+non-preview source bundles and must not be used to bypass preview identity and
+source-authority checks.
+
+The UI sends the preview-local artifact ID, an optional title/body, and
+`draft: true`. The preview transfers that exact artifact to physical control;
+the browser and preview never choose the repository, base, branch, or GitHub
+credential. Internal workflows may still invoke `dev/preview-promote` as a
+compatibility path:
 
 ```yaml
 call: dev/preview-promote
@@ -640,12 +660,50 @@ with:
 The preview first transfers the strict artifact to the physical control plane
 under its tuple capability. The physical promotion broker re-authorizes the
 current preview generation, applies the captured mappings into one GitHub
-checkout, verifies the exact branch ancestry, and opens a PR. Repository, base,
+checkout, verifies that the promoted commit is parented by the preview's
+immutable captured `sourceRevision`, and opens a PR. Repository, target branch,
 branch prefix, and GitHub credentials are broker-owned and are not accepted from
-the workflow. The response includes the PR URL, branch, exact `commitSha`, and
-affected service set. Capture coherence covers all five services, but the broker
-derives that affected set from the actual changed paths. Only those changed
-production services proceed to acceptance builds.
+the workflow or browser. The live target branch may advance while the preview
+is active; that does not change the captured ancestry proof. Capture coherence
+covers all five services, but the broker derives the affected set from the
+actual changed paths. Only those changed production services proceed to
+acceptance builds.
+
+One preview execution owns one deterministic branch and one draft pull request.
+The first promoted checkpoint creates them. A later checkpoint for the same
+preview execution updates that branch and the existing draft PR, using the
+latest verified receipt head as a Git lease. The runner pushes with
+`--force-with-lease`; an unexpected branch or PR head fails closed instead of
+overwriting concurrent work. Promotion of the same artifact is an idempotent
+receipt replay.
+
+Moving the pull request out of draft is the manual freeze boundary for the
+session branch. Do that only after the final checkpoint and acceptance run are
+complete. The broker checks the live PR identity and draft state immediately
+before every leased push and verifies them again afterward; once the PR is
+ready for review, later checkpoint promotion fails closed. This POC does not
+try to coordinate a concurrent GitHub ready-for-review click with a distributed
+lock, so operators should not change draft state while a promotion is running.
+
+Every distinct successfully promoted checkpoint creates a new immutable,
+append-only physical promotion receipt keyed to its imported artifact. The
+receipt binds the preview tuple, execution, repository, base SHA, branch,
+commit SHA, draft PR number, services, and changed paths. The preview stores
+only a local projection on its source artifact: the opaque receipt ID and
+bounded PR details needed to render **Code versions** and continue the session.
+The projection carries no GitHub or acceptance authority. Physical control
+revalidates its receipt and
+the live draft PR before every update or replay.
+
+The receipt keeps two Git revisions with different meanings. `sourceRevision`
+is the immutable preview baseline and remains the required parent/ancestry
+proof. `baseSha` is the live head of the PR target branch observed when that
+exact receipt was issued. An unrelated `main` advance therefore does not
+invalidate a stored artifact replay or prevent a later checkpoint from leasing
+the same draft PR. The receipt itself remains immutable: acceptance replays the
+exact repository, PR number, recorded base SHA, and head SHA. If the PR target
+moves after receipt issuance, acceptance fails the exact-tuple freshness check;
+promote a newer checkpoint to issue a fresh receipt before running acceptance.
 
 Promotion requires the execution owner to be a platform admin. Never install a
 Gitea instance in the preview, point Argo CD at mutable session Git, or push from
@@ -655,8 +713,19 @@ physical broker has materialized it in GitHub.
 
 ## Clean Acceptance Replay
 
-Use the promotion response's exact verified PR tuple with
-`dev/preview-acceptance`:
+Choose **Run acceptance** on the promoted strict checkpoint. The browser sends
+only the preview-local artifact ID. The preview-session continuation service
+loads that artifact's local promotion projection and sends its opaque receipt
+ID, together with server-derived preview identity, to physical control. The
+physical receipt resolver recovers the exact repository, PR number, base SHA,
+and head SHA from the append-only receipt before invoking the existing immutable
+acceptance broker. Neither the browser nor the mutable preview supplies that PR
+tuple. The bounded outcome is projected back onto the local artifact for the UI.
+
+The existing workflow action below accepts the exact tuple returned by its own
+promotion step. It remains an internal compatibility path for trusted workflow
+automation; do not use it for the interactive product flow or add tuple fields
+to the preview-session continuation request:
 
 ```yaml
 call: dev/preview-acceptance
@@ -664,11 +733,11 @@ with:
   pullRequest: ${ .promote.pullRequest }
 ```
 
-The acceptance route accepts only the exact PR tuple returned by source
-promotion. The physical broker re-resolves the open GitHub PR, its complete
-changed-path set, the preview's immutable source baseline and catalog, and the
-platform-admin owner. Callers cannot assert a source SHA, stacks SHA, service
-set, image, or retention policy.
+On that compatibility path, the acceptance route accepts only the exact PR tuple
+returned by source promotion. The physical broker re-resolves the open GitHub
+PR, its complete changed-path set, the preview's immutable source baseline and
+catalog, and the platform-admin owner. Callers cannot assert a source SHA,
+stacks SHA, service set, image, or retention policy.
 
 The application service then:
 
@@ -733,6 +802,51 @@ its product row before its final intent confirmation, so teardown either sees
 the row or the late provision observes the intent and compensates. Inventory,
 database drop, durable-run stop, or orphan-restore uncertainty is a failed or
 pending teardown, never success.
+
+Before the first active product teardown, the application reads the complete
+requested service set from the scoped workflow execution's stored, post-default
+trigger input. The current active product rows must match that set exactly;
+partial, duplicate, malformed, or unexpected services fail closed before any
+receiver changes state. The application also verifies platform-administrator
+authority before establishing teardown intent or pausing a receiver. The route
+only authenticates and delegates this policy through the teardown application
+port.
+
+The preview provisioner first establishes the SEA execution-wide intent, then
+uses the receiver-only capability to run a two-phase barrier across the exact
+service set. `POST /__freeze?phase=prepare` persistently and reversibly pauses
+source writes. Only after every receiver reports the same generation does
+`phase=commit` atomically persist its one-way `frozen` state. A busy receiver or
+generation mismatch causes `phase=abort` on every prepared peer, so a partial
+sync can be rerun instead of becoming a permanent mixed freeze. The operation
+ID is deterministic per execution; a lost response or partial commit replays
+the same operation until all services converge. Agent-action credentials cannot
+prepare, commit, or abort the receiver fence. Sync and allowlisted run commands
+return `409` while prepared or frozen; status and export remain readable for
+checkpoint recovery. Receiver state survives process restarts.
+
+The server then runs one strict capture through the same preview-session
+continuation port. The artifact must match the frozen generation and exact
+service set. Its per-service export digests remain independent artifact-integrity
+proofs: they intentionally differ from the freeze receipts, which hash the last
+sync uploads rather than the newly materialized export archives. It invokes the
+idempotent physical promotion continuation even when a local projection already
+exists, revalidating the append-only receipt and live draft PR before it
+materializes the broker-owned draft PR. Only after the preview-local artifact
+carries that receipt does the server atomically merge a version 2 teardown
+marker bound to the freeze receipts, artifact, central artifact, repository, PR,
+branch, and head SHA.
+
+Freeze, capture, promotion, or marker failure returns HTTP `409`; preview
+resource deletion and durable-run cleanup are not invoked. A failure after
+freeze intentionally leaves the environment read-only: retry teardown to reuse
+the frozen export and stable draft PR, or use **Discard changes and tear down**.
+The server accepts that override only from a platform administrator. Once
+destructive cleanup starts, retries may observe only a subset of active product
+rows. They validate the stored marker against its artifact, promotion, frozen
+generation, service digests, and the original execution service contract, then
+resume without requiring receivers that have already been deleted. A cleaned-row
+tombstone remains the final idempotent resume proof after no active rows remain.
 
 For the BFF and function-router, the first product
 `DELETE /api/dev-environments/<executionId>` may return HTTP `202` with

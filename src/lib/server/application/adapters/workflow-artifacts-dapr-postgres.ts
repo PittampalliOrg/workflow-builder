@@ -301,6 +301,47 @@ export class DaprPostgresArtifactStore implements ArtifactStore {
 		if (conditional && result.rowsAffected !== 1) return null;
 		return this.getWorkflowArtifactForExecution(input);
 	}
+
+	async mergeWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		patch: Record<string, unknown>;
+		ifAbsentMetadataKey?: string;
+	}): Promise<WorkflowArtifactRecord | null> {
+		const conditional = Boolean(input.ifAbsentMetadataKey);
+		const result = await this.client.exec({
+			summary: conditional
+				? "workflow_artifacts.merge_metadata_if_absent"
+				: "workflow_artifacts.merge_metadata",
+			collection: "workflow_artifacts",
+			sql: `
+				UPDATE workflow_artifacts
+				SET metadata = COALESCE(metadata, '{}'::jsonb) || CAST($3 AS jsonb)
+				WHERE workflow_execution_id = $1 AND id = $2
+				${conditional ? "AND NOT (COALESCE(metadata, '{}'::jsonb) ? $4)" : ""}
+			`,
+			params: [
+				input.executionId,
+				input.artifactId,
+				jsonParam(input.patch),
+				...(conditional ? [input.ifAbsentMetadataKey] : []),
+			],
+			spanParams: [
+				input.executionId,
+				input.artifactId,
+				input.patch,
+				...(conditional ? [input.ifAbsentMetadataKey] : []),
+			],
+			paramNames: [
+				"workflow_execution_id",
+				"id",
+				"metadata_patch",
+				...(conditional ? ["if_absent_metadata_key"] : []),
+			],
+		});
+		if (conditional && result.rowsAffected !== 1) return null;
+		return this.getWorkflowArtifactForExecution(input);
+	}
 }
 
 export class DaprPostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactStore {

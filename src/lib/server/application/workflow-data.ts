@@ -5867,6 +5867,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.artifactStore.updateWorkflowArtifactMetadata(input);
 	}
 
+	mergeWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		patch: Record<string, unknown>;
+		ifAbsentMetadataKey?: string;
+	}) {
+		return this.deps.artifactStore.mergeWorkflowArtifactMetadata(input);
+	}
+
 	createWorkflowFile(input: CreateWorkflowFileInput) {
 		return this.requireWorkflowFiles().createFile(input);
 	}

@@ -146,6 +146,15 @@ export type SourceBundlePromotionRunnerInput = {
    * head/base tuple instead of creating another one.
    */
   branchName?: string;
+  /**
+   * Compare-and-swap lease for updating an exact preview branch. `null`
+   * requires the remote ref to be absent; a SHA permits replacement only when
+   * the remote still points at that exact head.
+   */
+  branchLease?: Readonly<{
+    expectedHeadSha: string | null;
+    existingPullRequestNumber?: number;
+  }>;
   /** Open the PR as a draft (pr mode only). */
   draft?: boolean;
   /** PR body markdown. Defaults to a generic "promoted from a code version" note. */

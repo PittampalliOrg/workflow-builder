@@ -56,6 +56,11 @@ describe('fetchSidecarStatus', () => {
 							commit: 1,
 							total: 62
 						},
+						frozen: true,
+						prepared: false,
+						preparedOperationId: null,
+						preparedAt: null,
+						frozenOperationId: 'teardown-abc',
 						lastRun: null,
 						commands: ['contract', 'deps']
 					}),
@@ -74,6 +79,9 @@ describe('fetchSidecarStatus', () => {
 				ok: true,
 				dest: '/app',
 				commands: ['contract', 'deps'],
+				frozen: true,
+				prepared: false,
+				frozenOperationId: 'teardown-abc',
 				lastSyncTimingsMs: { planning: 30, total: 62 }
 			}
 		});

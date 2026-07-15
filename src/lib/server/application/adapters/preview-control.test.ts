@@ -58,13 +58,55 @@ describe("GithubPreviewControlSourceAdapter", () => {
         commitSha: SHA as never,
         baseBranch: "main",
         baseRevision: BASE_SHA as never,
+        expectedBaseHead: ADVANCED_MAIN_SHA as never,
       }),
     ).resolves.toBe(true);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(6);
     for (const [, init] of fetch.mock.calls) {
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBeUndefined();
     }
+  });
+
+  it("rejects when the observed base head moves during verification", async () => {
+    let baseReads = 0;
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes("/git/ref/heads/preview-development-1")) {
+        return new Response(JSON.stringify({ object: { sha: SHA } }));
+      }
+      if (value.includes("/git/ref/heads/main")) {
+        baseReads += 1;
+        return new Response(
+          JSON.stringify({
+            object: {
+              sha: baseReads === 1 ? ADVANCED_MAIN_SHA : "d".repeat(40),
+            },
+          }),
+        );
+      }
+      if (value.includes(`/git/commits/${SHA}`)) {
+        return new Response(JSON.stringify({ parents: [{ sha: BASE_SHA }] }));
+      }
+      return new Response(
+        JSON.stringify({
+          status: "ahead",
+          merge_base_commit: { sha: BASE_SHA },
+        }),
+      );
+    });
+    const adapter = new GithubPreviewControlSourceAdapter({ fetch });
+
+    await expect(
+      adapter.verifyBranch({
+        repository: "PittampalliOrg/workflow-builder",
+        branch: "preview-development-1",
+        commitSha: SHA as never,
+        baseBranch: "main",
+        baseRevision: BASE_SHA as never,
+        expectedBaseHead: ADVANCED_MAIN_SHA as never,
+      }),
+    ).resolves.toBe(false);
   });
 
   it("uses only the dedicated token and rejects a candidate with a different parent", async () => {
@@ -183,9 +225,10 @@ describe("GithubPreviewControlPullRequestAdapter", () => {
           return new Response(
             JSON.stringify({
               state: "open",
+              draft: true,
               changed_files: 101,
               base: {
-                ref: "main",
+                ref: "develop",
                 sha: baseSha,
                 repo: { full_name: "PittampalliOrg/stacks" },
               },
@@ -211,6 +254,7 @@ describe("GithubPreviewControlPullRequestAdapter", () => {
     const adapter = new GithubPreviewControlPullRequestAdapter({
       fetch,
       token: () => "read-token",
+      baseBranch: "develop",
     });
 
     await expect(
@@ -234,6 +278,7 @@ describe("GithubPreviewControlPullRequestAdapter", () => {
     const headSha = "c".repeat(40);
     const pull = {
       state: "open",
+      draft: true,
       changed_files: 1,
       base: {
         ref: "main",

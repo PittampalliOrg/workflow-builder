@@ -196,7 +196,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
       artifactId: artifact.id,
       title: readString(body.title),
       bodyMarkdown: readString(body.bodyMarkdown),
-      draft: body.draft === true,
+      draft: true,
     });
     return json(result);
   } catch (cause) {

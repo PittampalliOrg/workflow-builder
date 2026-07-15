@@ -3,8 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import type {
   DevPreviewInfo,
+  DevPreviewSourceFreezeResult,
   DevPreviewServiceResult,
   DevPreviewsResult,
+  FreezeDevPreviewSourcesParams,
   ProvisionDevPreviewParams,
   ProvisionDevPreviewsParams,
   PreviewDatabaseProvisioner,
@@ -14,10 +16,13 @@ import type {
   TeardownDevPreviewResult,
 } from "$lib/server/application/ports";
 import { RetryableDevPreviewActivationError } from "$lib/server/application/ports/dev-preview-provisioner";
+import { latestWorkflowArtifact } from "$lib/server/application/workflow-code-version-order";
 export type {
   DevPreviewInfo,
+  DevPreviewSourceFreezeResult,
   DevPreviewServiceResult,
   DevPreviewsResult,
+  FreezeDevPreviewSourcesParams,
   ProvisionDevPreviewParams,
   ProvisionDevPreviewsParams,
   ReplaceDevPreviewImagesParams,
@@ -134,6 +139,21 @@ export interface DevPreviewPersistence {
     id: string;
     userId: string;
     projectId: string | null;
+  } | null>;
+  /** Optional read side used to make strict capture idempotent for one live generation. */
+  listWorkflowArtifactsByExecutionId?(executionId: string): Promise<
+    Array<{
+      id: string;
+      kind: string;
+      inlinePayload: unknown;
+      fileId: string | null;
+      sizeBytes: number | null;
+      createdAt: Date;
+    }>
+  >;
+  getWorkflowFile?(id: string): Promise<{
+    id: string;
+    archivedAt?: string | null;
   } | null>;
   persistSourceBundleArtifact(
     input: DevPreviewPersistSourceBundleInput,
@@ -1898,9 +1918,236 @@ type TarOverlaySetManifest = {
 const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const SYNC_GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+type FreezePhase = "prepare" | "commit" | "abort";
+
+type DevPreviewFreezeReceiver = Readonly<{
+  service: string;
+  endpoint: string;
+  receiverToken: string;
+}>;
+
+type DevPreviewFreezeProof = Readonly<{
+  service: string;
+  generation: string;
+  contentSha256: `sha256:${string}`;
+  prepared: boolean;
+  frozen: boolean;
+}>;
 
 function sha256(bytes: Buffer): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/**
+ * Establish the physical teardown fence, then use a reversible prepare barrier
+ * before committing the one-way receiver freeze. No receiver is made terminal
+ * until the complete service set proves one coherent generation.
+ */
+export async function freezeDevPreviewSourcesForTeardown(
+  params: FreezeDevPreviewSourcesParams,
+  persistence?: DevPreviewPersistence,
+  credentialOptions?: DevSyncCredentialResolverOptions,
+): Promise<DevPreviewSourceFreezeResult> {
+  const baseUrl = sandboxExecutionApiUrl();
+  if (!baseUrl || !persistence) {
+    throw new Error("dev-preview teardown freeze is unavailable");
+  }
+  const services = [...new Set(params.services.map((service) => service.trim()))]
+    .filter(Boolean)
+    .sort();
+  if (services.length === 0 || services.length !== params.services.length) {
+    throw new Error("dev-preview teardown requires an exact service set");
+  }
+  for (const service of services) resolveDevPreviewDescriptor(service);
+
+  await requestDevPreviewTeardownIntent({
+    baseUrl,
+    executionId: params.executionId,
+    token: internalToken(),
+  });
+
+  const operationId = `teardown-${createHash("sha256")
+    .update(params.executionId)
+    .digest("hex")
+    .slice(0, 40)}`;
+  const receivers = await Promise.all(
+    services.map(async (service): Promise<DevPreviewFreezeReceiver> => {
+      const details = await resolveDevPreviewDetails(
+        params.executionId,
+        persistence,
+        service,
+      );
+      if (
+        !details?.podIP ||
+        !details.syncPort ||
+        details.service !== service
+      ) {
+        throw new Error(`dev-preview receiver is unavailable for ${service}`);
+      }
+      const { receiverToken } = await resolveDevSyncCredentials(
+        { executionId: params.executionId, service },
+        credentialOptions,
+      );
+      return {
+        service,
+        endpoint: `http://${details.podIP}:${details.syncPort}/__freeze`,
+        receiverToken,
+      };
+    }),
+  );
+
+  const prepared = await Promise.allSettled(
+    receivers.map((receiver) =>
+      requestReceiverFreezePhase(receiver, "prepare", operationId),
+    ),
+  );
+  const preparedProofs = prepared.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const prepareFailed = prepared.some((result) => result.status === "rejected");
+  const recoveringCommit = preparedProofs.some(({ frozen }) => frozen);
+  if (prepareFailed) {
+    if (!recoveringCommit) {
+      await abortReceiverFreezePreparation(receivers, operationId);
+    }
+    throw new Error(
+      recoveringCommit
+        ? "dev-preview checkpoint freeze is partially committed; retry teardown"
+        : "dev-preview receivers are busy; retry teardown after live sync completes",
+    );
+  }
+
+  const generations = new Set(
+    preparedProofs.map(({ generation }) => generation),
+  );
+  if (generations.size !== 1) {
+    if (!recoveringCommit) {
+      await abortReceiverFreezePreparation(receivers, operationId);
+    }
+    throw new Error(
+      recoveringCommit
+        ? "dev-preview checkpoint recovery found inconsistent committed generations"
+        : "dev-preview services are on different live-sync generations; run sync again, then retry teardown",
+    );
+  }
+
+  const committed = await Promise.allSettled(
+    receivers.map((receiver) =>
+      requestReceiverFreezePhase(receiver, "commit", operationId, 20),
+    ),
+  );
+  if (committed.some((result) => result.status === "rejected")) {
+    throw new Error(
+      "dev-preview checkpoint freeze is partially committed; retry teardown",
+    );
+  }
+  const receipts = committed.map((result) => {
+    if (result.status !== "fulfilled" || !result.value.frozen) {
+      throw new Error("dev-preview receiver freeze commit was not proven");
+    }
+    return Object.freeze({
+      service: result.value.service,
+      generation: result.value.generation,
+      contentSha256: result.value.contentSha256,
+    });
+  });
+  return Object.freeze({
+    executionId: params.executionId,
+    generation: receipts[0]!.generation,
+    services: Object.freeze(receipts),
+  });
+}
+
+async function requestReceiverFreezePhase(
+  receiver: DevPreviewFreezeReceiver,
+  phase: FreezePhase,
+  operationId: string,
+  retries = 0,
+): Promise<DevPreviewFreezeProof> {
+  const url = new URL(receiver.endpoint);
+  url.searchParams.set("phase", phase);
+  url.searchParams.set("operationId", operationId);
+  let lastStatus = 0;
+  let lastError = "request failed";
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "x-sync-token": receiver.receiverToken },
+        signal: AbortSignal.timeout(10_000),
+      });
+      lastStatus = response.status;
+      const body = (await response.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      lastError =
+        typeof body?.error === "string" ? body.error : `HTTP ${response.status}`;
+      if (response.status === 409 && attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+      if (phase === "abort") {
+        if (
+          response.ok &&
+          body?.ok === true &&
+          body.operationId === operationId &&
+          body.prepared === false &&
+          body.frozen === false
+        ) {
+          return {
+            service: receiver.service,
+            generation: "aborted",
+            contentSha256: `sha256:${"0".repeat(64)}`,
+            prepared: false,
+            frozen: false,
+          };
+        }
+      } else if (
+        response.ok &&
+        body?.ok === true &&
+        body.operationId === operationId &&
+        body.service === receiver.service &&
+        typeof body.generation === "string" &&
+        SYNC_GENERATION_PATTERN.test(body.generation) &&
+        typeof body.contentSha256 === "string" &&
+        SHA256_DIGEST_PATTERN.test(body.contentSha256) &&
+        typeof body.prepared === "boolean" &&
+        typeof body.frozen === "boolean" &&
+        body.prepared !== body.frozen &&
+        (phase !== "commit" || body.frozen === true)
+      ) {
+        return {
+          service: receiver.service,
+          generation: body.generation,
+          contentSha256: body.contentSha256 as `sha256:${string}`,
+          prepared: body.prepared,
+          frozen: body.frozen,
+        };
+      }
+    } catch (cause) {
+      lastError = message(cause);
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
+    }
+    break;
+  }
+  throw new Error(
+    `dev-preview receiver ${phase} was not proven for ${receiver.service} (HTTP ${lastStatus}: ${lastError})`,
+  );
+}
+
+async function abortReceiverFreezePreparation(
+  receivers: readonly DevPreviewFreezeReceiver[],
+  operationId: string,
+): Promise<void> {
+  await Promise.allSettled(
+    receivers.map((receiver) =>
+      requestReceiverFreezePhase(receiver, "abort", operationId, 4),
+    ),
+  );
 }
 
 async function fetchDevPreviewExport(
@@ -2240,6 +2487,7 @@ export async function captureAllDevPreviewSources(
   skipped?: string;
   captureId?: string;
   generation?: string | null;
+  reused?: boolean;
   services: Array<{ service: string | null; ok: boolean; skipped?: string }>;
 }> {
   if (!persistence) return { ok: false, services: [] };
@@ -2503,6 +2751,32 @@ export async function captureAllDevPreviewSources(
         overlay.contentSha256,
       ]),
     );
+    const reusable = strict
+      ? await latestReusableStrictCapture(persistence, executionId, {
+          generation: manifest.generation,
+          repoUrl: manifest.repoUrl,
+          base: manifest.base,
+          services: manifest.services.map((overlay) => overlay.service),
+          overlayDigests,
+          catalogDigest: manifest.catalogDigest,
+          sourceRevision: manifest.sourceRevision,
+          platformRevision: manifest.platformRevision,
+        })
+      : null;
+    if (reusable) {
+      console.info(
+        `[dev-preview] capture-set exec=${executionId} reused artifact ${reusable.artifactId} for unchanged generation=${generation}`,
+      );
+      return {
+        ok: true,
+        artifactId: reusable.artifactId,
+        bytes: reusable.bytes,
+        captureId: reusable.captureId,
+        generation,
+        reused: true,
+        services: serviceResults,
+      };
+    }
     const result = await persistence.persistSourceBundleArtifact({
       executionId,
       userId: exec.userId,
@@ -2555,6 +2829,83 @@ export async function captureAllDevPreviewSources(
   }
 }
 
+type StrictCaptureIdentity = Readonly<{
+  generation: string | null;
+  repoUrl: string;
+  base: string;
+  services: readonly string[];
+  overlayDigests: Readonly<Record<string, string>>;
+  catalogDigest: string | null;
+  sourceRevision: string | null;
+  platformRevision: string | null;
+}>;
+
+async function latestReusableStrictCapture(
+  persistence: DevPreviewPersistence,
+  executionId: string,
+  identity: StrictCaptureIdentity,
+): Promise<
+  | Readonly<{
+      artifactId: string;
+      captureId: string;
+      bytes: number;
+    }>
+  | null
+> {
+  if (!persistence.listWorkflowArtifactsByExecutionId) return null;
+  const latest = latestWorkflowArtifact(
+    await persistence.listWorkflowArtifactsByExecutionId(executionId),
+    (artifact) => {
+      if (artifact.kind !== "source-bundle") return false;
+      const payload = asRecord(artifact.inlinePayload);
+      return (
+        payload?.captureProtocol === "atomic-generation-v2" ||
+        payload?.acceptanceEligible === true
+      );
+    },
+  );
+  if (!latest) return null;
+
+  const payload = asRecord(latest.inlinePayload);
+  const captureId = payload?.captureId;
+  const services = Array.isArray(payload?.services)
+    ? payload.services.filter((value): value is string => typeof value === "string")
+    : [];
+  const overlayDigests = asRecord(payload?.overlayDigests);
+  const sameStrings = (left: readonly string[], right: readonly string[]) =>
+    JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+  const sameDigests =
+    overlayDigests != null &&
+    sameStrings(Object.keys(overlayDigests), Object.keys(identity.overlayDigests)) &&
+    Object.entries(identity.overlayDigests).every(
+      ([service, digest]) => overlayDigests[service] === digest,
+    );
+
+  const matches = typeof captureId === "string" &&
+    captureId.trim() &&
+    typeof latest.fileId === "string" &&
+    latest.fileId.trim() &&
+    latest.sizeBytes != null &&
+    payload?.generation === identity.generation &&
+    payload?.repoUrl === identity.repoUrl &&
+    payload?.base === identity.base &&
+    sameStrings(services, identity.services) &&
+    sameDigests &&
+    payload?.catalogDigest === identity.catalogDigest &&
+    payload?.sourceRevision === identity.sourceRevision &&
+    payload?.platformRevision === identity.platformRevision;
+  if (!matches || typeof captureId !== "string" || !latest.fileId) return null;
+  if (persistence.getWorkflowFile) {
+    const file = await persistence.getWorkflowFile(latest.fileId);
+    if (!file || file.id !== latest.fileId || file.archivedAt) return null;
+  }
+  return {
+    artifactId: latest.id,
+    captureId,
+    bytes: latest.sizeBytes as number,
+  };
+}
+
 export async function teardownDevPreview(
   params: TeardownDevPreviewParams,
   persistence?: DevPreviewPersistence,
@@ -2602,15 +2953,17 @@ export async function teardownDevPreview(
   // Fence new execution-wide provisioning before reading or exporting the live
   // workspace. An explicit single-Sandbox cleanup remains the narrow back-compat
   // path and does not acquire the execution-wide fence.
-  await captureAllDevPreviewSources(
-    params.executionId,
-    {
-      nodeId: "dev-preview",
-      iteration: null,
-    },
-    persistence,
-    credentialOptions,
-  );
+  if (!params.sourceCheckpoint) {
+    await captureAllDevPreviewSources(
+      params.executionId,
+      {
+        nodeId: "dev-preview",
+        iteration: null,
+      },
+      persistence,
+      credentialOptions,
+    );
+  }
   try {
     persistedTargets = await listDevPreviewSandboxTargets(
       params.executionId,

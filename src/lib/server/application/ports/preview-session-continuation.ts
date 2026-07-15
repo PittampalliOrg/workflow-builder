@@ -1,3 +1,8 @@
+import type {
+  PreviewEnvironmentCleanupProof,
+  PreviewEnvironmentVerificationResult,
+} from "./preview-environments";
+
 /**
  * Public, user-session continuation commands for an already-running dev
  * PreviewEnvironment. The application service parses `action` at the boundary
@@ -14,17 +19,27 @@ export type PreviewSessionContinuationCaptureBody = Readonly<{
   action: "capture";
   ok: boolean;
   artifactId?: string;
+  bytes?: number;
+  captureId?: string;
+  generation?: string | null;
+  reused?: boolean;
+  skipped?: string;
   services: readonly Readonly<{
     service: string | null;
     ok: boolean;
+    skipped?: string;
   }>[];
 }>;
 
 export type PreviewSessionContinuationPromotionBody = Readonly<{
   action: "promote";
   ok: true;
+  /** Preview-local artifact ID used for subsequent acceptance. */
   artifactId: string;
+  receiptId: string;
   services: readonly string[];
+  branch: string;
+  prUrl: string;
   pullRequest: Readonly<{
     repository: string;
     number: number;
@@ -40,6 +55,11 @@ export type PreviewSessionContinuationAcceptanceBody = Readonly<{
     repository: string;
     number: number;
   }>;
+  stage?: string;
+  message?: string;
+  evidenceReceiptDigest?: `sha256:${string}`;
+  verification?: PreviewEnvironmentVerificationResult;
+  cleanup?: PreviewEnvironmentCleanupProof | null;
 }>;
 
 export type PreviewSessionContinuationBody =
@@ -55,7 +75,7 @@ export type PreviewSessionContinuationResult =
     }>
   | Readonly<{
       status: "error";
-      httpStatus: 400 | 403 | 404 | 502;
+      httpStatus: 400 | 403 | 404 | 409 | 502;
       message: string;
     }>;
 

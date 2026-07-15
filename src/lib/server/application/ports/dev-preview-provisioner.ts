@@ -129,9 +129,44 @@ export type ReplaceDevPreviewImagesResult = DevPreviewsResult & {
   };
 };
 
+export type DevPreviewSourceFreezeReceipt = Readonly<{
+  service: string;
+  generation: string;
+  contentSha256: `sha256:${string}`;
+}>;
+
+export type DevPreviewSourceFreezeResult = Readonly<{
+  executionId: string;
+  generation: string;
+  services: readonly DevPreviewSourceFreezeReceipt[];
+}>;
+
+export type FreezeDevPreviewSourcesParams = Readonly<{
+  executionId: string;
+  services: readonly string[];
+}>;
+
 export interface TeardownDevPreviewParams {
   executionId: string;
   sandboxName?: string | null;
+  /**
+   * Proof that the caller already persisted and promoted the strict
+   * whole-environment source checkpoint. Legacy callers omit this and retain
+   * best-effort capture.
+   */
+  sourceCheckpoint?:
+    | Readonly<{
+        status: "promoted";
+        artifactId: string;
+        receiptId: string;
+        repository: string;
+        pullRequestNumber: number;
+        branch: string;
+        headSha: string;
+        generation: string;
+        services: readonly DevPreviewSourceFreezeReceipt[];
+      }>
+    | Readonly<{ status: "discard-authorized" | "teardown-resume" }>;
 }
 
 export interface TeardownDevPreviewResult {
@@ -156,5 +191,12 @@ export interface PreviewEnvironmentProvisioner {
   replaceMany(
     input: ReplaceDevPreviewImagesParams,
   ): Promise<ReplaceDevPreviewImagesResult>;
+  /**
+   * Establishes the execution teardown intent and irreversibly freezes every
+   * live-sync receiver at one generation while exports remain readable.
+   */
+  freezeSourcesForTeardown(
+    input: FreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourceFreezeResult>;
   teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult>;
 }

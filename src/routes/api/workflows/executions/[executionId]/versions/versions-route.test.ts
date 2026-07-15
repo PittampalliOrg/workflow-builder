@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => {
             },
           ],
           outstanding: true,
+          unpromotedCount: 1,
+          canManageStrictCheckpoints: true,
         },
       }),
     ),
@@ -96,6 +98,8 @@ describe("workflow execution versions route", () => {
         },
       ],
       outstanding: true,
+      unpromotedCount: 1,
+      canManageStrictCheckpoints: true,
     });
     expect(mocks.workflowCodeVersions.listVersions).toHaveBeenCalledWith({
       executionId: "exec-1",

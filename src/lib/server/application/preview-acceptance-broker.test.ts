@@ -7,11 +7,13 @@ import type { PreviewGovernanceStatusMode } from "$lib/server/application/config
 import type {
   PreviewAcceptanceChangedServiceCatalogPort,
   PreviewAcceptedImageReceiptStorePort,
+  PreviewControlGitSourceVerificationPort,
   PreviewControlPullRequestInspectionPort,
   PreviewControlSourceAuthorityPort,
 } from "$lib/server/application/ports";
 
 const BASE_SHA = "a".repeat(40);
+const LIVE_BASE_SHA = "f".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 const CATALOG_DIGEST = `sha256:${"c".repeat(64)}` as const;
 const IMAGE_DIGEST = `sha256:${"e".repeat(64)}` as const;
@@ -92,6 +94,9 @@ function harness(
       services: input.requiredServices,
     })),
   };
+  const git: PreviewControlGitSourceVerificationPort = {
+    verifyBranch: vi.fn(async () => true),
+  };
   const acceptance = {
     replay: vi.fn(async () => ({
       ok: true as const,
@@ -107,7 +112,13 @@ function harness(
     latest: vi.fn(),
   };
   const receipts: PreviewAcceptedImageReceiptStorePort = {
-    put: vi.fn(async () => ACCEPTED_RECEIPT),
+    put: vi.fn(async (receiptInput) =>
+      Object.freeze({
+        ...preparePreviewAcceptedImageReceipt(receiptInput),
+        attestation: ACCEPTED_RECEIPT.attestation,
+        createdAt: ACCEPTED_RECEIPT.createdAt,
+      }),
+    ),
     getByRepoPrHeadContext: vi.fn(async () => null),
   };
   const receiptAttestations = {
@@ -124,6 +135,7 @@ function harness(
     pullRequests,
     catalog,
     authority,
+    git,
     acceptance,
     statuses,
     receipts,
@@ -134,12 +146,14 @@ function harness(
       pullRequests,
       catalog,
       authority,
+      git,
       acceptance,
       statuses: reporting.statuses,
       receipts,
       receiptAttestations,
       gate: reporting.gate,
       sourceRepository: "PittampalliOrg/workflow-builder",
+      baseBranch: "main",
       now: () => new Date("2026-07-09T21:00:00.000Z"),
     }),
   };
@@ -176,6 +190,18 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
       environmentSourceRevision: BASE_SHA,
       catalogDigest: CATALOG_DIGEST,
       requiredServices: ["workflow-builder"],
+    });
+    expect(h.git.verifyBranch).toHaveBeenCalledWith({
+      repository: "PittampalliOrg/workflow-builder",
+      branch: "feature/preview-change",
+      commitSha: HEAD_SHA,
+      baseBranch: "main",
+      baseRevision: BASE_SHA,
+      expectedBaseHead: BASE_SHA,
+      expectedChangedPaths: [
+        "src/routes/new-feature.ts",
+        "docs/preview.md",
+      ],
     });
     expect(h.acceptance.replay).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -331,6 +357,7 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
       .mockResolvedValueOnce({
         repository: "PittampalliOrg/workflow-builder",
         number: 42,
+        draft: true,
         baseSha: BASE_SHA as never,
         headRef: "feature/preview-change",
         headSha: HEAD_SHA as never,
@@ -378,14 +405,33 @@ describe("ApplicationPreviewAcceptanceBrokerService", () => {
     expect(h.acceptance.replay).not.toHaveBeenCalled();
   });
 
-  it("requires the PR base to match the physical preview source baseline", async () => {
+  it("accepts an advanced live base when the checkpoint branch still descends from the preview baseline", async () => {
     const h = harness();
     await expect(
       h.service.replay({
         ...input,
-        pullRequest: { ...input.pullRequest, baseSha: "e".repeat(40) as never },
+        pullRequest: { ...input.pullRequest, baseSha: LIVE_BASE_SHA as never },
       }),
-    ).rejects.toThrow("base SHA");
+    ).resolves.toMatchObject({
+      ok: true,
+      pullRequest: { baseSha: LIVE_BASE_SHA, headSha: HEAD_SHA },
+    });
+    expect(h.git.verifyBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRevision: BASE_SHA }),
+    );
+  });
+
+  it("rejects an advanced live base when Git ancestry verification fails", async () => {
+    const h = harness();
+    vi.mocked(h.git.verifyBranch).mockResolvedValueOnce(false);
+
+    await expect(
+      h.service.replay({
+        ...input,
+        pullRequest: { ...input.pullRequest, baseSha: LIVE_BASE_SHA as never },
+      }),
+    ).rejects.toThrow("does not descend");
     expect(h.acceptance.replay).not.toHaveBeenCalled();
+    expect(h.statuses.publish).not.toHaveBeenCalled();
   });
 });

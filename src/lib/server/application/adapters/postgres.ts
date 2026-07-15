@@ -6345,6 +6345,31 @@ export class PostgresArtifactStore implements ArtifactStore {
 			.returning();
 		return row ? mapArtifact(row) : null;
 	}
+
+	async mergeWorkflowArtifactMetadata(input: {
+		executionId: string;
+		artifactId: string;
+		patch: Record<string, unknown>;
+		ifAbsentMetadataKey?: string;
+	}): Promise<WorkflowArtifactRecord | null> {
+		const conditions: SQL[] = [
+			eq(workflowArtifacts.id, input.artifactId),
+			eq(workflowArtifacts.workflowExecutionId, input.executionId),
+		];
+		if (input.ifAbsentMetadataKey) {
+			conditions.push(
+				sql`NOT (COALESCE(${workflowArtifacts.metadata}, '{}'::jsonb) ? ${input.ifAbsentMetadataKey})`,
+			);
+		}
+		const [row] = await this.database
+			.update(workflowArtifacts)
+			.set({
+				metadata: sql`COALESCE(${workflowArtifacts.metadata}, '{}'::jsonb) || ${JSON.stringify(input.patch)}::jsonb`,
+			})
+			.where(and(...conditions))
+			.returning();
+		return row ? mapArtifact(row) : null;
+	}
 }
 
 export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {

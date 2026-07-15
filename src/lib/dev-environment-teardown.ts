@@ -28,6 +28,16 @@ export interface DevEnvironmentTeardownOptions {
   now?: () => number;
   timeoutMs?: number;
   retryIntervalMs?: number;
+  discardUncaptured?: boolean;
+}
+
+export class DevEnvironmentTeardownBlockedError extends Error {
+  readonly status = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "DevEnvironmentTeardownBlockedError";
+  }
 }
 
 const DEFAULT_TIMEOUT_MS = 2 * 60_000;
@@ -58,6 +68,20 @@ function timeoutError(): Error {
   );
 }
 
+function receiptError(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const receipt = value as Record<string, unknown>;
+  if (typeof receipt.error === "string" && receipt.error.trim()) {
+    return receipt.error;
+  }
+  if (typeof receipt.message === "string" && receipt.message.trim()) {
+    return receipt.message;
+  }
+  return null;
+}
+
 async function wait(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -84,7 +108,10 @@ export async function teardownDevEnvironmentUntilComplete(
   }
 
   const deadline = now() + timeoutMs;
-  const url = `/api/dev-environments/${encodeURIComponent(executionId)}`;
+  const endpoint = `/api/dev-environments/${encodeURIComponent(executionId)}`;
+  const url = options.discardUncaptured
+    ? `${endpoint}?discardUncaptured=true`
+    : endpoint;
   const retry = async (): Promise<void> => {
     const waitMs = Math.min(retryIntervalMs, deadline - now());
     if (waitMs <= 0) throw timeoutError();
@@ -128,6 +155,20 @@ export async function teardownDevEnvironmentUntilComplete(
       );
     }
     clearTimeout(timeout);
+
+    if (response.status === 409) {
+      throw new DevEnvironmentTeardownBlockedError(
+        receiptError(receipt) ??
+          "Teardown was blocked because the latest live-sync changes could not be captured",
+      );
+    }
+
+    if (response.status === 403) {
+      throw new Error(
+        receiptError(receipt) ??
+          "Platform administrator access is required for preview teardown",
+      );
+    }
 
     if (
       response.status === 503 &&

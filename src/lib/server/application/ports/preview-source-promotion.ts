@@ -18,6 +18,7 @@ export type PreviewSourcePromotionBrokerRequest = Readonly<{
 
 export type PreviewSourcePromotionResult = Readonly<{
   ok: true;
+  receiptId: string;
   previewName: string;
   requestId: string;
   executionId: string;
@@ -34,6 +35,59 @@ export type PreviewSourcePromotionResult = Readonly<{
   }>;
   draft: boolean;
 }>;
+
+export type PreviewSourcePromotionReceiptInput = Readonly<{
+  artifactId: string;
+  previewName: string;
+  requestId: string;
+  executionId: string;
+  platformRevision: ImmutableGitSha;
+  /** Immutable source baseline captured by the preview and used as the promoted commit parent. */
+  sourceRevision: ImmutableGitSha;
+  catalogDigest: `sha256:${string}`;
+  repository: string;
+  baseBranch: string;
+  /** Live head of baseBranch observed on the exact GitHub PR tuple for this receipt. */
+  baseSha: ImmutableGitSha;
+  branch: string;
+  commitSha: ImmutableGitSha;
+  prUrl: string;
+  pullRequestNumber: number;
+  draft: true;
+  services: readonly string[];
+  changedPaths: readonly string[];
+}>;
+
+export type PreviewSourcePromotionReceipt = PreviewSourcePromotionReceiptInput &
+  Readonly<{
+    receiptId: string;
+    createdAt: string;
+  }>;
+
+export type PreviewSourcePromotionReceiptScope = Readonly<{
+  previewName: string;
+  requestId: string;
+  executionId: string;
+  platformRevision: ImmutableGitSha;
+  sourceRevision: ImmutableGitSha;
+  catalogDigest: `sha256:${string}`;
+  repository: string;
+  baseBranch: string;
+}>;
+
+/** Physical durable receipt store. Mutable preview deployments never receive this port. */
+export interface PreviewSourcePromotionReceiptStorePort {
+  put(
+    input: PreviewSourcePromotionReceiptInput,
+  ): Promise<PreviewSourcePromotionReceipt>;
+  getByArtifact(artifactId: string): Promise<PreviewSourcePromotionReceipt | null>;
+  getScoped(
+    input: PreviewSourcePromotionReceiptScope & Readonly<{ receiptId: string }>,
+  ): Promise<PreviewSourcePromotionReceipt | null>;
+  getLatestForExecution(
+    input: PreviewSourcePromotionReceiptScope,
+  ): Promise<PreviewSourcePromotionReceipt | null>;
+}
 
 export interface PreviewSourcePromotionBrokerPort {
   promote(

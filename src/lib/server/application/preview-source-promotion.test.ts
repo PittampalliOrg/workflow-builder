@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationPreviewSourcePromotionBrokerService,
   ApplicationPreviewSourcePromotionService,
+  previewSourcePromotionBranch,
 } from "$lib/server/application/preview-source-promotion";
 import { HttpPreviewSourcePromotionBrokerAdapter } from "$lib/server/application/adapters/preview-control";
 import type {
@@ -13,9 +14,20 @@ import type {
 const PLATFORM = "a".repeat(40) as ImmutableGitSha;
 const SOURCE = "b".repeat(40) as ImmutableGitSha;
 const COMMIT = "c".repeat(40) as ImmutableGitSha;
+const ADVANCED_BASE = "f".repeat(40) as ImmutableGitSha;
 const CATALOG = `sha256:${"d".repeat(64)}` as const;
 const FILE = `sha256:${"e".repeat(64)}` as const;
-const BRANCH = "preview-feature-central-artifact-1";
+const RECEIPT_ID = `pspr_${"f".repeat(64)}`;
+const BRANCH = previewSourcePromotionBranch({
+  previewName: "preview-one",
+  requestId: "request-1",
+  executionId: "execution-1",
+  platformRevision: PLATFORM,
+  sourceRevision: SOURCE,
+  catalogDigest: CATALOG,
+  repository: "PittampalliOrg/workflow-builder",
+  baseBranch: "main",
+});
 const FIVE_CAPTURED_SERVICES = Object.freeze([
   "function-router",
   "mcp-gateway",
@@ -60,9 +72,13 @@ const fiveServiceCommand: PreviewSourcePromotionBrokerRequest = {
   },
 };
 
-function promotionBrokerProof(services: readonly string[]) {
+function promotionBrokerProof(
+  services: readonly string[],
+  baseSha: ImmutableGitSha = SOURCE,
+) {
   return {
     ok: true,
+    receiptId: RECEIPT_ID,
     previewName: "preview-one",
     requestId: "request-1",
     executionId: "execution-1",
@@ -74,7 +90,8 @@ function promotionBrokerProof(services: readonly string[]) {
     pullRequest: {
       repository: "PittampalliOrg/workflow-builder",
       number: 42,
-      baseSha: SOURCE,
+      draft: true,
+      baseSha,
       headSha: COMMIT,
     },
     draft: true,
@@ -105,6 +122,7 @@ function promotionHttpHarness(body: unknown) {
 }
 
 function brokerHarness() {
+  let storedReceipt: Record<string, unknown> | null = null;
   const authority = {
     authorize: vi.fn(async () => ({
       previewName: "preview-one",
@@ -146,16 +164,51 @@ function brokerHarness() {
     })),
   };
   const git = { verifyBranch: vi.fn(async () => true) };
+  const inspectOpen = vi.fn(async () => ({
+    repository: "PittampalliOrg/workflow-builder",
+    number: 42,
+    draft: true,
+    baseSha: SOURCE,
+    headRef: BRANCH,
+    headSha: COMMIT,
+    changedPaths: ["src/routes/feature.ts"],
+  }));
   const pullRequests = {
-    inspectOpen: vi.fn(async () => ({
-      repository: "PittampalliOrg/workflow-builder",
-      number: 42,
-      baseSha: SOURCE,
-      headRef: BRANCH,
-      headSha: COMMIT,
-      changedPaths: ["src/routes/feature.ts"],
-    })),
-    inspect: vi.fn(),
+    inspectOpen,
+    inspect: vi.fn(async (input: {
+      repository: string;
+      number: number;
+      baseSha: ImmutableGitSha;
+      headSha: ImmutableGitSha;
+    }) => {
+      const pullRequest = await inspectOpen();
+      if (
+        pullRequest.repository !== input.repository ||
+        pullRequest.number !== input.number ||
+        pullRequest.baseSha !== input.baseSha ||
+        pullRequest.headSha !== input.headSha
+      ) {
+        throw new Error(
+          "GitHub pull request repo/base/head identity does not match",
+        );
+      }
+      return pullRequest;
+    }),
+  };
+  const receipts = {
+    getByArtifact: vi.fn(async (artifactId: string) =>
+      storedReceipt?.artifactId === artifactId ? storedReceipt : null,
+    ),
+    getScoped: vi.fn(async () => storedReceipt),
+    getLatestForExecution: vi.fn(async () => storedReceipt),
+    put: vi.fn(async (value: Record<string, unknown>) => {
+      storedReceipt = {
+        ...value,
+        receiptId: `pspr_${(value.artifactId === "central-artifact-1" ? "f" : "a").repeat(64)}`,
+        createdAt: "2026-07-14T12:00:00.000Z",
+      };
+      return storedReceipt;
+    }),
   };
   const catalog = {
     currentDigest: () => CATALOG,
@@ -176,6 +229,7 @@ function brokerHarness() {
     promotions,
     git,
     pullRequests,
+    receipts,
     catalog,
     service: new ApplicationPreviewSourcePromotionBrokerService({
       authority: authority as never,
@@ -183,6 +237,7 @@ function brokerHarness() {
       promotions,
       git,
       pullRequests,
+      receipts: receipts as never,
       catalog,
       sourceRepository: "PittampalliOrg/workflow-builder",
       baseBranch: "main",
@@ -204,6 +259,7 @@ describe("preview source promotion", () => {
     const broker = {
       promote: vi.fn(async () => ({
         ok: true as const,
+        receiptId: RECEIPT_ID,
         previewName: "preview-one",
         requestId: "request-1",
         executionId: "execution-1",
@@ -277,12 +333,279 @@ describe("preview source promotion", () => {
       commitSha: COMMIT,
       baseBranch: "main",
       baseRevision: SOURCE,
+      expectedBaseHead: SOURCE,
       expectedChangedPaths: ["src/routes/feature.ts"],
     });
     expect(h.pullRequests.inspectOpen).toHaveBeenCalledWith({
       repository: "PittampalliOrg/workflow-builder",
       number: 42,
     });
+    expect(h.pullRequests.inspect).toHaveBeenCalledWith({
+      repository: "PittampalliOrg/workflow-builder",
+      number: 42,
+      baseSha: SOURCE,
+      headSha: COMMIT,
+    });
+  });
+
+  it("does not persist a PR base that moves after ancestry verification", async () => {
+    const h = brokerHarness();
+    h.pullRequests.inspectOpen
+      .mockResolvedValueOnce({
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        draft: true,
+        baseSha: SOURCE,
+        headRef: BRANCH,
+        headSha: COMMIT,
+        changedPaths: ["src/routes/feature.ts"],
+      })
+      .mockResolvedValueOnce({
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        draft: true,
+        baseSha: ADVANCED_BASE,
+        headRef: BRANCH,
+        headSha: COMMIT,
+        changedPaths: ["src/routes/feature.ts"],
+      });
+
+    await expect(h.service.promote(command)).rejects.toMatchObject({
+      code: "materialization-failed",
+      statusCode: 409,
+    });
+    expect(h.receipts.put).not.toHaveBeenCalled();
+  });
+
+  it("replays a stored artifact after the PR target branch advances", async () => {
+    const h = brokerHarness();
+    await h.service.promote(command);
+    h.pullRequests.inspectOpen.mockResolvedValue({
+      repository: "PittampalliOrg/workflow-builder",
+      number: 42,
+      draft: true,
+      baseSha: ADVANCED_BASE,
+      headRef: BRANCH,
+      headSha: COMMIT,
+      changedPaths: ["src/routes/feature.ts"],
+    });
+
+    await expect(h.service.promote(command)).resolves.toMatchObject({
+      receiptId: RECEIPT_ID,
+      commitSha: COMMIT,
+      pullRequest: {
+        baseSha: SOURCE,
+        headSha: COMMIT,
+      },
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledTimes(1);
+    expect(h.git.verifyBranch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        baseRevision: SOURCE,
+        commitSha: COMMIT,
+      }),
+    );
+  });
+
+  it("reuses one leased draft branch and pull request for later checkpoints", async () => {
+    const h = brokerHarness();
+    await h.service.promote(command);
+
+    const nextCommit = "1".repeat(40) as ImmutableGitSha;
+    const nextIdentity: PreviewImportedArtifactIdentity = {
+      ...identity,
+      sourceArtifactId: "source-artifact-2",
+      captureId: "capture-2",
+      generation: "generation-2",
+      fileDigest: `sha256:${"2".repeat(64)}`,
+    };
+    const nextCommand: PreviewSourcePromotionBrokerRequest = {
+      ...command,
+      operationId: "central-artifact-2",
+      artifactId: "central-artifact-2",
+      artifactIdentity: nextIdentity,
+    };
+    h.trust.preparePromotion.mockResolvedValueOnce({
+      artifactId: "central-artifact-2",
+      artifactIdentity: nextIdentity,
+      fileId: "file-2",
+      fileDigest: nextIdentity.fileDigest,
+      services: ["workflow-builder"],
+      catalogDigest: CATALOG,
+      repo: "PittampalliOrg/workflow-builder",
+      base: "main",
+      capturedSourceRevision: SOURCE,
+      platformRevision: PLATFORM,
+    });
+    h.pullRequests.inspectOpen
+      .mockResolvedValueOnce({
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        draft: true,
+        baseSha: ADVANCED_BASE,
+        headRef: BRANCH,
+        headSha: COMMIT,
+        changedPaths: ["src/routes/feature.ts"],
+      })
+      .mockResolvedValueOnce({
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        draft: true,
+        baseSha: ADVANCED_BASE,
+        headRef: BRANCH,
+        headSha: nextCommit,
+        changedPaths: ["src/routes/feature.ts"],
+      })
+      .mockResolvedValueOnce({
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        draft: true,
+        baseSha: ADVANCED_BASE,
+        headRef: BRANCH,
+        headSha: nextCommit,
+        changedPaths: ["src/routes/feature.ts"],
+      });
+    h.promotions.promoteSourceBundle.mockResolvedValueOnce({
+      status: "ok",
+      output: "",
+      prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+      branch: BRANCH,
+      commitSha: nextCommit,
+      baseRevision: SOURCE,
+      pullRequestBase: "main",
+      changedPaths: ["src/routes/feature.ts"],
+      prError: null,
+    });
+
+    await expect(h.service.promote(nextCommand)).resolves.toMatchObject({
+      receiptId: `pspr_${"a".repeat(64)}`,
+      branch: BRANCH,
+      commitSha: nextCommit,
+      pullRequest: { number: 42, baseSha: ADVANCED_BASE },
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        branchName: BRANCH,
+        branchLease: {
+          expectedHeadSha: COMMIT,
+          existingPullRequestNumber: 42,
+        },
+        draft: true,
+      }),
+    );
+    expect(h.git.verifyBranch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        baseRevision: SOURCE,
+        commitSha: nextCommit,
+      }),
+    );
+    expect(h.receipts.put).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceRevision: SOURCE,
+        baseSha: ADVANCED_BASE,
+        commitSha: nextCommit,
+      }),
+    );
+  });
+
+  it("recovers a deterministic leased head after its receipt write failed", async () => {
+    const h = brokerHarness();
+    await h.service.promote(command);
+
+    const nextCommit = "1".repeat(40) as ImmutableGitSha;
+    const nextIdentity: PreviewImportedArtifactIdentity = {
+      ...identity,
+      sourceArtifactId: "source-artifact-2",
+      captureId: "capture-2",
+      generation: "generation-2",
+      fileDigest: `sha256:${"2".repeat(64)}`,
+    };
+    const nextCommand: PreviewSourcePromotionBrokerRequest = {
+      ...command,
+      operationId: "central-artifact-2",
+      artifactId: "central-artifact-2",
+      artifactIdentity: nextIdentity,
+    };
+    h.trust.preparePromotion.mockResolvedValue({
+      artifactId: "central-artifact-2",
+      artifactIdentity: nextIdentity,
+      fileId: "file-2",
+      fileDigest: nextIdentity.fileDigest,
+      services: ["workflow-builder"],
+      catalogDigest: CATALOG,
+      repo: "PittampalliOrg/workflow-builder",
+      base: "main",
+      capturedSourceRevision: SOURCE,
+      platformRevision: PLATFORM,
+    });
+    h.promotions.promoteSourceBundle.mockResolvedValue({
+      status: "ok",
+      output: "",
+      prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+      branch: BRANCH,
+      commitSha: nextCommit,
+      baseRevision: SOURCE,
+      pullRequestBase: "main",
+      changedPaths: ["src/routes/feature.ts"],
+      prError: null,
+    });
+    const oldPullRequest = {
+      repository: "PittampalliOrg/workflow-builder",
+      number: 42,
+      draft: true,
+      baseSha: SOURCE,
+      headRef: BRANCH,
+      headSha: COMMIT,
+      changedPaths: ["src/routes/feature.ts"],
+    };
+    const advancedPullRequest = {
+      ...oldPullRequest,
+      headSha: nextCommit,
+    };
+    h.pullRequests.inspectOpen
+      .mockResolvedValue(advancedPullRequest)
+      .mockResolvedValueOnce(oldPullRequest)
+      .mockResolvedValueOnce(advancedPullRequest);
+    h.receipts.put.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(h.service.promote(nextCommand)).rejects.toMatchObject({
+      code: "materialization-failed",
+      statusCode: 502,
+    });
+    await expect(h.service.promote(nextCommand)).resolves.toMatchObject({
+      receiptId: `pspr_${"a".repeat(64)}`,
+      commitSha: nextCommit,
+      pullRequest: { number: 42 },
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledTimes(3);
+    expect(h.promotions.promoteSourceBundle).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        branchLease: {
+          expectedHeadSha: COMMIT,
+          existingPullRequestNumber: 42,
+        },
+      }),
+    );
+  });
+
+  it("refuses to update a pull request after it leaves draft state", async () => {
+    const h = brokerHarness();
+    await h.service.promote(command);
+    h.pullRequests.inspectOpen.mockResolvedValueOnce({
+      repository: "PittampalliOrg/workflow-builder",
+      number: 42,
+      draft: false,
+      baseSha: SOURCE,
+      headRef: BRANCH,
+      headSha: COMMIT,
+      changedPaths: ["src/routes/feature.ts"],
+    });
+
+    await expect(h.service.promote(command)).rejects.toMatchObject({
+      code: "materialization-failed",
+      statusCode: 409,
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an attacker-controlled artifact tuple before Git or GitHub", async () => {
@@ -351,6 +674,7 @@ describe("preview source promotion", () => {
     h.pullRequests.inspectOpen.mockResolvedValueOnce({
       repository: "PittampalliOrg/workflow-builder",
       number: 42,
+      draft: true,
       baseSha: SOURCE,
       headRef: "unrelated-branch",
       headSha: COMMIT,
@@ -363,21 +687,33 @@ describe("preview source promotion", () => {
     expect(h.git.verifyBranch).not.toHaveBeenCalled();
   });
 
-  it("rejects a PR whose base advanced beyond the captured preview baseline", async () => {
+  it("accepts an advanced PR base while preserving captured ancestry", async () => {
     const h = brokerHarness();
-    h.pullRequests.inspectOpen.mockResolvedValueOnce({
+    h.pullRequests.inspectOpen.mockResolvedValue({
       repository: "PittampalliOrg/workflow-builder",
       number: 42,
-      baseSha: "f".repeat(40) as ImmutableGitSha,
+      draft: true,
+      baseSha: ADVANCED_BASE,
       headRef: BRANCH,
       headSha: COMMIT,
       changedPaths: ["src/routes/feature.ts"],
     });
-    await expect(h.service.promote(command)).rejects.toMatchObject({
-      code: "materialization-failed",
-      statusCode: 409,
+    await expect(h.service.promote(command)).resolves.toMatchObject({
+      commitSha: COMMIT,
+      pullRequest: {
+        baseSha: ADVANCED_BASE,
+        headSha: COMMIT,
+      },
     });
-    expect(h.git.verifyBranch).not.toHaveBeenCalled();
+    expect(h.git.verifyBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ baseRevision: SOURCE }),
+    );
+    expect(h.receipts.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceRevision: SOURCE,
+        baseSha: ADVANCED_BASE,
+      }),
+    );
   });
 });
 
@@ -417,12 +753,36 @@ describe("preview source promotion HTTP adapter", () => {
     });
   });
 
+  it("accepts a live PR base that advanced beyond the captured source revision", async () => {
+    const { adapter } = promotionHttpHarness(
+      promotionBrokerProof(["workflow-builder"], ADVANCED_BASE),
+    );
+
+    await expect(adapter.promote(command)).resolves.toMatchObject({
+      pullRequest: {
+        baseSha: ADVANCED_BASE,
+        headSha: COMMIT,
+      },
+    });
+  });
+
   it("rejects an extra service outside the captured artifact", async () => {
     const { adapter } = promotionHttpHarness(
       promotionBrokerProof(["unknown-service", "workflow-builder"]),
     );
 
     await expect(adapter.promote(fiveServiceCommand)).rejects.toThrow(
+      "preview source promotion broker returned invalid proof",
+    );
+  });
+
+  it("rejects a malformed physical promotion receipt", async () => {
+    const { adapter } = promotionHttpHarness({
+      ...promotionBrokerProof(["workflow-builder"]),
+      receiptId: "artifact-controlled-receipt",
+    });
+
+    await expect(adapter.promote(command)).rejects.toThrow(
       "preview source promotion broker returned invalid proof",
     );
   });

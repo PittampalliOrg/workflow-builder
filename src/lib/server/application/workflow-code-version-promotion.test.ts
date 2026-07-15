@@ -157,6 +157,41 @@ describe("ApplicationWorkflowCodeVersionPromotionService", () => {
     expect(runner.promoteSourceBundle).not.toHaveBeenCalled();
   });
 
+  it("rejects strict atomic preview captures before the generic promotion path", async () => {
+    vi.mocked(
+      workflowData.getWorkflowArtifactForExecution,
+    ).mockResolvedValueOnce(
+      sourceBundleArtifact({
+        inlinePayload: {
+          tier: "tar-overlay-set",
+          captureProtocol: "atomic-generation-v2",
+          acceptanceEligible: true,
+          repoUrl: "https://github.com/owner/repo.git",
+          base: "main",
+          sourceRevision: "b".repeat(40),
+        },
+      }),
+    );
+
+    await expect(
+      service.promote({
+        executionId: "exec-1",
+        artifactId: "artifact-1",
+        userId: "user-1",
+        projectId: "project-1",
+        body: { mode: "pr" },
+      }),
+    ).resolves.toEqual({
+      status: "error",
+      httpStatus: 409,
+      message:
+        "Strict preview captures must be promoted through preview continuation",
+    });
+    expect(promotionGate.evaluatePromotionGate).not.toHaveBeenCalled();
+    expect(runner.promoteSourceBundle).not.toHaveBeenCalled();
+    expect(workflowData.updateWorkflowArtifactMetadata).not.toHaveBeenCalled();
+  });
+
   it("returns the existing bad request when no target repo can be resolved", async () => {
     vi.mocked(workflowData.getScopedExecutionById).mockResolvedValueOnce(
       executionRecord({ input: {} }),

@@ -8,6 +8,7 @@ import type {
   PreviewAcceptedImageReceiptStorePort,
   PreviewControlPullRequest,
   PreviewControlPullRequestInspectionPort,
+  PreviewControlGitSourceVerificationPort,
   PreviewControlSourceAuthorityPort,
   PreviewGateReconcilerPort,
 } from "$lib/server/application/ports";
@@ -38,6 +39,7 @@ type AcceptanceReplay = Readonly<{
 type PreviewAcceptanceBrokerDeps = Readonly<{
   authority: PreviewControlSourceAuthorityPort;
   pullRequests: PreviewControlPullRequestInspectionPort;
+  git: PreviewControlGitSourceVerificationPort;
   catalog: PreviewAcceptanceChangedServiceCatalogPort;
   acceptance: AcceptanceReplay;
   statuses: PreviewAcceptanceCommitStatusPort;
@@ -45,6 +47,7 @@ type PreviewAcceptanceBrokerDeps = Readonly<{
   receiptAttestations: PreviewAcceptedImageReceiptAttestationPort;
   gate: PreviewGateReconcilerPort;
   sourceRepository: string;
+  baseBranch: string;
   now?: () => Date;
   ttlHours?: number;
   timeoutMs?: number;
@@ -97,9 +100,18 @@ export class ApplicationPreviewAcceptanceBrokerService implements PreviewAccepta
         "physical source authority returned a different preview identity",
       );
     }
-    if (source.sourceRevision !== pullRequest.baseSha) {
+    const verifiedBranch = await this.deps.git.verifyBranch({
+      repository: pullRequest.repository,
+      branch: pullRequest.headRef,
+      commitSha: pullRequest.headSha,
+      baseBranch: this.deps.baseBranch,
+      baseRevision: source.sourceRevision,
+      expectedBaseHead: pullRequest.baseSha,
+      expectedChangedPaths: pullRequest.changedPaths,
+    });
+    if (!verifiedBranch) {
       throw new PreviewAcceptanceBrokerInputError(
-        "pull request base SHA does not match the authorized preview source baseline",
+        "pull request branch does not descend from the authorized preview source baseline",
       );
     }
     if (source.catalogDigest !== this.deps.catalog.currentDigest()) {

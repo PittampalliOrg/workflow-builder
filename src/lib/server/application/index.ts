@@ -415,6 +415,7 @@ import { ApplicationVclusterPreviewService } from "$lib/server/application/vclus
 import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
 import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/application/dev-preview-source-capture";
 import { ApplicationPreviewSessionContinuationService } from "$lib/server/application/preview-session-continuation";
+import { ApplicationDevEnvironmentTeardownService } from "$lib/server/application/dev-environment-teardown";
 import {
   LegacyVclusterPreviewGateway,
   LegacyDevPreviewSidecarGateway,
@@ -464,6 +465,7 @@ import {
   ApplicationPreviewSourcePromotionBrokerService,
   ApplicationPreviewSourcePromotionService,
 } from "$lib/server/application/preview-source-promotion";
+import { ApplicationPreviewSourcePromotionAcceptanceService } from "$lib/server/application/preview-source-promotion-acceptance";
 import {
   HmacPreviewRuntimeCapabilityAdapter,
   HttpPreviewRuntimeUpstreamAdapter,
@@ -489,6 +491,8 @@ import {
   PreviewControlAcceptanceArtifactAdapter,
   WorkflowDataPreviewArtifactExportAdapter,
 } from "$lib/server/application/adapters/preview-control-artifacts";
+import { PostgresPreviewSourcePromotionReceiptStore } from "$lib/server/application/adapters/preview-source-promotion-receipts";
+import { HttpPreviewSourcePromotionAcceptanceAdapter } from "$lib/server/application/adapters/preview-source-promotion-acceptance";
 import { TektonPreviewDevelopmentBuildAdapter } from "$lib/server/application/adapters/preview-development-build";
 import { TektonPreviewActivationBuildAdapter } from "$lib/server/application/adapters/preview-activation-build";
 import { HttpPreviewActivationBrokerAdapter } from "$lib/server/application/adapters/preview-activation-dispatch";
@@ -919,8 +923,14 @@ export function getApplicationAdapters(
   let previewSourcePromotion:
     | ApplicationPreviewSourcePromotionService
     | undefined;
+  let previewSourcePromotionReceipts:
+    | PostgresPreviewSourcePromotionReceiptStore
+    | undefined;
   let previewSourcePromotionBroker:
     | ApplicationPreviewSourcePromotionBrokerService
+    | undefined;
+  let previewSourcePromotionAcceptance:
+    | ApplicationPreviewSourcePromotionAcceptanceService
     | undefined;
   let devPreviewSidecar: ApplicationDevPreviewSidecarService | undefined;
   let devPreviewSourceCapture:
@@ -928,6 +938,9 @@ export function getApplicationAdapters(
     | undefined;
   let previewSessionContinuation:
     | ApplicationPreviewSessionContinuationService
+    | undefined;
+  let devEnvironmentTeardown:
+    | ApplicationDevEnvironmentTeardownService
     | undefined;
   let workflowExecutionReadModels:
     | ApplicationWorkflowExecutionReadModelService
@@ -1907,6 +1920,9 @@ export function getApplicationAdapters(
       getWorkflowData,
       getDatabase(),
     ));
+  const getPreviewSourcePromotionReceipts = () =>
+    (previewSourcePromotionReceipts ??=
+      new PostgresPreviewSourcePromotionReceiptStore(getDatabase()));
   const getPreviewArtifactIngress = () =>
     (previewArtifactIngress ??= new ApplicationPreviewArtifactIngressService({
       authority: getPreviewControlSourceAuthority(),
@@ -2205,6 +2221,7 @@ export function getApplicationAdapters(
     (previewGateReconciler ??= new ApplicationPreviewGateReconcilerService({
       pullRequests: new GithubPreviewControlPullRequestAdapter({
         credentials: getPreviewGithubReadToken(),
+        baseBranch: config.previewSourceRef,
       }),
       catalog: new DevPreviewServiceCatalogAdapter(),
       baseCatalog: new GithubPreviewGateBaseCatalogAdapter({
@@ -2226,6 +2243,7 @@ export function getApplicationAdapters(
       new ApplicationPreviewActivationGateService({
         pullRequests: new GithubPreviewControlPullRequestAdapter({
           credentials: getPreviewGithubReadToken(),
+          baseBranch: config.previewSourceRef,
         }),
         catalog: new DevPreviewServiceCatalogAdapter(),
         builds: new TektonPreviewActivationBuildAdapter(),
@@ -2278,7 +2296,9 @@ export function getApplicationAdapters(
         }),
         pullRequests: new GithubPreviewControlPullRequestAdapter({
           credentials: getPreviewGithubReadToken(),
+          baseBranch: config.previewSourceRef,
         }),
+        receipts: getPreviewSourcePromotionReceipts(),
         catalog: new DevPreviewServiceCatalogAdapter(),
         sourceRepository: config.previewSourceRepository,
         baseBranch: config.previewSourceRef,
@@ -2291,6 +2311,18 @@ export function getApplicationAdapters(
         sourceRepository: config.previewSourceRepository,
       }),
     }));
+  const getPreviewSourcePromotionAcceptance = () =>
+    (previewSourcePromotionAcceptance ??=
+      new ApplicationPreviewSourcePromotionAcceptanceService({
+        receipts: getPreviewSourcePromotionReceipts(),
+        pullRequests: new GithubPreviewControlPullRequestAdapter({
+          credentials: getPreviewGithubReadToken(),
+          baseBranch: config.previewSourceRef,
+        }),
+        acceptance: getPreviewAcceptanceBroker(),
+        sourceRepository: config.previewSourceRepository,
+        baseBranch: config.previewSourceRef,
+      }));
   const getPreviewSessionContinuation = () =>
     (previewSessionContinuation ??=
       new ApplicationPreviewSessionContinuationService({
@@ -2298,7 +2330,21 @@ export function getApplicationAdapters(
         identity: getPreviewLocalControlIdentity(),
         capture: getDevPreviewSourceCapture(),
         promotion: getPreviewSourcePromotion(),
-        acceptance: getPreviewAcceptanceBroker(),
+        acceptance: new HttpPreviewSourcePromotionAcceptanceAdapter({
+          catalog: new DevPreviewServiceCatalogAdapter(),
+        }),
+      }));
+  const getDevEnvironmentTeardown = () =>
+    (devEnvironmentTeardown ??=
+      new ApplicationDevEnvironmentTeardownService({
+        workflowData: getWorkflowData(),
+        continuation: getPreviewSessionContinuation(),
+        previews: getPreviewEnvironmentProvisioner(),
+        sessions: new LifecycleSessionController(
+          getSessionGoalStore(),
+          getLifecycleCoordinatorOwners(),
+        ),
+        executions: new LifecycleWorkflowExecutionControllerPort(),
       }));
   const getPreviewAcceptanceBroker = () => {
     if (previewAcceptanceBroker) return previewAcceptanceBroker;
@@ -2324,6 +2370,10 @@ export function getApplicationAdapters(
             authority: getPreviewControlSourceAuthority(),
             pullRequests: new GithubPreviewControlPullRequestAdapter({
               credentials: getPreviewGithubReadToken(),
+              baseBranch: config.previewSourceRef,
+            }),
+            git: new GithubPreviewControlSourceAdapter({
+              credentials: getPreviewGithubReadToken(),
             }),
             statuses: reporting.statuses,
             receipts: getPreviewAcceptedImageReceipts(),
@@ -2332,6 +2382,7 @@ export function getApplicationAdapters(
             catalog: new DevPreviewServiceCatalogAdapter(),
             acceptance: getPreviewEnvironmentAcceptance(),
             sourceRepository: config.previewSourceRepository,
+            baseBranch: config.previewSourceRef,
           });
         })()
       : new HttpPreviewAcceptanceBrokerAdapter({
@@ -2358,6 +2409,7 @@ export function getApplicationAdapters(
             },
             pullRequests: new GithubPreviewControlPullRequestAdapter({
               credentials: getPreviewGithubReadToken(),
+              baseBranch: config.previewPlatformRef,
             }),
             paths: new ManifestCandidatePathPolicyAdapter(),
             environments: {
@@ -2908,8 +2960,14 @@ export function getApplicationAdapters(
     get previewSourcePromotionBroker() {
       return getPreviewSourcePromotionBroker();
     },
+    get previewSourcePromotionAcceptance() {
+      return getPreviewSourcePromotionAcceptance();
+    },
     get previewSessionContinuation() {
       return getPreviewSessionContinuation();
+    },
+    get devEnvironmentTeardown() {
+      return getDevEnvironmentTeardown();
     },
     get previewAcceptanceBroker() {
       return getPreviewAcceptanceBroker();

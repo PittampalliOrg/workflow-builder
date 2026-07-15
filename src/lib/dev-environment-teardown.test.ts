@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { teardownDevEnvironmentUntilComplete } from "./dev-environment-teardown";
+import {
+  DevEnvironmentTeardownBlockedError,
+  teardownDevEnvironmentUntilComplete,
+} from "./dev-environment-teardown";
 
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -70,6 +73,91 @@ describe("teardownDevEnvironmentUntilComplete", () => {
     ).resolves.toEqual({ ok: true, complete: true, pending: false });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("sends the explicit admin discard flag on every teardown retry", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json(
+          {
+            ok: true,
+            complete: false,
+            pending: true,
+            executionId: "exec-1",
+          },
+          202,
+        ),
+      )
+      .mockResolvedValueOnce(
+        json(
+          {
+            ok: true,
+            complete: true,
+            pending: false,
+            executionId: "exec-1",
+          },
+          200,
+        ),
+      );
+
+    await teardownDevEnvironmentUntilComplete("exec-1", {
+      fetcher,
+      sleep: vi.fn(async () => undefined),
+      discardUncaptured: true,
+    });
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      "/api/dev-environments/exec-1?discardUncaptured=true",
+      "/api/dev-environments/exec-1?discardUncaptured=true",
+    ]);
+  });
+
+  it("surfaces a capture-blocked 409 using the server-provided reason", async () => {
+    const fetcher = vi.fn(async () =>
+      json(
+        {
+          ok: false,
+          complete: false,
+          pending: false,
+          executionId: "exec-1",
+          error: "Capture receiver is unavailable; teardown was not started",
+        },
+        409,
+      ),
+    );
+
+    const promise = teardownDevEnvironmentUntilComplete("exec-1", {
+      fetcher,
+      sleep: vi.fn(),
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      name: "DevEnvironmentTeardownBlockedError",
+      status: 409,
+      message: "Capture receiver is unavailable; teardown was not started",
+    } satisfies Partial<DevEnvironmentTeardownBlockedError>);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces an authorization failure before retrying teardown", async () => {
+    const fetcher = vi.fn(async () =>
+      json(
+        {
+          ok: false,
+          complete: false,
+          pending: false,
+          executionId: "exec-1",
+          error: "Checkpoint-preserving preview teardown requires a platform administrator",
+        },
+        403,
+      ),
+    );
+
+    await expect(
+      teardownDevEnvironmentUntilComplete("exec-1", { fetcher }),
+    ).rejects.toThrow("requires a platform administrator");
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("fails immediately on an explicit semantic 503 receipt", async () => {

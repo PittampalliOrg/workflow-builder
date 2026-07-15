@@ -9307,6 +9307,7 @@ describe("ApplicationWorkflowDataService", () => {
 			listSourceBundleArtifactsByWorkflowId: vi.fn(async () => []),
 			getWorkflowArtifactForExecution: vi.fn(async () => null),
 			updateWorkflowArtifactMetadata: vi.fn(async () => null),
+			mergeWorkflowArtifactMetadata: vi.fn(async () => null),
 		} satisfies ArtifactStore;
 		const workflowFiles = fakeWorkflowFiles();
 		const workspaceSessions = {
@@ -9447,6 +9448,11 @@ describe("ApplicationWorkflowDataService", () => {
 			executionId: "exec-1",
 			artifactId: "artifact-1",
 			metadata: { promotion: { branch: "wfb-promote-1" } },
+		});
+		await service.mergeWorkflowArtifactMetadata({
+			executionId: "exec-1",
+			artifactId: "artifact-1",
+			patch: { acceptance: { ok: true } },
 		});
 		await service.listSourceBundleArtifactsByWorkflowId("wf-1");
 		await service.createWorkflowFile({
@@ -9599,6 +9605,11 @@ describe("ApplicationWorkflowDataService", () => {
 			executionId: "exec-1",
 			artifactId: "artifact-1",
 			metadata: { promotion: { branch: "wfb-promote-1" } },
+		});
+		expect(artifactStore.mergeWorkflowArtifactMetadata).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			artifactId: "artifact-1",
+			patch: { acceptance: { ok: true } },
 		});
 		expect(artifactStore.listSourceBundleArtifactsByWorkflowId).toHaveBeenCalledWith("wf-1");
 		expect(workflowFiles.createFile).toHaveBeenCalledWith(
