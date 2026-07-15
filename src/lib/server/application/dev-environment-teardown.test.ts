@@ -277,6 +277,77 @@ describe("ApplicationDevEnvironmentTeardownService", () => {
 		});
 	});
 
+	it("revalidates the latest exact promoted artifact without recapturing it", async () => {
+		const harness = makeHarness();
+		harness.artifact.metadata = { promotion: { ...promotionReceipt } };
+		harness.artifacts.push(harness.artifact);
+
+		const result = await teardown(harness);
+
+		expect(result).toMatchObject({ status: "ok", httpStatus: 202 });
+		expect(harness.continuation.continue).toHaveBeenCalledOnce();
+		expect(harness.continuation.continue).toHaveBeenCalledWith({
+			executionId: EXECUTION_ID,
+			userId: USER_ID,
+			projectId: PROJECT_ID,
+			action: {
+				action: "promote",
+				artifactId: harness.artifact.id,
+				draft: true,
+			},
+		});
+		expect(harness.workflowData.mergeWorkflowArtifactMetadata).toHaveBeenCalledWith(
+			expect.objectContaining({
+				artifactId: harness.artifact.id,
+				ifAbsentMetadataKey: "teardownCheckpoint",
+			}),
+		);
+		expect(harness.previews.teardown).toHaveBeenCalledOnce();
+	});
+
+	it("does not adopt a historical promoted artifact when strict captures share a timestamp", async () => {
+		const harness = makeHarness();
+		harness.artifact.metadata = { promotion: { ...promotionReceipt } };
+		const newer = sourceArtifact({
+			id: "artifact-2",
+			inlinePayload: {
+				...sourceArtifact().inlinePayload,
+				generation: "generation-2",
+			},
+			createdAt: harness.artifact.createdAt,
+		});
+		harness.artifacts.push(harness.artifact, newer);
+
+		const result = await teardown(harness);
+
+		expect(result).toMatchObject({ status: "ok", httpStatus: 202 });
+		expect(harness.continuation.continue).toHaveBeenNthCalledWith(1, {
+			executionId: EXECUTION_ID,
+			userId: USER_ID,
+			projectId: PROJECT_ID,
+			action: { action: "capture", services: [...SERVICES] },
+		});
+	});
+
+	it("uses an exact checkpoint that appears concurrently after the freeze", async () => {
+		const harness = makeHarness();
+		harness.previews.freezeSourcesForTeardown.mockImplementationOnce(async () => {
+			harness.artifact.metadata = {
+				promotion: { ...promotionReceipt },
+				teardownCheckpoint: teardownMarker(),
+			};
+			harness.artifacts.push(harness.artifact);
+			return freezeReceipt;
+		});
+
+		const result = await teardown(harness);
+
+		expect(result).toMatchObject({ status: "ok", httpStatus: 202 });
+		expect(harness.continuation.continue).not.toHaveBeenCalled();
+		expect(harness.workflowData.mergeWorkflowArtifactMetadata).not.toHaveBeenCalled();
+		expect(harness.previews.teardown).toHaveBeenCalledOnce();
+	});
+
 	it.each([
 		["partial", [{ service: SERVICES[0] }]],
 		[
@@ -555,7 +626,13 @@ describe("ApplicationDevEnvironmentTeardownService", () => {
 
 		expect(result).toMatchObject({ status: "error", httpStatus: 409 });
 		expect(harness.continuation.continue).toHaveBeenCalledWith(
-			expect.objectContaining({ action: { action: "capture", services: [...SERVICES] } }),
+			expect.objectContaining({
+				action: {
+					action: "promote",
+					artifactId: harness.artifact.id,
+					draft: true,
+				},
+			}),
 		);
 		expect(harness.previews.teardown).not.toHaveBeenCalled();
 	});

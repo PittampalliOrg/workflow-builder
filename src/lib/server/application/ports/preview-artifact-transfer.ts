@@ -10,6 +10,10 @@ export type PreviewArtifactTransferEnvelope = Readonly<{
   executionId: string;
   artifactId: string;
   fileDigest: `sha256:${string}`;
+  /**
+   * Capture snapshot. Server-owned promotion, acceptance, and teardown metadata
+   * are mutable projections and are excluded from physical content identity.
+   */
   artifact: PreviewAcceptanceArtifactSnapshot;
 }>;
 

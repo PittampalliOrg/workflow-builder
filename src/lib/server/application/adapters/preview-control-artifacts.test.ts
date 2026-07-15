@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { PostgresPreviewControlArtifactStore } from "$lib/server/application/adapters/preview-control-artifacts";
 import type { PreviewArtifactTransferEnvelope } from "$lib/server/application/ports";
@@ -31,9 +32,22 @@ function envelope(
         captureId: "capture-1",
         generation: "generation-1",
       },
-      metadata: null,
+      metadata: {
+        createdBy: "source-bundle",
+        capturedAt: "2026-07-09T19:59:00.000Z",
+      },
     },
   } satisfies PreviewArtifactTransferEnvelope;
+}
+
+function envelopeWithMetadata(
+  metadata: Record<string, unknown>,
+): PreviewArtifactTransferEnvelope {
+  const value = envelope();
+  return {
+    ...value,
+    artifact: { ...value.artifact, metadata },
+  };
 }
 
 function databaseHarness() {
@@ -58,11 +72,29 @@ function databaseHarness() {
       }),
     })),
   };
-  return { database, row: () => row };
+  return {
+    database,
+    row: () => row,
+    setRow: (next: Record<string, unknown>) => {
+      row = next;
+    },
+  };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function putInput(
-  transferEnvelope = envelope(),
+  transferEnvelope: PreviewArtifactTransferEnvelope = envelope(),
   bytes = Buffer.from("original"),
 ) {
   return {
@@ -76,6 +108,121 @@ function putInput(
 }
 
 describe("PostgresPreviewControlArtifactStore", () => {
+  it("replays one immutable capture after lifecycle metadata changes", async () => {
+    const db = databaseHarness();
+    const files = {
+      createWorkflowFile: vi.fn(async () => ({
+        file: { id: "central-file-1" },
+        deduplicated: false,
+      })),
+      getWorkflowFileContent: vi.fn(),
+      deleteWorkflowFile: vi.fn(async () => true),
+    };
+    const store = new PostgresPreviewControlArtifactStore(
+      () => files as never,
+      db.database as never,
+    );
+    const original = putInput();
+    const stored = await store.put(original);
+    const originalRow = structuredClone(db.row());
+    const replayEnvelope = envelopeWithMetadata({
+      ...envelope().artifact.metadata,
+      promotion: { receiptId: "receipt-1" },
+      acceptance: { ok: true },
+      teardownCheckpoint: { version: 2 },
+    });
+
+    await expect(store.put(putInput(replayEnvelope))).resolves.toEqual(stored);
+
+    expect(files.createWorkflowFile).toHaveBeenCalledOnce();
+    expect(files.deleteWorkflowFile).not.toHaveBeenCalled();
+    expect(db.row()).toEqual(originalRow);
+  });
+
+  it("accepts a legacy metadata-derived id when immutable capture content matches", async () => {
+    const db = databaseHarness();
+    const files = {
+      createWorkflowFile: vi.fn(async () => ({
+        file: { id: "central-file-1" },
+        deduplicated: false,
+      })),
+      getWorkflowFileContent: vi.fn(),
+      deleteWorkflowFile: vi.fn(async () => true),
+    };
+    const store = new PostgresPreviewControlArtifactStore(
+      () => files as never,
+      db.database as never,
+    );
+    const firstEnvelope = envelopeWithMetadata({
+      ...envelope().artifact.metadata,
+      promotion: { receiptId: "receipt-1" },
+    });
+    const inserted = await store.put(putInput(firstEnvelope));
+    expect((db.row()?.artifactSnapshot as any).metadata).toEqual(
+      envelope().artifact.metadata,
+    );
+
+    const legacyId = `pca_${createHash("sha256")
+      .update(
+        stableJson({
+          importIdentity: inserted.importIdentity,
+          artifact: firstEnvelope.artifact,
+        }),
+      )
+      .digest("hex")}`;
+    db.setRow({
+      ...db.row(),
+      id: legacyId,
+      artifactSnapshot: firstEnvelope.artifact,
+    });
+    const replayEnvelope = envelopeWithMetadata({
+      ...firstEnvelope.artifact.metadata,
+      acceptance: { ok: true },
+      teardownCheckpoint: { version: 2 },
+    });
+
+    await expect(store.put(putInput(replayEnvelope))).resolves.toMatchObject({
+      id: legacyId,
+      artifact: firstEnvelope.artifact,
+    });
+    expect(files.createWorkflowFile).toHaveBeenCalledOnce();
+  });
+
+  it("still rejects changes to immutable capture payload and metadata", async () => {
+    const db = databaseHarness();
+    const files = {
+      createWorkflowFile: vi.fn(async () => ({
+        file: { id: "central-file-1" },
+        deduplicated: false,
+      })),
+      getWorkflowFileContent: vi.fn(),
+      deleteWorkflowFile: vi.fn(async () => true),
+    };
+    const store = new PostgresPreviewControlArtifactStore(
+      () => files as never,
+      db.database as never,
+    );
+    await store.put(putInput());
+
+    const changedPayload = envelope();
+    changedPayload.artifact.inlinePayload = {
+      captureId: "capture-1",
+      generation: "generation-2",
+    };
+    await expect(store.put(putInput(changedPayload))).rejects.toThrow(
+      "replayed with different content",
+    );
+
+    const changedAttestation = envelopeWithMetadata({
+      ...envelope().artifact.metadata,
+      previewAcceptanceAttestationV1: { trusted: true },
+    });
+    await expect(store.put(putInput(changedAttestation))).rejects.toThrow(
+      "replayed with different content",
+    );
+    expect(files.createWorkflowFile).toHaveBeenCalledOnce();
+  });
+
   it("keeps the immutable original and creates no blob for a tampered replay", async () => {
     const db = databaseHarness();
     const files = {
