@@ -181,6 +181,9 @@ export function createWorkflowStore() {
   let scriptCursorLine = $state<number | null>(null);
   let scriptRevealRequest = $state<{ line: number; nonce: number } | null>(null);
   let scriptRevealNonce = 0;
+  // One-shot intent prefill for the AI author panel (e.g. legacy → script
+  // conversion CTA); the panel consumes and clears it.
+  let authorIntent = $state<string | null>(null);
   let workflowName = $state("Untitled Workflow");
   let engineType = $state<string | null>(null);
   let isSaving = $state(false);
@@ -689,6 +692,12 @@ export function createWorkflowStore() {
     },
     requestScriptReveal(line: number) {
       scriptRevealRequest = { line, nonce: ++scriptRevealNonce };
+    },
+    get authorIntent() {
+      return authorIntent;
+    },
+    set authorIntent(v: string | null) {
+      authorIntent = v;
     },
     /** The dynamic-script meta block (spec.meta), or null. */
     get scriptMeta() {

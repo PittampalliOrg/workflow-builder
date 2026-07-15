@@ -843,7 +843,18 @@ export function scriptToGraph(
   script: string,
   meta?: unknown,
 ): { nodes: Node[]; edges: Edge[]; model: ScriptGraphModel } {
-  const model = parseScriptStructure(script, meta);
+  return graphFromModel(parseScriptStructure(script, meta));
+}
+
+/**
+ * Model → SvelteFlow graph (layout + node data). Shared by BOTH engines:
+ * dynamic-script models come from parseScriptStructure; legacy SW 1.0 models
+ * come from swSpecToScriptModel (sw-script-model.ts) so every workflow renders
+ * in the ONE visual system.
+ */
+export function graphFromModel(
+  model: ScriptGraphModel,
+): { nodes: Node[]; edges: Edge[]; model: ScriptGraphModel } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 

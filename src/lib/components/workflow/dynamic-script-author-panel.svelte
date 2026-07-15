@@ -81,6 +81,14 @@
 	let intent = $state('');
 
 	const storageKey = $derived(workflowId ? `wb-author-session:${workflowId}` : null);
+	// One-shot prefill (e.g. the legacy 'Convert to script' CTA).
+	$effect(() => {
+		const prefill = store.authorIntent;
+		if (prefill) {
+			intent = prefill;
+			store.authorIntent = null;
+		}
+	});
 	const runtimeKey = $derived(workflowId ? `wb-author-runtime:${workflowId}` : null);
 	$effect(() => {
 		if (!runtimeKey || typeof localStorage === 'undefined') return;
