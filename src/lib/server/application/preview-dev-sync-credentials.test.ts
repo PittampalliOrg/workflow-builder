@@ -53,6 +53,16 @@ describe('physical preview dev-sync credential mint', () => {
 		expect(h.issuer.issue).toHaveBeenCalledWith(identity);
 	});
 
+	it('accepts the URL-safe Nanoid generated for the live workflow execution', async () => {
+		const h = harness();
+		const executionId = '_O-r4CT3dAp9CRUi7ImCA';
+		await expect(h.service.mint({ ...identity, executionId })).resolves.toEqual({
+			receiverToken: 'd'.repeat(64),
+			agentActionToken: 'e'.repeat(64)
+		});
+		expect(h.issuer.issue).toHaveBeenCalledWith({ ...identity, executionId });
+	});
+
 	it('never issues for malformed execution or service coordinates', async () => {
 		const h = harness();
 		await expect(h.service.mint({ ...identity, executionId: '../other' })).rejects.toThrow(

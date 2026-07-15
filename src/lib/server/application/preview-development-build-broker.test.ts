@@ -19,11 +19,12 @@ const FILE_DIGEST = `sha256:${"f".repeat(64)}` as const;
 
 function importedIdentity(
   services: readonly string[] = ["function-router", "workflow-builder"],
+  executionId = "exec-1",
 ): PreviewImportedArtifactIdentity {
   return {
     previewName: "preview1",
     requestId: "launch-1",
-    executionId: "exec-1",
+    executionId,
     sourceArtifactId: "source-artifact-1",
     platformRevision: BASELINE_PLATFORM_SHA,
     sourceRevision: BASELINE_SOURCE_SHA,
@@ -152,8 +153,11 @@ function harness() {
   };
 }
 
-function input(services = ["workflow-builder", "function-router"]) {
-  const identity = importedIdentity(services);
+function input(
+  services = ["workflow-builder", "function-router"],
+  executionId = "exec-1",
+) {
+  const identity = importedIdentity(services, executionId);
   return {
     requestId: "audit-request-1",
     executionId: identity.executionId,
@@ -215,6 +219,19 @@ describe("ApplicationPreviewDevelopmentBuildBrokerService", () => {
         requestId: `preview-development:preview1:${CANDIDATE_SHA}:function-router`,
         service: "function-router",
       }),
+    );
+  });
+
+  it("accepts a URL-safe Nanoid workflow execution identity", async () => {
+    const h = harness();
+    const executionId = "_O-r4CT3dAp9CRUi7ImCA";
+
+    await expect(h.service.build(input(undefined, executionId))).resolves.toMatchObject({
+      ok: true,
+      previewName: "preview1",
+    });
+    expect(h.promotions.promoteSourceBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId }),
     );
   });
 

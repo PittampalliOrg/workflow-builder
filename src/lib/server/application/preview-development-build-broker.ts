@@ -12,9 +12,10 @@ import type {
   PreviewScopedDevelopmentBrokerRequest,
   SourceBundlePromotionRunnerPort,
 } from "$lib/server/application/ports";
+import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const DEVELOPMENT_BRANCH = /^preview-development-[0-9]{1,20}$/;
 
@@ -255,13 +256,13 @@ export class ApplicationPreviewDevelopmentBuildBrokerService {
   }
 
   private validateInput(input: PreviewDevelopmentBrokerRequest): void {
-    if (!SAFE_ID.test(input.requestId)) {
+    if (!SAFE_COORDINATE.test(input.requestId)) {
       throw new PreviewDevelopmentBrokerInputError("requestId is invalid");
     }
-    if (!SAFE_ID.test(input.executionId)) {
+    if (!isPreviewResourceId(input.executionId)) {
       throw new PreviewDevelopmentBrokerInputError("executionId is invalid");
     }
-    if (!SAFE_ID.test(input.artifactId)) {
+    if (!SAFE_COORDINATE.test(input.artifactId)) {
       throw new PreviewDevelopmentBrokerInputError("artifactId is invalid");
     }
     if (!PREVIEW_NAME.test(input.previewName)) {
@@ -276,7 +277,7 @@ export class ApplicationPreviewDevelopmentBuildBrokerService {
       );
     }
     if (
-      !SAFE_ID.test(input.environmentRequestId ?? "") ||
+      !SAFE_COORDINATE.test(input.environmentRequestId ?? "") ||
       !FULL_SHA.test(input.environmentPlatformRevision ?? "") ||
       !FULL_SHA.test(input.environmentSourceRevision ?? "")
     ) {
@@ -316,18 +317,18 @@ function validImportedIdentity(
 ): boolean {
   return (
     PREVIEW_NAME.test(identity.previewName) &&
-    SAFE_ID.test(identity.requestId) &&
-    SAFE_ID.test(identity.executionId) &&
-    SAFE_ID.test(identity.sourceArtifactId) &&
+    SAFE_COORDINATE.test(identity.requestId) &&
+    isPreviewResourceId(identity.executionId) &&
+    SAFE_COORDINATE.test(identity.sourceArtifactId) &&
     FULL_SHA.test(identity.platformRevision) &&
     FULL_SHA.test(identity.sourceRevision) &&
     /^sha256:[0-9a-f]{64}$/.test(identity.catalogDigest) &&
     /^sha256:[0-9a-f]{64}$/.test(identity.fileDigest) &&
-    SAFE_ID.test(identity.captureId) &&
-    SAFE_ID.test(identity.generation) &&
+    SAFE_COORDINATE.test(identity.captureId) &&
+    SAFE_COORDINATE.test(identity.generation) &&
     Array.isArray(identity.services) &&
     identity.services.length > 0 &&
-    identity.services.every((service) => SAFE_ID.test(service)) &&
+    identity.services.every((service) => SAFE_COORDINATE.test(service)) &&
     new Set(identity.services).size === identity.services.length
   );
 }

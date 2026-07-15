@@ -21,10 +21,11 @@ import type {
   PreviewSourcePromotionResult,
   SourceBundlePromotionRunnerPort,
 } from "$lib/server/application/ports";
+import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const MAX_TITLE = 240;
@@ -199,7 +200,7 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
     }
     if (
       prepared.artifactId !== input.artifactId ||
-      !SAFE_ID.test(prepared.fileId) ||
+      !isPreviewResourceId(prepared.fileId) ||
       prepared.fileDigest !== input.artifactIdentity.fileDigest ||
       !sameArtifactIdentity(
         prepared.artifactIdentity,
@@ -423,7 +424,10 @@ function validateLocalInput(input: {
   title?: string | null;
   bodyMarkdown?: string | null;
 }): void {
-  if (!SAFE_ID.test(input.executionId) || !SAFE_ID.test(input.artifactId)) {
+  if (
+    !isPreviewResourceId(input.executionId) ||
+    !SAFE_COORDINATE.test(input.artifactId)
+  ) {
     throw new PreviewSourcePromotionError(
       "invalid-request",
       "source promotion execution or artifact id is invalid",
@@ -437,7 +441,7 @@ function validateLocalInput(input: {
 function validateBrokerInput(input: PreviewSourcePromotionBrokerRequest): void {
   validateLocalInput(input);
   if (
-    !SAFE_ID.test(input.operationId) ||
+    !SAFE_COORDINATE.test(input.operationId) ||
     input.operationId !== input.artifactId ||
     input.draft !== true ||
     !PREVIEW_NAME.test(input.previewName) ||

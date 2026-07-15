@@ -6,10 +6,9 @@ import type {
   PreviewReadBrokerPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
+import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
 
-// Workflow and file IDs use Nanoid's URL-safe alphabet; existing workflow IDs
-// may additionally contain dots or colons. Slashes and whitespace stay barred.
-const SAFE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_CONTROL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_FILTER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -79,12 +78,12 @@ export class ApplicationPreviewReadBrokerService implements PreviewReadBrokerPor
       });
       if (
         !PREVIEW_NAME.test(observedIdentity.previewName) ||
-        !SAFE_ID.test(observedIdentity.environmentRequestId) ||
+        !SAFE_CONTROL_ID.test(observedIdentity.environmentRequestId) ||
         !FULL_SHA.test(observedIdentity.environmentPlatformRevision) ||
         !FULL_SHA.test(observedIdentity.environmentSourceRevision) ||
         !SHA256.test(observedIdentity.catalogDigest) ||
         !PREVIEW_NAME.test(input.identity.previewName) ||
-        !SAFE_ID.test(input.identity.environmentRequestId) ||
+        !SAFE_CONTROL_ID.test(input.identity.environmentRequestId) ||
         !FULL_SHA.test(input.identity.environmentPlatformRevision) ||
         !FULL_SHA.test(input.identity.environmentSourceRevision) ||
         !SHA256.test(input.identity.catalogDigest)
@@ -145,7 +144,7 @@ export class ApplicationPreviewReadBrokerService implements PreviewReadBrokerPor
         }
         return;
       case "get-execution":
-        if (!SAFE_ID.test(command.executionId)) {
+        if (!isPreviewResourceId(command.executionId)) {
           throw new PreviewReadBrokerError(
             "invalid-request",
             "invalid execution id",
@@ -154,7 +153,7 @@ export class ApplicationPreviewReadBrokerService implements PreviewReadBrokerPor
         return;
       case "list-artifacts":
         if (
-          !SAFE_ID.test(command.executionId) ||
+          !isPreviewResourceId(command.executionId) ||
           (command.artifactKind !== null &&
             !SAFE_FILTER.test(command.artifactKind))
         ) {
@@ -166,7 +165,7 @@ export class ApplicationPreviewReadBrokerService implements PreviewReadBrokerPor
         return;
       case "fetch-file":
         if (
-          !SAFE_ID.test(command.fileId) ||
+          !isPreviewResourceId(command.fileId) ||
           !Number.isInteger(command.maxBytes) ||
           command.maxBytes < 1 ||
           command.maxBytes > MAX_FILE_BYTES

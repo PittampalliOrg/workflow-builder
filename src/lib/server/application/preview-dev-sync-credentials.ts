@@ -5,8 +5,8 @@ import type {
 	PreviewDevSyncLeafIssuerPort,
 	PreviewEnvironmentVersionedServiceCatalogPort
 } from '$lib/server/application/ports';
+import { isPreviewResourceId } from '$lib/server/application/preview-resource-id';
 
-const EXECUTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SERVICE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export class PreviewDevSyncCredentialInputError extends Error {
@@ -29,7 +29,7 @@ export class ApplicationPreviewDevSyncCredentialMintService implements PreviewDe
 	async mint(input: PreviewDevSyncCredentialRequest) {
 		const executionId = input.executionId.trim();
 		const service = input.service.trim();
-		if (!EXECUTION_ID.test(executionId)) {
+		if (!isPreviewResourceId(executionId)) {
 			throw new PreviewDevSyncCredentialInputError('invalid dev-sync execution id');
 		}
 		if (!SERVICE.test(service)) {

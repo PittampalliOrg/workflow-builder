@@ -100,17 +100,28 @@ def test_preview_logical_keys_reject_paths_and_caller_prefixes(key: str) -> None
         app_module._preview_storage_logical_key(key, field="workspace")
 
 
+@pytest.mark.parametrize("key", ["_session-1", "-execution-1"])
+def test_preview_logical_keys_accept_url_safe_nanoid_prefixes(key: str) -> None:
+    assert app_module._preview_storage_logical_key(key, field="workspace") == key
+
+
+@pytest.mark.parametrize(
+    ("session_id", "execution_id"),
+    [("_session-1", "-execution-1"), ("-session-1", "_execution-1")],
+)
 def test_preview_transcript_and_workspace_use_only_host_issued_dynamic_class(
     monkeypatch,
+    session_id: str,
+    execution_id: str,
 ) -> None:
     set_preview_env(monkeypatch, "1" * 32)
     core = FakeCore()
     cfg = storage_class()
     host = AgentWorkflowHostRequest(
-        sessionId="session-1",
+        sessionId=session_id,
         agentAppId="agent-1",
         executionClass="interactive-cli",
-        sharedWorkspaceKey="execution-1",
+        sharedWorkspaceKey=execution_id,
     )
 
     transcript = app_module._ensure_cli_transcript_volume(
@@ -120,8 +131,12 @@ def test_preview_transcript_and_workspace_use_only_host_issued_dynamic_class(
         core, host, cfg, namespace="workflow-builder"
     )
 
-    assert transcript == f"ptx-{app_module.sha256(b'session-1').hexdigest()[:32]}"
-    assert workspace == f"pws-{app_module.sha256(b'execution-1').hexdigest()[:32]}"
+    assert transcript == (
+        f"ptx-{app_module.sha256(session_id.encode()).hexdigest()[:32]}"
+    )
+    assert workspace == (
+        f"pws-{app_module.sha256(execution_id.encode()).hexdigest()[:32]}"
+    )
     assert core.persistent_volume_calls == 0
     assert set(core.pvcs) == {transcript, workspace}
     for pvc in core.pvcs.values():
