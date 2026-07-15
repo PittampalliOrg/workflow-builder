@@ -105,12 +105,16 @@ export function registerWorkflowTools(
 		{
 			title: "List Workflows",
 			description:
-				"List workflows with summary metadata, engine type, and node/edge counts. Does not return full spec/node data.",
+				"List workflows with summary metadata, engine type, and node/edge counts. Does not return full spec/node data. Defaults to the 50 most recently updated in COMPACT form (id | name | engine); pass summary:false for full metadata rows, and limit to change the cap (max 500).",
 			inputSchema: {
 				target: targetInput,
+				limit: z.number().int().positive().max(500).optional()
+					.describe("Max workflows returned, most recently updated first (default 50)."),
+				summary: z.boolean().optional()
+					.describe("true (default): compact 'id | name | engine' lines. false: full metadata objects."),
 			},
 		},
-		async (args: { target?: string } = {}) => {
+		async (args: { target?: string; limit?: number; summary?: boolean } = {}) => {
 			try {
 				const proxied = await proxyTargetTool(
 					"list_workflows",
@@ -118,7 +122,15 @@ export function registerWorkflowTools(
 					effectiveUserId,
 				);
 				if (proxied) return proxied;
-				const workflows = await db.listWorkflows(effectiveUserId);
+				const limit = args.limit ?? 50;
+				const workflows = await db.listWorkflows(effectiveUserId, limit);
+				if (args.summary !== false) {
+					return textResult(
+						workflows
+							.map((w) => `${w.id} | ${w.name} | ${w.engineType ?? "?"}`)
+							.join("\n") || "(no workflows)",
+					);
+				}
 				return textResult(workflows);
 			} catch (err) {
 				return errorResult(`Failed to list workflows: ${err}`);

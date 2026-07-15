@@ -152,6 +152,7 @@ function createDefaultTriggerNode(): NodeData {
 
 export async function listWorkflows(
   userId?: string,
+  limit?: number,
 ): Promise<WorkflowSummary[]> {
   const userIdFilter = userId ?? process.env.USER_ID;
   let query = `
@@ -166,6 +167,9 @@ export async function listWorkflows(
     params.push(userIdFilter);
   }
   query += ` ORDER BY updated_at DESC`;
+  if (Number.isFinite(limit) && (limit as number) > 0) {
+    query += ` LIMIT ${Math.min(Math.trunc(limit as number), 500)}`;
+  }
 
   const result = await pool.query(query, params);
   return result.rows.map((r) => ({
