@@ -203,6 +203,35 @@ describe("microservice-dev-session: emitted plan", () => {
 		expect(args.activationPollSeconds).toBeDefined();
 		expect(args.activationTimeoutSeconds).toBeDefined();
 	});
+
+	it("hands off one logged sync and receipt-based verification", async () => {
+		const { tasks } = await drive(
+			script,
+			{ service: "workflow-orchestrator" },
+			(task) =>
+				task.actionSlug === "dev/preview"
+					? { ready: true, browseUrl: "https://x", services: [] }
+					: task.actionSlug === "session/spawn"
+						? { sessionId: "sess-1" }
+						: { exitCode: 0 },
+			6,
+		);
+		const handoff = tasks.find((task) => task.actionSlug === "session/spawn");
+		const instructions = String(
+			(handoff?.args as Record<string, unknown> | undefined)?.instructions ?? "",
+		);
+		const syncCommand = "/sandbox/work/sync.sh > /sandbox/work/sync.log 2>&1";
+
+		expect(instructions.split(syncCommand)).toHaveLength(2);
+		expect(instructions.indexOf(syncCommand)).toBeLessThan(
+			instructions.indexOf("inspect `/sandbox/work/sync.log`"),
+		);
+		expect(instructions).toContain("an `APPLIED ...` receipt for every selected service");
+		expect(instructions).toContain("the final global `SYNCED ...` line");
+		expect(instructions).toContain(
+			"Never rerun the sync command merely to recover tool output that was truncated",
+		);
+	});
 });
 
 // ── pr-heavy-review ──────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ SERVICES = (
 )
 HEREDOC_START = "python3 - <<'PY_PREVIEW_METADATA'\n"
 HEREDOC_END = "\nPY_PREVIEW_METADATA\n"
+SYNC_COMMAND = "/sandbox/work/sync.sh > /sandbox/work/sync.log 2>&1"
 
 
 def preview_services() -> list[dict[str, object]]:
@@ -82,6 +83,39 @@ def evaluated_clone_command(
             },
             "provision_preview": {"services": previews},
         },
+    )
+
+
+def evaluated_handoff_instructions() -> str:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    expression = next(
+        entry["handoff"]["with"]["instructions"]
+        for entry in fixture["do"]
+        if "handoff" in entry
+    )
+    return evaluate_expression(
+        expression,
+        {
+            "trigger": {
+                "services": list(SERVICES),
+                "previewOrigin": "https://preview.example.test",
+            }
+        },
+    )
+
+
+def test_handoff_persists_one_sync_and_verifies_receipts() -> None:
+    instructions = evaluated_handoff_instructions()
+
+    assert instructions.count(SYNC_COMMAND) == 1
+    assert instructions.index(SYNC_COMMAND) < instructions.index(
+        "inspect `/sandbox/work/sync.log`"
+    )
+    assert "an `APPLIED ...` receipt for every selected service" in instructions
+    assert "the final global `SYNCED ...` line" in instructions
+    assert (
+        "Never rerun the sync command merely to recover tool output that was truncated"
+        in instructions
     )
 
 
