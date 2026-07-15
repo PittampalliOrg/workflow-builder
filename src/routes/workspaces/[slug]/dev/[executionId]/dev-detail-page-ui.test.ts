@@ -52,4 +52,16 @@ describe("workspace dev detail polling", () => {
 			"oncheckpointstate={(service, state) =>",
 		);
 	});
+
+	it("shows durable teardown reconciliation instead of a raw transport failure", () => {
+		expect(pageSource).toContain("type DevEnvironmentTeardownProgress");
+		expect(pageSource).toContain("pendingDevEnvironmentTeardowns()");
+		expect(pageSource).toContain("onProgress: (progress) => {");
+		expect(pageSource).toContain("armTeardownReloadFallback()");
+		expect(pageSource).toContain(
+			"Connection changed. Verifying the durable teardown receipt",
+		);
+		expect(pageSource).toContain('role="status" aria-live="polite"');
+		expect(pageSource).toContain("Discarding uncaptured changes and starting cleanup");
+	});
 });

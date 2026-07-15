@@ -22,12 +22,20 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader } from '$lib/components/ui/card';
-	import { Container, ExternalLink, MessagesSquare, Trash2, ShieldCheck } from '@lucide/svelte';
+	import {
+		Container,
+		ExternalLink,
+		Loader2,
+		MessagesSquare,
+		Trash2,
+		ShieldCheck
+	} from '@lucide/svelte';
 
 	let {
 		environment,
 		slug,
 		busy = false,
+		busyLabel = null,
 		services = [],
 		onopen,
 		onteardown
@@ -35,6 +43,7 @@
 		environment: DevEnvironmentSummary;
 		slug: string;
 		busy?: boolean;
+		busyLabel?: string | null;
 		/** B5: every per-service preview of the execution (multi-service session). */
 		services?: DevEnvironmentSummary[];
 		onopen: (e: DevEnvironmentSummary) => void;
@@ -45,14 +54,18 @@
 
 	const ready = $derived(environment.ready && environment.runStatus !== 'error');
 	const dotClass = $derived(
-		environment.runStatus === 'error'
+		busy
+			? 'bg-amber-500 animate-pulse'
+			: environment.runStatus === 'error'
 			? 'bg-red-500'
 			: ready
 				? 'bg-emerald-500'
 				: 'bg-amber-500 animate-pulse'
 	);
 	const statusLabel = $derived(
-		environment.runStatus === 'error'
+		busy
+			? 'tearing down'
+			: environment.runStatus === 'error'
 			? 'error'
 			: ready
 				? 'ready'
@@ -93,6 +106,16 @@
 		</div>
 	</CardHeader>
 	<CardContent class="space-y-3">
+		{#if busy && busyLabel}
+			<div
+				class="flex min-h-8 items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground"
+				role="status"
+				aria-live="polite"
+			>
+				<Loader2 class="size-3.5 shrink-0 motion-safe:animate-spin" />
+				<span>{busyLabel}</span>
+			</div>
+		{/if}
 		{#if multiService}
 			<div class="flex flex-wrap items-center gap-1.5">
 				{#each services as svc (svc.service)}
@@ -142,7 +165,11 @@
 				disabled={busy}
 				onclick={() => onteardown(environment)}
 			>
-				<Trash2 class="size-3.5" /> Teardown
+				{#if busy}
+					<Loader2 class="size-3.5 motion-safe:animate-spin" /> Teardown…
+				{:else}
+					<Trash2 class="size-3.5" /> Teardown
+				{/if}
 			</Button>
 		</div>
 	</CardContent>

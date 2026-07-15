@@ -63,6 +63,15 @@ describe("dev hub data remote", () => {
 		expect(pageSource).not.toContain("\n\t\tonVisibility();");
 	});
 
+	it("surfaces checkpoint-preserving teardown progress on the hub", () => {
+		expect(pageSource).toContain("type DevEnvironmentTeardownProgress");
+		expect(pageSource).toContain("pendingDevEnvironmentTeardowns()");
+		expect(pageSource).toContain(
+			"onProgress: (progress) => (teardownProgress = progress)",
+		);
+		expect(pageSource).toContain("busyLabel={busyId === group.executionId");
+	});
+
 	it("guards every query/command and maps application teardown refusals", () => {
 		expect(source).toContain("getRequestEvent");
 		expect(source).toContain("Authentication required");
