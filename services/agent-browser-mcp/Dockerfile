@@ -34,7 +34,7 @@ RUN agent-browser install
 # core = navigation/snapshot/screenshot/interaction; network = HAR; debug = video
 # recording + DevTools trace/profiler. Needed so agents can produce those artifacts.
 ENV PORT=8000 \
-	AGENT_BROWSER_TOOLS=core,network,debug \
+	AGENT_BROWSER_TOOLS=core,network,debug,state \
 	NODE_ENV=production
 EXPOSE 8000
 

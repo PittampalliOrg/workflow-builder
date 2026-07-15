@@ -50,11 +50,35 @@ import {
 import { renderDemo, readAndRm } from "./render.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
-const TOOLS = process.env.AGENT_BROWSER_TOOLS || "core,network,debug";
+// state = cookies/storage (the bridge's own target-auth cookie injection).
+const TOOLS = process.env.AGENT_BROWSER_TOOLS || "core,network,debug,state";
 const BFF =
 	process.env.WORKFLOW_BUILDER_URL ||
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const TOKEN = process.env.INTERNAL_API_TOKEN || "";
+
+// Target-auth injection: authenticate the demo browser to an app the run owner
+// controls, WITHOUT the LLM typing credentials and WITHOUT the token entering
+// the trace. The run's owning session forwards, per run, on the browser MCP
+// entry:
+//   X-Wfb-Target-Auth       = "<cookieName>=<cookieValue>" (or "Bearer <token>")
+//   X-Wfb-Target-Auth-Host  = the ONE host the credential may be presented to
+// The bridge sets that cookie (via agent-browser cookies_set) the first time the
+// agent opens a page on the matching host, then re-opens so the agent sees the
+// authenticated page. HOST-SCOPING is the safety boundary: the owner credential
+// is never attached to any other origin the browser visits.
+function parseTargetAuth(headers) {
+	const raw = String(headers["x-wfb-target-auth"] || "").trim();
+	const host = String(headers["x-wfb-target-auth-host"] || "").trim().toLowerCase();
+	if (!raw || !host) return null;
+	// "Bearer <jwt>" → send as an Authorization header instead of a cookie.
+	if (/^bearer\s+/i.test(raw)) {
+		return { host, kind: "header", headerName: "Authorization", headerValue: raw };
+	}
+	const eq = raw.indexOf("=");
+	if (eq <= 0) return null;
+	return { host, kind: "cookie", cookieName: raw.slice(0, eq), cookieValue: raw.slice(eq + 1) };
+}
 
 // Tools the LLM sees in tools/list. The child still exposes everything in
 // AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
@@ -392,6 +416,7 @@ async function stopCapture(browserSession, reason, liveChild) {
 	entry.stopped = true;
 	captures.delete(browserSession);
 	pendingScenes.delete(browserSession);
+	authApplied.delete(browserSession);
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 
 	// Prefer the child that carried the triggering call (alive for the duration
@@ -453,6 +478,47 @@ async function stopCapture(browserSession, reason, liveChild) {
 	}
 }
 
+// browserSessions whose owner credential has already been planted.
+const authApplied = new Set();
+
+/** If the run carries a target-auth credential and the just-opened URL is on the
+ * permitted host, plant it (cookie or header) so subsequent navigations — incl.
+ * the recorder's fresh-context record_start, which preserves cookies — are
+ * authenticated. Returns true if it planted something (caller should re-open so
+ * the agent sees the authenticated page). Host-scoped: the credential is never
+ * set for any other origin. */
+async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
+	const auth = ctx?.targetAuth;
+	if (!auth || authApplied.has(browserSession)) return false;
+	let host;
+	try {
+		host = new URL(openedUrl).host.toLowerCase();
+	} catch {
+		return false;
+	}
+	if (host !== auth.host) return false; // wrong origin — never present the credential
+	authApplied.add(browserSession);
+	try {
+		if (auth.kind === "cookie") {
+			await child.callTool({
+				name: "agent_browser_cookies_set",
+				arguments: { name: auth.cookieName, value: auth.cookieValue, url: openedUrl },
+			});
+			console.error(`[target-auth] cookie ${auth.cookieName} set for ${host} exec=${ctx.executionId}`);
+		} else {
+			await child.callTool({
+				name: "agent_browser_set_headers",
+				arguments: { headers: { [auth.headerName]: auth.headerValue } },
+			});
+			console.error(`[target-auth] auth header set for ${host} exec=${ctx.executionId}`);
+		}
+		return true;
+	} catch (err) {
+		console.error(`[target-auth] apply failed: ${err?.message}`);
+		return false;
+	}
+}
+
 function armIdleStop(browserSession) {
 	const entry = captures.get(browserSession);
 	if (!entry || !AUTO_CAPTURE_IDLE_MS) return;
@@ -473,7 +539,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.3.0" },
+		{ name: "agent-browser-mcp", version: "1.4.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -510,7 +576,22 @@ async function makeProxy(ctxRef, browserSession) {
 		if (name === "agent_browser_close" && captures.has(browserSession)) {
 			await stopCapture(browserSession, "close", child);
 		}
-		const result = await child.callTool({ name, arguments: args || {} });
+		let result = await child.callTool({ name, arguments: args || {} });
+		// Plant the run owner's credential on the first open of the permitted
+		// host, then re-open so the agent (and the recorder) see the
+		// authenticated page. Must happen before startCapture's record_start.
+		if (
+			name === "agent_browser_open" &&
+			result?.isError !== true &&
+			ctxRef.value?.targetAuth &&
+			!authApplied.has(browserSession) &&
+			typeof args?.url === "string"
+		) {
+			const planted = await applyTargetAuth(browserSession, ctxRef.value, child, args.url);
+			if (planted) {
+				result = await child.callTool({ name, arguments: args });
+			}
+		}
 		if (ARTIFACT_TOOLS[name]) {
 			try {
 				await persistArtifact(ctxRef.value, seenPaths, name, result);
@@ -569,6 +650,7 @@ app.post("/mcp", async (req, res) => {
 			executionId: req.headers["x-wfb-execution-id"] || null,
 			workflowId: req.headers["x-wfb-workflow-id"] || null,
 			nodeId: req.headers["x-wfb-node-id"] || null,
+			targetAuth: parseTargetAuth(req.headers),
 		},
 	};
 	// One browser per run: every MCP connection carrying the same execution id
