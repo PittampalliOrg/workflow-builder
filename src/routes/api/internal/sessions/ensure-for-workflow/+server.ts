@@ -55,6 +55,34 @@ import {
  *     childInput: {...},  // payload for session_workflow
  *   }
  */
+
+/**
+ * Stamp the owning run's identity onto the agent-browser MCP entry (matched by
+ * URL) so the agent-browser-mcp service can persist the artifacts it produces
+ * (screenshot / video / pdf / HAR) to THIS run's browser-artifacts store. Those
+ * artifacts live on the agent-browser-mcp pod, so the run identity has to travel
+ * with the MCP connection; scoping by URL keeps the headers off every other
+ * server. Mirrors stampGoalMcpSessionHeader.
+ */
+function stampAgentBrowserRunHeaders(
+	servers: unknown[],
+	ctx: { executionId: string; workflowId: string | null; nodeId: string | null },
+): unknown[] {
+	if (!Array.isArray(servers)) return servers;
+	return servers.map((entry) => {
+		if (!entry || typeof entry !== "object") return entry;
+		const e = entry as Record<string, unknown>;
+		const url = typeof e.url === "string" ? e.url : "";
+		if (!url.includes("agent-browser-mcp")) return entry;
+		const headers = {
+			...((e.headers as Record<string, unknown> | undefined) ?? {}),
+			"X-Wfb-Execution-Id": ctx.executionId,
+			...(ctx.workflowId ? { "X-Wfb-Workflow-Id": ctx.workflowId } : {}),
+			...(ctx.nodeId ? { "X-Wfb-Node-Id": ctx.nodeId } : {}),
+		};
+		return { ...e, headers };
+	});
+}
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const { workflowData, sessionGoals, sessionCommands, promptStackCompiler } =
@@ -487,6 +515,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			...dispatchAgentConfig,
 			mcpServers: stampScriptGuardHeader(
 				(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+			),
+		} as AgentConfig;
+	}
+	// Give the agent-browser MCP service this run's identity so it can persist
+	// produced artifacts (screenshot/video/pdf/HAR) to the run's browser-artifacts.
+	if (workflowExecutionId) {
+		dispatchAgentConfig = {
+			...dispatchAgentConfig,
+			mcpServers: stampAgentBrowserRunHeaders(
+				(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+				{ executionId: workflowExecutionId, workflowId, nodeId },
 			),
 		} as AgentConfig;
 	}

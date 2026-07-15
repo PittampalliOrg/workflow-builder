@@ -1,13 +1,15 @@
 {
   "name": "agent-browser-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Vercel agent-browser exposed as a streamable-HTTP MCP server (Chrome-isolated) for non-CLI (dapr-agent-py) agents.",
+  "type": "module",
+  "description": "Vercel agent-browser as a streamable-HTTP MCP server (Chrome-isolated) for non-CLI (dapr-agent-py) agents, with deterministic artifact persistence to the owning run.",
   "scripts": {
-    "start": "supergateway --stdio \"agent-browser mcp --tools ${AGENT_BROWSER_TOOLS:-core}\" --outputTransport streamableHttp --streamableHttpPath /mcp --port ${PORT:-8000} --stateful"
+    "start": "node bridge.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
     "agent-browser": "0.31.2",
-    "supergateway": "3.4.3"
+    "express": "5.1.0"
   }
 }
