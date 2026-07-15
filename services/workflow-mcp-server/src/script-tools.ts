@@ -65,9 +65,32 @@ const targetInput = z
 export const PLATFORM_SCRIPT_DIALECT_GUIDE = `# Dynamic Script dialect (workflow-builder platform)
 
 Write plain JavaScript (NOT TypeScript). The script starts with a PURE-LITERAL
-\`export const meta = { name, description?, phases? }\` (name required; no variables/calls
-inside it), then a body using these globals/hooks. The engine RE-EXECUTES the whole script
-each round, so it must be deterministic.
+\`export const meta = { name, description?, phases?, input? }\` (name required; no
+variables/calls inside it), then a body using these globals/hooks. The engine RE-EXECUTES
+the whole script each round, so it must be deterministic.
+
+RUN PARAMETERIZATION (meta.input + x-wfb). Anything the user may want to change per run —
+ESPECIALLY which agent runs a step — must be declared as a property of \`meta.input\`
+(an object JSON Schema; validated at start, rendered as the run form) and threaded through
+the \`args\` global. Annotate semantic inputs with the vendor keyword \`'x-wfb'\` so the
+UI renders a typed picker instead of a text box (validators ignore it):
+
+  export const meta = {
+    name: 'review',
+    input: {
+      type: 'object',
+      properties: {
+        topic:       { type: 'string', title: 'Topic' },
+        reviewAgent: { type: 'string', default: 'trace-analyst', title: 'Reviewer',
+                       'x-wfb': { kind: 'agent' } },          // agent picker
+      },
+    },
+  }
+  const verdict = await agent('Review ' + args.topic, { agent: args.reviewAgent })
+
+Kinds: 'agent' (a registered agent slug — dispatch resolves it FAIL-CLOSED; add
+\`runtime: '<runtime>'\` to narrow the picker), 'model', 'sandbox-template'. Always give
+parameterized inputs a sensible \`default\` so the workflow runs unconfigured.
 
 PRIMITIVES (identical to Claude Code). The script body is ASYNC — every hook returns a
 Promise and MUST be awaited (\`const x = await agent(...)\`, \`const [a, b] = await

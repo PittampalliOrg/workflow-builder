@@ -206,6 +206,12 @@
 		required: boolean;
 		options: string[];
 		defaultValue: unknown;
+		/** Semantic annotation (`x-wfb: {kind}`): 'agent' renders a typed picker
+		 * populated from the agent catalog; unknown kinds degrade to plain
+		 * inputs. Vendor keywords are ignored by Ajv (strict:false) — the run
+		 * contract is unchanged. */
+		wfbKind: string | null;
+		wfbRuntime: string | null;
 	};
 	const scriptInputFields = $derived.by<ScriptInputField[]>(() => {
 		const schema = scriptInputSchema;
@@ -226,6 +232,10 @@
 						: t === 'object' || t === 'array'
 							? 'json'
 							: 'string';
+			const xwfb =
+				prop['x-wfb'] && typeof prop['x-wfb'] === 'object' && !Array.isArray(prop['x-wfb'])
+					? (prop['x-wfb'] as Record<string, unknown>)
+					: null;
 			return {
 				key,
 				type,
@@ -233,11 +243,50 @@
 				description: typeof prop.description === 'string' ? prop.description : null,
 				required: required.has(key),
 				options: enumVals.map((v) => String(v)),
-				defaultValue: prop.default
+				defaultValue: prop.default,
+				wfbKind: typeof xwfb?.kind === 'string' ? xwfb.kind : null,
+				wfbRuntime: typeof xwfb?.runtime === 'string' ? xwfb.runtime : null
 			};
 		});
 	});
 	let scriptFieldValues = $state<Record<string, string>>({});
+
+	// Agent picker catalog (x-wfb kind 'agent'): fetched once per dialog open,
+	// only when the schema actually declares an agent-kind input.
+	type AgentOption = { slug: string; name: string; runtime: string | null };
+	let agentOptions = $state<AgentOption[] | null>(null);
+	let agentFetchSeq = 0;
+	$effect(() => {
+		if (!open) return;
+		if (!scriptInputFields.some((f) => f.wfbKind === 'agent')) return;
+		if (agentOptions !== null) return;
+		const seq = ++agentFetchSeq;
+		void (async () => {
+			try {
+				const res = await fetch('/api/agents');
+				if (!res.ok) return;
+				const body = (await res.json()) as {
+					agents?: Array<{ slug?: string; name?: string; runtime?: string | null }>;
+				};
+				if (seq !== agentFetchSeq) return;
+				agentOptions = (body.agents ?? [])
+					.filter((a) => typeof a.slug === 'string' && a.slug && !a.slug.startsWith('wf-') && !a.slug.startsWith('exp-'))
+					.map((a) => ({
+						slug: a.slug as string,
+						name: typeof a.name === 'string' ? a.name : (a.slug as string),
+						runtime: typeof a.runtime === 'string' ? a.runtime : null
+					}));
+			} catch {
+				/* picker degrades to a free-text input */
+			}
+		})();
+	});
+	function agentChoices(field: ScriptInputField): AgentOption[] {
+		const list = agentOptions ?? [];
+		return field.wfbRuntime && field.wfbRuntime !== 'any'
+			? list.filter((a) => a.runtime === field.wfbRuntime)
+			: list;
+	}
 	$effect(() => {
 		if (!open || !scriptInputSchema) return;
 		const fields = scriptInputFields;
@@ -567,7 +616,34 @@
 										{field.label}
 										{#if field.required}<span class="text-destructive">*</span>{/if}
 									</Label>
-									{#if field.type === 'enum'}
+									{#if field.wfbKind === 'agent' && agentChoices(field).length > 0}
+										<Select.Root
+											type="single"
+											value={scriptFieldValues[field.key] ?? ''}
+											onValueChange={(v) => (scriptFieldValues = { ...scriptFieldValues, [field.key]: v })}
+										>
+											<Select.Trigger class="w-full">
+												{#if scriptFieldValues[field.key]}
+													{@const sel = agentChoices(field).find((a) => a.slug === scriptFieldValues[field.key])}
+													{sel ? sel.name : scriptFieldValues[field.key]}
+												{:else}
+													Select an agent…
+												{/if}
+											</Select.Trigger>
+											<Select.Content>
+												{#each agentChoices(field) as a (a.slug)}
+													<Select.Item value={a.slug}>
+														<span class="flex w-full items-center justify-between gap-2">
+															<span class="truncate">{a.name}</span>
+															{#if a.runtime}
+																<span class="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">{a.runtime}</span>
+															{/if}
+														</span>
+													</Select.Item>
+												{/each}
+											</Select.Content>
+										</Select.Root>
+									{:else if field.type === 'enum'}
 										<Select.Root
 											type="single"
 											value={scriptFieldValues[field.key] ?? ''}

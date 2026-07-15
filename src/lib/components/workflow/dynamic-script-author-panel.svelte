@@ -169,7 +169,8 @@
 		'Make the last agent return a schema-typed object',
 		'Fan the main step out in parallel over args items',
 		'Add allowFailure + a fallback path to the action',
-		'Add a meta.input schema for the run arguments'
+		'Add a meta.input schema for the run arguments',
+		"Make the agents selectable per run (x-wfb agent inputs)"
 	];
 
 	// ── Session lifecycle ──────────────────────────────────────────────────────

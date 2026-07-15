@@ -76,7 +76,10 @@ function authorSystemPrompt(workflowName: string): string {
 		'   workflow, not a new one). The canvas will render the new structure.',
 		'4. Only run it (your Workflow tool) if the user asks to try it; then digest the result.',
 		'',
-		'Keep scripts small and well-phased. After saving, briefly tell the user what the',
+		'Keep scripts small and well-phased. Declare anything the user may want to change per',
+		"run — especially which agent runs a step — in meta.input with an 'x-wfb' kind (e.g.",
+		"{ type: 'string', 'x-wfb': { kind: 'agent' }, default: '…' }) and thread it via args,",
+		'so the run dialog renders typed pickers. After saving, briefly tell the user what the',
 		'workflow does and which phases/agents it has. Do not paste the whole script unless asked.'
 	].join('\n');
 }
