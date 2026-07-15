@@ -39,4 +39,17 @@ describe("workspace dev detail polling", () => {
 		expect(pageSource).toContain("const view = await query");
 		expect(pageSource).not.toContain("const view = query.current");
 	});
+
+	it("uses a stable idempotent service checkpoint callback", () => {
+		expect(pageSource).toContain(
+			"const current = untrack(() => serviceCheckpointStates);",
+		);
+		expect(pageSource).toContain("if (current[service] === state) return;");
+		expect(pageSource).toContain(
+			"oncheckpointstate={updateServiceCheckpointState}",
+		);
+		expect(pageSource).not.toContain(
+			"oncheckpointstate={(service, state) =>",
+		);
+	});
 });
