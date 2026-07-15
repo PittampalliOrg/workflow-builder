@@ -2708,6 +2708,159 @@ def test_adopted_dev_manifest_overrides_inherited_sync_root_with_receiver_leaf()
     )
 
 
+def test_adopt_identity_inherits_only_config_map_file_mounts() -> None:
+    main = SimpleNamespace(
+        name="function-router",
+        env=None,
+        volume_mounts=[
+            {"name": "function-registry", "mountPath": "/config"},
+            {"name": "credentials", "mountPath": "/secrets", "readOnly": True},
+            {"name": "workspace", "mountPath": "/data"},
+        ],
+    )
+    pod_spec = SimpleNamespace(
+        service_account_name="workflow-functions",
+        containers=[main],
+        volumes=[
+            {
+                "name": "function-registry",
+                "configMap": {
+                    "name": "function-registry",
+                    "items": [{"key": "functions.json", "path": "functions.json"}],
+                },
+            },
+            {"name": "credentials", "secret": {"secretName": "credentials"}},
+            {"name": "workspace", "persistentVolumeClaim": {"claimName": "work"}},
+        ],
+    )
+    deployment = SimpleNamespace(
+        spec=SimpleNamespace(
+            template=SimpleNamespace(
+                metadata=SimpleNamespace(annotations={}),
+                spec=pod_spec,
+            )
+        )
+    )
+    apps = SimpleNamespace(
+        api_client=SimpleNamespace(sanitize_for_serialization=lambda value: value),
+        read_namespaced_deployment=lambda **_kwargs: deployment,
+    )
+
+    identity = app_module._adopt_read_identity(
+        apps, namespace="workflow-builder", name="function-router"
+    )
+
+    assert identity is not None
+    assert identity["configMapMounts"] == [
+        {
+            "volume": {
+                "name": "function-registry",
+                "configMap": {
+                    "name": "function-registry",
+                    "items": [{"key": "functions.json", "path": "functions.json"}],
+                },
+            },
+            "mount": {
+                "name": "function-registry",
+                "mountPath": "/config",
+                "readOnly": True,
+            },
+        }
+    ]
+    assert "credentials" not in json.dumps(identity["configMapMounts"])
+    assert "workspace" not in json.dumps(identity["configMapMounts"])
+
+
+def test_adopted_manifest_mounts_platform_config_map_read_only() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="function-router",
+            previewNative=True,
+            workdir="/app",
+            syncMode="sidecar",
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+        adopt_config_map_mounts=[
+            {
+                "volume": {
+                    "name": "function-registry",
+                    "configMap": {"name": "function-registry"},
+                },
+                "mount": {"name": "function-registry", "mountPath": "/config"},
+            },
+            {
+                "volume": {
+                    "name": "mutable-source-mask",
+                    "configMap": {"name": "must-not-mask-source"},
+                },
+                "mount": {
+                    "name": "mutable-source-mask",
+                    "mountPath": "/app/config",
+                },
+            },
+        ],
+    )
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    dev = next(c for c in pod["containers"] if c["name"] == "dev")
+
+    assert {
+        "name": "function-registry",
+        "mountPath": "/config",
+        "readOnly": True,
+    } in dev["volumeMounts"]
+    assert {
+        "name": "function-registry",
+        "configMap": {"name": "function-registry"},
+    } in pod["volumes"]
+    assert not any(
+        mount["name"] == "mutable-source-mask" for mount in dev["volumeMounts"]
+    )
+    assert not any(
+        volume["name"] == "mutable-source-mask" for volume in pod["volumes"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("workdir", "mount_path"),
+    [
+        ("/app/.", "/app/config"),
+        ("/app//src", "/app/src/config"),
+        ("/app/src/..", "/app/config"),
+        ("/app", "/config/../app/config"),
+    ],
+)
+def test_adopted_manifest_normalizes_paths_before_workdir_overlap_check(
+    workdir: str, mount_path: str
+) -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="function-router",
+            previewNative=True,
+            workdir=workdir,
+            syncMode="sidecar",
+        ),
+        namespace="workflow-builder",
+        class_config=_dev_class(),
+        adopt_config_map_mounts=[
+            {
+                "volume": {
+                    "name": "source-mask",
+                    "configMap": {"name": "must-not-mask-source"},
+                },
+                "mount": {"name": "source-mask", "mountPath": mount_path},
+            }
+        ],
+    )
+    pod = manifest["spec"]["podTemplate"]["spec"]
+    dev = next(c for c in pod["containers"] if c["name"] == "dev")
+
+    assert not any(mount["name"] == "source-mask" for mount in dev["volumeMounts"])
+    assert not any(volume["name"] == "source-mask" for volume in pod["volumes"])
+
+
 def test_list_vcluster_previews_ttl_zero_disables_cache(monkeypatch) -> None:
     app_module._vcluster_previews_cache["data"] = None
     monkeypatch.setattr(app_module, "_require_internal", lambda *_a, **_k: None)

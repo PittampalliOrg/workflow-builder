@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { groupDevEnvironmentSummaries } from "$lib/server/application/dev-environment-grouping";
+import {
+	groupDevEnvironmentSummaries,
+	mergePendingDevEnvironmentServices,
+} from "$lib/server/application/dev-environment-grouping";
 import type { DevEnvironmentSummaryReadModel } from "$lib/server/application/ports";
 
 function row(over: Partial<DevEnvironmentSummaryReadModel>): DevEnvironmentSummaryReadModel {
@@ -74,5 +77,75 @@ describe("groupDevEnvironmentSummaries", () => {
 
 	it("handles the empty list", () => {
 		expect(groupDevEnvironmentSummaries([])).toEqual([]);
+	});
+});
+
+describe("mergePendingDevEnvironmentServices", () => {
+	it("represents every requested service before any workspace row is persisted", () => {
+		const environment = row({
+			workspaceRef: "",
+			ready: false,
+			runStatus: "running",
+			requestedServices: [
+				"function-router",
+				"workflow-builder",
+				"mcp-gateway",
+			],
+		});
+
+		const services = mergePendingDevEnvironmentServices(environment, []);
+
+		expect(services.map((service) => service.service)).toEqual([
+			"function-router",
+			"workflow-builder",
+			"mcp-gateway",
+		]);
+		expect(services.every((service) => service.ready === false)).toBe(true);
+		expect(services[1]).toMatchObject({
+			workspaceRef: "",
+			podIP: null,
+			sandboxName: null,
+			sessionId: null,
+		});
+	});
+
+	it("keeps requested order while observed rows override pending placeholders", () => {
+		const environment = row({
+			service: "function-router",
+			workspaceRef: "router-workspace",
+			ready: true,
+			podIP: "10.0.0.8",
+			requestedServices: [
+				"function-router",
+				"workflow-builder",
+				"mcp-gateway",
+			],
+		});
+		const builder = row({
+			service: "workflow-builder",
+			workspaceRef: "builder-workspace",
+			ready: true,
+			podIP: "10.0.0.9",
+			sessionId: "session-1",
+		});
+		// Persisted group order is deliberately different from launch order.
+		const services = mergePendingDevEnvironmentServices(environment, [
+			builder,
+			environment,
+		]);
+
+		expect(services.map((service) => service.service)).toEqual([
+			"function-router",
+			"workflow-builder",
+			"mcp-gateway",
+		]);
+		expect(services[0]).toBe(environment);
+		expect(services[1]).toBe(builder);
+		expect(services[2]).toMatchObject({
+			service: "mcp-gateway",
+			ready: false,
+			podIP: null,
+			sessionId: null,
+		});
 	});
 });

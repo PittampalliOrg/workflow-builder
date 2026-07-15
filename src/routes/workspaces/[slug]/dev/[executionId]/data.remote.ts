@@ -6,6 +6,7 @@ import type {
 	DevSidecarStatusView,
 } from "$lib/server/application/dev-preview-sidecar";
 import type { DevEnvironmentSummaryReadModel } from "$lib/server/application/ports";
+import { mergePendingDevEnvironmentServices } from "$lib/server/application/dev-environment-grouping";
 
 function requireSession() {
 	const event = getRequestEvent();
@@ -33,8 +34,10 @@ export const getDevEnvironment = query(
 		const groups = await workflowData.listDevEnvironmentGroups({
 			projectId: session.projectId ?? null,
 		});
-		const services =
-			groups.find((g) => g.executionId === executionId)?.services ?? [environment];
+		const services = mergePendingDevEnvironmentServices(
+			environment,
+			groups.find((g) => g.executionId === executionId)?.services ?? [],
+		);
 		return { environment, services };
 	},
 );

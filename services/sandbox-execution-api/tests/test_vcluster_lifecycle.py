@@ -3315,6 +3315,44 @@ def _runtime_pod(service: str, image: str, *, ready: bool = True):
     )
 
 
+def _hmr_runtime_pod(
+    service: str,
+    image: str,
+    *,
+    ready: bool = True,
+    managed: bool = True,
+):
+    labels = {
+        "app": service,
+        "dev-preview-service": service,
+    }
+    if managed:
+        labels["preview.stacks.io/managed-by"] = "sandbox-execution-api"
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"wfb-dev-preview-{service}-abc",
+            labels=labels,
+            deletion_timestamp=None,
+        ),
+        spec=SimpleNamespace(
+            containers=[
+                SimpleNamespace(name="dev", image=image),
+                SimpleNamespace(name="dev-sync", image="dev-sync:latest"),
+            ]
+        ),
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[SimpleNamespace(type="Ready", status="True")],
+            container_statuses=[
+                SimpleNamespace(name="dev", image_id=image, ready=ready),
+                SimpleNamespace(
+                    name="dev-sync", image_id="dev-sync:latest", ready=True
+                ),
+            ],
+        ),
+    )
+
+
 def _runtime_identity() -> dict[str, str]:
     return {
         "previewName": "acceptance",
@@ -3633,6 +3671,44 @@ def test_runtime_endpoint_preserves_conflicting_up_job_state(monkeypatch) -> Non
         "succeeded": True,
         "failed": True,
     }
+
+
+def test_runtime_endpoint_observes_controller_owned_hmr_container(monkeypatch) -> None:
+    service = "function-router"
+    image = f"ghcr.io/pittampalliorg/function-router-dev@sha256:{'e' * 64}"
+    namespace = _ns("acceptance")
+    namespace.metadata.annotations["preview.stacks.io/services"] = json.dumps(
+        [service]
+    )
+    core = _FakeCore([namespace])
+    core.list_namespaced_pod = lambda **_kwargs: SimpleNamespace(
+        items=[
+            _hmr_runtime_pod(service, image),
+            _hmr_runtime_pod(service, image, managed=False),
+        ]
+    )
+    batch = SimpleNamespace(
+        read_namespaced_job_status=lambda **_kwargs: (_ for _ in ()).throw(
+            _ApiExc(404)
+        )
+    )
+    monkeypatch.setattr(app_module, "_load_k8s_clients", lambda: (batch, core))
+
+    result = app_module.get_vcluster_preview_runtime(_no_auth_request(), "acceptance")
+
+    assert result["services"] == [
+        {
+            "service": service,
+            "containers": [
+                {
+                    "pod": f"wfb-dev-preview-{service}-abc",
+                    "image": image,
+                    "imageId": image,
+                    "ready": True,
+                }
+            ],
+        }
+    ]
 
 
 def test_runtime_endpoint_dry_run_returns_deterministic_up_job(monkeypatch) -> None:

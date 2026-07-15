@@ -11,6 +11,8 @@ function queryReturning(rows: unknown[]) {
 		where: vi.fn(),
 		orderBy: vi.fn(),
 		limit: vi.fn(async () => rows),
+		then: (resolve: (value: unknown[]) => unknown) =>
+			Promise.resolve(rows).then(resolve),
 	};
 	query.from.mockReturnValue(query);
 	query.innerJoin.mockReturnValue(query);
@@ -47,6 +49,138 @@ function tombstoneRow(overrides: Record<string, unknown> = {}) {
 		...overrides,
 	};
 }
+
+function activePreviewRow(service = "function-router") {
+	return {
+		workspaceRef: `wfb-dev-preview-${service}-exec-1`,
+		executionId: "exec-1",
+		sandboxState: {
+			details: {
+				kind: "dev-preview",
+				executionId: "exec-1",
+				service,
+				sandboxName: `wfb-dev-preview-${service}-exec-1`,
+				podIP: "10.0.0.8",
+				port: service === "workflow-builder" ? 3000 : 8080,
+				ready: true,
+				needsDapr: true,
+			},
+		},
+		createdAt,
+		runStatus: "running",
+	};
+}
+
+describe("PostgresDevEnvironmentReadRepository pending cardinality", () => {
+	it("keeps canonical requested order before any preview row is persisted", async () => {
+		const database = databaseReturning(
+			[],
+			[
+				{
+					id: "exec-1",
+					status: "running",
+					input: {
+						services: [
+							" function-router ",
+							"workflow-builder",
+							"function-router",
+							"unknown-service",
+						],
+					},
+					createdAt,
+				},
+			],
+			[{ id: "session-1" }],
+		);
+		const repository = new PostgresDevEnvironmentReadRepository(
+			database as never,
+		);
+
+		await expect(
+			repository.getDevEnvironmentOrPending({
+				executionId: "exec-1",
+				projectId: "project-1",
+			}),
+		).resolves.toMatchObject({
+			service: "function-router",
+			ready: false,
+			sessionId: "session-1",
+			requestedServices: ["function-router", "workflow-builder"],
+		});
+		expect(database.select).toHaveBeenCalledTimes(3);
+	});
+
+	it("falls back to legacy input.service", async () => {
+		const database = databaseReturning(
+			[],
+			[
+				{
+					id: "exec-1",
+					status: "running",
+					input: { service: "workflow-orchestrator" },
+					createdAt,
+				},
+			],
+			[],
+		);
+		const repository = new PostgresDevEnvironmentReadRepository(
+			database as never,
+		);
+
+		await expect(
+			repository.getDevEnvironmentOrPending({
+				executionId: "exec-1",
+				projectId: "project-1",
+			}),
+		).resolves.toMatchObject({
+			service: "workflow-orchestrator",
+			requestedServices: ["workflow-orchestrator"],
+		});
+	});
+
+	it("adds requested services to a partially persisted environment without changing readiness", async () => {
+		const persisted = activePreviewRow();
+		const database = databaseReturning(
+			[persisted],
+			[],
+			[
+				{
+					id: "exec-1",
+					status: "running",
+					input: {
+						services: [
+							"function-router",
+							"workflow-builder",
+							"mcp-gateway",
+						],
+					},
+					createdAt,
+				},
+			],
+		);
+		const repository = new PostgresDevEnvironmentReadRepository(
+			database as never,
+		);
+
+		await expect(
+			repository.getDevEnvironmentOrPending({
+				executionId: "exec-1",
+				projectId: "project-1",
+			}),
+		).resolves.toMatchObject({
+			service: "function-router",
+			workspaceRef: persisted.workspaceRef,
+			ready: true,
+			podIP: "10.0.0.8",
+			requestedServices: [
+				"function-router",
+				"workflow-builder",
+				"mcp-gateway",
+			],
+		});
+		expect(database.select).toHaveBeenCalledTimes(3);
+	});
+});
 
 describe("PostgresDevEnvironmentReadRepository teardown tombstone", () => {
 	it("reads an exact cleaned preview for a terminal execution", async () => {

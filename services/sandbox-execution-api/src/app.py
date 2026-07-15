@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 import re
 import secrets
 import threading
@@ -1382,12 +1383,24 @@ def _delete_dev_preview_adoption_lease(
         time.sleep(0.1)
 
 
+def _canonical_absolute_posix_path(value: str, *, field: str) -> str:
+    """Return one absolute, non-root POSIX path or reject the attachment."""
+    if not isinstance(value, str) or not value.startswith("/") or "\x00" in value:
+        raise ValueError(f"{field} must be an absolute POSIX path")
+    normalized = posixpath.normpath(f"/{value.lstrip('/')}")
+    if normalized == "/":
+        raise ValueError(f"{field} must not be the filesystem root")
+    return normalized
+
+
 def _adopt_read_identity(
     apps: Any, *, namespace: str, name: str
 ) -> dict[str, Any] | None:
-    """Read the prod Deployment's pod identity (ServiceAccount + Dapr
-    app-id/config/app-port) so the dev pod can FAITHFULLY assume it instead of
-    guessing. Read-only. Returns the identity, or None if the Deployment is absent.
+    """Read the prod Deployment identity that an adopted dev pod must preserve.
+
+    Inline env and read-only ConfigMap mounts are copied from the selected app
+    container. Secret, projected, PVC, hostPath, and writable mounts are never
+    inherited through this adapter.
     """
     try:
         dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
@@ -1408,6 +1421,7 @@ def _adopt_read_identity(
     # without them the adopted dev BFF wedges interactive CLI sessions. envFrom is
     # already reused via the descriptor; only the inline env was missing.
     container_env: list[dict[str, Any]] | None = None
+    config_map_mounts: list[dict[str, Any]] = []
     if tmpl_spec and tmpl_spec.containers:
         main = next(
             (c for c in tmpl_spec.containers if c.name == name),
@@ -1421,12 +1435,63 @@ def _adopt_read_identity(
             except Exception as exc:  # noqa: BLE001 — best-effort; fall back to envFrom only
                 logger.warning("adopt: failed to read %s container env: %s", name, exc)
                 container_env = None
+        try:
+            serialized_mounts = apps.api_client.sanitize_for_serialization(
+                main.volume_mounts or []
+            )
+            serialized_volumes = apps.api_client.sanitize_for_serialization(
+                tmpl_spec.volumes or []
+            )
+            volumes_by_name = {
+                volume.get("name"): volume
+                for volume in serialized_volumes
+                if isinstance(volume, dict) and volume.get("name")
+            }
+            for mount in serialized_mounts:
+                if not isinstance(mount, dict):
+                    continue
+                volume = volumes_by_name.get(mount.get("name"))
+                raw_mount_path = mount.get("mountPath")
+                try:
+                    mount_path = _canonical_absolute_posix_path(
+                        raw_mount_path, field="adopted ConfigMap mountPath"
+                    )
+                except ValueError:
+                    continue
+                if (
+                    not isinstance(volume, dict)
+                    or not isinstance(volume.get("configMap"), dict)
+                ):
+                    continue
+                inherited_mount = {
+                    "name": mount["name"],
+                    "mountPath": mount_path,
+                    "readOnly": True,
+                }
+                for key in ("subPath", "subPathExpr"):
+                    if isinstance(mount.get(key), str) and mount[key]:
+                        inherited_mount[key] = mount[key]
+                config_map_mounts.append(
+                    {
+                        "volume": {
+                            "name": volume["name"],
+                            "configMap": volume["configMap"],
+                        },
+                        "mount": inherited_mount,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - parity enrichment is best-effort
+            logger.warning(
+                "adopt: failed to read %s ConfigMap mounts: %s", name, exc
+            )
+            config_map_mounts = []
     return {
         "serviceAccountName": (tmpl_spec.service_account_name if tmpl_spec else None),
         "daprAppId": pod_annotations.get("dapr.io/app-id"),
         "daprConfig": pod_annotations.get("dapr.io/config"),
         "daprAppPort": pod_annotations.get("dapr.io/app-port"),
         "containerEnv": container_env,
+        "configMapMounts": config_map_mounts,
     }
 
 
@@ -4201,6 +4266,7 @@ def build_dev_preview_sandbox_manifest(
     namespace: str,
     class_config: ExecutionClassConfig,
     adopt_selector: dict[str, str] | None = None,
+    adopt_config_map_mounts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """A PLAIN single-container `vite dev` Sandbox (no daprd/app-id/OpenShell).
 
@@ -4215,9 +4281,10 @@ def build_dev_preview_sandbox_manifest(
     exec_label = _safe_name(request.executionId, max_length=63)
     image = request.image or class_config.serviceImage or DEFAULT_DEV_PREVIEW_IMAGE
     port = request.port or class_config.servicePort or 3000
-    workdir = (request.workdir or class_config.serviceWorkdir or "/app").rstrip(
-        "/"
-    ) or "/app"
+    workdir = _canonical_absolute_posix_path(
+        request.workdir or class_config.serviceWorkdir or "/app",
+        field="dev preview workdir",
+    )
     health_path = request.healthPath or class_config.serviceHealthPath or "/"
     sync_mode = (request.syncMode or "plugin").lower()
     use_sidecar = sync_mode == "sidecar"
@@ -4693,6 +4760,61 @@ def build_dev_preview_sandbox_manifest(
                 "configMap": {"name": class_config.imagePinsConfigMap},
             }
         )
+    # Preserve platform-owned file configuration such as function-router's
+    # strict registry. The identity adapter supplies ConfigMap-only, forced-
+    # read-only attachments; caller request data cannot add mounts here.
+    if adopt_config_map_mounts:
+        mounts = container.setdefault("volumeMounts", [])
+        volumes = pod_spec.setdefault("volumes", [])
+        existing_volume_names = {item.get("name") for item in volumes}
+        existing_mount_paths = {item.get("mountPath") for item in mounts}
+        for attachment in adopt_config_map_mounts:
+            volume = attachment.get("volume") if isinstance(attachment, dict) else None
+            mount = attachment.get("mount") if isinstance(attachment, dict) else None
+            if not isinstance(volume, dict) or not isinstance(mount, dict):
+                continue
+            name = volume.get("name")
+            raw_mount_path = mount.get("mountPath")
+            try:
+                mount_path = _canonical_absolute_posix_path(
+                    raw_mount_path, field="adopted ConfigMap mountPath"
+                )
+            except ValueError:
+                continue
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(volume.get("configMap"), dict)
+            ):
+                continue
+            workdir_prefix = f"{workdir.rstrip('/')}/"
+            mount_prefix = f"{mount_path.rstrip('/')}/"
+            if (
+                mount_path == workdir
+                or mount_path.startswith(workdir_prefix)
+                or workdir.startswith(mount_prefix)
+            ):
+                logger.warning(
+                    "adopt: skipping ConfigMap mount %s at %s because it overlaps "
+                    "the mutable dev workdir %s",
+                    name,
+                    mount_path,
+                    workdir,
+                )
+                continue
+            if name in existing_volume_names or mount_path in existing_mount_paths:
+                continue
+            volumes.append({"name": name, "configMap": volume["configMap"]})
+            mounts.append(
+                {
+                    key: value
+                    for key, value in mount.items()
+                    if key in {"name", "mountPath", "subPath", "subPathExpr"}
+                }
+                | {"name": name, "mountPath": mount_path, "readOnly": True}
+            )
+            existing_volume_names.add(name)
+            existing_mount_paths.add(mount_path)
     pod_labels = {
         "app": "wfb-dev-preview",
         DEV_PREVIEW_MANAGED_LABEL: DEV_PREVIEW_MANAGED_VALUE,
@@ -5303,6 +5425,7 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
         ]
     sandbox_name = _dev_preview_sandbox_name(body.executionId, body.service)
     adopt_selector: dict[str, str] | None = None
+    adopt_config_map_mounts: list[dict[str, Any]] = []
     pod_ip: str | None = None
     readiness_status = "queued"
     dry_run = os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
@@ -5377,11 +5500,13 @@ def provision_dev_preview(request: Request, body: DevPreviewRequest) -> dict[str
                 # the dev-specific env (NODE_ENV=development, WFB_DEV_SYNC*) overrides.
                 if identity.get("containerEnv"):
                     body.adoptInheritedEnv = identity["containerEnv"]
+                adopt_config_map_mounts = list(identity.get("configMapMounts") or [])
         manifest = build_dev_preview_sandbox_manifest(
             body,
             namespace=namespace,
             class_config=class_config,
             adopt_selector=adopt_selector,
+            adopt_config_map_mounts=adopt_config_map_mounts,
         )
         adoption_coordination: Any | None = None
         adoption_holder: str | None = None
@@ -11474,6 +11599,27 @@ def _preview_pod_matches_service(pod: Any, service: str) -> bool:
     return pod_name == service or pod_name.startswith(f"{service}-")
 
 
+def _preview_runtime_container_name(pod: Any, service: str) -> str | None:
+    """Resolve the physical container that represents a logical preview service."""
+    spec_value = getattr(pod, "spec", None)
+    container_names = {
+        getattr(container, "name", None)
+        for container in (getattr(spec_value, "containers", None) or [])
+    }
+    if service in container_names:
+        return service
+
+    metadata = getattr(pod, "metadata", None)
+    labels = getattr(metadata, "labels", None) or {}
+    if (
+        "dev" in container_names
+        and labels.get("preview.stacks.io/managed-by") == "sandbox-execution-api"
+        and labels.get("dev-preview-service") == service
+    ):
+        return "dev"
+    return None
+
+
 def _preview_runtime_services(
     pods: Any, services: tuple[str, ...]
 ) -> list[dict[str, Any]]:
@@ -11491,6 +11637,9 @@ def _preview_runtime_services(
             pod_name = getattr(metadata, "name", None) or ""
             spec_value = getattr(pod, "spec", None)
             status_value = getattr(pod, "status", None)
+            runtime_container_name = _preview_runtime_container_name(pod, service)
+            if runtime_container_name is None:
+                continue
             statuses = {
                 getattr(item, "name", ""): item
                 for item in (getattr(status_value, "container_statuses", None) or [])
@@ -11499,9 +11648,9 @@ def _preview_runtime_services(
                 getattr(metadata, "deletion_timestamp", None)
             )
             for container in getattr(spec_value, "containers", None) or []:
-                if getattr(container, "name", None) != service:
+                if getattr(container, "name", None) != runtime_container_name:
                     continue
-                container_status = statuses.get(service)
+                container_status = statuses.get(runtime_container_name)
                 containers.append(
                     {
                         "pod": pod_name,
