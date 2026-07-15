@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { getContext, untrack } from 'svelte';
+	import { AGENT_MODEL_OPTIONS } from '$lib/agents/model-options';
+	import { parseScriptStructure } from '$lib/utils/script-graph-adapter';
 	import { Play, Loader2, CircleAlert } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Label } from '$lib/components/ui/label';
@@ -184,6 +186,18 @@
 	let scriptBudgetTotal = $state<string>('');
 	// meta.input (cutover P1f): an object JSON Schema turns the free-form Args
 	// textarea into a generated form (same start-path validation applies).
+	// args.X → consuming call labels ("used by: crawl, named-agent").
+	const scriptArgUsage = $derived.by<Record<string, string[]>>(() => {
+		if (!isDynamicScript) return {};
+		const src = (store.spec as { script?: unknown } | null)?.script;
+		if (typeof src !== 'string' || !src) return {};
+		try {
+			return parseScriptStructure(src).argUsage;
+		} catch {
+			return {};
+		}
+	});
+
 	let scriptInputSchema = $derived.by(() => {
 		const m = ((store.spec as Record<string, unknown> | null)?.meta ?? {}) as Record<
 			string,
@@ -616,7 +630,22 @@
 										{field.label}
 										{#if field.required}<span class="text-destructive">*</span>{/if}
 									</Label>
-									{#if field.wfbKind === 'agent' && agentChoices(field).length > 0}
+									{#if field.wfbKind === 'model'}
+										<Select.Root
+											type="single"
+											value={scriptFieldValues[field.key] ?? ''}
+											onValueChange={(v) => (scriptFieldValues = { ...scriptFieldValues, [field.key]: v })}
+										>
+											<Select.Trigger class="w-full">
+												{scriptFieldValues[field.key] || 'Select a model…'}
+											</Select.Trigger>
+											<Select.Content>
+												{#each AGENT_MODEL_OPTIONS as m (m.value)}
+													<Select.Item value={m.value}>{m.label ?? m.value}</Select.Item>
+												{/each}
+											</Select.Content>
+										</Select.Root>
+									{:else if field.wfbKind === 'agent' && agentChoices(field).length > 0}
 										<Select.Root
 											type="single"
 											value={scriptFieldValues[field.key] ?? ''}
@@ -689,6 +718,11 @@
 									{/if}
 									{#if field.description}
 										<p class="text-[10px] text-muted-foreground">{field.description}</p>
+									{/if}
+									{#if scriptArgUsage[field.key]?.length}
+										<p class="text-[9.5px] text-muted-foreground/70">
+											used by: {scriptArgUsage[field.key].join(', ')}
+										</p>
 									{/if}
 								</div>
 							{/each}

@@ -349,3 +349,17 @@ describe('prompt strings cannot fake the new kinds', () => {
 		expect(m.calls[0].kind).toBe('agent');
 	});
 });
+
+describe('argUsage (run-parameterization captions)', () => {
+	it('maps args.X to the labels of consuming calls (incl. template interpolations)', () => {
+		const m = parseScriptStructure(
+			[
+				"const crawl = await action('web/crawl', { url: args.url }, { label: 'crawl' })",
+				"await agent('review it', { label: 'review', agent: args.reviewAgent })",
+				"await agent(`use ${args.url}`, { label: 'summarize' })"
+			].join('\n')
+		);
+		expect(m.argUsage.url).toEqual(['crawl', 'summarize']);
+		expect(m.argUsage.reviewAgent).toEqual(['review']);
+	});
+});
