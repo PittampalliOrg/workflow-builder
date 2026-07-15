@@ -3,6 +3,7 @@ import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import {
 	extractTraceContext,
 	maybeProvisionAgentWorkflowHost,
+	probeAgentWorkflowHostAppReady,
 	waitForAgentWorkflowHostAppReady,
 } from "./agent-workflow-host";
 
@@ -78,6 +79,49 @@ describe("agent workflow host app readiness", () => {
 			"http://10.244.1.20:8002/healthz",
 			"http://10.244.1.20:8002/healthz",
 		]);
+	});
+
+	it("probes a missing host only once", async () => {
+		vi.mocked(getAgentWorkflowHostPod).mockResolvedValue(null);
+		const fetchImpl = vi.fn();
+
+		const result = await probeAgentWorkflowHostAppReady({
+			agentAppId: "agent-session-missing",
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		expect(result).toBeNull();
+		expect(getAgentWorkflowHostPod).toHaveBeenCalledTimes(1);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("bounds a blackholed pod probe so provisioning can proceed", async () => {
+		vi.mocked(getAgentWorkflowHostPod).mockResolvedValue({
+			name: "agent-host-agent-session-stale",
+			namespace: "workflow-builder",
+			podIP: "10.244.1.99",
+			containers: [{ name: "dapr-agent-py", ready: true }],
+		});
+		const fetchImpl = vi.fn(
+			(_input: string | URL | Request, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+						once: true,
+					});
+				}),
+		);
+
+		const result = await probeAgentWorkflowHostAppReady({
+			agentAppId: "agent-session-stale",
+			fetchImpl: fetchImpl as typeof fetch,
+			probeTimeoutMs: 10,
+		});
+
+		expect(result).toBeNull();
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"http://10.244.1.99:8002/healthz",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
 	});
 });
 

@@ -12,6 +12,7 @@
 	import FeedbackWidget from '$lib/components/chrome/feedback-widget.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
 	import { deploymentNotifications } from '$lib/stores/deployment-notifications.svelte';
+	import { startRuntimeHandoffWatcher } from '$lib/runtime-handoff';
 
 	let { children, data } = $props();
 
@@ -79,8 +80,16 @@
 		}
 	});
 
-	// The root layout only unmounts on full teardown (logout / tab close); stop
-	// the watcher so its timers + EventSource don't linger.
+	// The root layout survives client navigation. Rebind the preview watcher when
+	// authentication or the server generation changes and let Svelte stop the old one.
+	$effect(() => {
+		if (!data.session?.userId) return;
+		return startRuntimeHandoffWatcher({
+			baseline: data.runtimeHandoff,
+			reload: () => window.location.reload()
+		});
+	});
+
 	onDestroy(() => deploymentNotifications.stop());
 
 	function handleGlobalKeydown(e: KeyboardEvent) {

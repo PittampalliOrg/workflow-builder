@@ -32,6 +32,7 @@ import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
 import {
 	waitForAgentWorkflowHostAppReady,
+	probeAgentWorkflowHostAppReady,
 	maybeProvisionAgentWorkflowHost,
 	sessionHostAppId,
 } from "$lib/server/sessions/agent-workflow-host";
@@ -323,15 +324,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		const sharedWorkspaceKey = execRow?.daprInstanceId ?? executionId;
 		const helperSessionId = `${executionId}__cliws`;
 		const helperAppId = sessionHostAppId(helperSessionId);
-		// Fast path: a previously-provisioned helper is already up.
-		try {
-			const ready = await waitForAgentWorkflowHostAppReady({
-				agentAppId: helperAppId,
-			});
-			if (ready?.baseUrl) baseUrl = ready.baseUrl;
-		} catch {
-			/* not up yet — provision below */
-		}
+		// Fast path: check once for an already-ready helper. A missing helper must
+		// provision immediately instead of consuming the full readiness timeout as
+		// an existence probe. Provisioning is idempotent when a helper is starting.
+		const ready = await probeAgentWorkflowHostAppReady({
+			agentAppId: helperAppId,
+		});
+		if (ready?.baseUrl) baseUrl = ready.baseUrl;
 		if (!baseUrl) {
 			const ghToken = await resolveWorkflowGithubToken();
 			try {

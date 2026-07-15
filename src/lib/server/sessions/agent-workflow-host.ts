@@ -221,6 +221,10 @@ export type AgentWorkflowHostAppReadyResult = {
 	podIP: string;
 };
 
+type AgentWorkflowHostAppProbeAttempt =
+	| { ready: true; result: AgentWorkflowHostAppReadyResult }
+	| { ready: false; error: string };
+
 export interface TraceContext {
 	traceparent: string | null;
 	tracestate: string | null;
@@ -572,11 +576,68 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	};
 }
 
+async function probeAgentWorkflowHostAppReadyOnce(params: {
+	agentAppId: string;
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}): Promise<AgentWorkflowHostAppProbeAttempt> {
+	try {
+		const pod = await getAgentWorkflowHostPod(params.agentAppId);
+		if (!pod) return { ready: false, error: "pod not found" };
+		const baseUrl = `http://${pod.podIP}:8002`;
+		const res = await (params.fetchImpl ?? fetch)(`${baseUrl}/healthz`, {
+			method: "GET",
+			signal: AbortSignal.timeout(Math.max(1, params.timeoutMs ?? 1_500)),
+		});
+		if (res.ok) {
+			return {
+				ready: true,
+				result: {
+					ok: true,
+					attempts: 1,
+					status: res.status,
+					baseUrl,
+					podName: pod.name,
+					podIP: pod.podIP,
+				},
+			};
+		}
+		const text = await res.text().catch(() => "");
+		return {
+			ready: false,
+			error: `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
+		};
+	} catch (err) {
+		return {
+			ready: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+/**
+ * Check one time whether an existing workflow-host app is usable. This is the
+ * non-blocking existence/readiness probe for adopt-or-provision decisions; use
+ * `waitForAgentWorkflowHostAppReady` only after provisioning has been requested.
+ */
+export async function probeAgentWorkflowHostAppReady(params: {
+	agentAppId: string;
+	fetchImpl?: typeof fetch;
+	probeTimeoutMs?: number;
+}): Promise<AgentWorkflowHostAppReadyResult | null> {
+	const attempt = await probeAgentWorkflowHostAppReadyOnce({
+		...params,
+		timeoutMs: params.probeTimeoutMs,
+	});
+	return attempt.ready ? attempt.result : null;
+}
+
 export async function waitForAgentWorkflowHostAppReady(params: {
 	agentAppId: string;
 	timeoutSeconds?: number;
 	pollMs?: number;
 	fetchImpl?: typeof fetch;
+	probeTimeoutMs?: number;
 }): Promise<AgentWorkflowHostAppReadyResult> {
 	const timeoutSeconds =
 		params.timeoutSeconds ??
@@ -598,33 +659,23 @@ export async function waitForAgentWorkflowHostAppReady(params: {
 
 	while (Date.now() <= deadline) {
 		attempts += 1;
-		try {
-			const pod = await getAgentWorkflowHostPod(params.agentAppId);
-			if (!pod) {
-				lastError = "pod not found";
-				throw new Error(lastError);
-			}
-			const baseUrl = `http://${pod.podIP}:8002`;
-			const url = `${baseUrl}/healthz`;
-			const res = await fetchImpl(url, { method: "GET" });
-			if (res.ok) {
-				return {
-					ok: true,
-					attempts,
-					status: res.status,
-					baseUrl,
-					podName: pod.name,
-					podIP: pod.podIP,
-				};
-			}
-			const text = await res.text().catch(() => "");
-			lastError = `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`;
-		} catch (err) {
-			lastError = err instanceof Error ? err.message : String(err);
+		const attempt = await probeAgentWorkflowHostAppReadyOnce({
+			agentAppId: params.agentAppId,
+			fetchImpl,
+			timeoutMs: Math.min(
+				Math.max(1, params.probeTimeoutMs ?? 1_500),
+				Math.max(1, deadline - Date.now()),
+			),
+		});
+		if (attempt.ready) {
+			return { ...attempt.result, attempts };
 		}
+		lastError = attempt.error;
 
 		if (Date.now() > deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, pollMs));
+		await new Promise((resolve) =>
+			setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))),
+		);
 	}
 
 	throw new Error(

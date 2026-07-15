@@ -4,10 +4,18 @@ import { getApplicationAdapters } from '$lib/server/application';
 
 export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	const theme = cookies.get('theme') || 'system';
+	const application = getApplicationAdapters();
+	const runtimeHandoff = application.runtimeHandoff.current();
 
 	// Don't redirect on auth pages or API routes
 	if (url.pathname.startsWith('/auth') || url.pathname.startsWith('/api')) {
-		return { session: locals.session, theme, user: null, platformRole: 'MEMBER' as const };
+		return {
+			session: locals.session,
+			theme,
+			user: null,
+			platformRole: 'MEMBER' as const,
+			runtimeHandoff
+		};
 	}
 
 	// Redirect unauthenticated users to sign-in
@@ -23,7 +31,7 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 	let platformRole: 'ADMIN' | 'MEMBER' = 'MEMBER';
 	if (locals.session?.userId) {
 		try {
-			const row = await getApplicationAdapters().workflowData.getUserProfile(
+				const row = await application.workflowData.getUserProfile(
 				locals.session.userId
 			);
 			if (row) {
@@ -39,6 +47,7 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 		session: locals.session,
 		theme,
 		user,
-		platformRole
+		platformRole,
+		runtimeHandoff
 	};
 };

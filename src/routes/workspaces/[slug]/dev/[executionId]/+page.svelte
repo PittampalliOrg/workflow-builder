@@ -151,19 +151,19 @@
 					});
 					try {
 						await query.refresh();
+						const view = await query;
+						const state =
+							view.status.ok && view.status.data.frozen
+								? 'frozen'
+								: view.status.ok && view.status.data.prepared
+									? 'preparing'
+									: view.status.ok
+										? 'writable'
+										: 'unknown';
+						return [service.service, state] as const;
 					} catch {
 						return [service.service, 'unknown'] as const;
 					}
-					const view = query.current;
-					const state =
-						view?.status.ok && view.status.data.frozen
-							? 'frozen'
-							: view?.status.ok && view.status.data.prepared
-								? 'preparing'
-								: view?.status.ok
-									? 'writable'
-									: 'unknown';
-					return [service.service, state] as const;
 				})
 			);
 			if (epoch !== sourceProbeEpoch) return;

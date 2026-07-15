@@ -16,6 +16,7 @@
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import { relativeTime } from '$lib/components/dev/preview-lifecycle';
 	import type { SidecarLastRunView } from '$lib/types/dev-previews';
+	import { onMount } from 'svelte';
 	import {
 		getSidecarStatus,
 		runSidecarCmd
@@ -43,12 +44,16 @@
 		executionId: service.executionId,
 		service: service.service
 	});
-	const view = $derived(statusQuery.current);
+	type StatusView = Awaited<typeof statusQuery>;
+	let view = $state<StatusView | undefined>();
+	let statusError = $state<string | null>(null);
+	let statusRefreshing = $state(false);
 	const statusData = $derived(view?.status.ok ? view.status.data : null);
 	const statusFailure = $derived(
-		view && !view.status.ok
-			? `${view.status.reason}${view.status.message ? `: ${view.status.message}` : ''}`
-			: null
+		statusError ??
+			(view && !view.status.ok
+				? `${view.status.reason}${view.status.message ? `: ${view.status.message}` : ''}`
+				: null)
 	);
 	// The sidecar's own command list wins (it reflects what the pod allows); the
 	// registry allowlist is the fallback before first load.
@@ -79,6 +84,24 @@
 		executedIn: 'app' | 'sidecar' | null;
 	} | null>(null);
 	let outputOpen = $state(false);
+
+	async function refreshStatus(invalidate = true) {
+		if (statusRefreshing) return;
+		statusRefreshing = true;
+		try {
+			if (invalidate) await statusQuery.refresh();
+			view = await statusQuery;
+			statusError = null;
+		} catch (error) {
+			statusError = error instanceof Error ? error.message : 'sidecar status request failed';
+		} finally {
+			statusRefreshing = false;
+		}
+	}
+
+	onMount(() => {
+		void refreshStatus(false);
+	});
 
 	async function run(cmd: string) {
 		if (runningCmd || sourceReadOnly) return;
@@ -120,7 +143,7 @@
 			runningCmd = null;
 			// Auto-open the output on failure; refresh status so lastRun updates.
 			if (runOutput && !runOutput.ok) outputOpen = true;
-			void statusQuery.refresh();
+			void refreshStatus();
 		}
 	}
 </script>
@@ -164,10 +187,10 @@
 				size="icon"
 				variant="ghost"
 				class="size-7"
-				onclick={() => void statusQuery.refresh()}
+				onclick={() => void refreshStatus()}
 				title="Refresh sidecar status"
 			>
-				<RefreshCw class="size-3.5" />
+				<RefreshCw class="size-3.5 {statusRefreshing ? 'animate-spin' : ''}" />
 			</Button>
 		</div>
 	</div>

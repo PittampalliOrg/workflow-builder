@@ -33,4 +33,10 @@ describe("workspace dev detail polling", () => {
 		expect(pageSource).toContain("{services.length} service");
 		expect(pageSource).toContain("{#each services as svc (svc.service)}");
 	});
+
+	it("awaits each sidecar query resource after refresh before deriving checkpoint state", () => {
+		expect(pageSource).toContain("await query.refresh()");
+		expect(pageSource).toContain("const view = await query");
+		expect(pageSource).not.toContain("const view = query.current");
+	});
 });

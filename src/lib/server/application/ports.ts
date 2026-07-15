@@ -35,6 +35,7 @@ export * from "./ports/preview-source-promotion";
 export * from "./ports/preview-source-promotion-acceptance";
 export * from "./ports/preview-traces";
 export * from "./ports/pr-previews";
+export * from "./ports/runtime-handoff";
 export * from "./ports/sandboxes";
 export * from "./ports/sessions";
 export * from "./ports/shared";

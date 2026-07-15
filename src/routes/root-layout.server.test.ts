@@ -12,6 +12,7 @@ describe("root layout loader", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("workflowData.getUserProfile");
+		expect(source).toContain("application.runtimeHandoff.current()");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
