@@ -262,6 +262,7 @@ class FakeCtx:
         self.prepare_inputs: list[dict] = []
         self.stop_inputs: list[dict] = []
         self.execute_action_inputs: list[dict] = []
+        self.persist_workspace_inputs: list[dict] = []
         # Sequenced results: pop from the front while >1 remain (last repeats) —
         # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
         self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
@@ -334,6 +335,9 @@ class FakeCtx:
             if len(self.execute_action_results) > 1:
                 return self.execute_action_results.pop(0)
             return self.execute_action_results[0]
+        if name == "persist_workspace_session":
+            self.persist_workspace_inputs.append(inp)
+            return {"success": True}
         if name == "record_script_call_pause":
             self.pause_inputs.append(inp)
             return {"success": True}
@@ -1871,3 +1875,41 @@ def test_dev_preview_activation_routes_to_runner_child_with_durable_poll():
     assert cfg["actionType"] == "dev/preview" and cfg["mode"] == "preview-native"
     # AP-only retry semantics must NOT be stamped on an activation call.
     assert "raiseOnRetryable" not in child_input["activityInput"]
+
+
+def test_retained_workspace_profile_records_workspace_session():
+    """SW parity: a retained (keepAfterRun) workspace/profile action records a
+    workflow_workspace_sessions row via persist_workspace_session — the
+    runtime-preview page resolves an execution's sandbox through it."""
+    cid = "c1" * 20 + "_0"
+    task = action_task(
+        cid,
+        "workspace/profile",
+        {"name": "x", "rootPath": "/sandbox", "keepAfterRun": True},
+        label="workspace_profile",
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+    ctx.execute_action_results = [
+        {"success": True, "result": {"workspaceRef": "ws-1", "rootPath": "/sandbox"}}
+    ]
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    assert len(ctx.persist_workspace_inputs) == 1
+    payload = ctx.persist_workspace_inputs[0]
+    assert payload["workflowExecutionId"] == "e1"
+    assert payload["keepAfterRun"] is True
+    assert payload["taskName"] == "workspace_profile"
+    assert payload["result"]["result"]["workspaceRef"] == "ws-1"
+
+
+def test_transient_workspace_profile_skips_session_recording():
+    """keepAfterRun absent/false → NO workspace-session row (matches SW)."""
+    cid = "c2" * 20 + "_0"
+    task = action_task(
+        cid, "workspace/profile", {"name": "x", "rootPath": "/sandbox"}, label="p"
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+    ctx.execute_action_results = [{"success": True, "result": {"workspaceRef": "ws-2"}}]
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+    assert result["success"] is True
+    assert ctx.persist_workspace_inputs == []
