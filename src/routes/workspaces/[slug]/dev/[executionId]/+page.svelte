@@ -348,6 +348,7 @@
 				{services.length} service{services.length === 1 ? '' : 's'} · run
 				<code>{environment.executionId.slice(0, 8)}</code>
 			</p>
+			<p class="text-xs text-muted-foreground">Live sync verified: archapp-0715b-hmr-1</p>
 		</div>
 		<StatusPill status={lifecycle.effectiveStatus} spinner={false} />
 		{#if sessionId}

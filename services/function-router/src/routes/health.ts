@@ -8,7 +8,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
    * GET /healthz - Liveness probe
    */
   app.get("/healthz", async (_request, reply) =>
-    reply.status(200).send({ status: "healthy" })
+    reply.status(200).send({ status: "healthy", previewHmrProof: "archapp-0715b-hmr-1" })
   );
 
   /**
