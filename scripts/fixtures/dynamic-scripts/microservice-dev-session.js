@@ -74,6 +74,12 @@ export const meta = {
         "description": "Optional task prompt delivered after the fixed activation, HMR, testing, and source-safety instructions.",
         "maxLength": 12000,
         "default": ""
+      },
+      "agentSlug": {
+        "type": "string",
+        "title": "Agent slug",
+        "description": "Preview-local dapr-agent-py GLM agent used for the interactive handoff.",
+        "default": "glm-juicefs-builder-agent"
       }
     }
   }
@@ -111,6 +117,7 @@ const services = t.services ?? (t.service ? [t.service] : DEFAULT_SERVICES)
 const primary = t.service ?? services[0]
 const mode = t.mode ?? 'preview-native'
 const intent = typeof t.intent === 'string' ? t.intent : ''
+const agentSlug = typeof t.agentSlug === 'string' && t.agentSlug.length > 0 ? t.agentSlug : 'glm-juicefs-builder-agent'
 
 phase('Provision')
 const preview = await action('dev/preview', {
@@ -145,6 +152,7 @@ await action('workspace/command', {
 
 phase('Handoff')
 const session = await action('session/spawn', {
+  agentSlug,
   instructions:
     `You are the interactive developer for these microservices: **${services.join(', ')}**.` +
     HANDOFF_PROSE +
