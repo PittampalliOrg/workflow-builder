@@ -1096,7 +1096,10 @@ export class ApplicationPreviewEnvironmentService implements PreviewEnvironmentU
           : []),
       candidatePaths: input.candidatePaths ?? [],
       owner: { kind: "user", id: input.userId },
-      origin: { kind: "user" },
+			origin:
+				input.workflowExecutionId == null
+					? { kind: "user" }
+					: { kind: "workflow", reference: input.workflowExecutionId },
       ttlHours: input.ttlHours ?? defaults.ttlHours ?? 24,
       mode: policy.mode,
       lifecycle,

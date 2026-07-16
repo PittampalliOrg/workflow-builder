@@ -178,22 +178,28 @@ describe("GAN generator: emitted script plans the harness", () => {
 describe("microservice-dev-session: emitted plan", () => {
 	const script = read("scripts/fixtures/dynamic-scripts/microservice-dev-session.js");
 
-	it("plans provision(dev/preview) → seed(workspace/command) → handoff(session/spawn)", async () => {
+	it("plans provision → seed → handoff, then waits for typed control", async () => {
 		const { tasks, final } = await drive(
 			script,
 			{ service: "workflow-orchestrator" },
 			(task) =>
-				task.actionSlug === "dev/preview"
-					? { ready: true, browseUrl: "https://x", services: [] }
-					: task.actionSlug === "session/spawn"
-						? { sessionId: "sess-1" }
-						: { exitCode: 0 },
+				task.kind === "event"
+					? { action: "discard" }
+					: task.actionSlug === "dev/preview"
+						? { ready: true, browseUrl: "https://x", services: [] }
+						: task.actionSlug === "session/spawn"
+							? { sessionId: "sess-1" }
+							: { exitCode: 0 },
 			6,
 		);
-		const slugs = tasks.map((t) => t.actionSlug);
+		const slugs = tasks.filter((task) => task.kind === "action").map((t) => t.actionSlug);
 		expect(slugs).toEqual(["dev/preview", "workspace/command", "session/spawn"]);
+		expect(tasks.find((task) => task.kind === "event")?.eventName).toBe(
+			"preview.development.control",
+		);
 		expect(final.status).toBe("done");
 		expect((final.returnValue as Record<string, unknown>).sessionId).toBe("sess-1");
+		expect((final.returnValue as Record<string, unknown>).controlOutcome).toBe("discarded");
 	});
 
 	it("the dev/preview call carries its durable-activation knobs", async () => {

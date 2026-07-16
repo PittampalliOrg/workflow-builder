@@ -7,7 +7,7 @@ import {
   canonicalPreviewOrigin,
   previewNameFromOrigin,
 } from "$lib/server/application/preview-development-build";
-import { getWorkflowLaunchSurface } from "$lib/utils/workflow-launch";
+import { getWorkflowLaunchSurface, getWorkflowLaunchTarget } from "$lib/utils/workflow-launch";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -73,6 +73,15 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
 
     const triggerData = asRecord(input.triggerData);
     const deployment = this.scope.current();
+		if (getWorkflowLaunchTarget(input.workflow.spec) === "control-plane") {
+			if (deployment.kind !== "control-plane") {
+				return policyError(
+					409,
+					"This workflow can only orchestrate preview development from the control plane.",
+				);
+			}
+			return { ok: true, triggerData };
+		}
     if (deployment.kind === "control-plane") {
       const hostTriggerData = { ...triggerData };
       delete hostTriggerData.previewOrigin;

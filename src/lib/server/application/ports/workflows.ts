@@ -653,6 +653,8 @@ export type WorkflowRunStartInput = {
 	launchSurface?: string;
 	/** Origin candidate supplied by a presentation adapter for policy validation. */
 	launchOrigin?: string | null;
+	/** Fail closed if the resolved executable spec is not this exact digest. */
+	expectedWorkflowSpecDigest?: `sha256:${string}`;
 };
 
 export type WorkflowRunStartResult =
@@ -759,6 +761,8 @@ export type DevPreviewHubReadModel = {
 	services: DevPreviewServiceReadModel[];
 	devWorkflowId: string | null;
 	devWorkflowName: string;
+	lifecycleWorkflowId: string | null;
+	lifecycleWorkflowName: string;
 };
 
 /**
@@ -1489,10 +1493,18 @@ export interface WorkflowDataService {
 		instructions: string;
 		title?: string | null;
 	}): Promise<
-		| { status: "created"; sessionId: string; agentSlug: string }
+		| {
+				status: "created" | "reused";
+				sessionId: string;
+				agentSlug: string;
+		  }
 		| { status: "execution_not_found" }
 		| { status: "agent_not_found"; agentSlug: string }
 		| { status: "agent_policy_mismatch"; agentSlug: string }
+		| {
+				status: "session_conflict";
+				reason: "ambiguous" | "identity_mismatch" | "instructions_mismatch";
+		  }
 	>;
 	getSessionGoalFlow(input: {
 		sessionId: string;

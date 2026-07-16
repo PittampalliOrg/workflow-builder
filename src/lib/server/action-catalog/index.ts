@@ -462,6 +462,229 @@ function buildCliAgentOneShotDetail(): ActionCatalogDetail {
   };
 }
 
+function buildPreviewDevelopmentActionDetails(): ActionCatalogDetail[] {
+	const targetSchema = {
+		type: "object",
+		additionalProperties: false,
+		required: [
+			"previewName",
+			"environmentRequestId",
+			"platformRevision",
+			"sourceRevision",
+			"catalogDigest",
+		],
+		properties: {
+			previewName: { type: "string" },
+			environmentRequestId: { type: "string" },
+			platformRevision: { type: "string", pattern: "^[0-9a-f]{40}$" },
+			sourceRevision: { type: "string", pattern: "^[0-9a-f]{40}$" },
+			catalogDigest: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
+		},
+	};
+	const childIdentity = {
+		executionId: { type: "string" },
+		workflowSpecDigest: {
+			type: "string",
+			pattern: "^sha256:[0-9a-f]{64}$",
+		},
+	};
+	const servicesSchema = {
+		type: "array",
+		minItems: 1,
+		maxItems: 16,
+		uniqueItems: true,
+		items: {
+			type: "string",
+			pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+		},
+	};
+	const definitions: Array<{
+		slug: string;
+		displayName: string;
+		description: string;
+		inputSchema: Record<string, unknown>;
+	}> = [
+		{
+			slug: "preview/environment-launch",
+			displayName: "Launch Preview Environment",
+			description:
+				"Request an app-live PreviewEnvironment bound to the current host workflow execution.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["environmentName", "services", "ttlHours"],
+				properties: {
+					environmentName: { type: "string" },
+					services: servicesSchema,
+					ttlHours: { type: "integer", minimum: 2, maximum: 24 },
+					retainAfterCompletion: { type: "boolean", default: false },
+				},
+			},
+		},
+		{
+			slug: "preview/environment-status",
+			displayName: "Observe Preview Environment",
+			description:
+				"Read the exact generation-bound PreviewEnvironment status for this host run.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target"],
+				properties: { target: targetSchema },
+			},
+		},
+		{
+			slug: "preview/workflow-start",
+			displayName: "Start Preview Development Workflow",
+			description:
+				"Start the pinned microservice-dev-session inside the exact preview target.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target", "intent", "services"],
+				properties: {
+					target: targetSchema,
+					intent: { type: "string", minLength: 1, maxLength: 12000 },
+					services: servicesSchema,
+				},
+			},
+		},
+		{
+			slug: "preview/workflow-status",
+			displayName: "Observe Preview Development Workflow",
+			description: "Read the preview-local child workflow status and promotion receipt.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target", "executionId", "workflowSpecDigest"],
+				properties: { target: targetSchema, ...childIdentity },
+			},
+		},
+		{
+			slug: "preview/workflow-signal",
+			displayName: "Control Preview Development Workflow",
+			description:
+				"Send the fixed submit_preview_pr or discard command to the exact preview-local child.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target", "executionId", "workflowSpecDigest", "action"],
+				properties: {
+					target: targetSchema,
+					...childIdentity,
+					action: { type: "string", enum: ["submit_preview_pr", "discard"] },
+				},
+			},
+		},
+		{
+			slug: "preview/workflow-verify-promotion",
+			displayName: "Verify Preview Promotion",
+			description:
+				"Verify the child promotion against the physical broker's durable draft pull request receipt.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target", "childExecutionId", "receiptId", "services"],
+				properties: {
+					target: targetSchema,
+					childExecutionId: { type: "string" },
+					receiptId: {
+						type: "string",
+						pattern: "^pspr_[0-9a-f]{64}$",
+					},
+					services: servicesSchema,
+				},
+			},
+		},
+		{
+			slug: "preview/environment-teardown",
+			displayName: "Teardown Preview Environment",
+			description:
+				"Request generation-fenced teardown of the PreviewEnvironment owned by this host run.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target"],
+				properties: { target: targetSchema },
+			},
+		},
+		{
+			slug: "preview/environment-teardown-status",
+			displayName: "Observe Preview Teardown",
+			description: "Read cleanup proof for a signed PreviewEnvironment teardown ticket.",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				required: ["target", "ticket"],
+				properties: {
+					target: targetSchema,
+					ticket: {
+						type: "object",
+						additionalProperties: false,
+						required: [
+							"name",
+							"environmentUid",
+							"requestId",
+							"sourceRevision",
+							"signature",
+						],
+						properties: {
+							name: { type: "string" },
+							environmentUid: { type: "string" },
+							requestId: { type: "string" },
+							sourceRevision: { type: "string", pattern: "^[0-9a-f]{40}$" },
+							signature: { type: "string", pattern: "^[0-9a-f]{64}$" },
+						},
+					},
+				},
+			},
+		},
+	];
+
+	return definitions.map((definition) => {
+		const taskConfig = { call: definition.slug, with: {} };
+		return {
+			id: buildActionId("builtin", definition.slug),
+			slug: definition.slug,
+			name: definition.slug,
+			displayName: definition.displayName,
+			description: definition.description,
+			providerId: "preview-development",
+			providerLabel: "Preview Development",
+			providerIconUrl: null,
+			category: "preview",
+			serviceId: "function-router",
+			kind: "dapr-activity",
+			visibility: "public-callable",
+			compatibility: "compatible",
+			group: "Preview Development",
+			version: "1.0.0",
+			language: "typescript",
+			entrypoint: definition.slug,
+			sourceKind: "activity",
+			insertable: true,
+			auth: null,
+			fields: null,
+			tags: ["preview", "vcluster", "development-lifecycle", "durable"],
+			doc: "The function router binds this action to the trusted workflow execution and proxies a narrow command through the application-layer preview development ports.",
+			inputSchema: definition.inputSchema,
+			outputSchema: { type: "object" },
+			semanticModel: null,
+			sourceCode: null,
+			sourceHtml: null,
+			sw: {
+				functionName: definition.slug,
+				definition: taskConfig,
+				taskConfig,
+				warnings: [],
+			},
+			runtime: buildRuntimeStatus(true, ["host-preview-development"]),
+			rendered: null,
+			raw: null,
+		} satisfies ActionCatalogDetail;
+	});
+}
+
 function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
   const startTaskConfig = {
     call: "browser/start-preview",
@@ -1343,6 +1566,7 @@ async function loadRemoteActionCache(
   const actions: ActionCatalogDetail[] = [
     buildDaprAgentPyDetail(),
     buildCliAgentOneShotDetail(),
+    ...buildPreviewDevelopmentActionDetails(),
     ...buildBrowserPreviewDetails(),
   ];
   const services: ActionCatalogServiceSnapshot[] = [];

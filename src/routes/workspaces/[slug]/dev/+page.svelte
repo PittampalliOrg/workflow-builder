@@ -213,8 +213,12 @@
 		})();
 	});
 
-	function onLaunched(executionId: string) {
-		goto(`/workspaces/${slug}/dev/${executionId}`);
+	function onLaunched(executionId: string, lifecycle: boolean) {
+		goto(
+			lifecycle
+				? `/workspaces/${slug}/workflows/runs/${executionId}`
+				: `/workspaces/${slug}/dev/${executionId}`
+		);
 	}
 </script>
 
@@ -382,6 +386,8 @@
 	previewEnvironment={data.previewEnvironment}
 	devWorkflowId={data.devWorkflowId}
 	devWorkflowName={data.devWorkflowName}
+	lifecycleWorkflowId={data.lifecycleWorkflowId}
+	lifecycleWorkflowName={data.lifecycleWorkflowName}
 	onlaunched={onLaunched}
 />
 

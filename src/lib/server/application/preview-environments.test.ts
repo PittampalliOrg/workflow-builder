@@ -738,6 +738,29 @@ describe("ApplicationPreviewEnvironmentService", () => {
     );
   });
 
+	it("derives workflow origin from trusted host execution context", async () => {
+		const { service, vcluster } = userService();
+		await service.launchForUser({
+			name: "feature-x",
+			userId: "user-42",
+			workflowExecutionId: "parent-execution-1",
+			services: ["workflow-builder"],
+			provenance: {
+				parentEnvironmentId: `workflow-execution:sha256:${"a".repeat(64)}:launch:sha256:${"b".repeat(64)}`,
+			},
+		});
+
+		expect(vcluster.launch).toHaveBeenCalledWith(
+			expect.objectContaining({
+				owner: { kind: "user", id: "user-42" },
+				origin: { kind: "workflow", reference: "parent-execution-1" },
+				provenance: expect.objectContaining({
+					parentEnvironmentId: `workflow-execution:sha256:${"a".repeat(64)}:launch:sha256:${"b".repeat(64)}`,
+				}),
+			}),
+		);
+	});
+
   it("verifies full immutable revisions through repository authority", async () => {
     const { service, revisions } = userService();
     await service.launchForUser({

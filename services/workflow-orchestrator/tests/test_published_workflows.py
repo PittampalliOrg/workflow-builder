@@ -1266,6 +1266,74 @@ def test_execute_action_includes_otel_body_fallback(monkeypatch):
     assert "workflow.activity.correlation_id=exec-1:profile:0" in captured["metadata"][
         "baggage"
     ]
+    assert "x-preview-action-token" not in captured["metadata"]
+
+
+@pytest.mark.parametrize(
+    "action_type",
+    ["preview/environment-launch", "dev/preview-promote"],
+)
+def test_execute_action_authenticates_only_privileged_preview_actions(
+    monkeypatch, action_type
+):
+    execute_action_module = _load_module(
+        f"workflow_orchestrator_preview_auth_{action_type.replace('/', '_')}",
+        "activities/execute_action.py",
+    )
+    captured = {}
+
+    def fake_dapr_invoke(_app_id, _method, _payload, **kwargs):
+        captured["metadata"] = kwargs.get("metadata")
+        return 200, {"success": True, "data": {"ok": True}}, "{}"
+
+    monkeypatch.setenv("PREVIEW_ACTION_INTERNAL_TOKEN", "preview-purpose-token")
+    monkeypatch.setattr(execute_action_module, "dapr_invoke", fake_dapr_invoke)
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {"id": "preview", "config": {"actionType": action_type}},
+            "nodeOutputs": {},
+            "executionId": "sw-test-exec",
+            "workflowId": "wf-1",
+            "dbExecutionId": "parent-1",
+        },
+    )
+    assert result["success"] is True
+    assert captured["metadata"]["x-preview-action-token"] == "preview-purpose-token"
+
+
+@pytest.mark.parametrize(
+    "action_type",
+    ["preview/environment-launch", "dev/preview-promote"],
+)
+def test_execute_action_fails_closed_when_preview_action_token_is_missing(
+    monkeypatch, action_type
+):
+    execute_action_module = _load_module(
+        f"workflow_orchestrator_preview_auth_missing_{action_type.replace('/', '_')}",
+        "activities/execute_action.py",
+    )
+    monkeypatch.setattr(
+        execute_action_module,
+        "dapr_invoke",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not invoke")
+        ),
+    )
+    monkeypatch.delenv("PREVIEW_ACTION_INTERNAL_TOKEN", raising=False)
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {"id": "preview", "config": {"actionType": action_type}},
+            "nodeOutputs": {},
+            "executionId": "sw-test-exec",
+            "workflowId": "wf-1",
+            "dbExecutionId": "parent-1",
+        },
+    )
+    assert result["success"] is False
+    assert result["errorClass"] == "permanent"
+    assert result["responseStatus"] == 0
 
 
 def test_execute_action_preserves_dev_preview_target_status(monkeypatch):
@@ -1286,6 +1354,7 @@ def test_execute_action_preserves_dev_preview_target_status(monkeypatch):
             "{}",
         ),
     )
+    monkeypatch.setenv("PREVIEW_ACTION_INTERNAL_TOKEN", "preview-purpose-token")
 
     result = execute_action_module.execute_action(
         None,
@@ -1315,6 +1384,7 @@ def test_execute_action_classifies_router_replacement_for_dev_preview(monkeypatc
         "dapr_invoke",
         lambda *_args, **_kwargs: (500, {"error": "router unavailable"}, ""),
     )
+    monkeypatch.setenv("PREVIEW_ACTION_INTERNAL_TOKEN", "preview-purpose-token")
 
     result = execute_action_module.execute_action(
         None,

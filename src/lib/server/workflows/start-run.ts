@@ -37,6 +37,7 @@ import {
 	validateDynamicScriptSpec,
 	validateWithEvaluator
 } from '$lib/server/workflows/dynamic-script-validation';
+import { workflowSpecDigest } from '$lib/server/application/workflow-spec-digest';
 
 export function isSWWorkflow(spec: unknown): boolean {
 	if (typeof spec !== 'object' || spec === null) return false;
@@ -104,6 +105,8 @@ export interface StartWorkflowOptions {
 	launchSurface?: string;
 	/** Origin candidate supplied by a presentation adapter for policy validation. */
 	launchOrigin?: string | null;
+	/** Exact executable spec expected by a tuple-bound remote caller. */
+	expectedWorkflowSpecDigest?: `sha256:${string}`;
 }
 
 export async function startWorkflowRun(
@@ -137,6 +140,16 @@ export async function startWorkflowRun(
 		workflowName: opts.workflowName
 	});
 	if (!workflow) return { ok: false, status: 404, error: 'Workflow not found' };
+	if (
+		opts.expectedWorkflowSpecDigest &&
+		workflowSpecDigest(workflow.spec) !== opts.expectedWorkflowSpecDigest
+	) {
+		return {
+			ok: false,
+			status: 409,
+			error: "Workflow spec digest does not match the expected executable contract",
+		};
+	}
 	const launch = app.workflowLaunchPolicy.prepare({
 		workflow,
 		triggerData: opts.triggerData,

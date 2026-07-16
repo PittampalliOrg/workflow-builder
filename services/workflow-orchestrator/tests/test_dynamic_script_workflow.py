@@ -1617,6 +1617,28 @@ def test_action_ap_slug_dispatches_runner_child_with_pause_contract():
     assert raws == [{"success": True, "data": {"appended": True}}]
 
 
+@pytest.mark.parametrize(
+    "slug", ["preview/environment-launch", "dev/preview-promote"]
+)
+def test_privileged_preview_action_dispatches_retrying_runner_child(slug):
+    cid = "d4" * 20 + "_0"
+    task = action_task(cid, slug, {"environmentName": "feature-one"})
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete_runner(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "data": {"ok": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_runner]
+    )
+    assert result["success"] is True
+    iid = script_child_instance_id(ctx.instance_id, cid, 0)
+    child_input = ctx.child_inputs[iid]
+    assert child_input["activityInput"]["raiseOnRetryable"] is True
+    assert child_input["activityInput"]["idempotencyKey"] == f"wf1:e1:{cid}"
+    assert child_input["journal"]["callId"] == cid
+
+
 def test_action_crawl_async_journals_clear_dispatch_error():
     cid = "e7" * 20 + "_0"
     task = action_task(cid, "web/crawl.async", {"url": "https://x"})

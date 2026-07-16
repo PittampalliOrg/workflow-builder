@@ -148,6 +148,39 @@ describe('normal BFF preview launch adapter', () => {
 		expect(JSON.parse(String(init?.body))).toEqual(input);
 	});
 
+	it('validates a workflow-origin proof against the trusted execution context', async () => {
+		const workflowInput = {
+			...input,
+			workflowExecutionId: 'parent-execution-1',
+			provenance: { parentEnvironmentId: 'workflow-binding-1' },
+		};
+		const workflowOutcome = {
+			...outcome,
+			environment: {
+				...outcome.environment,
+				origin: { kind: 'workflow' as const, reference: 'parent-execution-1' },
+				provenance: {
+					...outcome.environment.provenance,
+					parentEnvironmentId: 'workflow-binding-1',
+				},
+			},
+		};
+		const adapter = new HttpPreviewEnvironmentLaunchBrokerAdapter({
+			catalog,
+			baseUrl: () => 'http://preview-control-broker:3000',
+			token: () => 'broker-token',
+			fetch: vi.fn(
+				async () =>
+					new Response(JSON.stringify(workflowOutcome), {
+						status: 200,
+						headers: { 'content-type': 'application/json' },
+					}),
+			) as typeof fetch,
+		});
+
+		await expect(adapter.launchForUser(workflowInput)).resolves.toEqual(workflowOutcome);
+	});
+
 	it('rejects a forged owner in an otherwise valid broker response', async () => {
 		const adapter = new HttpPreviewEnvironmentLaunchBrokerAdapter({
 			catalog,

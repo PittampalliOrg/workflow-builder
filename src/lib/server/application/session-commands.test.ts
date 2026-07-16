@@ -760,6 +760,10 @@ function fakeSessions(): SessionRepository {
 		listSessions: vi.fn(async () => []),
 		getSession: vi.fn(async () => null),
 		createSession: vi.fn(async () => sampleSession()),
+		ensureSession: vi.fn(async () => ({
+			session: sampleSession(),
+			created: true,
+		})),
 		updateSessionTitle: vi.fn(async () => null),
 		archiveSession: vi.fn(async () => false),
 		deleteSession: vi.fn(async () => false),

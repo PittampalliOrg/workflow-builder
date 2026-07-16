@@ -20,6 +20,7 @@ import {
 const ALLOWED = new Set([
   "name",
   "userId",
+	"workflowExecutionId",
   "profile",
   "lane",
   "capabilities",
@@ -65,7 +66,8 @@ export const POST: RequestHandler = async ({ request }) => {
   if (
     unexpected.length > 0 ||
     typeof value.name !== "string" ||
-    typeof value.userId !== "string"
+		typeof value.userId !== "string" ||
+		(value.workflowExecutionId !== undefined && typeof value.workflowExecutionId !== "string")
   ) {
     return json(
       {

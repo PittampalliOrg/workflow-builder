@@ -47,4 +47,21 @@ describe("startWorkflowRun launch policy", () => {
     });
     expect(result).toEqual({ ok: false, status: 409, error: "blocked" });
   });
+
+	it("fails closed before launch when the executable spec digest changed", async () => {
+		const result = await startWorkflowRun({
+			workflowId: "workflow-1",
+			triggerData: { prompt: "change the UI" },
+			launchSurface: "dev-environment",
+			launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+			expectedWorkflowSpecDigest: `sha256:${"f".repeat(64)}`,
+		});
+
+		expect(result).toEqual({
+			ok: false,
+			status: 409,
+			error: "Workflow spec digest does not match the expected executable contract",
+		});
+		expect(prepare).not.toHaveBeenCalled();
+	});
 });

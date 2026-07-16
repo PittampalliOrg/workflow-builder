@@ -230,14 +230,22 @@ export type CreateSessionRecordInput = {
 	resumedFromSessionId?: string | null;
 };
 
+export type EnsureSessionRecordInput = CreateSessionRecordInput & {
+	id: string;
+};
+
+export type EnsureSessionRecordResult = {
+	session: SessionDetail;
+	created: boolean;
+};
+
 export interface SessionRepository {
 	listSessions(filter?: SessionListInput): Promise<SessionSummary[]>;
 	getSession(id: string): Promise<SessionDetail | null>;
 	createSession(input: CreateSessionRecordInput): Promise<SessionDetail>;
-	updateSessionTitle(input: {
-		id: string;
-		title: string;
-	}): Promise<SessionDetail | null>;
+	/** Atomically inserts a caller-keyed session or returns the existing row. */
+	ensureSession(input: EnsureSessionRecordInput): Promise<EnsureSessionRecordResult>;
+	updateSessionTitle(input: { id: string; title: string }): Promise<SessionDetail | null>;
 	archiveSession(id: string): Promise<boolean>;
 	deleteSession(id: string): Promise<boolean>;
 	listSessionResources(sessionId: string): Promise<SessionResource[]>;

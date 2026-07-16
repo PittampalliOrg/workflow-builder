@@ -50,7 +50,7 @@ from core.sw_expressions import (
     resolve_output_definition,
 )
 from core.template_resolver import resolve_templates
-from activities.execute_action import execute_action
+from activities.execute_action import PRIVILEGED_PREVIEW_ACTION_SLUGS, execute_action
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
@@ -2929,8 +2929,9 @@ def _handle_call_task(
     # idempotency key (stable across retries AND replay), retryable-failure
     # raising (so the RetryPolicy fires), and DELAY/WEBHOOK pause mapping.
     is_ap_action = _is_ap_piece_action(action_type)
+    is_privileged_preview_action = action_type in PRIVILEGED_PREVIEW_ACTION_SLUGS
     call_kwargs: dict[str, Any] = {}
-    if is_ap_action:
+    if is_ap_action or is_privileged_preview_action:
         activity_input["idempotencyKey"] = (
             f"{tc.workflow_id}:{tc.db_execution_id or tc.execution_id}:{task_name}"
         )

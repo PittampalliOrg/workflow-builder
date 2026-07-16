@@ -9569,6 +9569,11 @@ var workflowScriptCalls = pgTable(
     errorCode: text("error_code"),
     retries: integer("retries").notNull().default(0),
     tokensUsed: integer("tokens_used").notNull().default(0),
+    // Advisory call-site {line, column} in stored-source coordinates (contract
+    // 1.2.0, cutover P2): the static-graph <-> journal join key for the canvas
+    // overlay. NEVER part of callId identity; stale after resume-after-edit
+    // imports (the overlay falls back to label/phase heuristics then).
+    callSite: jsonb("call_site").$type(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow()
   },
@@ -9781,6 +9786,48 @@ var previewControlArtifacts = pgTable(
     requestIdx: index("idx_preview_control_artifact_request").on(
       table.previewName,
       table.environmentRequestId
+    )
+  })
+);
+var previewSourcePromotionReceipts = pgTable(
+  "preview_source_promotion_receipts",
+  {
+    receiptId: text("receipt_id").primaryKey(),
+    artifactId: text("artifact_id").notNull().references(() => previewControlArtifacts.id, { onDelete: "restrict" }),
+    previewName: text("preview_name").notNull(),
+    environmentRequestId: text("environment_request_id").notNull(),
+    executionId: text("execution_id").notNull(),
+    platformRevision: text("platform_revision").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    catalogDigest: text("catalog_digest").notNull(),
+    repository: text("repository").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    baseSha: text("base_sha").notNull(),
+    branch: text("branch").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    prUrl: text("pr_url").notNull(),
+    pullRequestNumber: integer("pull_request_number").notNull(),
+    draft: boolean("draft").notNull(),
+    services: jsonb("services").$type().notNull(),
+    changedPaths: jsonb("changed_paths").$type().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow()
+  },
+  (table) => ({
+    artifactIdentity: uniqueIndex(
+      "uq_preview_source_promotion_receipt_artifact"
+    ).on(table.artifactId),
+    sessionCreatedIdx: index(
+      "idx_preview_source_promotion_receipt_session_created"
+    ).on(
+      table.previewName,
+      table.environmentRequestId,
+      table.executionId,
+      table.createdAt
+    ),
+    prHeadIdx: index("idx_preview_source_promotion_receipt_pr_head").on(
+      table.repository,
+      table.pullRequestNumber,
+      table.commitSha
     )
   })
 );
@@ -16543,6 +16590,7 @@ function buildPlannedGoalAgentConfig() {
 }
 async function upsertRawWorkflow(params) {
   const visibility = params.visibility ?? "private";
+  const engineType = params.engineType ?? "dapr";
   const existing = await params.db.query.workflows.findFirst({
     where: eq(workflows.id, params.workflowId)
   });
@@ -16558,7 +16606,7 @@ async function upsertRawWorkflow(params) {
       specVersion: "1.0.0",
       spec: params.spec,
       visibility,
-      engineType: "dapr"
+      engineType
     });
     console.log(
       `[seed-workflows] Created workflow ${params.workflowId} for user ${params.userId}`
@@ -16580,7 +16628,7 @@ async function upsertRawWorkflow(params) {
     specVersion: "1.0.0",
     spec: params.spec,
     visibility,
-    engineType: "dapr",
+    engineType,
     updatedAt: /* @__PURE__ */ new Date()
   }).where(eq(workflows.id, params.workflowId));
   console.log(
@@ -16887,26 +16935,82 @@ async function seedGeneratorCriticShowcases(params) {
     effort: "ultracode",
     instructions: GAN_GENERATOR_ULTRACODE_PERSONA
   });
+  const hostPreviewLifecycleScript = fs2.readFileSync(
+    path.resolve(
+      process.cwd(),
+      "scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js"
+    ),
+    "utf8"
+  );
+  const hostPreviewLifecycleMeta = {
+    name: "preview-development-lifecycle",
+    description: "Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.",
+    phases: [
+      { title: "Provision" },
+      { title: "Start development" },
+      { title: "Review" },
+      { title: "Finalize" }
+    ],
+    launch: { surface: "dev-environment", target: "control-plane" },
+    input: {
+      type: "object",
+      required: ["intent", "environmentName"],
+      additionalProperties: false,
+      properties: {
+        intent: {
+          type: "string",
+          title: "Development task",
+          minLength: 1,
+          maxLength: 12e3,
+          description: "The initial task sent to the preview-local interactive agent."
+        },
+        environmentName: {
+          type: "string",
+          title: "Preview environment name",
+          pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+        },
+        services: {
+          type: "array",
+          title: "Microservices to develop",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "string" },
+          default: ["workflow-builder"]
+        },
+        ttlHours: {
+          type: "integer",
+          title: "Preview lifetime in hours",
+          minimum: 2,
+          maximum: 24,
+          default: 8
+        },
+        retainAfterCompletion: {
+          type: "boolean",
+          title: "Retain environment after completion",
+          default: false
+        }
+      }
+    }
+  };
+  await upsertRawWorkflow({
+    db: params.db,
+    workflowId: "preview-development-lifecycle",
+    name: "Preview development lifecycle",
+    description: hostPreviewLifecycleMeta.description,
+    userId: params.userId,
+    projectId: params.projectId,
+    spec: {
+      engine: "dynamic-script",
+      script: hostPreviewLifecycleScript,
+      meta: hostPreviewLifecycleMeta
+    },
+    nodes: [],
+    edges: [],
+    visibility: "public",
+    engineType: "dynamic-script"
+  });
   const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
   for (const file of [
-    "evaluator-optimizer-showcase.json",
-    "design-critic-showcase.json",
-    "evaluator-gated-showcase.json",
-    "retroforge-showcase.json",
-    "retroforge-cli-showcase.json",
-    "retroforge-codex-cli-showcase.json",
-    "retroforge-agy-cli-showcase.json",
-    // Parameterized per-phase mix-and-match: planAgent/generatorAgent/criticAgent
-    // each selectable independently (Phase 1, interchangeable-agents workstream).
-    "generator-critic-showcase.json",
-    // Coding generator/critic: clone a repo → redesign → build-gate → Playwright
-    // critic (screenshots the running app) → open a PR. (interactive-cli family.)
-    "coding-redesign-cli-showcase.json",
-    // GAN-style harness: Planner → Generator↔Evaluator contract negotiation →
-    // contract-graded build loop → PR. Parameterized build/install/preview
-    // (default "auto"). interactive-cli family ONLY (7 cliWorkspace/JuiceFS nodes;
-    // see docs/gan-harness-workflow.md "Runtime / workspace-backend compatibility").
-    "gan-harness-cli-showcase.json",
     // Same GAN harness re-authored for dapr-agent-py on the openshell-shared
     // backend: a workspace/profile provisions ONE shared /sandbox sandbox + a
     // deterministic clone_repo; all durable/run agents (evaluator-critic-agent)
@@ -16914,27 +17018,6 @@ async function seedGeneratorCriticShowcases(params) {
     // (no cliWorkspace). Code profiles (library/service); default library on
     // jonschlinkert/is-number. ui-web/browser eval is a follow-up.
     "gan-harness-dapr-showcase.json",
-    // PILOT: dapr-agent-py on the juicefs-shared backend (runtime
-    // dapr-agent-py-juicefs → LocalWorkspaceRuntime + /sandbox/work CSI mount,
-    // no openshell RPC). Same juicefs/cliWorkspace spine as the CLI showcase but
-    // dapr agents; a deterministic cliWorkspace clone_repo replaces the
-    // agent-driven clone (the dapr pod has no GITHUB_TOKEN). Proves the
-    // dapr→juicefs migration + cross-family workspace sharing.
-    // docs/dapr-agent-py-sandbox-architecture.md.
-    "gan-harness-dapr-juicefs-pilot.json",
-    // ALL-ON-JUICEFS GAN VISUAL LOOP: GLM-5.2 (dapr-agent-py-juicefs) plans +
-    // builds a standalone SvelteKit dashboard (workflows/sessions/fleet/gitops
-    // primitives, mock data) → deterministic ui-web build+preview gate → a real
-    // browser visual critic (cli-playwright-critic-agent, in-pod Chromium, same
-    // /sandbox/work) screenshots + judges it. Derived from the post-refinement
-    // pilot do[] (behavioral criteria, calibrated evaluator, failing[] feedback,
-    // shallow clone). repoUrl=PittampalliOrg/glm-dashboard-starter.
-    "gan-harness-glm-visual-dashboard.json",
-    // Minimal single-node test of R1 persisted browser recording: a Playwright-MCP
-    // critic drives a real browser (navigate/snapshot/screenshot); the in-pod
-    // @playwright/mcp --save-video .webm is pushed to browser-artifacts and plays
-    // inline on the run's Browser tab. Isolates browser/video from the heavy flow.
-    "browser-recording-test-showcase.json",
     // Minimal clone + single-agent-edit workflow: fast verification of W3
     // local-build, uid alignment, durable source-bundle persistence, and
     // concurrency-safe parallel tool calls — no GAN plan/negotiate/refine loop.

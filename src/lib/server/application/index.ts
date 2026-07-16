@@ -416,6 +416,16 @@ import {
   HttpPreviewCapabilityReadTransportAdapter,
   HttpPreviewReadBrokerAdapter,
 } from "$lib/server/application/adapters/preview-read-broker";
+import {
+	HttpPreviewTargetDevelopmentBrokerAdapter,
+	HttpPreviewTargetDevelopmentLeafAdapter,
+} from "$lib/server/application/adapters/preview-target-development";
+import {
+	ApplicationPreviewTargetDevelopmentBrokerService,
+	ApplicationPreviewTargetDevelopmentLocalService,
+	ApplicationPreviewTargetDevelopmentService,
+} from "$lib/server/application/preview-target-development";
+import { ApplicationPreviewDevelopmentEnvironmentService } from "$lib/server/application/preview-development-environment";
 import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
 import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
 import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/application/dev-preview-source-capture";
@@ -821,6 +831,12 @@ export function getApplicationAdapters(
   let prPreviewCommands: PrPreviewCommandPort | undefined;
   let previewReadProxy: ApplicationPreviewReadProxyService | undefined;
   let previewReadBroker: ApplicationPreviewReadBrokerService | undefined;
+	let previewTargetDevelopment: ApplicationPreviewTargetDevelopmentService | undefined;
+	let previewTargetDevelopmentBroker:
+		| ApplicationPreviewTargetDevelopmentBrokerService
+		| undefined;
+	let previewTargetDevelopmentLocal: ApplicationPreviewTargetDevelopmentLocalService | undefined;
+	let previewDevelopmentEnvironment: ApplicationPreviewDevelopmentEnvironmentService | undefined;
   let previewTraces: ApplicationPreviewTraceService | undefined;
   let previewTraceBroker: ApplicationPreviewTraceBrokerService | undefined;
   let previewArchive: ApplicationPreviewArchiveService | undefined;
@@ -2045,6 +2061,60 @@ export function getApplicationAdapters(
       capabilities: new HmacPreviewControlCapabilityMintAdapter(),
       transport: new HttpPreviewCapabilityReadTransportAdapter(),
     }));
+	const getPreviewTargetDevelopment = () =>
+		(previewTargetDevelopment ??= new ApplicationPreviewTargetDevelopmentService({
+			executions: getWorkflowExecutions(),
+			definitions: getWorkflowDefinitions(),
+			admins: {
+				isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+			},
+			broker: new HttpPreviewTargetDevelopmentBrokerAdapter(),
+			scope: previewDeploymentScope,
+		}));
+	const getPreviewDevelopmentEnvironment = () =>
+		(previewDevelopmentEnvironment ??= new ApplicationPreviewDevelopmentEnvironmentService({
+			executions: getWorkflowExecutions(),
+			admins: {
+				isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+			},
+			scope: {
+				isControlPlane: () =>
+					previewDeploymentScope.isControlPlane() && !isPreviewControlBroker(),
+			},
+			environments: getPreviewEnvironments(),
+			previews: getVclusterPreviewGateway(),
+			teardown: getPreviewTeardown(),
+		}));
+	const getPreviewTargetDevelopmentBroker = () => {
+		if (!isPreviewControlBroker()) {
+			throw new Error(
+				"physical preview development brokerage is available only in broker mode",
+			);
+		}
+		return (previewTargetDevelopmentBroker ??=
+			new ApplicationPreviewTargetDevelopmentBrokerService({
+				previews: getVclusterPreviewGateway(),
+				authority: getPreviewControlSourceAuthority(),
+				capabilities: new HmacPreviewControlCapabilityMintAdapter(),
+				transport: new HttpPreviewTargetDevelopmentLeafAdapter(),
+				receipts: getPreviewSourcePromotionReceipts(),
+			}));
+	};
+	const getPreviewTargetDevelopmentLocal = () => {
+		if (isPreviewControlBroker() || previewDeploymentScope.isControlPlane()) {
+			throw new Error("preview-local development commands require a preview deployment");
+		}
+		return (previewTargetDevelopmentLocal ??=
+			new ApplicationPreviewTargetDevelopmentLocalService({
+				identity: getPreviewLocalControlIdentity(),
+				scope: previewDeploymentScope,
+				definitions: getWorkflowDefinitions(),
+				executions: getWorkflowExecutions(),
+				projects: getWorkspaceProjects(),
+				starter: new LegacyWorkflowRunStarterPort(),
+				events: new DaprWorkflowApprovalEventPort(),
+			}));
+	};
   const getPreviewRuntimeBudgetReservation = () =>
     (previewRuntimeBudgetReservation ??=
       new PostgresPreviewRuntimeBudgetReservationAdapter(getDatabase()));
@@ -2900,6 +2970,18 @@ export function getApplicationAdapters(
     get previewReadBroker() {
       return getPreviewReadBroker();
     },
+		get previewTargetDevelopment() {
+			return getPreviewTargetDevelopment();
+		},
+		get previewTargetDevelopmentBroker() {
+			return getPreviewTargetDevelopmentBroker();
+		},
+		get previewTargetDevelopmentLocal() {
+			return getPreviewTargetDevelopmentLocal();
+		},
+		get previewDevelopmentEnvironment() {
+			return getPreviewDevelopmentEnvironment();
+		},
     get previewTraces() {
       return getPreviewTraces();
     },

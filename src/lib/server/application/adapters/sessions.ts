@@ -4,6 +4,8 @@ import type {
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
 	CreateSessionRecordInput,
+	EnsureSessionRecordInput,
+	EnsureSessionRecordResult,
 	CreatePeerSessionInput,
 	CreateSessionGoalInput,
 	GoalLoopStore,
@@ -436,10 +438,56 @@ export class CurrentSessionRepository implements SessionRepository {
 		return rowToSessionDetail(row);
 	}
 
-	async updateSessionTitle(input: {
-		id: string;
-		title: string;
-	}): Promise<SessionDetail | null> {
+	async ensureSession(input: EnsureSessionRecordInput): Promise<EnsureSessionRecordResult> {
+		const database = requireDb(this.database);
+		const resolvedAgent = await resolveAgentRef({
+			id: input.agentId,
+			version: input.agentVersion,
+		});
+		if (!resolvedAgent) {
+			throw new Error(`Agent ${input.agentId} not found`);
+		}
+
+		const environmentId = input.environmentId ?? resolvedAgent.environmentId;
+		const environmentVersion =
+			input.environmentVersion ?? resolvedAgent.environmentVersion ?? null;
+		const vaultIds =
+			input.vaultIds ??
+			(resolvedAgent.defaultVaultIds.length > 0 ? resolvedAgent.defaultVaultIds : []);
+		const values = {
+			id: input.id,
+			title: input.title ?? null,
+			status: "rescheduling" as const,
+			agentId: resolvedAgent.id,
+			agentVersion: resolvedAgent.version,
+			environmentId: environmentId ?? null,
+			environmentVersion,
+			vaultIds,
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+			sandboxName: input.sandboxName ?? DEFAULT_SANDBOX_NAME,
+			workflowExecutionId: input.workflowExecutionId ?? null,
+			parentExecutionId: input.parentExecutionId ?? null,
+			resumedFromSessionId: input.resumedFromSessionId ?? null,
+			mlflowSessionId: input.id,
+		};
+		const [inserted] = await database
+			.insert(sessions)
+			.values(values)
+			.onConflictDoNothing({ target: sessions.id })
+			.returning();
+		if (inserted) {
+			return { session: rowToSessionDetail(inserted), created: true };
+		}
+
+		const existing = await this.getSession(input.id);
+		if (!existing) {
+			throw new Error(`Session ${input.id} conflicted but could not be loaded`);
+		}
+		return { session: existing, created: false };
+	}
+
+	async updateSessionTitle(input: { id: string; title: string }): Promise<SessionDetail | null> {
 		const database = requireDb(this.database);
 		const [row] = await database
 			.update(sessions)

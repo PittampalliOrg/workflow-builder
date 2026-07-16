@@ -322,7 +322,10 @@ function parseLaunchOutcome(
 	const expectedServices = catalog.assertPreviewNativeServices(
 		input.services ?? catalog.listPreviewNativeServices()
 	);
-	const expectedCapabilities = input.capabilities ?? ['service-live-sync'];
+	const expectedCapabilities = input.capabilities ?? ["service-live-sync"];
+	const expectedOrigin = input.workflowExecutionId
+		? { kind: "workflow", reference: input.workflowExecutionId }
+		: { kind: "user" };
 	const currentCatalogDigest = catalog.currentDigest();
 	let validated: ValidatedPreviewEnvironmentLaunchSpec;
 	try {
@@ -355,12 +358,12 @@ function parseLaunchOutcome(
 		validated.name !== input.name ||
 		validated.owner.kind !== 'user' ||
 		validated.owner.id !== input.userId ||
-		validated.origin.kind !== 'user' ||
-		validated.origin.reference !== undefined ||
-		validated.profile !== 'app-live' ||
-		validated.lane !== 'application' ||
-		validated.mode !== 'live' ||
-		validated.allocation.kind !== 'cold' ||
+		validated.origin.kind !== expectedOrigin.kind ||
+		validated.origin.reference !== expectedOrigin.reference ||
+		validated.profile !== "app-live" ||
+		validated.lane !== "application" ||
+		validated.mode !== "live" ||
+		validated.allocation.kind !== "cold" ||
 		!sameStringSets(validated.services, expectedServices) ||
 		!sameStringSets(validated.capabilities, expectedCapabilities) ||
 		validated.candidatePaths.length !== 0 ||

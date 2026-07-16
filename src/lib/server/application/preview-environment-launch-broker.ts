@@ -11,6 +11,8 @@ export class PreviewEnvironmentLaunchAuthorizationError extends Error {
   }
 }
 
+const SAFE_WORKFLOW_EXECUTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+
 /** Physical broker guard in front of revision resolution and capability minting. */
 export class ApplicationPreviewEnvironmentLaunchBrokerService implements PreviewEnvironmentUserLaunchPort {
   constructor(
@@ -40,6 +42,14 @@ export class ApplicationPreviewEnvironmentLaunchBrokerService implements Preview
         "app-live launch broker accepts only the application cold lane",
       );
     }
+		if (
+			input.workflowExecutionId !== undefined &&
+			!SAFE_WORKFLOW_EXECUTION_ID.test(input.workflowExecutionId)
+		) {
+			throw new PreviewEnvironmentLaunchAuthorizationError(
+				"preview workflow execution identity is invalid",
+			);
+		}
     return this.deps.environments.launchForUser({
       ...input,
       profile: "app-live",
