@@ -50,6 +50,28 @@ async function ffprobeDuration(path) {
 	return Number.isFinite(d) ? d : 0;
 }
 
+/** Screencast-written webm (remote/CDP recordings) can carry NO container
+ * duration (ffprobe: N/A) despite minutes of frames — a stream-copy remux
+ * rebuilds the metadata so measuring/freezedetect work. Returns the clip
+ * (possibly re-pathed into `dir`); never throws. */
+async function normalizeClip(dir, clip, index) {
+	try {
+		if ((await ffprobeDuration(clip.path)) >= 0.4) return clip;
+		const fixed = join(dir, `norm-${index}.webm`);
+		await run("ffmpeg", [
+			"-hide_banner", "-y",
+			"-fflags", "+genpts",
+			"-i", clip.path,
+			"-c", "copy",
+			fixed,
+		]);
+		if ((await ffprobeDuration(fixed)) >= 0.4) return { ...clip, path: fixed };
+	} catch {
+		/* fall through to the original clip */
+	}
+	return clip;
+}
+
 /** Freeze spans [{start, end}] via freezedetect (end may be clip end). */
 async function detectFreezes(path, duration) {
 	let stderr = "";
@@ -210,7 +232,8 @@ export async function renderDemo(clips, meta) {
 		// First pass: measure kept footage at natural speed to size the speedup.
 		let naturalTotal = 0;
 		const measured = [];
-		for (const clip of clips) {
+		for (let ci = 0; ci < clips.length; ci++) {
+			const clip = await normalizeClip(dir, clips[ci], ci);
 			const duration = await ffprobeDuration(clip.path);
 			if (duration < 0.4) continue;
 			const keep = keepIntervals(duration, await detectFreezes(clip.path, duration));
