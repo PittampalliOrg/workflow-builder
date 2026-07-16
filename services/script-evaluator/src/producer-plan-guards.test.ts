@@ -223,6 +223,9 @@ describe("microservice-dev-session: emitted plan", () => {
 			6,
 		);
 		const handoff = tasks.find((task) => task.actionSlug === "session/spawn");
+		expect((handoff?.args as Record<string, unknown> | undefined)?.agentSlug).toBe(
+			"glm-juicefs-builder-agent",
+		);
 		const instructions = String(
 			(handoff?.args as Record<string, unknown> | undefined)?.instructions ?? "",
 		);
@@ -236,6 +239,26 @@ describe("microservice-dev-session: emitted plan", () => {
 		expect(instructions).toContain("the final global `SYNCED ...` line");
 		expect(instructions).toContain(
 			"Never rerun the sync command merely to recover tool output that was truncated",
+		);
+	});
+
+	it("defaults direct handoff to the GLM dapr-agent-py JuiceFS agent", async () => {
+		const { tasks } = await drive(
+			script,
+			{ service: "workflow-builder" },
+			(task) =>
+				task.kind === "event"
+					? { action: "discard" }
+					: task.actionSlug === "dev/preview"
+						? { ready: true, browseUrl: "https://x", services: [] }
+						: task.actionSlug === "session/spawn"
+							? { sessionId: "sess-1" }
+							: { exitCode: 0 },
+			6,
+		);
+		const handoff = tasks.find((task) => task.actionSlug === "session/spawn");
+		expect((handoff?.args as Record<string, unknown> | undefined)?.agentSlug).toBe(
+			"glm-juicefs-builder-agent",
 		);
 	});
 });

@@ -299,6 +299,7 @@ describe("host preview development lifecycle", () => {
       target,
       intent: "Add a deployment health panel",
       services: ["workflow-builder"],
+      agentSlug: "glm-juicefs-builder-agent",
     });
     const signal = tasks.find(
       (task) => task.actionSlug === "preview/workflow-signal",
