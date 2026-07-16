@@ -94,6 +94,10 @@ jobs:
       # above still run.
       - name: Run build
         run: pnpm build
+        env:
+          # Match the authoritative Docker build: adapter-node exceeds V8's
+          # default ~4 GiB heap for the current server bundle.
+          NODE_OPTIONS: --max-old-space-size=8192
         if: github.event_name == 'pull_request' && steps.build_surface.outputs.build == 'true'
 
   orchestrator-tests:
