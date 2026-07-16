@@ -167,6 +167,41 @@ function harness() {
     }
     return record({ binding: launchInput.provenance.parentEnvironmentId });
   });
+  const observeRuntime = vi.fn(async () => {
+    if (!launchInput?.provenance?.parentEnvironmentId) {
+      throw new Error("launch binding unavailable");
+    }
+    return {
+      identity: {
+        previewName: "feature-one",
+        environmentRequestId: REQUEST,
+        environmentPlatformRevision: PLATFORM,
+        environmentSourceRevision: SOURCE,
+        catalogDigest: CATALOG,
+      },
+      preview: record({ binding: launchInput.provenance.parentEnvironmentId }),
+      runtime: {
+        name: "feature-one",
+        resourceName: "feature-one",
+        reconciliationSucceeded: false,
+        upJob: {
+          name: "vcpreview-up-feature-one",
+          found: true,
+          active: true,
+          succeeded: false,
+          failed: false,
+        },
+        services: [],
+        identity: {
+          previewName: "feature-one",
+          environmentRequestId: REQUEST,
+          environmentPlatformRevision: PLATFORM,
+          environmentSourceRevision: SOURCE,
+          catalogDigest: CATALOG,
+        },
+      },
+    };
+  });
   const status = vi.fn(async () => cleanup());
   const cleanupPreview = vi.fn(async () => cleanup());
   const teardown = vi.fn(async () => ({
@@ -188,13 +223,14 @@ function harness() {
       previewNativeServices: () => ["workflow-builder"],
       launchForUser,
     },
-    previews: { get, status, cleanup: cleanupPreview },
+    previews: { get, observeRuntime, status, cleanup: cleanupPreview },
     teardown: { teardown },
   };
   return {
     deps,
     launchForUser,
     get,
+    observeRuntime,
     status,
     cleanupPreview,
     teardown,
@@ -303,13 +339,40 @@ describe("host preview development environment lifecycle", () => {
         retainAfterCompletion: false,
       },
     });
-    h.get.mockResolvedValueOnce(
-      record({
+    h.observeRuntime.mockResolvedValueOnce({
+      identity: {
+        previewName: "feature-one",
+        environmentRequestId: REQUEST,
+        environmentPlatformRevision: PLATFORM,
+        environmentSourceRevision: SOURCE,
+        catalogDigest: CATALOG,
+      },
+      preview: record({
         binding: h.launchInput()!.provenance!.parentEnvironmentId!,
         phase: "ready",
         ready: true,
       }),
-    );
+      runtime: {
+        name: "feature-one",
+        resourceName: "feature-one",
+        reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-feature-one",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [],
+        identity: {
+          previewName: "feature-one",
+          environmentRequestId: REQUEST,
+          environmentPlatformRevision: PLATFORM,
+          environmentSourceRevision: SOURCE,
+          catalogDigest: CATALOG,
+        },
+      },
+    });
     await expect(
       h.service.getEnvironmentStatus({
         parentExecutionId: PARENT,
@@ -318,13 +381,43 @@ describe("host preview development environment lifecycle", () => {
       }),
     ).resolves.toMatchObject({ phase: "ready", ready: true, target: target() });
     expect(h.teardown).not.toHaveBeenCalled();
+    expect(h.get).not.toHaveBeenCalled();
 
-    h.get.mockResolvedValueOnce({
+    h.observeRuntime.mockResolvedValueOnce({
+      identity: {
+        previewName: "feature-one",
+        environmentRequestId: "replacement",
+        environmentPlatformRevision: PLATFORM,
+        environmentSourceRevision: SOURCE,
+        catalogDigest: CATALOG,
+      },
+      preview: {
       ...record({ binding: h.launchInput()!.provenance!.parentEnvironmentId! }),
       provenance: {
         ...record({ binding: "unused" }).provenance,
         requestId: "replacement",
         parentEnvironmentId: h.launchInput()!.provenance!.parentEnvironmentId!,
+      },
+      },
+      runtime: {
+        name: "feature-one",
+        resourceName: "feature-one",
+        reconciliationSucceeded: true,
+        upJob: {
+          name: "vcpreview-up-feature-one",
+          found: true,
+          active: false,
+          succeeded: true,
+          failed: false,
+        },
+        services: [],
+        identity: {
+          previewName: "feature-one",
+          environmentRequestId: "replacement",
+          environmentPlatformRevision: PLATFORM,
+          environmentSourceRevision: SOURCE,
+          catalogDigest: CATALOG,
+        },
       },
     });
     await expect(
@@ -386,7 +479,7 @@ describe("host preview development environment lifecycle", () => {
         retainAfterCompletion: false,
       },
     });
-    h.get.mockRejectedValueOnce(new Error("preview is absent"));
+    h.observeRuntime.mockRejectedValueOnce(new Error("preview is absent"));
 
     await expect(
       h.service.teardownEnvironment({
@@ -402,6 +495,43 @@ describe("host preview development environment lifecycle", () => {
     });
     expect(h.cleanupPreview).toHaveBeenCalledWith("feature-one");
     expect(h.teardown).not.toHaveBeenCalled();
+  });
+
+  it("uses tuple-bound observation when generic preview status is sparse during provisioning", async () => {
+    const h = harness();
+    await h.service.launchEnvironment({
+      parentExecutionId: PARENT,
+      operationId: operation("launch-environment"),
+      launch: {
+        environmentName: "feature-one",
+        services: ["workflow-builder"],
+        ttlHours: 8,
+        retainAfterCompletion: false,
+      },
+    });
+    h.get.mockResolvedValueOnce({
+      ...record({ binding: "" }),
+      origin: null,
+      owner: null,
+      provenance: { requestId: REQUEST },
+      trustedCode: null,
+    });
+
+    await expect(
+      h.service.getEnvironmentStatus({
+        parentExecutionId: PARENT,
+        operationId: operation("get-environment-status"),
+        target: target(),
+      }),
+    ).resolves.toMatchObject({ target: target() });
+    expect(h.observeRuntime).toHaveBeenCalledWith({
+      previewName: "feature-one",
+      environmentRequestId: REQUEST,
+      environmentPlatformRevision: PLATFORM,
+      environmentSourceRevision: SOURCE,
+      catalogDigest: CATALOG,
+    });
+    expect(h.get).not.toHaveBeenCalled();
   });
 
   it("requires an active platform-admin execution on the host control plane", async () => {
