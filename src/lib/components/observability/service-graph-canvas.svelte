@@ -16,6 +16,7 @@
 	import type { GraphSelection, ServiceGraphNode as SGNode, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphNode, { phaseHue } from './service-graph-node.svelte';
 	import ServiceGraphEdge from './service-graph-edge.svelte';
+	import ServiceGraphFitView from './service-graph-fit-view.svelte';
 
 	let {
 		payload,
@@ -39,6 +40,7 @@
 
 	let canvasNodes = $state.raw<Node[]>([]);
 	let canvasEdges = $state.raw<Edge[]>([]);
+	let fitKey = $state('');
 
 	let colorMode = $derived<'light' | 'dark' | 'system'>('system');
 
@@ -49,6 +51,7 @@
 		if (!p || p.nodes.length === 0) {
 			canvasNodes = [];
 			canvasEdges = [];
+			fitKey = '';
 			return;
 		}
 
@@ -89,6 +92,15 @@
 			if (cancelled) return;
 			canvasNodes = positioned;
 			canvasEdges = edges;
+			fitKey = JSON.stringify([
+				p.mode,
+				p.scope,
+				p.executionId ?? '',
+				p.workflowId ?? '',
+				hasBadges,
+				positioned.map((node) => node.id).sort(),
+				edges.map((edge) => edge.id).sort()
+			]);
 		});
 		return () => {
 			cancelled = true;
@@ -154,13 +166,13 @@
 		zoomOnDoubleClick={false}
 		minZoom={0.1}
 		maxZoom={2}
-		fitView
 		onnodeclick={({ node }) =>
 			onSelect?.({ kind: 'node', id: node.id, nodeKind: (node.data.node as SGNode).kind })}
 		onedgeclick={({ edge }) =>
 			onSelect?.({ kind: 'edge', id: edge.id, source: edge.source, target: edge.target })}
 		onpaneclick={() => onSelect?.(null)}
 	>
+		<ServiceGraphFitView {fitKey} />
 		<Controls showLock={false} />
 		<Background
 			variant={BackgroundVariant.Dots}
