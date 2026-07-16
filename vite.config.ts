@@ -893,7 +893,7 @@ export default defineConfig({
 			...(process.env.CI
 				? [
 						'services/piece-mcp-server/src/metadata-catalog.test.ts',
-						'services/function-router/src/routes/execute.test.ts',
+						'services/function-router/src/routes/execute*.test.ts',
 						'services/workflow-mcp-server/**'
 					]
 				: [])
