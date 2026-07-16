@@ -49,6 +49,8 @@ const API_VERSION = "v1alpha1";
 const API_PLURAL = "previewenvironments";
 const CONTROL_NAMESPACE = "preview-system";
 const ENVIRONMENT_CLEANUP_FINALIZER = "preview.stacks.io/environment-cleanup";
+const HEADLAMP_REGISTRATION_FINALIZER =
+  "preview.stacks.io/headlamp-registration";
 const API_PATH = `/apis/${API_GROUP}/${API_VERSION}/namespaces/${CONTROL_NAMESPACE}/${API_PLURAL}`;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
@@ -483,7 +485,10 @@ export function buildPreviewEnvironmentDesiredStateManifest(
     metadata: {
       name: input.name,
       namespace: CONTROL_NAMESPACE,
-      finalizers: [ENVIRONMENT_CLEANUP_FINALIZER],
+      finalizers: [
+        ENVIRONMENT_CLEANUP_FINALIZER,
+        HEADLAMP_REGISTRATION_FINALIZER,
+      ],
       labels: {
         "preview.stacks.io/broker-managed": "true",
       },

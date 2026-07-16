@@ -316,6 +316,14 @@ function launchInput() {
 }
 
 describe("KubernetesPreviewEnvironmentDesiredStateAdapter", () => {
+  it("creates PreviewEnvironment resources with cleanup and Headlamp registration finalizers", () => {
+    const manifest = buildPreviewEnvironmentDesiredStateManifest(command);
+    expect((manifest.metadata as Record<string, unknown>).finalizers).toEqual([
+      "preview.stacks.io/environment-cleanup",
+      "preview.stacks.io/headlamp-registration",
+    ]);
+  });
+
   it("uses only the explicit least-privilege hub kubeconfig transport", async () => {
     expect(() => previewEnvironmentHubKubeFetch({})).toThrow(
       "PREVIEW_ENVIRONMENT_HUB_KUBECONFIG",
