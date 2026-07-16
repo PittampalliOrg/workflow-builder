@@ -1,10 +1,9 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
-	getTraceSpanDetail,
-	isClickHouseConfigured
-} from '$lib/server/otel/clickhouse';
-import { assertTraceInScope } from '../../trace-access';
+	getTraceSpanDetailInScope,
+	isTraceSpanDetailConfigured
+} from '../../trace-access';
 
 /**
  * GET /api/observability/traces/[traceId]/spans/[spanId]
@@ -13,7 +12,7 @@ import { assertTraceInScope } from '../../trace-access';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const { traceId, spanId } = params;
 
-	if (!isClickHouseConfigured()) {
+	if (!isTraceSpanDetailConfigured()) {
 		return json(
 			{ configured: false, available: false, traceId, spanId, span: null },
 			{ status: 503 }
@@ -21,9 +20,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 
 	try {
-		await assertTraceInScope(traceId, locals.session);
-
-		const span = await getTraceSpanDetail(traceId, spanId);
+		const span = await getTraceSpanDetailInScope({ traceId, spanId, session: locals.session });
 		if (!span) throw error(404, 'Span not found');
 
 		return json({ configured: true, available: true, traceId, spanId, span });

@@ -23,3 +23,22 @@ export async function assertTraceInScope(
 		throw err;
 	}
 }
+
+export function isTraceSpanDetailConfigured(): boolean {
+	return getApplicationAdapters().observabilityTraceAccess.isSpanDetailConfigured();
+}
+
+export async function getTraceSpanDetailInScope(input: {
+	traceId: string;
+	spanId: string;
+	session: CallerSession | null | undefined;
+}): Promise<unknown | null> {
+	try {
+		return await getApplicationAdapters().observabilityTraceAccess.getTraceSpanDetail(input);
+	} catch (err) {
+		if (err instanceof ApplicationObservabilityTraceAccessError) {
+			throw error(err.status, err.message);
+		}
+		throw err;
+	}
+}

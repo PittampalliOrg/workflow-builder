@@ -2,18 +2,13 @@ import { error } from '@sveltejs/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-	isClickHouseConfigured: vi.fn(),
-	getTraceSpanDetail: vi.fn(),
-	assertTraceInScope: vi.fn()
-}));
-
-vi.mock('$lib/server/otel/clickhouse', () => ({
-	isClickHouseConfigured: mocks.isClickHouseConfigured,
-	getTraceSpanDetail: mocks.getTraceSpanDetail
+	isTraceSpanDetailConfigured: vi.fn(),
+	getTraceSpanDetailInScope: vi.fn()
 }));
 
 vi.mock('../../trace-access', () => ({
-	assertTraceInScope: mocks.assertTraceInScope
+	isTraceSpanDetailConfigured: mocks.isTraceSpanDetailConfigured,
+	getTraceSpanDetailInScope: mocks.getTraceSpanDetailInScope
 }));
 
 import { GET } from './+server';
@@ -28,9 +23,8 @@ function request() {
 describe('observability span detail route', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.isClickHouseConfigured.mockReturnValue(true);
-		mocks.assertTraceInScope.mockResolvedValue(undefined);
-		mocks.getTraceSpanDetail.mockResolvedValue({
+		mocks.isTraceSpanDetailConfigured.mockReturnValue(true);
+		mocks.getTraceSpanDetailInScope.mockResolvedValue({
 			traceId: 'trace-1',
 			spanId: 'span-1',
 			operationName: 'agent.run',
@@ -48,33 +42,35 @@ describe('observability span detail route', () => {
 		const body = await response.json();
 
 		expect(response.status).toBe(200);
-		expect(mocks.assertTraceInScope).toHaveBeenCalledWith('trace-1', { userId: 'user-1' });
-		expect(mocks.getTraceSpanDetail).toHaveBeenCalledWith('trace-1', 'span-1');
+		expect(mocks.getTraceSpanDetailInScope).toHaveBeenCalledWith({
+			traceId: 'trace-1',
+			spanId: 'span-1',
+			session: { userId: 'user-1' }
+		});
 		expect(body.span.attributes).toEqual({ 'input.value': 'full payload' });
 	});
 
 	it('returns 503 without querying when ClickHouse is not configured', async () => {
-		mocks.isClickHouseConfigured.mockReturnValue(false);
+		mocks.isTraceSpanDetailConfigured.mockReturnValue(false);
 
 		const response = await request();
 
 		expect(response.status).toBe(503);
-		expect(mocks.assertTraceInScope).not.toHaveBeenCalled();
-		expect(mocks.getTraceSpanDetail).not.toHaveBeenCalled();
+		expect(mocks.getTraceSpanDetailInScope).not.toHaveBeenCalled();
 	});
 
 	it('preserves deliberate scope errors', async () => {
-		mocks.assertTraceInScope.mockImplementation(() => error(403, 'Forbidden'));
+		mocks.getTraceSpanDetailInScope.mockImplementation(() => error(403, 'Forbidden'));
 
 		await expect(request()).rejects.toMatchObject({ status: 403 });
-		expect(mocks.getTraceSpanDetail).not.toHaveBeenCalled();
+		expect(mocks.getTraceSpanDetailInScope).toHaveBeenCalledOnce();
 	});
 
 	it('distinguishes a missing span from a ClickHouse failure', async () => {
-		mocks.getTraceSpanDetail.mockResolvedValueOnce(null);
+		mocks.getTraceSpanDetailInScope.mockResolvedValueOnce(null);
 		await expect(request()).rejects.toMatchObject({ status: 404 });
 
-		mocks.getTraceSpanDetail.mockRejectedValueOnce(new Error('timeout'));
+		mocks.getTraceSpanDetailInScope.mockRejectedValueOnce(new Error('timeout'));
 		const response = await request();
 		const body = await response.json();
 
