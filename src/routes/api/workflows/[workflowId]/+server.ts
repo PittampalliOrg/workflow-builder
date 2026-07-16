@@ -3,10 +3,12 @@ import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
 import type { WorkflowDefinitionCommandResult } from '$lib/server/application/workflow-definition-commands';
 
-export const GET: RequestHandler = async ({ params }) => {
-	const workflow = await getApplicationAdapters().workflowData.getWorkflowByRef({
+export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+	const workflow = await getApplicationAdapters().workflowData.getScopedWorkflowById({
 		workflowId: params.workflowId,
-		lookup: 'id',
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null
 	});
 
 	if (!workflow) {
@@ -16,7 +18,15 @@ export const GET: RequestHandler = async ({ params }) => {
 	return json(workflow);
 };
 
-export const PUT: RequestHandler = async ({ params, request }) => {
+export const PUT: RequestHandler = async ({ params, request, locals }) => {
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+	const workflow = await getApplicationAdapters().workflowData.getScopedWorkflowById({
+		workflowId: params.workflowId,
+		userId: locals.session.userId,
+		projectId: locals.session.projectId ?? null
+	});
+	if (!workflow) return error(404, 'Workflow not found');
+
 	const body = await request.json();
 	const result = await getApplicationAdapters().workflowDefinitionCommands.updateWorkflow({
 		workflowId: params.workflowId,

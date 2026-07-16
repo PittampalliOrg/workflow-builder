@@ -140,14 +140,16 @@ function classifyNativeSpan(span: ObservabilityTraceSpan): ObservabilityWorkflow
 }
 
 function hasInput(span: ObservabilityTraceSpan): boolean {
-	return span.attributes?.['input.value'] != null;
+	return span.hasInput ?? span.attributes?.['input.value'] != null;
 }
 
 function hasOutput(span: ObservabilityTraceSpan): boolean {
-	return span.attributes?.['output.value'] != null;
+	return span.hasOutput ?? span.attributes?.['output.value'] != null;
 }
 
 function ioLength(span: ObservabilityTraceSpan, key: 'input.value' | 'output.value'): number {
+	const compactSize = key === 'input.value' ? span.inputSize : span.outputSize;
+	if (compactSize != null) return compactSize;
 	const value = span.attributes?.[key];
 	if (value == null) return 0;
 	return typeof value === 'string' ? value.length : JSON.stringify(value).length;

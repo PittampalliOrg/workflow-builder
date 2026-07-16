@@ -81,25 +81,21 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// Dynamic-script executions carry no SW step logs — their step graph is the
 	// call journal. Loading it is cheap and returns [] for SW 1.0 runs, so we
 	// probe unconditionally for step × execution.
-	const scriptCalls =
+	const scriptCallRows =
 		mode === 'step' && scope === 'execution' && executionId
-			? await application.scriptCalls
-					.listInternal(executionId)
-					.then((rows) =>
-						rows.map((r) => ({
-							callId: r.callId,
-							seq: r.seq,
-							kind: r.kind,
-							label: r.label,
-							phase: r.phase,
-							status: r.status ?? 'null',
-							sessionId: r.sessionId,
-							retries: r.retries ?? 0,
-							errorCode: r.errorCode
-						}))
-					)
-					.catch(() => [])
+			? await application.scriptCalls.listInternal(executionId)
 			: [];
+	const scriptCalls = scriptCallRows.map((row) => ({
+		callId: row.callId,
+		seq: row.seq,
+		kind: row.kind,
+		label: row.label,
+		phase: row.phase,
+		status: row.status ?? 'null',
+		sessionId: row.sessionId,
+		retries: row.retries ?? 0,
+		errorCode: row.errorCode
+	}));
 
 	const payload = await buildServiceGraph({
 		query,

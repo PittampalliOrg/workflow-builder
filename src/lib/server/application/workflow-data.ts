@@ -147,6 +147,7 @@ import type {
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
+	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
 	UserProfileRepository,
@@ -3776,6 +3777,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const workflowName = ref.workflowName?.trim();
 		return workflowName
 			? this.deps.workflowDefinitions.getLatestByName(workflowName)
+			: null;
+	}
+
+	async getScopedWorkflowById(input: {
+		workflowId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<WorkflowDefinition | null> {
+		const workflow = await this.deps.workflowDefinitions.getById(input.workflowId);
+		return this.isResourceVisibleToCaller(workflow, {
+			userId: input.userId,
+			projectId: input.projectId ?? null,
+		})
+			? workflow
 			: null;
 	}
 

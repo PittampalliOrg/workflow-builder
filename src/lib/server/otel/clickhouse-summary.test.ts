@@ -1,0 +1,177 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('$env/dynamic/private', () => ({
+	env: {
+		CLICKHOUSE_URL: 'http://clickhouse.test:8123',
+		CLICKHOUSE_USER: 'test-user',
+		CLICKHOUSE_PASSWORD: 'test-password',
+		CLICKHOUSE_DB: 'otel',
+		CLICKHOUSE_OBS_DB: 'obs'
+	}
+}));
+
+import {
+	getMultiTraceGraphLlmSpans,
+	getMultiTraceSpanSummaries,
+	getTraceSpanDetail
+} from './clickhouse';
+
+const TRACE_ID = 'c4235a0ea97132eba9adfa3bfbc3ff23';
+
+function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		TraceId: TRACE_ID,
+		SpanId: '0000000000000001',
+		ParentSpanId: '',
+		SpanName: 'agent.run',
+		SpanKind: 'Internal',
+		ServiceName: 'agent-runtime',
+		DurationMs: 125.4,
+		StatusCode: 'Ok',
+		StatusMessage: '',
+		Timestamp: '2026-07-09 15:27:14.250000000',
+		SpanAttr0: 'session-1',
+		SpanAttr18: 'postgresql',
+		ResourceAttr1: 'exec-1',
+		HasInput: 1,
+		HasOutput: 0,
+		InputSize: 2048,
+		OutputSize: 0,
+		...overrides
+	};
+}
+
+function jsonEachRow(rows: Record<string, unknown>[]): Response {
+	return new Response(rows.map((value) => JSON.stringify(value)).join('\n'), {
+		status: 200
+	});
+}
+
+describe('compact ClickHouse trace span loading', () => {
+	const fetchMock = vi.fn<typeof fetch>();
+
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal('fetch', fetchMock);
+	});
+
+	it('bounds and truncates summary queries without selecting complete attribute maps', async () => {
+		fetchMock.mockResolvedValueOnce(
+			jsonEachRow([
+				row({ StatusCode: 'Error', StatusMessage: 'model failed' }),
+				row({
+					SpanId: '0000000000000002',
+					HasInput: 0,
+					HasOutput: 1,
+					OutputSize: 4096
+				}),
+				row({ SpanId: '0000000000000003' })
+			])
+		);
+
+		const result = await getMultiTraceSpanSummaries([TRACE_ID], {
+			startedAt: '2026-07-09T15:27:14.000Z',
+			completedAt: '2026-07-09T15:27:15.000Z',
+			limit: 2
+		});
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql).not.toMatch(/^\s*SpanAttributes,?\s*$/m);
+		expect(sql).not.toMatch(/^\s*ResourceAttributes,?\s*$/m);
+		expect(sql).toContain("Timestamp >= '2026-07-09 15:27:09.000'");
+		expect(sql).toContain("Timestamp <= '2026-07-09 15:27:25.000'");
+		expect(sql).toContain('ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC');
+		expect(sql).toContain('LIMIT 3');
+
+		expect(result).toMatchObject({ truncated: true, limit: 2 });
+		expect(result.spans).toHaveLength(2);
+		expect(result.spans[0]).toMatchObject({
+			status: 'error',
+			statusCode: 'Error',
+			attributesTruncated: true,
+			hasInput: true,
+			hasOutput: false,
+			inputSize: 2048,
+			outputSize: 0,
+			attributes: {
+				'session.id': 'session-1',
+				'db.system.name': 'postgresql'
+			},
+			resourceAttributes: {
+				'workflow.execution.id': 'exec-1'
+			}
+		});
+		expect(result.spans[1]).toMatchObject({
+			hasInput: false,
+			hasOutput: true,
+			outputSize: 4096
+		});
+	});
+
+	it('scopes full span detail by both trace and span identifiers', async () => {
+		fetchMock.mockResolvedValueOnce(
+			jsonEachRow([
+				row({
+					SpanAttributes: { 'input.value': 'full input' },
+					ResourceAttributes: { 'service.version': 'test' }
+				})
+			])
+		);
+
+		const detail = await getTraceSpanDetail(TRACE_ID, '0000000000000001');
+
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql).toContain(`WHERE TraceId = '${TRACE_ID}'`);
+		expect(sql).toContain("AND SpanId = '0000000000000001'");
+		expect(sql).toContain('LIMIT 1');
+		expect(detail?.attributes).toEqual({ 'input.value': 'full input' });
+		expect(detail?.resourceAttributes).toEqual({ 'service.version': 'test' });
+	});
+
+	it('loads graph LLM token counters without message or invocation payloads', async () => {
+		fetchMock.mockResolvedValueOnce(
+			jsonEachRow([
+				{
+					TraceId: TRACE_ID,
+					SpanId: '0000000000000001',
+					ServiceName: 'agent-runtime',
+					SessionId: 'session-1',
+					ModelName: 'anthropic/claude-opus-4-8',
+					PromptTokens: 1200,
+					CompletionTokens: 300,
+					TotalTokens: 1500,
+					CacheReadInputTokens: 800,
+					CacheCreationInputTokens: 50
+				}
+			])
+		);
+
+		const spans = await getMultiTraceGraphLlmSpans([TRACE_ID, TRACE_ID], {
+			startedAt: '2026-07-09T15:27:14.000Z',
+			completedAt: '2026-07-09T15:27:15.000Z'
+		});
+
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql.match(new RegExp(TRACE_ID, 'g'))).toHaveLength(1);
+		expect(sql).toContain('CacheReadInputTokens');
+		expect(sql).toContain('CacheCreationInputTokens');
+		expect(sql).not.toContain('InputMessages');
+		expect(sql).not.toContain('OutputMessages');
+		expect(sql).not.toContain('InvocationParameters');
+		expect(spans).toEqual([
+			{
+				traceId: TRACE_ID,
+				spanId: '0000000000000001',
+				serviceName: 'agent-runtime',
+				sessionId: 'session-1',
+				modelName: 'anthropic/claude-opus-4-8',
+				promptTokens: 1200,
+				completionTokens: 300,
+				totalTokens: 1500,
+				cacheReadInputTokens: 800,
+				cacheCreationInputTokens: 50
+			}
+		]);
+	});
+});

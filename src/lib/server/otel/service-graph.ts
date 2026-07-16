@@ -15,20 +15,20 @@
  *
  * IMPORTANT literal notes (verified against live data, NOT the OTLP enum names):
  *   - SpanKind values are 'Client' | 'Server' | 'Producer' | 'Consumer' | 'Internal'.
- *   - StatusCode values are 'Unset' | 'Ok' | 'Error'. (The mapper in clickhouse.ts
- *     compares against 'STATUS_CODE_ERROR', which never matches — so we read the
- *     raw `statusCode` field here, not the derived `status`.)
+ *   - StatusCode values are 'Unset' | 'Ok' | 'Error'.
  */
-import type { ObservabilityLlmSpan, ObservabilityTraceSpan } from '$lib/types/observability';
+import type { ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
 	escapeClickHouseString,
 	extractExecutionTraceIds,
 	findCorrelatedTraceIds,
-	getMultiTraceLlmSpans,
-	getMultiTraceSpans,
+	getMultiTraceGraphLlmSpans,
+	getMultiTraceSpanSummaries,
 	queryClickHouse,
-	sanitizeTraceIds
+	sanitizeTraceIds,
+	type GraphLlmSpan,
+	type TraceTimeWindow
 } from '$lib/server/otel/clickhouse';
 import { costFor } from '$lib/server/pricing/model-pricing';
 import {
@@ -83,7 +83,10 @@ export function isBenignControlPlaneError(span: ObservabilityTraceSpan): boolean
 	if (operation.includes('SubscribeTopicEventsAlpha1') && message.includes('context canceled')) {
 		return true;
 	}
-	if (operation.includes('GetConfiguration') && message.includes('configuration stores not configured')) {
+	if (
+		operation.includes('GetConfiguration') &&
+		message.includes('configuration stores not configured')
+	) {
 		return true;
 	}
 	if (
@@ -107,7 +110,11 @@ function toNum(value: unknown): number {
 }
 
 /** Nearest-rank percentiles over an unsorted millisecond array. */
-function percentiles(values: number[]): { p50: number; p95: number; p99: number } {
+function percentiles(values: number[]): {
+	p50: number;
+	p95: number;
+	p99: number;
+} {
 	if (values.length === 0) return { p50: 0, p95: 0, p99: 0 };
 	const sorted = [...values].sort((a, b) => a - b);
 	const at = (q: number) => {
@@ -156,7 +163,16 @@ class GraphBuilder {
 	node(id: string, kind: ServiceGraphNodeKind, label = id): NodeAcc {
 		let n = this.nodes.get(id);
 		if (!n) {
-			n = { id, label, kind, total: 0, errors: 0, durations: [], selfDurations: [], status: 'idle' };
+			n = {
+				id,
+				label,
+				kind,
+				total: 0,
+				errors: 0,
+				durations: [],
+				selfDurations: [],
+				status: 'idle'
+			};
 			this.nodes.set(id, n);
 		}
 		return n;
@@ -172,7 +188,10 @@ class GraphBuilder {
 		return e;
 	}
 
-	finalize(perSecond: number | null): { nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[] } {
+	finalize(perSecond: number | null): {
+		nodes: ServiceGraphNode[];
+		edges: ServiceGraphEdge[];
+	} {
 		const mkRed = (
 			total: number,
 			errors: number,
@@ -223,13 +242,31 @@ class GraphBuilder {
 type ExecutionRow = ServiceGraphExecutionContext;
 
 /** Trace ids tagged with this execution id via the `workflow.execution.id` span attr. */
-async function traceIdsByExecutionAttr(executionId: string): Promise<string[]> {
+function executionTimestampWindow(execution: ExecutionRow): string {
+	const start = new Date(execution.startedAt.getTime() - 5_000)
+		.toISOString()
+		.replace('T', ' ')
+		.replace('Z', '');
+	const end = new Date((execution.completedAt?.getTime() ?? Date.now()) + 10_000)
+		.toISOString()
+		.replace('T', ' ')
+		.replace('Z', '');
+	return `AND Timestamp >= '${start}' AND Timestamp <= '${end}'`;
+}
+
+async function traceIdsByExecutionAttr(
+	executionId: string,
+	execution: ExecutionRow
+): Promise<string[]> {
 	const escaped = escapeClickHouseString(executionId.trim());
 	if (!escaped) return [];
 	const rows = await queryClickHouse(`
 		SELECT DISTINCT TraceId FROM ${CLICKHOUSE_DB}.otel_traces
-		WHERE (mapContains(SpanAttributes, 'workflow.execution.id') AND SpanAttributes['workflow.execution.id'] = '${escaped}')
-		   OR (mapContains(SpanAttributes, 'session.id') AND SpanAttributes['session.id'] = '${escaped}')
+		WHERE (
+			(mapContains(SpanAttributes, 'workflow.execution.id') AND SpanAttributes['workflow.execution.id'] = '${escaped}')
+			OR (mapContains(SpanAttributes, 'session.id') AND SpanAttributes['session.id'] = '${escaped}')
+		)
+		${executionTimestampWindow(execution)}
 		ORDER BY TraceId`);
 	return sanitizeTraceIds(rows.map((r) => String(r.TraceId ?? '')));
 }
@@ -239,9 +276,13 @@ export async function resolveExecutionTraceIds(execution: ExecutionRow): Promise
 	if (execution.primaryTraceId) ids.add(execution.primaryTraceId.trim());
 	for (const id of extractExecutionTraceIds(execution.output)) ids.add(id);
 	try {
-		for (const id of await traceIdsByExecutionAttr(execution.id)) ids.add(id);
-		if (execution.workflowSessionId) {
-			for (const id of await traceIdsByExecutionAttr(execution.workflowSessionId)) ids.add(id);
+		const correlationIds = new Set(
+			[execution.id, execution.workflowSessionId]
+				.filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+				.map((id) => id.trim())
+		);
+		for (const correlationId of correlationIds) {
+			for (const id of await traceIdsByExecutionAttr(correlationId, execution)) ids.add(id);
 		}
 	} catch (err) {
 		console.warn('[service-graph] Trace id attribute lookup failed', {
@@ -271,10 +312,17 @@ function isError(span: ObservabilityTraceSpan): boolean {
 	return span.statusCode === ERROR_STATUS && !isBenignControlPlaneError(span);
 }
 
-export function virtualPeer(span: ObservabilityTraceSpan): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
+export function virtualPeer(
+	span: ObservabilityTraceSpan
+): { id: string; kind: ServiceGraphNodeKind; label: string } | null {
 	const attrs = span.attributes ?? {};
 	const dbSystem = attrs['db.system.name'] ?? attrs['db.system'] ?? attrs['db.namespace'];
-	if (dbSystem) return { id: `db:${String(dbSystem)}`, kind: 'db', label: String(dbSystem) };
+	if (dbSystem)
+		return {
+			id: `db:${String(dbSystem)}`,
+			kind: 'db',
+			label: String(dbSystem)
+		};
 	const peer = attrs['peer.service'] ?? attrs['server.address'] ?? attrs['net.peer.name'];
 	if (peer) return { id: `ext:${String(peer)}`, kind: 'external', label: String(peer) };
 	return null;
@@ -367,7 +415,11 @@ export function buildServiceGraphFromSpans(spans: ObservabilityTraceSpan[]): {
 async function buildServiceGraphWindowed(
 	windowSeconds: number,
 	workflowId: string | undefined
-): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; truncated: boolean }> {
+): Promise<{
+	nodes: ServiceGraphNode[];
+	edges: ServiceGraphEdge[];
+	truncated: boolean;
+}> {
 	const wfFilter = workflowId
 		? `AND SpanAttributes['workflow.id'] = '${escapeClickHouseString(workflowId)}'`
 		: '';
@@ -442,7 +494,15 @@ async function buildServiceGraphWindowed(
 				label,
 				kind,
 				status: 'idle',
-				red: { total: 0, errors: 0, errorRate: 0, rate: 0, p50: 0, p95: 0, p99: 0 }
+				red: {
+					total: 0,
+					errors: 0,
+					errorRate: 0,
+					rate: 0,
+					p50: 0,
+					p95: 0,
+					p99: 0
+				}
 			};
 			nodes.set(id, n);
 		}
@@ -560,7 +620,11 @@ function nodeLabel(node: WorkflowNodeJson): string {
 async function buildStepGraphSingleExec(
 	workflow: ServiceGraphWorkflowContext,
 	logs: ServiceGraphStepLogRow[]
-): Promise<{ nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; logs: StepLogRow[] }> {
+): Promise<{
+	nodes: ServiceGraphNode[];
+	edges: ServiceGraphEdge[];
+	logs: StepLogRow[];
+}> {
 	const wfNodes = (workflow.nodes ?? []) as WorkflowNodeJson[];
 	const wfEdges = (workflow.edges ?? []) as WorkflowEdgeJson[];
 
@@ -577,8 +641,7 @@ async function buildStepGraphSingleExec(
 		const errors = rows.filter((r) => r.status === 'error').length;
 		const durations = rows.map((r) => toNum(r.duration)).filter((d) => d > 0);
 		const selfMs = rows.reduce((acc, r) => acc + toNum(r.executionMs ?? r.duration), 0);
-		const status: ServiceGraphNode['status'] =
-			total === 0 ? 'idle' : errors > 0 ? 'error' : 'ok';
+		const status: ServiceGraphNode['status'] = total === 0 ? 'idle' : errors > 0 ? 'error' : 'ok';
 		return {
 			id: wn.id,
 			label: nodeLabel(wn),
@@ -648,8 +711,12 @@ export type ServiceGraphScriptCallRow = {
 export function buildStepGraphDynamicScript(
 	calls: ServiceGraphScriptCallRow[],
 	spans: ObservabilityTraceSpan[],
-	llmSpans: ObservabilityLlmSpan[]
-): { nodes: ServiceGraphNode[]; edges: ServiceGraphEdge[]; insights: ServiceGraphInsights } {
+	llmSpans: GraphLlmSpan[]
+): {
+	nodes: ServiceGraphNode[];
+	edges: ServiceGraphEdge[];
+	insights: ServiceGraphInsights;
+} {
 	const ordered = [...calls].sort((a, b) => a.seq - b.seq);
 
 	// Per-session span windows → per-call durations/errors.
@@ -661,7 +728,11 @@ export function buildStepGraphDynamicScript(
 		const start = Date.parse(s.startTime);
 		if (!Number.isFinite(start)) continue;
 		const end = start + (s.duration || 0);
-		const agg = spanAgg.get(key) ?? { startMs: Infinity, endMs: -Infinity, errors: 0 };
+		const agg = spanAgg.get(key) ?? {
+			startMs: Infinity,
+			endMs: -Infinity,
+			errors: 0
+		};
 		agg.startMs = Math.min(agg.startMs, start);
 		agg.endMs = Math.max(agg.endMs, end);
 		if (isError(s)) agg.errors += 1;
@@ -744,7 +815,13 @@ export function buildStepGraphDynamicScript(
 		const call = s.sessionId ? callBySession.get(s.sessionId) : undefined;
 		if (!call) continue;
 		const ins = ensure(call.callId);
-		const t = (ins.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, total: 0 });
+		const t = (ins.tokens ??= {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheCreate: 0,
+			total: 0
+		});
 		const inputTokens = s.promptTokens ?? 0;
 		const outputTokens = s.completionTokens ?? 0;
 		const cacheReadTokens = s.cacheReadInputTokens ?? 0;
@@ -756,19 +833,30 @@ export function buildStepGraphDynamicScript(
 		t.total += s.totalTokens ?? inputTokens + outputTokens;
 		ins.costUsd =
 			(ins.costUsd ?? 0) +
-			costFor(s.modelName, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens });
+			costFor(s.modelName, {
+				inputTokens,
+				outputTokens,
+				cacheReadTokens,
+				cacheCreateTokens
+			});
 	}
 	for (const call of ordered) {
 		if (call.retries > 0) ensure(call.callId).retries = call.retries;
 		if (call.errorCode) {
-			(ensure(call.callId).errorSamples ??= []).push({ message: call.errorCode });
+			(ensure(call.callId).errorSamples ??= []).push({
+				message: call.errorCode
+			});
 		}
 	}
 
 	return {
 		nodes,
 		edges,
-		insights: { nodes: nodeInsights, edges: {}, criticalPath: computeCriticalPath(nodes, edges) }
+		insights: {
+			nodes: nodeInsights,
+			edges: {},
+			criticalPath: computeCriticalPath(nodes, edges)
+		}
 	};
 }
 
@@ -818,8 +906,7 @@ async function buildStepGraphWindowed(
 		const total = rows.length;
 		const errors = rows.filter((r) => r.status === 'error').length;
 		const durations = rows.map((r) => toNum(r.duration)).filter((d) => d > 0);
-		const status: ServiceGraphNode['status'] =
-			total === 0 ? 'idle' : errors > 0 ? 'error' : 'ok';
+		const status: ServiceGraphNode['status'] = total === 0 ? 'idle' : errors > 0 ? 'error' : 'ok';
 		return {
 			id: wn.id,
 			label: nodeLabel(wn),
@@ -898,7 +985,7 @@ function buildSpanNodeMap(spans: ObservabilityTraceSpan[]): Map<string, string> 
 interface InsightInput {
 	mode: ServiceGraphMode;
 	spans: ObservabilityTraceSpan[];
-	llmSpans: ObservabilityLlmSpan[];
+	llmSpans: GraphLlmSpan[];
 	logs?: StepLogRow[];
 	nodes: ServiceGraphNode[];
 	edges: ServiceGraphEdge[];
@@ -918,7 +1005,13 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
 		const key = keyFor(s.serviceName, s.spanId);
 		if (!key) continue;
 		const ins = ensure(key);
-		const t = (ins.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, total: 0 });
+		const t = (ins.tokens ??= {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheCreate: 0,
+			total: 0
+		});
 		const inputTokens = s.promptTokens ?? 0;
 		const outputTokens = s.completionTokens ?? 0;
 		const cacheReadTokens = s.cacheReadInputTokens ?? 0;
@@ -930,7 +1023,12 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
 		t.total += s.totalTokens ?? inputTokens + outputTokens;
 		ins.costUsd =
 			(ins.costUsd ?? 0) +
-			costFor(s.modelName, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens });
+			costFor(s.modelName, {
+				inputTokens,
+				outputTokens,
+				cacheReadTokens,
+				cacheCreateTokens
+			});
 	}
 
 	// timing breakdown + retries (step mode, from workflow_execution_logs)
@@ -995,11 +1093,16 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
 			}
 			if (!activity.relatedSpanIds.includes(s.spanId)) activity.relatedSpanIds.push(s.spanId);
 			const service = collapseServiceName(s.serviceName);
-			if (service && !activity.servicesTouched.includes(service)) activity.servicesTouched.push(service);
+			if (service && !activity.servicesTouched.includes(service))
+				activity.servicesTouched.push(service);
 		}
 	}
 
-	return { nodes: nodeInsights, edges: {}, criticalPath: computeCriticalPath(nodes, edges) };
+	return {
+		nodes: nodeInsights,
+		edges: {},
+		criticalPath: computeCriticalPath(nodes, edges)
+	};
 }
 
 /**
@@ -1007,7 +1110,10 @@ function buildExecutionInsights(input: InsightInput): ServiceGraphInsights {
  * (selfMs ?? p95); edge weight = edge p95. Memoized DFS with an on-stack guard so
  * retry-induced cycles (service mode) don't loop. Returns ordered node ids.
  */
-export function computeCriticalPath(nodes: ServiceGraphNode[], edges: ServiceGraphEdge[]): string[] {
+export function computeCriticalPath(
+	nodes: ServiceGraphNode[],
+	edges: ServiceGraphEdge[]
+): string[] {
 	if (nodes.length === 0) return [];
 	const nodeById = new Map(nodes.map((n) => [n.id, n]));
 	const outgoing = new Map<string, ServiceGraphEdge[]>();
@@ -1071,11 +1177,17 @@ async function computeExecutionInsights(params: {
 	logs?: StepLogRow[];
 	nodes: ServiceGraphNode[];
 	edges: ServiceGraphEdge[];
+	window?: TraceTimeWindow;
 }): Promise<ServiceGraphInsights> {
 	try {
 		const spans =
-			params.spans ?? (params.traceIds.length ? await getMultiTraceSpans(params.traceIds) : []);
-		const llmSpans = params.traceIds.length ? await getMultiTraceLlmSpans(params.traceIds) : [];
+			params.spans ??
+			(params.traceIds.length
+				? (await getMultiTraceSpanSummaries(params.traceIds, params.window)).spans
+				: []);
+		const llmSpans = params.traceIds.length
+			? await getMultiTraceGraphLlmSpans(params.traceIds, params.window)
+			: [];
 		return buildExecutionInsights({
 			mode: params.mode,
 			spans,
@@ -1085,8 +1197,101 @@ async function computeExecutionInsights(params: {
 			edges: params.edges
 		});
 	} catch {
-		return { nodes: {}, edges: {}, criticalPath: computeCriticalPath(params.nodes, params.edges) };
+		return {
+			nodes: {},
+			edges: {},
+			criticalPath: computeCriticalPath(params.nodes, params.edges)
+		};
 	}
+}
+
+type DynamicScriptGraphTelemetry = {
+	traceIds: string[];
+	spans: ObservabilityTraceSpan[];
+	llmSpans: GraphLlmSpan[];
+	truncated: boolean;
+	limit: number;
+	degraded: boolean;
+	warnings: string[];
+};
+
+function warnGraphEnrichmentFailure(
+	executionId: string,
+	source: 'trace discovery' | 'span timing' | 'LLM usage',
+	reason: unknown
+): void {
+	console.warn(`[service-graph] Dynamic-script ${source} unavailable`, {
+		executionId,
+		message: reason instanceof Error ? reason.message : String(reason)
+	});
+}
+
+async function loadDynamicScriptGraphTelemetry(
+	execution: ExecutionRow
+): Promise<DynamicScriptGraphTelemetry> {
+	const warnings: string[] = [];
+	let traceIds: string[];
+	try {
+		traceIds = await resolveExecutionTraceIds(execution);
+	} catch (reason) {
+		warnGraphEnrichmentFailure(execution.id, 'trace discovery', reason);
+		return {
+			traceIds: [],
+			spans: [],
+			llmSpans: [],
+			truncated: false,
+			limit: 0,
+			degraded: true,
+			warnings: ['Trace discovery unavailable; showing journal topology only']
+		};
+	}
+
+	if (traceIds.length === 0) {
+		return {
+			traceIds,
+			spans: [],
+			llmSpans: [],
+			truncated: false,
+			limit: 0,
+			degraded: true,
+			warnings: ['No traces found; showing journal topology only']
+		};
+	}
+
+	const window = {
+		startedAt: execution.startedAt,
+		completedAt: execution.completedAt
+	};
+	const [spanResult, llmResult] = await Promise.allSettled([
+		getMultiTraceSpanSummaries(traceIds, window),
+		getMultiTraceGraphLlmSpans(traceIds, window)
+	]);
+
+	let spans: ObservabilityTraceSpan[] = [];
+	let truncated = false;
+	let limit = 0;
+	let degraded = false;
+	if (spanResult.status === 'fulfilled') {
+		spans = spanResult.value.spans;
+		truncated = spanResult.value.truncated;
+		limit = spanResult.value.limit;
+		if (truncated) warnings.push(`Showing the first ${limit} span summaries`);
+	} else {
+		degraded = true;
+		warnings.push('Span timing unavailable; showing journal topology without span metrics');
+		warnGraphEnrichmentFailure(execution.id, 'span timing', spanResult.reason);
+	}
+
+	let llmSpans: GraphLlmSpan[] = [];
+	if (llmResult.status === 'fulfilled') {
+		llmSpans = llmResult.value;
+	} else {
+		degraded = true;
+		warnings.push('LLM usage unavailable; token and cost metrics omitted');
+		warnGraphEnrichmentFailure(execution.id, 'LLM usage', llmResult.reason);
+	}
+
+	return { traceIds, spans, llmSpans, truncated, limit, degraded, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,7 +1308,9 @@ export interface BuildServiceGraphInput {
 	scriptCalls?: ServiceGraphScriptCallRow[];
 }
 
-export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<ServiceGraphPayload> {
+export async function buildServiceGraph(
+	input: BuildServiceGraphInput
+): Promise<ServiceGraphPayload> {
 	const { query, execution, workflow } = input;
 	const base = emptyServiceGraph(query);
 
@@ -1112,23 +1319,40 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 			if (!execution) return emptyServiceGraph(query, { warnings: ['Execution not found'] });
 			const traceIds = await resolveExecutionTraceIds(execution);
 			if (traceIds.length === 0) {
-				return emptyServiceGraph(query, { warnings: ['No traces found for this execution'] });
+				return emptyServiceGraph(query, {
+					warnings: ['No traces found for this execution']
+				});
 			}
-			const spans = await getMultiTraceSpans(traceIds);
+			const spanBatch = await getMultiTraceSpanSummaries(traceIds, {
+				startedAt: execution.startedAt,
+				completedAt: execution.completedAt
+			});
+			const spans = spanBatch.spans;
 			const { nodes, edges } = buildServiceGraphFromSpans(spans);
 			const insights = await computeExecutionInsights({
 				mode: 'service',
 				traceIds,
 				spans,
 				nodes,
-				edges
+				edges,
+				window: {
+					startedAt: execution.startedAt,
+					completedAt: execution.completedAt
+				}
 			});
 			return {
 				...base,
 				nodes,
 				edges,
 				insights,
-				meta: { spanCount: spans.length, traceCount: traceIds.length, warnings: [] }
+				meta: {
+					spanCount: spans.length,
+					traceCount: traceIds.length,
+					truncated: spanBatch.truncated,
+					warnings: spanBatch.truncated
+						? [`Showing the first ${spanBatch.limit} span summaries`]
+						: []
+				}
 			};
 		}
 
@@ -1155,20 +1379,24 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 			// Dynamic-script runs have no SW step logs — their step graph IS the
 			// call journal, enriched with per-session span timing + LLM usage.
 			if (input.scriptCalls && input.scriptCalls.length > 0) {
-				const traceIds = await resolveExecutionTraceIds(execution);
-				const spans = traceIds.length ? await getMultiTraceSpans(traceIds) : [];
-				const llmSpans = traceIds.length ? await getMultiTraceLlmSpans(traceIds) : [];
+				const telemetry = await loadDynamicScriptGraphTelemetry(execution);
 				const { nodes, edges, insights } = buildStepGraphDynamicScript(
 					input.scriptCalls,
-					spans,
-					llmSpans
+					telemetry.spans,
+					telemetry.llmSpans
 				);
 				return {
 					...base,
 					nodes,
 					edges,
 					insights,
-					meta: { spanCount: spans.length, traceCount: traceIds.length, warnings: [] }
+					meta: {
+						spanCount: telemetry.spans.length,
+						traceCount: telemetry.traceIds.length,
+						degraded: telemetry.degraded || undefined,
+						truncated: telemetry.truncated,
+						warnings: telemetry.warnings
+					}
 				};
 			}
 			if (!workflow) return emptyServiceGraph(query, { warnings: ['Workflow not found'] });
@@ -1179,7 +1407,11 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 				traceIds,
 				logs,
 				nodes,
-				edges
+				edges,
+				window: {
+					startedAt: execution.startedAt,
+					completedAt: execution.completedAt
+				}
 			});
 			return {
 				...base,
@@ -1192,14 +1424,21 @@ export async function buildServiceGraph(input: BuildServiceGraphInput): Promise<
 
 		// step × window
 		if (!workflow) {
-			return emptyServiceGraph(query, { warnings: ['workflowId is required for step + window'] });
+			return emptyServiceGraph(query, {
+				warnings: ['workflowId is required for step + window']
+			});
 		}
 		const { nodes, edges } = await buildStepGraphWindowed(
 			workflow,
 			query.windowSeconds,
 			input.stepLogs ?? []
 		);
-		return { ...base, nodes, edges, meta: { spanCount: 0, traceCount: 0, warnings: [] } };
+		return {
+			...base,
+			nodes,
+			edges,
+			meta: { spanCount: 0, traceCount: 0, warnings: [] }
+		};
 	} catch (err) {
 		return emptyServiceGraph(query, {
 			degraded: true,

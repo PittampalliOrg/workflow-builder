@@ -1,17 +1,18 @@
 import {
 	getMultiTraceLlmSpans,
 	getMultiTraceLogs,
-	getMultiTraceSpans,
+	getMultiTraceSpanSummaries,
 	getMultiTraceToolSpans,
 	getSessionLlmSpans,
 	getSessionLogs,
 	getSessionToolSpans,
-	getSessionTraceSpans,
+	getSessionTraceSpanSummaries,
 	getTraceLlmSpans,
 	getTraceLogs,
-	getTraceSpans,
+	getTraceSpanSummaries,
 	getTraceToolSpans,
-	sanitizeTraceIds
+	sanitizeTraceIds,
+	type TraceSpanSummaryBatch
 } from '$lib/server/otel/clickhouse';
 import { isBenignControlPlaneError } from '$lib/server/otel/service-graph';
 import { buildWorkflowTimeline } from '$lib/server/observability/workflow-timeline';
@@ -197,7 +198,7 @@ async function loadSessionTraceBackend(sessionId: string): Promise<TraceBackendD
 		scope: 'session',
 		identifier: sessionId,
 		queries: {
-			traceSpans: () => getSessionTraceSpans(sessionId),
+			traceSpans: () => getSessionTraceSpanSummaries(sessionId),
 			logs: () => getSessionLogs(sessionId),
 			llmSpans: () => getSessionLlmSpans(sessionId),
 			toolSpans: () => getSessionToolSpans(sessionId)
@@ -210,7 +211,7 @@ async function loadTraceBackend(traceId: string): Promise<TraceBackendData> {
 		scope: 'trace',
 		identifier: traceId,
 		queries: {
-			traceSpans: () => getTraceSpans(traceId),
+			traceSpans: () => getTraceSpanSummaries(traceId),
 			logs: () => getTraceLogs(traceId),
 			llmSpans: () => getTraceLlmSpans(traceId),
 			toolSpans: () => getTraceToolSpans(traceId)
@@ -221,7 +222,9 @@ async function loadTraceBackend(traceId: string): Promise<TraceBackendData> {
 async function loadExecutionTraceBackend(
 	executionId: string,
 	traceIds: string[],
-	serviceNames?: string[]
+	serviceNames?: string[],
+	startedAt?: string | null,
+	completedAt?: string | null
 ): Promise<TraceBackendData> {
 	const ids = sanitizeTraceIds(traceIds);
 	if (ids.length === 0) return emptyTraceBackendData(null);
@@ -229,10 +232,11 @@ async function loadExecutionTraceBackend(
 		scope: 'execution',
 		identifier: executionId,
 		queries: {
-			traceSpans: () => getMultiTraceSpans(ids, serviceNames),
-			logs: () => getMultiTraceLogs(ids, serviceNames),
-			llmSpans: () => getMultiTraceLlmSpans(ids, serviceNames),
-			toolSpans: () => getMultiTraceToolSpans(ids, serviceNames)
+			traceSpans: () =>
+				getMultiTraceSpanSummaries(ids, { serviceNames, startedAt, completedAt }),
+			logs: () => getMultiTraceLogs(ids, serviceNames, { startedAt, completedAt }),
+			llmSpans: () => getMultiTraceLlmSpans(ids, serviceNames, { startedAt, completedAt }),
+			toolSpans: () => getMultiTraceToolSpans(ids, serviceNames, { startedAt, completedAt })
 		}
 	});
 }
@@ -241,7 +245,7 @@ async function loadTraceBackendQueries(args: {
 	scope: 'session' | 'trace' | 'execution';
 	identifier: string;
 	queries: {
-		traceSpans: () => Promise<ObservabilityTraceSpan[]>;
+		traceSpans: () => Promise<TraceSpanSummaryBatch>;
 		logs: () => Promise<ObservabilityLogEntry[]>;
 		llmSpans: () => Promise<ObservabilityLlmSpan[]>;
 		toolSpans: () => Promise<ObservabilityToolSpan[]>;
@@ -256,11 +260,18 @@ async function loadTraceBackendQueries(args: {
 	const settled = await Promise.allSettled(entries.map(([, , run]) => run()));
 	const data = emptyTraceBackendData(null);
 	const failures: { label: string; reason: unknown }[] = [];
+	let truncationWarning: string | null = null;
 
 	for (const [index, result] of settled.entries()) {
 		const [key, label] = entries[index];
 		if (result.status === 'fulfilled') {
-			if (key === 'traceSpans') data.traceSpans = result.value as ObservabilityTraceSpan[];
+			if (key === 'traceSpans') {
+				const batch = result.value as TraceSpanSummaryBatch;
+				data.traceSpans = batch.spans;
+				if (batch.truncated) {
+					truncationWarning = `Trace span view limited to the first ${batch.limit} spans`;
+				}
+			}
 			if (key === 'logs') data.logs = result.value as ObservabilityLogEntry[];
 			if (key === 'llmSpans') data.llmSpans = result.value as ObservabilityLlmSpan[];
 			if (key === 'toolSpans') data.toolSpans = result.value as ObservabilityToolSpan[];
@@ -269,7 +280,12 @@ async function loadTraceBackendQueries(args: {
 		}
 	}
 
-	data.warningMessage = formatTraceBackendPartialWarning(failures, failures.length === entries.length);
+	data.warningMessage = [
+		truncationWarning,
+		formatTraceBackendPartialWarning(failures, failures.length === entries.length)
+	]
+		.filter((message): message is string => Boolean(message))
+		.join('; ') || null;
 	if (data.warningMessage) {
 		console.warn('[observability] Trace backend query degraded', {
 			scope: args.scope,
@@ -1044,11 +1060,15 @@ export async function buildExecutionInvestigation(
 ): Promise<ObservabilityInvestigationPayload> {
 	const workflowReader = await getWorkflowReader(options.workflowReader);
 	const ids = sanitizeTraceIds(traceIds);
-	const [stepInfo, traceBackend] = await Promise.all([
-		workflowReader.getWorkflowSteps(executionId),
-		loadExecutionTraceBackend(executionId, ids, serviceNames)
-	]);
+	const stepInfo = await workflowReader.getWorkflowSteps(executionId);
 	const { steps, status, startedAt, completedAt } = stepInfo;
+	const traceBackend = await loadExecutionTraceBackend(
+		executionId,
+		ids,
+		serviceNames,
+		startedAt,
+		completedAt
+	);
 	const { traceSpans, logs, llmSpans, toolSpans } = traceBackend;
 	const sessionId =
 		traceSpans.find((s) => typeof s.attributes?.['session.id'] === 'string')?.attributes?.[

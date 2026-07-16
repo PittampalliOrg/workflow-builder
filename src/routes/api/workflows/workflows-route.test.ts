@@ -89,6 +89,18 @@ describe("workflows collection route", () => {
 		});
 	});
 
+	it("scopes the default collection to the active project", async () => {
+		const response = (await GET(
+			event({ url: new URL("http://localhost/api/workflows?limit=20") }) as never,
+		)) as Response;
+
+		expect(response.status).toBe(200);
+		expect(mocks.workflowData.listWorkflows).toHaveBeenCalledWith({
+			limit: 20,
+			projectId: "project-1",
+		});
+	});
+
 	it("creates a workflow through workflow definition commands", async () => {
 		const response = (await POST(event() as never)) as Response;
 

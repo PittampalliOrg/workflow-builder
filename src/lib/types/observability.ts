@@ -172,6 +172,12 @@ export interface ObservabilityTraceSpan {
 	spanKind?: string;
 	attributes?: Record<string, unknown>;
 	resourceAttributes?: Record<string, unknown>;
+	/** True when the initial payload contains only the attributes needed for the timeline/graph. */
+	attributesTruncated?: boolean;
+	hasInput?: boolean;
+	hasOutput?: boolean;
+	inputSize?: number;
+	outputSize?: number;
 	depth: number;
 }
 

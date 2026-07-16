@@ -1998,6 +1998,31 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowDefinitions.getLatestByName).toHaveBeenCalledWith("example");
 	});
 
+	it("loads a workflow only when it is visible in the caller's active project", async () => {
+		const { service, workflowDefinitions } = makeService({ byId: baseWorkflow });
+
+		await expect(
+			service.getScopedWorkflowById({
+				workflowId: "wf-id",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		).resolves.toEqual(baseWorkflow);
+		expect(workflowDefinitions.getById).toHaveBeenCalledWith("wf-id");
+	});
+
+	it("hides workflows from a different active project", async () => {
+		const { service } = makeService({ byId: baseWorkflow });
+
+		await expect(
+			service.getScopedWorkflowById({
+				workflowId: "wf-id",
+				userId: "user-1",
+				projectId: "project-2",
+			}),
+		).resolves.toBeNull();
+	});
+
 	it("delegates workflow definition commands to the workflow definition port", async () => {
 		const { service, workflowDefinitions } = makeService({
 			byId: baseWorkflow,
