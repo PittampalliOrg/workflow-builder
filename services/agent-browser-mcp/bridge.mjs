@@ -38,6 +38,7 @@
 //     to the run. Untitled footage (recon wandering) never ships in a demo.
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -56,6 +57,20 @@ const BFF =
 	process.env.WORKFLOW_BUILDER_URL ||
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const TOKEN = process.env.INTERNAL_API_TOKEN || "";
+
+// BrowserStation lanes: when a run stamps `X-Wfb-Browser-Lane: per-node`, each
+// script call (node) gets its OWN isolated browser LEASED from the
+// BrowserStation farm (KubeRay; one Chrome per worker pod) instead of sharing
+// the run's Chrome in this pod — parallel agents without co-tenant Chromes
+// here. Unset BROWSERSTATION_URL/API key ⇒ lanes still isolate (suffixed
+// session ⇒ separate LOCAL Chrome), they just don't offload to the farm.
+const BROWSERSTATION_URL = (process.env.BROWSERSTATION_URL || "").replace(/\/$/, "");
+const BROWSERSTATION_API_KEY = process.env.BROWSERSTATION_API_KEY || "";
+// Cold farm scale-up = pod schedule + image pull; warm worker ≈ 2s.
+const LANE_READY_TIMEOUT_MS = Number(process.env.BROWSERSTATION_READY_TIMEOUT_MS || 240000);
+// Tool calls wait this long for the lane, then return a retryable error so the
+// agent's MCP call doesn't hit client timeouts during farm scale-up.
+const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 45000);
 
 // Target-auth injection: authenticate the demo browser to an app the run owner
 // controls, WITHOUT the LLM typing credentials and WITHOUT the token entering
@@ -275,6 +290,97 @@ function pruneToolForLlm(tool) {
 	};
 }
 
+// ---------------------------------------------------------------------------
+// BrowserStation lane registry.
+//
+// browserSession -> { browserId, ready } where `ready` resolves true when the
+// lane's agent-browser session is attached to a leased farm browser, or false
+// when the lease failed and the lane fell back to a local Chrome. Leases are
+// released on the agent's close, the idle stop, or (best-effort) never — the
+// farm's worker idle-out is the backstop for leaks.
+// ---------------------------------------------------------------------------
+const lanes = new Map();
+
+function lanesEnabled() {
+	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
+}
+
+function bsFetch(path, init = {}) {
+	return fetch(`${BROWSERSTATION_URL}${path}`, {
+		...init,
+		headers: {
+			"X-API-Key": BROWSERSTATION_API_KEY,
+			"Content-Type": "application/json",
+			...(init.headers || {}),
+		},
+	});
+}
+
+function ensureLaneBrowser(browserSession) {
+	const existing = lanes.get(browserSession);
+	if (existing) return existing.ready;
+	const lane = { browserId: null, ready: null };
+	lane.ready = (async () => {
+		const created = await bsFetch("/browsers", { method: "POST", body: "{}" });
+		if (!created.ok) throw new Error(`lease HTTP ${created.status}`);
+		lane.browserId = (await created.json()).browser_id;
+		const deadline = Date.now() + LANE_READY_TIMEOUT_MS;
+		let info;
+		for (;;) {
+			const resp = await bsFetch(`/browsers/${lane.browserId}`);
+			if (resp.ok) {
+				info = await resp.json();
+				if (info.chrome_ready && info.websocket_url) break;
+			} else if (resp.status === 404) {
+				// The farm GC'd a lease that pended too long for capacity.
+				lane.browserId = null;
+				throw new Error("lease expired waiting for farm capacity");
+			}
+			if (Date.now() > deadline) throw new Error(`farm browser not ready in ${LANE_READY_TIMEOUT_MS}ms`);
+			await new Promise((r) => setTimeout(r, 3000));
+		}
+		const ws = BROWSERSTATION_URL.replace(/^http/, "ws") + info.websocket_url;
+		await new Promise((resolve, reject) => {
+			const p = spawn("agent-browser", ["connect", ws], {
+				env: { ...process.env, AGENT_BROWSER_SESSION: browserSession },
+				stdio: ["ignore", "ignore", "inherit"],
+			});
+			p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`connect exit ${code}`))));
+			p.on("error", reject);
+		});
+		console.error(`[lane] ${browserSession} attached to farm browser ${lane.browserId}`);
+		return true;
+	})().catch(async (err) => {
+		console.error(
+			`[lane] ${browserSession} farm lease failed (${err?.message}) — this lane uses a local Chrome`,
+		);
+		if (lane.browserId) {
+			try {
+				await bsFetch(`/browsers/${lane.browserId}`, { method: "DELETE" });
+			} catch {
+				/* best-effort */
+			}
+			lane.browserId = null;
+		}
+		return false;
+	});
+	lanes.set(browserSession, lane);
+	return lane.ready;
+}
+
+async function releaseLaneBrowser(browserSession) {
+	const lane = lanes.get(browserSession);
+	if (!lane) return;
+	lanes.delete(browserSession);
+	if (!lane.browserId) return;
+	try {
+		await bsFetch(`/browsers/${lane.browserId}`, { method: "DELETE" });
+		console.error(`[lane] ${browserSession} released farm browser ${lane.browserId}`);
+	} catch (err) {
+		console.error(`[lane] release failed for ${browserSession}: ${err?.message}`);
+	}
+}
+
 function spawnChild(browserSession) {
 	const childTransport = new StdioClientTransport({
 		command: "agent-browser",
@@ -307,6 +413,7 @@ async function startCapture(browserSession, ctx, child, openedUrl) {
 	pendingScenes.delete(browserSession);
 	const entry = {
 		ctx,
+		browserSession,
 		seen: new Set(),
 		clips: [], // [{path, title, caption}] — title null = not part of a demo
 		site: (() => {
@@ -381,12 +488,21 @@ async function renderAndPersistDemo(entry) {
 	try {
 		const demo = await renderDemo(titled, { site: entry.site, focus: entry.focus });
 		const buf = await readAndRm(demo.path);
+		// Parallel lanes each render their own mini-demo; name by scene so the
+		// Browser tab distinguishes them from the run-level demo.mp4.
+		const laneSuffix = entry.browserSession?.includes("--")
+			? (titled[0]?.title || entry.browserSession.split("--").pop() || "lane")
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-+|-+$/g, "")
+					.slice(0, 40)
+			: null;
 		await persistBlob(entry.ctx, {
 			bucket: "assets",
 			kind: "video",
 			payloadBase64: buf.toString("base64"),
 			contentType: "video/mp4",
-			fileName: "demo.mp4",
+			fileName: laneSuffix ? `page-${laneSuffix}.mp4` : "demo.mp4",
 		});
 		console.error(
 			`[demo] rendered ${demo.seconds.toFixed(1)}s (${titled.length} scene(s), speedup ${demo.speedup.toFixed(2)}x) exec=${entry.ctx.executionId}`,
@@ -482,6 +598,9 @@ async function stopCapture(browserSession, reason, liveChild) {
 				/* ignore */
 			}
 		}
+		// A lane whose capture ended (close/idle/teardown) is done with its
+		// leased farm browser. Idempotent; the close path also releases.
+		releaseLaneBrowser(browserSession).catch(() => {});
 	}
 }
 
@@ -555,7 +674,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.6.0" },
+		{ name: "agent-browser-mcp", version: "1.7.0" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -576,6 +695,27 @@ async function makeProxy(ctxRef, browserSession) {
 	});
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		const { name, arguments: args } = req.params;
+		// A lane still provisioning its farm browser must not let the first
+		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
+		// tell the agent to retry (cold farm scale-up can take minutes).
+		const lane = lanes.get(browserSession);
+		if (lane) {
+			const ready = await Promise.race([
+				lane.ready,
+				new Promise((r) => setTimeout(() => r("pending"), LANE_CALL_WAIT_MS)),
+			]);
+			if (ready === "pending") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "The browser for this task is still provisioning (farm scale-up). Wait ~30 seconds and retry this exact tool call.",
+						},
+					],
+					isError: true,
+				};
+			}
+		}
 		if (name === DEMO_SCENE_TOOL.name) {
 			try {
 				const message = await beginScene(browserSession, ctxRef.value, child, args);
@@ -593,6 +733,9 @@ async function makeProxy(ctxRef, browserSession) {
 			await stopCapture(browserSession, "close", child);
 		}
 		let result = await child.callTool({ name, arguments: args || {} });
+		if (name === "agent_browser_close") {
+			releaseLaneBrowser(browserSession).catch(() => {});
+		}
 		// Plant the run owner's credential on the first open of the permitted
 		// host, then re-open so the agent (and the recorder) see the
 		// authenticated page. Must happen before startCapture's record_start.
@@ -670,10 +813,24 @@ app.post("/mcp", async (req, res) => {
 		},
 	};
 	// One browser per run: every MCP connection carrying the same execution id
-	// shares Chrome; connections without a run get a throwaway browser.
+	// shares Chrome; connections without a run get a throwaway browser. A
+	// `X-Wfb-Browser-Lane: per-node` header instead isolates each script call
+	// (node) in its own lane — leased from the BrowserStation farm when
+	// configured, a separate local Chrome otherwise.
+	const laneHeader = String(req.headers["x-wfb-browser-lane"] || "").trim().toLowerCase();
+	const laneKey =
+		laneHeader === "per-node" && ctxRef.value.executionId && ctxRef.value.nodeId
+			? String(ctxRef.value.nodeId).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "lane"
+			: null;
 	const browserSession = ctxRef.value.executionId
-		? `wfb-${ctxRef.value.executionId}`
+		? laneKey
+			? `wfb-${ctxRef.value.executionId}--${laneKey}`
+			: `wfb-${ctxRef.value.executionId}`
 		: `wfb-anon-${randomUUID().slice(0, 8)}`;
+	if (laneKey && lanesEnabled() && !lanes.has(browserSession)) {
+		// Fire the lease now (idempotent); tool calls await readiness bounded.
+		ensureLaneBrowser(browserSession);
+	}
 	const { server, cleanup } = await makeProxy(ctxRef, browserSession);
 	const transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
@@ -706,7 +863,7 @@ app.delete("/mcp", replay);
 
 app.listen(PORT, "0.0.0.0", () => {
 	console.error(
-		`[agent-browser-mcp] bridge listening on :${PORT}/mcp (tools=${TOOLS}, exposed=${EXPOSED_TOOLS.length || "all"}, auto=${AUTO_CAPTURE.join("+") || "off"}, idleStopMs=${AUTO_CAPTURE_IDLE_MS})`,
+		`[agent-browser-mcp] bridge listening on :${PORT}/mcp (tools=${TOOLS}, exposed=${EXPOSED_TOOLS.length || "all"}, auto=${AUTO_CAPTURE.join("+") || "off"}, idleStopMs=${AUTO_CAPTURE_IDLE_MS}, lanes=${lanesEnabled() ? BROWSERSTATION_URL : "local-only"})`,
 	);
 	console.error(`[agent-browser-mcp] artifact sink: ${BFF}/api/internal/browser-artifacts`);
 });
