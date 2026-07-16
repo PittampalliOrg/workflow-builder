@@ -173,6 +173,8 @@ export type PreviewEnvironmentLaunchOutcome =
 export type PreviewEnvironmentUserLaunchInput = Readonly<{
   name: string;
   userId: string;
+	/** Trusted host workflow context; never accepted from user-authored launch data. */
+	workflowExecutionId?: string;
   profile?: PreviewEnvironmentProfile;
   lane?: PreviewEnvironmentLane;
   capabilities?: readonly PreviewEnvironmentCapability[];

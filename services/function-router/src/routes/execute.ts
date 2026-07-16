@@ -15,6 +15,7 @@
  * - wasColdStart: Detected based on response time anomalies
  */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { DaprClient, HttpMethod } from "@dapr/dapr";
 import {
   context,
@@ -82,6 +83,8 @@ const WORKFLOW_BUILDER_URL =
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 const PREVIEW_ACTION_INTERNAL_TOKEN =
   process.env.PREVIEW_ACTION_INTERNAL_TOKEN?.trim() || "";
+const PREVIEW_DEVELOPMENT_PROXY_TIMEOUT_MS = 90_000;
+const DEV_PREVIEW_PROXY_TIMEOUT_MS = 15 * 60_000;
 const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
 const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
 const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
@@ -138,7 +141,7 @@ const ExecuteRequestSchema = z.object({
   ap_project_id: z.string().nullable().optional(),
   ap_platform_id: z.string().nullable().optional(),
   // AP durability contract (orchestrator → piece-runtime passthrough)
-  idempotency_key: z.string().nullable().optional(),
+	idempotency_key: z.string().min(1).max(512).nullable().optional(),
   execution_type: z.enum(["BEGIN", "RESUME"]).optional(),
   resume_payload: z.unknown().optional(),
   skip_idempotency_gate: z.boolean().optional(),
@@ -701,6 +704,478 @@ async function executeSessionSpawn(
   }
 }
 
+export const PREVIEW_DEVELOPMENT_ACTION_SLUGS = [
+	"preview/environment-launch",
+	"preview/environment-status",
+	"preview/workflow-start",
+	"preview/workflow-status",
+	"preview/workflow-signal",
+	"preview/workflow-verify-promotion",
+	"preview/environment-teardown",
+	"preview/environment-teardown-status",
+] as const;
+
+export const PRIVILEGED_PREVIEW_ACTION_SLUGS = [
+	...PREVIEW_DEVELOPMENT_ACTION_SLUGS,
+	"dev/preview",
+	"dev/preview-teardown",
+	"dev/preview-snapshot",
+	"dev/preview-promote",
+	"dev/preview-acceptance",
+	"dev/preview-build",
+] as const;
+
+export type PreviewDevelopmentActionSlug = (typeof PREVIEW_DEVELOPMENT_ACTION_SLUGS)[number];
+
+export function previewDevelopmentCallerAuthorized(
+	provided: unknown,
+	expected = PREVIEW_ACTION_INTERNAL_TOKEN,
+): boolean {
+	if (typeof provided !== "string" || !provided || !expected) return false;
+	const actualBytes = Buffer.from(provided, "utf8");
+	const expectedBytes = Buffer.from(expected, "utf8");
+	return (
+		actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes)
+	);
+}
+
+export function previewActionRequestAuthorized(
+	functionSlug: string,
+	provided: unknown,
+	expected = PREVIEW_ACTION_INTERNAL_TOKEN,
+): boolean {
+	return (
+		!(PRIVILEGED_PREVIEW_ACTION_SLUGS as readonly string[]).includes(functionSlug) ||
+		previewDevelopmentCallerAuthorized(provided, expected)
+	);
+}
+
+type PreviewDevelopmentProxyRequest = Readonly<{
+	path:
+		| "/api/internal/preview-development/environment"
+		| "/api/internal/preview-development/target";
+	body: Record<string, unknown>;
+	operationId: string;
+}>;
+
+type PreviewDevelopmentRequestResult =
+	| Readonly<{ ok: true; request: PreviewDevelopmentProxyRequest }>
+	| Readonly<{ ok: false; error: string }>;
+
+const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+const GIT_SHA = /^[0-9a-f]{40}$/;
+const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
+const SIGNATURE = /^[0-9a-f]{64}$/;
+const SAFE_EXECUTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const PROMOTION_RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
+
+function exactObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+	return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function parsePreviewDevelopmentTarget(value: unknown): Record<string, string> | null {
+	if (!isPlainObject(value)) return null;
+	const keys = [
+		"previewName",
+		"environmentRequestId",
+		"platformRevision",
+		"sourceRevision",
+		"catalogDigest",
+	] as const;
+	if (
+		Object.keys(value).length !== keys.length ||
+		!exactObjectKeys(value, keys) ||
+		typeof value.previewName !== "string" ||
+		!PREVIEW_NAME.test(value.previewName) ||
+		typeof value.environmentRequestId !== "string" ||
+		value.environmentRequestId.length < 1 ||
+		value.environmentRequestId.length > 256 ||
+		typeof value.platformRevision !== "string" ||
+		!GIT_SHA.test(value.platformRevision) ||
+		typeof value.sourceRevision !== "string" ||
+		!GIT_SHA.test(value.sourceRevision) ||
+		typeof value.catalogDigest !== "string" ||
+		!SHA256_REF.test(value.catalogDigest)
+	) {
+		return null;
+	}
+	return Object.fromEntries(keys.map((key) => [key, value[key] as string]));
+}
+
+function parsePreviewTeardownTicket(
+	value: unknown,
+	target: Record<string, string>,
+): Record<string, string> | null {
+	if (!isPlainObject(value)) return null;
+	const keys = ["name", "environmentUid", "requestId", "sourceRevision", "signature"] as const;
+	if (
+		Object.keys(value).length !== keys.length ||
+		!exactObjectKeys(value, keys) ||
+		value.name !== target.previewName ||
+		typeof value.environmentUid !== "string" ||
+		value.environmentUid.length < 1 ||
+		value.environmentUid.length > 128 ||
+		value.requestId !== target.environmentRequestId ||
+		value.sourceRevision !== target.sourceRevision ||
+		typeof value.signature !== "string" ||
+		!SIGNATURE.test(value.signature)
+	) {
+		return null;
+	}
+	return Object.fromEntries(keys.map((key) => [key, value[key] as string]));
+}
+
+function parseServices(value: unknown): string[] | null {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 16) return null;
+	const services: string[] = [];
+	const seen = new Set<string>();
+	for (const item of value) {
+		if (typeof item !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(item) || seen.has(item)) {
+			return null;
+		}
+		seen.add(item);
+		services.push(item);
+	}
+	return services;
+}
+
+export function previewDevelopmentOperationId(input: {
+	parentExecutionId: string;
+	commandKind: string;
+	idempotencyKey?: string | null;
+	actionSlug: PreviewDevelopmentActionSlug;
+}): string {
+	const idempotencyKey =
+		input.idempotencyKey?.trim() || `${input.parentExecutionId}:${input.actionSlug}`;
+	const digest = createHash("sha256")
+		.update(
+			`preview-development/v1\0${input.parentExecutionId}\0${input.commandKind}\0${idempotencyKey}`,
+		)
+		.digest("hex");
+	return `pdt-${input.commandKind}-${digest}`;
+}
+
+export function buildPreviewDevelopmentProxyRequest(input: {
+	actionSlug: PreviewDevelopmentActionSlug;
+	actionInput: Record<string, unknown>;
+	dbExecutionId: string | null | undefined;
+	idempotencyKey?: string | null;
+}): PreviewDevelopmentRequestResult {
+	const parentExecutionId = input.dbExecutionId?.trim() ?? "";
+	if (!SAFE_EXECUTION_ID.test(parentExecutionId)) {
+		return {
+			ok: false,
+			error: `${input.actionSlug}: missing trusted db_execution_id`,
+		};
+	}
+	if (
+		input.idempotencyKey !== undefined &&
+		input.idempotencyKey !== null &&
+		(input.idempotencyKey.trim().length < 1 ||
+			input.idempotencyKey.length > 512 ||
+			/[\u0000-\u001f\u007f]/.test(input.idempotencyKey))
+	) {
+		return {
+			ok: false,
+			error: `${input.actionSlug}: invalid idempotency key`,
+		};
+	}
+
+	const actionInput = input.actionInput;
+	let commandKind: string;
+	let path: PreviewDevelopmentProxyRequest["path"];
+	let command: Record<string, unknown>;
+	let target: Record<string, string> | undefined;
+
+	if (input.actionSlug === "preview/environment-launch") {
+		if (
+			!exactObjectKeys(actionInput, [
+				"environmentName",
+				"services",
+				"ttlHours",
+				"retainAfterCompletion",
+			]) ||
+			typeof actionInput.environmentName !== "string" ||
+			!PREVIEW_NAME.test(actionInput.environmentName) ||
+			!Number.isInteger(actionInput.ttlHours) ||
+			(actionInput.ttlHours as number) < 2 ||
+			(actionInput.ttlHours as number) > 24 ||
+			(actionInput.retainAfterCompletion !== undefined &&
+				typeof actionInput.retainAfterCompletion !== "boolean")
+		) {
+			return { ok: false, error: `${input.actionSlug}: invalid launch input` };
+		}
+		const services = parseServices(actionInput.services);
+		if (!services) {
+			return { ok: false, error: `${input.actionSlug}: invalid services` };
+		}
+		commandKind = "launch-environment";
+		path = "/api/internal/preview-development/environment";
+		command = {
+			kind: commandKind,
+			input: {
+				environmentName: actionInput.environmentName,
+				services,
+				ttlHours: actionInput.ttlHours,
+				retainAfterCompletion: actionInput.retainAfterCompletion === true,
+			},
+		};
+	} else {
+		const parsedTarget = parsePreviewDevelopmentTarget(actionInput.target);
+		if (!parsedTarget) {
+			return {
+				ok: false,
+				error: `${input.actionSlug}: invalid exact target tuple`,
+			};
+		}
+		target = parsedTarget;
+		if (input.actionSlug === "preview/environment-status") {
+			if (!exactObjectKeys(actionInput, ["target"])) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: unsupported input fields`,
+				};
+			}
+			commandKind = "get-environment-status";
+			path = "/api/internal/preview-development/environment";
+			command = { kind: commandKind, target };
+		} else if (input.actionSlug === "preview/workflow-start") {
+			if (
+				!exactObjectKeys(actionInput, ["target", "intent", "services"]) ||
+				typeof actionInput.intent !== "string" ||
+				actionInput.intent.trim().length < 1 ||
+				actionInput.intent.length > 12_000
+			) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: invalid workflow input`,
+				};
+			}
+			const services = parseServices(actionInput.services);
+			if (!services) {
+				return { ok: false, error: `${input.actionSlug}: invalid services` };
+			}
+			commandKind = "start-workflow";
+			path = "/api/internal/preview-development/target";
+			command = {
+				kind: commandKind,
+				target,
+				input: {
+					intent: actionInput.intent,
+					services,
+					keepPreview: "true",
+				},
+			};
+		} else if (
+			input.actionSlug === "preview/workflow-status" ||
+			input.actionSlug === "preview/workflow-signal"
+		) {
+			const allowed =
+				input.actionSlug === "preview/workflow-signal"
+					? ["target", "executionId", "workflowSpecDigest", "action"]
+					: ["target", "executionId", "workflowSpecDigest"];
+			if (
+				!exactObjectKeys(actionInput, allowed) ||
+				typeof actionInput.executionId !== "string" ||
+				actionInput.executionId.length < 1 ||
+				actionInput.executionId.length > 256 ||
+				typeof actionInput.workflowSpecDigest !== "string" ||
+				!SHA256_REF.test(actionInput.workflowSpecDigest)
+			) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: invalid child identity`,
+				};
+			}
+			commandKind =
+				input.actionSlug === "preview/workflow-signal"
+					? "signal-workflow"
+					: "get-workflow-status";
+			path = "/api/internal/preview-development/target";
+			command = {
+				kind: commandKind,
+				target,
+				executionId: actionInput.executionId,
+				workflowSpecDigest: actionInput.workflowSpecDigest,
+			};
+			if (input.actionSlug === "preview/workflow-signal") {
+				if (
+					actionInput.action !== "submit_preview_pr" &&
+					actionInput.action !== "discard"
+				) {
+					return {
+						ok: false,
+						error: `${input.actionSlug}: invalid control action`,
+					};
+				}
+				command.action = actionInput.action;
+			}
+		} else if (input.actionSlug === "preview/workflow-verify-promotion") {
+			if (
+				!exactObjectKeys(actionInput, [
+					"target",
+					"childExecutionId",
+					"receiptId",
+					"services",
+				]) ||
+				typeof actionInput.childExecutionId !== "string" ||
+				!SAFE_EXECUTION_ID.test(actionInput.childExecutionId) ||
+				typeof actionInput.receiptId !== "string" ||
+				!PROMOTION_RECEIPT_ID.test(actionInput.receiptId)
+			) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: invalid promotion coordinates`,
+				};
+			}
+			const services = parseServices(actionInput.services);
+			if (!services) {
+				return { ok: false, error: `${input.actionSlug}: invalid services` };
+			}
+			commandKind = "verify-promotion";
+			path = "/api/internal/preview-development/target";
+			command = {
+				kind: commandKind,
+				target,
+				childExecutionId: actionInput.childExecutionId,
+				receiptId: actionInput.receiptId,
+				services,
+			};
+		} else if (input.actionSlug === "preview/environment-teardown") {
+			if (!exactObjectKeys(actionInput, ["target"])) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: unsupported input fields`,
+				};
+			}
+			commandKind = "teardown-environment";
+			path = "/api/internal/preview-development/environment";
+			command = { kind: commandKind, target };
+		} else {
+			if (!exactObjectKeys(actionInput, ["target", "ticket"])) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: unsupported input fields`,
+				};
+			}
+			const ticket = parsePreviewTeardownTicket(actionInput.ticket, target);
+			if (!ticket) {
+				return {
+					ok: false,
+					error: `${input.actionSlug}: invalid teardown ticket`,
+				};
+			}
+			commandKind = "get-environment-teardown-status";
+			path = "/api/internal/preview-development/environment";
+			command = { kind: commandKind, target, ticket };
+		}
+	}
+
+	const operationId = previewDevelopmentOperationId({
+		parentExecutionId,
+		commandKind,
+		idempotencyKey: input.idempotencyKey,
+		actionSlug: input.actionSlug,
+	});
+	command.operationId = operationId;
+	return {
+		ok: true,
+		request: {
+			path,
+			operationId,
+			body: {
+				parentExecutionId,
+				command,
+			},
+		},
+	};
+}
+
+export async function executePreviewDevelopmentAction(
+	input: {
+		actionSlug: PreviewDevelopmentActionSlug;
+		actionInput: Record<string, unknown>;
+		dbExecutionId: string | null | undefined;
+		idempotencyKey?: string | null;
+	},
+	options: Readonly<{
+		fetchImpl?: typeof fetch;
+		previewActionToken?: string;
+		timeoutMs?: number;
+	}> = {},
+): Promise<ExecuteResponse> {
+	const started = Date.now();
+	const built = buildPreviewDevelopmentProxyRequest(input);
+	if (!built.ok) {
+		return {
+			success: false,
+			data: {},
+			error: built.error,
+			errorClass: "permanent",
+			duration_ms: Date.now() - started,
+		};
+	}
+	const previewActionToken = options.previewActionToken ?? PREVIEW_ACTION_INTERNAL_TOKEN;
+	if (!previewActionToken) {
+		return {
+			success: false,
+			data: {},
+			error: `${input.actionSlug}: PREVIEW_ACTION_INTERNAL_TOKEN is not configured`,
+			errorClass: "permanent",
+			duration_ms: Date.now() - started,
+		};
+	}
+	try {
+		const response = await (options.fetchImpl ?? fetch)(
+			`${WORKFLOW_BUILDER_URL}${built.request.path}`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Preview-Action-Token": previewActionToken,
+					"X-Idempotency-Key": built.request.operationId,
+				},
+				body: JSON.stringify(built.request.body),
+				signal: AbortSignal.timeout(
+					options.timeoutMs ?? PREVIEW_DEVELOPMENT_PROXY_TIMEOUT_MS,
+				),
+			},
+		);
+		const parsed = parseJsonResponse(await response.text());
+		const data = isPlainObject(parsed) ? parsed : {};
+		if (!response.ok || data.ok === false) {
+			return {
+				success: false,
+				data,
+				error:
+					typeof data.error === "string"
+						? data.error
+						: `${input.actionSlug} failed (${response.status})`,
+				errorClass: [408, 425, 429, 502, 503, 504].includes(response.status)
+					? "retryable"
+					: "permanent",
+				responseStatus: response.status,
+				duration_ms: Date.now() - started,
+			};
+		}
+		return {
+			success: true,
+			data,
+			responseStatus: response.status,
+			duration_ms: Date.now() - started,
+		};
+	} catch (cause) {
+		return {
+			success: false,
+			data: {},
+			error: cause instanceof Error ? cause.message : String(cause),
+			errorClass: "retryable",
+			responseStatus: 0,
+			duration_ms: Date.now() - started,
+		};
+	}
+}
+
 /**
  * dev/preview (ensure) + dev/preview-teardown — per-run ephemeral dev-server
  * Sandbox. The BFF owns the privileged sandbox-execution-api call (the agent
@@ -874,15 +1349,10 @@ export function classifyDevPreviewProxyResponse(input: {
       success: false,
       data,
       error: message,
-      ...(activationExpected
-        ? {
-            errorClass:
-              !explicitActivationFailure &&
-              TRANSIENT_DEV_PREVIEW_STATUSES.has(input.status)
-                ? ("retryable" as const)
-                : ("permanent" as const),
-          }
-        : {}),
+			errorClass:
+				!explicitActivationFailure && TRANSIENT_DEV_PREVIEW_STATUSES.has(input.status)
+					? ("retryable" as const)
+					: ("permanent" as const),
       responseStatus: input.status,
       duration_ms,
     };
@@ -908,7 +1378,7 @@ async function executeDevPreview(
       success: false,
       data: {},
       error: binding.error,
-      ...(mode === "ensure" ? { errorClass: "permanent" as const } : {}),
+			errorClass: "permanent" as const,
       responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
@@ -933,12 +1403,13 @@ async function executeDevPreview(
       data: {},
       error:
         "dev/preview: PREVIEW_ACTION_INTERNAL_TOKEN is not configured; refusing privileged proxy",
-      ...(mode === "ensure" ? { errorClass: "permanent" as const } : {}),
+      errorClass: "permanent" as const,
       responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
   }
   const executionId = binding.executionId;
+  const signal = AbortSignal.timeout(DEV_PREVIEW_PROXY_TIMEOUT_MS);
   const url = `${WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/${encodeURIComponent(
     executionId,
   )}/dev-preview`;
@@ -952,6 +1423,7 @@ async function executeDevPreview(
         : "";
       res = await fetch(`${url}${qs}`, {
         method: "DELETE",
+			signal,
         headers: {
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
@@ -966,6 +1438,7 @@ async function executeDevPreview(
       if (Array.isArray(input.services)) snap.services = input.services;
       res = await fetch(`${url}/snapshot`, {
         method: "POST",
+				signal,
         headers: {
           "Content-Type": "application/json",
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
@@ -992,6 +1465,7 @@ async function executeDevPreview(
       }
       res = await fetch(`${url}/promote`, {
         method: "POST",
+				signal,
         headers: {
           "Content-Type": "application/json",
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
@@ -1001,6 +1475,7 @@ async function executeDevPreview(
     } else if (mode === "acceptance") {
       res = await fetch(`${url}/acceptance`, {
         method: "POST",
+				signal,
         headers: {
           "Content-Type": "application/json",
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
@@ -1010,6 +1485,7 @@ async function executeDevPreview(
     } else if (mode === "build") {
       res = await fetch(`${url}/build`, {
         method: "POST",
+				signal,
         headers: {
           "Content-Type": "application/json",
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
@@ -1041,6 +1517,7 @@ async function executeDevPreview(
       }
       res = await fetch(url, {
         method: "POST",
+				signal,
         headers: {
           "Content-Type": "application/json",
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
@@ -1063,9 +1540,7 @@ async function executeDevPreview(
       success: false,
       data: {},
       error: err instanceof Error ? err.message : String(err),
-      ...(expectsDurableDevPreviewActivation(input, mode)
-        ? { errorClass: "retryable" as const }
-        : {}),
+			errorClass: "retryable" as const,
       responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
@@ -1783,6 +2258,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       } as ExecuteResponse);
     }
 
+		if (
+			!previewActionRequestAuthorized(functionSlug, request.headers["x-preview-action-token"])
+		) {
+			return reply.status(401).send({
+				success: false,
+				data: {},
+				error: "unauthorized preview development action caller",
+				errorClass: "permanent",
+				duration_ms: 0,
+			} as ExecuteResponse);
+		}
+
     const pluginId = functionSlug.split("/")[0];
     if (functionSlug !== "durable/run" && retiredAgentPrefixes.has(pluginId)) {
       return reply.status(410).send({
@@ -1800,6 +2287,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       );
       return reply.status(planResponse.success ? 200 : 502).send(planResponse);
     }
+
+		if ((PREVIEW_DEVELOPMENT_ACTION_SLUGS as readonly string[]).includes(functionSlug)) {
+			const previewDevelopmentResponse = await executePreviewDevelopmentAction({
+				actionSlug: functionSlug as PreviewDevelopmentActionSlug,
+				actionInput: body.input as Record<string, unknown>,
+				dbExecutionId: body.db_execution_id,
+				idempotencyKey: body.idempotency_key,
+			});
+			// Transport authentication succeeded. Preserve action-level permanent vs
+			// retryable classification in a durable HTTP-200 envelope.
+			return reply.status(200).send(previewDevelopmentResponse);
+		}
 
     // dev/preview (+ dev/preview-teardown + dev/preview-snapshot) proxy to the BFF
     // per-run dev-server Sandbox endpoint (not a Knative service / registry entry).
@@ -1829,12 +2328,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       // A staged dev/preview activation carries retryability and the target HTTP
       // status in its action envelope. Keep the router request successful so the
       // durable workflow can poll/retry it across pod replacement.
-      const durableActivationEnvelope =
-        functionSlug === "dev/preview" &&
-        (devResponse.success || devResponse.errorClass !== undefined);
-      return reply
-        .status(durableActivationEnvelope || devResponse.success ? 200 : 502)
-        .send(devResponse);
+			return reply.status(200).send(devResponse);
     }
 
     // session/spawn — workflow → interactive dev-session handoff (proxy to BFF).

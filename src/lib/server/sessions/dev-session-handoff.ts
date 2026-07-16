@@ -40,42 +40,51 @@ export interface SpawnDevSessionParams {
 	persistent?: boolean;
 }
 
-export async function spawnDevSession(
-	params: SpawnDevSessionParams,
-): Promise<{ sessionId: string; url: string; agentSlug: string }> {
-	const created = await getApplicationAdapters().workflowData.createWorkflowDevSession({
+export async function spawnDevSession(params: SpawnDevSessionParams): Promise<{
+	status: "created" | "reused";
+	sessionId: string;
+	url: string;
+	agentSlug: string;
+}> {
+	const ensured = await getApplicationAdapters().workflowData.createWorkflowDevSession({
 		executionId: params.executionId,
 		agentPolicy: DEV_AGENT_POLICY,
 		instructions: params.instructions,
 		title: params.title,
 	});
-	if (created.status === "execution_not_found") {
+	if (ensured.status === "execution_not_found") {
 		throw new Error(
 			`execution ${params.executionId} not found or has no owner (cannot scope the dev session)`,
 		);
 	}
-	if (created.status === "agent_not_found") {
+	if (ensured.status === "agent_not_found") {
 		throw new Error(
 			`dev-session agent "${DEV_AGENT_POLICY.slug}" not found — seed it (scripts/seed-workflows.ts)`,
 		);
 	}
-	if (created.status === "agent_policy_mismatch") {
+	if (ensured.status === "agent_policy_mismatch") {
 		throw new Error(
 			`dev-session agent "${DEV_AGENT_POLICY.slug}" does not match the required preview runtime policy`,
+		);
+	}
+	if (ensured.status === "session_conflict") {
+		throw new Error(
+			`dev-session replay for execution ${params.executionId} conflicts with its durable ${ensured.reason} contract`,
 		);
 	}
 
 	// Start the interactive session_workflow. Dev handoffs are persistent by
 	// default because the parent workflow is handing control to a human-driven
 	// session; callers can opt into the old bounded host with persistent:false.
-	await spawnSessionWorkflow(created.sessionId, {
+	await spawnSessionWorkflow(ensured.sessionId, {
 		persistentHost: params.persistent !== false,
 		requireWorkflowHost: true,
 	});
 
 	return {
-		sessionId: created.sessionId,
-		url: `/sessions/${created.sessionId}`,
-		agentSlug: created.agentSlug,
+		status: ensured.status,
+		sessionId: ensured.sessionId,
+		url: `/sessions/${ensured.sessionId}`,
+		agentSlug: ensured.agentSlug,
 	};
 }

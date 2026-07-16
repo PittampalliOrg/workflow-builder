@@ -49,7 +49,10 @@ export function validatePreviewActionInternalToken(request: Request): boolean {
   const expected = env.PREVIEW_ACTION_INTERNAL_TOKEN?.trim();
   if (!expected) return false;
   const token = request.headers.get("x-preview-action-token")?.trim();
-  return !!token && token === expected;
+  if (!token) return false;
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const tokenDigest = createHash("sha256").update(token).digest();
+  return timingSafeEqual(expectedDigest, tokenDigest);
 }
 
 /** Fail closed when the dedicated preview-action credential is absent or wrong. */

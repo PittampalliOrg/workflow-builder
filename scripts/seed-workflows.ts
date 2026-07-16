@@ -4141,8 +4141,10 @@ async function upsertRawWorkflow(params: {
 	nodes: JsonRecord[];
 	edges: JsonRecord[];
 	visibility?: "private" | "public";
+	engineType?: "dapr" | "dynamic-script";
 }) {
 	const visibility = params.visibility ?? "private";
+	const engineType = params.engineType ?? "dapr";
 	const existing = await params.db.query.workflows.findFirst({
 		where: eq(workflows.id, params.workflowId),
 	});
@@ -4159,7 +4161,7 @@ async function upsertRawWorkflow(params: {
 			specVersion: "1.0.0",
 			spec: params.spec,
 			visibility,
-			engineType: "dapr",
+			engineType,
 		});
 		console.log(
 			`[seed-workflows] Created workflow ${params.workflowId} for user ${params.userId}`,
@@ -4188,7 +4190,7 @@ async function upsertRawWorkflow(params: {
 			specVersion: "1.0.0",
 			spec: params.spec,
 			visibility,
-			engineType: "dapr",
+			engineType,
 			updatedAt: new Date(),
 		})
 		.where(eq(workflows.id, params.workflowId));
@@ -4694,6 +4696,84 @@ async function seedGeneratorCriticShowcases(params: {
 		modelSpec: "claude-opus-4-8",
 		effort: "ultracode",
 		instructions: GAN_GENERATOR_ULTRACODE_PERSONA,
+	});
+
+	// Host-owned dynamic lifecycle: seeded on the physical cluster and bridged to
+	// the preview-local microservice-dev-session through narrow command actions.
+	const hostPreviewLifecycleScript = fs.readFileSync(
+		path.resolve(
+			process.cwd(),
+			"scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js",
+		),
+		"utf8",
+	);
+	const hostPreviewLifecycleMeta = {
+		name: "preview-development-lifecycle",
+		description:
+			"Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.",
+		phases: [
+			{ title: "Provision" },
+			{ title: "Start development" },
+			{ title: "Review" },
+			{ title: "Finalize" },
+		],
+		launch: { surface: "dev-environment", target: "control-plane" },
+		input: {
+			type: "object",
+			required: ["intent", "environmentName"],
+			additionalProperties: false,
+			properties: {
+				intent: {
+					type: "string",
+					title: "Development task",
+					minLength: 1,
+					maxLength: 12000,
+					description: "The initial task sent to the preview-local interactive agent.",
+				},
+				environmentName: {
+					type: "string",
+					title: "Preview environment name",
+					pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$",
+				},
+				services: {
+					type: "array",
+					title: "Microservices to develop",
+					minItems: 1,
+					uniqueItems: true,
+					items: { type: "string" },
+					default: ["workflow-builder"],
+				},
+				ttlHours: {
+					type: "integer",
+					title: "Preview lifetime in hours",
+					minimum: 2,
+					maximum: 24,
+					default: 8,
+				},
+				retainAfterCompletion: {
+					type: "boolean",
+					title: "Retain environment after completion",
+					default: false,
+				},
+			},
+		},
+	};
+	await upsertRawWorkflow({
+		db: params.db,
+		workflowId: "preview-development-lifecycle",
+		name: "Preview development lifecycle",
+		description: hostPreviewLifecycleMeta.description,
+		userId: params.userId,
+		projectId: params.projectId,
+		spec: {
+			engine: "dynamic-script",
+			script: hostPreviewLifecycleScript,
+			meta: hostPreviewLifecycleMeta,
+		},
+		nodes: [],
+		edges: [],
+		visibility: "public",
+		engineType: "dynamic-script",
 	});
 
 	// Cutover P3 (item 17): the fixture set is the PORT SET — 13 historical

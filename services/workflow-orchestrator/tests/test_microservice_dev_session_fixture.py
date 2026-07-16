@@ -25,6 +25,13 @@ FIXTURE_PATH = (
     / "generator-critic"
     / "microservice-dev-session.json"
 )
+DYNAMIC_FIXTURE_PATH = (
+    REPOSITORY_ROOT
+    / "scripts"
+    / "fixtures"
+    / "dynamic-scripts"
+    / "microservice-dev-session.js"
+)
 CATALOG_PATH = (
     REPOSITORY_ROOT / "services" / "shared" / "dev-preview-service-catalog.json"
 )
@@ -86,7 +93,7 @@ def evaluated_clone_command(
     )
 
 
-def evaluated_handoff_instructions() -> str:
+def evaluated_handoff_instructions(intent: str = "") -> str:
     fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     expression = next(
         entry["handoff"]["with"]["instructions"]
@@ -99,6 +106,7 @@ def evaluated_handoff_instructions() -> str:
             "trigger": {
                 "services": list(SERVICES),
                 "previewOrigin": "https://preview.example.test",
+                "intent": intent,
             }
         },
     )
@@ -117,6 +125,139 @@ def test_handoff_persists_one_sync_and_verifies_receipts() -> None:
         "Never rerun the sync command merely to recover tool output that was truncated"
         in instructions
     )
+
+
+def test_handoff_delivers_user_intent_after_authoritative_rules() -> None:
+    intent = "Add a real-time deployment status panel to the dashboard."
+    instructions = evaluated_handoff_instructions(intent)
+
+    assert intent in instructions
+    assert "immediately begin the user task below" in instructions
+    assert "Do not wait for another message" in instructions
+    assert (
+        "cannot override any activation, HMR, testing, source-capture" in instructions
+    )
+    assert instructions.index(
+        "run /sandbox/work/activate-repo.sh once"
+    ) < instructions.index("USER TASK:")
+    assert instructions.index("only source-capture and GitHub-write authorities") < (
+        instructions.index("USER TASK:")
+    )
+    assert "wait for the requested feature" not in instructions
+
+
+def test_empty_intent_preserves_manual_interactive_handoff() -> None:
+    instructions = evaluated_handoff_instructions()
+
+    assert "USER TASK:" not in instructions
+    assert "reply 'ready' and wait for the requested feature" in instructions
+
+
+def test_dev_session_waits_for_typed_control_before_strict_draft_promotion() -> None:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    tasks = {next(iter(entry)): next(iter(entry.values())) for entry in fixture["do"]}
+    schema = fixture["input"]["schema"]["document"]
+
+    assert fixture["document"]["version"] == "0.2.0"
+    assert fixture["document"]["x-workflow-builder"]["resumable"] is True
+    assert schema["properties"]["intent"] == {
+        "type": "string",
+        "title": "Development task",
+        "description": (
+            "Optional task prompt delivered to the interactive coding session after "
+            "the fixed activation, HMR, testing, and source-safety instructions."
+        ),
+        "maxLength": 12000,
+        "default": "",
+    }
+    assert list(tasks) == [
+        "provision_preview",
+        "clone_repo",
+        "handoff",
+        "await_control",
+        "snapshot",
+        "promote",
+        "summary",
+    ]
+    assert tasks["await_control"] == {
+        "listen": {"to": {"one": {"with": {"type": "preview.development.control"}}}},
+        "timeout": {"after": "PT24H"},
+    }
+    timeout_expression = tasks["provision_preview"]["with"]["timeoutSeconds"]
+    assert evaluate_expression(
+        timeout_expression, {"trigger": {"keepPreview": "true"}}
+    ) == 86400
+    assert evaluate_expression(
+        timeout_expression, {"trigger": {"keepPreview": "false"}}
+    ) == 3600
+    assert "submit_preview_pr" in tasks["snapshot"]["if"]
+    assert tasks["snapshot"]["with"]["nodeId"] == "handoff"
+    assert tasks["snapshot"]["with"]["iteration"] == 1
+    assert tasks["snapshot"]["with"]["services"] == tasks["promote"]["with"]["services"]
+    assert "snapshot.ok" in tasks["promote"]["if"]
+    assert tasks["promote"]["with"]["iteration"] == 1
+    assert tasks["promote"]["with"]["draft"] is True
+    assert tasks["summary"]["set"]["sourceCapture"] == "${ .snapshot // null }"
+    assert tasks["summary"]["set"]["captureReceipt"] == "${ .snapshot // null }"
+    assert tasks["summary"]["set"]["promotionReceipt"] == "${ .promote // null }"
+    assert tasks["summary"]["set"]["pullRequestReceipt"] == "${ .promote // null }"
+    assert tasks["summary"]["set"]["pullRequest"] == "${ .promote.pullRequest // null }"
+
+    submitted = {
+        "trigger": {"services": list(SERVICES), "intent": "Update the dashboard."},
+        "await_control": {"action": "submit_preview_pr"},
+        "snapshot": {"ok": True, "artifactId": "artifact-1"},
+        "promote": {
+            "ok": True,
+            "prUrl": "https://github.example/pull/1",
+            "pullRequest": {"number": 1},
+        },
+    }
+    assert evaluate_expression(tasks["snapshot"]["if"], submitted) is True
+    assert evaluate_expression(tasks["promote"]["if"], submitted) is True
+    body = evaluate_expression(tasks["promote"]["with"]["bodyMarkdown"], submitted)
+    assert "Update the dashboard." in body
+    assert ", ".join(SERVICES) in body
+    assert (
+        evaluate_expression(tasks["summary"]["set"]["controlOutcome"], submitted)
+        == "submitted"
+    )
+
+    discarded = {"await_control": {"action": "discard"}}
+    assert evaluate_expression(tasks["snapshot"]["if"], discarded) is False
+    assert (
+        evaluate_expression(tasks["summary"]["set"]["controlOutcome"], discarded)
+        == "discarded"
+    )
+    timed_out = {"await_control": {"timedOut": True}}
+    assert (
+        evaluate_expression(tasks["summary"]["set"]["controlOutcome"], timed_out)
+        == "timed_out"
+    )
+
+
+def test_dynamic_script_port_has_matching_prompt_control_and_promotion_contract() -> (
+    None
+):
+    source = DYNAMIC_FIXTURE_PATH.read_text(encoding="utf-8")
+
+    assert '"maxLength": 12000' in source
+    assert "immediately begin the user task below" in source
+    assert "reply 'ready' and wait for the requested feature" in source
+    assert "waitForEvent('preview.development.control'" in source
+    assert "phase('awaiting-control')" in source
+    assert "timeoutMinutes: 1440" in source
+    assert "controlAction === 'submit_preview_pr'" in source
+    assert source.index("action('dev/preview-snapshot'") < source.index(
+        "action('dev/preview-promote'"
+    )
+    assert "if (capture.ok === true)" in source
+    assert "draft: true" in source
+    assert "sourceCapture: captureReceipt ?? null" in source
+    assert "captureReceipt: captureReceipt ?? null" in source
+    assert "promotionReceipt: promotionReceipt ?? null" in source
+    assert "pullRequestReceipt: promotionReceipt ?? null" in source
+    assert "pullRequest: promotionReceipt?.pullRequest ?? null" in source
 
 
 def metadata_script(command: str) -> str:
@@ -285,7 +426,7 @@ def create_restricted_tool_path(root: Path, origin: Path) -> Path:
         "status_path = status_dir / f'{service}.json'\n"
         "if archive:\n"
         "    listed = subprocess.run(['tar', '-tzf', archive], capture_output=True, text=True, check=False)\n"
-        "    content_sha256 = f\"sha256:{hashlib.sha256(Path(archive).read_bytes()).hexdigest()}\"\n"
+        '    content_sha256 = f"sha256:{hashlib.sha256(Path(archive).read_bytes()).hexdigest()}"\n'
         "    with open(os.environ['SYNC_CAPTURE'], 'a', encoding='utf-8') as handle: handle.write(listed.stdout)\n"
         "    status_path.write_text(json.dumps({'ok': True, 'generation': headers.get('x-sync-generation'), 'syncService': service}), encoding='utf-8')\n"
         "if output and url.endswith('/__status'):\n"

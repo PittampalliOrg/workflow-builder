@@ -56,6 +56,7 @@ describe("spawnDevSession", () => {
 				title: "Dev handoff",
 			}),
 		).resolves.toEqual({
+			status: "created",
 			sessionId: "session-1",
 			url: "/sessions/session-1",
 			agentSlug: "glm-juicefs-builder-agent",
@@ -71,6 +72,26 @@ describe("spawnDevSession", () => {
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
 		});
+		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
+			persistentHost: true,
+			requireWorkflowHost: true,
+		});
+	});
+
+	it("reuses and idempotently starts the same durable dev session on replay", async () => {
+		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
+			status: "reused",
+			sessionId: "session-1",
+			agentSlug: "glm-juicefs-builder-agent",
+		});
+
+		await expect(
+			spawnDevSession({
+				executionId: "exec-1",
+				instructions: "open the repo and run ./sync.sh",
+			}),
+		).resolves.toMatchObject({ status: "reused", sessionId: "session-1" });
+		expect(spawnSessionWorkflowMock).toHaveBeenCalledTimes(1);
 		expect(spawnSessionWorkflowMock).toHaveBeenCalledWith("session-1", {
 			persistentHost: true,
 			requireWorkflowHost: true,
@@ -131,6 +152,21 @@ describe("spawnDevSession", () => {
 				instructions: "start",
 			}),
 		).rejects.toThrow("does not match the required preview runtime policy");
+		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects conflicting durable replay provenance before workflow startup", async () => {
+		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
+			status: "session_conflict",
+			reason: "instructions_mismatch",
+		});
+
+		await expect(
+			spawnDevSession({
+				executionId: "exec-1",
+				instructions: "different task",
+			}),
+		).rejects.toThrow("durable instructions_mismatch contract");
 		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
 	});
 });

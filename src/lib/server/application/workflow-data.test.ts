@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	ApiKeyStore,
@@ -588,6 +589,18 @@ function fakeSessions(): SessionRepository {
 		listSessions: vi.fn(async () => []),
 		getSession: vi.fn(async () => null),
 		createSession: vi.fn(async () => sampleSessionDetail()),
+		ensureSession: vi.fn(async (input) => ({
+			session: {
+				...sampleSessionDetail(),
+				id: input.id,
+				title: input.title ?? null,
+				agentId: input.agentId,
+				agentVersion: input.agentVersion ?? null,
+				projectId: input.projectId ?? null,
+				workflowExecutionId: input.workflowExecutionId ?? null,
+			},
+			created: true,
+		})),
 		updateSessionTitle: vi.fn(async () => null),
 		archiveSession: vi.fn(async () => false),
 		deleteSession: vi.fn(async () => false),
@@ -992,6 +1005,11 @@ function fakeSessionAgentSlugs(): SessionAgentSlugResolver {
 	return {
 		resolveSessionAgentIdBySlug: vi.fn(async () => "agent-1"),
 	};
+}
+
+function expectedWorkflowDevSessionId(executionId: string): string {
+	const digest = createHash("sha256").update(executionId, "utf8").digest("hex");
+	return `preview-dev-${digest.slice(0, 32)}`;
 }
 
 function fakeWorkflowAgentReads(): WorkflowAgentReadRepository {
@@ -4088,23 +4106,29 @@ describe("ApplicationWorkflowDataService", () => {
 	});
 
 	it("creates workflow dev handoff sessions through session ports", async () => {
+		const sessionId = expectedWorkflowDevSessionId("exec-1");
 		const sessions = {
 			...fakeSessions(),
-			createSession: vi.fn(async (input) => ({
-				...sampleSessionDetail(),
-				id: "dev-session-1",
-				agentId: input.agentId,
-				agentVersion: input.agentVersion ?? null,
-				userId: input.userId,
-				projectId: input.projectId ?? null,
-				workflowExecutionId: input.workflowExecutionId ?? null,
-				title: input.title ?? null,
-			}) as SessionDetail),
+			ensureSession: vi.fn(async (input) => ({
+				session: {
+					...sampleSessionDetail(),
+					id: sessionId,
+					agentId: input.agentId,
+					agentVersion: input.agentVersion ?? null,
+					projectId: input.projectId ?? null,
+					workflowExecutionId: input.workflowExecutionId ?? null,
+					title: input.title ?? null,
+				} as SessionDetail,
+				created: true,
+			})),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
 		const sessionAgents = fakePreviewDevSessionAgentResolver();
 		const sessionAgentSlugs = fakeSessionAgentSlugs();
-		const workflowExecutions = fakeWorkflowExecutions();
+		const workflowExecutions = {
+			...fakeWorkflowExecutions(),
+			listSessionIdsByExecutionId: vi.fn(async () => [sessionId]),
+		} satisfies WorkflowExecutionRepository;
 		const { service } = makeService({
 			sessions,
 			sessionEvents,
@@ -4126,7 +4150,7 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toEqual({
 			status: "created",
-			sessionId: "dev-session-1",
+			sessionId,
 			agentSlug: "dapr-juicefs-dev-agent",
 		});
 		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith(
@@ -4138,7 +4162,8 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
 			agentId: "agent-1",
 		});
-		expect(sessions.createSession).toHaveBeenCalledWith({
+		expect(sessions.ensureSession).toHaveBeenCalledWith({
+			id: sessionId,
 			agentId: "agent-1",
 			agentVersion: 7,
 			userId: "user-1",
@@ -4146,17 +4171,219 @@ describe("ApplicationWorkflowDataService", () => {
 			workflowExecutionId: "exec-1",
 			title: "Dev handoff",
 		});
-		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith(
-			"dev-session-1",
-			{
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith(sessionId, {
+			type: "user.message",
+			data: {
 				type: "user.message",
+				content: [{ type: "text", text: "open repo" }],
+				origin: "preview-development-workflow",
+				provenance: {
+					contract: "workflow-dev-session-kickoff/v1",
+					workflowExecutionId: "exec-1",
+					instructionsSha256: createHash("sha256")
+						.update("open repo", "utf8")
+						.digest("hex"),
+					title: "Dev handoff",
+					agentSlug: "dapr-juicefs-dev-agent",
+					agentRuntime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
+			},
+			processedAt: null,
+			sourceEventId: "workflow-dev-session:kickoff:v1",
+		});
+	});
+
+	it("converges concurrent workflow dev-session retries on one session and kickoff", async () => {
+		const executionId = "exec-concurrent";
+		const sessionId = expectedWorkflowDevSessionId(executionId);
+		let durableSession: SessionDetail | null = null;
+		let durableKickoff: Awaited<ReturnType<SessionEventLog["appendSessionEvent"]>> | null =
+			null;
+		let durableKickoffWrites = 0;
+		const sessions = {
+			...fakeSessions(),
+			ensureSession: vi.fn(async (input) => {
+				if (durableSession) return { session: durableSession, created: false };
+				durableSession = {
+					...sampleSessionDetail(),
+					id: input.id,
+					title: input.title ?? null,
+					agentId: input.agentId,
+					agentVersion: input.agentVersion ?? null,
+					projectId: input.projectId ?? null,
+					workflowExecutionId: input.workflowExecutionId ?? null,
+				};
+				return { session: durableSession, created: true };
+			}),
+			getSessionFileOwner: vi.fn(async (id) =>
+				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+			),
+		} satisfies SessionRepository;
+		const sessionEvents = {
+			...fakeSessionEvents(),
+			appendSessionEvent: vi.fn(async (id, event) => {
+				if (durableKickoff) return durableKickoff;
+				durableKickoffWrites += 1;
+				durableKickoff = {
+					id: "kickoff-1",
+					sessionId: id,
+					sequence: 1,
+					type: event.type,
+					data: event.data ?? {},
+					processedAt: null,
+					sourceEventId: event.sourceEventId ?? null,
+					producerId: null,
+					producerEpoch: null,
+					createdAt: "2026-01-01T00:00:00.000Z",
+					timestamp: "2026-01-01T00:00:00.000Z",
+				};
+				return durableKickoff;
+			}),
+		} satisfies SessionEventLog;
+		const workflowExecutions = {
+			...fakeWorkflowExecutions(),
+			listSessionIdsByExecutionId: vi.fn(async () =>
+				durableSession ? [durableSession.id] : [],
+			),
+		} satisfies WorkflowExecutionRepository;
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionAgents: fakePreviewDevSessionAgentResolver(),
+			sessionAgentSlugs: fakeSessionAgentSlugs(),
+			workflowExecutions,
+		});
+		const request = {
+			executionId,
+			agentPolicy: {
+				slug: "dapr-juicefs-dev-agent",
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: "deepseek-v4-pro",
+			},
+			instructions: "open repo",
+		};
+
+		const results = await Promise.all([
+			service.createWorkflowDevSession(request),
+			service.createWorkflowDevSession(request),
+		]);
+
+		expect(results).toEqual([
+			{
+				status: "created",
+				sessionId,
+				agentSlug: "dapr-juicefs-dev-agent",
+			},
+			{
+				status: "reused",
+				sessionId,
+				agentSlug: "dapr-juicefs-dev-agent",
+			},
+		]);
+		expect(durableKickoffWrites).toBe(1);
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledTimes(2);
+	});
+
+	it("fails closed when a replay changes the durable kickoff instructions", async () => {
+		const executionId = "exec-replay";
+		const sessionId = expectedWorkflowDevSessionId(executionId);
+		const session = {
+			...sampleSessionDetail(),
+			id: sessionId,
+			title: `Dev session (${executionId})`,
+			agentId: "agent-1",
+			agentVersion: 7,
+			projectId: "project-1",
+			workflowExecutionId: executionId,
+		};
+		const sessions = {
+			...fakeSessions(),
+			ensureSession: vi.fn(async () => ({ session, created: false })),
+			getSessionFileOwner: vi.fn(async () => ({
+				id: sessionId,
+				userId: "user-1",
+				projectId: "project-1",
+			})),
+		} satisfies SessionRepository;
+		const sessionEvents = {
+			...fakeSessionEvents(),
+			appendSessionEvent: vi.fn(async (id, event) => ({
+				id: "kickoff-1",
+				sessionId: id,
+				sequence: 1,
+				type: event.type,
 				data: {
-					type: "user.message",
-					content: [{ type: "text", text: "open repo" }],
+					...(event.data ?? {}),
+					content: [{ type: "text", text: "different task" }],
 				},
 				processedAt: null,
-			},
-		);
+				sourceEventId: event.sourceEventId ?? null,
+				producerId: null,
+				producerEpoch: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				timestamp: "2026-01-01T00:00:00.000Z",
+			})),
+		} satisfies SessionEventLog;
+		const workflowExecutions = {
+			...fakeWorkflowExecutions(),
+			listSessionIdsByExecutionId: vi.fn(async () => [sessionId]),
+		} satisfies WorkflowExecutionRepository;
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionAgents: fakePreviewDevSessionAgentResolver(),
+			sessionAgentSlugs: fakeSessionAgentSlugs(),
+			workflowExecutions,
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId,
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
+				instructions: "open repo",
+			}),
+		).resolves.toEqual({
+			status: "session_conflict",
+			reason: "instructions_mismatch",
+		});
+	});
+
+	it("fails closed before creation when an execution already has another session", async () => {
+		const sessions = fakeSessions();
+		const sessionEvents = fakeSessionEvents();
+		const workflowExecutions = {
+			...fakeWorkflowExecutions(),
+			listSessionIdsByExecutionId: vi.fn(async () => ["legacy-session"]),
+		} satisfies WorkflowExecutionRepository;
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			sessionAgents: fakePreviewDevSessionAgentResolver(),
+			sessionAgentSlugs: fakeSessionAgentSlugs(),
+			workflowExecutions,
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId: "exec-ambiguous",
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
+				instructions: "open repo",
+			}),
+		).resolves.toEqual({
+			status: "session_conflict",
+			reason: "ambiguous",
+		});
+		expect(sessions.ensureSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
 	it("resolves session agents through the configured session-agent port", async () => {
@@ -4247,7 +4474,7 @@ describe("ApplicationWorkflowDataService", () => {
 				instructions: "open repo",
 			}),
 		).resolves.toEqual({ status: "execution_not_found" });
-		expect(sessions.createSession).not.toHaveBeenCalled();
+		expect(sessions.ensureSession).not.toHaveBeenCalled();
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
@@ -4278,7 +4505,7 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "agent_not_found",
 			agentSlug: "dapr-juicefs-dev-agent",
 		});
-		expect(sessions.createSession).not.toHaveBeenCalled();
+		expect(sessions.ensureSession).not.toHaveBeenCalled();
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
@@ -4313,7 +4540,7 @@ describe("ApplicationWorkflowDataService", () => {
 				status: "agent_policy_mismatch",
 				agentSlug: "dapr-juicefs-dev-agent",
 			});
-			expect(sessions.createSession).not.toHaveBeenCalled();
+			expect(sessions.ensureSession).not.toHaveBeenCalled();
 			expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 		},
 	);
@@ -8706,9 +8933,9 @@ describe("ApplicationWorkflowDataService", () => {
 	it("composes the dev preview hub read model through workflow-data ports", async () => {
 		const devEnvironments = fakeDevEnvironments();
 		const { service, workflowDefinitions } = makeService({ devEnvironments });
-		vi.mocked(
-			workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
-		).mockResolvedValueOnce("workflow-dev-session");
+		vi.mocked(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix)
+			.mockResolvedValueOnce("workflow-dev-session")
+			.mockResolvedValueOnce("workflow-preview-lifecycle");
 
 		await expect(
 			service.getDevPreviewHubReadModel({ projectId: "project-1" }),
@@ -8718,15 +8945,26 @@ describe("ApplicationWorkflowDataService", () => {
 			]),
 			devWorkflowId: "workflow-dev-session",
 			devWorkflowName: "microservice-dev-session",
+			lifecycleWorkflowId: "workflow-preview-lifecycle",
+			lifecycleWorkflowName: "preview-development-lifecycle",
 		});
 		expect(devEnvironments.listServices).toHaveBeenCalledOnce();
-		expect(
-			workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
-		).toHaveBeenCalledWith({
-			projectId: "project-1",
-			workflowId: "microservice-dev-session",
-			namePrefix: "Microservice dev-session%",
-		});
+		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenNthCalledWith(
+			1,
+			{
+				projectId: "project-1",
+				workflowId: "microservice-dev-session",
+				namePrefix: "Microservice dev-session%",
+			},
+		);
+		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenNthCalledWith(
+			2,
+			{
+				projectId: "project-1",
+				workflowId: "preview-development-lifecycle",
+				namePrefix: "Preview development lifecycle%",
+			},
+		);
 	});
 
 	it("loads dev environment list and detail through dev environment ports", async () => {

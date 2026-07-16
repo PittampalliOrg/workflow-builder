@@ -27,6 +27,24 @@ from tracing import apply_workflow_activity_context, set_current_span_attrs, sta
 logger = logging.getLogger(__name__)
 
 FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
+PRIVILEGED_PREVIEW_ACTION_SLUGS = frozenset(
+    {
+        "preview/environment-launch",
+        "preview/environment-status",
+        "preview/workflow-start",
+        "preview/workflow-status",
+        "preview/workflow-signal",
+        "preview/workflow-verify-promotion",
+        "preview/environment-teardown",
+        "preview/environment-teardown-status",
+        "dev/preview",
+        "dev/preview-teardown",
+        "dev/preview-snapshot",
+        "dev/preview-promote",
+        "dev/preview-acceptance",
+        "dev/preview-build",
+    }
+)
 
 
 class ExecuteActionInput(BaseModel):
@@ -113,6 +131,20 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             "error": f"No actionType specified for node {node.get('id')}. All action nodes must have an actionType configured.",
             "duration_ms": 0,
         }
+
+    preview_action_token = ""
+    if action_type in PRIVILEGED_PREVIEW_ACTION_SLUGS:
+        preview_action_token = os.environ.get(
+            "PREVIEW_ACTION_INTERNAL_TOKEN", ""
+        ).strip()
+        if not preview_action_token:
+            return {
+                "success": False,
+                "error": f"{action_type}: PREVIEW_ACTION_INTERNAL_TOKEN is not configured",
+                "errorClass": "permanent",
+                "responseStatus": 0,
+                "duration_ms": 0,
+            }
 
     # Resolve template variables in the node config
     resolved_config = resolve_templates(config, node_outputs)
@@ -238,16 +270,20 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             # the Dapr sidecar. function-router's sessionIdFromHeaders reads the
             # Phoenix session attribute from baggage when the explicit
             # x-workflow-session-id header isn't present.
+            dapr_metadata = {
+                key: value
+                for key, value in otel.items()
+                if key in ("traceparent", "tracestate", "baggage")
+            }
+            if preview_action_token:
+                dapr_metadata["x-preview-action-token"] = preview_action_token
+
             status, result, resp_text = dapr_invoke(
                 FUNCTION_ROUTER_APP_ID,
                 "execute",
                 request_payload,
                 timeout=http_timeout,
-                metadata={
-                    key: value
-                    for key, value in otel.items()
-                    if key in ("traceparent", "tracestate", "baggage")
-                },
+                metadata=dapr_metadata,
             )
 
             if status >= 400:
@@ -284,6 +320,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 if action_type == "dev/preview" and status >= 500:
                     failure_result["errorClass"] = "retryable"
                     failure_result["responseStatus"] = 0
+                elif action_type in PRIVILEGED_PREVIEW_ACTION_SLUGS:
+                    failure_result["errorClass"] = (
+                        "retryable" if status >= 500 else "permanent"
+                    )
+                    failure_result["responseStatus"] = status
                 return failure_result
 
             duration_ms = int((time.time() - start_time) * 1000)

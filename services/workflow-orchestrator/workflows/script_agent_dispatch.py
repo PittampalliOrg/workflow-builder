@@ -30,7 +30,7 @@ import dapr.ext.workflow as wf
 from workflows.session_host_wait import spawn_session_with_host_wait
 from workflows.action_runner_workflow import action_runner_workflow
 from workflows.wait_event_workflow import wait_event_workflow
-from activities.execute_action import execute_action
+from activities.execute_action import PRIVILEGED_PREVIEW_ACTION_SLUGS, execute_action
 from activities.resolve_script_workflow import resolve_script_workflow
 from activities.team_ops import execute_team_op
 
@@ -712,8 +712,9 @@ def start_action_call(
 
     # dev/preview activation needs the runner child's durable poll (blocker B1).
     needs_activation = _expects_durable_dev_preview_activation(slug, config)
+    needs_preview_retry = slug in PRIVILEGED_PREVIEW_ACTION_SLUGS
 
-    if _is_ap_piece_action(slug) or needs_activation:
+    if _is_ap_piece_action(slug) or needs_activation or needs_preview_retry:
         # AP durability contract: the runner child owns BEGIN/RESUME rounds,
         # _AP_RETRY_POLICY, and the DELAY/WEBHOOK pause waits; its instance id
         # (deterministic, already stamped by the pump) is the resume target.

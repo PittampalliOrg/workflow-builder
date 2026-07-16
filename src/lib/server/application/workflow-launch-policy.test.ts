@@ -8,6 +8,12 @@ const spec = {
   },
 };
 const revision = "a".repeat(40);
+const hostLifecycleSpec = {
+	engine: "dynamic-script",
+	meta: {
+		launch: { surface: "dev-environment", target: "control-plane" },
+	},
+};
 
 function scope(
   current: ReturnType<PreviewDeploymentScopePort["current"]>,
@@ -202,6 +208,61 @@ describe("ApplicationWorkflowLaunchPolicyService", () => {
       triggerData: { mode: "host-throwaway", service: "function-router" },
     });
   });
+
+	it("preserves the strict host lifecycle input without injecting child fields", () => {
+		const service = new ApplicationWorkflowLaunchPolicyService(
+			scope({ kind: "control-plane" }),
+		);
+		const triggerData = {
+			intent: "Add a dashboard capability",
+			environmentName: "dashboard-proof",
+			services: ["workflow-builder"],
+			ttlHours: 8,
+			retainAfterCompletion: false,
+		};
+
+		expect(
+			service.prepare({
+				workflow: {
+					name: "preview-development-lifecycle",
+					spec: hostLifecycleSpec,
+				},
+				launchSurface: "dev-environment",
+				launchOrigin: null,
+				triggerData,
+			}),
+		).toEqual({ ok: true, triggerData });
+	});
+
+	it("rejects the host lifecycle inside a preview deployment", () => {
+		const service = new ApplicationWorkflowLaunchPolicyService(
+			scope({
+				kind: "preview",
+				preview: {
+					name: "feature-one",
+					profile: "app-live",
+					platformRevision: "b".repeat(40),
+					sourceRevision: revision,
+					origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+				},
+			}),
+		);
+
+		expect(
+			service.prepare({
+				workflow: {
+					name: "preview-development-lifecycle",
+					spec: hostLifecycleSpec,
+				},
+				launchSurface: "dev-environment",
+				triggerData: { intent: "change", environmentName: "proof" },
+			}),
+		).toEqual({
+			ok: false,
+			status: 409,
+			error: "This workflow can only orchestrate preview development from the control plane.",
+		});
+	});
 
   it("rejects development launches from a non-app-live preview deployment", () => {
     const service = new ApplicationWorkflowLaunchPolicyService(

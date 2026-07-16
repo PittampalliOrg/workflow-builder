@@ -946,6 +946,64 @@ function workspaceSummaryFromRecord(
 	};
 }
 
+const WORKFLOW_DEV_SESSION_KICKOFF_CONTRACT = "workflow-dev-session-kickoff/v1";
+const WORKFLOW_DEV_SESSION_KICKOFF_SOURCE = "workflow-dev-session:kickoff:v1";
+
+function sha256Hex(value: string): string {
+	return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function workflowDevSessionId(executionId: string): string {
+	return `preview-dev-${sha256Hex(executionId).slice(0, 32)}`;
+}
+
+function workflowDevSessionKickoffData(input: {
+	executionId: string;
+	instructions: string;
+	title: string;
+	agentPolicy: { slug: string; runtime: string; modelSpec: string };
+}): Record<string, unknown> {
+	return {
+		type: "user.message",
+		content: [{ type: "text", text: input.instructions }],
+		origin: "preview-development-workflow",
+		provenance: {
+			contract: WORKFLOW_DEV_SESSION_KICKOFF_CONTRACT,
+			workflowExecutionId: input.executionId,
+			instructionsSha256: sha256Hex(input.instructions),
+			title: input.title,
+			agentSlug: input.agentPolicy.slug,
+			agentRuntime: input.agentPolicy.runtime,
+			modelSpec: input.agentPolicy.modelSpec,
+		},
+	};
+}
+
+function workflowDevSessionKickoffMatches(
+	actual: Record<string, unknown>,
+	expected: Record<string, unknown>,
+): boolean {
+	const actualContent = Array.isArray(actual.content) ? actual.content : [];
+	const expectedContent = Array.isArray(expected.content) ? expected.content : [];
+	const actualProvenance = actual.provenance;
+	const expectedProvenance = expected.provenance;
+	return (
+		actual.type === expected.type &&
+		actual.origin === expected.origin &&
+		actualContent.length === 1 &&
+		expectedContent.length === 1 &&
+		isRecord(actualContent[0]) &&
+		isRecord(expectedContent[0]) &&
+		actualContent[0].type === expectedContent[0].type &&
+		actualContent[0].text === expectedContent[0].text &&
+		isRecord(actualProvenance) &&
+		isRecord(expectedProvenance) &&
+		Object.keys(expectedProvenance).every(
+			(key) => actualProvenance[key] === expectedProvenance[key],
+		)
+	);
+}
+
 export class ApplicationWorkflowDataService implements WorkflowDataService {
 	constructor(
 		private readonly deps: {
@@ -4599,17 +4657,27 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async getDevPreviewHubReadModel(input: { projectId?: string | null }) {
 		const devEnvironments = this.requireDevEnvironments();
 		const projectId = input.projectId ?? null;
-		const devWorkflowId = projectId
-			? await this.findProjectWorkflowIdByIdOrNamePrefix({
-					projectId,
-					workflowId: DEV_SESSION_WORKFLOW_ID,
-					namePrefix: "Microservice dev-session%",
-				})
-			: null;
+		const lifecycleWorkflowName = "preview-development-lifecycle";
+		const [devWorkflowId, lifecycleWorkflowId] = projectId
+			? await Promise.all([
+					this.findProjectWorkflowIdByIdOrNamePrefix({
+						projectId,
+						workflowId: DEV_SESSION_WORKFLOW_ID,
+						namePrefix: "Microservice dev-session%",
+					}),
+					this.findProjectWorkflowIdByIdOrNamePrefix({
+						projectId,
+						workflowId: lifecycleWorkflowName,
+						namePrefix: "Preview development lifecycle%",
+					}),
+				])
+			: [null, null];
 		return {
 			services: devEnvironments.listServices(),
 			devWorkflowId,
 			devWorkflowName: DEV_SESSION_WORKFLOW_ID,
+			lifecycleWorkflowId,
+			lifecycleWorkflowName,
 		};
 	}
 
@@ -5269,10 +5337,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		instructions: string;
 		title?: string | null;
 	}): Promise<
-		| { status: "created"; sessionId: string; agentSlug: string }
+		| {
+				status: "created" | "reused";
+				sessionId: string;
+				agentSlug: string;
+		  }
 		| { status: "execution_not_found" }
 		| { status: "agent_not_found"; agentSlug: string }
 		| { status: "agent_policy_mismatch"; agentSlug: string }
+		| {
+				status: "session_conflict";
+				reason: "ambiguous" | "identity_mismatch" | "instructions_mismatch";
+		  }
 	> {
 		const executionOwner =
 			await this.getWorkflowExecutionSessionOwnerContext(input.executionId);
@@ -5300,25 +5376,82 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { status: "agent_policy_mismatch", agentSlug };
 		}
 
-		const session = await this.requireSessions().createSession({
+		const sessions = this.requireSessions();
+		const sessionId = workflowDevSessionId(input.executionId);
+		const existingSessionIds = await this.deps.workflowExecutions.listSessionIdsByExecutionId(
+			input.executionId,
+		);
+		if (existingSessionIds.some((id) => id !== sessionId)) {
+			return { status: "session_conflict", reason: "ambiguous" };
+		}
+
+		const title = input.title ?? `Dev session (${input.executionId})`;
+		const ensured = await sessions.ensureSession({
+			id: sessionId,
 			agentId: agent.id,
 			agentVersion: agent.version ?? undefined,
 			userId: executionOwner.userId,
 			projectId: executionOwner.projectId ?? null,
 			workflowExecutionId: input.executionId,
-			title: input.title ?? `Dev session (${input.executionId})`,
+			title,
 		});
+		const session = ensured.session;
+		const sessionOwner = await sessions.getSessionFileOwner(session.id);
+		const pinnedAgent = await this.requireSessionAgents().resolveSessionAgent({
+			agentId: session.agentId,
+			agentVersion: session.agentVersion ?? undefined,
+		});
+		const pinnedRuntime = pinnedAgent?.config.runtime?.trim();
+		const pinnedModelSpec = pinnedAgent?.config.modelSpec?.trim();
+		if (
+			session.id !== sessionId ||
+			session.workflowExecutionId !== input.executionId ||
+			session.title !== title ||
+			!sessionOwner ||
+			sessionOwner.userId !== executionOwner.userId ||
+			sessionOwner.projectId !== (executionOwner.projectId ?? null) ||
+			!pinnedAgent ||
+			pinnedAgent.id !== agent.id ||
+			pinnedAgent.slug !== agentSlug ||
+			pinnedAgent.runtime !== input.agentPolicy.runtime ||
+			pinnedRuntime !== input.agentPolicy.runtime ||
+			pinnedModelSpec !== input.agentPolicy.modelSpec
+		) {
+			return { status: "session_conflict", reason: "identity_mismatch" };
+		}
 
-		await this.requireSessionEvents().appendSessionEvent(session.id, {
+		const kickoffData = workflowDevSessionKickoffData({
+			executionId: input.executionId,
+			instructions: input.instructions,
+			title,
+			agentPolicy: input.agentPolicy,
+		});
+		const kickoff = await this.requireSessionEvents().appendSessionEvent(session.id, {
 			type: "user.message",
-			data: {
-				type: "user.message",
-				content: [{ type: "text", text: input.instructions }],
-			},
+			data: kickoffData,
 			processedAt: null,
+			sourceEventId: WORKFLOW_DEV_SESSION_KICKOFF_SOURCE,
 		});
+		if (
+			kickoff.type !== "user.message" ||
+			kickoff.sourceEventId !== WORKFLOW_DEV_SESSION_KICKOFF_SOURCE ||
+			!workflowDevSessionKickoffMatches(kickoff.data, kickoffData)
+		) {
+			return { status: "session_conflict", reason: "instructions_mismatch" };
+		}
 
-		return { status: "created", sessionId: session.id, agentSlug: agent.slug };
+		const finalSessionIds = await this.deps.workflowExecutions.listSessionIdsByExecutionId(
+			input.executionId,
+		);
+		if (finalSessionIds.length !== 1 || finalSessionIds[0] !== session.id) {
+			return { status: "session_conflict", reason: "ambiguous" };
+		}
+
+		return {
+			status: ensured.created ? "created" : "reused",
+			sessionId: session.id,
+			agentSlug: pinnedAgent.slug,
+		};
 	}
 
 	async getSessionGoalFlow(input: {
