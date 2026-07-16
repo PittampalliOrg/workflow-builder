@@ -681,7 +681,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.7.2" },
+		{ name: "agent-browser-mcp", version: "1.7.3" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {

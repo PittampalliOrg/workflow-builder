@@ -50,9 +50,11 @@ async function ffprobeDuration(path) {
 	return Number.isFinite(d) ? d : 0;
 }
 
-/** Screencast-written webm (remote/CDP recordings) can carry NO container
- * duration (ffprobe: N/A) despite minutes of frames — a stream-copy remux
- * rebuilds the metadata so measuring/freezedetect work. Returns the clip
+/** Screencast-written webm (remote/CDP recordings) carries NO container
+ * duration (ffprobe: N/A) AND can change frame size mid-stream (both break
+ * the render filter chain: "Failed to configure input pad"). When the
+ * duration probe fails, fully re-encode to a constant 1280x720@10fps —
+ * verified to recover 4-min lane recordings intact. Returns the clip
  * (possibly re-pathed into `dir`); never throws. */
 async function normalizeClip(dir, clip, index) {
 	try {
@@ -62,7 +64,10 @@ async function normalizeClip(dir, clip, index) {
 			"-hide_banner", "-y",
 			"-fflags", "+genpts",
 			"-i", clip.path,
-			"-c", "copy",
+			"-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+			"-r", "10",
+			"-c:v", "libvpx", "-b:v", "1M",
+			"-deadline", "realtime", "-cpu-used", "8",
 			fixed,
 		]);
 		if ((await ffprobeDuration(fixed)) >= 0.4) return { ...clip, path: fixed };
