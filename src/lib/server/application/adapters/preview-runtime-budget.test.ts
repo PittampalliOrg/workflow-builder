@@ -53,9 +53,14 @@ describe("Postgres preview runtime budget reservation", () => {
       replicaB.reserve({ identity, reservedTokens: 100, limits }),
     ]);
     expect(results.filter((result) => result.ok)).toHaveLength(1);
-    expect(results.filter((result) => !result.ok)).toEqual([
-      { ok: false, reason: "minute-request-limit" },
-    ]);
+    const denied = results.find((result) => !result.ok);
+    expect(denied).toMatchObject({
+      ok: false,
+      reason: "minute-request-limit",
+      retryAfterSeconds: expect.any(Number),
+    });
+    expect(denied?.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    expect(denied?.retryAfterSeconds).toBeLessThanOrEqual(60);
   });
 
   it("enforces minute and lifetime reserved-token caps", async () => {
@@ -64,9 +69,19 @@ describe("Postgres preview runtime budget reservation", () => {
     await expect(
       adapter.reserve({ identity, reservedTokens: 400, limits: minuteLimits }),
     ).resolves.toMatchObject({ ok: true });
-    await expect(
-      adapter.reserve({ identity, reservedTokens: 101, limits: minuteLimits }),
-    ).resolves.toEqual({ ok: false, reason: "minute-token-limit" });
+    const minuteDenied = await adapter.reserve({
+      identity,
+      reservedTokens: 101,
+      limits: minuteLimits,
+    });
+    expect(minuteDenied).toMatchObject({
+      ok: false,
+      reason: "minute-token-limit",
+      retryAfterSeconds: expect.any(Number),
+    });
+    if (minuteDenied.ok) throw new Error("expected minute budget denial");
+    expect(minuteDenied.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    expect(minuteDenied.retryAfterSeconds).toBeLessThanOrEqual(60);
 
     const totalIdentity = {
       ...identity,

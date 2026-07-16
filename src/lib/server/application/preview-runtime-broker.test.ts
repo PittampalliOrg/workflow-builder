@@ -337,11 +337,16 @@ describe("preview runtime broker application policy", () => {
 
   it("fails closed with distinct exhausted and unavailable budget errors", async () => {
     const denied = harness({
-      budgetResult: { ok: false, reason: "minute-token-limit" },
+      budgetResult: {
+        ok: false,
+        reason: "minute-token-limit",
+        retryAfterSeconds: 17,
+      },
     });
     await expect(denied.service.complete(request)).rejects.toMatchObject({
       code: "budget-exhausted",
       budgetReason: "minute-token-limit",
+      retryAfterSeconds: 17,
     });
     expect(denied.upstream.complete).not.toHaveBeenCalled();
     expect(denied.audit).toHaveBeenCalledWith(

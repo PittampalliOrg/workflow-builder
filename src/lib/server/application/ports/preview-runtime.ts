@@ -40,6 +40,8 @@ export type PreviewRuntimeBudgetReservation =
   | Readonly<{
       ok: false;
       reason: PreviewRuntimeBudgetDenialReason;
+      /** Present only when a fixed-window reset can make a retry admissible. */
+      retryAfterSeconds?: number;
     }>;
 
 /**
