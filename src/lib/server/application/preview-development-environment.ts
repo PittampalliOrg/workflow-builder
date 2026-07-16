@@ -9,8 +9,10 @@ import type {
   PreviewEnvironment,
   PreviewEnvironmentTeardownStatusPort,
   PreviewEnvironmentUserLaunchPort,
+  PreviewEnvironmentObservationReaderPort,
   VclusterPreviewGatewayPort,
   WorkflowExecutionRepository,
+  PreviewControlIdentity,
 } from "$lib/server/application/ports";
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
 import type {
@@ -57,6 +59,7 @@ type Deps = Readonly<{
   scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
   environments: PreviewEnvironmentUserLaunchPort;
   previews: Pick<VclusterPreviewGatewayPort, "get" | "cleanup"> &
+    Pick<PreviewEnvironmentObservationReaderPort, "observeRuntime"> &
     PreviewEnvironmentTeardownStatusPort;
   teardown: PreviewDevelopmentEnvironmentTeardownPort;
 }>;
@@ -209,6 +212,16 @@ function sameTarget(
   );
 }
 
+function targetIdentity(target: PreviewDevelopmentTarget): PreviewControlIdentity {
+  return {
+    previewName: target.previewName,
+    environmentRequestId: target.environmentRequestId,
+    environmentPlatformRevision: target.platformRevision,
+    environmentSourceRevision: target.sourceRevision,
+    catalogDigest: target.catalogDigest,
+  };
+}
+
 function recordProvenance(record: VclusterPreviewRecord): {
   requestId: unknown;
   parentEnvironmentId: unknown;
@@ -319,8 +332,8 @@ export class ApplicationPreviewDevelopmentEnvironmentService implements PreviewD
       input.operationId,
       "get-environment-status",
     );
-    const record = await this.readPreview(
-      input.target.previewName,
+    const record = await this.readTargetPreview(
+      input.target,
       "preview environment status could not be read",
     );
     const target = this.assertOwnedRecord({
@@ -363,8 +376,8 @@ export class ApplicationPreviewDevelopmentEnvironmentService implements PreviewD
     });
     let record: VclusterPreviewRecord;
     try {
-      record = await this.readPreview(
-        requestedTarget.previewName,
+      record = await this.readTargetPreview(
+        requestedTarget,
         "preview environment could not be read before teardown",
       );
     } catch (cause) {
@@ -500,6 +513,14 @@ export class ApplicationPreviewDevelopmentEnvironmentService implements PreviewD
     }
     try {
       return await this.deps.previews.get(name);
+    } catch (cause) {
+      return fail("upstream-failure", message, { cause });
+    }
+  }
+
+  private async readTargetPreview(target: PreviewDevelopmentTarget, message: string) {
+    try {
+      return (await this.deps.previews.observeRuntime(targetIdentity(target))).preview;
     } catch (cause) {
       return fail("upstream-failure", message, { cause });
     }
