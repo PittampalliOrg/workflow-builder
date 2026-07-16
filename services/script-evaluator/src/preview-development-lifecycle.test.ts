@@ -26,6 +26,7 @@ async function drive(
     terminalOutput?: Record<string, unknown>;
     ttlHours?: number;
     childReadyPolls?: number;
+    transientControlSignalFailures?: number;
     transientPostSignalStatusFailures?: number;
     promotionVerification?: Record<string, unknown>;
   } = {},
@@ -38,6 +39,7 @@ async function drive(
   const knownCallIds: string[] = [];
   const tasks: Array<Record<string, unknown>> = [];
   let signaled = false;
+  let controlSignalFailures = 0;
   let postSignalStatusFailures = 0;
   let result = await evaluateScript({
     script,
@@ -153,8 +155,20 @@ async function drive(
             break;
           }
           case "preview/workflow-signal":
-            value = { ok: true, accepted: true };
-            signaled = true;
+            if (
+              controlSignalFailures <
+              (options.transientControlSignalFailures ?? 0)
+            ) {
+              controlSignalFailures += 1;
+              status = "error";
+              errorCode = "action_error";
+              value = {
+                message: "preview development endpoint returned HTTP 409",
+              };
+            } else {
+              value = { ok: true, accepted: true };
+              signaled = true;
+            }
             break;
           case "preview/workflow-verify-promotion":
             value =
@@ -334,6 +348,37 @@ describe("host preview development lifecycle", () => {
         .filter((task) => task.actionSlug === "preview/workflow-verify-promotion")
         .length,
     ).toBe(1);
+    expect(result.returnValue).toMatchObject({
+      outcome: {
+        output: {
+          controlOutcome: "submitted",
+          pullRequestReceipt: { receiptId: promotionReceiptId, draft: true },
+        },
+      },
+      promotionVerification: {
+        verified: true,
+        receipt: { receiptId: promotionReceiptId, draft: true },
+      },
+    });
+  });
+
+  it("retries transient control-signal conflicts before teardown", async () => {
+    const { result, tasks } = await drive(true, {
+      transientControlSignalFailures: 3,
+    });
+    expect(result.status, result.error?.message).toBe("done");
+    expect(
+      tasks.filter((task) => task.actionSlug === "preview/workflow-signal"),
+    ).toHaveLength(4);
+    expect(
+      tasks.findIndex(
+        (task) => task.actionSlug === "preview/environment-teardown",
+      ),
+    ).toBeGreaterThan(
+      tasks.findLastIndex(
+        (task) => task.actionSlug === "preview/workflow-status",
+      ),
+    );
     expect(result.returnValue).toMatchObject({
       outcome: {
         output: {

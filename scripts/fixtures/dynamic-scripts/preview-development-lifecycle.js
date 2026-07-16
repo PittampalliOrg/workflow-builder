@@ -104,8 +104,12 @@ function errorMessage(error) {
     : String(error);
 }
 
-function transientWorkflowStatusError(slug, error) {
-  if (slug !== "preview/workflow-status") return false;
+function transientPreviewWorkflowError(slug, error) {
+  if (
+    slug !== "preview/workflow-status" &&
+    slug !== "preview/workflow-signal"
+  )
+    return false;
   const message = errorMessage(error);
   return (
     message.includes("preview development endpoint returned HTTP 409") ||
@@ -139,7 +143,7 @@ async function waitForStatus(
       transientFailures = 0;
     } catch (error) {
       if (
-        transientWorkflowStatusError(slug, error) &&
+        transientPreviewWorkflowError(slug, error) &&
         transientFailures < maxTransientFailures
       ) {
         transientFailures += 1;
@@ -154,6 +158,37 @@ async function waitForStatus(
     if (attempt + 1 < attempts) await sleep(pollSeconds);
   }
   throw new Error(`${slug} timed out after ${attempts} observations`);
+}
+
+async function signalPreviewWorkflow(input, actionName) {
+  const label =
+    actionName === "submit_preview_pr"
+      ? "submit preview pull request"
+      : "discard preview changes";
+  const attempts = 25;
+  const pollSeconds = 5;
+  let transientFailures = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const result = await action("preview/workflow-signal", input, {
+        label: `${label} ${attempt + 1}`,
+      });
+      const failure = failureOf(result);
+      if (failure) throw new Error(`preview/workflow-signal: ${failure}`);
+      return result;
+    } catch (error) {
+      if (
+        transientPreviewWorkflowError("preview/workflow-signal", error) &&
+        transientFailures < attempts - 1
+      ) {
+        transientFailures += 1;
+        if (attempt + 1 < attempts) await sleep(pollSeconds);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(`preview/workflow-signal timed out after ${attempts} attempts`);
 }
 
 function environmentReady(value) {
@@ -386,20 +421,14 @@ try {
     decision?.approved === true && decision?.timedOut !== true
       ? "submit_preview_pr"
       : "discard";
-  control = await action(
-    "preview/workflow-signal",
+  control = await signalPreviewWorkflow(
     {
       target: environment?.target ?? launch?.target,
       executionId: child?.executionId,
       workflowSpecDigest: child?.workflowSpecDigest,
       action: actionName,
     },
-    {
-      label:
-        actionName === "submit_preview_pr"
-          ? "submit preview pull request"
-          : "discard preview changes",
-    },
+    actionName,
   );
   const controlFailure = failureOf(control);
   if (controlFailure)
