@@ -21,6 +21,7 @@ export type PreviewDevelopmentTarget = Readonly<{
 export type PreviewDevelopmentWorkflowInput = Readonly<{
   intent: string;
   services: readonly string[];
+  agentSlug?: string;
   keepPreview?: boolean | string;
 }>;
 

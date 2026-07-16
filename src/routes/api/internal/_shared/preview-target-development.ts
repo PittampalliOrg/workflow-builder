@@ -115,9 +115,17 @@ function target(value: unknown): PreviewDevelopmentTarget {
 
 function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   const raw = object(value, "workflowInput");
-  assertKeys(raw, ["intent", "services", "keepPreview"], "workflowInput");
+  assertKeys(
+    raw,
+    ["intent", "services", "agentSlug", "keepPreview"],
+    "workflowInput",
+  );
   if (!Array.isArray(raw.services)) {
     throw new Error("workflowInput.services must be an array");
+  }
+  const agentSlug = raw.agentSlug;
+  if (agentSlug !== undefined && typeof agentSlug !== "string") {
+    throw new Error("workflowInput.agentSlug must be a string");
   }
   const keepPreview = raw.keepPreview;
   if (
@@ -132,6 +140,7 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
     services: raw.services.map((service, index) =>
       string(service, `workflowInput.services[${index}]`),
     ),
+    ...(agentSlug !== undefined ? { agentSlug } : {}),
     ...(keepPreview !== undefined ? { keepPreview } : {}),
   };
 }

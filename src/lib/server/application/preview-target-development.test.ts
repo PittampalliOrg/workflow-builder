@@ -160,7 +160,11 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         parentExecutionId: "parent-execution",
         operationId: operation("start-workflow", "2"),
         target,
-        workflowInput: { intent: "x", services: ["workflow-builder"] },
+        workflowInput: {
+          intent: "x",
+          services: ["workflow-builder"],
+          agentSlug: "glm-juicefs-builder-agent",
+        },
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
 
@@ -174,12 +178,30 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         parentExecutionId: "parent-execution",
         operationId: operation("start-workflow", "3"),
         target,
-        workflowInput: { intent: "x", services: ["workflow-builder"] },
+        workflowInput: {
+          intent: "x",
+          services: ["workflow-builder"],
+          agentSlug: "glm-juicefs-builder-agent",
+        },
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
   it("rejects URL, identity, and credential fields at the typed input boundary", () => {
+    expect(
+      __previewTargetDevelopmentForTest.normalizeWorkflowInput({
+        intent: "x",
+        services: ["workflow-builder"],
+        agentSlug: "glm-juicefs-builder-agent",
+      }),
+    ).toMatchObject({ agentSlug: "glm-juicefs-builder-agent" });
+    expect(() =>
+      __previewTargetDevelopmentForTest.normalizeWorkflowInput({
+        intent: "x",
+        services: ["workflow-builder"],
+        agentSlug: "https://attacker.invalid",
+      }),
+    ).toThrow("workflow input is invalid");
     expect(() =>
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",
