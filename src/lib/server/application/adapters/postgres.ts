@@ -3747,6 +3747,9 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 			.select({
 				id: workflows.id,
 				name: workflows.name,
+				description: workflows.description,
+				engineType: workflows.engineType,
+				createdAt: workflows.createdAt,
 				updatedAt: workflows.updatedAt,
 			})
 			.from(workflows)
@@ -5624,6 +5627,24 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 					isNotNull(workflowExecutions.rerunOfExecutionId),
 				),
 			)
+			.groupBy(workflowExecutions.workflowId);
+		return rows.map((row) => ({
+			workflowId: row.workflowId,
+			count: Number(row.count) || 0,
+		}));
+	}
+
+	async countRunsByWorkflowIds(
+		workflowIds: string[],
+	): Promise<WorkflowExecutionForkCountRecord[]> {
+		if (workflowIds.length === 0) return [];
+		const rows = await this.database
+			.select({
+				workflowId: workflowExecutions.workflowId,
+				count: sql<number>`count(*)::int`,
+			})
+			.from(workflowExecutions)
+			.where(inArray(workflowExecutions.workflowId, workflowIds))
 			.groupBy(workflowExecutions.workflowId);
 		return rows.map((row) => ({
 			workflowId: row.workflowId,

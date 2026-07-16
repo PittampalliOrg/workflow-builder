@@ -3806,8 +3806,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		if (rows.length === 0) return [];
 
 		const workflowIds = rows.map((row) => row.id);
-		const [forkCounts, recentRuns] = await Promise.all([
+		const [forkCounts, totalRunCounts, recentRuns] = await Promise.all([
 			this.deps.workflowExecutions.countForksByWorkflowIds(workflowIds),
+			this.deps.workflowExecutions.countRunsByWorkflowIds(workflowIds),
 			this.deps.workflowExecutions.listRecentRunsByWorkflowIds({
 				workflowIds,
 				limitPerWorkflow: 3,
@@ -3815,6 +3816,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		]);
 		const forkCountByWorkflow = new Map(
 			forkCounts.map((row) => [row.workflowId, row.count]),
+		);
+		const totalRunCountByWorkflow = new Map(
+			totalRunCounts.map((row) => [row.workflowId, row.count]),
 		);
 		const recentRunsByWorkflow = new Map<
 			string,
@@ -3841,12 +3845,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return {
 				id: row.id,
 				name: row.name,
+				description: row.description ?? null,
+				engineType: row.engineType ?? null,
+				createdAt: row.createdAt.toISOString(),
 				updatedAt,
 				latestExecution: latest,
 				recentRuns,
 				running,
 				lastActivityAt,
 				forkCount: forkCountByWorkflow.get(row.id) ?? 0,
+				totalRunCount: totalRunCountByWorkflow.get(row.id) ?? 0,
 			};
 		});
 

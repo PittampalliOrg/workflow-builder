@@ -414,6 +414,9 @@ export interface WorkflowExecutionRepository {
 	countForksByWorkflowIds(
 		workflowIds: string[],
 	): Promise<WorkflowExecutionForkCountRecord[]>;
+	countRunsByWorkflowIds(
+		workflowIds: string[],
+	): Promise<WorkflowExecutionForkCountRecord[]>;
 	listRecentRunsByWorkflowIds(input: {
 		workflowIds: string[];
 		limitPerWorkflow: number;
