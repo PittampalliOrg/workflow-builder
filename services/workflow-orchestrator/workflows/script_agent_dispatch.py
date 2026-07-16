@@ -670,14 +670,9 @@ def start_action_call(
     # The run's shared workspace (same key agent(isolation:'shared') binds), so
     # workspace/* actions and agents operate on ONE filesystem.
     raw_input = _substitute_workspace(spec.get("args"), f"ws_script_{exec_id}")
-    if isinstance(raw_input, dict):
-        config: dict[str, Any] = dict(raw_input)
-    elif raw_input is None:
-        config = {}
-    else:
-        # Scalar/array inputs ride under "input" so actionType can merge in.
-        config = {"input": raw_input}
-    config["actionType"] = slug
+    config: dict[str, Any] = {"actionType": slug}
+    if raw_input is not None:
+        config["input"] = raw_input
 
     connection = action_opts.get("connection")
     activity_input: dict[str, Any] = {
@@ -711,7 +706,7 @@ def start_action_call(
         activity_input["skipIdempotencyGate"] = True
 
     # dev/preview activation needs the runner child's durable poll (blocker B1).
-    needs_activation = _expects_durable_dev_preview_activation(slug, config)
+    needs_activation = _expects_durable_dev_preview_activation(slug, raw_input)
     needs_preview_retry = slug in PRIVILEGED_PREVIEW_ACTION_SLUGS
 
     if _is_ap_piece_action(slug) or needs_activation or needs_preview_retry:
