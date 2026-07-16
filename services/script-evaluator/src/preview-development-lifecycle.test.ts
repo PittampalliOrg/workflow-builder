@@ -323,12 +323,12 @@ describe("host preview development lifecycle", () => {
 
   it("retries transient post-signal status conflicts before teardown", async () => {
     const { result, tasks } = await drive(true, {
-      transientPostSignalStatusFailures: 2,
+      transientPostSignalStatusFailures: 30,
     });
     expect(result.status, result.error?.message).toBe("done");
     expect(
       tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
-    ).toHaveLength(4);
+    ).toHaveLength(32);
     expect(
       tasks
         .filter((task) => task.actionSlug === "preview/workflow-verify-promotion")

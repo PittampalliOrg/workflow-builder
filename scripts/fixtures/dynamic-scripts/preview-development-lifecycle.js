@@ -122,10 +122,17 @@ async function waitForStatus(
   label,
   attempts,
   pollSeconds,
+  options = {},
 ) {
   let latest = null;
   let transientFailures = 0;
-  const maxTransientFailures = slug === "preview/workflow-status" ? 24 : 0;
+  const maxTransientFailures =
+    Number.isInteger(options.maxTransientFailures) &&
+    options.maxTransientFailures >= 0
+      ? options.maxTransientFailures
+      : slug === "preview/workflow-status"
+        ? 24
+        : 0;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       latest = await action(slug, input, { label: `${label} ${attempt + 1}` });
@@ -408,6 +415,7 @@ try {
     "observe development outcome",
     241,
     5,
+    { maxTransientFailures: 240 },
   );
   const childPromotionReceipt = assertChildOutcome(actionName, outcome, {
     target: environment?.target ?? launch?.target,

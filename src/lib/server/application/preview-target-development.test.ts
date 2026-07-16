@@ -420,12 +420,19 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         sourceCapture: { token: "capture-secret" },
       },
     } as WorkflowExecutionRecord;
+    listSessionIdsByExecutionId.mockResolvedValueOnce([]);
     const terminalStatus = await service.getWorkflowStatus({
       parentExecutionId: "parent-execution",
       actorUserId: "admin-1",
       operationId: operation("get-workflow-status", "6"),
       target,
       workflow,
+    });
+    expect(terminalStatus).toMatchObject({
+      controlReady: false,
+      sessionId: null,
+      sessionUrl: null,
+      terminal: true,
     });
     expect(terminalStatus.output).toEqual({
       controlOutcome: "submitted",
