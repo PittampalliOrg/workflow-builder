@@ -99,15 +99,31 @@ describe("preview runtime route", () => {
         "budget-exhausted",
         "preview runtime budget is exhausted",
         "minute-token-limit",
+        17,
       ),
     );
     const exhausted = (await POST({ request: request() } as never)) as Response;
     expect(exhausted.status).toBe(429);
+    expect(exhausted.headers.get("retry-after")).toBe("17");
     await expect(exhausted.json()).resolves.toEqual({
       error: "preview runtime budget is exhausted",
       code: "budget-exhausted",
       reason: "minute-token-limit",
     });
+
+    complete.mockRejectedValueOnce(
+      new PreviewRuntimeBrokerError(
+        "budget-exhausted",
+        "preview runtime budget is exhausted",
+        "total-token-limit",
+        17,
+      ),
+    );
+    const lifetimeExhausted = (await POST({
+      request: request(),
+    } as never)) as Response;
+    expect(lifetimeExhausted.status).toBe(429);
+    expect(lifetimeExhausted.headers.get("retry-after")).toBeNull();
 
     complete.mockRejectedValueOnce(
       new PreviewRuntimeBrokerError(

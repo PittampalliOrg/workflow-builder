@@ -21,6 +21,7 @@ type CurrentBudgetRow = BudgetRow &
   Readonly<{
     identity_closed: boolean;
     minute_expired: boolean;
+    retry_after_seconds: number;
   }>;
 
 /** Postgres atomic reservation authority shared by every broker replica. */
@@ -124,7 +125,13 @@ export class PostgresPreviewRuntimeBudgetReservationAdapter implements PreviewRu
         total_requests,
         total_reserved_tokens,
         closed_at IS NOT NULL AS identity_closed,
-        minute_started_at < date_trunc('minute', now()) AS minute_expired
+        minute_started_at < date_trunc('minute', now()) AS minute_expired,
+        GREATEST(
+          1,
+          CEIL(EXTRACT(EPOCH FROM (
+            date_trunc('minute', now()) + interval '1 minute' - now()
+          )))::integer
+        ) AS retry_after_seconds
       FROM preview_runtime_budgets
       WHERE preview_name = ${identity.previewName}
         AND environment_request_id = ${identity.environmentRequestId}
@@ -137,9 +144,11 @@ export class PostgresPreviewRuntimeBudgetReservationAdapter implements PreviewRu
     if (!current) {
       throw new Error("preview runtime budget reservation was not observable");
     }
+    const reason = denialReason(current, reservedTokens, limits);
     return Object.freeze({
       ok: false,
-      reason: denialReason(current, reservedTokens, limits),
+      reason,
+      ...retryAfter(current, reason),
     });
   }
 }
@@ -272,6 +281,20 @@ function denialReason(
   throw new Error(
     "preview runtime budget denial did not match a configured limit",
   );
+}
+
+function retryAfter(
+  row: CurrentBudgetRow,
+  reason: PreviewRuntimeBudgetDenialReason,
+): Readonly<{ retryAfterSeconds: number }> | Record<string, never> {
+  if (reason !== "minute-request-limit" && reason !== "minute-token-limit") {
+    return Object.freeze({});
+  }
+  const retryAfterSeconds = Number(row.retry_after_seconds);
+  if (!Number.isSafeInteger(retryAfterSeconds) || retryAfterSeconds < 1) {
+    throw new Error("preview runtime budget retry interval is invalid");
+  }
+  return Object.freeze({ retryAfterSeconds });
 }
 
 function initialDenial(

@@ -87,6 +87,15 @@ export const POST: RequestHandler = async ({ request }) => {
         "budget-exhausted": 429,
         "budget-unavailable": 503,
       }[cause.code];
+      const retryAfter =
+        cause.code === "budget-exhausted" &&
+        (cause.budgetReason === "minute-request-limit" ||
+          cause.budgetReason === "minute-token-limit") &&
+        typeof cause.retryAfterSeconds === "number" &&
+        Number.isSafeInteger(cause.retryAfterSeconds) &&
+        cause.retryAfterSeconds > 0
+          ? String(cause.retryAfterSeconds)
+          : null;
       return json(
         {
           error: cause.message,
@@ -95,7 +104,10 @@ export const POST: RequestHandler = async ({ request }) => {
             ? { reason: cause.budgetReason }
             : {}),
         },
-        { status },
+        {
+          status,
+          ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}),
+        },
       );
     }
     if (cause instanceof PreviewControlSourceAuthorityError) {

@@ -61,6 +61,7 @@ export class PreviewRuntimeBrokerError extends Error {
     public readonly code: PreviewRuntimeBrokerErrorCode,
     message: string,
     public readonly budgetReason?: PreviewRuntimeBudgetDenialReason,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "PreviewRuntimeBrokerError";
@@ -197,6 +198,7 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
           "budget-exhausted",
           "preview runtime budget is exhausted",
           reservation.reason,
+          reservation.retryAfterSeconds,
         );
       }
 
