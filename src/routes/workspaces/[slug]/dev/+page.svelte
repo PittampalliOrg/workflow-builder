@@ -96,6 +96,21 @@
 	let lastRefreshedAt = $state<number | null>(null);
 	const surfaceError = $derived(errorMessage ?? refreshErrorMessage);
 
+	let liveSyncProof = $state(false);
+	onMount(() => {
+		void (async () => {
+			try {
+				const res = await fetch('/api/health', { headers: { 'cache-control': 'no-store' } });
+				if (res.ok) {
+					const body = await res.json();
+					if (body?.liveSyncProof) liveSyncProof = true;
+				}
+			} catch {
+				/* non-fatal — proof is best-effort */
+			}
+		})();
+	});
+
 	async function tick() {
 		if (refreshing) return;
 		refreshing = true;
@@ -241,6 +256,11 @@
 			<Alert variant="destructive">
 				<AlertDescription>{surfaceError}</AlertDescription>
 			</Alert>
+		</div>
+	{/if}
+	{#if liveSyncProof}
+		<div class="px-5 pt-3 lg:px-6">
+			<p class="text-xs text-muted-foreground">Live sync proof: ARCHAPP-0715E-HMR-1</p>
 		</div>
 	{/if}
 	{#if operationNotice}

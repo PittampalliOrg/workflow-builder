@@ -6,4 +6,7 @@ import type { RequestHandler } from "./$types";
 // flaps) to know the server is back before it grades a route. Deliberately
 // trivial so it answers the instant SvelteKit is serving.
 export const GET: RequestHandler = () =>
-	json({ ok: true }, { headers: { "cache-control": "no-store" } });
+	json(
+		{ ok: true, liveSyncProof: "ARCHAPP-0715E-HMR-1" },
+		{ headers: { "cache-control": "no-store" } }
+	);
