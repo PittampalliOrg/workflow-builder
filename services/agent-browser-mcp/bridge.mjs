@@ -553,7 +553,13 @@ async function stopCapture(browserSession, reason, liveChild) {
 		if (entry.videoActive) {
 			entry.videoActive = false;
 			try {
-				const result = await child.callTool({ name: "agent_browser_record_stop", arguments: {} });
+				// Finalizing a long recording (ffmpeg) routinely exceeds the SDK's
+				// 60s default request timeout — that lost every 10-min-plus video.
+				const result = await child.callTool(
+					{ name: "agent_browser_record_stop", arguments: {} },
+					undefined,
+					{ timeout: 300000 },
+				);
 				const hasDemoScenes = entry.clips.some((c) => c.title);
 				if (hasDemoScenes) {
 					// When the AGENT explicitly closes, the run finalizes right after this returns —
@@ -580,10 +586,11 @@ async function stopCapture(browserSession, reason, liveChild) {
 		if (entry.harActive) {
 			entry.harActive = false;
 			try {
-				const result = await child.callTool({
-					name: "agent_browser_network_har_stop",
-					arguments: {},
-				});
+				const result = await child.callTool(
+					{ name: "agent_browser_network_har_stop", arguments: {} },
+					undefined,
+					{ timeout: 300000 },
+				);
 				await persistArtifact(entry.ctx, entry.seen, "agent_browser_network_har_stop", result);
 				console.error(`[auto-capture] HAR stopped+persisted (${reason})`);
 			} catch (err) {
@@ -674,7 +681,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const canPersist = () => Boolean(ctxRef.value?.executionId && TOKEN);
 
 	const server = new Server(
-		{ name: "agent-browser-mcp", version: "1.7.0" },
+		{ name: "agent-browser-mcp", version: "1.7.1" },
 		{ capabilities: { tools: {} } },
 	);
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
