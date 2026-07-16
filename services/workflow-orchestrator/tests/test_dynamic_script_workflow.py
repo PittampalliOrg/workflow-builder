@@ -1579,7 +1579,7 @@ def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
     assert len(ctx.execute_action_inputs) == 1
     inp = ctx.execute_action_inputs[0]
     assert inp["node"]["config"]["actionType"] == "workspace/command"
-    assert inp["node"]["config"]["command"] == "ls"
+    assert inp["node"]["config"]["input"] == {"command": "ls"}
     assert inp["idempotencyKey"] == f"wf1:e1:{cid}"
     # SW parity (sw_workflow.py:4160): openshell /api/tools/* resolves a sandbox
     # by executionId = the DAPR INSTANCE id. Passing the DB id 404'd
@@ -1637,6 +1637,33 @@ def test_privileged_preview_action_dispatches_retrying_runner_child(slug):
     assert child_input["activityInput"]["raiseOnRetryable"] is True
     assert child_input["activityInput"]["idempotencyKey"] == f"wf1:e1:{cid}"
     assert child_input["journal"]["callId"] == cid
+
+
+def test_privileged_preview_launch_dispatch_preserves_exact_action_input():
+    cid = "d5" * 20 + "_0"
+    launch_input = {
+        "environmentName": "feature-one",
+        "services": ["workflow-builder"],
+        "ttlHours": 8,
+        "retainAfterCompletion": False,
+    }
+    task = action_task(cid, "preview/environment-launch", launch_input)
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    def complete_runner(c: FakeCtx):
+        c.complete_child(cid, {"success": True, "data": {"ok": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_runner]
+    )
+
+    assert result["success"] is True
+    child_input = ctx.child_inputs[script_child_instance_id(ctx.instance_id, cid, 0)]
+    config = child_input["activityInput"]["node"]["config"]
+    assert config == {
+        "actionType": "preview/environment-launch",
+        "input": launch_input,
+    }
 
 
 def test_action_crawl_async_journals_clear_dispatch_error():
@@ -1894,7 +1921,8 @@ def test_dev_preview_activation_routes_to_runner_child_with_durable_poll():
     iid = script_child_instance_id(ctx.instance_id, cid, 0)
     child_input = ctx.child_inputs[iid]
     cfg = child_input["activityInput"]["node"]["config"]
-    assert cfg["actionType"] == "dev/preview" and cfg["mode"] == "preview-native"
+    assert cfg["actionType"] == "dev/preview"
+    assert cfg["input"]["mode"] == "preview-native"
     # AP-only retry semantics must NOT be stamped on an activation call.
     assert "raiseOnRetryable" not in child_input["activityInput"]
 
