@@ -306,6 +306,9 @@ function normalizeWorkflowInput(
     input.services.some(
       (service) => typeof service !== "string" || !SAFE_SERVICE.test(service),
     ) ||
+    (input.agentSlug !== undefined &&
+      (typeof input.agentSlug !== "string" ||
+        !SAFE_SERVICE.test(input.agentSlug))) ||
     new Set(input.services).size !== input.services.length
   ) {
     return invalid("preview development workflow input is invalid");
@@ -321,6 +324,7 @@ function normalizeWorkflowInput(
   return Object.freeze({
     intent: input.intent,
     services: Object.freeze([...input.services]),
+    ...(input.agentSlug !== undefined ? { agentSlug: input.agentSlug } : {}),
     ...(input.keepPreview !== undefined
       ? {
           keepPreview:

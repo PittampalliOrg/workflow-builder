@@ -112,6 +112,7 @@ describe("preview development action binding", () => {
         target,
         intent: "Add a deployment health panel",
         services: ["workflow-builder", "function-router"],
+        agentSlug: "glm-juicefs-builder-agent",
       },
       dbExecutionId: "parent-1",
       idempotencyKey: "workflow:parent-1:start",
@@ -128,6 +129,7 @@ describe("preview development action binding", () => {
             input: {
               intent: "Add a deployment health panel",
               services: ["workflow-builder", "function-router"],
+              agentSlug: "glm-juicefs-builder-agent",
               keepPreview: "true",
             },
           },

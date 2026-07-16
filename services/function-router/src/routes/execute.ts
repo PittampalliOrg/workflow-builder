@@ -767,6 +767,7 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
 const SIGNATURE = /^[0-9a-f]{64}$/;
 const SAFE_EXECUTION_ID = /^[A-Za-z0-9._:-]{1,256}$/;
+const SAFE_AGENT_SLUG = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const PROMOTION_RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
 
 function exactObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -941,10 +942,18 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 			command = { kind: commandKind, target };
 		} else if (input.actionSlug === "preview/workflow-start") {
 			if (
-				!exactObjectKeys(actionInput, ["target", "intent", "services"]) ||
+				!exactObjectKeys(actionInput, [
+					"target",
+					"intent",
+					"services",
+					"agentSlug",
+				]) ||
 				typeof actionInput.intent !== "string" ||
 				actionInput.intent.trim().length < 1 ||
-				actionInput.intent.length > 12_000
+				actionInput.intent.length > 12_000 ||
+				(actionInput.agentSlug !== undefined &&
+					(typeof actionInput.agentSlug !== "string" ||
+						!SAFE_AGENT_SLUG.test(actionInput.agentSlug)))
 			) {
 				return {
 					ok: false,
@@ -963,6 +972,9 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 				input: {
 					intent: actionInput.intent,
 					services,
+					...(actionInput.agentSlug !== undefined
+						? { agentSlug: actionInput.agentSlug }
+						: {}),
 					keepPreview: "true",
 				},
 			};

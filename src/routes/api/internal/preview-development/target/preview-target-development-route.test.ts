@@ -82,6 +82,7 @@ describe("host preview development route", () => {
         input: {
           intent: "Update the dashboard",
           services: ["workflow-builder"],
+          agentSlug: "glm-juicefs-builder-agent",
           keepPreview: true,
         },
       },
@@ -100,6 +101,7 @@ describe("host preview development route", () => {
       workflowInput: {
         intent: "Update the dashboard",
         services: ["workflow-builder"],
+        agentSlug: "glm-juicefs-builder-agent",
         keepPreview: true,
       },
     });
