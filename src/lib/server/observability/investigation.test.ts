@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ObservabilityTraceSpan } from '$lib/types/observability';
 
 const mocks = vi.hoisted(() => ({
-	getSessionTraceSpans: vi.fn(),
+	getSessionTraceSpanSummaries: vi.fn(),
 	getSessionLogs: vi.fn(),
 	getSessionLlmSpans: vi.fn(),
 	getSessionToolSpans: vi.fn(),
-	getTraceSpans: vi.fn(),
+	getTraceSpanSummaries: vi.fn(),
 	getTraceLogs: vi.fn(),
 	getTraceLlmSpans: vi.fn(),
 	getTraceToolSpans: vi.fn(),
-	getMultiTraceSpans: vi.fn(),
+	getMultiTraceSpanSummaries: vi.fn(),
 	getMultiTraceLogs: vi.fn(),
 	getMultiTraceLlmSpans: vi.fn(),
 	getMultiTraceToolSpans: vi.fn()
@@ -76,15 +76,27 @@ describe('observability investigation trace backend degradation', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
-		mocks.getSessionTraceSpans.mockResolvedValue([traceSpan()]);
+		mocks.getSessionTraceSpanSummaries.mockResolvedValue({
+			spans: [traceSpan()],
+			truncated: false,
+			limit: 20_000
+		});
 		mocks.getSessionLogs.mockResolvedValue([]);
 		mocks.getSessionLlmSpans.mockResolvedValue([]);
 		mocks.getSessionToolSpans.mockResolvedValue([]);
-		mocks.getTraceSpans.mockResolvedValue([traceSpan()]);
+		mocks.getTraceSpanSummaries.mockResolvedValue({
+			spans: [traceSpan()],
+			truncated: false,
+			limit: 20_000
+		});
 		mocks.getTraceLogs.mockResolvedValue([]);
 		mocks.getTraceLlmSpans.mockResolvedValue([]);
 		mocks.getTraceToolSpans.mockResolvedValue([]);
-		mocks.getMultiTraceSpans.mockResolvedValue([traceSpan()]);
+		mocks.getMultiTraceSpanSummaries.mockResolvedValue({
+			spans: [traceSpan()],
+			truncated: false,
+			limit: 20_000
+		});
 		mocks.getMultiTraceLogs.mockResolvedValue([]);
 		mocks.getMultiTraceLlmSpans.mockResolvedValue([]);
 		mocks.getMultiTraceToolSpans.mockResolvedValue([]);
@@ -120,6 +132,95 @@ describe('observability investigation trace backend degradation', () => {
 			expect.objectContaining({
 				id: 'issue-trace-backend-unavailable-execution-exec-1',
 				severity: 'warning'
+			})
+		);
+		expect(mocks.getMultiTraceSpanSummaries).toHaveBeenCalledWith(
+			['c4235a0ea97132eba9adfa3bfbc3ff23'],
+			{
+				serviceNames: undefined,
+				startedAt: '2026-07-09T15:27:14.000Z',
+				completedAt: '2026-07-09T15:27:15.000Z'
+			}
+		);
+	});
+
+	it('keeps LLM, tool, and log evidence when span summaries time out', async () => {
+		mocks.getMultiTraceSpanSummaries.mockRejectedValue(new Error('query timeout'));
+		mocks.getMultiTraceLogs.mockResolvedValue([
+			{
+				timestamp: '2026-07-09T15:27:14.500Z',
+				traceId: 'c4235a0ea97132eba9adfa3bfbc3ff23',
+				spanId: 'span-log',
+				serviceName: 'agent-runtime',
+				severityText: 'info',
+				body: 'agent progress recorded',
+				resourceAttributes: {},
+				logAttributes: {}
+			}
+		]);
+		mocks.getMultiTraceLlmSpans.mockResolvedValue([
+			{
+				timestamp: '2026-07-09T15:27:14.600Z',
+				traceId: 'c4235a0ea97132eba9adfa3bfbc3ff23',
+				spanId: 'span-llm',
+				parentSpanId: null,
+				serviceName: 'agent-runtime',
+				sessionId: 'session-1',
+				workflowExecutionId: 'exec-1',
+				agentRunId: null,
+				statusCode: 'Ok',
+				modelName: 'test-model',
+				provider: 'test',
+				inputMessages: [],
+				outputMessages: [],
+				invocationParameters: null,
+				finishReason: 'stop',
+				promptTokens: 10,
+				completionTokens: 5,
+				totalTokens: 15,
+				cacheReadInputTokens: null,
+				cacheCreationInputTokens: null,
+				reasoningTokens: null,
+				inputMessagesTruncated: false,
+				outputMessagesTruncated: false,
+				invocationParametersTruncated: false
+			}
+		]);
+		mocks.getMultiTraceToolSpans.mockResolvedValue([
+			{
+				timestamp: '2026-07-09T15:27:14.700Z',
+				traceId: 'c4235a0ea97132eba9adfa3bfbc3ff23',
+				spanId: 'span-tool',
+				parentSpanId: null,
+				serviceName: 'agent-runtime',
+				sessionId: 'session-1',
+				workflowExecutionId: 'exec-1',
+				agentRunId: null,
+				statusCode: 'Ok',
+				toolName: 'read_file',
+				toolArguments: {},
+				toolResult: {},
+				toolArgumentsTruncated: false,
+				toolResultTruncated: false
+			}
+		]);
+
+		const payload = await buildExecutionInvestigation(
+			'exec-1',
+			['c4235a0ea97132eba9adfa3bfbc3ff23'],
+			undefined,
+			{ workflowReader }
+		);
+
+		expect(payload.traceSpans).toEqual([]);
+		expect(payload.summary.logCount).toBe(1);
+		expect(payload.summary.llmTurnCount).toBe(1);
+		expect(payload.summary.toolCallCount).toBe(1);
+		expect(payload.summary.totalTokens).toBe(15);
+		expect(payload.issues).toContainEqual(
+			expect.objectContaining({
+				id: 'issue-trace-backend-unavailable-execution-exec-1',
+				label: expect.stringContaining('spans: query timeout')
 			})
 		);
 	});

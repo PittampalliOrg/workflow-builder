@@ -21,6 +21,11 @@ export interface ObservabilityTraceAccessRepository {
 	}): Promise<boolean>;
 }
 
+export interface ObservabilityTraceSpanDetailReader {
+	isConfigured(): boolean;
+	getSpanDetail(traceId: string, spanId: string): Promise<unknown | null>;
+}
+
 export class ApplicationObservabilityTraceAccessError extends Error {
 	constructor(
 		public readonly status: 401 | 404 | 503,
@@ -36,8 +41,13 @@ export class ApplicationObservabilityTraceAccessService {
 		private readonly deps: {
 			owners: ObservabilityTraceOwnerResolver;
 			access: ObservabilityTraceAccessRepository;
+			spanDetails: ObservabilityTraceSpanDetailReader;
 		},
 	) {}
+
+	isSpanDetailConfigured(): boolean {
+		return this.deps.spanDetails.isConfigured();
+	}
 
 	async assertTraceAccess(input: {
 		traceId: string;
@@ -62,5 +72,20 @@ export class ApplicationObservabilityTraceAccessService {
 				"Trace not found",
 			);
 		}
+	}
+
+	async getTraceSpanDetail(input: {
+		traceId: string;
+		spanId: string;
+		session: ObservabilityTraceAccessSession | null | undefined;
+	}): Promise<unknown | null> {
+		if (!this.deps.spanDetails.isConfigured()) {
+			throw new ApplicationObservabilityTraceAccessError(
+				503,
+				"ClickHouse is not configured",
+			);
+		}
+		await this.assertTraceAccess(input);
+		return this.deps.spanDetails.getSpanDetail(input.traceId, input.spanId);
 	}
 }

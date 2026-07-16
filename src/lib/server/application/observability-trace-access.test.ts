@@ -4,11 +4,13 @@ import {
 	ApplicationObservabilityTraceAccessService,
 	type ObservabilityTraceAccessRepository,
 	type ObservabilityTraceOwnerResolver,
+	type ObservabilityTraceSpanDetailReader,
 } from "$lib/server/application/observability-trace-access";
 
 function makeService(options: {
 	owners?: ObservabilityTraceOwnerResolver;
 	access?: ObservabilityTraceAccessRepository;
+	spanDetails?: ObservabilityTraceSpanDetailReader;
 } = {}) {
 	const owners =
 		options.owners ??
@@ -23,13 +25,21 @@ function makeService(options: {
 		({
 			hasAnyTraceOwnerInScope: vi.fn(async () => true),
 		} satisfies ObservabilityTraceAccessRepository);
+	const spanDetails =
+		options.spanDetails ??
+		({
+			isConfigured: vi.fn(() => true),
+			getSpanDetail: vi.fn(async () => ({ spanId: "span-1" })),
+		} satisfies ObservabilityTraceSpanDetailReader);
 
 	return {
 		owners,
 		access,
+		spanDetails,
 		service: new ApplicationObservabilityTraceAccessService({
 			owners,
 			access,
+			spanDetails,
 		}),
 	};
 }
@@ -91,5 +101,41 @@ describe("ApplicationObservabilityTraceAccessService", () => {
 			status: 404,
 			message: "Trace not found",
 		});
+	});
+
+	it("loads span detail only after authorizing the trace", async () => {
+		const { service, owners, access, spanDetails } = makeService();
+
+		await expect(
+			service.getTraceSpanDetail({
+				traceId: "trace-1",
+				spanId: "span-1",
+				session: { userId: "user-1", projectId: "project-1" },
+			}),
+		).resolves.toEqual({ spanId: "span-1" });
+
+		expect(owners.resolveTraceOwners).toHaveBeenCalledWith("trace-1");
+		expect(access.hasAnyTraceOwnerInScope).toHaveBeenCalledOnce();
+		expect(spanDetails.getSpanDetail).toHaveBeenCalledWith("trace-1", "span-1");
+	});
+
+	it("rejects span detail reads when ClickHouse is not configured", async () => {
+		const { service, owners, spanDetails } = makeService({
+			spanDetails: {
+				isConfigured: vi.fn(() => false),
+				getSpanDetail: vi.fn(),
+			},
+		});
+
+		expect(service.isSpanDetailConfigured()).toBe(false);
+		await expect(
+			service.getTraceSpanDetail({
+				traceId: "trace-1",
+				spanId: "span-1",
+				session: { userId: "user-1" },
+			}),
+		).rejects.toMatchObject({ status: 503 });
+		expect(owners.resolveTraceOwners).not.toHaveBeenCalled();
+		expect(spanDetails.getSpanDetail).not.toHaveBeenCalled();
 	});
 });

@@ -63,6 +63,10 @@
 	let expandSignal = $state(0);
 	let filterQuery = $state('');
 	let errorNavIndex = $state(0);
+	let spanDetailCache = $state<Record<string, ObservabilityTraceSpan>>({});
+	let spanDetailLoadingKey = $state<string | null>(null);
+	let spanDetailErrorKey = $state<string | null>(null);
+	let spanDetailError = $state<string | null>(null);
 
 	// --- Helpers ---
 	function formatDuration(value: number): string {
@@ -115,6 +119,13 @@
 	const allLlmSpans = $derived(payload?.llmSpans ?? []);
 	const allToolSpans = $derived(payload?.toolSpans ?? []);
 	const allAgentDecisions = $derived(payload?.agentDecisions ?? []);
+	const traceBackendWarnings = $derived(
+		(payload?.issues ?? []).filter(
+			(issue) => issue.severity === 'warning' && (
+				issue.id.startsWith('issue-trace-backend-') || issue.serviceName === 'otel-clickhouse'
+			)
+		)
+	);
 
 	const llmCounts = $derived.by(() => {
 		const counts: Record<string, number> = {};
@@ -189,6 +200,57 @@
 	const selectedSpan = $derived.by(() => {
 		if (!store.selectedSpanRef) return null;
 		return allTraceSpans.find((s) => s.traceId === store.selectedSpanRef?.traceId && s.spanId === store.selectedSpanRef?.spanId) ?? null;
+	});
+
+	const evidenceSpan = $derived.by(() => {
+		if (!selectedSpan) return null;
+		const detail = spanDetailCache[rowKey(selectedSpan)];
+		return detail ? { ...selectedSpan, ...detail, attributesTruncated: false } : selectedSpan;
+	});
+
+	const isSpanDetailLoading = $derived(
+		selectedSpan?.attributesTruncated === true && spanDetailLoadingKey === (selectedSpan ? rowKey(selectedSpan) : null)
+	);
+	const selectedSpanDetailError = $derived(
+		selectedSpan && spanDetailErrorKey === rowKey(selectedSpan) ? spanDetailError : null
+	);
+
+	$effect(() => {
+		const summarySpan = selectedSpan;
+		if (!summarySpan?.attributesTruncated) return;
+
+		const key = rowKey(summarySpan);
+		if (spanDetailCache[key]) return;
+
+		const controller = new AbortController();
+		spanDetailLoadingKey = key;
+		spanDetailErrorKey = null;
+		spanDetailError = null;
+
+		void fetch(
+			`/api/observability/traces/${encodeURIComponent(summarySpan.traceId)}/spans/${encodeURIComponent(summarySpan.spanId)}`,
+			{ signal: controller.signal }
+		)
+			.then(async (response) => {
+				const body = await response.json().catch(() => null) as {
+					span?: ObservabilityTraceSpan | null;
+					error?: string;
+				} | null;
+				if (!response.ok || !body?.span) {
+					throw new Error(body?.error ?? `Span details request failed (${response.status})`);
+				}
+				spanDetailCache = { ...spanDetailCache, [key]: body.span };
+			})
+			.catch((err: unknown) => {
+				if (controller.signal.aborted) return;
+				spanDetailErrorKey = key;
+				spanDetailError = err instanceof Error ? err.message : 'Span details are unavailable';
+			})
+			.finally(() => {
+				if (spanDetailLoadingKey === key) spanDetailLoadingKey = null;
+			});
+
+		return () => controller.abort();
 	});
 
 	const filteredAgentDecisions = $derived.by(() => {
@@ -451,6 +513,16 @@
 		{/snippet}
 
 		{#snippet mainContent()}
+			{#if traceBackendWarnings.length > 0}
+				<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/[0.08] px-4 py-2 text-[11px] text-amber-100" role="status">
+					<CircleAlert size={13} class="mt-0.5 shrink-0 text-amber-300" />
+					<div class="min-w-0 space-y-0.5">
+						{#each traceBackendWarnings as warning (warning.id)}
+							<p class="break-words">{warning.label}</p>
+						{/each}
+					</div>
+				</div>
+			{/if}
 			{#if mainViewTab === 'goal' && payload.goalFlow}
 				<GoalFlowTimeline
 					goalFlow={payload.goalFlow}
@@ -518,7 +590,9 @@
 					/>
 				{:else}
 					<SpanEvidencePanel
-						span={selectedSpan}
+						span={evidenceSpan}
+						{isSpanDetailLoading}
+						spanDetailError={selectedSpanDetailError}
 						selectedDecision={activeSelectedDecision}
 						{selectedLog}
 						logs={relatedLogs}

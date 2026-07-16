@@ -21,6 +21,8 @@
 		llmSpans?: ObservabilityLlmSpan[];
 		toolSpans?: ObservabilityToolSpan[];
 		externalTab?: EvidenceTab | null;
+		isSpanDetailLoading?: boolean;
+		spanDetailError?: string | null;
 	}
 
 	let {
@@ -30,7 +32,9 @@
 		logs = [],
 		llmSpans = [],
 		toolSpans = [],
-		externalTab = null
+		externalTab = null,
+		isSpanDetailLoading = false,
+		spanDetailError = null
 	}: Props = $props();
 
 	let internalTab = $state<EvidenceTab>('overview');
@@ -150,6 +154,13 @@
 			</div>
 			<h3 class="mt-2 break-all font-mono text-[13.5px] font-semibold text-zinc-50">{span.operationName}</h3>
 			<p class="mt-1 text-[11px] text-zinc-500">{formatTimestamp(span.startTime)}</p>
+			{#if isSpanDetailLoading}
+				<p class="mt-2 text-[10px] text-cyan-300" aria-live="polite">Loading complete span attributes...</p>
+			{:else if spanDetailError}
+				<p class="mt-2 break-words text-[10px] text-amber-300" role="status">
+					Complete attributes unavailable. Showing the span summary. {spanDetailError}
+				</p>
+			{/if}
 		</div>
 
 		{#if !externalTab}

@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => {
 		updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 	};
 	const workflowData = {
-		getWorkflowByRef: vi.fn(async () => workflow),
+		getScopedWorkflowById: vi.fn(async (): Promise<typeof workflow | null> => workflow),
 	};
 	const workflowDefinitionCommands = {
 		updateWorkflow: vi.fn(async () => ({
@@ -64,7 +64,7 @@ async function expectHttpStatus(promise: Promise<unknown>, status: number) {
 describe("workflow item route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
+		mocks.workflowData.getScopedWorkflowById.mockResolvedValue(mocks.workflow);
 		mocks.workflowDefinitionCommands.updateWorkflow.mockResolvedValue({
 			status: "ok",
 			body: mocks.workflow,
@@ -96,10 +96,17 @@ describe("workflow item route", () => {
 			id: "wf-1",
 			name: "Example",
 		});
-		expect(mocks.workflowData.getWorkflowByRef).toHaveBeenCalledWith({
+		expect(mocks.workflowData.getScopedWorkflowById).toHaveBeenCalledWith({
 			workflowId: "wf-1",
-			lookup: "id",
+			userId: "user-1",
+			projectId: "project-1",
 		});
+	});
+
+	it("hides workflows outside the active project", async () => {
+		mocks.workflowData.getScopedWorkflowById.mockResolvedValueOnce(null);
+
+		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 	});
 
 	it("updates a workflow through workflow definition commands", async () => {
@@ -110,6 +117,13 @@ describe("workflow item route", () => {
 			workflowId: "wf-1",
 			body: { name: "Updated", nodes: [], edges: [], spec: { do: [] } },
 		});
+	});
+
+	it("does not update a workflow outside the active project", async () => {
+		mocks.workflowData.getScopedWorkflowById.mockResolvedValueOnce(null);
+
+		await expectHttpStatus(Promise.resolve(PUT(event() as never)), 404);
+		expect(mocks.workflowDefinitionCommands.updateWorkflow).not.toHaveBeenCalled();
 	});
 
 	it("blocks delete when active executions exist", async () => {

@@ -1,10 +1,13 @@
 import {
 	CLICKHOUSE_DB,
+	getTraceSpanDetail,
+	isClickHouseConfigured,
 	queryClickHouse,
 } from "$lib/server/otel/clickhouse";
 import type {
 	ObservabilityTraceOwnerResolver,
 	ObservabilityTraceOwners,
+	ObservabilityTraceSpanDetailReader,
 } from "$lib/server/application/observability-trace-access";
 
 const chEscape = (value: string) => value.replace(/'/g, "''");
@@ -27,5 +30,17 @@ export class ClickHouseTraceOwnerResolver
 			sessionIds: (row.SessionIds as string[]) ?? [],
 			executionIds: (row.ExecutionIds as string[]) ?? [],
 		};
+	}
+}
+
+export class ClickHouseTraceSpanDetailReader
+	implements ObservabilityTraceSpanDetailReader
+{
+	isConfigured(): boolean {
+		return isClickHouseConfigured();
+	}
+
+	getSpanDetail(traceId: string, spanId: string): Promise<unknown | null> {
+		return getTraceSpanDetail(traceId, spanId);
 	}
 }

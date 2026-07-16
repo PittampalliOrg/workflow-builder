@@ -10,6 +10,8 @@
 		type EdgeTypes
 	} from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
+	import { CircleAlert, RefreshCw } from '@lucide/svelte';
+	import { Button } from '$lib/components/ui/button';
 	import { createLayoutConfig, layoutWorkflowGraph } from '$lib/utils/layout';
 	import type { GraphSelection, ServiceGraphNode as SGNode, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphNode, { phaseHue } from './service-graph-node.svelte';
@@ -18,10 +20,14 @@
 	let {
 		payload,
 		loading = false,
+		error = null,
+		onRetry,
 		onSelect
 	}: {
 		payload: ServiceGraphPayload | null;
 		loading?: boolean;
+		error?: string | null;
+		onRetry?: () => void;
 		onSelect?: (sel: GraphSelection | null) => void;
 	} = $props();
 
@@ -89,7 +95,7 @@
 		};
 	});
 
-	let isEmpty = $derived(!loading && (!payload || payload.nodes.length === 0));
+	let isEmpty = $derived(!loading && !error && (!payload || payload.nodes.length === 0));
 
 	// Phase legend (dynamic-script step graphs): distinct groups in node order.
 	let phases = $derived.by(() => {
@@ -113,7 +119,20 @@
 			{/each}
 		</div>
 	{/if}
-	{#if isEmpty}
+	{#if error}
+		<div
+			class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 px-6 text-center"
+			role="alert"
+		>
+			<CircleAlert class="size-5 text-destructive" />
+			<p class="max-w-md text-sm text-foreground">{error}</p>
+			{#if onRetry}
+				<Button variant="outline" size="sm" class="h-7 gap-1.5" onclick={onRetry}>
+					<RefreshCw class="size-3" /> Retry
+				</Button>
+			{/if}
+		</div>
+	{:else if isEmpty}
 		<div
 			class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"
 		>

@@ -7,7 +7,7 @@
 import { getApplicationAdapters } from '$lib/server/application';
 import {
 	getMultiTraceLlmSpans,
-	getMultiTraceSpans,
+	getMultiTraceSpanSummaries,
 	isClickHouseConfigured
 } from '$lib/server/otel/clickhouse';
 import { resolveExecutionTraceIds } from '$lib/server/otel/service-graph';
@@ -37,16 +37,14 @@ type TraceBundle = {
 		errorCode: string | null;
 	}[];
 	traceIds: string[];
-	spans: Awaited<ReturnType<typeof getMultiTraceSpans>>;
+	spans: Awaited<ReturnType<typeof getMultiTraceSpanSummaries>>['spans'];
 	llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>>;
 };
 
 // Short-TTL bundle cache: the run page polls the digest (6s) + graph (5s)
-// while trace tools fire in bursts — each used to re-fetch the FULL span
-// bundle from ClickHouse (~1MB over the dev→hub egress), and the resulting
-// concurrent streams are exactly what stalled a reviewer's tool call. One
-// fetch per execution per TTL window is plenty for eventually-consistent
-// telemetry.
+// while trace tools fire in bursts. One summary fetch per execution per TTL
+// window is enough for eventually-consistent telemetry and avoids redundant
+// dev-to-hub egress.
 const BUNDLE_TTL_MS = Number(process.env.TRACE_BUNDLE_CACHE_TTL_MS) || 15_000;
 const BUNDLE_CACHE_MAX = 24;
 const bundleCache = new Map<string, { at: number; bundle: Promise<TraceBundle> }>();
@@ -90,7 +88,7 @@ async function loadExecutionTraceBundleUncached(
 		.catch(() => []);
 
 	let traceIds: string[] = [];
-	let spans: Awaited<ReturnType<typeof getMultiTraceSpans>> = [];
+	let spans: Awaited<ReturnType<typeof getMultiTraceSpanSummaries>>['spans'] = [];
 	let llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>> = [];
 	if (isClickHouseConfigured()) {
 		// Degrade, never throw: a slow/terminated ClickHouse egress must yield a
@@ -105,19 +103,42 @@ async function loadExecutionTraceBundleUncached(
 				startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
 				completedAt: execution.completedAt ? new Date(execution.completedAt) : null
 			});
-			if (traceIds.length > 0) {
-				[spans, llmSpans] = await Promise.all([
-					getMultiTraceSpans(traceIds),
-					getMultiTraceLlmSpans(traceIds)
-				]);
-			}
 		} catch (err) {
 			console.warn(
-				`[trace-bundle] ClickHouse load degraded for ${execution.id}:`,
+				`[trace-bundle] Trace resolution degraded for ${execution.id}:`,
 				err instanceof Error ? err.message : err
 			);
-			spans = [];
-			llmSpans = [];
+		}
+		if (traceIds.length > 0) {
+			const window = {
+				startedAt: execution.startedAt,
+				completedAt: execution.completedAt
+			};
+			const [spanResult, llmResult] = await Promise.allSettled([
+				getMultiTraceSpanSummaries(traceIds, window),
+				getMultiTraceLlmSpans(traceIds, undefined, window)
+			]);
+			if (spanResult.status === 'fulfilled') {
+				spans = spanResult.value.spans;
+				if (spanResult.value.truncated) {
+					console.warn(
+						`[trace-bundle] Span summaries limited to ${spanResult.value.limit} rows for ${execution.id}`
+					);
+				}
+			} else {
+				console.warn(
+					`[trace-bundle] Span summary load degraded for ${execution.id}:`,
+					spanResult.reason instanceof Error ? spanResult.reason.message : spanResult.reason
+				);
+			}
+			if (llmResult.status === 'fulfilled') {
+				llmSpans = llmResult.value;
+			} else {
+				console.warn(
+					`[trace-bundle] LLM span load degraded for ${execution.id}:`,
+					llmResult.reason instanceof Error ? llmResult.reason.message : llmResult.reason
+				);
+			}
 		}
 	}
 	return { calls, traceIds, spans, llmSpans };

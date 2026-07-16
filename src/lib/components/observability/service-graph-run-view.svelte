@@ -10,6 +10,7 @@
 	 * standalone service-graph page's Run view.
 	 */
 	import { RefreshCw, GitBranch, Server, MessageCircleQuestion, Microscope, Loader2, Maximize2, Minimize2 } from '@lucide/svelte';
+	import { untrack } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { GraphSelection, ServiceGraphPayload } from '$lib/types/service-graph';
 	import ServiceGraphCanvas from './service-graph-canvas.svelte';
@@ -20,6 +21,10 @@
 	import { page } from '$app/state';
 	import { toast } from 'svelte-sonner';
 	import type { DeepAnalysisStart, TraceAnalysisReport } from '$lib/types/trace-analysis';
+	import {
+		fetchServiceGraphPayload,
+		ServiceGraphRequestError
+	} from './service-graph-client';
 
 	let {
 		executionId,
@@ -44,6 +49,8 @@
 	let lens = $state<'flow' | 'services'>(initialLens);
 	let payload = $state<ServiceGraphPayload | null>(null);
 	let loading = $state(false);
+	let graphError = $state<string | null>(null);
+	let requestInFlight = $state(false);
 	// svelte-ignore state_referenced_locally -- deep-link applies once at mount
 	let selection = $state<GraphSelection | null>(initialSelection);
 	let refreshNonce = $state(0);
@@ -58,23 +65,46 @@
 	const polling = $derived(active || hasLiveNodes);
 
 	let abort: AbortController | null = null;
+	let requestId = 0;
+
+	function graphErrorMessage(error: unknown): string {
+		if (error instanceof ServiceGraphRequestError) {
+			if (error.status === 404) return 'This run is not available in the active workspace.';
+			if (error.status === 401) return 'Sign in again to load this graph.';
+			return error.message;
+		}
+		return error instanceof Error ? error.message : 'Failed to load the service graph.';
+	}
+
 	async function fetchGraph(background = false) {
 		if (!executionId) return;
-		abort?.abort();
+		if (background && requestInFlight) return;
+		if (!background) abort?.abort();
 		const controller = new AbortController();
 		abort = controller;
+		const currentRequest = ++requestId;
+		requestInFlight = true;
 		if (!background) loading = true;
 		try {
 			const qs = new URLSearchParams({ mode, scope: 'execution', executionId });
-			const res = await fetch(`/api/observability/service-graph?${qs}`, {
+			const nextPayload = await fetchServiceGraphPayload(`/api/observability/service-graph?${qs}`, {
 				signal: controller.signal
 			});
-			const p = (await res.json()) as ServiceGraphPayload;
-			if (!controller.signal.aborted) payload = p;
+			if (!controller.signal.aborted && currentRequest === requestId) {
+				payload = nextPayload;
+				graphError = null;
+			}
 		} catch (e) {
-			if ((e as Error)?.name !== 'AbortError') console.error('service-graph fetch failed', e);
+			if ((e as Error)?.name !== 'AbortError' && currentRequest === requestId) {
+				graphError = graphErrorMessage(e);
+				console.error('service-graph fetch failed', e);
+			}
 		} finally {
-			if (!controller.signal.aborted) loading = false;
+			if (currentRequest === requestId) {
+				requestInFlight = false;
+				loading = false;
+				if (abort === controller) abort = null;
+			}
 		}
 	}
 
@@ -87,6 +117,8 @@
 		void mode;
 		if (firstLoad) firstLoad = false;
 		else setSelection(null);
+		payload = null;
+		graphError = null;
 		fetchGraph();
 		return () => abort?.abort();
 	});
@@ -94,7 +126,7 @@
 	// Manual refresh keeps the selection — the stale-selection effect below
 	// clears it only if the refreshed graph no longer contains it.
 	$effect(() => {
-		if (refreshNonce > 0) fetchGraph();
+		if (refreshNonce > 0) untrack(() => fetchGraph());
 	});
 
 	// Background poll while the run breathes (5s — matches the run panel cadence
@@ -335,7 +367,13 @@
 
 	<div class="flex min-h-0 flex-1">
 		<div class="min-h-0 flex-1">
-			<ServiceGraphCanvas {payload} {loading} onSelect={(s) => setSelection(s)} />
+			<ServiceGraphCanvas
+				{payload}
+				{loading}
+				error={!payload ? graphError : null}
+				onRetry={() => (refreshNonce += 1)}
+				onSelect={(s) => setSelection(s)}
+			/>
 		</div>
 		{#if selection && (selectedNode || selectedEdge)}
 			<ServiceGraphDrilldown
@@ -369,6 +407,11 @@
 	{#if payload?.meta.degraded}
 		<div class="border-t bg-destructive/10 px-4 py-2 text-xs text-destructive">
 			Telemetry store unavailable — graph may be incomplete. {payload.meta.warnings.join(' · ')}
+		</div>
+	{/if}
+	{#if payload && graphError}
+		<div class="border-t bg-destructive/10 px-4 py-2 text-xs text-destructive">
+			Graph refresh failed: {graphError}
 		</div>
 	{/if}
 </div>

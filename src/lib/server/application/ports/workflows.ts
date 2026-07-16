@@ -910,6 +910,11 @@ export interface WorkflowDataService {
 	getWorkflowByRef(
 		ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
 	): Promise<WorkflowDefinition | null>;
+	getScopedWorkflowById(input: {
+		workflowId: string;
+		userId: string;
+		projectId?: string | null;
+	}): Promise<WorkflowDefinition | null>;
 	listActiveWorkflowExecutionsForUser(
 		userId: string,
 	): Promise<ActiveWorkflowExecutionReadModel[]>;

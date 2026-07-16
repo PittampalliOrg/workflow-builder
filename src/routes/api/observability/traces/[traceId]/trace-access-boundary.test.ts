@@ -9,6 +9,7 @@ const routeFiles = [
 	"llm-spans/+server.ts",
 	"tool-spans/+server.ts",
 	"investigation/+server.ts",
+	"spans/[spanId]/+server.ts",
 	"trace-access.ts",
 ];
 

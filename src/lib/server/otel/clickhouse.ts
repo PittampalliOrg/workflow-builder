@@ -6,7 +6,8 @@ import type {
 	ObservabilityTraceSpan
 } from '$lib/types/observability';
 
-export const CLICKHOUSE_URL = env.CLICKHOUSE_URL ?? 'http://otel-clickhouse.observability.svc.cluster.local:8123';
+export const CLICKHOUSE_URL =
+	env.CLICKHOUSE_URL ?? 'http://otel-clickhouse.observability.svc.cluster.local:8123';
 export const CLICKHOUSE_USER = env.CLICKHOUSE_USER ?? 'default';
 export const CLICKHOUSE_PASSWORD = env.CLICKHOUSE_PASSWORD ?? 'otel_dev_password';
 export const CLICKHOUSE_DB = env.CLICKHOUSE_DB ?? 'otel';
@@ -29,6 +30,40 @@ function toNullableNumber(value: unknown): number | null {
 			: null;
 }
 
+function toBoolean(value: unknown): boolean {
+	return value === true || value === 1 || value === '1';
+}
+
+export type TraceTimeWindow = {
+	startedAt?: string | Date | null;
+	completedAt?: string | Date | null;
+};
+
+export type TraceSpanSummaryOptions = TraceTimeWindow & {
+	serviceNames?: string[];
+	limit?: number;
+};
+
+export type TraceSpanSummaryBatch = {
+	spans: ObservabilityTraceSpan[];
+	truncated: boolean;
+	limit: number;
+};
+
+export type GraphLlmSpan = Pick<
+	ObservabilityLlmSpan,
+	| 'traceId'
+	| 'spanId'
+	| 'serviceName'
+	| 'sessionId'
+	| 'modelName'
+	| 'promptTokens'
+	| 'completionTokens'
+	| 'totalTokens'
+	| 'cacheReadInputTokens'
+	| 'cacheCreationInputTokens'
+>;
+
 /**
  * Cheap "is ClickHouse wired up" check. The connection constants above always
  * carry an in-cluster default, so on an environment WITHOUT ClickHouse (e.g. a
@@ -44,20 +79,28 @@ export function isClickHouseConfigured(): boolean {
  * through the dev→hub egress must FAIL (callers degrade) rather than hang the
  * request chain — a hung trace-tool fetch stalls an agent activity forever. */
 const CLICKHOUSE_TIMEOUT_MS = Number(process.env.CLICKHOUSE_TIMEOUT_MS) || 30_000;
+const TRACE_SPAN_SUMMARY_TIMEOUT_MS = Number(process.env.TRACE_SPAN_SUMMARY_TIMEOUT_MS) || 20_000;
+const TRACE_SPAN_SUMMARY_LIMIT = Number(process.env.TRACE_SPAN_SUMMARY_LIMIT) || 20_000;
 
-export async function queryClickHouse(sql: string): Promise<Record<string, unknown>[]> {
+export async function queryClickHouse(
+	sql: string,
+	options: { timeoutMs?: number } = {}
+): Promise<Record<string, unknown>[]> {
 	const res = await fetch(CLICKHOUSE_URL, {
 		method: 'POST',
 		headers: {
 			Authorization: `Basic ${Buffer.from(`${CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD}`).toString('base64')}`
 		},
 		body: `${sql} FORMAT JSONEachRow`,
-		signal: AbortSignal.timeout(CLICKHOUSE_TIMEOUT_MS)
+		signal: AbortSignal.timeout(options.timeoutMs ?? CLICKHOUSE_TIMEOUT_MS)
 	});
 	if (!res.ok) throw new Error(`ClickHouse error: ${res.status}`);
 	const text = await res.text();
 	if (!text.trim()) return [];
-	return text.trim().split('\n').map((line) => JSON.parse(line));
+	return text
+		.trim()
+		.split('\n')
+		.map((line) => JSON.parse(line));
 }
 
 export function escapeClickHouseString(value: string): string {
@@ -133,6 +176,21 @@ function mapObservabilityLlmSpan(row: Record<string, unknown>): ObservabilityLlm
 	};
 }
 
+function mapGraphLlmSpan(row: Record<string, unknown>): GraphLlmSpan {
+	return {
+		traceId: String(row.TraceId ?? ''),
+		spanId: String(row.SpanId ?? ''),
+		serviceName: String(row.ServiceName ?? 'unknown'),
+		sessionId: String(row.SessionId ?? ''),
+		modelName: row.ModelName ? String(row.ModelName) : null,
+		promptTokens: toNullableNumber(row.PromptTokens),
+		completionTokens: toNullableNumber(row.CompletionTokens),
+		totalTokens: toNullableNumber(row.TotalTokens),
+		cacheReadInputTokens: toNullableNumber(row.CacheReadInputTokens),
+		cacheCreationInputTokens: toNullableNumber(row.CacheCreationInputTokens)
+	};
+}
+
 function mapObservabilityToolSpan(row: Record<string, unknown>): ObservabilityToolSpan {
 	return {
 		timestamp: String(row.Timestamp ?? ''),
@@ -152,7 +210,10 @@ function mapObservabilityToolSpan(row: Record<string, unknown>): ObservabilityTo
 	};
 }
 
-function mapObservabilityTraceSpan(row: Record<string, unknown>): Omit<ObservabilityTraceSpan, 'depth'> {
+function mapObservabilityTraceSpan(
+	row: Record<string, unknown>
+): Omit<ObservabilityTraceSpan, 'depth'> {
+	const statusCode = row.StatusCode ? String(row.StatusCode) : undefined;
 	return {
 		traceId: String(row.TraceId ?? ''),
 		spanId: String(row.SpanId ?? ''),
@@ -161,12 +222,120 @@ function mapObservabilityTraceSpan(row: Record<string, unknown>): Omit<Observabi
 		serviceName: String(row.ServiceName ?? 'unknown'),
 		startTime: String(row.Timestamp ?? ''),
 		duration: Math.round(Number(row.DurationMs ?? 0)),
-		statusCode: row.StatusCode ? String(row.StatusCode) : undefined,
+		statusCode,
 		statusMessage: row.StatusMessage ? String(row.StatusMessage) : undefined,
 		spanKind: row.SpanKind ? String(row.SpanKind) : undefined,
 		attributes: (row.SpanAttributes as Record<string, unknown>) ?? {},
 		resourceAttributes: (row.ResourceAttributes as Record<string, unknown>) ?? {},
-		status: String(row.StatusCode ?? '') === 'STATUS_CODE_ERROR' ? 'error' : 'ok'
+		status: statusCode === 'Error' || statusCode === 'STATUS_CODE_ERROR' ? 'error' : 'ok'
+	};
+}
+
+const COMPACT_SPAN_ATTRIBUTE_KEYS = [
+	'session.id',
+	'workflow.execution.id',
+	'workflow_execution_id',
+	'agent.run.id',
+	'agent_run_id',
+	'workflow.node.id',
+	'workflow.node.name',
+	'workflow.node.action_type',
+	'workflow.node.sequence',
+	'node.id',
+	'node.name',
+	'node.action_type',
+	'action.type',
+	'workflow.activity.correlation_id',
+	'durabletask.task.task_id',
+	'durabletask.task.name',
+	'workflow.id',
+	'workflow.name',
+	'db.system.name',
+	'db.system',
+	'db.namespace',
+	'db.collection.name',
+	'db.operation.name',
+	'peer.service',
+	'server.address',
+	'net.peer.name',
+	'http.method',
+	'http.request.method',
+	'http.route',
+	'http.target',
+	'http.url',
+	'http.status_code',
+	'http.response.status_code',
+	'url.full',
+	'url.path',
+	'rpc.system',
+	'rpc.service',
+	'rpc.method',
+	'messaging.system',
+	'messaging.operation',
+	'gen_ai.operation.name',
+	'gen_ai.request.model',
+	'gen_ai.response.model',
+	'llm.model_name',
+	'model',
+	'model_name',
+	'openinference.span.kind',
+	'mlflow.spanType',
+	'span.type',
+	'durabletask.type',
+	'tool.name',
+	'tool_name',
+	'mcp.tool.name',
+	'function.name',
+	'gen_ai.tool.name',
+	'error',
+	'error.type',
+	'exception.type',
+	'exception.message'
+] as const;
+
+const COMPACT_RESOURCE_ATTRIBUTE_KEYS = [
+	'session.id',
+	'workflow.execution.id',
+	'workflow_execution_id',
+	'agent.run.id',
+	'agent_run_id'
+] as const;
+
+function compactAttributeSelect(
+	column: 'SpanAttributes' | 'ResourceAttributes',
+	prefix: string,
+	keys: readonly string[]
+): string {
+	return keys.map((key, index) => `${column}['${key}'] AS ${prefix}${index}`).join(',\n\t\t\t');
+}
+
+function mapCompactAttributes(
+	row: Record<string, unknown>,
+	prefix: string,
+	keys: readonly string[]
+): Record<string, unknown> {
+	const attributes: Record<string, unknown> = {};
+	for (const [index, key] of keys.entries()) {
+		const value = row[`${prefix}${index}`];
+		if (value !== undefined && value !== null && value !== '') attributes[key] = value;
+	}
+	return attributes;
+}
+
+function mapObservabilityTraceSpanSummary(
+	row: Record<string, unknown>
+): Omit<ObservabilityTraceSpan, 'depth'> {
+	return {
+		...mapObservabilityTraceSpan({
+			...row,
+			SpanAttributes: mapCompactAttributes(row, 'SpanAttr', COMPACT_SPAN_ATTRIBUTE_KEYS),
+			ResourceAttributes: mapCompactAttributes(row, 'ResourceAttr', COMPACT_RESOURCE_ATTRIBUTE_KEYS)
+		}),
+		attributesTruncated: true,
+		hasInput: toBoolean(row.HasInput),
+		hasOutput: toBoolean(row.HasOutput),
+		inputSize: Math.max(0, Number(row.InputSize ?? 0)),
+		outputSize: Math.max(0, Number(row.OutputSize ?? 0))
 	};
 }
 
@@ -219,6 +388,26 @@ async function queryObservabilityLlmSpans(whereClause: string): Promise<Observab
 	return rows.map(mapObservabilityLlmSpan);
 }
 
+async function queryGraphLlmSpans(whereClause: string): Promise<GraphLlmSpan[]> {
+	const rows = await queryClickHouse(`
+		SELECT
+			TraceId,
+			SpanId,
+			ServiceName,
+			SessionId,
+			ModelName,
+			PromptTokens,
+			CompletionTokens,
+			TotalTokens,
+			CacheReadInputTokens,
+			CacheCreationInputTokens
+		FROM ${CLICKHOUSE_OBS_DB}.llm_spans
+		${whereClause}
+		ORDER BY Timestamp ASC
+	`);
+	return rows.map(mapGraphLlmSpan);
+}
+
 async function queryObservabilityToolSpans(whereClause: string): Promise<ObservabilityToolSpan[]> {
 	const rows = await queryClickHouse(`
 		SELECT
@@ -266,7 +455,9 @@ async function getSessionTraceIds(sessionId: string): Promise<string[]> {
 	return sanitizeTraceIds(rows.map((row) => String(row.TraceId ?? '')));
 }
 
-function enrichTraceDepths(spans: Omit<ObservabilityTraceSpan, 'depth'>[]): ObservabilityTraceSpan[] {
+function enrichTraceDepths(
+	spans: Omit<ObservabilityTraceSpan, 'depth'>[]
+): ObservabilityTraceSpan[] {
 	const byTrace = new Map<string, Omit<ObservabilityTraceSpan, 'depth'>[]>();
 	for (const span of spans) {
 		const group = byTrace.get(span.traceId) ?? [];
@@ -324,20 +515,150 @@ async function queryTraceSpans(whereClause: string): Promise<ObservabilityTraceS
 	return enrichTraceDepths(rows.map(mapObservabilityTraceSpan));
 }
 
-export async function getTraceLogs(traceId: string): Promise<ObservabilityLogEntry[]> {
-	return queryObservabilityLogs(
-		`WHERE TraceId = '${escapeClickHouseString(traceId)}'`
+function clickHouseTimestamp(value: string | Date | null | undefined): string | null {
+	if (value == null) return null;
+	const date = value instanceof Date ? value : new Date(value);
+	if (!Number.isFinite(date.getTime())) return null;
+	return date.toISOString().replace('T', ' ').replace('Z', '');
+}
+
+function traceTimeWindowClause(window: TraceTimeWindow = {}): string {
+	const startValue = window.startedAt == null ? null : new Date(window.startedAt);
+	const start =
+		startValue && Number.isFinite(startValue.getTime())
+			? clickHouseTimestamp(new Date(startValue.getTime() - 5_000))
+			: null;
+	const completedValue = window.completedAt == null ? null : new Date(window.completedAt);
+	const end =
+		completedValue && Number.isFinite(completedValue.getTime())
+			? clickHouseTimestamp(new Date(completedValue.getTime() + 10_000))
+			: start
+				? clickHouseTimestamp(new Date(Date.now() + 10_000))
+				: null;
+	return [start ? `AND Timestamp >= '${start}'` : '', end ? `AND Timestamp <= '${end}'` : '']
+		.filter(Boolean)
+		.join(' ');
+}
+
+async function queryTraceSpanSummaries(
+	whereClause: string,
+	options: TraceSpanSummaryOptions = {}
+): Promise<TraceSpanSummaryBatch> {
+	const configuredLimit = Number.isFinite(options.limit)
+		? Number(options.limit)
+		: TRACE_SPAN_SUMMARY_LIMIT;
+	const limit = Math.min(50_000, Math.max(1, Math.floor(configuredLimit)));
+	const rows = await queryClickHouse(
+		`
+		SELECT
+			TraceId,
+			SpanId,
+			ParentSpanId,
+			SpanName,
+			SpanKind,
+			ServiceName,
+			Duration/1000000 AS DurationMs,
+			StatusCode,
+			StatusMessage,
+			Timestamp,
+			${compactAttributeSelect('SpanAttributes', 'SpanAttr', COMPACT_SPAN_ATTRIBUTE_KEYS)},
+			${compactAttributeSelect('ResourceAttributes', 'ResourceAttr', COMPACT_RESOURCE_ATTRIBUTE_KEYS)},
+			mapContains(SpanAttributes, 'input.value') AS HasInput,
+			mapContains(SpanAttributes, 'output.value') AS HasOutput,
+			length(SpanAttributes['input.value']) AS InputSize,
+			length(SpanAttributes['output.value']) AS OutputSize
+		FROM ${CLICKHOUSE_DB}.otel_traces
+		${whereClause}
+		${traceTimeWindowClause(options)}
+		${serviceNameClause(options.serviceNames)}
+		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
+		LIMIT ${limit + 1}
+	`,
+		{ timeoutMs: TRACE_SPAN_SUMMARY_TIMEOUT_MS }
 	);
+	const truncated = rows.length > limit;
+	return {
+		spans: enrichTraceDepths(rows.slice(0, limit).map(mapObservabilityTraceSpanSummary)),
+		truncated,
+		limit
+	};
+}
+
+export async function getTraceSpanSummaries(
+	traceId: string,
+	options: TraceSpanSummaryOptions = {}
+): Promise<TraceSpanSummaryBatch> {
+	return queryTraceSpanSummaries(`WHERE TraceId = '${escapeClickHouseString(traceId)}'`, options);
+}
+
+export async function getMultiTraceSpanSummaries(
+	traceIds: string[],
+	options: TraceSpanSummaryOptions = {}
+): Promise<TraceSpanSummaryBatch> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	const limit = Math.min(
+		50_000,
+		Math.max(1, Math.floor(options.limit ?? TRACE_SPAN_SUMMARY_LIMIT))
+	);
+	if (sanitized.length === 0) return { spans: [], truncated: false, limit };
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	return queryTraceSpanSummaries(`WHERE TraceId IN (${inClause})`, options);
+}
+
+export async function getSessionTraceSpanSummaries(
+	sessionId: string,
+	options: TraceSpanSummaryOptions = {}
+): Promise<TraceSpanSummaryBatch> {
+	const traceIds = await getSessionTraceIds(sessionId);
+	return getMultiTraceSpanSummaries(traceIds, options);
+}
+
+export async function getTraceSpanDetail(
+	traceId: string,
+	spanId: string
+): Promise<ObservabilityTraceSpan | null> {
+	const sanitizedTraceIds = sanitizeTraceIds([traceId]);
+	const normalizedSpanId = spanId.trim();
+	if (sanitizedTraceIds.length === 0 || !/^[a-f0-9]+$/i.test(normalizedSpanId)) return null;
+	const rows = await queryClickHouse(`
+		SELECT
+			TraceId,
+			SpanId,
+			ParentSpanId,
+			SpanName,
+			SpanKind,
+			ServiceName,
+			Duration/1000000 AS DurationMs,
+			StatusCode,
+			StatusMessage,
+			Timestamp,
+			SpanAttributes,
+			ResourceAttributes
+		FROM ${CLICKHOUSE_DB}.otel_traces
+		WHERE TraceId = '${escapeClickHouseString(sanitizedTraceIds[0])}'
+		  AND SpanId = '${escapeClickHouseString(normalizedSpanId)}'
+		ORDER BY Timestamp ASC
+		LIMIT 1
+	`);
+	if (rows.length === 0) return null;
+	return enrichTraceDepths(rows.map(mapObservabilityTraceSpan))[0] ?? null;
+}
+
+export async function getTraceLogs(traceId: string): Promise<ObservabilityLogEntry[]> {
+	return queryObservabilityLogs(`WHERE TraceId = '${escapeClickHouseString(traceId)}'`);
 }
 
 export async function getMultiTraceLogs(
 	traceIds: string[],
-	serviceNames?: string[]
+	serviceNames?: string[],
+	window: TraceTimeWindow = {}
 ): Promise<ObservabilityLogEntry[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityLogs(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
+	return queryObservabilityLogs(
+		`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)} ${traceTimeWindowClause(window)}`
+	);
 }
 
 /**
@@ -470,35 +791,49 @@ export async function getSessionTraceSpans(sessionId: string): Promise<Observabi
 }
 
 export async function getTraceLlmSpans(traceId: string): Promise<ObservabilityLlmSpan[]> {
-	return queryObservabilityLlmSpans(
-		`WHERE TraceId = '${escapeClickHouseString(traceId)}'`
-	);
+	return queryObservabilityLlmSpans(`WHERE TraceId = '${escapeClickHouseString(traceId)}'`);
 }
 
 export async function getTraceToolSpans(traceId: string): Promise<ObservabilityToolSpan[]> {
-	return queryObservabilityToolSpans(
-		`WHERE TraceId = '${escapeClickHouseString(traceId)}'`
-	);
+	return queryObservabilityToolSpans(`WHERE TraceId = '${escapeClickHouseString(traceId)}'`);
 }
 
 export async function getMultiTraceLlmSpans(
 	traceIds: string[],
-	serviceNames?: string[]
+	serviceNames?: string[],
+	window: TraceTimeWindow = {}
 ): Promise<ObservabilityLlmSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityLlmSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
+	return queryObservabilityLlmSpans(
+		`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)} ${traceTimeWindowClause(window)}`
+	);
+}
+
+/** Token-only projection for service-graph insights. Message bodies and invocation
+ * parameters are loaded by investigation views, never by the graph. */
+export async function getMultiTraceGraphLlmSpans(
+	traceIds: string[],
+	window: TraceTimeWindow = {}
+): Promise<GraphLlmSpan[]> {
+	const sanitized = [...new Set(sanitizeTraceIds(traceIds))];
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	return queryGraphLlmSpans(`WHERE TraceId IN (${inClause}) ${traceTimeWindowClause(window)}`);
 }
 
 export async function getMultiTraceToolSpans(
 	traceIds: string[],
-	serviceNames?: string[]
+	serviceNames?: string[],
+	window: TraceTimeWindow = {}
 ): Promise<ObservabilityToolSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
-	return queryObservabilityToolSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
+	return queryObservabilityToolSpans(
+		`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)} ${traceTimeWindowClause(window)}`
+	);
 }
 
 export async function getSessionLlmSpans(sessionId: string): Promise<ObservabilityLlmSpan[]> {
@@ -540,13 +875,17 @@ export async function findCorrelatedTraceIds(
 	try {
 		const start = new Date(startedAt);
 		// Add buffer: 5s before start, 10s after end (or now if still running)
-		const startBuf = new Date(start.getTime() - 5000).toISOString().replace('T', ' ').replace('Z', '');
+		const startBuf = new Date(start.getTime() - 5000)
+			.toISOString()
+			.replace('T', ' ')
+			.replace('Z', '');
 		const end = completedAt ? new Date(new Date(completedAt).getTime() + 10000) : new Date();
 		const endBuf = end.toISOString().replace('T', ' ').replace('Z', '');
 
-		const knownExclude = knownTraceIds.length > 0
-			? `AND TraceId NOT IN (${knownTraceIds.map(id => `'${id}'`).join(', ')})`
-			: '';
+		const knownExclude =
+			knownTraceIds.length > 0
+				? `AND TraceId NOT IN (${knownTraceIds.map((id) => `'${id}'`).join(', ')})`
+				: '';
 
 		const rows = await queryClickHouse(`
 			SELECT DISTINCT TraceId
@@ -558,7 +897,7 @@ export async function findCorrelatedTraceIds(
 			ORDER BY TraceId
 		`);
 
-		return rows.map(r => r.TraceId as string);
+		return rows.map((r) => r.TraceId as string);
 	} catch {
 		return [];
 	}

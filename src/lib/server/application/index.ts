@@ -105,7 +105,10 @@ import {
   RegistryPeerAgentResolver,
 } from "$lib/server/application/adapters/agents";
 import { PostgresAgentInlineBackfillRepository } from "$lib/server/application/adapters/agent-backfill";
-import { ClickHouseTraceOwnerResolver } from "$lib/server/application/adapters/observability-trace-access";
+import {
+  ClickHouseTraceOwnerResolver,
+  ClickHouseTraceSpanDetailReader,
+} from "$lib/server/application/adapters/observability-trace-access";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
 import { PostgresResourceMetricsRepository } from "$lib/server/application/adapters/aggregate-metrics";
@@ -1067,6 +1070,7 @@ export function getApplicationAdapters(
       new ApplicationObservabilityTraceAccessService({
         owners: new ClickHouseTraceOwnerResolver(),
         access: getObservabilityTraces(),
+        spanDetails: new ClickHouseTraceSpanDetailReader(),
       }));
   const getCapabilityBundles = () =>
     (capabilityBundles ??= new ApplicationCapabilityBundleService(

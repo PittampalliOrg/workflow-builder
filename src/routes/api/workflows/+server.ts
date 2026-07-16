@@ -5,11 +5,11 @@ import type { WorkflowDefinitionCommandResult } from '$lib/server/application/wo
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	const limit = parseInt(url.searchParams.get('limit') || '50');
-	const projectOnly = url.searchParams.get('projectOnly') === '1';
-	if (projectOnly && !locals.session?.projectId) return json([]);
+	if (!locals.session?.userId) return error(401, 'Authentication required');
+	if (!locals.session.projectId) return json([]);
 	const result = await getApplicationAdapters().workflowData.listWorkflows({
 		limit,
-		projectId: projectOnly ? locals.session?.projectId : null,
+		projectId: locals.session.projectId,
 	});
 
 	return json(result);

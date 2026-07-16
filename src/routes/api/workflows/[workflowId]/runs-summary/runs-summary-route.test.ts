@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
 	const workflowData = {
+		getScopedWorkflowById: vi.fn(
+			async (): Promise<{ id: string } | null> => ({ id: "wf-1" }),
+		),
 		listWorkflowExecutionRunSummaries: vi.fn(async () => [
 			{
 				id: "exec-1",
@@ -31,12 +34,14 @@ function event(search = "") {
 	return {
 		params: { workflowId: "wf-1" },
 		url: new URL(`http://workflow-builder.local/test${search}`),
+		locals: { session: { userId: "user-1", projectId: "project-1" } },
 	};
 }
 
 describe("workflow runs-summary route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.workflowData.getScopedWorkflowById.mockResolvedValue({ id: "wf-1" });
 	});
 
 	it("keeps the route behind workflow-data application services", () => {
@@ -67,5 +72,12 @@ describe("workflow runs-summary route", () => {
 			workflowId: "wf-1",
 			limit: 12,
 		});
+	});
+
+	it("does not return summaries for an out-of-scope workflow", async () => {
+		mocks.workflowData.getScopedWorkflowById.mockResolvedValueOnce(null);
+
+		await expect(GET(event() as never)).rejects.toMatchObject({ status: 404 });
+		expect(mocks.workflowData.listWorkflowExecutionRunSummaries).not.toHaveBeenCalled();
 	});
 });
