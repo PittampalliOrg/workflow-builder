@@ -1244,16 +1244,17 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
       execution.status === "error" ||
       execution.status === "cancelled";
     const controlReady =
-      terminal ||
-      execution.currentNodeId === "await_control" ||
-      execution.phase === "awaiting-control";
+      !terminal &&
+      (execution.currentNodeId === "await_control" ||
+        execution.phase === "awaiting-control");
     const sessionIds = await this.deps.executions.listSessionIdsByExecutionId(
       execution.id,
     );
     const uniqueSessionIds = [...new Set(sessionIds)];
     if (
-      uniqueSessionIds.length > 1 ||
-      sessionIds.length !== uniqueSessionIds.length
+      controlReady &&
+      (uniqueSessionIds.length > 1 ||
+        sessionIds.length !== uniqueSessionIds.length)
     ) {
       throw new PreviewTargetDevelopmentError(
         "contract-mismatch",
