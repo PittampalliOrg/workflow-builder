@@ -82,6 +82,29 @@ describe("preview development action binding", () => {
     expect(JSON.stringify(result)).not.toContain("credential");
   });
 
+  it("accepts trusted platform execution ids that start with url-safe punctuation", () => {
+    const result = buildPreviewDevelopmentProxyRequest({
+      actionSlug: "preview/environment-launch",
+      actionInput: {
+        environmentName: "feature-one",
+        services: ["workflow-builder"],
+        ttlHours: 8,
+        retainAfterCompletion: false,
+      },
+      dbExecutionId: "-EOL5B879L-KygR0HVXB8",
+      idempotencyKey: "workflow:-EOL5B879L-KygR0HVXB8:call-1",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      request: {
+        body: {
+          parentExecutionId: "-EOL5B879L-KygR0HVXB8",
+        },
+      },
+    });
+  });
+
   it("binds child start and typed signal commands to the exact tuple", () => {
     const start = buildPreviewDevelopmentProxyRequest({
       actionSlug: "preview/workflow-start",

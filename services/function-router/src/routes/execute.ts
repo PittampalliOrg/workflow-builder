@@ -766,7 +766,7 @@ const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
 const SIGNATURE = /^[0-9a-f]{64}$/;
-const SAFE_EXECUTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_EXECUTION_ID = /^[A-Za-z0-9._:-]{1,256}$/;
 const PROMOTION_RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
 
 function exactObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
