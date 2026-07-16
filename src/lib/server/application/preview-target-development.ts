@@ -33,7 +33,10 @@ import type {
   WorkflowRunStarterPort,
   WorkspaceProjectRepository,
 } from "$lib/server/application/ports";
-import { PREVIEW_DEVELOPMENT_WORKFLOW_NAME } from "$lib/server/application/ports";
+import {
+  PREVIEW_DEVELOPMENT_WORKFLOW_ID,
+  PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
+} from "$lib/server/application/ports";
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
 import { previewDevelopmentParentBindingPrefix } from "$lib/server/application/preview-development-environment";
 import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest";
@@ -763,8 +766,9 @@ function executionSpecDigest(executionIr: unknown): `sha256:${string}` | null {
 }
 
 type StoredDevelopmentContext = Readonly<{
-  version: 1;
+  version: 2;
   parentExecutionId: string;
+  remoteActorUserId: string;
   operationId: string;
   target: PreviewDevelopmentTarget;
   workflowSpecDigest: `sha256:${string}`;
@@ -783,9 +787,11 @@ function readStoredContext(
   const value = raw as Record<string, unknown>;
   const target = value.target as PreviewDevelopmentTarget;
   if (
-    value.version !== 1 ||
+    value.version !== 2 ||
     typeof value.parentExecutionId !== "string" ||
     !SAFE_ID.test(value.parentExecutionId) ||
+    typeof value.remoteActorUserId !== "string" ||
+    !SAFE_ID.test(value.remoteActorUserId) ||
     typeof value.operationId !== "string" ||
     !OPERATION_ID.test(value.operationId) ||
     !value.operationId.startsWith("pdt-start-workflow-") ||
@@ -801,8 +807,9 @@ function readStoredContext(
   }
   asIdentity(target);
   return {
-    version: 1,
+    version: 2,
     parentExecutionId: value.parentExecutionId,
+    remoteActorUserId: value.remoteActorUserId,
     operationId: value.operationId,
     target,
     workflowSpecDigest: value.workflowSpecDigest as `sha256:${string}`,
@@ -832,7 +839,7 @@ export class ApplicationPreviewTargetDevelopmentService implements PreviewTarget
     asIdentity(input.target);
     const workflowInput = normalizeWorkflowInput(input.workflowInput);
     const definition = await this.deps.definitions.getByRef({
-      workflowName: PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
+      workflowId: PREVIEW_DEVELOPMENT_WORKFLOW_ID,
     });
     if (!definition) {
       throw new PreviewTargetDevelopmentError(
@@ -1166,7 +1173,7 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
       );
     }
     const definition = await this.deps.definitions.getByRef({
-      workflowName: PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
+      workflowId: PREVIEW_DEVELOPMENT_WORKFLOW_ID,
     });
     if (!definition) {
       throw new PreviewTargetDevelopmentError(
@@ -1182,21 +1189,21 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     }
     const workflowInput = normalizeWorkflowInput(input.workflowInput);
     const storedContext: StoredDevelopmentContext = Object.freeze({
-      version: 1,
+      version: 2,
       parentExecutionId: input.parentExecutionId,
+      remoteActorUserId: input.actorUserId,
       operationId: input.operationId,
       target,
       workflowSpecDigest: workflow.workflowSpecDigest,
     });
     const result = await this.deps.starter.startWorkflowRun({
-      workflowName: PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
+      workflowId: PREVIEW_DEVELOPMENT_WORKFLOW_ID,
       triggerData: {
         ...workflowInput,
         [CONTEXT_KEY]: storedContext,
       },
       executionId: workflow.executionId,
       idempotent: true,
-      userId: input.actorUserId,
       launchSurface: "dev-environment",
       launchOrigin: previewLaunchOrigin(this.deps.scope),
       expectedWorkflowSpecDigest: workflow.workflowSpecDigest,
@@ -1209,7 +1216,7 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     }
     if (
       result.executionId !== workflow.executionId ||
-      result.workflowName !== PREVIEW_DEVELOPMENT_WORKFLOW_NAME
+      result.workflowId !== PREVIEW_DEVELOPMENT_WORKFLOW_ID
     ) {
       throw new PreviewTargetDevelopmentError(
         "contract-mismatch",
@@ -1406,8 +1413,10 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     });
     if (
       !definition ||
-      definition.name !== PREVIEW_DEVELOPMENT_WORKFLOW_NAME ||
-      execution.userId !== input.actorUserId ||
+      definition.id !== PREVIEW_DEVELOPMENT_WORKFLOW_ID ||
+      execution.userId !== definition.userId ||
+      execution.projectId !== definition.projectId ||
+      context.remoteActorUserId !== input.actorUserId ||
       execution.id !== expectedExecutionId ||
       executedDigest !== input.workflow.workflowSpecDigest ||
       context.parentExecutionId !== input.parentExecutionId ||

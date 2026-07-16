@@ -1,8 +1,10 @@
 import type { WorkflowExecutionStatus } from "./executions";
 import type { ImmutableGitSha } from "./preview-environments";
 
+export const PREVIEW_DEVELOPMENT_WORKFLOW_ID =
+	"microservice-dev-session" as const;
 export const PREVIEW_DEVELOPMENT_WORKFLOW_NAME =
-  "microservice-dev-session" as const;
+	PREVIEW_DEVELOPMENT_WORKFLOW_ID;
 
 export type PreviewDevelopmentControlAction = "submit_preview_pr" | "discard";
 

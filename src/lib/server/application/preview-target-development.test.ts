@@ -54,6 +54,14 @@ function parent(status: "pending" | "running" | "success" = "running") {
 
 describe("ApplicationPreviewTargetDevelopmentService", () => {
   it("derives actor, digest, and child id before calling the broker", async () => {
+    const getDefinitionByRef = vi.fn(
+      async () =>
+        ({
+          id: "microservice-dev-session",
+          name: "Microservice dev-session: preview-local development",
+          spec,
+        }) as never,
+    );
     const broker: PreviewTargetDevelopmentBrokerPort = {
       startWorkflow: vi.fn(async (input) => ({
         kind: "start-workflow",
@@ -70,16 +78,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
     };
     const service = new ApplicationPreviewTargetDevelopmentService({
       executions: { getById: vi.fn(async () => parent()) },
-      definitions: {
-        getByRef: vi.fn(
-          async () =>
-            ({
-              id: "workflow-1",
-              name: "microservice-dev-session",
-              spec,
-            }) as never,
-        ),
-      },
+      definitions: { getByRef: getDefinitionByRef },
       admins: { isPlatformAdmin: vi.fn(async () => true) },
       broker,
       scope: {
@@ -102,6 +101,9 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
 
     expect(result.workflowSpecDigest).toBe(digest);
     expect(result.executionId).toMatch(/^pdc_[0-9a-f]{60}$/);
+    expect(getDefinitionByRef).toHaveBeenCalledWith({
+      workflowId: "microservice-dev-session",
+    });
     expect(broker.startWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         actorUserId: "admin-1",
@@ -199,17 +201,20 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     const getByRef = vi.fn(
       async () =>
         ({
-          id: "workflow-1",
-          name: "microservice-dev-session",
+          id: "microservice-dev-session",
+          name: "Microservice dev-session: preview-local development",
+          userId: "preview-admin",
+          projectId: "preview-project",
           spec,
         }) as never,
     );
     const startWorkflowRun = vi.fn(async (input) => {
       execution = {
         ...parent(),
+        userId: "preview-admin",
         id: input.executionId!,
-        workflowId: "workflow-1",
-        projectId: "project-1",
+        workflowId: "microservice-dev-session",
+        projectId: "preview-project",
         input: input.triggerData as Record<string, unknown>,
         executionIr: { spec, triggerData: input.triggerData },
         daprInstanceId: "instance-1",
@@ -223,8 +228,8 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         ok: true as const,
         executionId: input.executionId!,
         instanceId: "instance-1",
-        workflowId: "workflow-1",
-        workflowName: "microservice-dev-session",
+        workflowId: "microservice-dev-session",
+        workflowName: "Microservice dev-session: preview-local development",
         reused: false,
       };
     });
@@ -293,15 +298,18 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     expect(started.executionId).toBe(workflow.executionId);
     expect(startWorkflowRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        workflowName: "microservice-dev-session",
+        workflowId: "microservice-dev-session",
         executionId: workflow.executionId,
         idempotent: true,
-        userId: "admin-1",
         launchSurface: "dev-environment",
         launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
         expectedWorkflowSpecDigest: digest,
       }),
     );
+    expect(startWorkflowRun.mock.calls[0]![0]).not.toHaveProperty("userId");
+    expect(getByRef).toHaveBeenCalledWith({
+      workflowId: "microservice-dev-session",
+    });
     const trigger = startWorkflowRun.mock.calls[0]![0].triggerData as Record<
       string,
       unknown
@@ -310,13 +318,17 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
       intent: "Change the dashboard",
       services: ["workflow-builder"],
       keepPreview: "true",
+      __previewDevelopment: {
+        version: 2,
+        remoteActorUserId: "admin-1",
+      },
     });
     expect(trigger).not.toHaveProperty("previewOrigin");
     expect(trigger).not.toHaveProperty("sourceRevision");
 
     execution = {
       ...execution!,
-      userId: "other-admin",
+      userId: "admin-1",
     } as WorkflowExecutionRecord;
     await expect(
       service.getWorkflowStatus({
@@ -327,7 +339,20 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         workflow,
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
-    execution = { ...execution!, userId: "admin-1" } as WorkflowExecutionRecord;
+    execution = {
+      ...execution!,
+      userId: "preview-admin",
+    } as WorkflowExecutionRecord;
+
+    await expect(
+      service.getWorkflowStatus({
+        parentExecutionId: "parent-execution",
+        actorUserId: "other-remote-admin",
+        operationId: operation("get-workflow-status", "6"),
+        target,
+        workflow,
+      }),
+    ).rejects.toMatchObject({ code: "contract-mismatch" });
 
     const status = await service.getWorkflowStatus({
       parentExecutionId: "parent-execution",

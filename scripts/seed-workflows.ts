@@ -34,6 +34,7 @@ import {
 import { generateId } from "../lib/utils/id";
 import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
+import { planProjectSystemWorkflowInstallations } from "./lib/project-system-workflows";
 
 const DATABASE_URL =
 	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -4199,6 +4200,110 @@ async function upsertRawWorkflow(params: {
 	);
 }
 
+function hostPreviewLifecycleDefinition() {
+	const script = fs.readFileSync(
+		path.resolve(
+			process.cwd(),
+			"scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js",
+		),
+		"utf8",
+	);
+	const description =
+		"Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.";
+	return {
+		script,
+		description,
+		meta: {
+			name: "preview-development-lifecycle",
+			description,
+			phases: [
+				{ title: "Provision" },
+				{ title: "Start development" },
+				{ title: "Review" },
+				{ title: "Finalize" },
+			],
+			launch: { surface: "dev-environment", target: "control-plane" },
+			input: {
+				type: "object",
+				required: ["intent", "environmentName"],
+				additionalProperties: false,
+				properties: {
+					intent: {
+						type: "string",
+						title: "Development task",
+						minLength: 1,
+						maxLength: 12000,
+						description: "The initial task sent to the preview-local interactive agent.",
+					},
+					environmentName: {
+						type: "string",
+						title: "Preview environment name",
+						pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$",
+					},
+					services: {
+						type: "array",
+						title: "Microservices to develop",
+						minItems: 1,
+						uniqueItems: true,
+						items: { type: "string" },
+						default: ["workflow-builder"],
+					},
+					ttlHours: {
+						type: "integer",
+						title: "Preview lifetime in hours",
+						minimum: 2,
+						maximum: 24,
+						default: 8,
+					},
+					retainAfterCompletion: {
+						type: "boolean",
+						title: "Retain environment after completion",
+						default: false,
+					},
+				},
+			},
+		},
+	};
+}
+
+async function seedHostPreviewLifecycleForAdminProjects(params: {
+	db: ReturnType<typeof drizzle>;
+	canonicalProjectId: string;
+}) {
+	// The host launcher is user-facing and must remain in the authenticated
+	// workspace. The child workflow stays canonical: it is invoked only through
+	// the tuple-authorized broker and executes from the preview-local seed.
+	const owners = await params.db
+		.select({ projectId: projects.id, userId: users.id })
+		.from(users)
+		.innerJoin(projects, eq(projects.ownerId, users.id))
+		.where(and(eq(users.platformRole, "ADMIN"), eq(users.status, "ACTIVE")));
+	const definition = hostPreviewLifecycleDefinition();
+	for (const installation of planProjectSystemWorkflowInstallations({
+		baseWorkflowId: "preview-development-lifecycle",
+		canonicalProjectId: params.canonicalProjectId,
+		owners,
+	})) {
+		await upsertRawWorkflow({
+			db: params.db,
+			workflowId: installation.workflowId,
+			name: "Preview development lifecycle",
+			description: definition.description,
+			userId: installation.userId,
+			projectId: installation.projectId,
+			spec: {
+				engine: "dynamic-script",
+				script: definition.script,
+				meta: definition.meta,
+			},
+			nodes: [],
+			edges: [],
+			visibility: "public",
+			engineType: "dynamic-script",
+		});
+	}
+}
+
 async function upsertWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -4700,75 +4805,18 @@ async function seedGeneratorCriticShowcases(params: {
 
 	// Host-owned dynamic lifecycle: seeded on the physical cluster and bridged to
 	// the preview-local microservice-dev-session through narrow command actions.
-	const hostPreviewLifecycleScript = fs.readFileSync(
-		path.resolve(
-			process.cwd(),
-			"scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js",
-		),
-		"utf8",
-	);
-	const hostPreviewLifecycleMeta = {
-		name: "preview-development-lifecycle",
-		description:
-			"Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.",
-		phases: [
-			{ title: "Provision" },
-			{ title: "Start development" },
-			{ title: "Review" },
-			{ title: "Finalize" },
-		],
-		launch: { surface: "dev-environment", target: "control-plane" },
-		input: {
-			type: "object",
-			required: ["intent", "environmentName"],
-			additionalProperties: false,
-			properties: {
-				intent: {
-					type: "string",
-					title: "Development task",
-					minLength: 1,
-					maxLength: 12000,
-					description: "The initial task sent to the preview-local interactive agent.",
-				},
-				environmentName: {
-					type: "string",
-					title: "Preview environment name",
-					pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$",
-				},
-				services: {
-					type: "array",
-					title: "Microservices to develop",
-					minItems: 1,
-					uniqueItems: true,
-					items: { type: "string" },
-					default: ["workflow-builder"],
-				},
-				ttlHours: {
-					type: "integer",
-					title: "Preview lifetime in hours",
-					minimum: 2,
-					maximum: 24,
-					default: 8,
-				},
-				retainAfterCompletion: {
-					type: "boolean",
-					title: "Retain environment after completion",
-					default: false,
-				},
-			},
-		},
-	};
+	const hostPreviewLifecycle = hostPreviewLifecycleDefinition();
 	await upsertRawWorkflow({
 		db: params.db,
 		workflowId: "preview-development-lifecycle",
 		name: "Preview development lifecycle",
-		description: hostPreviewLifecycleMeta.description,
+		description: hostPreviewLifecycle.description,
 		userId: params.userId,
 		projectId: params.projectId,
 		spec: {
 			engine: "dynamic-script",
-			script: hostPreviewLifecycleScript,
-			meta: hostPreviewLifecycleMeta,
+			script: hostPreviewLifecycle.script,
+			meta: hostPreviewLifecycle.meta,
 		},
 		nodes: [],
 		edges: [],
@@ -5062,6 +5110,10 @@ async function seedWorkflow() {
 		// design grading), evaluator-gated (deterministic ground-truth gate AND critic).
 		// Ensures a dedicated per-session `evaluator-critic-agent` first.
 		await seedGeneratorCriticShowcases({ db, sqlClient: sql, userId, projectId });
+		await seedHostPreviewLifecycleForAdminProjects({
+			db,
+			canonicalProjectId: projectId,
+		});
 
 		await upsertWorkflow({
 			db,
