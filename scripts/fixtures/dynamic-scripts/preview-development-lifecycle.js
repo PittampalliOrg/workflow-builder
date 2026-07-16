@@ -98,6 +98,23 @@ function failureOf(value) {
   return "";
 }
 
+function errorMessage(error) {
+  return error && typeof error.message === "string"
+    ? error.message
+    : String(error);
+}
+
+function transientWorkflowStatusError(slug, error) {
+  if (slug !== "preview/workflow-status") return false;
+  const message = errorMessage(error);
+  return (
+    message.includes("preview development endpoint returned HTTP 409") ||
+    message.includes("preview development endpoint returned HTTP 425") ||
+    message.includes("preview development endpoint returned HTTP 502") ||
+    message.includes("preview development request timed out")
+  );
+}
+
 async function waitForStatus(
   slug,
   input,
@@ -107,8 +124,23 @@ async function waitForStatus(
   pollSeconds,
 ) {
   let latest = null;
+  let transientFailures = 0;
+  const maxTransientFailures = slug === "preview/workflow-status" ? 24 : 0;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    latest = await action(slug, input, { label: `${label} ${attempt + 1}` });
+    try {
+      latest = await action(slug, input, { label: `${label} ${attempt + 1}` });
+      transientFailures = 0;
+    } catch (error) {
+      if (
+        transientWorkflowStatusError(slug, error) &&
+        transientFailures < maxTransientFailures
+      ) {
+        transientFailures += 1;
+        if (attempt + 1 < attempts) await sleep(pollSeconds);
+        continue;
+      }
+      throw error;
+    }
     const failure = failureOf(latest);
     if (failure) throw new Error(`${slug}: ${failure}`);
     if (isDone(latest)) return latest;

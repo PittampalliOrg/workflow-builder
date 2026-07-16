@@ -26,13 +26,19 @@ async function drive(
     terminalOutput?: Record<string, unknown>;
     ttlHours?: number;
     childReadyPolls?: number;
+    transientPostSignalStatusFailures?: number;
     promotionVerification?: Record<string, unknown>;
   } = {},
 ) {
-  const completedResults: Record<string, { status: "done"; value: unknown }> =
-    {};
+  const completedResults: Record<
+    string,
+    | { status: "done"; value: unknown }
+    | { status: "error"; value: unknown; errorCode?: string }
+  > = {};
   const knownCallIds: string[] = [];
   const tasks: Array<Record<string, unknown>> = [];
+  let signaled = false;
+  let postSignalStatusFailures = 0;
   let result = await evaluateScript({
     script,
     args: {
@@ -54,6 +60,8 @@ async function drive(
     for (const task of result.tasks) {
       tasks.push(task as unknown as Record<string, unknown>);
       let value: unknown;
+      let status: "done" | "error" = "done";
+      let errorCode: string | undefined;
       if (task.kind === "event") {
         value = { approved, approvedBy: "user-1" };
       } else if (task.kind === "sleep") {
@@ -128,12 +136,25 @@ async function drive(
                               controlOutcome: "discarded",
                               pullRequest: null,
                               pullRequestReceipt: null,
-                            }),
+                          }),
                     };
+            if (
+              signaled &&
+              postSignalStatusFailures <
+                (options.transientPostSignalStatusFailures ?? 0)
+            ) {
+              postSignalStatusFailures += 1;
+              status = "error";
+              errorCode = "action_error";
+              value = {
+                message: "preview development endpoint returned HTTP 409",
+              };
+            }
             break;
           }
           case "preview/workflow-signal":
             value = { ok: true, accepted: true };
+            signaled = true;
             break;
           case "preview/workflow-verify-promotion":
             value =
@@ -193,7 +214,10 @@ async function drive(
             );
         }
       }
-      completedResults[task.callId] = { status: "done", value };
+      completedResults[task.callId] =
+        status === "done"
+          ? { status: "done", value }
+          : { status: "error", value, errorCode };
       knownCallIds.push(task.callId);
     }
     result = await evaluateScript({
@@ -295,6 +319,33 @@ describe("host preview development lifecycle", () => {
       (task) => task.actionSlug === "preview/workflow-signal",
     );
     expect(signal?.args).toMatchObject({ action: "discard" });
+  });
+
+  it("retries transient post-signal status conflicts before teardown", async () => {
+    const { result, tasks } = await drive(true, {
+      transientPostSignalStatusFailures: 2,
+    });
+    expect(result.status, result.error?.message).toBe("done");
+    expect(
+      tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
+    ).toHaveLength(4);
+    expect(
+      tasks
+        .filter((task) => task.actionSlug === "preview/workflow-verify-promotion")
+        .length,
+    ).toBe(1);
+    expect(result.returnValue).toMatchObject({
+      outcome: {
+        output: {
+          controlOutcome: "submitted",
+          pullRequestReceipt: { receiptId: promotionReceiptId, draft: true },
+        },
+      },
+      promotionVerification: {
+        verified: true,
+        receipt: { receiptId: promotionReceiptId, draft: true },
+      },
+    });
   });
 
   it("allows more than the former 20 minute startup polling budget", async () => {
