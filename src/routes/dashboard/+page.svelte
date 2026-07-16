@@ -6,8 +6,10 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group';
 	import {
 		Card,
+		CardAction,
 		CardContent,
 		CardDescription,
 		CardHeader,
@@ -22,8 +24,18 @@
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		RefreshCw,
 		Sparkles
 	} from '@lucide/svelte';
+	import {
+		RUN_ACTIVITY_FETCH_LIMIT,
+		RUN_ACTIVITY_FILTERS,
+		RUN_ACTIVITY_FILTER_LABELS,
+		deriveFilterCounts,
+		selectVisibleRuns,
+		type RunActivityFilter,
+		type RunActivityRun
+	} from './run-activity';
 
 	type DashboardPayload = {
 		stats: {
@@ -55,21 +67,14 @@
 		}>;
 	};
 
-	type RecentRun = {
-		executionId: string;
-		workflowId: string;
-		workflowName: string;
-		status: 'pending' | 'running' | 'success' | 'error' | 'cancelled';
-		startedAt: string;
-		durationMs: number | null;
-		sessionCount: number;
-	};
-
 	let data = $state<DashboardPayload | null>(null);
-	let recentRuns = $state<RecentRun[]>([]);
+	let recentRuns = $state<RunActivityRun[]>([]);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
+	let refreshing = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let refreshError = $state<string | null>(null);
+	let runFilter = $state<RunActivityFilter>('all');
 
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
@@ -93,7 +98,7 @@
 			const [dRes, uRes, rRes] = await Promise.all([
 				fetch('/api/v1/dashboard'),
 				fetch('/api/v1/auth/session').catch(() => null),
-				fetch('/api/v1/runs?limit=5').catch(() => null)
+				fetch(`/api/v1/runs?limit=${RUN_ACTIVITY_FETCH_LIMIT}`).catch(() => null)
 			]);
 			if (!dRes.ok) {
 				errorMessage = `Failed to load dashboard (${dRes.status})`;
@@ -101,7 +106,7 @@
 			}
 			data = (await dRes.json()) as DashboardPayload;
 			if (rRes && rRes.ok) {
-				const rPayload = (await rRes.json()) as { runs: RecentRun[] };
+				const rPayload = (await rRes.json()) as { runs: RunActivityRun[] };
 				recentRuns = rPayload.runs ?? [];
 			}
 			if (uRes && uRes.ok) {
@@ -115,6 +120,52 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	// Background refresh: re-runs the same load path without replacing existing
+	// content with the initial skeleton. The dashboard stays visible while data
+	// is fetched; only the refresh button shows a spinning/disabled state.
+	async function refresh() {
+		if (refreshing) return;
+		refreshing = true;
+		refreshError = null;
+		try {
+			const [dRes, uRes, rRes] = await Promise.all([
+				fetch('/api/v1/dashboard'),
+				fetch('/api/v1/auth/session').catch(() => null),
+				fetch(`/api/v1/runs?limit=${RUN_ACTIVITY_FETCH_LIMIT}`).catch(() => null)
+			]);
+			if (!dRes.ok) throw new Error(`Failed to refresh dashboard (${dRes.status})`);
+			data = (await dRes.json()) as DashboardPayload;
+			if (!rRes?.ok) {
+				throw new Error(
+					rRes ? `Failed to refresh run activity (${rRes.status})` : 'Failed to refresh run activity'
+				);
+			}
+			const rPayload = (await rRes.json()) as { runs: RunActivityRun[] };
+			recentRuns = rPayload.runs ?? [];
+			if (uRes && uRes.ok) {
+				const payload = (await uRes.json()) as {
+					user?: { name: string | null; email: string | null };
+				};
+				user = payload.user ?? null;
+			}
+		} catch (err) {
+			refreshError = err instanceof Error ? err.message : 'Failed to refresh dashboard';
+		} finally {
+			refreshing = false;
+		}
+	}
+
+	// Pure derived state from the run-activity module.
+	let runFilterCounts = $derived(deriveFilterCounts(recentRuns));
+	let visibleRuns = $derived(selectVisibleRuns(recentRuns, runFilter));
+	let runFilterIsEmpty = $derived(
+		runFilter !== 'all' && runFilterCounts[runFilter] === 0,
+	);
+
+	function resetRunFilter() {
+		runFilter = 'all';
 	}
 
 	function formatRelative(iso: string): string {
@@ -236,63 +287,124 @@
 			</Card>
 		{/if}
 
-		<!-- Recent runs (workflow executions) — added for Phase C to expose
-		     the /runs feed without making users drill into a specific workflow. -->
-		{#if recentRuns.length > 0}
-			<Card>
-				<CardHeader class="pb-2 flex-row items-center justify-between">
+		<!-- Run activity (workflow executions) — interactive triage panel that
+		     exposes the /runs feed with status filtering and background refresh. -->
+		<Card class="shrink-0">
+				<CardHeader class="pb-2">
 					<div>
 						<CardTitle class="text-base flex items-center gap-2">
-							<Activity class="size-4" /> Recent runs
+							<Activity class="size-4" /> Run activity
 						</CardTitle>
 						<CardDescription class="text-xs">
-							Workflow executions across this workspace.
+							Latest workflow executions in this workspace (up to {RUN_ACTIVITY_FETCH_LIMIT}).
 						</CardDescription>
 					</div>
-					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
-						View all <ExternalLink class="size-3" />
-					</Button>
+					<CardAction class="flex items-center gap-2">
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							aria-label="Refresh dashboard"
+							onclick={() => void refresh()}
+							disabled={refreshing}
+						>
+							<RefreshCw class="size-3.5 {refreshing ? 'animate-spin' : ''}" />
+						</Button>
+						<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
+							View all <ExternalLink class="size-3" />
+						</Button>
+					</CardAction>
 				</CardHeader>
-				<CardContent>
-					<ul class="divide-y">
-						{#each recentRuns as r (r.executionId)}
-							<li class="py-2">
-								<a
-									href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
-									class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
-								>
-									<div class="flex items-center gap-2 min-w-0 flex-1">
-										<span class="text-sm truncate" title={r.workflowName}>
-											{r.workflowName}
-										</span>
-										{#if r.sessionCount > 0}
-											<Badge variant="outline" class="text-[10px]">
-												{r.sessionCount} session{r.sessionCount === 1 ? '' : 's'}
-											</Badge>
-										{/if}
-									</div>
-									<Badge
-										variant="outline"
-										class={r.status === 'running' || r.status === 'pending'
-											? 'bg-blue-500/10 text-blue-600'
-											: r.status === 'success'
-												? 'bg-emerald-500/10 text-emerald-600'
-												: r.status === 'error'
-													? 'bg-red-500/10 text-red-600'
-													: 'bg-muted text-muted-foreground'}
-									>
-										{r.status}
-									</Badge>
-									<span class="text-[11px] text-muted-foreground whitespace-nowrap">
-										{formatRelative(r.startedAt)}
-									</span>
-								</a>
-							</li>
+				<CardContent class="flex flex-col gap-3">
+					{#if refreshError}
+						<p class="text-xs text-destructive" role="status">{refreshError}</p>
+					{/if}
+					<div class="max-w-full overflow-x-auto pb-1">
+					<ToggleGroup.Root
+						type="single"
+						value={runFilter}
+						onValueChange={(v) => {
+							// Ignore an empty primitive value as a defense in depth; the
+							// active item also suppresses pointer and keyboard deselection.
+							if (typeof v === 'string' && v.length > 0) {
+								runFilter = v as RunActivityFilter;
+							}
+						}}
+						variant="outline"
+						class="h-8 min-w-max"
+					>
+						{#each RUN_ACTIVITY_FILTERS as f (f)}
+							<ToggleGroup.Item
+								value={f}
+								class="h-8 px-2.5 text-xs"
+								onclick={(event) => {
+									if (f === runFilter) event.preventDefault();
+								}}
+								onkeydown={(event) => {
+									if (f === runFilter && (event.key === 'Enter' || event.key === ' ')) {
+										event.preventDefault();
+									}
+								}}
+							>
+								{RUN_ACTIVITY_FILTER_LABELS[f]}
+								<span class="ml-1 text-muted-foreground">{runFilterCounts[f]}</span>
+							</ToggleGroup.Item>
 						{/each}
-					</ul>
+					</ToggleGroup.Root>
+					</div>
+
+					{#if visibleRuns.length > 0}
+						<ul class="divide-y">
+							{#each visibleRuns as r (r.executionId)}
+								<li class="py-2">
+									<a
+										href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+										class="flex items-center justify-between gap-2 hover:bg-muted/40 rounded px-2 -mx-2"
+									>
+										<div class="flex items-center gap-2 min-w-0 flex-1">
+											<span class="text-sm truncate" title={r.workflowName}>
+												{r.workflowName}
+											</span>
+											{#if r.sessionCount > 0}
+												<Badge variant="outline" class="text-[10px]">
+													{r.sessionCount} session{r.sessionCount === 1 ? '' : 's'}
+												</Badge>
+											{/if}
+										</div>
+										<Badge
+											variant="outline"
+											class={r.status === 'running' || r.status === 'pending'
+												? 'bg-blue-500/10 text-blue-600'
+												: r.status === 'success'
+													? 'bg-emerald-500/10 text-emerald-600'
+													: r.status === 'error'
+														? 'bg-red-500/10 text-red-600'
+														: 'bg-muted text-muted-foreground'}
+										>
+											{r.status}
+										</Badge>
+										<span class="text-[11px] text-muted-foreground whitespace-nowrap">
+											{formatRelative(r.startedAt)}
+										</span>
+									</a>
+								</li>
+							{/each}
+						</ul>
+					{:else if runFilterIsEmpty}
+						<div class="py-6 text-center">
+							<p class="text-sm text-muted-foreground">
+								No {RUN_ACTIVITY_FILTER_LABELS[runFilter].toLowerCase()} runs in the recent set.
+							</p>
+							<Button variant="link" size="sm" onclick={resetRunFilter} class="mt-1">
+								Reset filter
+							</Button>
+						</div>
+					{:else}
+						<p class="text-sm text-muted-foreground py-6 text-center">
+							No workflow runs yet.
+						</p>
+					{/if}
 				</CardContent>
-			</Card>
-		{/if}
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
