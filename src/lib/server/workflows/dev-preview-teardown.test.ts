@@ -3,6 +3,7 @@ import {
 	teardownDevPreview,
 	type DevPreviewPersistence,
 } from '$lib/server/workflows/dev-preview';
+import { DEV_PREVIEW_DELETE_ATTEMPT_TIMEOUT_MS } from '$lib/dev-preview-teardown-timing';
 
 function fakePersistence(
 	rows: Array<{
@@ -108,6 +109,139 @@ function stubSea() {
 }
 
 describe('teardownDevPreview (B5 restore-all)', () => {
+	it('deletes independent ordinary services concurrently before final inventory proof', async () => {
+		vi.stubEnv('SANDBOX_EXECUTION_API_URL', 'http://sea.test');
+		vi.stubEnv('INTERNAL_API_TOKEN', 'tok');
+		const services = [
+			'mcp-gateway',
+			'workflow-mcp-server',
+			'workflow-orchestrator',
+		];
+		const live = new Map(
+			services.map((service) => [
+				service,
+				`wfb-dev-preview-${service}-exec-1`,
+			]),
+		);
+		const started: string[] = [];
+		const release = new Map<string, () => void>();
+		let inventoryReads = 0;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string | URL, init?: RequestInit) => {
+				const target = String(url);
+				if (target.endsWith('/internal/dev-previews/teardown-intent')) {
+					return Response.json({
+						accepted: true,
+						executionId: 'exec-1',
+					});
+				}
+				if (target.includes('/internal/dev-previews?')) {
+					inventoryReads += 1;
+					return Response.json({
+						executionId: 'exec-1',
+						complete: true,
+						services: [...live].map(([service, sandboxName]) => ({
+							service,
+							sandboxName,
+						})),
+					});
+				}
+				if (init?.method === 'DELETE') {
+					const request = teardownRequestIdentity(target);
+					const service = request.service;
+					expect(service).not.toBeNull();
+					started.push(service!);
+					return new Promise<Response>((resolve) => {
+						release.set(service!, () => {
+							live.delete(service!);
+							resolve(
+								Response.json({
+									sandboxName: request.sandboxName,
+									accepted: true,
+									deleted: true,
+									deferred: false,
+								}),
+							);
+						});
+					});
+				}
+				return Response.json({ restored: [], releasedLeases: [] });
+			}),
+		);
+		const persistence = fakePersistence(
+			services.map((service) => ({
+				workspaceRef: `wfb-dev-preview-${service}-exec-1`,
+				service,
+			})),
+		);
+
+		const pending = teardownDevPreview(
+			{
+				executionId: 'exec-1',
+				sourceCheckpoint: { status: 'teardown-resume' },
+			},
+			persistence,
+		);
+
+		await vi.waitFor(() => expect(started).toHaveLength(services.length));
+		expect([...started].sort()).toEqual([...services].sort());
+		expect(inventoryReads).toBe(1);
+		for (const service of services) release.get(service)!();
+
+		await expect(pending).resolves.toMatchObject({
+			ok: true,
+			complete: true,
+			pending: false,
+		});
+		expect(inventoryReads).toBe(2);
+		expect(
+			vi.mocked(persistence.markWorkflowWorkspaceSessionCleaned).mock.calls
+				.map(([input]) => input.workspaceRef)
+				.sort(),
+		).toEqual(services.map((service) => `wfb-dev-preview-${service}-exec-1`).sort());
+	});
+
+	it('allows one SEA delete attempt to cover endpoint restore and CR removal waits', async () => {
+		vi.stubEnv('SANDBOX_EXECUTION_API_URL', 'http://sea.test');
+		const name = 'wfb-dev-preview-workflow-orchestrator-exec-1';
+		const timeout = vi
+			.spyOn(AbortSignal, 'timeout')
+			.mockReturnValue(new AbortController().signal);
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string | URL, init?: RequestInit) => {
+				if (init?.method === 'DELETE') {
+					return Response.json({
+						sandboxName: teardownRequestIdentity(String(url)).sandboxName,
+						accepted: true,
+						deleted: true,
+						deferred: false,
+					});
+				}
+				return Response.json({ restored: [], releasedLeases: [] });
+			}),
+		);
+		const persistence = fakePersistence([
+			{ workspaceRef: name, service: 'workflow-orchestrator' },
+		]);
+
+		await expect(
+			teardownDevPreview(
+				{
+					executionId: 'exec-1',
+					sandboxName: name,
+					sourceCheckpoint: { status: 'teardown-resume' },
+				},
+				persistence,
+			),
+		).resolves.toMatchObject({ ok: true, complete: true, pending: false });
+		expect(timeout).toHaveBeenCalledOnce();
+		expect(timeout).toHaveBeenCalledWith(
+			DEV_PREVIEW_DELETE_ATTEMPT_TIMEOUT_MS,
+		);
+	});
+
 	it('ignores unrelated and malformed persistence rows when selecting delete targets', async () => {
 		const calls = stubSea();
 		vi.spyOn(console, 'warn').mockImplementation(() => {});

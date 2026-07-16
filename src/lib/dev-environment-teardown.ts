@@ -1,3 +1,5 @@
+import { DEV_ENVIRONMENT_TEARDOWN_TIMEOUT_MS } from "$lib/dev-preview-teardown-timing";
+
 export interface CompletedDevEnvironmentTeardown {
   ok: true;
   complete: true;
@@ -54,7 +56,7 @@ export class DevEnvironmentTeardownBlockedError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 2 * 60_000;
+const DEFAULT_TIMEOUT_MS = DEV_ENVIRONMENT_TEARDOWN_TIMEOUT_MS;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const PENDING_STORAGE_KEY = "workflow-builder:pending-dev-environment-teardowns:v1";
 const PENDING_TTL_MS = 24 * 60 * 60_000;

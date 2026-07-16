@@ -17,6 +17,10 @@ import type {
 } from "$lib/server/application/ports";
 import { RetryableDevPreviewActivationError } from "$lib/server/application/ports/dev-preview-provisioner";
 import { latestWorkflowArtifact } from "$lib/server/application/workflow-code-version-order";
+import {
+  DEV_PREVIEW_DELETE_ATTEMPT_TIMEOUT_MS,
+  DEV_PREVIEW_DELETE_MAX_ATTEMPTS,
+} from "$lib/dev-preview-teardown-timing";
 export type {
   DevPreviewInfo,
   DevPreviewSourceFreezeResult,
@@ -1098,13 +1102,17 @@ async function requestDevPreviewTeardown(input: {
   });
   const url = `${input.baseUrl}/internal/dev-preview/${encodeURIComponent(input.name)}?${query}`;
   let uncertainty = "teardown receipt was not observed";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < DEV_PREVIEW_DELETE_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
     let response: Response;
     try {
       response = await fetch(url, {
         method: "DELETE",
         headers: input.token ? { Authorization: `Bearer ${input.token}` } : {},
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(DEV_PREVIEW_DELETE_ATTEMPT_TIMEOUT_MS),
       });
     } catch (cause) {
       uncertainty = `teardown response was not observed: ${message(cause)}`;
@@ -1155,7 +1163,9 @@ async function requestDevPreviewTeardown(input: {
     }
     uncertainty = `teardown receipt was incomplete (HTTP ${response.status})`;
   }
-  throw new Error(`${uncertainty} after 3 attempts`);
+  throw new Error(
+    `${uncertainty} after ${DEV_PREVIEW_DELETE_MAX_ATTEMPTS} attempts`,
+  );
 }
 
 async function requestDevPreviewTeardownIntent(input: {
@@ -3028,35 +3038,46 @@ export async function teardownDevPreview(
   const responsePathTargets = targets.filter(
     (target) => devPreviewResponsePathRank(target) > 0,
   );
-  for (const { name, service } of ordinaryTargets) {
-    try {
-      if (!baseUrl) throw new Error("SANDBOX_EXECUTION_API_URL not configured");
-      const disposition = await requestDevPreviewTeardown({
-        baseUrl,
-        token,
-        name,
-        executionId: params.executionId,
-        service,
-      });
-      if (disposition !== "deleted") {
-        throw new Error("non-response-path teardown was unexpectedly deferred");
-      }
-      if (persistence && persistedNames.has(name)) {
-        const cleaned = await persistence
-          .markWorkflowWorkspaceSessionCleaned({ workspaceRef: name })
-          .catch(() => false);
-        if (!cleaned) {
-          throw new Error("workspace cleanup state was not persisted");
+  const ordinaryReceipts = await Promise.all(
+    ordinaryTargets.map(async ({ name, service }) => {
+      try {
+        if (!baseUrl)
+          throw new Error("SANDBOX_EXECUTION_API_URL not configured");
+        const disposition = await requestDevPreviewTeardown({
+          baseUrl,
+          token,
+          name,
+          executionId: params.executionId,
+          service,
+        });
+        if (disposition !== "deleted") {
+          throw new Error("non-response-path teardown was unexpectedly deferred");
         }
+        return { name } as const;
+      } catch (err) {
+        return {
+          name,
+          error: err instanceof Error ? err.message : String(err),
+        } as const;
       }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      teardownErrors.push(`${name}: ${detail}`);
-      console.warn(
-        `[dev-preview] teardown request failed for ${name}:`,
-        detail,
-      );
+    }),
+  );
+  // Preserve deterministic error ordering and persistence semantics even though
+  // the independent, per-Deployment infrastructure deletes run concurrently.
+  for (const receipt of ordinaryReceipts) {
+    let detail = "error" in receipt ? receipt.error : null;
+    if (!detail && persistence && persistedNames.has(receipt.name)) {
+      const cleaned = await persistence
+        .markWorkflowWorkspaceSessionCleaned({ workspaceRef: receipt.name })
+        .catch(() => false);
+      if (!cleaned) detail = "workspace cleanup state was not persisted";
     }
+    if (!detail) continue;
+    teardownErrors.push(`${receipt.name}: ${detail}`);
+    console.warn(
+      `[dev-preview] teardown request failed for ${receipt.name}:`,
+      detail,
+    );
   }
   // Prove that every ordinary member from the exact initial inventory is gone
   // before touching the response path. This is the last inventory I/O before a

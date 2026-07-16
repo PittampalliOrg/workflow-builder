@@ -6,6 +6,7 @@ import {
   type DevEnvironmentTeardownProgress,
   type DevEnvironmentTeardownStorage,
 } from "./dev-environment-teardown";
+import { DEV_ENVIRONMENT_TEARDOWN_TIMEOUT_MS } from "./dev-preview-teardown-timing";
 
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -427,6 +428,37 @@ describe("teardownDevEnvironmentUntilComplete", () => {
       );
 
       await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the default client deadline beyond the full server receipt-retry window", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("aborted")),
+              { once: true },
+            );
+          }),
+      );
+      const pending = teardownDevEnvironmentUntilComplete("exec-1", {
+        fetcher,
+      });
+      const rejected = expect(pending).rejects.toThrow(
+        "Teardown could not yet be confirmed",
+      );
+
+      await vi.advanceTimersByTimeAsync(
+        DEV_ENVIRONMENT_TEARDOWN_TIMEOUT_MS - 1,
+      );
+      expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       await rejected;
     } finally {
       vi.useRealTimers();
