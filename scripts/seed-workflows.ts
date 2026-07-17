@@ -4310,9 +4310,11 @@ async function upsertPreviewHmrGateCodeFunction(params: {
 		diagnostics: [],
 		capabilities: {},
 	};
-	const existing = await params.db.query.codeFunctions.findFirst({
-		where: eq(codeFunctions.slug, PREVIEW_HMR_GATE_SLUG),
-	});
+	const [existing] = await params.db
+		.select({ id: codeFunctions.id })
+		.from(codeFunctions)
+		.where(eq(codeFunctions.slug, PREVIEW_HMR_GATE_SLUG))
+		.limit(1);
 
 	if (!existing) {
 		await params.db.insert(codeFunctions).values({
