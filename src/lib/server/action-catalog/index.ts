@@ -537,7 +537,7 @@ function buildPreviewDevelopmentActionDetails(): ActionCatalogDetail[] {
 			slug: "preview/workflow-start",
 			displayName: "Start Preview Development Workflow",
 			description:
-				"Start the pinned microservice-dev-session inside the exact preview target.",
+				"Start the pinned automated preview UI development GAN workflow inside the exact preview target.",
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,

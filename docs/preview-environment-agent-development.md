@@ -150,13 +150,11 @@ surface without helping OTLP delivery, so it is not a prerequisite for tracing.
   carries only complete SHAs.
 - Select only services with `capabilities.previewNative: true` in
   `services/shared/dev-preview-service-catalog.json`.
-- Use `mode: preview-native` and the preview's HTTPS origin when starting the
-  `microservice-dev-session` workflow. From the preview UI, derive that value
-  from the current browser's `window.location.origin`; do not prefer a persisted
-  or configured environment origin. The configured value is only a non-browser
-  fallback.
-- Pass the exact source SHA to the workflow. Do not let the agent begin from a
-  moving default branch.
+- Start the host `preview-development-lifecycle` workflow from the physical dev
+  Workflow Builder. It provisions the preview, starts the preview-local
+  `preview-ui-development-gan` child, and derives the preview origin, source
+  SHA, platform SHA, catalog digest, workflow digest, and credentials from
+  trusted server state.
 - Do not supply an agent slug. The handoff is fixed to
   `glm-juicefs-builder-agent` on `dapr-agent-py-juicefs` with model
   `zai/glm-5.2`; caller-selected agents are outside this POC contract.
@@ -179,58 +177,47 @@ wet replay:
 
 ```bash
 pnpm exec vitest run \
-  scripts/fixtures/generator-critic/microservice-dev-session.test.ts \
+  services/script-evaluator/src/producer-ports.test.ts \
+  services/script-evaluator/src/preview-development-lifecycle.test.ts \
+  src/lib/server/application/preview-target-development.test.ts \
+  src/lib/server/application/adapters/preview-target-development.test.ts \
+  src/routes/api/internal/_shared/preview-target-development.test.ts \
+  src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts \
   src/lib/server/application/workflow-data.test.ts \
-  src/lib/server/sessions/agent-workflow-host.test.ts \
-  src/lib/server/sessions/dev-session-handoff.test.ts \
-  src/lib/server/sessions/runtime-target.test.ts \
-  src/lib/server/sessions/spawn.test.ts \
-  src/lib/server/workflows/dev-preview.test.ts \
-  src/lib/components/dev/dev-launch-origin.test.ts \
-  'src/routes/api/internal/workflows/executions/[executionId]/interactive-session/interactive-session-route.test.ts' &&
-(
-  cd services/workflow-orchestrator
-  uv run pytest tests/test_microservice_dev_session_fixture.py
-)
+  src/lib/server/action-catalog/preview-development.test.ts
 ```
 
 ## Start The Session
 
-Launch `microservice-dev-session` with an input shaped like:
+Launch `preview-development-lifecycle` on physical dev with an input shaped like:
 
 ```json
 {
+  "intent": "Enhance the workflow-builder dashboard with useful preview-environment status and workflow progress signals.",
   "services": [
-    "workflow-builder",
-    "workflow-orchestrator",
-    "function-router",
-    "mcp-gateway",
-    "workflow-mcp-server"
+    "workflow-builder"
   ],
-  "mode": "preview-native",
-  "sourceRevision": "<exact-workflow-builder-sha>",
-  "previewOrigin": "https://wfb-<preview>.<tailnet-suffix>",
-  "keepPreview": "true"
+  "environmentName": "app-live",
+  "ttlHours": 4,
+  "retainAfterCompletion": false
 }
 ```
 
-For an in-preview browser launch, `previewOrigin` must equal the current page's
-origin. A stale persistent-dev or other-environment origin would route sync and
-lifecycle calls outside the isolated environment and is a failed launch input.
+Do not pass `previewOrigin`. The earlier `microservice-dev-session` proof path
+required that field because it could be launched directly inside a preview. The
+new host-orchestrated path derives the correct origin from the provisioned
+PreviewEnvironment tuple and starts the child immediately.
 
-The workflow provisions one dev pod per selected service. A trusted helper
-checks out the exact sparse source revision on its local disk, publishes one
-mode-`0600` archive plus digest into the execution's JuiceFS workspace, and
-writes a mode-`0700` activator. It does not copy its GitHub credential into the
-interactive agent host. The shared workspace contains:
+The preview-local child provisions one adopted dev pod per selected service and
+uses the preview receiver's `/__export` and `/__sync` capability to mutate only
+cataloged source paths. It does not receive GitHub credentials, Kubernetes
+credentials, the preview-control token, or a caller-selected origin. The shared
+workspace may contain HMR helper metadata such as:
 
 ```text
 /sandbox/work/.preview-services.json provision results
 /sandbox/work/.syncenv.d/<service>  service-to-pod mappings
-/sandbox/work/repo.tar              exact sparse source archive
-/sandbox/work/repo.tar.sha256       expected archive digest
-/sandbox/work/activate-repo.sh      fail-closed local activation
-/sandbox/work/sync.sh               catalog-driven fan-out client
+/sandbox/work/dashboard-gan-contract.json planned dashboard acceptance contract
 ```
 
 The handoff does not accept an agent override. Before creating a session or its

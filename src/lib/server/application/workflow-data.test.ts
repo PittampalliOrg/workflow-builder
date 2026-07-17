@@ -2049,8 +2049,8 @@ describe("ApplicationWorkflowDataService", () => {
 		await service.listWorkflows({ limit: 50, projectId: "project-1" });
 		await service.findProjectWorkflowIdByIdOrNamePrefix({
 			projectId: "project-1",
-			workflowId: "microservice-dev-session",
-			namePrefix: "Microservice dev-session%",
+			workflowId: "preview-ui-development-gan",
+			namePrefix: "Preview UI development GAN%",
 		});
 		await service.createWorkflowDefinition({
 			name: "New workflow",
@@ -2074,8 +2074,8 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenCalledWith({
 			projectId: "project-1",
-			workflowId: "microservice-dev-session",
-			namePrefix: "Microservice dev-session%",
+			workflowId: "preview-ui-development-gan",
+			namePrefix: "Preview UI development GAN%",
 		});
 		expect(workflowDefinitions.create).toHaveBeenCalledWith(
 			expect.objectContaining({ name: "New workflow", engineType: "dapr" }),
@@ -8934,7 +8934,7 @@ describe("ApplicationWorkflowDataService", () => {
 		const devEnvironments = fakeDevEnvironments();
 		const { service, workflowDefinitions } = makeService({ devEnvironments });
 		vi.mocked(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix)
-			.mockResolvedValueOnce("workflow-dev-session")
+			.mockResolvedValueOnce("workflow-preview-ui-gan")
 			.mockResolvedValueOnce("workflow-preview-lifecycle");
 
 		await expect(
@@ -8943,8 +8943,8 @@ describe("ApplicationWorkflowDataService", () => {
 			services: expect.arrayContaining([
 				expect.objectContaining({ service: "workflow-builder" }),
 			]),
-			devWorkflowId: "workflow-dev-session",
-			devWorkflowName: "microservice-dev-session",
+			devWorkflowId: "workflow-preview-ui-gan",
+			devWorkflowName: "preview-ui-development-gan",
 			lifecycleWorkflowId: "workflow-preview-lifecycle",
 			lifecycleWorkflowName: "preview-development-lifecycle",
 		});
@@ -8953,8 +8953,8 @@ describe("ApplicationWorkflowDataService", () => {
 			1,
 			{
 				projectId: "project-1",
-				workflowId: "microservice-dev-session",
-				namePrefix: "Microservice dev-session%",
+				workflowId: "preview-ui-development-gan",
+				namePrefix: "Preview UI development GAN%",
 			},
 		);
 		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenNthCalledWith(

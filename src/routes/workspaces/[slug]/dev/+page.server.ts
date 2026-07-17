@@ -4,7 +4,7 @@ import type { PageServerLoad } from "./$types";
 import { requirePlatformAdmin } from "$lib/server/platform-admin";
 
 /**
- * Resolve the launchable service catalog + the seeded `microservice-dev-session`
+ * Resolve the launchable service catalog + the seeded preview UI development
  * workflow id (the launch engine) for the Dev hub. The grid itself is fetched
  * client-side (polled) from /api/dev-environments.
  */

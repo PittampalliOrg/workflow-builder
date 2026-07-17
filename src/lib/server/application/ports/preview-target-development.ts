@@ -2,7 +2,7 @@ import type { WorkflowExecutionStatus } from "./executions";
 import type { ImmutableGitSha } from "./preview-environments";
 
 export const PREVIEW_DEVELOPMENT_WORKFLOW_ID =
-	"microservice-dev-session" as const;
+	"preview-ui-development-gan" as const;
 export const PREVIEW_DEVELOPMENT_WORKFLOW_NAME =
 	PREVIEW_DEVELOPMENT_WORKFLOW_ID;
 

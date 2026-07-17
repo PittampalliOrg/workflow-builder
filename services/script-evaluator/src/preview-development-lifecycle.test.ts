@@ -19,15 +19,38 @@ const target = {
 };
 const promotionReceiptId = `pspr_${"e".repeat(64)}`;
 
+function terminalOutput(overrides: Record<string, unknown> = {}) {
+  return {
+    controlOutcome: "submitted",
+    pullRequestReceipt: {
+      ok: true,
+      receiptId: promotionReceiptId,
+      previewName: target.previewName,
+      requestId: target.environmentRequestId,
+      executionId: "child-1",
+      services: ["workflow-builder"],
+      branch: "preview-feature-verified",
+      commitSha: "e".repeat(40),
+      prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+      pullRequest: {
+        repository: "PittampalliOrg/workflow-builder",
+        number: 42,
+        baseSha: "b".repeat(40),
+        headSha: "e".repeat(40),
+      },
+      draft: true,
+    },
+    ...overrides,
+  };
+}
+
 async function drive(
-  approved: boolean,
   options: {
     teardownAlreadyComplete?: boolean;
     terminalOutput?: Record<string, unknown>;
     ttlHours?: number;
-    childReadyPolls?: number;
-    transientControlSignalFailures?: number;
-    transientPostSignalStatusFailures?: number;
+    runningPolls?: number;
+    transientStatusFailures?: number;
     promotionVerification?: Record<string, unknown>;
   } = {},
 ) {
@@ -38,9 +61,7 @@ async function drive(
   > = {};
   const knownCallIds: string[] = [];
   const tasks: Array<Record<string, unknown>> = [];
-  let signaled = false;
-  let controlSignalFailures = 0;
-  let postSignalStatusFailures = 0;
+  let statusFailures = 0;
   let result = await evaluateScript({
     script,
     args: {
@@ -64,10 +85,10 @@ async function drive(
       let value: unknown;
       let status: "done" | "error" = "done";
       let errorCode: string | undefined;
-      if (task.kind === "event") {
-        value = { approved, approvedBy: "user-1" };
-      } else if (task.kind === "sleep") {
+      if (task.kind === "sleep") {
         value = null;
+      } else if (task.kind === "event") {
+        throw new Error("host lifecycle should not wait for manual approval");
       } else {
         switch (task.actionSlug) {
           case "preview/environment-launch":
@@ -85,91 +106,29 @@ async function drive(
             };
             break;
           case "preview/workflow-status": {
+            if (statusFailures < (options.transientStatusFailures ?? 0)) {
+              statusFailures += 1;
+              status = "error";
+              errorCode = "action_error";
+              value = {
+                message: "preview development endpoint returned HTTP 409",
+              };
+              break;
+            }
             const previousStatuses = tasks.filter(
               (entry) => entry.actionSlug === "preview/workflow-status",
             ).length;
             value =
-              previousStatuses <= (options.childReadyPolls ?? 0)
+              previousStatuses <= (options.runningPolls ?? 0)
                 ? { ok: true, status: "running", controlReady: false }
-                : previousStatuses === (options.childReadyPolls ?? 0) + 1
-                  ? {
-                      ok: true,
-                      status: "control-ready",
-                      controlReady: true,
-                      sessionId: "session-1",
-                      sessionUrl:
-                        "https://wfb-feature-one.tail286401.ts.net/workspaces/workspace-one/sessions/session-1",
-                    }
-                  : {
-                      ok: true,
-                      status: approved ? "completed" : "discarded",
-                      terminal: true,
-                      output:
-                        options.terminalOutput ??
-                        (approved
-                          ? {
-                              controlOutcome: "submitted",
-                              pullRequest: {
-                                repository: "PittampalliOrg/workflow-builder",
-                                number: 42,
-                              },
-                              pullRequestReceipt: {
-                                ok: true,
-                                receiptId: promotionReceiptId,
-                                previewName: target.previewName,
-                                requestId: target.environmentRequestId,
-                                executionId: "child-1",
-                                services: ["workflow-builder"],
-                                branch: "preview/feature-one",
-                                commitSha: "e".repeat(40),
-                                prUrl:
-                                  "https://github.com/PittampalliOrg/workflow-builder/pull/42",
-                                pullRequest: {
-                                  repository: "PittampalliOrg/workflow-builder",
-                                  number: 42,
-                                  baseSha: "b".repeat(40),
-                                  headSha: "e".repeat(40),
-                                },
-                                draft: true,
-                              },
-                            }
-                          : {
-                              controlAction: "discard",
-                              controlOutcome: "discarded",
-                              pullRequest: null,
-                              pullRequestReceipt: null,
-                          }),
-                    };
-            if (
-              signaled &&
-              postSignalStatusFailures <
-                (options.transientPostSignalStatusFailures ?? 0)
-            ) {
-              postSignalStatusFailures += 1;
-              status = "error";
-              errorCode = "action_error";
-              value = {
-                message: "preview development endpoint returned HTTP 409",
-              };
-            }
+                : {
+                    ok: true,
+                    status: "completed",
+                    terminal: true,
+                    output: options.terminalOutput ?? terminalOutput(),
+                  };
             break;
           }
-          case "preview/workflow-signal":
-            if (
-              controlSignalFailures <
-              (options.transientControlSignalFailures ?? 0)
-            ) {
-              controlSignalFailures += 1;
-              status = "error";
-              errorCode = "action_error";
-              value = {
-                message: "preview development endpoint returned HTTP 409",
-              };
-            } else {
-              value = { ok: true, accepted: true };
-              signaled = true;
-            }
-            break;
           case "preview/workflow-verify-promotion":
             value =
               options.promotionVerification ??
@@ -263,8 +222,8 @@ describe("host preview development lifecycle", () => {
     });
   });
 
-  it("propagates intent, submits only the typed PR signal, and tears down", async () => {
-    const { result, tasks } = await drive(true);
+  it("starts the automated child, verifies its draft PR receipt, and tears down", async () => {
+    const { result, tasks } = await drive();
     expect(result.status, result.error?.message).toBe("done");
     expect(
       tasks
@@ -275,23 +234,11 @@ describe("host preview development lifecycle", () => {
       "preview/environment-status",
       "preview/workflow-start",
       "preview/workflow-status",
-      "preview/workflow-signal",
-      "preview/workflow-status",
       "preview/workflow-verify-promotion",
       "preview/environment-teardown",
       "preview/environment-teardown-status",
     ]);
-    const launch = tasks.find(
-      (task) => task.actionSlug === "preview/environment-launch",
-    );
-    expect(launch?.args).toEqual({
-      environmentName: "feature-one",
-      services: ["workflow-builder"],
-      ttlHours: 8,
-      retainAfterCompletion: false,
-    });
-    expect(JSON.stringify(launch?.args)).not.toContain("userId");
-    expect(JSON.stringify(launch?.args)).not.toContain("Revision");
+    expect(tasks.some((task) => task.kind === "event")).toBe(false);
     const start = tasks.find(
       (task) => task.actionSlug === "preview/workflow-start",
     );
@@ -301,16 +248,6 @@ describe("host preview development lifecycle", () => {
       services: ["workflow-builder"],
     });
     expect(start?.args).not.toHaveProperty("agentSlug");
-    const signal = tasks.find(
-      (task) => task.actionSlug === "preview/workflow-signal",
-    );
-    expect(signal?.args).toMatchObject({ action: "submit_preview_pr" });
-    const approval = tasks.find((task) => task.kind === "event");
-    expect(approval?.eventOpts).toMatchObject({
-      message: expect.stringContaining(
-        "https://wfb-feature-one.tail286401.ts.net/workspaces/workspace-one/sessions/session-1",
-      ),
-    });
     expect(result.returnValue).toMatchObject({
       retained: false,
       outcome: {
@@ -327,90 +264,24 @@ describe("host preview development lifecycle", () => {
     });
   });
 
-  it("maps rejection to discard and never submits a PR", async () => {
-    const { result, tasks } = await drive(false);
-    expect(result.status).toBe("done");
-    const signal = tasks.find(
-      (task) => task.actionSlug === "preview/workflow-signal",
-    );
-    expect(signal?.args).toMatchObject({ action: "discard" });
-  });
-
-  it("retries transient post-signal status conflicts before teardown", async () => {
-    const { result, tasks } = await drive(true, {
-      transientPostSignalStatusFailures: 30,
+  it("retries transient workflow status conflicts before teardown", async () => {
+    const { result, tasks } = await drive({
+      transientStatusFailures: 3,
+      runningPolls: 2,
     });
     expect(result.status, result.error?.message).toBe("done");
     expect(
       tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
-    ).toHaveLength(32);
+    ).toHaveLength(6);
     expect(
-      tasks
-        .filter((task) => task.actionSlug === "preview/workflow-verify-promotion")
-        .length,
-    ).toBe(1);
-    expect(result.returnValue).toMatchObject({
-      outcome: {
-        output: {
-          controlOutcome: "submitted",
-          pullRequestReceipt: { receiptId: promotionReceiptId, draft: true },
-        },
-      },
-      promotionVerification: {
-        verified: true,
-        receipt: { receiptId: promotionReceiptId, draft: true },
-      },
-    });
-  });
-
-  it("retries transient control-signal conflicts before teardown", async () => {
-    const { result, tasks } = await drive(true, {
-      transientControlSignalFailures: 3,
-    });
-    expect(result.status, result.error?.message).toBe("done");
-    expect(
-      tasks.filter((task) => task.actionSlug === "preview/workflow-signal"),
-    ).toHaveLength(4);
-    expect(
-      tasks.findIndex(
-        (task) => task.actionSlug === "preview/environment-teardown",
+      tasks.filter(
+        (task) => task.actionSlug === "preview/workflow-verify-promotion",
       ),
-    ).toBeGreaterThan(
-      tasks.findLastIndex(
-        (task) => task.actionSlug === "preview/workflow-status",
-      ),
-    );
-    expect(result.returnValue).toMatchObject({
-      outcome: {
-        output: {
-          controlOutcome: "submitted",
-          pullRequestReceipt: { receiptId: promotionReceiptId, draft: true },
-        },
-      },
-      promotionVerification: {
-        verified: true,
-        receipt: { receiptId: promotionReceiptId, draft: true },
-      },
-    });
-  });
-
-  it("allows more than the former 20 minute startup polling budget", async () => {
-    const { result, tasks } = await drive(false, { childReadyPolls: 242 });
-    expect(result.status, result.error?.message).toBe("done");
-    expect(
-      tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
-    ).toHaveLength(244);
-  });
-
-  it("bounds approval below a two-hour environment TTL", async () => {
-    const { result, tasks } = await drive(false, { ttlHours: 2 });
-    expect(result.status).toBe("done");
-    const approval = tasks.find((task) => task.kind === "event");
-    expect(approval?.eventOpts).toMatchObject({ timeoutMinutes: 10 });
+    ).toHaveLength(1);
   });
 
   it("accepts an already-absent environment without polling a null teardown ticket", async () => {
-    const { result, tasks } = await drive(false, {
+    const { result, tasks } = await drive({
       teardownAlreadyComplete: true,
     });
     expect(result.status).toBe("done");
@@ -430,17 +301,16 @@ describe("host preview development lifecycle", () => {
     ["promotion failure", { controlOutcome: "promotion_failed" }],
     [
       "malformed PR receipt",
-      {
-        controlOutcome: "submitted",
+      terminalOutput({
         pullRequestReceipt: {
           ok: true,
           receiptId: promotionReceiptId,
           draft: false,
         },
-      },
+      }),
     ],
-  ])("fails the parent after cleanup on %s", async (_label, terminalOutput) => {
-    const { result, tasks } = await drive(true, { terminalOutput });
+  ])("fails the parent after cleanup on %s", async (_label, output) => {
+    const { result, tasks } = await drive({ terminalOutput: output });
     expect(result.status).toBe("script_error");
     expect(
       tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
@@ -451,7 +321,7 @@ describe("host preview development lifecycle", () => {
   });
 
   it("fails after cleanup when physical receipt verification is missing or mismatched", async () => {
-    const { result, tasks } = await drive(true, {
+    const { result, tasks } = await drive({
       promotionVerification: {
         kind: "verify-promotion",
         verified: true,

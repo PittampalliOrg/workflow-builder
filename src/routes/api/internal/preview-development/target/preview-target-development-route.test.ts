@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
     operationId: `pdt-start-workflow-${"b".repeat(64)}`,
     target: {},
     executionId: "child-1",
-    workflowName: "microservice-dev-session",
+    workflowName: "preview-ui-development-gan",
     workflowSpecDigest: `sha256:${"c".repeat(64)}`,
     instanceId: "instance-1",
     status: "running",
