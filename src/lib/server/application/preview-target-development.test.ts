@@ -215,6 +215,27 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
       ),
     ).toThrow("operation id");
   });
+
+  it("keeps the child execution stable across start retries for the same preview generation", () => {
+    const first = __previewTargetDevelopmentForTest.childExecutionId({
+      parentExecutionId: "parent-execution",
+      target,
+      workflowSpecDigest: digest,
+    });
+    const second = __previewTargetDevelopmentForTest.childExecutionId({
+      parentExecutionId: "parent-execution",
+      target,
+      workflowSpecDigest: digest,
+    });
+    const replacement = __previewTargetDevelopmentForTest.childExecutionId({
+      parentExecutionId: "parent-execution",
+      target: { ...target, environmentRequestId: "request-2" },
+      workflowSpecDigest: digest,
+    });
+
+    expect(first).toBe(second);
+    expect(first).not.toBe(replacement);
+  });
 });
 
 describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
@@ -296,7 +317,6 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     const workflow = {
       executionId: __previewTargetDevelopmentForTest.childExecutionId({
         parentExecutionId: "parent-execution",
-        operationId: startOperation,
         target,
         workflowSpecDigest: digest,
       }),
