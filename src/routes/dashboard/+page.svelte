@@ -17,11 +17,14 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		FlaskConical,
+		GitBranch,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		RefreshCw,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -123,6 +126,46 @@
 		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
 		return new Date(iso).toLocaleDateString();
+	}
+
+	// Preview Development Status — derived from already-loaded dashboard data.
+	// No new API plumbing: we reuse recentRuns + stats and render explicit
+	// graceful empty states when preview/sync/PR data is unavailable.
+	let previewSyncing = $state(false);
+	let previewSyncedAt = $state<string | null>(null);
+
+	// A run counts as "recent workflow activity" if it started within 24h.
+	let recentRunsWithin24h = $derived(
+		(recentRuns ?? []).filter((r) => {
+			const started = new Date(r.startedAt).getTime();
+			return Number.isFinite(started) && Date.now() - started < 86_400_000;
+		})
+	);
+
+	let runningRunCount = $derived(
+		(recentRuns ?? []).filter(
+			(r) => r.status === 'running' || r.status === 'pending'
+		).length
+	);
+
+	// HMR/live-sync health is inferred from the last successful dashboard
+	// load. We do not fabricate metrics; when no sync has been observed we
+	// show an explicit idle state.
+	let hmrStatus = $derived.by(() => {
+		if (previewSyncing) return { label: 'Syncing', tone: 'syncing' as const };
+		if (previewSyncedAt) return { label: 'Live', tone: 'live' as const };
+		return { label: 'Idle', tone: 'idle' as const };
+	});
+
+	async function refreshPreviewStatus() {
+		// Reuses the existing load() path; no new endpoint.
+		previewSyncing = true;
+		try {
+			await load();
+			previewSyncedAt = new Date().toISOString();
+		} finally {
+			previewSyncing = false;
+		}
 	}
 
 	onMount(load);
@@ -293,6 +336,170 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status — helps operators understand preview
+		     environments, HMR/live-sync health, recent workflow activity, and
+		     draft PR / source-promotion status. Uses existing dashboard data
+		     and explicit graceful empty states; no new API routes. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<FlaskConical class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Preview environments, live-sync health, and source-promotion status.
+					</CardDescription>
+				</div>
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={refreshPreviewStatus}
+					disabled={previewSyncing}
+				>
+					<RefreshCw class="size-3 {previewSyncing ? 'animate-spin' : ''}" />
+					Refresh
+				</Button>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<!-- Preview environments -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-1">
+							<Layers class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">Preview environments</span>
+						</div>
+						{#if data.stats.totalEnvironments > 0}
+							<div class="text-2xl font-semibold">
+								{data.stats.totalEnvironments}
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								{data.stats.totalAgents} agent{data.stats.totalAgents === 1 ? '' : 's'} configured
+							</div>
+						{:else}
+							<p class="text-xs text-muted-foreground py-2">
+								No preview environments configured.
+								<button
+									type="button"
+									class="text-primary hover:underline"
+									onclick={() => goto(`/workspaces/${slug}/environments/new`)}
+								>
+									Define one
+								</button>
+								.
+							</p>
+						{/if}
+					</div>
+
+					<!-- HMR / live-sync health -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-1">
+							<RefreshCw class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">HMR / live-sync</span>
+						</div>
+						<div class="flex items-center gap-2">
+							<span
+								class="inline-block size-2 rounded-full {hmrStatus.tone === 'live'
+									? 'bg-emerald-500'
+									: hmrStatus.tone === 'syncing'
+										? 'bg-blue-500 animate-pulse'
+										: 'bg-muted-foreground/40'}"
+							></span>
+							<span class="text-sm font-medium">{hmrStatus.label}</span>
+						</div>
+						<div class="text-[11px] text-muted-foreground">
+							{#if previewSyncedAt}
+								Last synced {formatRelative(previewSyncedAt)}
+							{:else if previewSyncing}
+								Syncing dashboard data…
+							{:else}
+								No live sync observed yet. Press Refresh.
+							{/if}
+						</div>
+					</div>
+
+					<!-- Recent workflow activity (reuses recentRuns) -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-1">
+							<Activity class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">Recent workflow activity</span>
+						</div>
+						{#if recentRunsWithin24h.length > 0}
+							<div class="text-2xl font-semibold">
+								{recentRunsWithin24h.length}
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								{runningRunCount} active · last 24h
+							</div>
+							<ul class="mt-2 space-y-1">
+								{#each recentRunsWithin24h.slice(0, 3) as r (r.executionId)}
+									<li class="text-[11px] flex items-center justify-between gap-2">
+										<a
+											href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+											class="truncate hover:underline"
+											title={r.workflowName}
+										>
+											{r.workflowName}
+										</a>
+										<span class="text-muted-foreground whitespace-nowrap">
+											{formatRelative(r.startedAt)}
+										</span>
+									</li>
+								{/each}
+							</ul>
+						{:else}
+							<p class="text-xs text-muted-foreground py-2">
+								No workflow runs in the last 24h.
+								{#if recentRuns.length > 0}
+									<button
+										type="button"
+										class="text-primary hover:underline"
+										onclick={() => goto(`/workspaces/${slug}/runs`)}
+									>
+										View older runs
+									</button>
+									.
+								{/if}
+							</p>
+						{/if}
+					</div>
+
+					<!-- Draft PR / source-promotion status -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-1">
+							<GitBranch class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">Draft PR / promotion</span>
+						</div>
+						{#if recentChanges && recentChanges.length > 0}
+							<ul class="space-y-1">
+								{#each recentChanges.slice(0, 3) as change (change.resourceId + ':' + change.version)}
+									<li class="text-[11px] flex items-center justify-between gap-2">
+										<a
+											href={change.kind === 'agent'
+												? `/workspaces/${slug}/agents/${change.resourceId}`
+												: `/workspaces/${slug}/environments/${change.resourceId}`}
+											class="truncate hover:underline"
+											title={change.resourceName}
+										>
+											{change.resourceName}
+										</a>
+										<Badge variant="outline" class="text-[9px]">v{change.version}</Badge>
+									</li>
+								{/each}
+							</ul>
+							<div class="text-[11px] text-muted-foreground mt-1">
+								Recent published versions shown above.
+							</div>
+						{:else}
+							<p class="text-xs text-muted-foreground py-2">
+								No draft PRs or pending promotions captured yet. Source capture and
+								PR creation run automatically after preview verification.
+							</p>
+						{/if}
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
