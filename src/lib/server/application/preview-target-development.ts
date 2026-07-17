@@ -392,7 +392,7 @@ function canonicalStatusOutput(input: {
   executionId: string;
 }): PreviewDevelopmentTerminalOutput | null {
   if (input.status !== "success") return null;
-  const output = record(input.output);
+  const output = terminalOutputPayload(input.output);
   const controlOutcome = output?.controlOutcome;
   if (
     controlOutcome !== "submitted" &&
@@ -476,6 +476,23 @@ function canonicalStatusOutput(input: {
       draft: true as const,
     }),
   });
+}
+
+function terminalOutputPayload(
+  output: unknown,
+): Record<string, unknown> | null {
+  const direct = record(output);
+  if (!direct) return null;
+  if (typeof direct.controlOutcome === "string") return direct;
+
+  const outputs = record(direct.outputs);
+  const state = record(outputs?.state);
+  const stateData = record(state?.data);
+  const nestedData = record(stateData?.data);
+
+  if (typeof nestedData?.controlOutcome === "string") return nestedData;
+  if (typeof stateData?.controlOutcome === "string") return stateData;
+  return direct;
 }
 
 function previewLaunchOrigin(scope: PreviewDeploymentScopePort): string {
