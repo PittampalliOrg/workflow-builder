@@ -47,6 +47,11 @@ export const meta = {
         title: "Retain environment after completion",
         default: false,
       },
+      retainOnFailure: {
+        type: "boolean",
+        title: "Retain environment after failure",
+        default: false,
+      },
     },
   },
 };
@@ -61,6 +66,7 @@ const services =
     : ["workflow-builder"];
 const ttlHours = Number.isInteger(t.ttlHours) ? t.ttlHours : 8;
 const retainAfterCompletion = t.retainAfterCompletion === true;
+const retainOnFailure = t.retainOnFailure === true;
 
 if (!intent) throw new Error("intent is required");
 if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(environmentName)) {
@@ -446,7 +452,10 @@ try {
   completedNormally = true;
 } finally {
   phase("Finalize");
-  if (environmentLaunched && (!retainAfterCompletion || !completedNormally)) {
+  const shouldRetain =
+    (completedNormally && retainAfterCompletion) ||
+    (!completedNormally && retainOnFailure);
+  if (environmentLaunched && !shouldRetain) {
     teardown = await action(
       "preview/environment-teardown",
       {
@@ -482,7 +491,15 @@ try {
 return {
   environmentName,
   services,
-  retained: retainAfterCompletion && completedNormally,
+  retained:
+    (completedNormally && retainAfterCompletion) ||
+    (!completedNormally && retainOnFailure),
+  retainedReason:
+    completedNormally && retainAfterCompletion
+      ? "completed"
+      : !completedNormally && retainOnFailure
+        ? "failure"
+        : null,
   launch,
   environment,
   child,
