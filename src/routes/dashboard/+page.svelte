@@ -17,11 +17,14 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitBranch,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		RefreshCw,
+		Rocket,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -70,6 +73,33 @@
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+
+	// Preview Development Operations — surfaced for operators. These endpoints
+	// may not exist or may be unavailable in every deployment, so every field
+	// degrades to a graceful empty state rather than blocking the dashboard.
+	type PreviewEnvironment = {
+		id: string;
+		name: string;
+		status: string;
+		url?: string | null;
+		updatedAt?: string | null;
+	};
+	type HmrStatus = {
+		connected: boolean;
+		lastSyncAt?: string | null;
+		generation?: string | null;
+		service?: string | null;
+	};
+	type PrCaptureStatus = {
+		state: 'idle' | 'pending' | 'captured' | 'promoted' | 'error';
+		branch?: string | null;
+		url?: string | null;
+		updatedAt?: string | null;
+	};
+	let previewEnvs = $state<PreviewEnvironment[]>([]);
+	let hmrStatus = $state<HmrStatus | null>(null);
+	let prCapture = $state<PrCaptureStatus | null>(null);
+	let previewOpsLoaded = $state(false);
 
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
@@ -125,7 +155,42 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
-	onMount(load);
+	// Preview-dev-ops data is best-effort: each source is fetched independently
+	// and guarded, so a missing/404 endpoint leaves an explicit empty state
+	// instead of crashing the panel.
+	async function loadPreviewOps() {
+		previewOpsLoaded = false;
+		try {
+			const [eRes, hRes, pRes] = await Promise.all([
+				fetch('/api/v1/preview-environments').catch(() => null),
+				fetch('/api/v1/preview/hmr-status').catch(() => null),
+				fetch('/api/v1/preview/pr-capture').catch(() => null)
+			]);
+			if (eRes && eRes.ok) {
+				const payload = (await eRes.json()) as
+					| { environments?: PreviewEnvironment[] }
+					| PreviewEnvironment[];
+				previewEnvs = Array.isArray(payload)
+					? payload
+					: (payload.environments ?? []);
+			}
+			if (hRes && hRes.ok) {
+				hmrStatus = (await hRes.json()) as HmrStatus;
+			}
+			if (pRes && pRes.ok) {
+				prCapture = (await pRes.json()) as PrCaptureStatus;
+			}
+		} catch {
+			// Swallow: panel renders empty states.
+		} finally {
+			previewOpsLoaded = true;
+		}
+	}
+
+	onMount(() => {
+		load();
+		loadPreviewOps();
+	});
 </script>
 
 <div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
@@ -293,6 +358,195 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status — gives operators a single view of
+		     active preview environments, live-sync/HMR health, recent workflow
+		     activity, and draft PR / source-promotion status. Uses best-effort
+		     data sources and explicit empty states so it never blocks. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Rocket class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Preview environments, live-sync/HMR health, recent workflow activity, and draft PR status.
+					</CardDescription>
+				</div>
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={() => loadPreviewOps()}
+					title="Refresh preview ops"
+				>
+					<RefreshCw class="size-3" />
+				</Button>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<!-- Active preview environments -->
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+							Active preview environments
+						</div>
+						{#if !previewOpsLoaded}
+							<Skeleton class="h-16" />
+						{:else if previewEnvs.length === 0}
+							<p class="text-sm text-muted-foreground py-3">
+								No preview environments detected.
+							</p>
+						{:else}
+							<ul class="space-y-1.5">
+								{#each previewEnvs as env (env.id)}
+									<li class="flex items-center justify-between gap-2 text-sm">
+										<a
+											href={env.url ?? '#'}
+											class="truncate hover:underline"
+											title={env.name}
+										>
+											{env.name}
+										</a>
+										<Badge
+											variant="outline"
+											class={env.status === 'running'
+												? 'bg-emerald-500/10 text-emerald-600'
+												: env.status === 'pending' || env.status === 'provisioning'
+													? 'bg-blue-500/10 text-blue-600'
+													: 'bg-muted text-muted-foreground'}
+										>
+											{env.status}
+										</Badge>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+
+					<!-- Live-sync / HMR health -->
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+							Live-sync / HMR health
+						</div>
+						{#if !previewOpsLoaded}
+							<Skeleton class="h-16" />
+						{:else if !hmrStatus}
+							<p class="text-sm text-muted-foreground py-3">
+								Live-sync status unavailable. No HMR sidecar reported.
+							</p>
+						{:else}
+							<div class="flex items-center gap-2 text-sm">
+								<Badge
+									variant="outline"
+									class={hmrStatus.connected
+										? 'bg-emerald-500/10 text-emerald-600'
+										: 'bg-red-500/10 text-red-600'}
+								>
+									{hmrStatus.connected ? 'connected' : 'disconnected'}
+								</Badge>
+								{#if hmrStatus.service}
+									<span class="text-xs text-muted-foreground">{hmrStatus.service}</span>
+								{/if}
+							</div>
+							{#if hmrStatus.lastSyncAt}
+								<div class="text-[11px] text-muted-foreground mt-1">
+									Last sync {formatRelative(hmrStatus.lastSyncAt)}
+								</div>
+							{/if}
+							{#if hmrStatus.generation}
+								<div class="text-[11px] text-muted-foreground truncate">
+									Generation {hmrStatus.generation}
+								</div>
+							{/if}
+						{/if}
+					</div>
+
+					<!-- Recent workflow activity (reuses the /runs feed) -->
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+							Recent workflow activity
+						</div>
+						{#if recentRuns.length === 0}
+							<p class="text-sm text-muted-foreground py-3">
+								No recent workflow executions.
+							</p>
+						{:else}
+							<ul class="space-y-1.5">
+								{#each recentRuns.slice(0, 3) as r (r.executionId)}
+									<li class="flex items-center justify-between gap-2 text-sm">
+										<a
+											href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+											class="truncate hover:underline"
+											title={r.workflowName}
+										>
+											{r.workflowName}
+										</a>
+										<div class="flex items-center gap-2">
+											<Badge
+												variant="outline"
+												class={r.status === 'running' || r.status === 'pending'
+													? 'bg-blue-500/10 text-blue-600'
+													: r.status === 'success'
+														? 'bg-emerald-500/10 text-emerald-600'
+														: r.status === 'error'
+															? 'bg-red-500/10 text-red-600'
+															: 'bg-muted text-muted-foreground'}
+											>
+												{r.status}
+											</Badge>
+											<span class="text-[11px] text-muted-foreground whitespace-nowrap">
+												{formatRelative(r.startedAt)}
+											</span>
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+
+					<!-- Draft PR / source-promotion status -->
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+							Draft PR / source promotion
+						</div>
+						{#if !previewOpsLoaded}
+							<Skeleton class="h-16" />
+						{:else if !prCapture}
+							<p class="text-sm text-muted-foreground py-3">
+								No source-capture or PR-promotion run detected.
+							</p>
+						{:else}
+							<div class="flex items-center gap-2 text-sm">
+								<GitBranch class="size-3 text-muted-foreground" />
+								{#if prCapture.url}
+									<a href={prCapture.url} class="truncate hover:underline">
+										{prCapture.branch ?? 'draft'}
+									</a>
+								{:else}
+									<span class="truncate">{prCapture.branch ?? 'draft'}</span>
+								{/if}
+								<Badge
+									variant="outline"
+									class={prCapture.state === 'promoted' || prCapture.state === 'captured'
+										? 'bg-emerald-500/10 text-emerald-600'
+										: prCapture.state === 'pending'
+											? 'bg-blue-500/10 text-blue-600'
+											: prCapture.state === 'error'
+												? 'bg-red-500/10 text-red-600'
+												: 'bg-muted text-muted-foreground'}
+								>
+									{prCapture.state}
+								</Badge>
+							</div>
+							{#if prCapture.updatedAt}
+								<div class="text-[11px] text-muted-foreground mt-1">
+									Updated {formatRelative(prCapture.updatedAt)}
+								</div>
+							{/if}
+						{/if}
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
