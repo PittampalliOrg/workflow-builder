@@ -2,10 +2,14 @@
 
 ## Status
 
-Implementation is in final rollout verification. The core host-orchestrated
-preview UI-development lifecycle has been proved on the dev cluster; this
-checkpoint adds the post-promotion helper cleanup fix and must be followed by a
-fresh dev-cluster proof after rollout.
+Implementation is proved on the dev cluster. The current accepted proof is
+`app-live-gan-proof26`: a physical dev workflow provisioned a fresh `app-live`
+preview, started the preview-local GAN UI-development workflow, used GLM 5.2 to
+edit the Workflow Builder dashboard through HMR/live sync, captured the exact
+source, opened a draft PR, and completed generation-fenced teardown. The
+pointer-only stacks change that advances the `dev-preview-platform` Application
+to a revision containing the down-job TTL admission compatibility fix has also
+merged and reconciled on dev.
 
 ### Checkpoints
 
@@ -18,10 +22,13 @@ fresh dev-cluster proof after rollout.
 - [x] Replace the manual interactive-session handoff with the automated
       preview UI development GAN workflow.
 - [x] Pass repository and rendered-manifest validation.
-- [ ] Deploy the helper-cleanup checkpoint through GitHub, GHCR, and GitOps to
+- [x] Deploy the helper-cleanup checkpoint through GitHub, GHCR, and GitOps to
       dev.
-- [ ] Re-prove prompt to HMR to draft PR to teardown on a fresh preview after
+- [x] Re-prove prompt to HMR to draft PR to teardown on a fresh preview after
       the helper-cleanup checkpoint is live.
+- [x] Advance the dev `dev-preview-platform` Application pointer to the stacks
+      revision containing the down-job TTL admission compatibility fix and
+      verify ArgoCD converges on dev.
 
 ## Objective
 
@@ -249,75 +256,73 @@ test preview, session, sandbox, or stale ownership resources after cleanup.
 ## Current Dev Proof
 
 The accepted proof run was submitted from the physical dev Workflow Builder and
-used a fresh `app-live` preview named `app-live-gan-proof23`.
+used a fresh `app-live` preview named `app-live-gan-proof26`.
 
 ```text
-hostExecutionId: 4JZZQG91aPvmExQYN8mVR
-parentInstanceId: dsw-preview-development-lifecycle-exec-4JZZQG91aPvmExQYN8mVR
-previewName: app-live-gan-proof23
-environmentRequestId: 757f5c7f-7d41-412a-920b-70a5240ccffa
-platformRevision: e3750b42e587e99f528a00f93abbc068cca225dc
-sourceRevision: a81fd546d51195e78a2623710b4de6927c5388e7
+hostExecutionId: iXqP79VryvXlDXQtsTpqR
+parentWorkflow: preview-development-lifecycle-eb45df2ffdba3cb2dcef
+previewName: app-live-gan-proof26
+environmentRequestId: 017b3825-1c2e-495e-b628-d91ddd147287
+platformRevision: 7b33ab3a0126da5a859a16baf4af07a215fb3404
+sourceRevision: bd4dce2e39b69765a28520329cacebb70fecb335
 catalogDigest: sha256:22877c5349ccf8ffce018c1df99954cfbbb472ab17bb6fd18434c6e8d78e619d
-childExecutionId: pdc_cc50a892d9779d8f69bb57ada7eb8783b393b9c36ad649cd2a12d35707f3
-childInstanceId: dsw-preview-ui-development-gan-exec-pdc_cc50a892d9779d8f69bb57ada7eb8783b393b9c36ad649cd2a12d35707f3
+childExecutionId: pdc_7a6f18e119b02deaa3d82daa40a7326cc68bae19f2b112d34ebdd7b89ec8
+childInstanceId: dsw-preview-ui-development-gan-exec-pdc_7a6f18e119b02deaa3d82daa40a7326cc68bae19f2b112d34ebdd7b89ec8
 childWorkflowDigest: sha256:35d0108a74a1f45c3ce94e963daffb00e9ad3c526cf368248ba330c7d469c464
 agent: glm-juicefs-builder-agent
 executionClass: dapr-agent-py-juicefs
 model: zai/glm-5.2
 ```
 
-The host run reached `status=success`, `phase=completed`, and the terminal node
-`observe preview cleanup 21`. Its child outcome was `status=success`,
-`phase=completed`, `progress=100`, `terminal=true`, and `controlOutcome=submitted`.
-The workflow started immediately from the host-submitted dashboard-enhancement
-prompt; it did not wait for manual instructions or a manual submit approval.
-
-The HMR proof used one adopted `workflow-builder` development pod in the host
-namespace `vcluster-app-live-gan-proof23`:
+The host run reached `status=success`, `phase=completed`, `success=true`, and
+`promotionVerification.verified=true`. The workflow started immediately from
+the host-submitted dashboard-enhancement prompt; it did not wait for manual
+instructions or a manual submit approval. The preview-local runtime log
+confirmed the requested model path:
 
 ```text
-pod: wfb-dev-preview-workflow-builder-pdc-cc50a892d9779d8-eeccbf3705
-workflow-builder-dev: sha256:92adc7a3763ff4b0a5177042ef381ec907d86127a376726901d56f2f850336ad
-dev-sync-sidecar: sha256:33e902c422cf84b2d9c3cde5d919763eb03509442f7b5b1b9e472e8b74a66617
-sync: drizzle,lib,scripts,services/shared/workflow-data-contract,src,static
-syncSize: 7117947B
-syncApplyElapsed: 1489ms
-captureDigest: 918cd1b7e12d7746c92a47eb
+[gateway-adapter] llm-glm-5.2 -> model=glm-5.2
 ```
 
-The fixed sidecar used merge semantics, preserved the SvelteKit source tree,
-and avoided replacing the adopted service pod. This is the regression guard for
-the earlier proof22 failure where an older sidecar applied a 45 byte patch as a
-full replacement and deleted `src/app.html`.
-
-Source promotion created a durable diff artifact on the parent run:
+The HMR proof used one adopted `workflow-builder` development pod in the host
+namespace `vcluster-app-live-gan-proof26`:
 
 ```text
-artifactId: 88b54a731e302a33b0df4b09
-artifactKind: diff
-artifactNode: dev-preview-promote
-artifactTitle: Preview source promotion
+pod: wfb-dev-preview-workflow-builder-pdc-7a6f18e119b02de-b5449834d6
+sync: drizzle,lib,scripts,services/shared/workflow-data-contract,src,static
+syncSize: 7119655B
+syncApplyElapsed: 1522ms
+changedPaths: src/routes/dashboard/+page.svelte
+```
+
+The adopted service pod stayed in place while the HMR receiver applied the
+source update. The generated dashboard change added a `Preview Development
+Status` panel with quadrants for preview environment, workflow progress, source
+capture, and draft PR handoff, using existing dashboard data and no new API
+routes. A live smoke test returned `/api/health` 200 and loaded `/dashboard`
+through the expected unauthenticated redirect path without Svelte or server
+errors.
+
+Source promotion created a durable source artifact and draft PR:
+
+```text
+sourceArtifactId: pca_86f566bacb093997fa1bbb27b7c5d5649581f001046e54e8f6b8f3981cec7afc
+receiptId: pspr_9047f7a75463f8516508c3a1a6e5db309a3ae6d54e66e1067e33980ab38ff52e
+branch: preview-feature-0c81000a3320f709e0a7ea58047bb28f
+commitSha: b7f3856ab1d97729212ace7521d6e650921ce469
+baseSha: bd4dce2e39b69765a28520329cacebb70fecb335
+pullRequest: https://github.com/PittampalliOrg/workflow-builder/pull/677
+pullRequestState: open draft
+changedPaths: src/routes/dashboard/+page.svelte
 ```
 
 The physical broker verified the append-only promotion receipt before the parent
-completed:
-
-```text
-receiptId: pspr_9faa193d8e4badfb2e5bbb678ab9c56b656432217f01ff4a7ece036707596c28
-centralArtifactId: pca_f3ce2ed5acfea0090ef7d1d8a5aae91286d98c48a6ae89c7c7660dc39eaf9481
-branch: preview-feature-c38a02729b1238b2eab66253e540120a
-commitSha: 92184550f620a45c70f84e733d0d70b8b0f42ba2
-pullRequest: https://github.com/PittampalliOrg/workflow-builder/pull/671
-pullRequestState: open draft
-changedPaths: src/routes/dashboard/+page.svelte
-diffStats: +200 -3
-githubChecks: checks=success, orchestrator-tests=success, Initialize preview/gate=success
-```
+completed. A transient GLM 5.2 minute-token-limit error was retried by the
+runtime and did not require manual intervention.
 
 The parent performed generation-fenced teardown after promotion verification.
-The signed cleanup proof for `app-live-gan-proof23` reached `phase=complete` and
-`complete=true`; all cleanup checks were true:
+The signed cleanup proof for `app-live-gan-proof26` reached completion; all
+preview-environment cleanup checks were true:
 
 ```text
 runnerSucceeded
@@ -334,19 +339,19 @@ storageScopeAbsent
 runnerIdentityAbsent
 ```
 
-Older retained proof environments were removed through the platform-admin,
-generation-fenced DELETE path after the successful proof. `app-live-gan-proof21`
-archived one run and one source bundle before teardown. `app-live-gan-proof22`
-was the known stale-sidecar failure and used the explicit discard/quarantine
-path because its preview-local archive returned an incomplete response. The
-Kubernetes namespaces for proof21, proof22, and proof23 are absent on dev.
+The `PreviewEnvironment`, hub certificate resources, and dev namespace for
+`app-live-gan-proof26` were absent after teardown. The source-promotion Sandbox
+uses `shutdownPolicy: Delete`; its pod was gone after completion and its
+transcript/workspace PVCs remained only until the scheduled Sandbox
+`shutdownTime`, at which point the Sandbox controller is expected to reap the
+owner-referenced storage.
 
-The proof exposed one post-success cleanup gap: the source-promotion helper pod
-stopped at its active deadline, but its Sandbox CR, PVCs, and credential Secret
-remained until the later Sandbox `shutdownTime`. The promotion runner now calls
-the helper-pod cleanup adapter in a `finally` block after the fixed PR
-materialization command returns. The cleanup deletes the helper Sandbox CR
-through the existing Kubernetes sandbox adapter, allowing owner references to
-remove the pod, PVCs, and credential Secret without adding Kubernetes authority
-to the workflow or preview-local child. The proof23 helper resources were
-deleted through that same Sandbox CR boundary after the fix was identified.
+One durable platform issue was found during proof teardown. The dev
+`dev-preview-platform` ArgoCD Application was still pinned to
+`35f8a10ae3846cfce2d535ccf04a70e3deaff2fe`, so the live admission policy lacked
+the merged down-job `ttlSecondsAfterFinished == 1800` compatibility. A manual
+application of the current policy allowed the proof26 down job to complete. The
+durable fix advanced the dev overlay pointer to
+`7b33ab3a0126da5a859a16baf4af07a215fb3404`; ArgoCD converged to `Synced
+Healthy`, and the live admission policy now accepts either an absent down-job
+TTL or `ttlSecondsAfterFinished == 1800`.
