@@ -1,6 +1,6 @@
 /**
  * deep-research — a dynamic-script mimic of Claude Code's built-in `deep-research`
- * workflow, running on the workflow-builder engine (GLM 5.2 by default).
+ * workflow, running on the workflow-builder engine (Kimi K3 by default).
  *
  * Structure (built-in → our primitives):
  *   Plan       decompose the question into distinct angles      agent() + schema
@@ -9,13 +9,13 @@
  *   (loop Research↔Critique until saturated / budget / maxRounds)
  *   Synthesize a sourced research brief                          agent()
  *
- * Our dapr-agent-py GLM agents ship the Claude-Code tool set, so the research
+ * Our dapr-agent-py agents ship the Claude-Code tool set, so the research
  * agents do GENUINE web research via the WebSearch + WebFetch tools. When the
  * sandbox can't reach the network they fall back to model knowledge and say so.
  *
  * args: { question: string, breadth?: number (2-6, default 4),
  *         maxRounds?: number (1-5, default 3) }
- * Set a run budgetTotal to bound the loop (each round costs a few k tokens on GLM).
+ * Set a run budgetTotal to bound the loop (each round costs a few k tokens).
  */
 
 export const meta = {

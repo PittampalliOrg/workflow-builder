@@ -114,12 +114,11 @@ def _native_structured_enabled() -> bool:
 
 def _structured_model() -> str:
     """The model schema'd calls route to for first-class structured output.
-    Default is GLM + the StructuredOutput tool (spike: 42/42 first-try valid,
-    zero retries — and it keeps schema'd calls on the cheap default provider).
+    Kimi K3 is the platform default and supports strict JSON Schema directly.
     Set DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/gpt-5.5 to route schema'd calls
-    to OpenAI strict json_schema (constrained decoding) instead. Read per-call
-    so tests/env can override; empty falls back to the GLM default."""
-    return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "zai/glm-5.2").strip() or "zai/glm-5.2"
+    to OpenAI strict json_schema instead. Read per-call so tests/env can
+    override; empty falls back to the Kimi K3 default."""
+    return os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_MODEL", "kimi/kimi-k3").strip() or "kimi/kimi-k3"
 
 
 def _structured_tool_enabled() -> bool:
@@ -185,8 +184,8 @@ def _build_agent_config(
     model = ""
     phase_model = _phase_model(meta, opts.get("phase"))
     # A schema'd call on the multi-provider runtime gets provider-native
-    # structured output (Tier 1 OpenAI strict json_schema / Tier 2 GLM
-    # json_object). The <output-contract> prompt block + jsonschema validation
+    # structured output (Tier 1 Kimi/OpenAI strict json_schema / Tier 2 GLM
+    # tool mode). The <output-contract> prompt block + jsonschema validation
     # remain the universal Tier-3 authority/fallback either way.
     schema = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
     native_structured = (
@@ -208,10 +207,8 @@ def _build_agent_config(
         model = phase_model
     elif native_structured:
         # Hybrid routing: a schema'd call with no explicit model defaults to
-        # the configured structured model — GLM + the StructuredOutput tool by
-        # default; DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/* buys strict
-        # constrained decoding instead. A per-call opts.model / phase model
-        # above still wins.
+        # the configured structured model (Kimi K3 strict JSON Schema by
+        # default). A per-call opts.model / phase model above still wins.
         model = _structured_model()
     elif (
         isinstance((defaults or {}).get("model"), str)
@@ -233,9 +230,9 @@ def _build_agent_config(
     if isinstance(opts.get("effort"), str) and opts.get("effort").strip():
         agent_config["reasoningEffort"] = opts["effort"].strip()
     if native_structured:
-        # The raw JSON Schema the adapter enforces provider-side (OpenAI strict
-        # json_schema; GLM json_object). Read back in call_llm and stamped on the
-        # chat client alongside _llm_component / _reasoning_effort.
+        # The raw JSON Schema the adapter enforces provider-side (Kimi/OpenAI
+        # strict json_schema; tool mode elsewhere). Read back in call_llm and
+        # stamped on the chat client alongside _llm_component / _reasoning_effort.
         agent_config["responseJsonSchema"] = schema
         # Tier 2 tool mode: providers without a strict json_schema mode (GLM,
         # Anthropic, DeepSeek) deliver the result via the synthetic
@@ -243,7 +240,7 @@ def _build_agent_config(
         # per-request tool definition whose parameters ARE the schema, the
         # runtime validates the call args in-loop, and the agent loop finalizes
         # the session with the canonical JSON. Object schemas only (tool args
-        # are JSON objects); OpenAI keeps strict json_schema (stronger).
+        # are JSON objects); Kimi and OpenAI keep strict json_schema (stronger).
         if (
             model.startswith(("zai/", "anthropic/", "deepseek/"))
             and _structured_tool_enabled()

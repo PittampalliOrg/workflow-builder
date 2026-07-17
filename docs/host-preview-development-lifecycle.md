@@ -35,7 +35,7 @@ merged and reconciled on dev.
 A user submits one task from the physical dev Workflow Builder. One durable host
 workflow provisions an isolated `app-live` PreviewEnvironment, starts the pinned
 `preview-ui-development-gan` workflow inside it, and waits for that child to
-finish. The child runs `zai/glm-5.2` through `dapr-agent-py-juicefs`, receives
+finish. The child runs `kimi/kimi-k3` through `dapr-agent-py-juicefs`, receives
 the submitted task as its first work item, plans a dashboard change, applies it
 through the existing HMR receiver, verifies the live preview, captures the strict
 source generation, and opens an idempotent draft pull request. The happy path
@@ -52,7 +52,7 @@ This is one logical lifecycle implemented by two durable executions:
    It owns provisioning, correlation, approval, receipt reconciliation, and
    whole-environment teardown.
 2. `preview-ui-development-gan` is stored and run inside the target vCluster. It
-   owns service adoption, the shared HMR workspace, the GLM plan/generate/verify
+   owns service adoption, the shared HMR workspace, the Kimi K3 plan/generate/verify
    loop, strict source capture, and PR promotion.
 
 The executions are not related with Dapr `call_child_workflow`. The physical dev
@@ -171,10 +171,10 @@ inside the existing durable action-runner retry policy. Contract, authorization,
 and generation conflicts are permanent results and are not retried. Both proxy
 hops have fixed deadlines.
 
-When the child exposes a GLM session, status must resolve at most one session
+When the child exposes a Kimi K3 session, status must resolve at most one session
 linked to the child execution. The result includes the preview-local,
 workspace-scoped session URL so the host run detail can take the operator
-directly to the active GLM session. Duplicate or ambiguous links fail the
+directly to the active Kimi K3 session. Duplicate or ambiguous links fail the
 contract instead of presenting controls. Normal automated runs may complete
 without a manual handoff session URL if all proof artifacts and the physical
 promotion receipt are present.
@@ -244,7 +244,7 @@ Completion requires a fresh dev-cluster run that records one correlated chain:
 
 ```text
 host execution -> PreviewEnvironment generation -> preview child execution
--> GLM session -> HMR generation -> source artifact -> draft PR receipt
+-> Kimi K3 session -> HMR generation -> source artifact -> draft PR receipt
 -> teardown ticket -> cleanup proof
 ```
 

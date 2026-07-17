@@ -216,7 +216,7 @@ def test_foundry_structured_call_rejects_empty_content(monkeypatch) -> None:
 
     try:
         adapter._call_foundry_chat(
-            "llm-foundry-kimi-k26",
+            "llm-foundry-deepseek-v4-flash",
             [{"role": "user", "content": "summarize"}],
             response_format=ConversationSummary,
         )

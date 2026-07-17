@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 
 EFFECTIVE_AGENT_CONFIG_SCHEMA_VERSION = "workflow-builder.effective-agent-config.v1"
+KIMI_K3_CONTEXT_WINDOW_TOKENS = 1_048_576
 
 
 MODEL_COMPONENT_MAP: dict[str, str] = {
@@ -49,17 +50,11 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "qwen/qwen3-coder-480b-a35b-instruct": "llm-nvidia-qwen3-coder-480b",
     "nvidia/mistralai/devstral-2-123b-instruct-2512": "llm-nvidia-devstral-2-123b",
     "mistralai/devstral-2-123b-instruct-2512": "llm-nvidia-devstral-2-123b",
-    "nvidia/moonshotai/kimi-k2-thinking": "llm-nvidia-kimi-k2-thinking",
-    "moonshotai/kimi-k2-thinking": "llm-nvidia-kimi-k2-thinking",
-    "nvidia/moonshotai/kimi-k2-instruct-0905": "llm-nvidia-kimi-k2-0905",
-    "moonshotai/kimi-k2-instruct-0905": "llm-nvidia-kimi-k2-0905",
     "nvidia/z-ai/glm4.7": "llm-nvidia-glm47",
     "z-ai/glm4.7": "llm-nvidia-glm47",
     # Azure AI Foundry direct models
     "foundry/DeepSeek-V4-Flash": "llm-foundry-deepseek-v4-flash",
     "DeepSeek-V4-Flash": "llm-foundry-deepseek-v4-flash",
-    "foundry/Kimi-K2.6": "llm-foundry-kimi-k26",
-    "Kimi-K2.6": "llm-foundry-kimi-k26",
     # Together AI OpenAI-compatible serverless models
     "together/zai-org/GLM-5.1": "llm-together-glm-51",
     "zai-org/GLM-5.1": "llm-together-glm-51",
@@ -110,12 +105,9 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
     "qwen/qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
     "dashscope/qwen3-coder-plus": "llm-alibaba-qwen3-coder-plus",
     # Kimi direct API
-    "kimi/kimi-k2.6": "llm-kimi-k26",
-    "kimi-k2.6": "llm-kimi-k26",
-    "moonshot/kimi-k2.6": "llm-kimi-k26",
-    "kimi/kimi-k2.5": "llm-kimi-k25",
-    "kimi-k2.5": "llm-kimi-k25",
-    "moonshot/kimi-k2.5": "llm-kimi-k25",
+    "kimi/kimi-k3": "llm-kimi-k3",
+    "kimi-k3": "llm-kimi-k3",
+    "moonshot/kimi-k3": "llm-kimi-k3",
     # Hugging Face
     "huggingface/meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
     "meta-llama/Meta-Llama-3-8B": "llm-huggingface-llama3",
@@ -131,14 +123,11 @@ MODEL_COMPONENT_MAP: dict[str, str] = {
 }
 
 
-# Default to DeepSeek (NOT Anthropic). dapr-agent-py must never silently bill the
-# metered Anthropic API: CLI agents authenticate via their linked subscription
-# credential, and whenever dapr-agent-py itself runs it defaults to DeepSeek.
-# DAPR_LLM_COMPONENT_DEFAULT still overrides per-deployment; this code default is
-# the fail-safe for any pod (e.g. the coding pool) whose env wasn't synced — so an
-# unconfigured dapr-agent-py pod reaches DeepSeek, not claude-opus + ANTHROPIC_API_KEY.
+# Kimi K3 is the platform default for dapr-agent-py. Deployments can override it
+# with DAPR_LLM_COMPONENT_DEFAULT, but unsynchronized pods must use the same model
+# as the platform rather than silently falling back to another provider.
 DEFAULT_LLM_COMPONENT = os.environ.get(
-    "DAPR_LLM_COMPONENT_DEFAULT", "llm-deepseek-v4-pro"
+    "DAPR_LLM_COMPONENT_DEFAULT", "llm-kimi-k3"
 )
 
 
@@ -161,11 +150,8 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
         "nvidia",
         "mistralai/devstral-2-123b-instruct-2512",
     ),
-    "llm-nvidia-kimi-k2-thinking": ("nvidia", "moonshotai/kimi-k2-thinking"),
-    "llm-nvidia-kimi-k2-0905": ("nvidia", "moonshotai/kimi-k2-instruct-0905"),
     "llm-nvidia-glm47": ("nvidia", "z-ai/glm4.7"),
     "llm-foundry-deepseek-v4-flash": ("foundry", "DeepSeek-V4-Flash"),
-    "llm-foundry-kimi-k26": ("foundry", "Kimi-K2.6"),
     "llm-together-glm-51": ("together", "zai-org/GLM-5.1"),
     "llm-together-qwen3-coder-480b": (
         "together",
@@ -181,8 +167,7 @@ _COMPONENT_PROVIDER_MODELS: dict[str, tuple[str, str]] = {
     "llm-glm-5.1": ("zai", "glm-5.1"),
     "llm-glm-5v-turbo": ("zai", "glm-5v-turbo"),
     "llm-alibaba-qwen3-coder-plus": ("alibaba", "qwen3-coder-plus"),
-    "llm-kimi-k26": ("kimi", "kimi-k2.6"),
-    "llm-kimi-k25": ("kimi", "kimi-k2.5"),
+    "llm-kimi-k3": ("kimi", "kimi-k3"),
     "llm-huggingface-llama3": ("huggingface", "meta-llama/Meta-Llama-3-8B"),
     "llm-mistral-open": ("mistral", "open-mistral-7b"),
     "llm-echo": ("echo", "local"),
@@ -367,7 +352,10 @@ def resolve_llm_metadata(
     # NOTE: _string returns None for a missing key — guard before .lower()
     # (an unguarded .lower() crashed EVERY session without an effort opt).
     effort = (_string(config.get("reasoningEffort")) or "").lower()
-    if effort in {"low", "medium", "high", "xhigh", "max"}:
+    if component == "llm-kimi-k3":
+        out["contextWindowTokens"] = KIMI_K3_CONTEXT_WINDOW_TOKENS
+        out["reasoningEffort"] = "max"
+    elif effort in {"low", "medium", "high", "xhigh", "max"}:
         out["reasoningEffort"] = effort
     # Per-agent response JSON Schema for provider-native structured output
     # (dynamic-script agent(..., {schema}) → dispatch stamps responseJsonSchema).
@@ -590,7 +578,14 @@ def effective_audit_fields(snapshot: Mapping[str, Any] | None) -> dict[str, Any]
     ):
         if snapshot.get(key) is not None:
             out[key] = snapshot.get(key)
-    for key in ("modelSpec", "llmComponent", "provider", "providerModel"):
+    for key in (
+        "modelSpec",
+        "llmComponent",
+        "provider",
+        "providerModel",
+        "contextWindowTokens",
+        "reasoningEffort",
+    ):
         if llm.get(key) is not None:
             out[key] = llm.get(key)
     return out
@@ -623,6 +618,8 @@ def runtime_context_audit_cache_fields(context: Mapping[str, Any] | None) -> dic
         "llmComponent",
         "provider",
         "providerModel",
+        "contextWindowTokens",
+        "reasoningEffort",
     ):
         if context.get(key) is not None:
             out[key] = context.get(key)

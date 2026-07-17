@@ -1,7 +1,7 @@
 export const meta = {
   name: "preview-ui-development-gan",
   description:
-    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
+    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the Kimi K3 JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
   phases: [
     { title: "Dev mode" },
     { title: "Plan" },
@@ -74,7 +74,7 @@ export const meta = {
 };
 
 const DEFAULT_AGENT = "glm-juicefs-builder-agent";
-const REQUIRED_MODEL = "zai/glm-5.2";
+const REQUIRED_MODEL = "kimi/kimi-k3";
 const DEFAULT_SERVICE = "workflow-builder";
 const DEFAULT_ROUTES = ["/dashboard"];
 const DASHBOARD_MARKER = "Preview Development Status";
@@ -230,7 +230,7 @@ while (!accepted && iterations < maxIterations) {
     ? `\nPrevious verifier feedback to address:\n${JSON.stringify(lastVerdict)}\n`
     : "";
   lastGenerator = await agent(
-    `You are the GLM builder for a workflow-builder preview UI-development run.
+    `You are the Kimi K3 builder for a workflow-builder preview UI-development run.
 
 You are running inside the preview workflow with a shared JuiceFS workspace. Implement the requested dashboard enhancement against the live preview and push exactly one HMR generation before stopping.
 

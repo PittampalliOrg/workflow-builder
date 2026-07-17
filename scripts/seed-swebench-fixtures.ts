@@ -221,7 +221,7 @@ const REQUIRED_AGENT_MODEL_SPECS = {
   "codex-cli-swebench-smoke": "openai/gpt-5.5",
   "agy-cli-swebench-smoke": "googleai/gemini-3.1-pro-preview",
   "deepseek-v4-pro-swebench": "deepseek/deepseek-v4-pro",
-  "kimi-k26-swebench-canary": "kimi/kimi-k2.6",
+  "kimi-k26-swebench-canary": "kimi/kimi-k3",
 } as const;
 
 const CLAUDE_AGENT_SEED_TIMESTAMP = "2026-06-06T14:26:53.520075";

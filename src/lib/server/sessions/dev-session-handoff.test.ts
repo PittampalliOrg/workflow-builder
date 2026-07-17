@@ -64,11 +64,11 @@ describe("spawnDevSession", () => {
 
 		expect(workflowDataMock.createWorkflowDevSession).toHaveBeenCalledWith({
 			executionId: "exec-1",
-			agentPolicy: {
-				slug: "glm-juicefs-builder-agent",
-				runtime: "dapr-agent-py-juicefs",
-				modelSpec: "zai/glm-5.2",
-			},
+				agentPolicy: {
+					slug: "glm-juicefs-builder-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "kimi/kimi-k3",
+				},
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
 		});

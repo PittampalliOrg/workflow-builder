@@ -37,6 +37,10 @@ import { generateId } from "../lib/utils/id";
 import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
 import { planProjectSystemWorkflowInstallations } from "./lib/project-system-workflows";
+import {
+	ensureKimiAgent,
+	type AgentRef as ThreeBOneBAgentRef,
+} from "./upsert-3b1b-animation-workflow";
 
 const DATABASE_URL =
 	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -87,9 +91,9 @@ const THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME =
 	'${ .workspace_profile.sandboxName // "" }';
 const THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF =
 	"${ .workspace_profile.workspaceRef }";
-const THREE_B_ONE_B_DEFAULT_AGENT_ID =
-	process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_claude_code_sdk_smoke";
-const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
+const THREE_B_ONE_B_AGENT_OVERRIDE_ID =
+	process.env.SEED_3B1B_AGENT_ID?.trim() || "";
+const THREE_B_ONE_B_AGENT_OVERRIDE_VERSION = Number(
 	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1",
 );
 
@@ -2095,10 +2099,10 @@ function makeThreeBOneBWorkspaceProfileTask(): JsonRecord {
 	};
 }
 
-function makeThreeBOneBBuildTask(): JsonRecord {
-	if (!Number.isInteger(THREE_B_ONE_B_DEFAULT_AGENT_VERSION)) {
+function makeThreeBOneBBuildTask(agentRef: ThreeBOneBAgentRef): JsonRecord {
+	if (!Number.isInteger(agentRef.version) || agentRef.version <= 0) {
 		throw new Error(
-			`SEED_3B1B_AGENT_VERSION must be an integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`,
+			`SEED_3B1B_AGENT_VERSION must be a positive integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`,
 		);
 	}
 	return {
@@ -2125,10 +2129,7 @@ function makeThreeBOneBBuildTask(): JsonRecord {
 				keepAfterRun: true,
 			},
 			body: {
-				agentRef: {
-					id: THREE_B_ONE_B_DEFAULT_AGENT_ID,
-					version: THREE_B_ONE_B_DEFAULT_AGENT_VERSION,
-				},
+				agentRef,
 				prompt: THREE_B_ONE_B_BUILD_PROMPT,
 				overrides: {
 					cwd: "/sandbox",
@@ -2233,7 +2234,7 @@ function makeThreeBOneBStartPreviewTask(): JsonRecord {
 	};
 }
 
-function buildThreeBOneBWorkflowSpec(): JsonRecord {
+function buildThreeBOneBWorkflowSpec(agentRef: ThreeBOneBAgentRef): JsonRecord {
 	return {
 		document: {
 			dsl: "1.0.0",
@@ -2269,7 +2270,7 @@ function buildThreeBOneBWorkflowSpec(): JsonRecord {
 		},
 		do: [
 			{ workspace_profile: makeThreeBOneBWorkspaceProfileTask() },
-			{ build_3b1b_animation: makeThreeBOneBBuildTask() },
+			{ build_3b1b_animation: makeThreeBOneBBuildTask(agentRef) },
 			{ browser_validate_capture: makeThreeBOneBBrowserValidateTask() },
 			{ start_preview: makeThreeBOneBStartPreviewTask() },
 		],
@@ -4823,9 +4824,11 @@ async function ensureCliShowcaseAgentFor(
 		name: string;
 		description: string;
 		mcpServers?: unknown[];
-		// dapr-family variants drive API-key LLMs and need an explicit modelSpec
-		// (quota-free deepseek-v4-pro); CLI variants omit it (native CLI auth).
+		// Dapr-family variants drive API-key LLMs and need an explicit modelSpec;
+		// CLI variants omit it because they use native CLI authentication.
 		modelSpec?: string;
+		reasoningEffort?: string;
+		contextWindowTokens?: number;
 		// Unified reasoning-effort selector for interactive-cli agents (mapped to
 		// each CLI's native control by the cli-agent-py adapters). Only set for
 		// agents that want a non-default effort (e.g. claude-code-cli "ultracode").
@@ -4840,6 +4843,10 @@ async function ensureCliShowcaseAgentFor(
 	const config = {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
+		...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+		...(opts.contextWindowTokens
+			? { contextWindowTokens: opts.contextWindowTokens }
+			: {}),
 		...(opts.effort ? { effort: opts.effort } : {}),
 		...(opts.instructions ? { instructions: opts.instructions } : {}),
 		maxTurns: 50,
@@ -4860,10 +4867,15 @@ async function ensureCliShowcaseAgentFor(
 	// Publish a NEW version ONLY when the resolved config differs (no churn when
 	// unchanged), so re-seeding is authoritative for modelSpec/runtime.
 	if (existing.length && existing[0].current_version_id) {
+		const agentId = existing[0].id;
+		await sqlClient`
+			update agents
+			set name = ${name}, description = ${description}, runtime = ${runtime},
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+			where id = ${agentId}`;
 		const cur = await sqlClient<{ config_hash: string | null }[]>`
 			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
 		if (cur.length && cur[0].config_hash === configHash) return slug;
-		const agentId = existing[0].id;
 		const maxV = await sqlClient<{ v: number }[]>`
 			select coalesce(max(version), 0)::int as v from agent_versions where agent_id = ${agentId}`;
 		const nextVersion = (maxV[0]?.v ?? 0) + 1;
@@ -4871,7 +4883,7 @@ async function ensureCliShowcaseAgentFor(
 		await sqlClient`
 			insert into agent_versions (id, agent_id, version, config, config_hash)
 			values (${newVersionId}, ${agentId}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
-		await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
+		await sqlClient`update agents set current_version_id = ${newVersionId} where id = ${agentId}`;
 		console.log(
 			`[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`,
 		);
@@ -4887,7 +4899,11 @@ async function ensureCliShowcaseAgentFor(
 				${description},
 				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
 	} else {
-		await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
+		await sqlClient`
+			update agents
+			set name = ${name}, description = ${description}, runtime = ${runtime},
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+			where id = ${agentId}`;
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
@@ -4945,7 +4961,8 @@ async function seedGeneratorCriticShowcases(params: {
 			"Interactive PreviewEnvironment developer that edits the per-execution JuiceFS workspace, runs the service-aware sync helper, and validates the isolated live system without a host CLI credential.",
 		modelSpec: "deepseek-v4-pro",
 	});
-	// GLM-5.2 BUILDER on the juicefs-shared backend (zai/glm-5.2 → /coding/paas/v4).
+	// Kimi K3 builder on the juicefs-shared backend. The legacy slug is retained
+	// because durable workflows and existing sessions pin it as an identifier.
 	// The planner/generator/design-reviewer of the all-on-juicefs GAN visual loop
 	// (gan-harness-glm-visual-dashboard); the visual critic is the dev-verified
 	// cli-playwright-critic-agent (claude-code-cli, in-pod Chromium, juicefs-shared
@@ -4955,10 +4972,12 @@ async function seedGeneratorCriticShowcases(params: {
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
 		slug: "glm-juicefs-builder-agent",
 		runtime: "dapr-agent-py-juicefs",
-		name: "GLM-5.2 (JuiceFS) Builder Agent",
+		name: "Kimi K3 (JuiceFS) Builder Agent",
 		description:
-			"GLM-5.2 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
-		modelSpec: process.env.SEED_GLM_BUILDER_MODEL?.trim() || "zai/glm-5.2",
+			"Kimi K3 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+		modelSpec: "kimi/kimi-k3",
+		reasoningEffort: "max",
+		contextWindowTokens: 1_048_576,
 	});
 	// Shared Playwright MCP config for every CLI critic (same sandbox image →
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the
@@ -5344,6 +5363,13 @@ async function seedWorkflow() {
 			edges: buildAiCodingAgentEdges(),
 		});
 
+		const threeBOneBAgentRef = THREE_B_ONE_B_AGENT_OVERRIDE_ID
+			? {
+					id: THREE_B_ONE_B_AGENT_OVERRIDE_ID,
+					version: THREE_B_ONE_B_AGENT_OVERRIDE_VERSION,
+				}
+			: await ensureKimiAgent(sql, { userId, projectId });
+
 		await upsertRawWorkflow({
 			db,
 			workflowId: THREE_B_ONE_B_WORKFLOW_ID,
@@ -5351,7 +5377,7 @@ async function seedWorkflow() {
 			description: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
 			userId,
 			projectId,
-			spec: buildThreeBOneBWorkflowSpec(),
+			spec: buildThreeBOneBWorkflowSpec(threeBOneBAgentRef),
 			nodes: buildThreeBOneBWorkflowNodes(),
 			edges: buildThreeBOneBWorkflowEdges(),
 			visibility: "public",

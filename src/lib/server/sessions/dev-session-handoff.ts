@@ -25,7 +25,7 @@ import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
 const DEV_AGENT_POLICY = Object.freeze({
 	slug: "glm-juicefs-builder-agent",
 	runtime: "dapr-agent-py-juicefs",
-	modelSpec: "zai/glm-5.2",
+	modelSpec: "kimi/kimi-k3",
 });
 
 export interface SpawnDevSessionParams {

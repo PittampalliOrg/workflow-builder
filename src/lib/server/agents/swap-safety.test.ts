@@ -22,7 +22,7 @@ function withCaps(id: string, overrides: Partial<RuntimeDescriptor["capabilities
 describe("resolveModelProvider", () => {
 	it("extracts the provider prefix", () => {
 		expect(resolveModelProvider("anthropic/claude-opus-4-8")).toBe("anthropic");
-		expect(resolveModelProvider("kimi/kimi-k2.6")).toBe("kimi");
+		expect(resolveModelProvider("kimi/kimi-k3")).toBe("kimi");
 		expect(resolveModelProvider("deepseek/deepseek-v4-pro")).toBe("deepseek");
 		expect(resolveModelProvider("foundry/DeepSeek-V4-Flash")).toBe("foundry");
 		expect(resolveModelProvider("gemini/gemini-2.5-pro")).toBe("googleai");
@@ -95,7 +95,7 @@ describe("assertSwapSafe", () => {
 	});
 
 	it("allows a multi-provider runtime to run any of its providers", () => {
-		const req = deriveAgentRequirements({ modelSpec: "kimi/kimi-k2.6" });
+		const req = deriveAgentRequirements({ modelSpec: "kimi/kimi-k3" });
 		// dapr-agent-py lists kimi among supportedProviders.
 		expect(assertSwapSafe(req, runtime("dapr-agent-py")).decision).toBe("allow");
 		// claude-agent-py does not.

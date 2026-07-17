@@ -3,7 +3,7 @@
 	 * First-class AI authoring for code-first workflows.
 	 *
 	 * The primary way users author workflows is describing them to an LLM: a
-	 * real interactive session (GLM 5.2 + the workflow-authoring MCP tools)
+	 * real interactive session (Kimi K3 + the workflow-authoring MCP tools)
 	 * bound to THIS workflow row. The agent authors → validates → saves the
 	 * script; the canvas re-projects it live.
 	 *
@@ -43,12 +43,12 @@
 	const slug = $derived(page.params.slug as string);
 	const workflowId = $derived(store.workflowId);
 
-	/** Selectable authors: the platform GLM loop (instant) or a CLI agent
+	/** Selectable authors: the platform Kimi K3 loop (instant) or a CLI agent
 	 * (user's own subscription auth, stronger coding model, pod cold-start). */
 	const AUTHORS = [
 		{
 			runtime: 'dapr-agent-py',
-			label: 'GLM 5.2',
+			label: 'Kimi K3',
 			hint: 'instant · platform-metered'
 		},
 		{

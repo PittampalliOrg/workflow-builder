@@ -78,7 +78,7 @@ export const meta = {
       "agentSlug": {
         "type": "string",
         "title": "Agent slug",
-        "description": "Preview-local dapr-agent-py GLM agent used for the interactive handoff.",
+        "description": "Preview-local dapr-agent-py Kimi K3 agent used for the interactive handoff.",
         "default": "glm-juicefs-builder-agent"
       }
     }

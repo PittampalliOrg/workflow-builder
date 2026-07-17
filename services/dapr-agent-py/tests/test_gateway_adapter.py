@@ -7,6 +7,8 @@ import os
 import sys
 from urllib.error import HTTPError
 
+from pydantic import BaseModel
+
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
     sys.path.insert(0, root)
@@ -51,6 +53,243 @@ def test_glm_52_model_requires_zai_feature_flag(monkeypatch) -> None:
     monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ZAI", "true")
     assert adapter._provider_for_component("llm-glm-5.2") == "zai"
     assert adapter._model_for_component("llm-glm-5.2") == "glm-5.2"
+
+
+def test_kimi_k3_model_requires_kimi_feature_flag(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "LLM_GATEWAY_OPENAI_BASE_URL",
+        "http://preview-runtime-egress.workflow-builder.svc.cluster.local:7000/v1",
+    )
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ADAPTER_ENABLED", "true")
+    monkeypatch.delenv("DAPR_AGENT_PY_GATEWAY_KIMI", raising=False)
+
+    assert adapter._model_for_component("llm-kimi-k3") is None
+
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_KIMI", "true")
+    assert adapter._provider_for_component("llm-kimi-k3") == "kimi"
+    assert adapter._model_for_component("llm-kimi-k3") == "kimi-k3"
+
+
+def test_kimi_k3_gateway_uses_max_reasoning_and_completion_defaults(monkeypatch) -> None:
+    requests = []
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+    monkeypatch.delenv("KIMI_MAX_COMPLETION_TOKENS", raising=False)
+    monkeypatch.delenv("KIMI_MAX_TOKENS", raising=False)
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "done",
+                    "reasoning_content": "I checked the result.",
+                },
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    result = adapter._call_gateway_chat(
+        "llm-kimi-k3",
+        "kimi-k3",
+        [{"role": "user", "content": "Finish the task."}],
+    )
+
+    body = json.loads(requests[0].data)
+    assert body["model"] == "kimi-k3"
+    assert body["reasoning_effort"] == "max"
+    assert body["max_completion_tokens"] == 131_072
+    assert "max_tokens" not in body
+    assert "thinking" not in body
+    assert result["reasoning_content"] == "I checked the result."
+
+
+def test_kimi_k3_gateway_replays_reasoning_with_tool_history(monkeypatch) -> None:
+    requests = []
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+    tool_calls = [{
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+    }]
+    messages = adapter._normalize_gateway_messages(
+        "kimi-k3",
+        None,
+        [
+            {"role": "user", "content": "Read the file."},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "I should inspect the file.",
+                "tool_calls": tool_calls,
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "contents"},
+        ],
+    )
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "I need another file.",
+                    "tool_calls": tool_calls,
+                },
+                "finish_reason": "tool_calls",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+    result = adapter._call_gateway_chat(
+        "llm-kimi-k3",
+        "kimi-k3",
+        messages,
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    )
+
+    body = json.loads(requests[0].data)
+    assert body["messages"][1]["reasoning_content"] == "I should inspect the file."
+    assert body["messages"][1]["tool_calls"] == tool_calls
+    assert body["tools"][0]["function"]["strict"] is False
+    assert result["reasoning_content"] == "I need another file."
+    assert result["tool_calls"] == tool_calls
+    stored = adapter._build_gateway_chat_response("kimi-k3", result).get_message().model_dump()
+    assert stored["reasoning_content"] == "I need another file."
+    assert stored["tool_calls"] == tool_calls
+
+
+def test_kimi_k3_gateway_uses_strict_pydantic_json_schema(monkeypatch) -> None:
+    class Summary(BaseModel):
+        summary: str
+
+    requests = []
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {"role": "assistant", "content": '{"summary":"ok"}'},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+    adapter._call_gateway_chat(
+        "llm-kimi-k3",
+        "kimi-k3",
+        [{"role": "user", "content": "Return JSON."}],
+        response_format=Summary,
+    )
+
+    response_format = json.loads(requests[0].data)["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "Summary"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"]["additionalProperties"] is False
+
+
+def test_kimi_k3_gateway_uses_raw_native_json_schema(monkeypatch) -> None:
+    requests = []
+    schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {"role": "assistant", "content": '{"ok":true}'},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+    adapter._call_gateway_chat(
+        "llm-kimi-k3",
+        "kimi-k3",
+        [{"role": "user", "content": "Decide."}],
+        native_json_schema=schema,
+    )
+
+    body = json.loads(requests[0].data)
+    assert "json" in body["messages"][0]["content"].lower()
+    response_format = body["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "structured_output"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"]["required"] == ["ok"]
+
+
+def test_gateway_patch_threads_kimi_raw_schema_and_reasoning_response(monkeypatch) -> None:
+    from dapr_agents.llm.dapr import DaprChatClient
+
+    schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    captured = {}
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ADAPTER_ENABLED", "true")
+    monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_KIMI", "true")
+
+    def call_gateway(component, gateway_model, messages, **kwargs):
+        captured.update({
+            "component": component,
+            "gateway_model": gateway_model,
+            "messages": messages,
+            **kwargs,
+        })
+        return {
+            "content": '{"ok":true}',
+            "reasoning_content": "The result satisfies the schema.",
+            "tool_calls": [],
+            "metadata": {"model": "kimi-k3"},
+        }
+
+    monkeypatch.setattr(adapter, "_call_gateway_chat", call_gateway)
+    original_generate = DaprChatClient.generate
+    had_patch_marker = hasattr(DaprChatClient, "_gateway_patched")
+    original_patch_marker = getattr(DaprChatClient, "_gateway_patched", None)
+    if had_patch_marker:
+        delattr(DaprChatClient, "_gateway_patched")
+    try:
+        client = DaprChatClient(component_name="llm-kimi-k3")
+        client._llm_component = "llm-kimi-k3"
+        client._response_json_schema = schema
+        adapter.patch_for_gateway(client)
+        response = client.generate([{"role": "user", "content": "Decide."}])
+    finally:
+        DaprChatClient.generate = original_generate
+        if had_patch_marker:
+            DaprChatClient._gateway_patched = original_patch_marker
+        elif hasattr(DaprChatClient, "_gateway_patched"):
+            delattr(DaprChatClient, "_gateway_patched")
+
+    assert captured["native_json_schema"] == schema
+    assert captured["gateway_model"] == "kimi-k3"
+    stored = response.get_message().model_dump()
+    assert stored["content"] == '{"ok":true}'
+    assert stored["reasoning_content"] == "The result satisfies the schema."
 
 
 def test_glm_52_gateway_disables_thinking_for_tool_calls(monkeypatch) -> None:

@@ -54,7 +54,7 @@
 </script>
 
 {#if store.isDynamicScript}
-	<!-- Dynamic-script workflows are authored by a real GLM-5.2 session using
+	<!-- Dynamic-script workflows are authored by a real Kimi K3 session using
 	     the workflow tools (not the SW-1.0 spec assistant). -->
 	<DynamicScriptAuthorPanel />
 {:else}

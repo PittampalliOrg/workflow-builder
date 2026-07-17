@@ -233,6 +233,13 @@ from src.dependency_guard import assert_dapr_agents_version
 
 assert_dapr_agents_version()
 
+from src.kimi_adapter import (
+    coerce_kimi_reasoning_message,
+    install_kimi_reasoning_state_schema,
+)
+
+install_kimi_reasoning_state_schema()
+
 from dapr_agents.agents.configs import (
     AgentExecutionConfig,
     AgentPubSubConfig,
@@ -916,7 +923,8 @@ AGENT_BROADCAST_TOPIC = os.environ.get(
 )
 
 state_config = AgentStateConfig(
-    store=StateStoreService(store_name=AGENT_STATE_STORE)
+    store=StateStoreService(store_name=AGENT_STATE_STORE),
+    message_coercer=coerce_kimi_reasoning_message,
 )
 
 pubsub_config = AgentPubSubConfig(

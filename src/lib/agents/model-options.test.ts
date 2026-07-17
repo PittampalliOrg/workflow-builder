@@ -18,8 +18,6 @@ describe("agent model options", () => {
       "nvidia/meta/llama-3.1-8b-instruct",
       "nvidia/mistralai/mistral-medium-3.5-128b",
       "nvidia/mistralai/devstral-2-123b-instruct-2512",
-      "nvidia/moonshotai/kimi-k2-thinking",
-      "nvidia/moonshotai/kimi-k2-instruct-0905",
       "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
       "nvidia/z-ai/glm4.7",
       "foundry/DeepSeek-V4-Flash",
@@ -30,8 +28,7 @@ describe("agent model options", () => {
       "zai/glm-5.1",
       "zai/glm-5v-turbo",
       "alibaba/qwen3-coder-plus",
-      "kimi/kimi-k2.6",
-      "kimi/kimi-k2.5",
+      "kimi/kimi-k3",
       "together/zai-org/GLM-5.1",
       "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
       "together/deepseek-ai/DeepSeek-V4-Pro",
@@ -68,9 +65,6 @@ describe("agent model options", () => {
     expect(
       canonicalAgentModelSpec("mistralai/devstral-2-123b-instruct-2512"),
     ).toBe("nvidia/mistralai/devstral-2-123b-instruct-2512");
-    expect(canonicalAgentModelSpec("kimi-k2-thinking")).toBe(
-      "nvidia/moonshotai/kimi-k2-thinking",
-    );
     expect(canonicalAgentModelSpec("qwen3-coder-480b-a35b-instruct")).toBe(
       "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
     );
@@ -88,10 +82,8 @@ describe("agent model options", () => {
     expect(canonicalAgentModelSpec("qwen3-coder-plus")).toBe(
       "alibaba/qwen3-coder-plus",
     );
-    expect(canonicalAgentModelSpec("kimi-k2.6")).toBe("kimi/kimi-k2.6");
-    expect(canonicalAgentModelSpec("moonshot/kimi-k2.5")).toBe(
-      "kimi/kimi-k2.5",
-    );
+    expect(canonicalAgentModelSpec("kimi-k3")).toBe("kimi/kimi-k3");
+    expect(canonicalAgentModelSpec("moonshot/kimi-k3")).toBe("kimi/kimi-k3");
     expect(canonicalAgentModelSpec("GLM-5.1")).toBe("together/zai-org/GLM-5.1");
     expect(
       canonicalAgentModelSpec("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
@@ -116,7 +108,8 @@ describe("agent model options", () => {
     expect(isSupportedAgentModelSpec("ollama/llama3.2")).toBe(false);
     expect(isSupportedAgentModelSpec("mistral/open-mistral-7b")).toBe(false);
     expect(isSupportedAgentModelSpec("foundry/Kimi-K2.6")).toBe(false);
-    expect(isSupportedAgentModelSpec("kimi-k2.6")).toBe(true);
+    expect(isSupportedAgentModelSpec("kimi-k2.6")).toBe(false);
+    expect(isSupportedAgentModelSpec("kimi-k3")).toBe(true);
     expect(isSupportedAgentModelSpec("qwen3-coder-plus")).toBe(true);
   });
 
@@ -124,10 +117,14 @@ describe("agent model options", () => {
     expect(
       agentModelOptionFor("alibaba/qwen3-coder-plus")?.sweBenchCapable,
     ).not.toBe(false);
-    expect(agentModelOptionFor("kimi/kimi-k2.6")?.sweBenchCapable).not.toBe(
-      false,
-    );
-    expect(agentModelOptionFor("kimi-k2.5")?.sweBenchCapable).not.toBe(false);
+    expect(agentModelOptionFor("kimi/kimi-k3")?.sweBenchCapable).not.toBe(false);
+  });
+
+  it("exposes Kimi K3 context and reasoning defaults", () => {
+    expect(agentModelOptionFor("kimi/kimi-k3")).toMatchObject({
+      contextWindowTokens: 1_048_576,
+      reasoningEffort: "max",
+    });
   });
 
   it("formats known aliases with their canonical label", () => {
@@ -139,7 +136,6 @@ describe("agent model options", () => {
     expect(agentModelLabel("mistral-medium-3.5-128b")).toBe(
       "NVIDIA Mistral Medium 3.5",
     );
-    expect(agentModelLabel("kimi-k2-thinking")).toBe("NVIDIA Kimi K2 Thinking");
     expect(agentModelLabel("DeepSeek-V4-Flash")).toBe(
       "Foundry DeepSeek V4 Flash",
     );
@@ -149,7 +145,7 @@ describe("agent model options", () => {
     expect(agentModelLabel("qwen3-coder-plus")).toBe(
       "Alibaba Qwen3-Coder Plus",
     );
-    expect(agentModelLabel("kimi-k2.6")).toBe("Kimi K2.6");
+    expect(agentModelLabel("kimi-k3")).toBe("Kimi K3");
     expect(agentModelLabel("GLM-5.1")).toBe("Together GLM-5.1");
     expect(agentModelLabel("DeepSeek-V4-Pro")).toBe("Together DeepSeek V4 Pro");
     expect(agentModelLabel("google/gemini-3-pro-preview")).toBe(

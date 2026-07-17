@@ -5,7 +5,7 @@ import { getApplicationAdapters } from '$lib/server/application';
 // ---------------------------------------------------------------------------
 // POST /api/workflows/executions/[executionId]/analyst-session
 //
-// Start an interactive GLM-5.2 TRACE-ANALYST session bound to one execution.
+// Start an interactive Kimi K3 TRACE-ANALYST session bound to one execution.
 // The agent investigates via the trace_* MCP tools (digest → targeted span/
 // LLM-turn/log reads) instead of receiving a trace dump, and cites evidence
 // with [call:<callId>] / [session:<sessionId>] / [span:<spanId>] tokens the
@@ -48,8 +48,10 @@ function analystSystemPrompt(executionId: string, workflowName: string | null): 
 
 function analystConfig(executionId: string, workflowName: string | null) {
 	return {
-		model: 'zai/glm-5.2',
-		modelSpec: 'zai/glm-5.2',
+		model: 'kimi/kimi-k3',
+		modelSpec: 'kimi/kimi-k3',
+		reasoningEffort: 'max',
+		contextWindowTokens: 1_048_576,
 		runtime: 'dapr-agent-py',
 		maxTurns: 40,
 		timeoutMinutes: 60,
@@ -100,7 +102,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 			userId,
 			currentProjectId: projectId,
 			body: {
-				name: 'Trace Analyst (GLM 5.2)',
+				name: 'Trace Analyst (Kimi K3)',
 				slug: ANALYST_SLUG,
 				description:
 					'Explains workflow runs from their OpenTelemetry traces via the trace_* MCP tools.',

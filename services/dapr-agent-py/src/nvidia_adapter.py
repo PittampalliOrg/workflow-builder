@@ -28,8 +28,6 @@ COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-nvidia-mistral-medium-35-128b": "mistralai/mistral-medium-3.5-128b",
     "llm-nvidia-qwen3-coder-480b": "qwen/qwen3-coder-480b-a35b-instruct",
     "llm-nvidia-devstral-2-123b": "mistralai/devstral-2-123b-instruct-2512",
-    "llm-nvidia-kimi-k2-thinking": "moonshotai/kimi-k2-thinking",
-    "llm-nvidia-kimi-k2-0905": "moonshotai/kimi-k2-instruct-0905",
     "llm-nvidia-glm47": "z-ai/glm4.7",
 }
 

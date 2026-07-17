@@ -251,7 +251,7 @@ describe("preview-ui-development-gan port", () => {
 		expect(res.tasks[0]?.kind).toBe("action");
 	});
 
-	it("uses the GLM JuiceFS agent for generate after deterministic planning and live-sync metadata resolves", async () => {
+		it("uses the Kimi K3 JuiceFS agent for generate after deterministic planning and live-sync metadata resolves", async () => {
 		const first = await evaluateScript({
 			script: previewUiDevelopmentGan,
 			args: { intent: "improve dashboard status visibility" },
@@ -289,7 +289,7 @@ describe("preview-ui-development-gan port", () => {
 		const generate = second.tasks[0];
 		expect(generate.kind).toBe("agent");
 		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
-		expect(generate.opts.model).toBe("zai/glm-5.2");
+			expect(generate.opts.model).toBe("kimi/kimi-k3");
 		expect(generate.opts.isolation).toBe("shared");
 		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
 		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");

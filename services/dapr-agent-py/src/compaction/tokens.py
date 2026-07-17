@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,16 @@ logger = logging.getLogger(__name__)
 # Claude Code parity constants (autoCompact.ts:30-65)
 MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 AUTOCOMPACT_BUFFER_TOKENS = 13_000
+KIMI_K3_DEFAULT_CONTEXT_WINDOW = 1_048_576
+KIMI_K3_CONTEXT_KEYS = {"kimi-k3", "llm-kimi-k3"}
+
+
+def _kimi_k3_context_window() -> int:
+    try:
+        value = int(os.environ.get("KIMI_CONTEXT_WINDOW", ""))
+    except (TypeError, ValueError):
+        return KIMI_K3_DEFAULT_CONTEXT_WINDOW
+    return value if value > 0 else KIMI_K3_DEFAULT_CONTEXT_WINDOW
 
 # Model -> context window (tokens). Keep in sync with
 # anthropic_adapter.COMPONENT_MODEL_MAP.
@@ -45,10 +56,6 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "llm-nvidia-qwen3-coder-480b": 262_144,
     "mistralai/devstral-2-123b-instruct-2512": 262_144,
     "llm-nvidia-devstral-2-123b": 262_144,
-    "moonshotai/kimi-k2-thinking": 256_000,
-    "llm-nvidia-kimi-k2-thinking": 256_000,
-    "moonshotai/kimi-k2-instruct-0905": 256_000,
-    "llm-nvidia-kimi-k2-0905": 256_000,
     "z-ai/glm4.7": 131_072,
     "llm-nvidia-glm47": 131_072,
     "zai-org/GLM-5.1": 128_000,
@@ -63,10 +70,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "llm-deepseek-v4-flash": 1_000_000,
     "qwen3-coder-plus": 1_000_000,
     "llm-alibaba-qwen3-coder-plus": 1_000_000,
-    "kimi-k2.6": 256_000,
-    "llm-kimi-k26": 256_000,
-    "kimi-k2.5": 256_000,
-    "llm-kimi-k25": 256_000,
+    "kimi-k3": KIMI_K3_DEFAULT_CONTEXT_WINDOW,
+    "llm-kimi-k3": KIMI_K3_DEFAULT_CONTEXT_WINDOW,
 }
 DEFAULT_WINDOW = 200_000
 
@@ -76,10 +81,14 @@ def get_context_window(model: str | None) -> int:
     if not model:
         return DEFAULT_WINDOW
     # exact match first, then substring (model ids sometimes include date suffix)
+    if model in KIMI_K3_CONTEXT_KEYS:
+        return _kimi_k3_context_window()
     if model in CONTEXT_WINDOWS:
         return CONTEXT_WINDOWS[model]
     for key, window in CONTEXT_WINDOWS.items():
         if key in model or model in key:
+            if key in KIMI_K3_CONTEXT_KEYS:
+                return _kimi_k3_context_window()
             return window
     return DEFAULT_WINDOW
 
