@@ -336,13 +336,11 @@ describe("preview-ui-development-gan port", () => {
 			slug: "preview-hmr-gate",
 			version: "1.0.0",
 		});
-		expect((gate.args as Record<string, unknown>).input).toMatchObject({
-			config: {
-				exportUrl: "http://10.0.0.8:8001/__export",
-				syncCapability: "capability",
-				previewUrl: "http://10.0.0.8:3000",
-				routes: ["/dashboard"],
-			},
+		expect((gate.args as Record<string, unknown>).config).toMatchObject({
+			exportUrl: "http://10.0.0.8:8001/__export",
+			syncCapability: "capability",
+			previewUrl: "http://10.0.0.8:3000",
+			routes: ["/dashboard"],
 		});
 	});
 });
