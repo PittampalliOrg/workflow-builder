@@ -95,6 +95,19 @@ describe("preview source promotion physical route", () => {
     );
   });
 
+  it("forwards the server-derived host execution id for parent run artifacts", async () => {
+    const response = (await POST(
+      event({ hostExecutionId: "parent-exec-1" }) as never,
+    )) as Response;
+    expect(response.status).toBe(200);
+    expect(mocks.promote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionId: "execution-1",
+        hostExecutionId: "parent-exec-1",
+      }),
+    );
+  });
+
   it("rejects caller repository authority before broker execution", async () => {
     const response = (await POST(
       event({ repository: "attacker/repo", base: "attacker" }) as never,
