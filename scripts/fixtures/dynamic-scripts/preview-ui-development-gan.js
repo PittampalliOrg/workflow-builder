@@ -231,27 +231,7 @@ const fallbackContract = {
   diffScope: "workflow-builder dashboard source and narrowly necessary supporting application/adapter code",
   hmrVerification: "sync via the dev-sync sidecar, export the synced source generation, then smoke the dashboard route",
 };
-await action(
-  "workspace/command",
-  {
-    cliWorkspace: true,
-    helperPod: true,
-    helperTimeoutMinutes: 10,
-    workspaceRef: workspace,
-    cwd: "/sandbox/work",
-    timeoutMs: 120000,
-    command: `set -eu
-mkdir -p /sandbox/work
-if [ ! -s /sandbox/work/dashboard-gan-contract.json ]; then
-  cat > /sandbox/work/dashboard-gan-contract.json <<'JSON'
-${JSON.stringify(fallbackContract, null, 2)}
-JSON
-fi
-jq -e 'type == "object" and (.acceptanceCriteria | type == "array") and (.acceptanceCriteria | length > 0)' /sandbox/work/dashboard-gan-contract.json >/dev/null
-cat /sandbox/work/dashboard-gan-contract.json`,
-  },
-  { label: "ensure dashboard contract" },
-);
+const fallbackContractText = JSON.stringify(fallbackContract, null, 2);
 
 phase("Generate");
 const VERDICT_SCHEMA = {
@@ -285,6 +265,8 @@ Hard rules:
 - Use real existing data or explicit graceful empty states. Do not invent fake metrics.
 - Do not commit or push. Source capture and PR creation are handled by dev/preview-snapshot and dev/preview-promote after verification.
 - Never touch auth/sign-in code.
+- If /sandbox/work/dashboard-gan-contract.json is absent or the planning step did not produce a usable contract, use this fallback contract:
+${fallbackContractText}
 
 Required implementation steps:
 1. Pull source:
@@ -306,50 +288,119 @@ ${feedback}`,
 
   phase("Verify");
   const gate = await action(
-    "workspace/command",
+    "code/run",
     {
-      cliWorkspace: true,
-      helperPod: true,
-      helperTimeoutMinutes: 60,
-      workspaceRef: workspace,
-      cwd: "/sandbox/work",
-      timeoutMs: 600000,
-      allowFailure: true,
-      command: `set -eu
-SCRATCH=/tmp/preview-ui-gan-gate
-rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/repo"
-curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"
-test -s "$SCRATCH/source.tgz"
-tar -tzf "$SCRATCH/source.tgz" | grep -E '(^|/)src/routes/dashboard/(\\+page\\.svelte|\\+page\\.server\\.ts)$'
-tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo"
-test -s "$SCRATCH/repo/src/routes/dashboard/+page.svelte"
-GEN="$(sed -n 's/^x-sync-generation:[[:space:]]*//p' "$SCRATCH/export.headers" | tr -d '\\r' | tail -1)"
-test -n "$GEN"
-for i in $(seq 1 45); do
-  code=$(curl -k -sS -o /tmp/preview-ui-health -w '%{http_code}' "${previewUrl}/api/health" || true)
-  [ "$code" = 200 ] && break
-  sleep 2
-done
-test "$code" = 200
-for route in ${routes.map((route) => `'${route.replace(/'/g, "'\\''")}'`).join(" ")}; do
-  code=$(curl -k -sS -L -o /tmp/preview-ui-route -w '%{http_code}' "${previewUrl}$route" || true)
-  test "$code" != 500
-  ! grep -E 'ReferenceError|each_key_duplicate' /tmp/preview-ui-route
-done
-printf '{"accepted":true,"summary":"exported dashboard source, observed live-sync generation, and checked preview routes"}\\n' > /sandbox/work/preview-ui-gan-gate-${iterations + 1}.json
-cat /sandbox/work/preview-ui-gan-gate-${iterations + 1}.json`,
+      language: "python",
+      entrypoint: "main",
+      timeout_ms: 300000,
+      args: [
+        {
+          exportUrl,
+          syncCapability,
+          previewUrl,
+          routes,
+        },
+      ],
+      source: `
+import io
+import tarfile
+import time
+import urllib.error
+import urllib.request
+
+
+def _request(url, *, token=None, timeout=30):
+    headers = {}
+    if token:
+        headers["x-sync-token"] = token
+    req = urllib.request.Request(url, headers=headers)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _http_code(url, timeout=20):
+    try:
+        with _request(url, timeout=timeout) as res:
+            body = res.read(512_000).decode("utf-8", "replace")
+            return res.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read(512_000).decode("utf-8", "replace")
+        return exc.code, body
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def main(config):
+    export_url = str(config.get("exportUrl") or "")
+    token = str(config.get("syncCapability") or "")
+    preview_url = str(config.get("previewUrl") or "").rstrip("/")
+    routes = config.get("routes") if isinstance(config.get("routes"), list) else ["/dashboard"]
+    if not export_url or not token or not preview_url:
+        raise RuntimeError("gate configuration is incomplete")
+
+    with _request(export_url, token=token, timeout=45) as res:
+        archive = res.read()
+        generation = res.headers.get("x-sync-generation") or ""
+    if not archive:
+        raise RuntimeError("sidecar export returned no source archive")
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        names = set(tar.getnames())
+        if "src/routes/dashboard/+page.svelte" not in names:
+            raise RuntimeError("dashboard page source is missing from sidecar export")
+        dashboard = tar.extractfile("src/routes/dashboard/+page.svelte").read().decode("utf-8", "replace")
+    if not dashboard.strip():
+        raise RuntimeError("dashboard page source is empty")
+    if not generation:
+        raise RuntimeError("sidecar export did not report a live-sync generation")
+
+    health_status = 0
+    health_body = ""
+    for _ in range(45):
+        health_status, health_body = _http_code(f"{preview_url}/api/health", timeout=10)
+        if health_status == 200:
+            break
+        time.sleep(2)
+    if health_status != 200:
+        raise RuntimeError(f"preview health did not become ready: {health_status} {health_body[:200]}")
+
+    route_results = []
+    for route in routes:
+        path = str(route or "/")
+        status, body = _http_code(f"{preview_url}{path}", timeout=20)
+        route_results.append({"route": path, "status": status})
+        if status == 500:
+            raise RuntimeError(f"{path} returned HTTP 500")
+        if "ReferenceError" in body or "each_key_duplicate" in body:
+            raise RuntimeError(f"{path} contains a client/runtime error marker")
+
+    return {
+        "accepted": True,
+        "summary": "exported dashboard source, observed live-sync generation, and checked preview routes",
+        "generation": generation,
+        "routes": route_results,
+    }
+`,
     },
     { label: `deterministic gate #${iterations + 1}`, allowFailure: true },
   );
   const gateBase = dataOf(gate);
-  const gateResult = gateBase.result ?? gateBase;
-  const gateOk = (gateResult.exitCode ?? gateBase.exitCode ?? 1) === 0;
+  const gateResult = gateBase.data?.result ?? gateBase.result ?? gateBase.data ?? gateBase;
+  const gateOk =
+    gateBase.success === true &&
+    (gateResult.accepted === true || gateResult.ok === true);
   if (!gateOk) {
     lastVerdict = {
       accepted: false,
       summary: "deterministic gate failed",
-      failing: [String(gateResult.stderr ?? gateResult.stdout ?? "gate failed").slice(0, 1000)],
+      failing: [
+        String(
+          gateBase.error ??
+            gateResult.error ??
+            gateResult.stderr ??
+            gateResult.stdout ??
+            "gate failed",
+        ).slice(0, 1000),
+      ],
     };
     iterations += 1;
     continue;

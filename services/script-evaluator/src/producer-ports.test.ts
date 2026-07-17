@@ -306,15 +306,17 @@ describe("preview-ui-development-gan port", () => {
 			features: { actions: true },
 		});
 		expect(third.status).toBe("need");
-		const ensureContract = third.tasks[0];
-		expect(ensureContract.kind).toBe("action");
-		expect(ensureContract.actionSlug).toBe("workspace/command");
-		expect(ensureContract.opts.label).toBe("ensure dashboard contract");
-		results[ensureContract.callId] = {
+		const generate = third.tasks[0];
+		expect(generate.kind).toBe("agent");
+		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
+		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
+		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");
+		expect(generate.prompt).toContain("fallback contract");
+		results[generate.callId] = {
 			status: "done",
-			value: { exitCode: 0, stdout: "{}" },
+			value: "implemented dashboard enhancement",
 		};
-		known.push(ensureContract.callId);
+		known.push(generate.callId);
 
 		const fourth = await evaluateScript({
 			script: previewUiDevelopmentGan,
@@ -326,10 +328,10 @@ describe("preview-ui-development-gan port", () => {
 			features: { actions: true },
 		});
 		expect(fourth.status).toBe("need");
-		const generate = fourth.tasks[0];
-		expect(generate.kind).toBe("agent");
-		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
-		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
-		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");
+		const gate = fourth.tasks[0];
+		expect(gate.kind).toBe("action");
+		expect(gate.actionSlug).toBe("code/run");
+		expect(gate.opts.label).toBe("deterministic gate #1");
+		expect((gate.args as Record<string, unknown>).language).toBe("python");
 	});
 });
