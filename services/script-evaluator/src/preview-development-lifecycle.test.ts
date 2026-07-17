@@ -45,23 +45,25 @@ function terminalOutput(overrides: Record<string, unknown> = {}) {
 }
 
 async function drive(
-  options: {
-    teardownAlreadyComplete?: boolean;
-    terminalOutput?: Record<string, unknown>;
-    ttlHours?: number;
-    runningPolls?: number;
-    transientStatusFailures?: number;
-    promotionVerification?: Record<string, unknown>;
-  } = {},
+	options: {
+		teardownAlreadyComplete?: boolean;
+		terminalOutput?: Record<string, unknown>;
+		ttlHours?: number;
+		runningPolls?: number;
+		transientStartFailures?: number;
+		transientStatusFailures?: number;
+		promotionVerification?: Record<string, unknown>;
+	} = {},
 ) {
   const completedResults: Record<
     string,
     | { status: "done"; value: unknown }
     | { status: "error"; value: unknown; errorCode?: string }
   > = {};
-  const knownCallIds: string[] = [];
-  const tasks: Array<Record<string, unknown>> = [];
-  let statusFailures = 0;
+	const knownCallIds: string[] = [];
+	const tasks: Array<Record<string, unknown>> = [];
+	let startFailures = 0;
+	let statusFailures = 0;
   let result = await evaluateScript({
     script,
     args: {
@@ -97,9 +99,18 @@ async function drive(
           case "preview/environment-status":
             value = { ok: true, phase: "Ready", ready: true, target };
             break;
-          case "preview/workflow-start":
-            value = {
-              ok: true,
+				case "preview/workflow-start":
+					if (startFailures < (options.transientStartFailures ?? 0)) {
+						startFailures += 1;
+						status = "error";
+						errorCode = "action_error";
+						value = {
+							message: "preview development endpoint returned HTTP 502",
+						};
+						break;
+					}
+					value = {
+						ok: true,
               executionId: "child-1",
               workflowSpecDigest: `sha256:${"d".repeat(64)}`,
               status: "running",
@@ -264,25 +275,38 @@ describe("host preview development lifecycle", () => {
     });
   });
 
-  it("retries transient workflow status conflicts before teardown", async () => {
-    const { result, tasks } = await drive({
-      transientStatusFailures: 3,
-      runningPolls: 2,
-    });
-    expect(result.status, result.error?.message).toBe("done");
-    expect(
-      tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
-    ).toHaveLength(6);
+	it("retries transient workflow status conflicts before teardown", async () => {
+		const { result, tasks } = await drive({
+			transientStatusFailures: 3,
+			runningPolls: 2,
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		expect(
+			tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
+		).toHaveLength(4);
     expect(
       tasks.filter(
         (task) => task.actionSlug === "preview/workflow-verify-promotion",
-      ),
-    ).toHaveLength(1);
-  });
+			),
+		).toHaveLength(1);
+	});
 
-  it("accepts an already-absent environment without polling a null teardown ticket", async () => {
-    const { result, tasks } = await drive({
-      teardownAlreadyComplete: true,
+	it("retries transient workflow start failures before observing the child", async () => {
+		const { result, tasks } = await drive({
+			transientStartFailures: 3,
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		expect(
+			tasks.filter((task) => task.actionSlug === "preview/workflow-start"),
+		).toHaveLength(4);
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/workflow-status"),
+		).toBe(true);
+	});
+
+	it("accepts an already-absent environment without polling a null teardown ticket", async () => {
+		const { result, tasks } = await drive({
+			teardownAlreadyComplete: true,
     });
     expect(result.status).toBe("done");
     expect(

@@ -3,7 +3,7 @@
 The controller intentionally has a narrow authority surface:
 
 * it watches PreviewEnvironment custom resources in ``preview-system`` only;
-* it owns one hub namespace and one Argo CD Application per request;
+* it owns one hub namespace, one AppProject, and one Argo CD Application per request;
 * certificate and Secret mechanics live behind an injected registration adapter; and
 * it refuses to adopt resources that do not carry its label and the originating
   PreviewEnvironment UID.
@@ -86,6 +86,7 @@ PHYSICAL_CLEANUP_CHECKS = frozenset(
 ARGO_GROUP = "argoproj.io"
 ARGO_VERSION = "v1alpha1"
 ARGO_APPLICATIONS_PLURAL = "applications"
+ARGO_PROJECTS_PLURAL = "appprojects"
 ARGO_RESOURCE_FINALIZER = "resources-finalizer.argocd.argoproj.io"
 
 STACKS_REPOSITORY = "https://github.com/PittampalliOrg/stacks.git"
@@ -1348,6 +1349,30 @@ def build_namespace_manifest(
     }
 
 
+def build_app_project_manifest(
+    environment: ValidatedPreviewEnvironment,
+) -> dict[str, Any]:
+    """Build the hub-side Argo CD project for the preview Application namespace."""
+
+    return {
+        "apiVersion": f"{ARGO_GROUP}/{ARGO_VERSION}",
+        "kind": "AppProject",
+        "metadata": {
+            "name": "default",
+            "namespace": environment.namespace,
+            "labels": _resource_labels(environment),
+            "annotations": _resource_annotations(environment),
+        },
+        "spec": {
+            "description": f"Default project for preview environment {environment.id}",
+            "sourceRepos": ["*"],
+            "destinations": [{"server": "*", "namespace": "*"}],
+            "clusterResourceWhitelist": [{"group": "*", "kind": "*"}],
+            "namespaceResourceWhitelist": [{"group": "*", "kind": "*"}],
+        },
+    }
+
+
 def _render_kustomize_patches(
     environment: ValidatedPreviewEnvironment,
 ) -> list[dict[str, Any]]:
@@ -1839,6 +1864,22 @@ class PreviewEnvironmentController:
                 return None
             raise
 
+    def _get_app_project(
+        self, namespace: str, name: str = "default"
+    ) -> dict[str, Any] | None:
+        try:
+            return self.custom_api.get_namespaced_custom_object(
+                group=ARGO_GROUP,
+                version=ARGO_VERSION,
+                namespace=namespace,
+                plural=ARGO_PROJECTS_PLURAL,
+                name=name,
+            )
+        except ApiException as exc:
+            if _api_status(exc) == 404:
+                return None
+            raise
+
     def _get_namespace(self, name: str) -> Any | None:
         try:
             return self.core_api.read_namespace(name=name)
@@ -1992,6 +2033,48 @@ class PreviewEnvironmentController:
             return self.core_api.patch_namespace(
                 name=environment.namespace,
                 body={"metadata": desired["metadata"]},
+            )
+        return existing
+
+    def _upsert_app_project(
+        self, environment: ValidatedPreviewEnvironment
+    ) -> dict[str, Any]:
+        desired = build_app_project_manifest(environment)
+        existing = self._get_app_project(environment.namespace)
+        if existing is None:
+            try:
+                return self.custom_api.create_namespaced_custom_object(
+                    group=ARGO_GROUP,
+                    version=ARGO_VERSION,
+                    namespace=environment.namespace,
+                    plural=ARGO_PROJECTS_PLURAL,
+                    body=desired,
+                )
+            except ApiException as exc:
+                if _api_status(exc) != 409:
+                    raise
+                existing = self._get_app_project(environment.namespace)
+                if existing is None:
+                    raise
+        assert_owned(
+            existing,
+            environment_id=environment.id,
+            environment_uid=environment.uid,
+        )
+        if (
+            not _metadata_subset_matches(existing, desired)
+            or existing.get("spec") != desired["spec"]
+        ):
+            return self.custom_api.patch_namespaced_custom_object(
+                group=ARGO_GROUP,
+                version=ARGO_VERSION,
+                namespace=environment.namespace,
+                plural=ARGO_PROJECTS_PLURAL,
+                name="default",
+                body={
+                    "metadata": desired["metadata"],
+                    "spec": desired["spec"],
+                },
             )
         return existing
 
@@ -2400,6 +2483,7 @@ class PreviewEnvironmentController:
 
         try:
             self._upsert_namespace(environment)
+            self._upsert_app_project(environment)
             application = self._upsert_application(environment)
         except OwnershipConflict as exc:
             self._patch_status(

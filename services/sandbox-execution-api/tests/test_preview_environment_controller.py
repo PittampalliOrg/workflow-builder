@@ -26,6 +26,7 @@ from src.preview_environment_controller import (
     API_PLURAL,
     API_VERSION,
     ARGO_APPLICATIONS_PLURAL,
+    ARGO_PROJECTS_PLURAL,
     CONTROL_NAMESPACE,
     CONTRACT_GENERATION_ANNOTATION,
     DELETION_ACK_STATUS_FIELD,
@@ -48,6 +49,7 @@ from src.preview_environment_controller import (
     SpecValidationError,
     application_is_ready,
     assert_owned,
+    build_app_project_manifest,
     build_application_manifest,
     build_deletion_intent,
     build_namespace_manifest,
@@ -603,6 +605,7 @@ def test_validation_rejects_mutable_or_unselected_images(
 def test_manifests_are_constant_derived_owned_and_digest_pinned() -> None:
     environment = validate_preview_environment(preview_resource())
     namespace = build_namespace_manifest(environment)
+    app_project = build_app_project_manifest(environment)
     application = build_application_manifest(environment)
 
     assert namespace["metadata"]["name"] == "preview-feature-x"
@@ -610,6 +613,16 @@ def test_manifests_are_constant_derived_owned_and_digest_pinned() -> None:
         namespace["metadata"]["labels"].get(key) == value
         for key, value in application["metadata"]["labels"].items()
     )
+    assert app_project["metadata"]["name"] == "default"
+    assert app_project["metadata"]["namespace"] == "preview-feature-x"
+    assert app_project["metadata"]["labels"] == application["metadata"]["labels"]
+    assert app_project["spec"] == {
+        "description": "Default project for preview environment feature-x",
+        "sourceRepos": ["*"],
+        "destinations": [{"server": "*", "namespace": "*"}],
+        "clusterResourceWhitelist": [{"group": "*", "kind": "*"}],
+        "namespaceResourceWhitelist": [{"group": "*", "kind": "*"}],
+    }
     assert {
         key: namespace["metadata"]["labels"][key]
         for key in (
@@ -975,6 +988,7 @@ class FakeCustomApi:
     def __init__(self, resource: dict[str, Any]) -> None:
         self.resource = copy.deepcopy(resource)
         self.application: dict[str, Any] | None = None
+        self.app_project: dict[str, Any] | None = None
         self.calls: list[tuple[str, str, str]] = []
         self.deleted_preview = False
         self.list_namespace: str | None = None
@@ -982,16 +996,29 @@ class FakeCustomApi:
 
     def get_namespaced_custom_object(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("get", kwargs["plural"], kwargs["name"]))
-        if kwargs["plural"] != ARGO_APPLICATIONS_PLURAL or self.application is None:
+        if kwargs["plural"] == ARGO_APPLICATIONS_PLURAL:
+            if self.application is None:
+                raise _not_found()
+            return copy.deepcopy(self.application)
+        if kwargs["plural"] == ARGO_PROJECTS_PLURAL:
+            if self.app_project is None:
+                raise _not_found()
+            return copy.deepcopy(self.app_project)
+        if kwargs["plural"] != API_PLURAL:
             raise _not_found()
-        return copy.deepcopy(self.application)
+        return copy.deepcopy(self.resource)
 
     def create_namespaced_custom_object(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(
             ("create", kwargs["plural"], kwargs["body"]["metadata"]["name"])
         )
-        self.application = copy.deepcopy(kwargs["body"])
-        return copy.deepcopy(self.application)
+        if kwargs["plural"] == ARGO_APPLICATIONS_PLURAL:
+            self.application = copy.deepcopy(kwargs["body"])
+            return copy.deepcopy(self.application)
+        if kwargs["plural"] == ARGO_PROJECTS_PLURAL:
+            self.app_project = copy.deepcopy(kwargs["body"])
+            return copy.deepcopy(self.app_project)
+        raise _not_found()
 
     def patch_namespaced_custom_object(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("patch", kwargs["plural"], kwargs["name"]))
@@ -1001,11 +1028,19 @@ class FakeCustomApi:
                 copy.deepcopy(body["metadata"])
             )
             return copy.deepcopy(self.resource)
-        assert self.application is not None
-        self.application["metadata"].update(copy.deepcopy(body["metadata"]))
-        if "spec" in body:
-            self.application["spec"] = copy.deepcopy(body["spec"])
-        return copy.deepcopy(self.application)
+        if kwargs["plural"] == ARGO_APPLICATIONS_PLURAL:
+            assert self.application is not None
+            self.application["metadata"].update(copy.deepcopy(body["metadata"]))
+            if "spec" in body:
+                self.application["spec"] = copy.deepcopy(body["spec"])
+            return copy.deepcopy(self.application)
+        if kwargs["plural"] == ARGO_PROJECTS_PLURAL:
+            assert self.app_project is not None
+            self.app_project["metadata"].update(copy.deepcopy(body["metadata"]))
+            if "spec" in body:
+                self.app_project["spec"] = copy.deepcopy(body["spec"])
+            return copy.deepcopy(self.app_project)
+        raise _not_found()
 
     def patch_namespaced_custom_object_status(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("status", kwargs["plural"], kwargs["name"]))
@@ -1123,6 +1158,8 @@ def test_reconcile_adds_finalizer_then_creates_resources_and_reports_ready() -> 
 
     controller.reconcile(custom.resource)
     assert core.namespace is not None
+    assert custom.app_project is not None
+    assert custom.app_project["metadata"]["namespace"] == "preview-feature-x"
     assert custom.application is not None
     assert custom.resource["status"]["phase"] == "Provisioning"
     assert (
