@@ -84,9 +84,76 @@ if (
 }
 if (new Set(services).size !== services.length)
   throw new Error("services must be unique");
+// Fail fast BEFORE provisioning anything: the pinned child only plumbs the
+// primary service's sync/export endpoints, so a multi-service run dead-ends
+// after burning the whole agent budget.
+if (services.length > 1) {
+  throw new Error(
+    `multi-service preview development is not yet supported: only 1 service may be requested (got ${services.length})`,
+  );
+}
 if (!Number.isInteger(ttlHours) || ttlHours < 2 || ttlHours > 24) {
   throw new Error("ttlHours must be an integer between 2 and 24");
 }
+
+// Deterministic exponential poll backoff. Delays derive ONLY from the attempt
+// index (no Date.now()/Math.random()) so durable replays schedule identical
+// timers. Each poll costs 2 engine action-calls (action + sleep) against the
+// hard 500-call engine cap, so backoff preserves each loop's TIME budget while
+// cutting the attempt count (flat 241x5s polls cost up to ~1,500 calls).
+const POLL_START_SECONDS = 5;
+const POLL_FACTOR = 1.5;
+const POLL_CAP_SECONDS = 30;
+const PROVISION_BUDGET_SECONDS = 20 * 60;
+const TEARDOWN_BUDGET_SECONDS = 20 * 60;
+// The pinned GAN child's documented worst-case budget: up to 3 agent
+// iterations x 35-minute per-iteration timeout plus ~15 minutes of
+// snapshot/promote overhead. The parent only sends {target, intent, services}
+// (the child's maxIterations/timeoutMinutes inputs are not visible here), so
+// this stays a named constant — keep it in sync with
+// preview-ui-development-gan.js.
+const CHILD_MAX_ITERATIONS = 3;
+const CHILD_ITERATION_TIMEOUT_MINUTES = 35;
+const CHILD_OVERHEAD_MINUTES = 15;
+const CHILD_BUDGET_SECONDS =
+  (CHILD_MAX_ITERATIONS * CHILD_ITERATION_TIMEOUT_MINUTES +
+    CHILD_OVERHEAD_MINUTES) *
+  60;
+// At the 30s cap the ~2h child window alone would cost ~480 action-calls; a
+// 60s cap keeps the whole run inside the engine cap (sleep LENGTH is free,
+// sleep CALLS are not).
+const CHILD_POLL_CAP_SECONDS = 60;
+
+function pollDelaySeconds(attempt, capSeconds) {
+  let delay = POLL_START_SECONDS;
+  for (let i = 0; i < attempt && delay < capSeconds; i += 1) {
+    delay = Math.min(delay * POLL_FACTOR, capSeconds);
+  }
+  return delay;
+}
+
+function attemptsForBudget(budgetSeconds, capSeconds) {
+  let elapsed = 0;
+  let sleeps = 0;
+  while (elapsed < budgetSeconds) {
+    elapsed += pollDelaySeconds(sleeps, capSeconds);
+    sleeps += 1;
+  }
+  return sleeps + 1; // the final poll fires after the last sleep
+}
+
+const PROVISION_WAIT_ATTEMPTS = attemptsForBudget(
+  PROVISION_BUDGET_SECONDS,
+  POLL_CAP_SECONDS,
+);
+const TEARDOWN_WAIT_ATTEMPTS = attemptsForBudget(
+  TEARDOWN_BUDGET_SECONDS,
+  POLL_CAP_SECONDS,
+);
+const CHILD_WAIT_ATTEMPTS = attemptsForBudget(
+  CHILD_BUDGET_SECONDS,
+  CHILD_POLL_CAP_SECONDS,
+);
 function stateOf(value) {
   return String(value?.status ?? value?.phase ?? "")
     .trim()
@@ -160,7 +227,7 @@ async function waitForStatus(
   isDone,
   label,
   attempts,
-  pollSeconds,
+  pollCapSeconds,
   options = {},
 ) {
   let latest = null;
@@ -182,7 +249,8 @@ async function waitForStatus(
         transientFailures < maxTransientFailures
       ) {
         transientFailures += 1;
-        if (attempt + 1 < attempts) await sleep(pollSeconds);
+        if (attempt + 1 < attempts)
+          await sleep(pollDelaySeconds(attempt, pollCapSeconds));
         continue;
       }
       throw error;
@@ -190,7 +258,8 @@ async function waitForStatus(
     const failure = failureOf(latest);
     if (failure) throw new Error(`${slug}: ${failure}`);
     if (isDone(latest)) return latest;
-    if (attempt + 1 < attempts) await sleep(pollSeconds);
+    if (attempt + 1 < attempts)
+      await sleep(pollDelaySeconds(attempt, pollCapSeconds));
   }
   throw new Error(`${slug} timed out after ${attempts} observations`);
 }
@@ -401,8 +470,8 @@ try {
     { target: launch?.target },
     environmentReady,
     "observe preview readiness",
-    241,
-    5,
+    PROVISION_WAIT_ATTEMPTS,
+    POLL_CAP_SECONDS,
   );
 
   phase("Start development");
@@ -421,9 +490,9 @@ try {
     },
     childFinished,
     "observe development outcome",
-    241,
-    5,
-    { maxTransientFailures: 240 },
+    CHILD_WAIT_ATTEMPTS,
+    CHILD_POLL_CAP_SECONDS,
+    { maxTransientFailures: CHILD_WAIT_ATTEMPTS - 1 },
   );
   const childPromotionReceipt = assertChildOutcome("submit_preview_pr", outcome, {
     target: environment?.target ?? launch?.target,
@@ -480,8 +549,8 @@ try {
         },
         teardownFinished,
         "observe preview cleanup",
-        241,
-        5,
+        TEARDOWN_WAIT_ATTEMPTS,
+        POLL_CAP_SECONDS,
       );
     } else {
       throw new Error(

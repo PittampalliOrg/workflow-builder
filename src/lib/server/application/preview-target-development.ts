@@ -313,6 +313,14 @@ function normalizeWorkflowInput(
   ) {
     return invalid("preview development workflow input is invalid");
   }
+  // The pinned child only plumbs the PRIMARY service's sync/export endpoints,
+  // so a multi-service request would deterministically dead-end after burning
+  // the full agent iteration budget. Fail fast before dispatching anything.
+  if (input.services.length > 1) {
+    return invalid(
+      `multi-service preview development is not yet supported: only 1 service may be requested (got ${input.services.length})`,
+    );
+  }
   if (
     input.keepPreview !== undefined &&
     typeof input.keepPreview !== "boolean" &&
