@@ -22,6 +22,7 @@
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		Radio,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -80,6 +81,22 @@
 
 	let displayName = $derived(
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
+	);
+
+	// Preview Development Status — reuses existing dashboard data where present
+	// and renders explicit empty states otherwise. No new API plumbing is added:
+	// preview-environment, HMR/live-sync, and PR-capture signals are not exposed
+	// by the current dashboard/runs APIs, so we surface those as graceful empty
+	// states rather than fabricated metrics.
+	let environmentCount = $derived(data?.stats.totalEnvironments ?? 0);
+	let activeSessionCount = $derived(data?.activeSessions.length ?? 0);
+	let runningRunCount = $derived(
+		recentRuns.filter(
+			(r) => r.status === 'running' || r.status === 'pending'
+		).length
+	);
+	let previewDevActivity = $derived(
+		environmentCount + activeSessionCount + runningRunCount
 	);
 
 	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
@@ -218,6 +235,102 @@
 				</CardContent>
 			</Card>
 		</div>
+
+		<!-- Preview Development Status — helps an operator understand active
+		     preview environments, live-sync/HMR state, recent workflow/session
+		     activity, and draft PR capture status. Reuses existing dashboard
+		     data (environments, active sessions, recent runs) and renders
+		     explicit empty states where dedicated signals are not yet wired. -->
+		<Card>
+			<CardHeader class="pb-3">
+				<CardTitle class="text-base flex items-center gap-2">
+					<Radio class="size-4" /> Preview Development Status
+				</CardTitle>
+				<CardDescription class="text-xs">
+					Snapshot of preview environments, live-sync/HMR, recent activity, and
+					draft PR capture for this workspace.
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+					<!-- Active preview environments -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Preview environments
+						</div>
+						<div class="text-2xl font-semibold mt-1">{environmentCount}</div>
+						<div class="text-[11px] text-muted-foreground mt-1">
+							{#if environmentCount > 0}
+								Defined for this workspace.
+							{:else}
+								No preview environments configured.
+							{/if}
+						</div>
+					</div>
+
+					<!-- Live-sync / HMR status -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Live-sync / HMR
+						</div>
+						<div class="text-sm font-medium mt-1">Status unavailable</div>
+						<div class="text-[11px] text-muted-foreground mt-1">
+							No live-sync signal surfaced by the dashboard API yet.
+						</div>
+					</div>
+
+					<!-- Recent workflow / session activity -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Recent activity
+						</div>
+						<div class="text-2xl font-semibold mt-1">{previewDevActivity}</div>
+						<div class="text-[11px] text-muted-foreground mt-1">
+							{activeSessionCount} active session{activeSessionCount === 1 ? '' : 's'} ·
+							{runningRunCount} running run{runningRunCount === 1 ? '' : 's'}.
+						</div>
+					</div>
+
+					<!-- Draft PR capture status -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Draft PR capture
+						</div>
+						<div class="text-sm font-medium mt-1">No capture recorded</div>
+						<div class="text-[11px] text-muted-foreground mt-1">
+							Capture/promote status will appear here when available.
+						</div>
+					</div>
+				</div>
+
+				<!-- Inline activity preview: reuse recentRuns when present, else empty state -->
+				<div class="mt-3 rounded border border-dashed p-3">
+					<div class="text-xs font-medium mb-2">Recent workflow / session activity</div>
+					{#if recentRuns.length > 0}
+						<ul class="space-y-1">
+							{#each recentRuns.slice(0, 3) as r (r.executionId)}
+								<li class="text-xs flex items-center justify-between gap-2">
+									<a
+										href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+										class="truncate hover:underline"
+										title={r.workflowName}
+									>
+										{r.workflowName}
+									</a>
+									<span class="text-[10px] text-muted-foreground whitespace-nowrap">
+										{r.status} · {formatRelative(r.startedAt)}
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{:else}
+						<p class="text-xs text-muted-foreground py-2 text-center">
+							No recent workflow runs. Activity will appear here once a workflow runs.
+						</p>
+					{/if}
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Quick start grid -->
 		{#if data.stats.totalAgents === 0}
