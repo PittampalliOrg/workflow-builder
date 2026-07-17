@@ -203,14 +203,39 @@ async function call(
   return data;
 }
 
+/** SEA/VAP-admitted per-preview TTL bounds: SEA only sets PREVIEW_TTL_HOURS /
+ * EXPIRES_AT (→ the `vcluster-preview-expires-at` reap marker) inside 1-168. */
+export const PREVIEW_TTL_HOURS_BOUNDS = { min: 1, max: 168 } as const;
+/** Fallback lifetime for profiled launches that omit ttlHours. */
+export const DEFAULT_PROFILED_PREVIEW_TTL_HOURS = 4;
+
+/** The TTL actually sent to SEA. Profiled (lifecycle-launched) previews ALWAYS
+ * carry one — without it SEA never stamps `vcluster-preview-expires-at`, so a
+ * stranded environment is NEVER reaped. Legacy/human launches keep the
+ * omitted = never-auto-reaped shape. */
+export function resolvePreviewTtlHours(
+  params: VclusterPreviewLifecycleParams &
+    Pick<VclusterPreviewProfileParams, "profile">,
+): number | undefined {
+  if (params.ttlHours == null) {
+    return params.profile ? DEFAULT_PROFILED_PREVIEW_TTL_HOURS : undefined;
+  }
+  return Math.min(
+    PREVIEW_TTL_HOURS_BOUNDS.max,
+    Math.max(PREVIEW_TTL_HOURS_BOUNDS.min, Math.trunc(params.ttlHours)),
+  );
+}
+
 function lifecycleFields(
-  params: VclusterPreviewLifecycleParams,
+  params: VclusterPreviewLifecycleParams &
+    Pick<VclusterPreviewProfileParams, "profile">,
 ): Record<string, unknown> {
+  const ttlHours = resolvePreviewTtlHours(params);
   return {
     ...(params.lifecycle ? { lifecycle: params.lifecycle } : {}),
     ...(params.origin ? { origin: params.origin } : {}),
     ...(params.prNumber != null ? { prNumber: params.prNumber } : {}),
-    ...(params.ttlHours != null ? { ttlHours: params.ttlHours } : {}),
+    ...(ttlHours != null ? { ttlHours } : {}),
   };
 }
 

@@ -71,16 +71,27 @@ export const GET: RequestHandler = async ({ request, params }) => {
 			effectiveStatus === 'error' ||
 			effectiveStatus === 'cancelled';
 
+		// Never rewrite a terminal row: the dynamic-script engine leaves Dapr custom
+		// status at a stale phase/progress after completion, so post-terminal polls
+		// must not clobber the persisted final state (mirrors the running/pending-only
+		// refresh in workflow-execution-read-model).
+		const rowIsTerminal =
+			execution.status === 'success' ||
+			execution.status === 'error' ||
+			execution.status === 'cancelled';
+
 		if (
-			effectiveStatus !== execution.status ||
-			(runtime.phase as string | null) !== execution.phase ||
-			(runtime.progress as number | null) !== execution.progress
+			!rowIsTerminal &&
+			(effectiveStatus !== execution.status ||
+				(runtime.phase as string | null) !== execution.phase ||
+				(runtime.progress as number | null) !== execution.progress)
 		) {
 			await workflowData.updateExecutionReadModel(execution.id, {
 				status: effectiveStatus,
 				phase: (runtime.phase as string) ?? execution.phase,
 				progress: (runtime.progress as number) ?? execution.progress,
-				output: (runtime.outputs as Record<string, unknown>) ?? execution.output,
+				// Runtime outputs only fill a missing output; never replace a persisted one.
+				output: execution.output ?? (runtime.outputs as Record<string, unknown>) ?? null,
 				error: effectiveError,
 				...(shouldComplete && !execution.completedAt ? { completedAt: new Date() } : {})
 			});

@@ -143,6 +143,11 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 if computed_duration_ms is not None
                 else duration_ms
             )
+            if duration_ms is None and computed_duration_ms is not None:
+                # The pump's terminal persist never passes durationMs — backfill
+                # final_output from startedAt->completedAt so output.durationMs
+                # is not null on completed runs (mirrors the duration column).
+                final_output["durationMs"] = computed_duration_ms
             workflow_data_client.patch_execution(
                 str(db_execution_id),
                 {

@@ -13,11 +13,7 @@
 
 import http from "node:http";
 import https from "node:https";
-import {
-  deleteCliStorageForSession,
-  deleteKubernetesSandbox,
-  waitForKubernetesSandboxDeleted,
-} from "$lib/server/kube/client";
+import { deleteCliStorageForSession } from "$lib/server/kube/client";
 import {
   maybeProvisionAgentWorkflowHost,
   sessionHostAppId,
@@ -91,7 +87,37 @@ export async function provisionWorkspaceHelperPod(
   return null;
 }
 
-/** Delete the helper Sandbox CR after the fixed helper command has completed. */
+/** SEA endpoint + token, resolved with the same env contract the provision
+ * path uses (maybeProvisionAgentWorkflowHost in agent-workflow-host.ts). */
+function sandboxExecutionApi(): { baseUrl: string; token: string } | null {
+  const baseUrl = (
+    env.SANDBOX_EXECUTION_API_URL ??
+    env.HOST_EXECUTION_API_URL ??
+    process.env.SANDBOX_EXECUTION_API_URL ??
+    process.env.HOST_EXECUTION_API_URL ??
+    ""
+  ).trim();
+  if (!baseUrl) return null;
+  const token = (
+    env.SANDBOX_EXECUTION_API_TOKEN ??
+    env.HOST_EXECUTION_API_TOKEN ??
+    process.env.SANDBOX_EXECUTION_API_TOKEN ??
+    process.env.HOST_EXECUTION_API_TOKEN ??
+    ""
+  ).trim();
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), token };
+}
+
+/** Delete the helper Sandbox CR after the fixed helper command has completed.
+ *
+ * Delegated to sandbox-execution-api's DELETE /api/v1/agent-workflow-hosts/
+ * {appId}: the preview-control broker mounts no SA token and has no RBAC on
+ * sandboxes.agents.x-k8s.io, so the former direct kube delete ALWAYS failed
+ * there and the helper lingered until shutdownTime (hard-killed by the pod
+ * activeDeadline first). SEA is the privileged controller — its foreground CR
+ * delete also GCs the ownerRef'd cred Secret + PVCs. Callers with kube RBAC
+ * (the BFF) additionally get best-effort PV storage cleanup below.
+ */
 export async function cleanupWorkspaceHelperPod(
   helper: {
     sandboxName?: string | null;
@@ -100,32 +126,67 @@ export async function cleanupWorkspaceHelperPod(
 ): Promise<"deleted" | "missing" | "skipped" | "failed"> {
   const explicitSandboxName = helper?.sandboxName?.trim();
   const helperSessionId = helper?.helperSessionId?.trim();
-  const sandboxName =
-    explicitSandboxName ||
-    (helperSessionId ? `agent-host-${sessionHostAppId(helperSessionId)}` : null);
-  if (!sandboxName && !helperSessionId) return "skipped";
-  let sandboxStatus: "deleted" | "missing" | "skipped" = "skipped";
+  const agentAppId = helperSessionId
+    ? sessionHostAppId(helperSessionId)
+    : explicitSandboxName?.startsWith("agent-host-")
+      ? explicitSandboxName.slice("agent-host-".length)
+      : null;
+  if (!agentAppId) return "skipped";
+  let outcome: "deleted" | "missing";
   try {
-    if (sandboxName) {
-      sandboxStatus = await deleteKubernetesSandbox(sandboxName);
-      const waitStatus = await waitForKubernetesSandboxDeleted(sandboxName);
-      if (waitStatus !== "deleted") {
-        throw new Error(
-          `sandbox ${sandboxName} did not terminate before storage cleanup`,
-        );
-      }
+    const api = sandboxExecutionApi();
+    if (!api) {
+      throw new Error("SANDBOX_EXECUTION_API_URL is not configured");
     }
-    if (helperSessionId) {
-      await deleteCliStorageForSession(helperSessionId);
+    const response = await fetch(
+      `${api.baseUrl}/api/v1/agent-workflow-hosts/${encodeURIComponent(agentAppId)}`,
+      {
+        method: "DELETE",
+        headers: api.token ? { Authorization: `Bearer ${api.token}` } : {},
+      },
+    );
+    const body = (await response.json().catch(() => ({}))) as {
+      outcome?: string;
+      message?: string;
+      detail?: string;
+    };
+    if (!response.ok) {
+      throw new Error(
+        (typeof body.detail === "string" && body.detail) ||
+          `sandbox-execution-api HTTP ${response.status}`,
+      );
     }
-    return sandboxStatus;
+    if (body.outcome === "deleted") {
+      outcome = "deleted";
+    } else if (body.outcome === "not-found") {
+      outcome = "missing";
+    } else {
+      throw new Error(
+        (typeof body.message === "string" && body.message) ||
+          `unexpected cleanup outcome ${JSON.stringify(body.outcome ?? null)}`,
+      );
+    }
   } catch (err) {
     console.warn(
-      `[helper-pod] cleanup failed for ${sandboxName ?? helperSessionId}:`,
+      `[helper-pod] cleanup failed for ${agentAppId}:`,
       err instanceof Error ? err.message : err,
     );
     return "failed";
   }
+  if (helperSessionId) {
+    // Best-effort: SEA's foreground delete already GC'd the namespaced
+    // storage; this direct call additionally reclaims cluster-scoped PVs
+    // where the caller has kube RBAC (the BFF). No-RBAC callers log only.
+    try {
+      await deleteCliStorageForSession(helperSessionId);
+    } catch (err) {
+      console.warn(
+        `[helper-pod] storage cleanup failed for ${helperSessionId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return outcome;
 }
 
 /** Run a fixed command in a helper pod via cli-agent-py /internal/workspace/command. */

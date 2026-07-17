@@ -2,17 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   deleteCliStorageForSession: vi.fn(),
-  deleteKubernetesSandbox: vi.fn(),
-  waitForKubernetesSandboxDeleted: vi.fn(),
   maybeProvisionAgentWorkflowHost: vi.fn(),
   resolveWorkflowGithubToken: vi.fn(),
+  fetch: vi.fn(),
 }));
 
 vi.mock("$env/dynamic/private", () => ({ env: process.env }));
 vi.mock("$lib/server/kube/client", () => ({
   deleteCliStorageForSession: mocks.deleteCliStorageForSession,
-  deleteKubernetesSandbox: mocks.deleteKubernetesSandbox,
-  waitForKubernetesSandboxDeleted: mocks.waitForKubernetesSandboxDeleted,
 }));
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
   maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
@@ -30,22 +27,34 @@ import {
   provisionWorkspaceHelperPod,
 } from "./helper-pod";
 
+function seaResponse(status: number, body: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as Response;
+}
+
 describe("workspace helper provisioning boundary", () => {
   beforeEach(() => {
     mocks.deleteCliStorageForSession.mockReset();
-    mocks.deleteKubernetesSandbox.mockReset();
-    mocks.waitForKubernetesSandboxDeleted.mockReset();
     mocks.maybeProvisionAgentWorkflowHost.mockReset();
     mocks.resolveWorkflowGithubToken.mockReset();
+    mocks.fetch.mockReset();
+    vi.stubGlobal("fetch", mocks.fetch);
     vi.stubEnv("INTERNAL_API_TOKEN", "internal-token");
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "http://sea:8080");
+    vi.stubEnv("SANDBOX_EXECUTION_API_TOKEN", "sea-token");
     mocks.deleteCliStorageForSession.mockResolvedValue({
       persistentVolumeClaims: [],
       persistentVolumes: [],
     });
-    mocks.waitForKubernetesSandboxDeleted.mockResolvedValue("deleted");
   });
 
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
 
   it("uses the ready endpoint returned by the SEA provisioning adapter", async () => {
     mocks.maybeProvisionAgentWorkflowHost.mockResolvedValue({
@@ -84,47 +93,64 @@ describe("workspace helper provisioning boundary", () => {
     expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledTimes(1);
   });
 
-  it("deletes the helper sandbox and CLI storage through the Kubernetes adapter", async () => {
-    mocks.deleteKubernetesSandbox.mockResolvedValue("deleted");
-    mocks.deleteCliStorageForSession.mockResolvedValue({
-      persistentVolumeClaims: ["cli-ws-exec-1"],
-      persistentVolumes: ["cli-ws-exec-1"],
-    });
+  it("deletes the helper sandbox through the privileged SEA delete endpoint", async () => {
+    mocks.fetch.mockResolvedValue(
+      seaResponse(200, {
+        agentAppId: "agent-session-derived",
+        sandboxName: "agent-host-agent-session-derived",
+        outcome: "deleted",
+      }),
+    );
 
     await expect(
       cleanupWorkspaceHelperPod({
-        helperSessionId: "exec-1__promote",
-        sandboxName: "agent-host-agent-exec-1-promote",
+        helperSessionId: "exec-1__preview-source-promotion",
+        sandboxName: "agent-host-agent-session-derived",
       }),
     ).resolves.toBe("deleted");
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-      "agent-host-agent-exec-1-promote",
-    );
-    expect(mocks.waitForKubernetesSandboxDeleted).toHaveBeenCalledWith(
-      "agent-host-agent-exec-1-promote",
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      "http://sea:8080/api/v1/agent-workflow-hosts/agent-session-derived",
+      {
+        method: "DELETE",
+        headers: { Authorization: "Bearer sea-token" },
+      },
     );
     expect(mocks.deleteCliStorageForSession).toHaveBeenCalledWith(
-      "exec-1__promote",
+      "exec-1__preview-source-promotion",
     );
   });
 
-  it("derives the helper sandbox from the helper session id when SEA omits it", async () => {
-    mocks.deleteKubernetesSandbox.mockResolvedValue("deleted");
+  it("maps an absent host (not-found) to missing", async () => {
+    mocks.fetch.mockResolvedValue(
+      seaResponse(200, {
+        agentAppId: "agent-session-derived",
+        outcome: "not-found",
+      }),
+    );
 
     await expect(
       cleanupWorkspaceHelperPod({
         helperSessionId: "exec-1__preview-source-promotion",
       }),
+    ).resolves.toBe("missing");
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives the app id from the sandbox name when only the name is known", async () => {
+    mocks.fetch.mockResolvedValue(
+      seaResponse(200, { outcome: "deleted" }),
+    );
+
+    await expect(
+      cleanupWorkspaceHelperPod({
+        sandboxName: "agent-host-agent-session-xyz",
+      }),
     ).resolves.toBe("deleted");
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-      "agent-host-agent-session-derived",
+    expect(mocks.fetch).toHaveBeenCalledWith(
+      "http://sea:8080/api/v1/agent-workflow-hosts/agent-session-xyz",
+      expect.objectContaining({ method: "DELETE" }),
     );
-    expect(mocks.waitForKubernetesSandboxDeleted).toHaveBeenCalledWith(
-      "agent-host-agent-session-derived",
-    );
-    expect(mocks.deleteCliStorageForSession).toHaveBeenCalledWith(
-      "exec-1__preview-source-promotion",
-    );
+    expect(mocks.deleteCliStorageForSession).not.toHaveBeenCalled();
   });
 
   it("skips cleanup when provisioning returned no cleanup identity", async () => {
@@ -132,60 +158,80 @@ describe("workspace helper provisioning boundary", () => {
     await expect(cleanupWorkspaceHelperPod({ sandboxName: "" })).resolves.toBe(
       "skipped",
     );
-    expect(mocks.deleteKubernetesSandbox).not.toHaveBeenCalled();
-    expect(mocks.waitForKubernetesSandboxDeleted).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
     expect(mocks.deleteCliStorageForSession).not.toHaveBeenCalled();
   });
 
-  it("contains helper sandbox cleanup failures", async () => {
-    mocks.deleteKubernetesSandbox.mockRejectedValue(new Error("api down"));
+  it("fails when SEA rejects the delete", async () => {
+    mocks.fetch.mockResolvedValue(
+      seaResponse(503, { detail: "agent-host lookup failed" }),
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await expect(
       cleanupWorkspaceHelperPod({
-        helperSessionId: "exec-1__promote",
-        sandboxName: "agent-host-agent-exec-1-promote",
+        helperSessionId: "exec-1__preview-source-promotion",
       }),
     ).resolves.toBe("failed");
     expect(warn).toHaveBeenCalledWith(
-      "[helper-pod] cleanup failed for agent-host-agent-exec-1-promote:",
-      "api down",
+      "[helper-pod] cleanup failed for agent-session-derived:",
+      "agent-host lookup failed",
     );
+    expect(mocks.deleteCliStorageForSession).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
-  it("does not delete helper storage while the helper sandbox is still terminating", async () => {
-    mocks.deleteKubernetesSandbox.mockResolvedValue("deleted");
-    mocks.waitForKubernetesSandboxDeleted.mockResolvedValue("timeout");
+  it("fails when SEA reports the sandbox is still terminating", async () => {
+    mocks.fetch.mockResolvedValue(
+      seaResponse(200, {
+        outcome: "error",
+        message: "sandbox delete requested but the CR is still terminating",
+      }),
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await expect(
       cleanupWorkspaceHelperPod({
-        helperSessionId: "exec-1__promote",
-        sandboxName: "agent-host-agent-exec-1-promote",
+        helperSessionId: "exec-1__preview-source-promotion",
       }),
     ).resolves.toBe("failed");
-    expect(mocks.deleteCliStorageForSession).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
-      "[helper-pod] cleanup failed for agent-host-agent-exec-1-promote:",
-      "sandbox agent-host-agent-exec-1-promote did not terminate before storage cleanup",
+      "[helper-pod] cleanup failed for agent-session-derived:",
+      "sandbox delete requested but the CR is still terminating",
     );
     warn.mockRestore();
   });
 
-  it("contains helper storage cleanup failures", async () => {
-    mocks.deleteKubernetesSandbox.mockResolvedValue("missing");
+  it("fails when the SEA endpoint is not configured", async () => {
+    vi.stubEnv("SANDBOX_EXECUTION_API_URL", "");
+    vi.stubEnv("HOST_EXECUTION_API_URL", "");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      cleanupWorkspaceHelperPod({
+        helperSessionId: "exec-1__preview-source-promotion",
+      }),
+    ).resolves.toBe("failed");
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "[helper-pod] cleanup failed for agent-session-derived:",
+      "SANDBOX_EXECUTION_API_URL is not configured",
+    );
+    warn.mockRestore();
+  });
+
+  it("keeps the delete outcome when best-effort storage cleanup fails", async () => {
+    mocks.fetch.mockResolvedValue(seaResponse(200, { outcome: "deleted" }));
     mocks.deleteCliStorageForSession.mockRejectedValue(new Error("pvc down"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await expect(
       cleanupWorkspaceHelperPod({
-        helperSessionId: "exec-1__promote",
-        sandboxName: "agent-host-agent-exec-1-promote",
+        helperSessionId: "exec-1__preview-source-promotion",
       }),
-    ).resolves.toBe("failed");
+    ).resolves.toBe("deleted");
     expect(warn).toHaveBeenCalledWith(
-      "[helper-pod] cleanup failed for agent-host-agent-exec-1-promote:",
+      "[helper-pod] storage cleanup failed for exec-1__preview-source-promotion:",
       "pvc down",
     );
     warn.mockRestore();

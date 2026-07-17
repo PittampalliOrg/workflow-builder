@@ -92,6 +92,23 @@ DEFAULT_MAX_CONCURRENT_ACTIONS = int(
     os.environ.get("DYNAMIC_SCRIPT_MAX_CONCURRENT_ACTIONS", "16") or "16"
 )
 DEFAULT_MAX_ACTION_CALLS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_ACTION_CALLS", "500") or "500")
+#: Compensation / teardown slugs keep dispatching after the lifetime action
+#: cap is exhausted (and in the post-cancel compensation round): a slow run
+#: that burns maxLifetimeActions must still be able to tear its preview
+#: environment down — a starved finally block strands vCluster+CNPG+tailnet.
+#: They draw from their own small budget instead of the lifetime cap so a
+#: runaway cleanup loop still terminates. Membership is decided from the
+#: replayed task spec — deterministic.
+COMPENSATION_ACTION_SLUGS = frozenset(
+    {
+        "preview/environment-teardown",
+        "preview/environment-teardown-status",
+        "dev/preview-teardown",
+    }
+)
+DEFAULT_MAX_COMPENSATION_ACTIONS = int(
+    os.environ.get("DYNAMIC_SCRIPT_MAX_COMPENSATION_ACTIONS", "25") or "25"
+)
 MAX_SLEEP_SECONDS = int(os.environ.get("DYNAMIC_SCRIPT_MAX_SLEEP_SECONDS", "86400") or "86400")
 # Post-drain settle delay before the next budget aggregate (see the
 # usage-settle gate in the pump loop). Only applies to budget-bounded runs.
@@ -161,6 +178,66 @@ def _clamp_limits(input_limits: dict[str, Any]) -> dict[str, int]:
         "maxConcurrentActions": max(1, max_concurrent_actions),
         "maxLifetimeActions": max(1, max_lifetime_actions),
     }
+
+
+def _is_compensation_action(spec: dict[str, Any]) -> bool:
+    """True for action() calls on a teardown/cleanup (compensation) slug."""
+    if str(spec.get("kind") or "agent") != "action":
+        return False
+    return str(spec.get("actionSlug") or "").strip().lower() in COMPENSATION_ACTION_SLUGS
+
+
+def _build_task_spec(
+    task: dict[str, Any], prior: dict[str, Any] | None, limits: dict[str, int]
+) -> dict[str, Any]:
+    """Assemble/refresh a call spec from an evaluator task (pure function of
+    replayed inputs — shared by the pump's enqueue and the post-cancel
+    compensation round)."""
+    spec = prior or {"retries": 0}
+    spec.update(
+        {
+            "kind": task.get("kind") or "agent",
+            "prompt": task.get("prompt") or "",
+            "opts": task.get("opts") if isinstance(task.get("opts"), dict) else {},
+            "baseHash": task.get("baseHash"),
+            "occurrence": task.get("occurrence"),
+            "workflowRef": task.get("workflowRef"),
+            "teamOp": task.get("teamOp"),
+            # Contract-1.2.0 action-class carriers (None for other kinds).
+            "actionSlug": task.get("actionSlug"),
+            "actionOpts": (
+                task.get("actionOpts") if isinstance(task.get("actionOpts"), dict) else None
+            ),
+            "seconds": task.get("seconds"),
+            "eventName": task.get("eventName"),
+            "eventOpts": (
+                task.get("eventOpts") if isinstance(task.get("eventOpts"), dict) else None
+            ),
+            # Advisory call-site (contract 1.2.0 tasks[].position) — the
+            # canvas overlay's join key; never part of callId identity.
+            "position": (
+                task.get("position") if isinstance(task.get("position"), dict) else None
+            ),
+        }
+    )
+    # workflow() child args: VERBATIM any-JSON value; key-absence means
+    # the parent passed nothing (child's `args` global -> undefined).
+    if "args" in task:
+        spec["args"] = task.get("args")
+    opts = spec["opts"]
+    spec["label"] = opts.get("label")
+    if (spec.get("kind") or "agent") == "team" and not spec.get("label"):
+        # Human rail label for team ops ("spawn researcher", 'task "..."').
+        # Pure function of replayed inputs — replay-safe.
+        spec["label"] = _team_call_label(spec.get("teamOp"), spec.get("args"))
+    spec["phase"] = opts.get("phase")
+    spec["schema"] = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
+    spec["promptSha256"] = hashlib.sha256(
+        str(spec.get("prompt") or "").encode("utf-8")
+    ).hexdigest()
+    spec["maxStructuredRetries"] = limits["maxStructuredRetries"]
+    spec.setdefault("retries", 0)
+    return spec
 
 
 def _custom_status_payload(
@@ -240,6 +317,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     seen_log_count = 0
     dispatched = 0
     dispatched_actions = 0
+    dispatched_compensation = 0
     seq_counter = 0
     lifetime_exceeded = False
     last_status_json: str | None = None
@@ -421,50 +499,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             cid = str(task.get("callId") or "").strip()
             if not cid or cid in resolved or cid in outstanding or cid in queue:
                 continue
-            spec = task_specs.get(cid) or {"retries": 0}
-            spec.update(
-                {
-                    "kind": task.get("kind") or "agent",
-                    "prompt": task.get("prompt") or "",
-                    "opts": task.get("opts") if isinstance(task.get("opts"), dict) else {},
-                    "baseHash": task.get("baseHash"),
-                    "occurrence": task.get("occurrence"),
-                    "workflowRef": task.get("workflowRef"),
-                    "teamOp": task.get("teamOp"),
-                    # Contract-1.2.0 action-class carriers (None for other kinds).
-                    "actionSlug": task.get("actionSlug"),
-                    "actionOpts": (
-                        task.get("actionOpts") if isinstance(task.get("actionOpts"), dict) else None
-                    ),
-                    "seconds": task.get("seconds"),
-                    "eventName": task.get("eventName"),
-                    "eventOpts": (
-                        task.get("eventOpts") if isinstance(task.get("eventOpts"), dict) else None
-                    ),
-                    # Advisory call-site (contract 1.2.0 tasks[].position) — the
-                    # canvas overlay's join key; never part of callId identity.
-                    "position": (
-                        task.get("position") if isinstance(task.get("position"), dict) else None
-                    ),
-                }
-            )
-            # workflow() child args: VERBATIM any-JSON value; key-absence means
-            # the parent passed nothing (child's `args` global -> undefined).
-            if "args" in task:
-                spec["args"] = task.get("args")
-            opts = spec["opts"]
-            spec["label"] = opts.get("label")
-            if (spec.get("kind") or "agent") == "team" and not spec.get("label"):
-                # Human rail label for team ops ("spawn researcher", 'task "..."').
-                # Pure function of replayed inputs — replay-safe.
-                spec["label"] = _team_call_label(spec.get("teamOp"), spec.get("args"))
-            spec["phase"] = opts.get("phase")
-            spec["schema"] = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
-            spec["promptSha256"] = hashlib.sha256(
-                str(spec.get("prompt") or "").encode("utf-8")
-            ).hexdigest()
-            spec["maxStructuredRetries"] = limits["maxStructuredRetries"]
-            spec.setdefault("retries", 0)
+            spec = _build_task_spec(task, task_specs.get(cid), limits)
             task_specs[cid] = spec
             if str(spec.get("kind") or "agent") not in allowed_kinds:
                 # Version-skew / feature-gate guard: journal a dispatch error and
@@ -539,7 +574,24 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     spec["_instance_id"] = child_instance_id
 
                     child_task: Any
-                    if dispatched_actions >= limits["maxLifetimeActions"]:
+                    # Teardown headroom: compensation slugs bypass the lifetime
+                    # cap (their own small budget instead) so a finally-block
+                    # teardown still dispatches on a cap-exhausted run.
+                    is_compensation = _is_compensation_action(spec)
+                    if is_compensation and (
+                        dispatched_compensation >= DEFAULT_MAX_COMPENSATION_ACTIONS
+                    ):
+                        child_task = {
+                            "dispatchError": (
+                                "compensation action budget reached "
+                                f"({DEFAULT_MAX_COMPENSATION_ACTIONS}) — teardown/cleanup "
+                                "calls appear to be looping"
+                            )
+                        }
+                    elif (
+                        not is_compensation
+                        and dispatched_actions >= limits["maxLifetimeActions"]
+                    ):
                         child_task = {
                             "dispatchError": (
                                 f"action lifetime cap reached ({limits['maxLifetimeActions']}) "
@@ -594,7 +646,10 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                         continue
 
                     outstanding[cid] = child_task
-                    dispatched_actions += 1
+                    if is_compensation:
+                        dispatched_compensation += 1
+                    else:
+                        dispatched_actions += 1
                     dispatched_this_round += 1
                     action_outstanding += 1
                     yield ctx.call_activity(
@@ -1028,6 +1083,162 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             event = event if isinstance(event, dict) else {}
             reason = event.get("reason") or "workflow cancelled"
             _set_status("cancelled", budget)
+
+            # ONE bounded compensation round before the terminal persist (the
+            # cancel intent still wins — status stays 'cancelled'): journal
+            # every in-flight call as cancelled so the re-evaluated script's
+            # awaits settle and its finally block runs, evaluate ONCE, then
+            # dispatch ONLY compensation-slug actions (from their reserved
+            # budget) and await + journal them. Non-compensation calls get the
+            # dispatchError. Deterministic: one extra evaluate + the pump's
+            # drain pattern, all replayed from persisted history.
+            for cid in list(outstanding):
+                spec = task_specs.get(cid) or {}
+                yield ctx.call_activity(
+                    record_script_call_result,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec.get("seq", 0),
+                            "spec": _spec_for_journal(spec),
+                            "raw": {"success": False, "cancelled": True},
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                del outstanding[cid]
+                resolved.add(cid)
+            comp_eval_input = {
+                "executionId": exec_id,
+                "script": script,
+                "scriptSha256": script_sha256,
+                "meta": meta,
+                "nested": nested,
+                "budget": budget,
+                "knownCallIds": sorted(resolved),
+                "seenLogCount": seen_log_count,
+                "limits": {"maxItemsPerCall": limits["maxItemsPerCall"]},
+                "_otel": otel,
+            }
+            if has_args:
+                comp_eval_input["args"] = args
+            if actions_enabled:
+                comp_eval_input["features"] = {"actions": True}
+            comp_plan = yield ctx.call_activity(
+                evaluate_script,
+                input=_freeze(comp_eval_input),
+                retry_policy=_SCRIPT_EVAL_RETRY_POLICY,
+            )
+            comp_plan = comp_plan if isinstance(comp_plan, dict) else {}
+            comp_outstanding: dict[str, Any] = {}
+            for comp_task in comp_plan.get("tasks") or []:
+                if not isinstance(comp_task, dict):
+                    continue
+                cid = str(comp_task.get("callId") or "").strip()
+                if not cid or cid in resolved or cid in comp_outstanding:
+                    continue
+                spec = _build_task_spec(comp_task, task_specs.get(cid), limits)
+                task_specs[cid] = spec
+                spec["seq"] = seq_counter
+                seq_counter += 1
+                child_task: Any
+                if not (actions_enabled and _is_compensation_action(spec)):
+                    child_task = {
+                        "dispatchError": (
+                            "workflow cancelled — only compensation actions "
+                            "(teardown/cleanup slugs) may dispatch during the "
+                            "post-cancel compensation round"
+                        )
+                    }
+                elif dispatched_compensation >= DEFAULT_MAX_COMPENSATION_ACTIONS:
+                    child_task = {
+                        "dispatchError": (
+                            "compensation action budget reached "
+                            f"({DEFAULT_MAX_COMPENSATION_ACTIONS}) — teardown/cleanup "
+                            "calls appear to be looping"
+                        )
+                    }
+                else:
+                    spec["_instance_id"] = script_child_instance_id(
+                        ctx.instance_id, cid, spec.get("retries", 0)
+                    )
+                    child_task = start_action_call(
+                        ctx,
+                        call_id=cid,
+                        spec=spec,
+                        exec_id=exec_id,
+                        workflow_id=workflow_id,
+                        otel=otel,
+                    )
+                if child_task is None or (
+                    isinstance(child_task, dict) and child_task.get("dispatchError")
+                ):
+                    raw = (
+                        {"success": False, "error": str(child_task["dispatchError"])}
+                        if isinstance(child_task, dict)
+                        else {"success": False, "cancelled": True}
+                    )
+                    yield ctx.call_activity(
+                        record_script_call_result,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec["seq"],
+                                "spec": _spec_for_journal(spec),
+                                "raw": raw,
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
+                    resolved.add(cid)
+                    continue
+                comp_outstanding[cid] = child_task
+                dispatched_compensation += 1
+                yield ctx.call_activity(
+                    record_script_call_dispatch,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec["seq"],
+                            "sessionId": None,
+                            "spec": _spec_for_journal(spec),
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+            while comp_outstanding:
+                yield wf_when_any(list(comp_outstanding.values()))
+                for cid, comp_child in list(comp_outstanding.items()):
+                    if not _task_is_complete(comp_child):
+                        continue
+                    try:
+                        raw = comp_child.get_result()
+                    except Exception as exc:  # noqa: BLE001 — teardown failure -> journal
+                        raw = {"success": False, "error": str(exc)}
+                    del comp_outstanding[cid]
+                    spec = task_specs.get(cid) or {}
+                    yield ctx.call_activity(
+                        record_script_call_result,
+                        input=_freeze(
+                            {
+                                "executionId": exec_id,
+                                "callId": cid,
+                                "seq": spec.get("seq", 0),
+                                "spec": _spec_for_journal(spec),
+                                "raw": raw if isinstance(raw, dict) else {"content": str(raw)},
+                                "_otel": otel,
+                            }
+                        ),
+                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                    )
+                    resolved.add(cid)
+
             yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(

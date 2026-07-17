@@ -41,7 +41,7 @@ function encodedChangedPaths(paths: readonly string[]): string {
 
 describe("HelperPodSourceBundlePromotionRunner helper cleanup", () => {
   beforeEach(() => {
-    mocks.cleanupWorkspaceHelperPod.mockReset();
+    mocks.cleanupWorkspaceHelperPod.mockReset().mockResolvedValue("deleted");
     mocks.internalBffBaseUrl.mockReset().mockReturnValue("http://bff");
     mocks.provisionWorkspaceHelperPod.mockReset().mockResolvedValue({
       baseUrl: "http://10.244.1.20:8002",
@@ -75,12 +75,45 @@ describe("HelperPodSourceBundlePromotionRunner helper cleanup", () => {
       branch: "preview-feature-test",
       commitSha: "b".repeat(40),
       changedPaths: ["src/routes/dashboard/+page.svelte"],
+      cleanup: { attempted: true, outcome: "deleted", message: null },
     });
     expect(mocks.cleanupWorkspaceHelperPod).toHaveBeenCalledWith({
       baseUrl: "http://10.244.1.20:8002",
       token: "internal-token",
       githubToken: "github-token",
       sandboxName: "agent-host-agent-exec-1-preview-source-promotion",
+    });
+  });
+
+  it("surfaces a failed helper cleanup on the promotion result", async () => {
+    mocks.cleanupWorkspaceHelperPod.mockResolvedValue("failed");
+    const runner = new HelperPodSourceBundlePromotionRunner({
+      githubToken: () => "github-token",
+      requireExplicitGithubToken: true,
+      helperSuffix: "preview-source-promotion",
+    });
+
+    await expect(runner.promoteSourceBundle(input())).resolves.toMatchObject({
+      status: "ok",
+      cleanup: {
+        attempted: true,
+        outcome: "failed",
+        message:
+          "helper sandbox cleanup failed; it may linger until its shutdownTime",
+      },
+    });
+  });
+
+  it("surfaces a thrown helper cleanup as a failed receipt", async () => {
+    mocks.cleanupWorkspaceHelperPod.mockRejectedValue(new Error("sea down"));
+    const runner = new HelperPodSourceBundlePromotionRunner({
+      githubToken: () => "github-token",
+      requireExplicitGithubToken: true,
+    });
+
+    await expect(runner.promoteSourceBundle(input())).resolves.toMatchObject({
+      status: "ok",
+      cleanup: { attempted: true, outcome: "failed", message: "sea down" },
     });
   });
 
@@ -94,6 +127,7 @@ describe("HelperPodSourceBundlePromotionRunner helper cleanup", () => {
     await expect(runner.promoteSourceBundle(input())).resolves.toEqual({
       status: "unavailable",
       message: "promote command failed (no pod response)",
+      cleanup: { attempted: true, outcome: "deleted", message: null },
     });
     expect(mocks.cleanupWorkspaceHelperPod).toHaveBeenCalledTimes(1);
   });
