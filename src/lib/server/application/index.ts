@@ -2375,6 +2375,9 @@ export function getApplicationAdapters(
         git: new GithubPreviewControlSourceAdapter({
           credentials: getPreviewGithubReadToken(),
         }),
+        gitDiff: new GithubPreviewControlSourceAdapter({
+          credentials: getPreviewGithubReadToken(),
+        }),
         pullRequests: new GithubPreviewControlPullRequestAdapter({
           credentials: getPreviewGithubReadToken(),
           baseBranch: config.previewSourceRef,
@@ -2382,6 +2385,7 @@ export function getApplicationAdapters(
         receipts: getPreviewSourcePromotionReceipts(),
         exclusivity: new PostgresPreviewSourcePromotionExclusivityAdapter(),
         catalog: new DevPreviewServiceCatalogAdapter(),
+        runDiffs: getWorkflowData(),
         sourceRepository: config.previewSourceRepository,
         baseBranch: config.previewSourceRef,
       }));

@@ -4,6 +4,7 @@ import { env } from "$env/dynamic/private";
 import type {
   PreviewControlEnvironmentInspectionPort,
   PreviewControlEnvironmentRecord,
+  PreviewControlGitDiffPort,
   PreviewControlGitSourceVerificationPort,
   PreviewControlPullRequestInspectionPort,
   PreviewAcceptanceBrokerPort,
@@ -98,7 +99,7 @@ export type GithubPreviewControlSourceOptions = Readonly<{
 }>;
 
 /** Resolve the server-created branch through GitHub before any build is admitted. */
-export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourceVerificationPort {
+export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourceVerificationPort, PreviewControlGitDiffPort {
   private readonly fetchImpl: typeof globalThis.fetch;
 
   constructor(
@@ -212,6 +213,31 @@ export class GithubPreviewControlSourceAdapter implements PreviewControlGitSourc
       }
     }
     return true;
+  }
+
+  async readCommitDiff(input: {
+    repository: string;
+    baseRevision: string;
+    commitSha: string;
+    expectedChangedPaths: readonly string[];
+  }): Promise<string | null> {
+    const expected = normalizeChangedPaths(input.expectedChangedPaths);
+    if (!expected) return null;
+    const token = await previewGithubToken(this.options);
+    const headers = {
+      ...githubHeaders(token),
+      Accept: "application/vnd.github.diff",
+    };
+    const response = await this.fetchImpl(
+      `https://api.github.com/repos/${input.repository}/compare/${input.baseRevision}...${input.commitSha}`,
+      { headers, signal: AbortSignal.timeout(15_000) },
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(`GitHub commit diff read failed (HTTP ${response.status})`);
+    }
+    const patch = await response.text();
+    return patch.trim() ? patch : null;
   }
 
   private async commitChangedPaths(
