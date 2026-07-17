@@ -2,12 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSpec,
+  jsonbParameter,
   KIMI_AGENT_CONFIG,
   KIMI_AGENT_SLUG,
   parseArgs,
 } from "./upsert-3b1b-animation-workflow";
 
 describe("3B1B Kimi K3 workflow upsert", () => {
+  it("serializes JSONB arrays as strings for postgres parameters", () => {
+    expect(jsonbParameter(["kimi-k3", "animation"])).toBe(
+      '["kimi-k3","animation"]',
+    );
+    expect(() => jsonbParameter(undefined)).toThrow(
+      "Cannot serialize an undefined 3B1B seed value",
+    );
+  });
+
   it("defines a dapr-agent-py Kimi K3 agent at max reasoning and 1M context", () => {
     expect(KIMI_AGENT_SLUG).toBe("kimi-k3-3b1b-animation-builder");
     expect(KIMI_AGENT_CONFIG).toMatchObject({

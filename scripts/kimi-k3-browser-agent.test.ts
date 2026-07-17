@@ -4,10 +4,18 @@ import {
   KIMI_K3_BROWSER_AGENT_SLUG,
   KIMI_K3_BROWSER_ALLOWED_TOOLS,
   KIMI_K3_BROWSER_PROBE_AGENT_SLUG,
+  jsonbParameter,
   migrateLegacyBrowserAgentReferences,
 } from "./kimi-k3-browser-agent";
 
 describe("Kimi K3 browser-agent migration", () => {
+  it("serializes JSONB arrays as strings for postgres parameters", () => {
+    expect(jsonbParameter(["kimi-k3", "vision"])).toBe('["kimi-k3","vision"]');
+    expect(() => jsonbParameter(undefined)).toThrow(
+      "Cannot serialize an undefined browser migration value",
+    );
+  });
+
   it("strips persistent target credentials while retaining host scope", () => {
     const config = buildKimiK3BrowserAgentConfig(
       {
