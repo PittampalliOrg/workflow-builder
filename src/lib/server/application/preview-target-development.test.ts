@@ -570,6 +570,60 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
 
     execution = {
       ...execution,
+      status: "success",
+      output: {
+        phase: "completed",
+        returnValue: {
+          controlAction: "submit_preview_pr",
+          controlOutcome: "submitted",
+          pullRequestReceipt: {
+            ok: true,
+            receiptId: `pspr_${"b".repeat(64)}`,
+            previewName: target.previewName,
+            requestId: target.environmentRequestId,
+            executionId: workflow.executionId,
+            services: ["workflow-builder"],
+            branch: promotionBranch,
+            commitSha: "d".repeat(40),
+            prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/44",
+            pullRequest: {
+              repository: "PittampalliOrg/workflow-builder",
+              number: 44,
+              baseSha: "c".repeat(40),
+              headSha: "d".repeat(40),
+            },
+            draft: true,
+            credential: "return-value-must-not-cross",
+          },
+          sourceCapture: { token: "return-value-capture-secret" },
+        },
+      },
+    } as WorkflowExecutionRecord;
+    listSessionIdsByExecutionId.mockResolvedValueOnce([]);
+    const returnValueTerminalStatus = await service.getWorkflowStatus({
+      parentExecutionId: "parent-execution",
+      actorUserId: "admin-1",
+      operationId: operation("get-workflow-status", "6"),
+      target,
+      workflow,
+    });
+    expect(returnValueTerminalStatus.output).toMatchObject({
+      controlOutcome: "submitted",
+      pullRequestReceipt: {
+        ok: true,
+        receiptId: `pspr_${"b".repeat(64)}`,
+        prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/44",
+      },
+    });
+    expect(JSON.stringify(returnValueTerminalStatus)).not.toContain(
+      "return-value-capture-secret",
+    );
+    expect(JSON.stringify(returnValueTerminalStatus)).not.toContain(
+      "return-value-must-not-cross",
+    );
+
+    execution = {
+      ...execution,
       status: "running",
       daprInstanceId: "instance-1",
       output: null,
