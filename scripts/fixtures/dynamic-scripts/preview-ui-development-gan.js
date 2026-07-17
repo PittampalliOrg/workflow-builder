@@ -274,15 +274,15 @@ Required implementation steps:
 2. Read /sandbox/work/dashboard-gan-contract.json if present.
 3. Edit source under "$SCRATCH/repo/src" to implement the dashboard enhancement requested by the user.
 4. Push one atomic HMR/live-sync generation:
-   cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && printf '%s' "$ROOTS_JSON" | jq -r '.[]' > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: ${syncCapability}" -H "x-sync-generation: $GEN" -H "x-sync-service: ${service}" -H "x-sync-roots: $ROOTS_JSON" "${syncUrl}" | tee /sandbox/work/preview-ui-gan-sync-${iterations + 1}.json.
+   cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && node -e 'const roots=JSON.parse(process.argv[1]); if (!Array.isArray(roots) || roots.length === 0) process.exit(2); for (const root of roots) console.log(root);' "$ROOTS_JSON" > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: ${syncCapability}" -H "x-sync-generation: $GEN" -H "x-sync-service: ${service}" -H "x-sync-roots: $ROOTS_JSON" "${syncUrl}" | tee /sandbox/work/preview-ui-gan-sync-${iterations + 1}.json.
 5. Smoke the live app after sync: poll ${previewUrl}/api/health until HTTP 200, then request ${routes.join(", ")} and verify the route does not return HTTP 500 and the served HTML has no ReferenceError or each_key_duplicate.
 
 User task:
 ${intent}
 ${feedback}`,
     agentOptions(`generate #${iterations + 1}`, agentSlug, {
-      maxTurns: 40,
-      timeoutMinutes: 45,
+      maxTurns: 24,
+      timeoutMinutes: 35,
     }),
   );
 
@@ -294,13 +294,11 @@ ${feedback}`,
         slug: "preview-hmr-gate",
         version: "1.0.0",
       },
-      input: {
-        config: {
-          exportUrl,
-          syncCapability,
-          previewUrl,
-          routes,
-        },
+      config: {
+        exportUrl,
+        syncCapability,
+        previewUrl,
+        routes,
       },
     },
     { label: `deterministic gate #${iterations + 1}`, allowFailure: true },
