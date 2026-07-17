@@ -2119,3 +2119,30 @@ def test_cancel_without_pending_compensation_stays_terminal():
     raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
     assert raws[cid] == {"success": False, "cancelled": True}
     assert len([a for a in ctx.action_log if a[0] == "child"]) == 1  # the agent only
+
+
+def test_terminal_custom_status_is_completed_with_progress_100():
+    # The terminal emit must not be deduped away: without an explicit terminal
+    # phase the payload equals the pre-terminal one (last script phase, progress
+    # 0 sans estimatedAgentCalls) and runtime consumers stay on "Finalize"/0%.
+    tasks = [agent_task("a" * 40 + "_0", label="A")]
+    ctx = FakeCtx(evaluator=make_evaluator(tasks, {"ok": True}))
+
+    def complete(c: FakeCtx):
+        c.complete_child("a" * 40 + "_0", {"success": True, "content": "done"})
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [complete])
+    assert result["status"] == "completed"
+    assert ctx.custom_statuses, "terminal custom status must be emitted"
+    final = json.loads(ctx.custom_statuses[-1])
+    assert final["phase"] == "completed"
+    assert final["progress"] == 100
+
+
+def test_script_error_emits_failed_terminal_custom_status():
+    ctx = FakeCtx(evaluator=lambda inp: plan_script_error("boom in script"))
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [])
+    assert result["status"] == "script_error"
+    assert ctx.custom_statuses, "terminal custom status must be emitted"
+    final = json.loads(ctx.custom_statuses[-1])
+    assert final["phase"] == "failed"
