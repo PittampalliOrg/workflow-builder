@@ -233,8 +233,9 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     # Job-only fields must not leak through to the Sandbox.
     assert "backoffLimit" not in manifest["spec"]
     assert "ttlSecondsAfterFinished" not in manifest["spec"]
-    # The pod (not the Sandbox) carries the deadline.
-    assert pod_spec["activeDeadlineSeconds"] == 900 + 600
+    # The pod (not the Sandbox) carries the deadline — as a LAST-RESORT backstop
+    # strictly after the controller's graceful shutdownTime (timeout + buffer).
+    assert pod_spec["activeDeadlineSeconds"] == 900 + 1800 + 600
     assert pod_spec["serviceAccountName"] == "sandbox-execution-worker"
     assert pod_spec["initContainers"][0]["name"] == "seed-openshell-config"
     assert pod_spec["initContainers"][0]["imagePullPolicy"] == "IfNotPresent"
@@ -1208,3 +1209,156 @@ def test_execution_classes_file_merges_over_defaults(tmp_path, monkeypatch) -> N
     classes = app_module._load_execution_classes()
     assert classes["dev-preview"].serviceImage == "img:v9"
     assert classes["benchmark-fast"].localQueue == "benchmark-fast"  # default kept
+
+
+# ---- goal 4: promotion-helper sandbox success path (delete endpoint + deadline) ----
+
+
+class _SandboxNotFoundError(Exception):
+    status = 404
+
+
+def test_agent_workflow_host_pod_deadline_lands_after_graceful_shutdown(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS", "120")
+    before = datetime.now(UTC)
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+            executionClass="benchmark-fast",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+
+    deadline = manifest["spec"]["podTemplate"]["spec"]["activeDeadlineSeconds"]
+    assert (
+        deadline == 900 + 120 + app_module.AGENT_HOST_POD_DEADLINE_MARGIN_SECONDS
+    )
+    shutdown_time = datetime.fromisoformat(
+        manifest["spec"]["shutdownTime"].replace("Z", "+00:00")
+    )
+    # The kubelet backstop must fire strictly AFTER the controller's graceful
+    # shutdownTime — never 20 minutes before it.
+    assert before + timedelta(seconds=deadline) > shutdown_time
+
+
+def test_delete_agent_workflow_host_requires_auth(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    with pytest.raises(HTTPException) as exc_info:
+        app_module.delete_agent_workflow_host(
+            SimpleNamespace(headers={"authorization": "Bearer wrong"}),
+            "agent-session-abc123",
+        )
+    assert exc_info.value.status_code == 401
+
+
+def test_delete_agent_workflow_host_rejects_bad_app_id(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    for bad in ("Agent-Session", "agent_session", "-agent", "a" * 64, ""):
+        with pytest.raises(HTTPException) as exc_info:
+            app_module.delete_agent_workflow_host(
+                SimpleNamespace(headers={"authorization": "Bearer token"}),
+                bad,
+            )
+        assert exc_info.value.status_code == 400
+
+
+def test_delete_agent_workflow_host_deletes_and_verifies(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    monkeypatch.delenv("AGENT_WORKFLOW_HOST_NAMESPACE", raising=False)
+    monkeypatch.delenv("WORKFLOW_BUILDER_NAMESPACE", raising=False)
+    deletes: list[tuple[str, str]] = []
+
+    class FakeCustom:
+        def __init__(self) -> None:
+            self.gets = 0
+
+        def get_namespaced_custom_object(self, **kwargs):
+            self.gets += 1
+            if self.gets == 1:
+                return {"metadata": {"name": kwargs["name"]}}
+            raise _SandboxNotFoundError()
+
+    fake_custom = FakeCustom()
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: fake_custom
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_delete_agent_host_cr_and_wait",
+        lambda custom, namespace, name: deletes.append((namespace, name)),
+    )
+
+    response = app_module.delete_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        "agent-session-abc123",
+    )
+
+    assert response["outcome"] == "deleted"
+    assert response["agentAppId"] == "agent-session-abc123"
+    assert response["sandboxName"] == "agent-host-agent-session-abc123"
+    assert deletes == [("workflow-builder", "agent-host-agent-session-abc123")]
+
+
+def test_delete_agent_workflow_host_absent_host_is_not_found(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    monkeypatch.delenv("AGENT_WORKFLOW_HOST_NAMESPACE", raising=False)
+    monkeypatch.delenv("WORKFLOW_BUILDER_NAMESPACE", raising=False)
+
+    class FakeCustom:
+        def get_namespaced_custom_object(self, **_kwargs):
+            raise _SandboxNotFoundError()
+
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: FakeCustom()
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_delete_agent_host_cr_and_wait",
+        lambda *_args, **_kwargs: pytest.fail(
+            "must not delete an absent agent host"
+        ),
+    )
+
+    response = app_module.delete_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        "agent-session-abc123",
+    )
+
+    assert response["outcome"] == "not-found"
+    assert response["sandboxName"] == "agent-host-agent-session-abc123"
+
+
+def test_delete_agent_workflow_host_reports_still_terminating(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+
+    class FakeCustom:
+        def get_namespaced_custom_object(self, **kwargs):
+            return {"metadata": {"name": kwargs["name"]}}
+
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: FakeCustom()
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_delete_agent_host_cr_and_wait",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = app_module.delete_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        "agent-session-abc123",
+    )
+
+    assert response["outcome"] == "error"
+    assert "still terminating" in response["message"]

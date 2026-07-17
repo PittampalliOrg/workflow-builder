@@ -17,6 +17,40 @@ import {
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 
+/** Additive receipt for the helper-sandbox teardown: the cleanup outcome is
+ * surfaced on the promotion result (and persisted by callers) instead of
+ * being swallowed as a console.warn. */
+export type PromotionHelperCleanup = {
+  attempted: boolean;
+  outcome: "deleted" | "missing" | "skipped" | "failed";
+  message: string | null;
+};
+
+export type SourceBundlePromotionRunnerResultWithCleanup =
+  SourceBundlePromotionRunnerResult & { cleanup?: PromotionHelperCleanup };
+
+async function cleanupHelperReceipt(
+  helper: Parameters<typeof cleanupWorkspaceHelperPod>[0],
+): Promise<PromotionHelperCleanup> {
+  try {
+    const outcome = await cleanupWorkspaceHelperPod(helper);
+    return {
+      attempted: outcome !== "skipped",
+      outcome,
+      message:
+        outcome === "failed"
+          ? "helper sandbox cleanup failed; it may linger until its shutdownTime"
+          : null,
+    };
+  } catch (err) {
+    return {
+      attempted: true,
+      outcome: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export class WorkflowPromotionGateAdapter implements SourceBundlePromotionGatePort {
   evaluatePromotionGate(
     input: SourceBundlePromotionGateInput,
@@ -41,7 +75,7 @@ export class HelperPodSourceBundlePromotionRunner implements SourceBundlePromoti
 
   async promoteSourceBundle(
     input: SourceBundlePromotionRunnerInput,
-  ): Promise<SourceBundlePromotionRunnerResult> {
+  ): Promise<SourceBundlePromotionRunnerResultWithCleanup> {
     const inputError = promotionInputError(input);
     if (inputError) {
       return {
@@ -80,6 +114,11 @@ export class HelperPodSourceBundlePromotionRunner implements SourceBundlePromoti
       this.opts,
     );
     let result: Awaited<ReturnType<typeof runHelperCommand>>;
+    let cleanup: PromotionHelperCleanup = {
+      attempted: false,
+      outcome: "skipped",
+      message: null,
+    };
     try {
       result = await runHelperCommand(
         helper.baseUrl,
@@ -89,85 +128,90 @@ export class HelperPodSourceBundlePromotionRunner implements SourceBundlePromoti
         300_000,
       );
     } finally {
-      await cleanupWorkspaceHelperPod(helper);
+      cleanup = await cleanupHelperReceipt(helper);
     }
-    if (!result) {
-      return {
-        status: "unavailable",
-        message: "promote command failed (no pod response)",
-      };
-    }
+    return { ...parsePromotionCommandResult(input, result), cleanup };
+  }
+}
 
-    const output = `${result.stdout}\n${result.stderr}`;
-    const errorMatch = output.match(/ERR=(\w+)/);
-    const prMatch = output.match(/PR_URL=(\S+)/);
-    const branchMatch = output.match(/BRANCH_PUSHED=(\S+)/);
-    const commitMatch = output.match(/COMMIT_SHA=([0-9a-f]{40})/);
-    const baseRevisionMatch = output.match(/BASE_REVISION=([0-9a-f]{40})/);
-    const pullRequestBaseMatch = output.match(/PULL_REQUEST_BASE=(\S+)/);
-    const changedPathsMatch = output.match(
-      /CHANGED_PATHS_B64=([A-Za-z0-9_-]+)/,
-    );
-    if (errorMatch) {
-      return {
-        status: "command_error",
-        error: errorMatch[1],
-        output,
-      };
-    }
-    if (!commitMatch) {
-      return {
-        status: "command_error",
-        error: "missing_commit_sha",
-        output,
-      };
-    }
-    if (
-      input.tier === "tar-overlay-set" &&
-      (!baseRevisionMatch ||
-        baseRevisionMatch[1] !== input.baseRevision ||
-        pullRequestBaseMatch?.[1] !== input.base ||
-        !changedPathsMatch)
-    ) {
-      return {
-        status: "command_error",
-        error: "invalid_materialization_provenance",
-        output,
-      };
-    }
-    let changedPaths: readonly string[] = Object.freeze([]);
-    if (changedPathsMatch) {
-      try {
-        changedPaths = decodeChangedPaths(changedPathsMatch[1]);
-      } catch {
-        return {
-          status: "command_error",
-          error: "invalid_changed_paths",
-          output,
-        };
-      }
-    }
-    if (input.tier === "tar-overlay-set" && changedPaths.length === 0) {
-      return {
-        status: "command_error",
-        error: "empty_materialized_diff",
-        output,
-      };
-    }
-
-    const prError = output.match(/PR_ERR=(.+)/);
+function parsePromotionCommandResult(
+  input: SourceBundlePromotionRunnerInput,
+  result: Awaited<ReturnType<typeof runHelperCommand>>,
+): SourceBundlePromotionRunnerResult {
+  if (!result) {
     return {
-      status: "ok",
-      output,
-      prUrl: prMatch ? prMatch[1] : null,
-      branch: branchMatch ? branchMatch[1] : null,
-      commitSha: commitMatch[1],
-      baseRevision: baseRevisionMatch?.[1] ?? null,
-      pullRequestBase: pullRequestBaseMatch?.[1] ?? input.base,
-      changedPaths,
-      prError: !prMatch && prError ? prError[1].trim() : null,
+      status: "unavailable",
+      message: "promote command failed (no pod response)",
     };
   }
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const errorMatch = output.match(/ERR=(\w+)/);
+  const prMatch = output.match(/PR_URL=(\S+)/);
+  const branchMatch = output.match(/BRANCH_PUSHED=(\S+)/);
+  const commitMatch = output.match(/COMMIT_SHA=([0-9a-f]{40})/);
+  const baseRevisionMatch = output.match(/BASE_REVISION=([0-9a-f]{40})/);
+  const pullRequestBaseMatch = output.match(/PULL_REQUEST_BASE=(\S+)/);
+  const changedPathsMatch = output.match(/CHANGED_PATHS_B64=([A-Za-z0-9_-]+)/);
+  if (errorMatch) {
+    return {
+      status: "command_error",
+      error: errorMatch[1],
+      output,
+    };
+  }
+  if (!commitMatch) {
+    return {
+      status: "command_error",
+      error: "missing_commit_sha",
+      output,
+    };
+  }
+  if (
+    input.tier === "tar-overlay-set" &&
+    (!baseRevisionMatch ||
+      baseRevisionMatch[1] !== input.baseRevision ||
+      pullRequestBaseMatch?.[1] !== input.base ||
+      !changedPathsMatch)
+  ) {
+    return {
+      status: "command_error",
+      error: "invalid_materialization_provenance",
+      output,
+    };
+  }
+  let changedPaths: readonly string[] = Object.freeze([]);
+  if (changedPathsMatch) {
+    try {
+      changedPaths = decodeChangedPaths(changedPathsMatch[1]);
+    } catch {
+      return {
+        status: "command_error",
+        error: "invalid_changed_paths",
+        output,
+      };
+    }
+  }
+  if (input.tier === "tar-overlay-set" && changedPaths.length === 0) {
+    return {
+      status: "command_error",
+      error: "empty_materialized_diff",
+      output,
+    };
+  }
+
+  const prError = output.match(/PR_ERR=(.+)/);
+  return {
+    status: "ok",
+    output,
+    prUrl: prMatch ? prMatch[1] : null,
+    branch: branchMatch ? branchMatch[1] : null,
+    commitSha: commitMatch[1],
+    baseRevision: baseRevisionMatch?.[1] ?? null,
+    pullRequestBase: pullRequestBaseMatch?.[1] ?? input.base,
+    changedPaths,
+    prError: !prMatch && prError ? prError[1].trim() : null,
+  };
 }
 
 /** Exported for tests (the shell is the single source of truth for the PR call). */

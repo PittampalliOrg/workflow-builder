@@ -34,6 +34,12 @@ KUEUE_PRIORITY_CLASS_LABEL = "kueue.x-k8s.io/priority-class"
 DEFAULT_NODE_SELECTOR = {"stacks.io/swebench-pool": "dev-benchmark"}
 DEFAULT_JOB_TTL_SECONDS = 300
 DEFAULT_AGENT_HOST_SHUTDOWN_BUFFER_SECONDS = 1800
+# Pod-level backstop margin BEYOND the controller's graceful shutdown window
+# (timeoutSeconds + shutdown buffer). The kubelet activeDeadline must land
+# strictly AFTER the Sandbox controller's shutdownTime — never before it —
+# so DeadlineExceeded stays a last-resort backstop, not the de-facto
+# terminator for every agent-host sandbox.
+AGENT_HOST_POD_DEADLINE_MARGIN_SECONDS = 600
 DEFAULT_AGENT_HOST_IMAGE = "ghcr.io/pittampalliorg/dapr-agent-py-sandbox:latest"
 DEFAULT_AGENT_HOST_CONFIG_HOME = "/root/.config"
 WORKER_ENV_PASSTHROUGH = (
@@ -3549,7 +3555,14 @@ def build_agent_workflow_host_sandbox_manifest(
     if class_config.priorityClassName:
         pod_spec["priorityClassName"] = _safe_name(class_config.priorityClassName)
     if request.timeoutSeconds is not None:
-        pod_spec["activeDeadlineSeconds"] = request.timeoutSeconds + 600
+        # Must exceed shutdownTime (timeoutSeconds + shutdown buffer): a smaller
+        # deadline hard-killed the pod (phase=Failed/DeadlineExceeded) 20 min
+        # before the controller's graceful Delete for every agent-host sandbox.
+        pod_spec["activeDeadlineSeconds"] = (
+            request.timeoutSeconds
+            + _agent_host_shutdown_buffer_seconds()
+            + AGENT_HOST_POD_DEADLINE_MARGIN_SECONDS
+        )
     if class_agent_host_env:
         overridden = {entry["name"] for entry in class_agent_host_env}
         base_env = [
@@ -5356,6 +5369,83 @@ def submit_agent_workflow_host(
                 "baseUrl": _agent_host_base_url(readiness.pod_ip),
             }
         )
+    set_current_span_io("output", response)
+    return response
+
+
+# Canonical Dapr-app-id shape for agent hosts (agent-session-<sha20> and the
+# benchmark stable app ids): lowercase DNS-label, no leading/trailing dash.
+_AGENT_APP_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+@app.delete("/api/v1/agent-workflow-hosts/{agent_app_id}")
+def delete_agent_workflow_host(
+    request: Request,
+    agent_app_id: str,
+) -> dict[str, Any]:
+    """Authoritative teardown of a per-session agent-host Sandbox CR.
+
+    The BFF / preview-control broker service accounts have no RBAC on
+    sandboxes.agents.x-k8s.io (and the broker mounts no SA token at all), so
+    their direct kube deletes always failed and helper sandboxes lingered
+    until shutdownTime. SEA is the privileged controller: the foreground CR
+    delete here also GCs the ownerRef'd cred Secret + PVCs. Idempotent —
+    deleting an absent host reports outcome="not-found" (HTTP 200).
+    """
+    _require_internal(request)
+    if not _AGENT_APP_ID_PATTERN.fullmatch(agent_app_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid agent app id",
+        )
+    namespace = _agent_workflow_host_namespace()
+    sandbox_name = _agent_host_sandbox_name(agent_app_id)
+    receipt: dict[str, Any] = {
+        "agentAppId": agent_app_id,
+        "sandboxName": sandbox_name,
+        "namespace": namespace,
+    }
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return {**receipt, "outcome": "deleted"}
+    custom = _load_k8s_custom_objects_client()
+
+    def _sandbox_exists() -> bool:
+        try:
+            custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return False
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="agent-host lookup failed",
+            ) from exc
+        return True
+
+    if not _sandbox_exists():
+        response = {**receipt, "outcome": "not-found"}
+        set_current_span_io("output", response)
+        return response
+    _delete_agent_host_cr_and_wait(custom, namespace, sandbox_name)
+    # _delete_agent_host_cr_and_wait tolerates a slow foreground delete; verify
+    # so a still-terminating CR is reported instead of claimed deleted.
+    if _sandbox_exists():
+        response = {
+            **receipt,
+            "outcome": "error",
+            "message": "sandbox delete requested but the CR is still terminating",
+        }
+    else:
+        response = {**receipt, "outcome": "deleted"}
     set_current_span_io("output", response)
     return response
 
