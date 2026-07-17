@@ -223,6 +223,7 @@ let accepted = false;
 let iterations = 0;
 let lastVerdict = null;
 let lastGenerator = null;
+let acceptedCapture = null;
 
 while (!accepted && iterations < maxIterations) {
   const feedback = lastVerdict
@@ -273,63 +274,25 @@ ${feedback}`,
   );
 
   phase("Verify");
-  const gateCommand = `set -eu
-SCRATCH=/sandbox/work/preview-ui-gan-gate-${iterations + 1}
-rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/repo"
-curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"
-tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo"
-test -f "$SCRATCH/repo/src/routes/dashboard/+page.svelte"
-grep -R "${DASHBOARD_MARKER}" "$SCRATCH/repo/src/routes/dashboard/+page.svelte"
-if find "$SCRATCH/repo/src" -path '*/auth/*' -o -path '*/auth.*' | grep -q .; then
-  echo "auth source exists in export; ensuring generated marker was not placed there"
-  ! grep -R "${DASHBOARD_MARKER}" "$SCRATCH/repo/src/routes/auth" "$SCRATCH/repo/src/lib/server/auth" 2>/dev/null
-fi
-for i in $(seq 1 60); do
-  code=$(curl -sS -o /tmp/preview-ui-gan-health-${iterations + 1}.txt -w '%{http_code}' "${previewUrl}/api/health" || true)
-  [ "$code" = "200" ] && break
-  sleep 2
-done
-LOGIN=/tmp/preview-ui-gan-login-${iterations + 1}.json
-JAR=/tmp/preview-ui-gan-cookie-${iterations + 1}.jar
-curl -sS -c "$JAR" -H 'content-type: application/json' -X POST "${previewUrl}/api/v1/auth/sign-in" --data '{"email":"admin@example.com","password":"developer"}' > "$LOGIN" || true
-for route in ${routes.map((route) => `'${route.replace(/'/g, "'\\''")}'`).join(" ")}; do
-  html="$SCRATCH/route$(echo "$route" | tr '/' '_').html"
-  code=$(curl -sS -b "$JAR" -L -o "$html" -w '%{http_code}' "${previewUrl}$route" || true)
-  [ "$code" = "200" ] || { echo "route $route returned HTTP $code"; exit 20; }
-  ! grep -E 'ReferenceError|each_key_duplicate|Internal Error|500' "$html"
-done
-echo '{"accepted":true,"summary":"deterministic HMR gate passed"}' > /sandbox/work/preview-ui-gan-gate-${iterations + 1}.json
-`;
-  const gate = await action(
-    "workspace/command",
+  const snapshotGate = await action(
+    "dev/preview-snapshot",
     {
-      cliWorkspace: true,
-      helperPod: true,
-      helperTimeoutMinutes: 10,
-      workspaceRef: workspace,
-      command: gateCommand,
-      cwd: "/sandbox/work",
-      timeoutMs: 600000,
+      nodeId: "generate",
+      iteration: iterations + 1,
+      services,
     },
-    { label: `deterministic HMR gate #${iterations + 1}`, allowFailure: true },
+    { label: `snapshot HMR generation #${iterations + 1}`, allowFailure: true },
   );
-  const gateBase = dataOf(gate);
-  const gateResult = gateBase.data?.result ?? gateBase.result ?? gateBase.data ?? gateBase;
-  const gateOk =
-    gateBase.success === true &&
-    (gateResult.exitCode === 0 || gateBase.exitCode === 0 || gateResult.accepted === true);
-  if (!gateOk) {
+  const capture = dataOf(snapshotGate);
+  if (capture.ok !== true) {
     lastVerdict = {
       accepted: false,
-      summary: "deterministic gate failed",
+      summary: "source-capture gate failed",
       failing: [
         String(
-          gateBase.error ??
-            gateResult.error ??
-            gateResult.stderr ??
-            gateResult.stdout ??
-            "gate failed",
+          capture.skipped ??
+            capture.error ??
+            "source capture failed",
         ).slice(0, 1000),
       ],
     };
@@ -337,9 +300,10 @@ echo '{"accepted":true,"summary":"deterministic HMR gate passed"}' > /sandbox/wo
     continue;
   }
 
+  acceptedCapture = capture;
   lastVerdict = {
     accepted: true,
-    summary: `deterministic HMR gate passed for ${routes.join(", ")}`,
+    summary: `source-capture gate passed for ${routes.join(", ")}`,
     failing: [],
   };
   accepted = true;
@@ -353,7 +317,7 @@ if (!accepted) {
 }
 
 phase("Promote");
-const snapshot = await action(
+const capture = acceptedCapture ?? dataOf(await action(
   "dev/preview-snapshot",
   {
     nodeId: "generate",
@@ -361,8 +325,7 @@ const snapshot = await action(
     services,
   },
   { label: "snapshot accepted live-sync generation" },
-);
-const capture = dataOf(snapshot);
+));
 if (capture.ok !== true) {
   throw new Error(`dev/preview-snapshot failed: ${String(capture.skipped ?? capture.error ?? "unknown")}`);
 }

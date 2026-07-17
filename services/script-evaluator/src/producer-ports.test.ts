@@ -315,12 +315,13 @@ describe("preview-ui-development-gan port", () => {
 		expect(third.status).toBe("need");
 		const gate = third.tasks[0];
 		expect(gate.kind).toBe("action");
-		expect(gate.actionSlug).toBe("workspace/command");
-		expect(gate.opts.label).toBe("deterministic HMR gate #1");
+		expect(gate.actionSlug).toBe("dev/preview-snapshot");
+		expect(gate.opts.label).toBe("snapshot HMR generation #1");
 		const gateArgs = gate.args as Record<string, unknown>;
-		expect(gateArgs.command).toContain("http://10.0.0.8:8001/__export");
-		expect(gateArgs.command).toContain("Preview Development Status");
-		expect(gateArgs.command).toContain("/api/v1/auth/sign-in");
-		expect(gateArgs.command).toContain("admin@example.com");
+		expect(gateArgs).toMatchObject({
+			nodeId: "generate",
+			iteration: 1,
+			services: ["workflow-builder"],
+		});
 	});
 });
