@@ -1366,6 +1366,7 @@ def build_app_project_manifest(
         "spec": {
             "description": f"Default project for preview environment {environment.id}",
             "sourceRepos": ["*"],
+            "sourceNamespaces": ["*"],
             "destinations": [{"server": "*", "namespace": "*"}],
             "clusterResourceWhitelist": [{"group": "*", "kind": "*"}],
             "namespaceResourceWhitelist": [{"group": "*", "kind": "*"}],
