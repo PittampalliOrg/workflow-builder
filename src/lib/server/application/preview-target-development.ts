@@ -1435,7 +1435,8 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
       execution.projectId !== definition.projectId ||
       context.remoteActorUserId !== input.actorUserId ||
       execution.id !== expectedExecutionId ||
-      executedDigest !== input.workflow.workflowSpecDigest ||
+      (executedDigest !== null &&
+        executedDigest !== input.workflow.workflowSpecDigest) ||
       context.parentExecutionId !== input.parentExecutionId ||
       context.workflowSpecDigest !== input.workflow.workflowSpecDigest ||
       !sameTarget(context.target, input.target)

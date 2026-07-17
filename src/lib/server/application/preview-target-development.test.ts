@@ -396,6 +396,11 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
 
+    execution = {
+      ...execution!,
+      executionIr: { args: execution!.input },
+    } as WorkflowExecutionRecord;
+
     const status = await service.getWorkflowStatus({
       parentExecutionId: "parent-execution",
       actorUserId: "admin-1",
