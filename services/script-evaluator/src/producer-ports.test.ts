@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import { evaluateScript, validateScript } from "./sandbox.js";
 
@@ -83,6 +84,38 @@ const previewUiDevelopmentGan = readFileSync(
 	),
 	"utf8",
 );
+
+function extractMetaInputSchema(source: string): Record<string, unknown> {
+	const marker = "export const meta =";
+	const markerIndex = source.indexOf(marker);
+	expect(markerIndex).toBeGreaterThanOrEqual(0);
+	const start = source.indexOf("{", markerIndex);
+	let depth = 0;
+	let end = -1;
+	let quote = "";
+	let escape = false;
+	for (let i = start; i < source.length; i += 1) {
+		const ch = source[i];
+		if (quote) {
+			if (escape) escape = false;
+			else if (ch === "\\") escape = true;
+			else if (ch === quote) quote = "";
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") {
+			quote = ch;
+			continue;
+		}
+		if (ch === "{") depth += 1;
+		else if (ch === "}" && --depth === 0) {
+			end = i;
+			break;
+		}
+	}
+	expect(end).toBeGreaterThan(start);
+	const meta = Function(`return (${source.slice(start, end + 1)});`)();
+	return meta.input as Record<string, unknown>;
+}
 
 describe("GAN generator port (preview-gan-ui-feature)", () => {
 	it("validates through the evaluator", async () => {
@@ -177,6 +210,45 @@ describe("preview-ui-development-gan port", () => {
 		expect((t.args as Record<string, unknown>).mode).toBe("preview-native");
 		expect((t.args as Record<string, unknown>).adopt).toBe(true);
 		expect((t.args as Record<string, unknown>).services).toEqual(["workflow-builder"]);
+	});
+
+	it("accepts the tuple-bound host launch fields injected by preview development", async () => {
+		const schema = extractMetaInputSchema(previewUiDevelopmentGan);
+		const ajv = new Ajv({
+			allErrors: true,
+			strict: false,
+			useDefaults: true,
+			coerceTypes: false,
+		});
+		const validate = ajv.compile(schema);
+		const launchArgs = {
+			intent: "improve dashboard status visibility",
+			services: ["workflow-builder"],
+			agentSlug: "glm-juicefs-builder-agent",
+			keepPreview: "true",
+			mode: "preview-native",
+			previewOrigin: "https://wfb-feature-one.tail286401.ts.net",
+			sourceRevision: "c".repeat(40),
+			__previewDevelopment: {
+				version: 2,
+				parentExecutionId: "parent-1",
+				remoteActorUserId: "admin-1",
+				operationId: `pdt-start-workflow-${"a".repeat(64)}`,
+			},
+		};
+		expect(validate(launchArgs), JSON.stringify(validate.errors)).toBe(true);
+
+		const res = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: launchArgs,
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: {},
+			knownCallIds: [],
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		expect(res.status).toBe("need");
+		expect(res.tasks[0]?.kind).toBe("action");
 	});
 
 	it("uses the GLM JuiceFS agent for plan and generate after live-sync metadata resolves", async () => {
