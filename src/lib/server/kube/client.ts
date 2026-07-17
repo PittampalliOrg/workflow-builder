@@ -1082,6 +1082,98 @@ export async function deleteKubernetesSandbox(
 	return "deleted";
 }
 
+export async function waitForKubernetesSandboxDeleted(
+	name: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+	timeoutMs = 30_000,
+	pollMs = 1_000,
+): Promise<"deleted" | "timeout"> {
+	const deadline = Date.now() + Math.max(0, timeoutMs);
+	for (;;) {
+		const current = await getKubernetesSandbox(name, namespace);
+		if (!current) return "deleted";
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return "timeout";
+		await sleep(Math.min(pollMs, remaining));
+	}
+}
+
+export type DeletedCliStorage = {
+	persistentVolumeClaims: string[];
+	persistentVolumes: string[];
+};
+
+async function deleteKubernetesResource(
+	path: string,
+	kind: string,
+	name: string,
+): Promise<"deleted" | "missing"> {
+	const res = await kubeFetch(path, {
+		method: "DELETE",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			apiVersion: "v1",
+			kind: "DeleteOptions",
+			propagationPolicy: "Background",
+		}),
+	});
+	if (res.status === 404) return "missing";
+	if (!res.ok) {
+		throw new Error(
+			`delete ${kind} ${name} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	return "deleted";
+}
+
+export async function deleteCliStorageForSession(
+	sessionId: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<DeletedCliStorage> {
+	const sessionLabel = safeKubernetesLabelValue(sessionId);
+	const selector = encodeURIComponent(
+		`workflow-builder.cnoe.io/session-id=${sessionLabel}`,
+	);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/persistentvolumeclaims?labelSelector=${selector}`,
+	);
+	if (!res.ok) {
+		throw new Error(
+			`list helper PVCs for ${sessionLabel} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	const body = (await res.json()) as {
+		items?: Array<{ metadata?: { name?: string } }>;
+	};
+	const names = [
+		...new Set(
+			(body.items ?? [])
+				.map((item) => item.metadata?.name?.trim())
+				.filter((name): name is string => Boolean(name)),
+		),
+	];
+	const deletedPvcs: string[] = [];
+	const deletedPvs: string[] = [];
+	for (const name of names) {
+		const pvcStatus = await deleteKubernetesResource(
+			`/api/v1/namespaces/${namespace}/persistentvolumeclaims/${encodeURIComponent(name)}`,
+			"PersistentVolumeClaim",
+			name,
+		);
+		if (pvcStatus === "deleted") deletedPvcs.push(name);
+		const pvStatus = await deleteKubernetesResource(
+			`/api/v1/persistentvolumes/${encodeURIComponent(name)}`,
+			"PersistentVolume",
+			name,
+		);
+		if (pvStatus === "deleted") deletedPvs.push(name);
+	}
+	return {
+		persistentVolumeClaims: deletedPvcs,
+		persistentVolumes: deletedPvs,
+	};
+}
+
 export async function upsertSandboxTemplate(
 	body: SandboxTemplate,
 ): Promise<SandboxTemplate> {

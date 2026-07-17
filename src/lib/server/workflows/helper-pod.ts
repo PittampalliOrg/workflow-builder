@@ -13,7 +13,11 @@
 
 import http from "node:http";
 import https from "node:https";
-import { deleteKubernetesSandbox } from "$lib/server/kube/client";
+import {
+  deleteCliStorageForSession,
+  deleteKubernetesSandbox,
+  waitForKubernetesSandboxDeleted,
+} from "$lib/server/kube/client";
 import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { AgentConfig } from "$lib/types/agents";
@@ -42,9 +46,13 @@ export async function provisionWorkspaceHelperPod(
   baseUrl: string;
   token: string;
   githubToken: string | null;
+  helperSessionId: string;
+  sharedWorkspaceKey: string;
   sandboxName: string | null;
 } | null> {
   const helperSessionId = `${executionId}__${suffix}`;
+  const sharedWorkspaceKey =
+    opts?.sharedWorkspaceKey ?? `${executionId}__${suffix}`;
   const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
   const githubToken =
     opts?.githubToken?.trim() ||
@@ -59,14 +67,15 @@ export async function provisionWorkspaceHelperPod(
       benchmarkInstanceId: null,
       timeoutMinutes: opts?.timeoutMinutes ?? 15,
       sessionSecretEnv: githubToken ? { GITHUB_TOKEN: githubToken } : null,
-      sharedWorkspaceKey:
-        opts?.sharedWorkspaceKey ?? `${executionId}__${suffix}`,
+      sharedWorkspaceKey,
     });
     if (prov?.status === "ready" && prov.baseUrl) {
       return {
         baseUrl: prov.baseUrl,
         token,
         githubToken,
+        helperSessionId,
+        sharedWorkspaceKey,
         sandboxName: prov.sandboxName ?? null,
       };
     }
@@ -81,15 +90,32 @@ export async function provisionWorkspaceHelperPod(
 
 /** Delete the helper Sandbox CR after the fixed helper command has completed. */
 export async function cleanupWorkspaceHelperPod(
-  helper: { sandboxName?: string | null } | null,
+  helper: {
+    sandboxName?: string | null;
+    helperSessionId?: string | null;
+  } | null,
 ): Promise<"deleted" | "missing" | "skipped" | "failed"> {
   const sandboxName = helper?.sandboxName?.trim();
-  if (!sandboxName) return "skipped";
+  const helperSessionId = helper?.helperSessionId?.trim();
+  if (!sandboxName && !helperSessionId) return "skipped";
+  let sandboxStatus: "deleted" | "missing" | "skipped" = "skipped";
   try {
-    return await deleteKubernetesSandbox(sandboxName);
+    if (sandboxName) {
+      sandboxStatus = await deleteKubernetesSandbox(sandboxName);
+      const waitStatus = await waitForKubernetesSandboxDeleted(sandboxName);
+      if (waitStatus !== "deleted") {
+        throw new Error(
+          `sandbox ${sandboxName} did not terminate before storage cleanup`,
+        );
+      }
+    }
+    if (helperSessionId) {
+      await deleteCliStorageForSession(helperSessionId);
+    }
+    return sandboxStatus;
   } catch (err) {
     console.warn(
-      `[helper-pod] cleanup failed for ${sandboxName}:`,
+      `[helper-pod] cleanup failed for ${sandboxName ?? helperSessionId}:`,
       err instanceof Error ? err.message : err,
     );
     return "failed";
