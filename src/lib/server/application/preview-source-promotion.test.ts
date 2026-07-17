@@ -462,6 +462,21 @@ describe("preview source promotion", () => {
     });
   });
 
+  it("also persists the promotion diff on the server-derived host parent execution", async () => {
+    const h = brokerHarness();
+    await h.service.promote({
+      ...command,
+      hostExecutionId: "parent-exec-1",
+    });
+
+    expect(h.runDiffs.persistRunDiffArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "execution-1" }),
+    );
+    expect(h.runDiffs.persistRunDiffArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: "parent-exec-1" }),
+    );
+  });
+
   it("passes a URL-safe Nanoid execution through the physical broker boundary", async () => {
     const h = brokerHarness();
     const executionId = "_O-r4CT3dAp9CRUi7ImCA";

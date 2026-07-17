@@ -146,9 +146,17 @@ it("fails closed before helper provisioning without the broker write token", asy
 
 function pythonApplier(shell: string): string {
   const match = shell.match(
-    /python3 - "\$BUNDLE" "\$PROMOTE" <<'PY'\n([\s\S]*?)\nPY/,
+    /python3 - "\$BUNDLE" "\$PROMOTE" "\$SELECTED_TARGETS" <<'PY'\n([\s\S]*?)\nPY/,
   );
   if (!match?.[1]) throw new Error("overlay-set Python applier missing");
+  return match[1];
+}
+
+function pythonDeletionGuard(shell: string): string {
+  const match = shell.match(
+    /python3 - "\$DIFF_NAME_STATUS" "\$SELECTED_TARGETS" <<'PY' \|\| \{ echo "ERR=unsafe_materialized_deletion"; exit 0; \}\n([\s\S]*?)\nPY/,
+  );
+  if (!match?.[1]) throw new Error("overlay-set deletion guard missing");
   return match[1];
 }
 
@@ -213,6 +221,7 @@ function runApplier(
 ) {
   const bundle = join(root, "overlay-set.json.gz");
   const repo = join(root, "repo");
+  const selectedTargets = join(root, "selected-targets.json");
   mkdirSync(repo, { recursive: true });
   for (const [path, content] of Object.entries(initialFiles)) {
     const target = join(repo, path);
@@ -222,11 +231,27 @@ function runApplier(
   writeFileSync(bundle, gzipSync(Buffer.from(JSON.stringify(manifest))));
   return {
     repo,
-    result: spawnSync("python3", ["-", bundle, repo], {
+    selectedTargets,
+    result: spawnSync("python3", ["-", bundle, repo, selectedTargets], {
       input: pythonApplier(command()),
       encoding: "utf8",
     }),
   };
+}
+
+function runDeletionGuard(
+  root: string,
+  records: string,
+  selectedTargets: readonly string[],
+) {
+  const diff = join(root, "diff-name-status.z");
+  const selected = join(root, "selected-targets.json");
+  writeFileSync(diff, Buffer.from(records.replaceAll("\\0", "\0")));
+  writeFileSync(selected, JSON.stringify(selectedTargets));
+  return spawnSync("python3", ["-", diff, selected], {
+    input: pythonDeletionGuard(command()),
+    encoding: "utf8",
+  });
 }
 
 function git(cwd: string, args: string[]): string {
@@ -675,7 +700,7 @@ describe("tar-overlay-set promotion shell", () => {
       ["generated/build-input"],
       ["src", "generated/build-input"],
     );
-    const { repo, result } = runApplier(
+    const { repo, result, selectedTargets } = runApplier(
       {
         version: 1,
         tier: "tar-overlay-set",
@@ -708,6 +733,37 @@ describe("tar-overlay-set promotion shell", () => {
     );
     expect(readFileSync(join(repo, "build.config.ts"), "utf8")).toBe(
       "export default { target: 'node' };\n",
+    );
+    expect(JSON.parse(readFileSync(selectedTargets, "utf8"))).toEqual(["src"]);
+  });
+
+  it("rejects materialized deletions outside selected overlay roots", () => {
+    const root = mkdtempSync(join(tmpdir(), "wfb-overlay-delete-guard-"));
+    roots.push(root);
+
+    const rejected = runDeletionGuard(
+      root,
+      "D\tDockerfile\\0M\tsrc/routes/dashboard/+page.svelte\\0",
+      ["src"],
+    );
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stdout).toContain("UNSAFE_DELETED_PATHS_B64=");
+
+    const accepted = runDeletionGuard(
+      root,
+      "D\tsrc/old-panel.ts\\0M\tsrc/routes/dashboard/+page.svelte\\0",
+      ["src"],
+    );
+    expect(accepted.status, accepted.stdout + accepted.stderr).toBe(0);
+  });
+
+  it("emits a fail-closed shell error before pushing unsafe materialized deletions", () => {
+    const shell = command();
+
+    expect(shell).toContain("SELECTED_TARGETS=\"$WORK/selected-targets.json\"");
+    expect(shell).toContain("ERR=unsafe_materialized_deletion");
+    expect(shell.indexOf("ERR=unsafe_materialized_deletion")).toBeLessThan(
+      shell.indexOf("git push -q"),
     );
   });
 

@@ -9,6 +9,7 @@ export type PreviewSourcePromotionBrokerRequest = Readonly<{
   environmentSourceRevision: string;
   catalogDigest: `sha256:${string}`;
   executionId: string;
+  hostExecutionId?: string | null;
   artifactId: string;
   artifactIdentity: PreviewImportedArtifactIdentity;
   title: string | null;
@@ -118,6 +119,7 @@ export interface PreviewSourcePromotionPort {
   promote(
     input: Readonly<{
       executionId: string;
+      hostExecutionId?: string | null;
       artifactId: string;
       title?: string | null;
       bodyMarkdown?: string | null;
