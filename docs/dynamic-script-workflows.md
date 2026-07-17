@@ -119,21 +119,20 @@ Schema'd `agent(..., {schema})` calls get **provider-native** structured output 
 prompt-contract, keyed off the existing `opts.schema` (no callId/contract change):
 
 - **Hybrid routing** (`script_agent_dispatch._build_agent_config`): a schema'd call with no explicit
-  model routes to `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `openai/gpt-5.5`) instead of the GLM
-  default; per-call `opts.model` / per-phase model still wins; gated by
+  model routes to `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `kimi/kimi-k3`); per-call
+  `opts.model` / per-phase model still wins; gated by
   `DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT` (default on), dapr-agent-py only.
 - **Threading:** dispatch stamps `agentConfig.responseJsonSchema` → `effective_agent_config.resolve_llm_metadata`
   carries it into `llm.responseJsonSchema` → `main.py call_llm` stamps `self.llm._response_json_schema`
   at BOTH seams (set/restore alongside `_llm_component`/`_reasoning_effort`) → adapters enforce it.
-- **Adapters:** `openai_adapter` sets `text.format={type:json_schema, strict:true}` from the raw dict
-  (near-100% first pass) and **returns text** (no Pydantic parse); `zai_adapter` sets
-  `response_format={type:json_object}` keeping thinking on. Both only when the memory-path Pydantic
-  `response_format` kwarg is absent.
+- **Adapters:** `kimi_adapter` sends strict `json_schema` to Kimi K3 and `openai_adapter` sets
+  `text.format={type:json_schema, strict:true}`; both return text for journal validation.
+  `zai_adapter` uses its provider-specific structured-output path for explicit GLM routes.
 - **The journal validation + corrective-retry stays the universal authority/fallback** — native
   enforcement is request-side only, so the `agent()`-returns-object-or-null contract is unchanged.
-  Effect: schema'd calls on OpenAI show `workflow_script_calls.retries ≈ 0` (vs GLM's 1/2/3).
-- Prereq: `OPENAI_API_KEY` (in `dapr-agent-py-secrets`) injected into the per-session sandbox pods;
-  cost note — schema'd calls bill OpenAI (kill-switch + per-call override mitigate). Rejected: the
+  Effect: schema'd calls on Kimi K3 or OpenAI use strict provider-side enforcement before journal validation.
+- Default prerequisite: `KIMI_API_KEY` (in `dapr-agent-py-secrets`) is injected into per-session
+  sandbox pods. Explicit OpenAI routes still require `OPENAI_API_KEY`. Rejected: the
   Dapr Conversation API (we bypass that alpha building block by design).
 
 ## Gotchas (each cost real debugging time — do not regress)
@@ -141,11 +140,10 @@ prompt-contract, keyed off the existing `opts.schema` (no callId/contract change
 - **`agentConfig.modelSpec` is the model key dapr-agent-py actually reads**
   (`effective_agent_config.resolve_llm_metadata`; `agents/markdown.ts` maps frontmatter
   `model` → `modelSpec`). The dispatch stamps BOTH `modelSpec` + `model`. Stamping only
-  `model` silently falls back to the Anthropic default.
-- **Default model**: BFF env `DYNAMIC_SCRIPT_DEFAULT_MODEL` (dev: `zai/glm-5.2`) → sent as
+  `model` silently falls back to the Kimi K3 default.
+- **Default model**: BFF env `DYNAMIC_SCRIPT_DEFAULT_MODEL` (default `kimi/kimi-k3`) → sent as
   `defaults.model`, applied ONLY when the resolved runtime is `dapr-agent-py`; per-call
-  `agent(..., {model})` always wins. (Cost datum: a trivial turn ≈ 40 tokens on GLM 5.2 vs
-  ≈ 480 on Opus.)
+  `agent(..., {model})` always wins.
 - **Terminal persistence is explicit**: a workflow that RETURNS an error dict is Dapr
   `COMPLETED`, and the read-model maps COMPLETED→success blindly. All four terminal paths
   (done / script_error / no-dispatchable-work / cancelled) call `persist_results_to_db`.

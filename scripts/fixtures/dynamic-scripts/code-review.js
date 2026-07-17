@@ -1,6 +1,6 @@
 /**
  * code-review — a dynamic-script mimic of Claude Code's built-in `/code-review`
- * (and the heavier `ultrareview`) running on workflow-builder (GLM 5.2 default).
+ * (and the heavier `ultrareview`) running on workflow-builder (Kimi K3 default).
  *
  * Structure (built-in → our primitives) — the canonical pipeline pattern:
  *   Review   one finder per review DIMENSION, in parallel     pipeline() stage 1 (schema'd findings)

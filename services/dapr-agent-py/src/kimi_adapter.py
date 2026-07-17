@@ -17,29 +17,69 @@ from urllib.error import HTTPError
 import urllib.request
 
 from src.provider_conformance import (
-    build_llm_chat_response,
     ensure_chat_completions_history,
     parse_structured_response,
+    strict_json_schema,
 )
 
 logger = logging.getLogger(__name__)
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
-    "llm-kimi-k26": "kimi-k2.6",
-    "llm-kimi-k25": "kimi-k2.5",
+    "llm-kimi-k3": "kimi-k3",
 }
+
+_KIMI_REASONING_MESSAGE_MODEL: Any = None
+_KIMI_REASONING_ENTRY_MODEL: Any = None
 
 
 def _is_kimi_component(component: str) -> bool:
-    text = str(component or "")
-    return text in COMPONENT_MODEL_MAP or text.startswith("llm-kimi-k2")
+    return str(component or "") in COMPONENT_MODEL_MAP
 
 
 def _get_kimi_model(component: str) -> str:
     return COMPONENT_MODEL_MAP.get(
         component,
-        os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k2.6"),
+        os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k3"),
     )
+
+
+def _kimi_reasoning_state_models() -> tuple[Any, Any]:
+    """Return Dapr state models that retain K3 reasoning across tool turns."""
+    global _KIMI_REASONING_MESSAGE_MODEL, _KIMI_REASONING_ENTRY_MODEL
+    if _KIMI_REASONING_MESSAGE_MODEL is not None:
+        return _KIMI_REASONING_MESSAGE_MODEL, _KIMI_REASONING_ENTRY_MODEL
+
+    from pydantic import Field
+    from dapr_agents.agents.schemas import AgentWorkflowEntry, AgentWorkflowMessage
+
+    class KimiReasoningWorkflowMessage(AgentWorkflowMessage):
+        reasoning_content: str | None = None
+
+    class KimiReasoningWorkflowEntry(AgentWorkflowEntry):
+        messages: list[KimiReasoningWorkflowMessage] = Field(default_factory=list)
+        system_messages: list[KimiReasoningWorkflowMessage] = Field(
+            default_factory=list
+        )
+        last_message: KimiReasoningWorkflowMessage | None = None
+
+    _KIMI_REASONING_MESSAGE_MODEL = KimiReasoningWorkflowMessage
+    _KIMI_REASONING_ENTRY_MODEL = KimiReasoningWorkflowEntry
+    return _KIMI_REASONING_MESSAGE_MODEL, _KIMI_REASONING_ENTRY_MODEL
+
+
+def install_kimi_reasoning_state_schema() -> None:
+    """Extend dapr-agent-py's state schema before DurableAgent construction."""
+    from dapr_agents.agents.configs import DEFAULT_AGENT_WORKFLOW_BUNDLE
+
+    message_model, entry_model = _kimi_reasoning_state_models()
+    DEFAULT_AGENT_WORKFLOW_BUNDLE.message_model_cls = message_model
+    DEFAULT_AGENT_WORKFLOW_BUNDLE.entry_model_cls = entry_model
+
+
+def coerce_kimi_reasoning_message(message: dict[str, Any]) -> Any:
+    """Coerce state messages without dropping K3's reasoning_content field."""
+    message_model, _ = _kimi_reasoning_state_models()
+    return message_model(**message)
 
 
 def _message_attr(message: Any, name: str, default: Any = None) -> Any:
@@ -115,6 +155,11 @@ def _normalize_messages_for_kimi(
 
         if role == "assistant":
             item: dict[str, Any] = {"role": "assistant", "content": text or None}
+            reasoning_content = _as_text(
+                _message_attr(message, "reasoning_content", "")
+            )
+            if reasoning_content:
+                item["reasoning_content"] = reasoning_content
             tool_calls = _message_attr(message, "tool_calls", None) or []
             normalized = [
                 call
@@ -131,19 +176,23 @@ def _normalize_messages_for_kimi(
         if role == "tool":
             call_id = str(_message_attr(message, "tool_call_id", "") or "").strip()
             if call_id:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": text or "ok",
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": text or "ok",
+                    }
+                )
             else:
                 messages.append({"role": "user", "content": text or "ok"})
             continue
 
-        messages.append({
-            "role": "user" if role not in {"user", "assistant"} else role,
-            "content": text or "Continue.",
-        })
+        messages.append(
+            {
+                "role": "user" if role not in {"user", "assistant"} else role,
+                "content": text or "Continue.",
+            }
+        )
 
     if not messages:
         messages.append({"role": "user", "content": "Continue."})
@@ -198,19 +247,21 @@ def _convert_tools_for_kimi_chat(
         name = _tool_name(tool)
         if not name:
             continue
-        converted.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": _tool_description(tool, name),
-                "parameters": _tool_parameters(tool),
-                # Kimi defaults function schemas to strict MFJS validation.
-                # Our coding tools use provider-agnostic JSON Schema, so keep
-                # provider request validation permissive and let tool execution
-                # validate concrete arguments.
-                "strict": False,
-            },
-        })
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": _tool_description(tool, name),
+                    "parameters": _tool_parameters(tool),
+                    # Kimi defaults function schemas to strict MFJS validation.
+                    # Our coding tools use provider-agnostic JSON Schema, so keep
+                    # provider request validation permissive and let tool execution
+                    # validate concrete arguments.
+                    "strict": False,
+                },
+            }
+        )
     if not converted:
         return None
     converted.sort(key=lambda item: item["function"].get("name") or "")
@@ -239,19 +290,19 @@ def _extract_kimi_response(
         if call is not None
     ]
     finish_reason = choice.get("finish_reason")
-    return content, tool_calls, str(finish_reason) if finish_reason else None, reasoning_content
+    return (
+        content,
+        tool_calls,
+        str(finish_reason) if finish_reason else None,
+        reasoning_content,
+    )
 
 
 def _auth_headers() -> tuple[dict[str, str], str]:
-    api_key = os.environ.get("KIMI_API_KEY") or os.environ.get("MOONSHOT_API_KEY")
+    api_key = os.environ.get("KIMI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "No Kimi authentication configured. Set KIMI_API_KEY."
-        )
-    auth_mode = (
-        "kimi-api-key" if os.environ.get("KIMI_API_KEY") else "moonshot-api-key"
-    )
-    return {"Authorization": f"Bearer {api_key}"}, auth_mode
+        raise RuntimeError("No Kimi authentication configured. Set KIMI_API_KEY.")
+    return {"Authorization": f"Bearer {api_key}"}, "kimi-api-key"
 
 
 def _user_agent() -> str:
@@ -351,9 +402,7 @@ def _publish_llm_usage(
             return
         usage = usage or {}
         prompt_cache_hit = int(
-            usage.get("cached_tokens")
-            or usage.get("prompt_cache_hit_tokens")
-            or 0
+            usage.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
         )
         prompt_cache_miss = int(usage.get("prompt_cache_miss_tokens") or 0)
         prompt_tokens = int(
@@ -388,17 +437,31 @@ def _publish_llm_usage(
 def _apply_kimi_output_mode(
     request_body: dict[str, Any],
     *,
-    structured: bool,
-    tool_chat: bool = False,
+    response_format: Any = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> None:
-    if structured:
-        request_body["thinking"] = {"type": "disabled"}
-        request_body["response_format"] = {"type": "json_object"}
+    reasoning_effort = os.environ.get("KIMI_REASONING_EFFORT", "max").strip().lower()
+    if reasoning_effort != "max":
+        raise RuntimeError("KIMI_REASONING_EFFORT must be 'max' for kimi-k3.")
+    request_body["reasoning_effort"] = reasoning_effort
+
+    if response_format is None and native_json_schema is None:
         return
-    if tool_chat:
-        request_body["thinking"] = {"type": "disabled"}
-        return
-    request_body["thinking"] = {"type": "enabled"}
+
+    if response_format is not None:
+        schema_name = response_format.__name__
+        schema = strict_json_schema(response_format.model_json_schema())
+    else:
+        schema_name = "structured_output"
+        schema = strict_json_schema(native_json_schema or {})
+    request_body["response_format"] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_name,
+            "schema": schema,
+            "strict": True,
+        },
+    }
 
 
 def _messages_contain_json_instruction(messages: list[dict[str, Any]]) -> bool:
@@ -431,7 +494,7 @@ def _call_kimi_chat(
     max_tokens: int | None = None,
     response_format: Any = None,
     tool_choice: Any = None,
-    cache_key: str | None = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model = _get_kimi_model(component)
     converted_tools = _convert_tools_for_kimi_chat(tools)
@@ -467,21 +530,19 @@ def _call_kimi_chat(
     output_cap = max_tokens or int(
         os.environ.get(
             "KIMI_MAX_COMPLETION_TOKENS",
-            os.environ.get("KIMI_MAX_TOKENS", "8192"),
+            os.environ.get("KIMI_MAX_TOKENS", "131072"),
         )
     )
     request_body: dict[str, Any] = {
         "model": model,
         "messages": (
             _ensure_json_instruction(messages)
-            if response_format is not None
+            if response_format is not None or native_json_schema is not None
             else messages
         ),
         "max_completion_tokens": output_cap,
         "stream": False,
     }
-    if cache_key:
-        request_body["prompt_cache_key"] = cache_key
     if converted_tools:
         request_body["tools"] = converted_tools
         if tool_choice in (None, "", "auto"):
@@ -498,8 +559,8 @@ def _call_kimi_chat(
             request_body["tool_choice"] = "auto"
     _apply_kimi_output_mode(
         request_body,
-        structured=response_format is not None,
-        tool_chat="tools" in request_body,
+        response_format=response_format,
+        native_json_schema=native_json_schema,
     )
 
     logger.info(
@@ -588,6 +649,7 @@ def _call_kimi_chat(
                 has_tool_call=bool(tool_calls),
                 ttft_ms=duration_ms,
                 model_output=content or None,
+                thinking_output=reasoning_content or None,
             )
             record_tokens(type_="input", count=input_tokens, model=model)
             record_tokens(type_="output", count=output_tokens, model=model)
@@ -615,6 +677,7 @@ def _call_kimi_chat(
         },
     }
     if reasoning_content:
+        result["reasoning_content"] = reasoning_content
         result["metadata"]["reasoning_content_present"] = True
     if tool_calls:
         result["tool_calls"] = tool_calls
@@ -647,6 +710,42 @@ def _call_kimi_chat(
     return result
 
 
+def _build_kimi_chat_response(
+    *,
+    content: str,
+    reasoning_content: str,
+    tool_calls: list[dict[str, Any]] | None,
+    metadata: dict[str, Any] | None,
+) -> Any:
+    """Build a Dapr response whose assistant message retains K3 reasoning."""
+    from dapr_agents.types.message import (
+        AssistantMessage,
+        LLMChatCandidate,
+        LLMChatResponse,
+    )
+
+    class KimiAssistantMessage(AssistantMessage):
+        reasoning_content: str
+
+    message_kwargs: dict[str, Any] = {
+        "content": content or "",
+        "role": "assistant",
+        "reasoning_content": reasoning_content or "",
+    }
+    if tool_calls:
+        message_kwargs["tool_calls"] = tool_calls
+    message = KimiAssistantMessage(**message_kwargs)
+    return LLMChatResponse(
+        results=[
+            LLMChatCandidate(
+                message=message,
+                finish_reason="tool_use" if tool_calls else "end_turn",
+            )
+        ],
+        metadata=metadata or {},
+    )
+
+
 def patch_for_kimi(llm_client: Any) -> None:
     """Patch DaprChatClient to use Kimi's OpenAI-compatible chat endpoint."""
 
@@ -666,8 +765,6 @@ def patch_for_kimi(llm_client: Any) -> None:
             max_tokens = kwargs.get("max_tokens")
             response_format = kwargs.get("response_format")
             tool_choice = kwargs.get("tool_choice")
-            cache_key = getattr(self, "_cache_key", None)
-
             messages = _normalize_messages_for_kimi(
                 prompt,
                 raw_messages if isinstance(raw_messages, list) else None,
@@ -679,7 +776,11 @@ def patch_for_kimi(llm_client: Any) -> None:
                 max_tokens=max_tokens,
                 response_format=response_format,
                 tool_choice=tool_choice,
-                cache_key=cache_key if isinstance(cache_key, str) else None,
+                native_json_schema=(
+                    getattr(self, "_response_json_schema", None)
+                    if response_format is None
+                    else None
+                ),
             )
 
             if response_format is not None:
@@ -688,8 +789,9 @@ def patch_for_kimi(llm_client: Any) -> None:
                     result.get("content", "") or "",
                 )
 
-            return build_llm_chat_response(
+            return _build_kimi_chat_response(
                 content=result.get("content", "") or "",
+                reasoning_content=result.get("reasoning_content", "") or "",
                 tool_calls=result.get("tool_calls") or None,
                 metadata=result.get("metadata") or {},
             )

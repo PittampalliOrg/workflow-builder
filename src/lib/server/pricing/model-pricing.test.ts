@@ -13,6 +13,15 @@ describe("model pricing", () => {
 			resolvedModel: "claude-opus-4-8",
 			pricing: { inputPerMillion: 5, outputPerMillion: 25 },
 		});
+		expect(resolveModelPricing("kimi/kimi-k3")).toMatchObject({
+			fallback: false,
+			resolvedModel: "kimi/kimi-k3",
+			pricing: {
+				inputPerMillion: 3,
+				outputPerMillion: 15,
+				cacheReadPerMillion: 0.3,
+			},
+		});
 		expect(resolveModelPricing("unknown/provider-model")).toEqual({
 			fallback: true,
 			resolvedModel: null,

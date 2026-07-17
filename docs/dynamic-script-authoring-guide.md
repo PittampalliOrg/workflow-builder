@@ -87,11 +87,11 @@ Claude Code accepts tier aliases like `'opus'`, `'sonnet'`, `'haiku'`, `'fable'`
 is passed straight through as the agent's `modelSpec`/`model`** (`script_agent_dispatch.py`
 `_build_agent_config`). It must be a key the runtime resolves:
 
-- ✅ `{ model: 'zai/glm-5.2' }`, `{ model: 'anthropic/claude-opus-4-8' }`, `{ model: 'openai/gpt-5.5' }`
+- ✅ `{ model: 'kimi/kimi-k3' }`, `{ model: 'anthropic/claude-opus-4-8' }`, `{ model: 'openai/gpt-5.5' }`
 - ❌ `{ model: 'opus' }` — not a resolvable key → the runtime **falls back to its default model**, silently.
 
 Omit `model` to inherit the run default. The default is set by the BFF env
-`DYNAMIC_SCRIPT_DEFAULT_MODEL` (dev = `zai/glm-5.2`) and is applied **only when the resolved
+`DYNAMIC_SCRIPT_DEFAULT_MODEL` (dev = `kimi/kimi-k3`) and is applied **only when the resolved
 runtime is `dapr-agent-py`** — a per-call `agentType` selecting an Anthropic-only runtime never
 inherits a cross-provider default. `dapr-agent-py` reads `modelSpec` (not `model`); the dispatch
 stamps both.
@@ -253,11 +253,12 @@ Pass `opts.schema` (a JSON Schema) to get a validated object back. `agent(prompt
 a schema-valid object or `null` — never an invalid object. Enforcement is layered (all keyed off the
 same `opts.schema`; the return contract is identical regardless of which tier fires):
 
-- **Tier 1 — the `StructuredOutput` tool (the default; the Claude Code mechanism).** By default a
-  schema'd call stays on the configured structured model (`DYNAMIC_SCRIPT_STRUCTURED_MODEL`, default
-  `zai/glm-5.2` — the cheap platform default) and, for object-shaped schemas on GLM / Anthropic /
-  DeepSeek, the runtime injects a synthetic **`StructuredOutput` tool whose parameters ARE your
-  schema** into the request; the agent delivers its result by *calling the tool* (it can use
+- **Tier 1 — strict `json_schema` (the default).** A schema'd call with no model override routes to
+  `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `kimi/kimi-k3`). Kimi K3 applies the supplied JSON
+  Schema natively; OpenAI models use the same strict constrained-decoding tier when selected.
+- **Tier 2 — the `StructuredOutput` tool (the Claude Code mechanism).** For object-shaped schemas
+  on GLM / Anthropic / DeepSeek, the runtime injects a synthetic **`StructuredOutput` tool whose
+  parameters ARE your schema** into the request; the agent delivers its result by *calling the tool* (it can use
   Read/Bash/WebSearch etc. first). Invalid arguments come back as a tool error with the exact
   validation failures, so the model corrects **in the same session** (a new turn, not a new
   session); a model that tries to finish in plain text is re-prompted (up to 5 nudges — the durable
@@ -269,10 +270,6 @@ same `opts.schema`; the return contract is identical regardless of which tier fi
   `structured_output.validation` event (Validation pill). Non-object schemas (and
   `DYNAMIC_SCRIPT_STRUCTURED_TOOL=false`) fall back to `json_object` on GLM (valid JSON, not
   shape-enforced; note `json_object` never applies to tool-carrying sessions anyway).
-- **Tier 2 — OpenAI strict `json_schema` (opt-in).** Route a schema'd call to OpenAI
-  (`opts.model: 'openai/gpt-5.5'`, a per-phase model, or set
-  `DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/gpt-5.5` to make it the default again) for strict
-  constrained decoding — the hardest guarantee available, at OpenAI billing.
 - **Tier 3 — universal fallback (always on).** The `<output-contract>` prompt block +
   `jsonschema` validation + **corrective retry session** (up to `maxStructuredRetries`, default **5**;
   then `null` with `error_max_structured_output_retries`) run for *every* schema'd call regardless of
@@ -280,8 +277,8 @@ same `opts.schema`; the return contract is identical regardless of which tier fi
   optimization that just makes it pass first try.
 
 **Controls & cost:** a per-call `opts.model` (or per-phase `meta.phases[].model`) always wins over the
-structured-model routing. The default keeps **all** calls — schema'd or not — on the cheap GLM
-default; only an explicit OpenAI route bills OpenAI. The whole native path is behind
+structured-model routing. Kimi K3 is the platform and structured-output default; explicit model
+routes use that provider instead. The whole native path is behind
 `DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT` (default on) — set it off to revert every schema'd call to
 the prompt-contract alone; the tool mode alone is behind `DYNAMIC_SCRIPT_STRUCTURED_TOOL`
 (default on).
@@ -329,7 +326,7 @@ zero, or "compare against the others").
 ## Recipes: mimicking the built-in Claude Code workflows
 
 The two flagship built-ins port directly onto these primitives — and, importantly, our
-dapr-agent-py GLM agents ship the **full Claude Code tool set** (`WebSearch`, `WebFetch`, `Read`,
+dapr-agent-py agents ship the **full Claude Code tool set** (`WebSearch`, `WebFetch`, `Read`,
 `Grep`, `Glob`, `Bash`, …), so the research recipe does *genuine* web research, not just knowledge
 synthesis. (Script-spawned `agent()`s set no `allowedTools`, so they get every default tool.)
 

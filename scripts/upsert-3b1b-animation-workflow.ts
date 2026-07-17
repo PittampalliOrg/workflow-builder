@@ -9,8 +9,10 @@
  *                                -> browser_validate_capture
  *
  * Each `durable/run` step dispatches via the workflow→session bridge to a
- * published agent's per-agent runtime pod (defaults to deepseek-v4-pro,
- * override with --agent-id / --agent-version). Mirrors the modern shape
+ * published agent's per-agent runtime pod. By default this script creates or
+ * reconciles a dedicated dapr-agent-py Kimi K3 agent and binds the workflow to
+ * its exact published version. Override with --agent-id / --agent-version.
+ * Mirrors the modern shape
  * established by services/code-eval-runner/code-eval-item.workflow.json
  * and scripts/upsert-plan-execute-browser-demo-workflow.ts.
  *
@@ -24,19 +26,24 @@
  *     `browser/validate` step that runs `python3 -m http.server` against
  *     the generated static files and captures screenshots end-to-end.
  *   - Drops the legacy hardcoded `9mg45nG313FLp1u82zqOP` agent reference;
- *     the script accepts --agent-id/--agent-version with deepseek defaults.
+ *     the script owns a stable Kimi K3 agent definition while retaining an
+ *     explicit --agent-id/--agent-version escape hatch.
  *   - Drops the `3b1b-style-animation` agent_skill_registry reference; the
  *     prompt is self-contained enough to produce the animation from the
  *     instructions alone.
  *
  * Usage:
- *   DATABASE_URL=... node scripts/upsert-3b1b-animation-workflow.ts
- *   DATABASE_URL=... node scripts/upsert-3b1b-animation-workflow.ts \
+ *   DATABASE_URL=... pnpm exec tsx scripts/upsert-3b1b-animation-workflow.ts
+ *   DATABASE_URL=... pnpm exec tsx scripts/upsert-3b1b-animation-workflow.ts \
  *     --user-email vinod@pittampalli.com \
- *     --agent-id agnt_claude_code_sdk_smoke --agent-version 1
+ *     --agent-id agnt_existing_override --agent-version 1
  */
 
+import { pathToFileURL } from "node:url";
+import { nanoid } from "nanoid";
 import postgres from "postgres";
+import { hashAgentConfig } from "../src/lib/server/agents/config-hash";
+import type { AgentConfig } from "../src/lib/types/agents";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const WORKFLOW_ID = process.env.WORKFLOW_ID || "three-b-one-b-skill-animation";
@@ -46,18 +53,69 @@ const WORKFLOW_DESCRIPTION =
   process.env.WORKFLOW_DESCRIPTION ||
   "Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
 
+export const KIMI_AGENT_SLUG = "kimi-k3-3b1b-animation-builder";
+export const KIMI_AGENT_NAME = "Kimi K3 3B1B Animation Builder";
+export const KIMI_AGENT_DESCRIPTION =
+  "Dapr Agents coding agent for building self-contained 3Blue1Brown-style browser animations with Kimi K3.";
+
+// Provider credentials stay on the llm-kimi-k3 Dapr component via
+// KIMI_API_KEY; agent definitions never persist provider secrets.
+export const KIMI_AGENT_CONFIG = {
+  systemPrompt:
+    "You build polished, self-contained mathematical browser animations. Work directly in the supplied sandbox, prefer Canvas or SVG with plain HTML/CSS/JavaScript, preserve the requested stable DOM ids, and verify the generated files before finishing.",
+  runtime: "dapr-agent-py",
+  runtimeClass: "coding",
+  runtimeIsolation: "shared",
+  modelSpec: "kimi/kimi-k3",
+  reasoningEffort: "max",
+  contextWindowTokens: 1_048_576,
+  maxTurns: 60,
+  timeoutMinutes: 60,
+  cwd: "/sandbox",
+  builtinTools: [
+    "execute_command",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "glob_files",
+    "grep_search",
+  ],
+  tools: [],
+  mcpConnectionMode: "explicit",
+  mcpServers: [],
+  skills: [],
+  memory: { backend: "dapr_state" },
+  runtimeOverridePolicy: {
+    allowToolNarrowing: true,
+    allowServerAdditions: false,
+    allowCredentialBinding: true,
+    allowSkillAdditions: false,
+    allowSkillNarrowing: true,
+  },
+} as const;
+
 type JsonRecord = Record<string, unknown>;
 
 interface ParsedArgs {
   userEmail: string;
-  agentId: string;
-  agentVersion: number;
+  agentOverride?: AgentOverride;
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+export interface AgentRef {
+  id: string;
+  version: number;
+}
+
+interface AgentOverride {
+  id: string;
+  version?: number;
+}
+
+export function parseArgs(argv: string[]): ParsedArgs {
   let userEmail = "";
-  let agentId = "agnt_claude_code_sdk_smoke";
-  let agentVersion = 1;
+  let agentId = "";
+  let agentVersion: number | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--user-email") {
       userEmail = String(argv[i + 1] || "").trim();
@@ -70,7 +128,21 @@ function parseArgs(argv: string[]): ParsedArgs {
       i += 1;
     }
   }
-  return { userEmail, agentId, agentVersion };
+  if (
+    agentVersion !== undefined &&
+    (!Number.isInteger(agentVersion) || agentVersion <= 0)
+  ) {
+    throw new Error("--agent-version must be a positive integer");
+  }
+  if (agentVersion !== undefined && !agentId) {
+    throw new Error("--agent-version requires --agent-id");
+  }
+  return {
+    userEmail,
+    ...(agentId
+      ? { agentOverride: { id: agentId, version: agentVersion } }
+      : {}),
+  };
 }
 
 async function resolveOwner(
@@ -126,12 +198,160 @@ async function resolveOwner(
   throw new Error("Could not resolve a workflow owner.");
 }
 
+function hashConfig(config: JsonRecord): string {
+  return hashAgentConfig(config as AgentConfig);
+}
+
+export async function ensureKimiAgent(
+  sql: postgres.Sql,
+  owner: { userId: string; projectId: string | null },
+): Promise<AgentRef> {
+  const config = KIMI_AGENT_CONFIG as unknown as JsonRecord;
+  const configHash = hashConfig(config);
+  const existingRows = await sql`
+    select a.id, av.version, av.config_hash
+    from agents a
+    left join agent_versions av on av.id = a.current_version_id
+    where a.slug = ${KIMI_AGENT_SLUG}
+    limit 1
+  `;
+  const existing = existingRows[0];
+
+  if (existing?.id && existing.config_hash === configHash) {
+    await sql`
+      update agents
+      set
+        name = ${KIMI_AGENT_NAME},
+        description = ${KIMI_AGENT_DESCRIPTION},
+        tags = ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        runtime = ${"dapr-agent-py"},
+        registry_status = ${"registered"},
+        is_archived = false,
+        updated_at = now()
+      where id = ${existing.id}
+        and (
+          name is distinct from ${KIMI_AGENT_NAME}
+          or description is distinct from ${KIMI_AGENT_DESCRIPTION}
+          or tags is distinct from ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
+          or runtime is distinct from ${"dapr-agent-py"}
+          or registry_status is distinct from ${"registered"}
+          or is_archived is distinct from false
+        )
+    `;
+    return { id: String(existing.id), version: Number(existing.version) };
+  }
+
+  if (existing?.id) {
+    const versionRows = await sql`
+      select coalesce(max(version), 0)::int as version
+      from agent_versions
+      where agent_id = ${existing.id}
+    `;
+    const nextVersion = Number(versionRows[0]?.version ?? 0) + 1;
+    const versionId = nanoid();
+    await sql.begin(async (transaction) => {
+      const tx = transaction as unknown as postgres.Sql;
+      await tx`
+        insert into agent_versions (
+          id, agent_id, version, config, config_hash,
+          changelog, published_at, published_by, created_at
+        ) values (
+          ${versionId}, ${existing.id}, ${nextVersion},
+          ${sql.json(config as postgres.JSONValue)}, ${configHash},
+          ${"Reconcile the 3B1B animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
+          now(), ${owner.userId}, now()
+        )
+      `;
+      await tx`
+        update agents
+        set
+          name = ${KIMI_AGENT_NAME},
+          description = ${KIMI_AGENT_DESCRIPTION},
+          tags = ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+          runtime = ${"dapr-agent-py"},
+          registry_status = ${"registered"},
+          is_archived = false,
+          current_version_id = ${versionId},
+          updated_at = now()
+        where id = ${existing.id}
+      `;
+    });
+    return { id: String(existing.id), version: nextVersion };
+  }
+
+  const agentId = nanoid();
+  const versionId = nanoid();
+  await sql.begin(async (transaction) => {
+    const tx = transaction as unknown as postgres.Sql;
+    await tx`
+      insert into agents (
+        id, slug, name, description, tags, runtime,
+        created_by, project_id, registry_status, is_archived,
+        default_vault_ids, created_at, updated_at
+      ) values (
+        ${agentId}, ${KIMI_AGENT_SLUG}, ${KIMI_AGENT_NAME},
+        ${KIMI_AGENT_DESCRIPTION},
+        ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        ${"dapr-agent-py"}, ${owner.userId}, ${owner.projectId},
+        ${"registered"}, false, ${sql.json([])}, now(), now()
+      )
+    `;
+    await tx`
+      insert into agent_versions (
+        id, agent_id, version, config, config_hash,
+        changelog, published_at, published_by, created_at
+      ) values (
+        ${versionId}, ${agentId}, 1,
+        ${sql.json(config as postgres.JSONValue)}, ${configHash},
+        ${"Initial Kimi K3 definition for the 3B1B animation workflow."},
+        now(), ${owner.userId}, now()
+      )
+    `;
+    await tx`
+      update agents
+      set current_version_id = ${versionId}, updated_at = now()
+      where id = ${agentId}
+    `;
+  });
+  return { id: agentId, version: 1 };
+}
+
+async function resolveAgentOverride(
+  sql: postgres.Sql,
+  override: AgentOverride,
+): Promise<AgentRef> {
+  const rows =
+    override.version !== undefined
+      ? await sql`
+          select a.id, av.version
+          from agents a
+          join agent_versions av on av.agent_id = a.id
+          where a.id = ${override.id} and av.version = ${override.version}
+          limit 1
+        `
+      : await sql`
+          select a.id, av.version
+          from agents a
+          join agent_versions av on av.id = a.current_version_id
+          where a.id = ${override.id}
+          limit 1
+        `;
+  if (!rows[0]?.id) {
+    throw new Error(
+      `Could not resolve published agent ${override.id}${
+        override.version !== undefined ? ` version ${override.version}` : ""
+      }`,
+    );
+  }
+  return { id: String(rows[0].id), version: Number(rows[0].version) };
+}
+
 // ---------------------------------------------------------------------------
 // SW 1.0 spec builders
 // ---------------------------------------------------------------------------
 
 const APP_DIR = "/sandbox/3b1b-style-animation-example";
-const BUILD_OUTPUT_SANDBOX_NAME = "${ .workspace_profile.sandboxName // \"\" }";
+const BUILD_OUTPUT_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
 const BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
 // Port is allocated by openshell-agent-runtime's `_allocate_local_port()`
 // per-run, not by us — so we don't pick one. Hardcoding a port collides
@@ -177,23 +397,23 @@ function makeWorkspaceProfileTask(): JsonRecord {
 const BUILD_PROMPT_PARTS = [
   '${ .trigger.animationDescription + " — Build a self-contained browser animation in ',
   APP_DIR,
-  ' with index.html, styles.css, script.js, and README.md. ',
-  'Use Canvas or SVG so the result runs via a simple static file server. ',
-  'The browser animation is the required deliverable. ',
+  " with index.html, styles.css, script.js, and README.md. ",
+  "Use Canvas or SVG so the result runs via a simple static file server. ",
+  "The browser animation is the required deliverable. ",
   'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
   'the play/pause control <button id=\\"btn-play\\">, ',
   'the restart control <button id=\\"btn-restart\\">. ',
-  'Do NOT install Manim — if a scene is useful, include scene.py as optional source only. ',
-  'Do not start any preview server; the downstream browser/validate and ',
-  'browser/start-preview steps will do that. ',
-  'The page must work when served as static files (no module imports outside relative script.js). ',
-  'Do NOT create a package.json — that triggers the runtime\'s npm-run-dev fallback ',
-  'which expects flags python3\'s http.server doesn\'t recognize. ',
+  "Do NOT install Manim — if a scene is useful, include scene.py as optional source only. ",
+  "Do not start any preview server; the downstream browser/validate and ",
+  "browser/start-preview steps will do that. ",
+  "The page must work when served as static files (no module imports outside relative script.js). ",
+  "Do NOT create a package.json — that triggers the runtime's npm-run-dev fallback ",
+  "which expects flags python3's http.server doesn't recognize. ",
   'Final answer: list the files created and a one-paragraph outline of the animation logic." }',
 ];
 const BUILD_PROMPT = BUILD_PROMPT_PARTS.join("");
 
-function makeBuildAnimationTask(args: ParsedArgs): JsonRecord {
+function makeBuildAnimationTask(agentRef: AgentRef): JsonRecord {
   return {
     call: "durable/run",
     with: {
@@ -218,7 +438,7 @@ function makeBuildAnimationTask(args: ParsedArgs): JsonRecord {
         keepAfterRun: true,
       },
       body: {
-        agentRef: { id: args.agentId, version: args.agentVersion },
+        agentRef,
         prompt: BUILD_PROMPT,
         overrides: {
           cwd: "/sandbox",
@@ -328,7 +548,8 @@ function makeBrowserValidateTask(): JsonRecord {
       metadata: {
         appPath: APP_DIR,
         workflowStage: "post-3b1b-animation",
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
+        runtimeSandboxName:
+          "${ .build_3b1b_animation.runtimeSandboxName // null }",
       },
       timeoutMs: 900000,
     },
@@ -339,7 +560,7 @@ function makeBrowserValidateTask(): JsonRecord {
 // Spec assembly
 // ---------------------------------------------------------------------------
 
-function buildSpec(args: ParsedArgs): JsonRecord {
+export function buildSpec(agentRef: AgentRef): JsonRecord {
   return {
     document: {
       dsl: "1.0.0",
@@ -375,7 +596,7 @@ function buildSpec(args: ParsedArgs): JsonRecord {
     },
     do: [
       { workspace_profile: makeWorkspaceProfileTask() },
-      { build_3b1b_animation: makeBuildAnimationTask(args) },
+      { build_3b1b_animation: makeBuildAnimationTask(agentRef) },
       { browser_validate_capture: makeBrowserValidateTask() },
       { start_preview: makeStartPreviewTask() },
     ],
@@ -384,7 +605,8 @@ function buildSpec(args: ParsedArgs): JsonRecord {
         appPath: APP_DIR,
         workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
         sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
+        runtimeSandboxName:
+          "${ .build_3b1b_animation.runtimeSandboxName // null }",
         animation: "${ .build_3b1b_animation }",
         screenshots: "${ .browser_validate_capture }",
         preview: "${ .start_preview }",
@@ -519,8 +741,11 @@ async function main() {
       limit 1
     `;
     const owner = await resolveOwner(sql, existingRows[0], args.userEmail);
+    const agentRef = args.agentOverride
+      ? await resolveAgentOverride(sql, args.agentOverride)
+      : await ensureKimiAgent(sql, owner);
 
-    const spec = buildSpec(args);
+    const spec = buildSpec(agentRef);
     const nodes = buildNodes();
     const edges = buildEdges();
     const now = new Date().toISOString();
@@ -570,7 +795,12 @@ async function main() {
     `;
 
     console.log(`Upserted workflow ${WORKFLOW_ID}`);
-    console.log(`  agentRef        = { id: '${args.agentId}', version: ${args.agentVersion} }`);
+    console.log(
+      `  agentRef        = { id: '${agentRef.id}', version: ${agentRef.version} }`,
+    );
+    console.log(
+      `  agent source    = ${args.agentOverride ? "explicit override" : KIMI_AGENT_SLUG}`,
+    );
     console.log(`  owner.userId    = ${owner.userId}`);
     console.log(`  owner.projectId = ${owner.projectId ?? "(none)"}`);
     console.log(`  visibility      = public`);
@@ -580,7 +810,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("[upsert-3b1b-animation-workflow] Error:", error);
-  process.exitCode = 1;
-});
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error("[upsert-3b1b-animation-workflow] Error:", error);
+    process.exitCode = 1;
+  });
+}

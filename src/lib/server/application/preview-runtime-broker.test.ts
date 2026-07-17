@@ -88,7 +88,7 @@ function harness(
     budget,
     budgetLimits: { ...budgetLimits, ...input.budgetLimits },
     requestLimits: { ...requestLimits, ...input.requestLimits },
-    allowedModels: ["deepseek-v4-pro"],
+    allowedModels: ["deepseek-v4-pro", "kimi-k3"],
     maxConcurrency: input.maxConcurrency ?? 2,
     audit,
   });
@@ -166,6 +166,66 @@ describe("preview runtime broker application policy", () => {
         payload: { ...gatewayPayload, thinking: { type: "enabled" } },
       }),
     ).rejects.toMatchObject({ code: "invalid-request" });
+  });
+
+  it("accepts Kimi K3 max reasoning and preserves bounded assistant reasoning", async () => {
+    const h = harness();
+    const kimiPayload = {
+      model: "kimi-k3",
+      messages: [
+        { role: "user", content: "Read the file." },
+        {
+          role: "assistant",
+          content: "",
+          reasoning_content: "I should inspect README.md.\nThen continue.",
+          tool_calls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: {
+                name: "read_file",
+                arguments: '{"path":"README.md"}',
+              },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call-1", content: "contents" },
+      ],
+      max_completion_tokens: 131_072,
+      reasoning_effort: "max",
+    };
+
+    await expect(
+      h.service.complete({ ...request, payload: kimiPayload }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(h.upstream.complete).toHaveBeenCalledWith({
+      identity,
+      payload: { ...kimiPayload, max_completion_tokens: 512 },
+    });
+
+    for (const payload of [
+      { ...kimiPayload, reasoning_effort: "ultra" },
+      {
+        ...kimiPayload,
+        messages: [
+          { role: "user", content: "hello", reasoning_content: "not allowed" },
+        ],
+      },
+      {
+        ...kimiPayload,
+        messages: [
+          {
+            role: "assistant",
+            content: "done",
+            reasoning_content: "x".repeat(requestLimits.maxContentBytes + 1),
+          },
+        ],
+      },
+    ]) {
+      await expect(
+        h.service.complete({ ...request, payload }),
+      ).rejects.toMatchObject({ code: "invalid-request" });
+    }
   });
 
   it("enforces payload, message-content, and tool shape/size bounds", async () => {

@@ -21,7 +21,7 @@ import { AGENT_MODEL_OPTIONS } from "$lib/agents/model-options";
  * `agents.x-k8s.io/slug: <slug>`).
  */
 
-const DEFAULT_LLM_COMPONENT = "llm-anthropic-opus";
+const DEFAULT_LLM_COMPONENT = "llm-kimi-k3";
 
 const DEFAULT_BROWSER_USE_IMAGE =
 	"gitea-ryzen.tail286401.ts.net/giteaadmin/browser-use-agent-sandbox:latest";

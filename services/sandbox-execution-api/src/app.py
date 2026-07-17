@@ -3231,7 +3231,7 @@ def build_agent_workflow_host_sandbox_manifest(
                     {"name": "XDG_CONFIG_HOME", "value": config_home},
                     {
                         "name": "DAPR_LLM_COMPONENT_DEFAULT",
-                        "value": "llm-anthropic-opus",
+                        "value": "llm-kimi-k3",
                     },
                     {"name": "DAPR_AGENT_PY_HOOKS_ENABLED", "value": "false"},
                     {"name": "DAPR_AGENT_PY_PLUGINS_ENABLED", "value": "false"},

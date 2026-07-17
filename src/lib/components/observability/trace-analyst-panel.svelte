@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * "Ask the trace" — a GLM-5.2 analyst session bound to one execution.
+	 * "Ask the trace" — a Kimi K3 analyst session bound to one execution.
 	 *
 	 * Embeds SessionTranscript (self-contained SSE) + a composer, exactly like
 	 * the canvas author panel. The exceptional part: the analyst cites evidence

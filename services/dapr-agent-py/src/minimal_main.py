@@ -59,6 +59,13 @@ from src.tools import all_tools, bootstrap_mcp_tools
 
 assert_dapr_agents_version()
 
+from src.kimi_adapter import (  # noqa: E402
+    coerce_kimi_reasoning_message,
+    install_kimi_reasoning_state_schema,
+)
+
+install_kimi_reasoning_state_schema()
+
 from dapr_agents.agents.configs import (  # noqa: E402
     AgentExecutionConfig,
     AgentStateConfig,
@@ -410,7 +417,7 @@ class MinimalOpenShellDurableAgent(DurableAgent):
 AGENT_SERVICE_NAME = os.environ.get("AGENT_SERVICE_NAME", "dapr-agent-py-minimal")
 DEFAULT_LLM_COMPONENT = os.environ.get(
     "DAPR_LLM_COMPONENT_DEFAULT",
-    os.environ.get("AGENT_LLM_COMPONENT", "llm-deepseek-v4-pro"),
+    os.environ.get("AGENT_LLM_COMPONENT", "llm-kimi-k3"),
 )
 DEFAULT_MAX_ITERATIONS = _env_int(
     "DAPR_AGENT_PY_MAX_ITERATIONS",
@@ -434,7 +441,10 @@ agent = MinimalOpenShellDurableAgent(
         max_iterations=DEFAULT_MAX_ITERATIONS,
         tool_execution_mode=ToolExecutionMode.SEQUENTIAL,
     ),
-    state=AgentStateConfig(store=StateStoreService(store_name=AGENT_STATE_STORE)),
+    state=AgentStateConfig(
+        store=StateStoreService(store_name=AGENT_STATE_STORE),
+        message_coercer=coerce_kimi_reasoning_message,
+    ),
     retry_policy=WorkflowRetryPolicy(
         max_attempts=8,
         initial_backoff_seconds=4,

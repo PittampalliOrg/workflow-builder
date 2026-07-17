@@ -134,12 +134,6 @@ def test_nvidia_component_model_map_includes_coding_models() -> None:
     assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-devstral-2-123b"] == (
         "mistralai/devstral-2-123b-instruct-2512"
     )
-    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-kimi-k2-thinking"] == (
-        "moonshotai/kimi-k2-thinking"
-    )
-    assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-kimi-k2-0905"] == (
-        "moonshotai/kimi-k2-instruct-0905"
-    )
     assert adapter.COMPONENT_MODEL_MAP["llm-nvidia-glm47"] == "z-ai/glm4.7"
 
 

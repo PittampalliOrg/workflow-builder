@@ -20,6 +20,11 @@ describe('model-groups', () => {
 		expect(glm).toEqual(['zai/glm-5.2']);
 	});
 
+	it('renders only Kimi K3 in the Kimi selector group', () => {
+		const kimi = groupModelOptions().find((group) => group.heading === 'Kimi');
+		expect(kimi?.options.map((option) => option.value)).toEqual(['kimi/kimi-k3']);
+	});
+
 	it('assigns each model option to at most one group', () => {
 		const counts = new Map<string, number>();
 		for (const group of groupModelOptions()) {

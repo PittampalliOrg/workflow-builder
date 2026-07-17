@@ -20,6 +20,8 @@ export type AgentModelOption = {
   provider: AgentModelProvider;
   iconProvider: string;
   component: string;
+  contextWindowTokens?: number;
+  reasoningEffort?: "max";
   sweBenchCapable?: boolean;
 };
 
@@ -79,20 +81,6 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     provider: "nvidia",
     iconProvider: "mistral",
     component: "llm-nvidia-devstral-2-123b",
-  },
-  {
-    value: "nvidia/moonshotai/kimi-k2-thinking",
-    label: "NVIDIA Kimi K2 Thinking",
-    provider: "nvidia",
-    iconProvider: "moonshotai",
-    component: "llm-nvidia-kimi-k2-thinking",
-  },
-  {
-    value: "nvidia/moonshotai/kimi-k2-instruct-0905",
-    label: "NVIDIA Kimi K2 0905",
-    provider: "nvidia",
-    iconProvider: "moonshotai",
-    component: "llm-nvidia-kimi-k2-0905",
   },
   {
     value: "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
@@ -171,19 +159,13 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     sweBenchCapable: true,
   },
   {
-    value: "kimi/kimi-k2.6",
-    label: "Kimi K2.6",
+    value: "kimi/kimi-k3",
+    label: "Kimi K3",
     provider: "kimi",
     iconProvider: "moonshotai",
-    component: "llm-kimi-k26",
-    sweBenchCapable: true,
-  },
-  {
-    value: "kimi/kimi-k2.5",
-    label: "Kimi K2.5",
-    provider: "kimi",
-    iconProvider: "moonshotai",
-    component: "llm-kimi-k25",
+    component: "llm-kimi-k3",
+    contextWindowTokens: 1_048_576,
+    reasoningEffort: "max",
     sweBenchCapable: true,
   },
   {
@@ -280,13 +262,6 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
     "nvidia/mistralai/devstral-2-123b-instruct-2512",
   "devstral-2-123b-instruct-2512":
     "nvidia/mistralai/devstral-2-123b-instruct-2512",
-  "nvidia/moonshotai/kimi-k2-thinking": "nvidia/moonshotai/kimi-k2-thinking",
-  "moonshotai/kimi-k2-thinking": "nvidia/moonshotai/kimi-k2-thinking",
-  "kimi-k2-thinking": "nvidia/moonshotai/kimi-k2-thinking",
-  "nvidia/moonshotai/kimi-k2-instruct-0905":
-    "nvidia/moonshotai/kimi-k2-instruct-0905",
-  "moonshotai/kimi-k2-instruct-0905": "nvidia/moonshotai/kimi-k2-instruct-0905",
-  "kimi-k2-instruct-0905": "nvidia/moonshotai/kimi-k2-instruct-0905",
   "nvidia/qwen/qwen3-coder-480b-a35b-instruct":
     "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
   "qwen/qwen3-coder-480b-a35b-instruct":
@@ -310,12 +285,9 @@ const AGENT_MODEL_ALIASES: Record<string, string> = {
   "qwen3-coder-plus": "alibaba/qwen3-coder-plus",
   "qwen/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
   "dashscope/qwen3-coder-plus": "alibaba/qwen3-coder-plus",
-  "kimi/kimi-k2.6": "kimi/kimi-k2.6",
-  "kimi-k2.6": "kimi/kimi-k2.6",
-  "moonshot/kimi-k2.6": "kimi/kimi-k2.6",
-  "kimi/kimi-k2.5": "kimi/kimi-k2.5",
-  "kimi-k2.5": "kimi/kimi-k2.5",
-  "moonshot/kimi-k2.5": "kimi/kimi-k2.5",
+  "kimi/kimi-k3": "kimi/kimi-k3",
+  "kimi-k3": "kimi/kimi-k3",
+  "moonshot/kimi-k3": "kimi/kimi-k3",
   "together/zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
   "zai-org/GLM-5.1": "together/zai-org/GLM-5.1",
   "GLM-5.1": "together/zai-org/GLM-5.1",

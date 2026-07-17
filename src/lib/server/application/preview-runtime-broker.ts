@@ -415,7 +415,14 @@ function validateMessage(
   if (!isPlainRecord(value)) return invalid("message must be an object");
   assertOnlyKeys(
     value,
-    new Set(["role", "content", "name", "tool_call_id", "tool_calls"]),
+    new Set([
+      "role",
+      "content",
+      "name",
+      "tool_call_id",
+      "tool_calls",
+      "reasoning_content",
+    ]),
     "message",
   );
   if (typeof value.role !== "string" || !MESSAGE_ROLES.has(value.role)) {
@@ -431,6 +438,17 @@ function validateMessage(
   }
   if (value.role !== "tool" && value.tool_call_id !== undefined) {
     return invalid("tool_call_id is valid only on tool messages");
+  }
+  if (value.reasoning_content !== undefined) {
+    if (value.role !== "assistant") {
+      return invalid("reasoning_content is valid only on assistant messages");
+    }
+    if (
+      typeof value.reasoning_content !== "string" ||
+      utf8Bytes(value.reasoning_content) > limits.maxContentBytes
+    ) {
+      return invalid("assistant reasoning_content is invalid or too large");
+    }
   }
   const toolCalls = value.tool_calls;
   if (toolCalls !== undefined) {
@@ -621,7 +639,7 @@ function validateStop(value: unknown, maxBytes: number): void {
 function validateReasoningEffort(value: unknown): void {
   if (
     value !== undefined &&
-    !["none", "minimal", "low", "medium", "high", "xhigh"].includes(
+    !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(
       String(value),
     )
   ) {

@@ -242,7 +242,7 @@ describe("microservice-dev-session: emitted plan", () => {
 		);
 	});
 
-	it("defaults direct handoff to the GLM dapr-agent-py JuiceFS agent", async () => {
+	it("defaults direct handoff to the Kimi K3 dapr-agent-py JuiceFS agent", async () => {
 		const { tasks } = await drive(
 			script,
 			{ service: "workflow-builder" },

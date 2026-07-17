@@ -22,8 +22,6 @@ def test_context_window_known_model():
     assert get_context_window("llm-nvidia-mistral-medium-35-128b") == 262_144
     assert get_context_window("llm-nvidia-qwen3-coder-480b") == 262_144
     assert get_context_window("llm-nvidia-devstral-2-123b") == 262_144
-    assert get_context_window("llm-nvidia-kimi-k2-thinking") == 256_000
-    assert get_context_window("llm-nvidia-kimi-k2-0905") == 256_000
     assert get_context_window("llm-nvidia-glm47") == 131_072
     assert get_context_window("llm-together-glm-51") == 128_000
     assert get_context_window("llm-together-qwen3-coder-480b") == 262_144
@@ -31,13 +29,25 @@ def test_context_window_known_model():
     assert get_context_window("llm-deepseek-v4-pro") == 1_000_000
     assert get_context_window("deepseek-v4-flash") == 1_000_000
     assert get_context_window("llm-alibaba-qwen3-coder-plus") == 1_000_000
-    assert get_context_window("llm-kimi-k26") == 256_000
-    assert get_context_window("kimi-k2.5") == 256_000
+    assert get_context_window("llm-kimi-k3") == 1_048_576
+    assert get_context_window("kimi-k3") == 1_048_576
 
 
 def test_context_window_unknown_model_falls_back_to_default():
     assert get_context_window("totally-made-up") == DEFAULT_WINDOW
     assert get_context_window(None) == DEFAULT_WINDOW
+
+
+def test_kimi_context_window_uses_valid_env_override(monkeypatch):
+    monkeypatch.setenv("KIMI_CONTEXT_WINDOW", "900000")
+    assert get_context_window("kimi-k3") == 900_000
+    assert get_context_window("llm-kimi-k3") == 900_000
+
+
+def test_kimi_context_window_rejects_invalid_env_override(monkeypatch):
+    for value in ("not-a-number", "0", "-1"):
+        monkeypatch.setenv("KIMI_CONTEXT_WINDOW", value)
+        assert get_context_window("kimi-k3") == 1_048_576
 
 
 def test_context_window_substring_match():

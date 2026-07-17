@@ -148,18 +148,6 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "mistralai/devstral-2-123b-instruct-2512",
         ),
         (
-            "nvidia/moonshotai/kimi-k2-thinking",
-            "llm-nvidia-kimi-k2-thinking",
-            "nvidia",
-            "moonshotai/kimi-k2-thinking",
-        ),
-        (
-            "nvidia/moonshotai/kimi-k2-instruct-0905",
-            "llm-nvidia-kimi-k2-0905",
-            "nvidia",
-            "moonshotai/kimi-k2-instruct-0905",
-        ),
-        (
             "nvidia/z-ai/glm4.7",
             "llm-nvidia-glm47",
             "nvidia",
@@ -207,18 +195,7 @@ def test_snapshot_excludes_prompts_auth_headers_env_and_schemas() -> None:
             "deepseek",
             "deepseek-v4-flash",
         ),
-        (
-            "kimi/kimi-k2.6",
-            "llm-kimi-k26",
-            "kimi",
-            "kimi-k2.6",
-        ),
-        (
-            "kimi-k2.5",
-            "llm-kimi-k25",
-            "kimi",
-            "kimi-k2.5",
-        ),
+        ("kimi/kimi-k3", "llm-kimi-k3", "kimi", "kimi-k3"),
         (
             "googleai/gemini-3-pro-preview",
             "llm-google-gemini",
@@ -250,12 +227,20 @@ def test_model_mapping_records_spec_component_provider_and_provider_model(
 ) -> None:
     llm = resolve_llm_metadata(message={"agentConfig": {"modelSpec": model_spec}})
 
-    assert llm == {
+    expected = {
         "modelSpec": model_spec,
         "llmComponent": llm_component,
         "provider": provider,
         "providerModel": provider_model,
     }
+    if llm_component == "llm-kimi-k3":
+        expected.update(
+            {
+                "contextWindowTokens": 1_048_576,
+                "reasoningEffort": "max",
+            }
+        )
+    assert llm == expected
 
 
 def test_mcp_auth_changes_do_not_change_hash() -> None:
@@ -368,9 +353,9 @@ def test_resolve_llm_metadata_without_reasoning_effort_does_not_crash():
     llm = resolve_llm_metadata(agent_config={"modelSpec": "zai/glm-5.2"})
     assert "reasoningEffort" not in llm
     assert llm["modelSpec"] == "zai/glm-5.2"
-    # Empty config too (the common direct-session path).
+    # Empty config takes the K3 platform default, whose max effort is explicit.
     llm = resolve_llm_metadata(agent_config={})
-    assert "reasoningEffort" not in llm
+    assert llm["reasoningEffort"] == "max"
 
 
 def test_resolve_llm_metadata_carries_valid_reasoning_effort():
@@ -430,6 +415,23 @@ def test_deepseek_default_is_v4_pro():
     assert resolve_llm_component("deepseek/deepseek-v4-pro") == "llm-deepseek-v4-pro"
     assert resolve_llm_component("deepseek/deepseek-v4-flash") == "llm-deepseek-v4-flash"
     assert resolve_llm_component("deepseek/default") == "llm-deepseek"
+
+
+def test_platform_default_is_kimi_k3():
+    assert resolve_llm_component(None) == "llm-kimi-k3"
+    llm = resolve_llm_metadata(agent_config={})
+    assert llm["llmComponent"] == "llm-kimi-k3"
+    assert llm["providerModel"] == "kimi-k3"
+    assert llm["contextWindowTokens"] == 1_048_576
+    assert llm["reasoningEffort"] == "max"
+
+
+def test_kimi_k3_always_records_max_reasoning_effort():
+    llm = resolve_llm_metadata(
+        agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "low"}
+    )
+    assert llm["contextWindowTokens"] == 1_048_576
+    assert llm["reasoningEffort"] == "max"
 
 
 def test_unknown_deepseek_spec_falls_back_to_v4_pro():

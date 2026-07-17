@@ -43,6 +43,13 @@ from src.provider_conformance import (
     parse_structured_response,
     strict_json_schema,
 )
+from src.kimi_adapter import (
+    _apply_kimi_output_mode,
+    _build_kimi_chat_response,
+    _convert_tools_for_kimi_chat,
+    _ensure_json_instruction,
+    _normalize_messages_for_kimi,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +68,16 @@ _DEFAULT_MODEL_MAP: dict[str, str] = {
     "llm-deepseek": "deepseek-v4-pro",                   # default DeepSeek model
     "llm-deepseek-v4-pro": "deepseek-v4-pro",
     "llm-deepseek-v4-flash": "deepseek-v4-flash",
-    # NVIDIA NIM (6 models)
+    # NVIDIA NIM
     "llm-nvidia-llama31-8b": "nvidia-llama31-8b",
     "llm-nvidia-glm47": "nvidia-glm47",
-    "llm-nvidia-kimi-k2-0905": "nvidia-kimi-k2-thinking",
-    "llm-nvidia-kimi-k2-thinking": "nvidia-kimi-k2-thinking",
     "llm-nvidia-devstral-2-123b": "nvidia-devstral-2-123b",
     "llm-nvidia-mistral-medium-35-128b": "nvidia-mistral-medium-35-128b",
     "llm-nvidia-qwen3-coder-480b": "nvidia-qwen3-coder-480b",
-    # Azure AI Foundry — 2 models
-    "llm-foundry-kimi-k26": "foundry-kimi-k26",
+    # Azure AI Foundry
     "llm-foundry-deepseek-v4-flash": "foundry-deepseek-v4-flash",
     # Moonshot Kimi
-    "llm-kimi-k25": "kimi-k25",
-    "llm-kimi-k26": "kimi-k25",                          # fall back to k25
+    "llm-kimi-k3": "kimi-k3",
     # Alibaba DashScope
     "llm-alibaba-qwen3-coder-plus": "alibaba-qwen3-coder-plus",
     # Together (3 models)
@@ -261,6 +264,16 @@ def _normalize_messages(prompt: Any, raw_messages: list[Any] | None) -> list[dic
     return out
 
 
+def _normalize_gateway_messages(
+    gateway_model: str,
+    prompt: Any,
+    raw_messages: list[Any] | None,
+) -> list[dict[str, Any]]:
+    if gateway_model == "kimi-k3":
+        return _normalize_messages_for_kimi(prompt, raw_messages)
+    return _normalize_messages(prompt, raw_messages)
+
+
 def _tool_name(tool: Any) -> str:
     """Extract a tool name from any of the shapes dapr-agents passes:
     dict (OpenAI-format), dict with bare `name`, or an object with a
@@ -358,20 +371,26 @@ def _convert_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
 
 def _extract_response(
     response: dict[str, Any],
-) -> tuple[str, list[dict[str, Any]], str | None]:
+) -> tuple[str, str, list[dict[str, Any]], str | None]:
     choices = response.get("choices") or []
     if not choices or not isinstance(choices[0], dict):
-        return "", [], None
+        return "", "", [], None
     choice = choices[0]
     message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
     content = _as_text(message.get("content"))
+    reasoning_content = _as_text(message.get("reasoning_content"))
     tool_calls = [
         call
         for call in (_normalize_tool_call(c) for c in (message.get("tool_calls") or []))
         if call is not None
     ]
     finish_reason = choice.get("finish_reason")
-    return content, tool_calls, str(finish_reason) if finish_reason else None
+    return (
+        content,
+        reasoning_content,
+        tool_calls,
+        str(finish_reason) if finish_reason else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +481,7 @@ def _call_gateway_chat(
     max_tokens: int | None = None,
     response_format: Any = None,
     tool_choice: Any = None,
+    native_json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Issue a single request to the configured OpenAI-compatible gateway."""
 
@@ -470,16 +490,37 @@ def _call_gateway_chat(
         raise RuntimeError("LLM_GATEWAY_OPENAI_BASE_URL is not set")
 
     url = f"{base}/chat/completions"
-    converted_tools = _convert_tools(tools)
-    output_cap = max_tokens or int(os.environ.get("DAPR_AGENT_PY_GATEWAY_MAX_TOKENS", "4096"))
+    is_kimi_k3 = gateway_model == "kimi-k3"
+    converted_tools = (
+        _convert_tools_for_kimi_chat(tools) if is_kimi_k3 else _convert_tools(tools)
+    )
+    if is_kimi_k3:
+        output_cap = max_tokens or int(
+            os.environ.get(
+                "KIMI_MAX_COMPLETION_TOKENS",
+                os.environ.get("KIMI_MAX_TOKENS", "131072"),
+            )
+        )
+    else:
+        output_cap = max_tokens or int(
+            os.environ.get("DAPR_AGENT_PY_GATEWAY_MAX_TOKENS", "4096")
+        )
     timeout = int(os.environ.get("DAPR_AGENT_PY_GATEWAY_TIMEOUT_SECONDS", "300"))
 
     body: dict[str, Any] = {
         "model": gateway_model,
-        "messages": messages,
-        "max_tokens": output_cap,
+        "messages": (
+            _ensure_json_instruction(messages)
+            if is_kimi_k3
+            and (response_format is not None or native_json_schema is not None)
+            else messages
+        ),
         "stream": False,
     }
+    if is_kimi_k3:
+        body["max_completion_tokens"] = output_cap
+    else:
+        body["max_tokens"] = output_cap
     if converted_tools:
         body["tools"] = converted_tools
         if isinstance(tool_choice, dict):
@@ -488,7 +529,13 @@ def _call_gateway_chat(
             body["tool_choice"] = tool_choice
         elif tool_choice is None:
             body["tool_choice"] = "auto"
-    if response_format is not None:
+    if is_kimi_k3:
+        _apply_kimi_output_mode(
+            body,
+            response_format=response_format,
+            native_json_schema=native_json_schema,
+        )
+    elif response_format is not None:
         # Generic OpenAI shim accepts response_format as JSON-object hint.
         body["response_format"] = {"type": "json_object"}
 
@@ -561,11 +608,11 @@ def _call_gateway_chat(
                 f"for model={gateway_model}: {detail[:500]}"
             ) from exc
 
-    content, tool_calls, _finish = _extract_response(data)
+    content, reasoning_content, tool_calls, _finish = _extract_response(data)
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     duration_ms = (time.monotonic() - started) * 1000.0
 
-    if response_format is not None and not content.strip():
+    if (response_format is not None or native_json_schema is not None) and not content.strip():
         raise RuntimeError(
             f"OpenAI-compatible gateway model={gateway_model} returned empty content "
             "for structured response_format"
@@ -604,9 +651,16 @@ def _call_gateway_chat(
         set_genai_request_attrs(
             system=f"gateway:{gateway_model.split('-', 1)[0]}",
             request_model=gateway_model,
-            max_tokens=max_tokens,
+            max_tokens=output_cap,
             tools_count=len(converted_tools) if converted_tools else None,
-            response_format=("json_object" if response_format is not None else None),
+            response_format=(
+                "json_schema"
+                if is_kimi_k3
+                and (response_format is not None or native_json_schema is not None)
+                else "json_object"
+                if response_format is not None
+                else None
+            ),
             tool_choice=(
                 tool_choice if isinstance(tool_choice, str) else None
             ),
@@ -629,6 +683,7 @@ def _call_gateway_chat(
 
     return {
         "content": content,
+        "reasoning_content": reasoning_content,
         "tool_calls": tool_calls,
         "metadata": {
             "model": gateway_model,
@@ -664,6 +719,21 @@ def _response_format_tool_name(response_format: Any) -> str:
 
     snake = _re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower()
     return f"emit_{snake}"
+
+
+def _build_gateway_chat_response(gateway_model: str, result: dict[str, Any]) -> Any:
+    if gateway_model == "kimi-k3":
+        return _build_kimi_chat_response(
+            content=result.get("content", "") or "",
+            reasoning_content=result.get("reasoning_content", "") or "",
+            tool_calls=result.get("tool_calls") or None,
+            metadata=result.get("metadata") or {},
+        )
+    return build_llm_chat_response(
+        content=result.get("content", "") or "",
+        tool_calls=result.get("tool_calls") or None,
+        metadata=result.get("metadata") or {},
+    )
 
 
 def _call_via_tool_emit(
@@ -790,6 +860,13 @@ def patch_for_gateway(llm_client: Any) -> None:
             return original_generate(self, *args, **kwargs)
 
         response_format = kwargs.get("response_format")
+        native_json_schema = (
+            getattr(self, "_response_json_schema", None)
+            if gateway_model == "kimi-k3" and response_format is None
+            else None
+        )
+        if not isinstance(native_json_schema, dict) or not native_json_schema:
+            native_json_schema = None
 
         # Structured output via forced tool-call (Phase 2c v2 reliability fix).
         # DeepSeek's `response_format: json_object` mode is unreliable on V4:
@@ -836,7 +913,8 @@ def patch_for_gateway(llm_client: Any) -> None:
         max_tokens = kwargs.get("max_tokens")
         tool_choice = kwargs.get("tool_choice")
 
-        messages = _normalize_messages(
+        messages = _normalize_gateway_messages(
+            gateway_model,
             prompt,
             raw_messages if isinstance(raw_messages, list) else None,
         )
@@ -848,16 +926,13 @@ def patch_for_gateway(llm_client: Any) -> None:
             max_tokens=max_tokens,
             response_format=response_format,
             tool_choice=tool_choice,
+            native_json_schema=native_json_schema,
         )
 
         if response_format is not None:
             return parse_structured_response(response_format, result.get("content", "") or "")
 
-        return build_llm_chat_response(
-            content=result.get("content", "") or "",
-            tool_calls=result.get("tool_calls") or None,
-            metadata=result.get("metadata") or {},
-        )
+        return _build_gateway_chat_response(gateway_model, result)
 
     DaprChatClient.generate = patched_generate
     DaprChatClient._gateway_patched = True

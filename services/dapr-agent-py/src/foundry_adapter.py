@@ -1,6 +1,6 @@
 """Azure AI Foundry chat-completions adapter for DaprChatClient.
 
-Foundry direct models such as DeepSeek and Kimi are exposed through the
+Foundry direct models such as DeepSeek are exposed through the
 OpenAI-compatible chat completions API. Keep them on the same durable-agent
 contract as NVIDIA: normal calls return LLMChatResponse and structured calls
 return the requested Pydantic model.
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-foundry-deepseek-v4-flash": "DeepSeek-V4-Flash",
-    "llm-foundry-kimi-k26": "Kimi-K2.6",
 }
 
 

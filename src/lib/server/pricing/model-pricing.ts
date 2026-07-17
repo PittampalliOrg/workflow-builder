@@ -105,25 +105,15 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 		cacheReadPerMillion: 0.2,
 	},
 	// Kimi direct API pricing as advertised by Kimi Open Platform.
-	"kimi/kimi-k2.6": {
-		inputPerMillion: 0.95,
-		outputPerMillion: 4.0,
-		cacheReadPerMillion: 0.16,
+	"kimi/kimi-k3": {
+		inputPerMillion: 3.0,
+		outputPerMillion: 15.0,
+		cacheReadPerMillion: 0.3,
 	},
-	"kimi-k2.6": {
-		inputPerMillion: 0.95,
-		outputPerMillion: 4.0,
-		cacheReadPerMillion: 0.16,
-	},
-	"kimi/kimi-k2.5": {
-		inputPerMillion: 0.6,
-		outputPerMillion: 3.0,
-		cacheReadPerMillion: 0.1,
-	},
-	"kimi-k2.5": {
-		inputPerMillion: 0.6,
-		outputPerMillion: 3.0,
-		cacheReadPerMillion: 0.1,
+	"kimi-k3": {
+		inputPerMillion: 3.0,
+		outputPerMillion: 15.0,
+		cacheReadPerMillion: 0.3,
 	},
 };
 

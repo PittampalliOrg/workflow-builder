@@ -5,7 +5,7 @@ import { getApplicationAdapters } from '$lib/server/application';
 // ---------------------------------------------------------------------------
 // POST /api/workflows/[workflowId]/author-session
 //
-// Start (or return) an interactive GLM-5.2 authoring session bound to a
+// Start (or return) an interactive Kimi K3 authoring session bound to a
 // dynamic-script workflow. The session runs the platform's dapr-agent-py
 // runtime with the workflow-authoring MCP tools (get_workflow_script_spec,
 // validate_workflow_script, save_workflow_script, run_workflow_script), so the
@@ -21,7 +21,7 @@ const WORKFLOW_MCP_URL =
 	process.env.WORKFLOW_MCP_SERVER_URL ??
 	'http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp';
 
-/** Selectable author runtimes. The default is the platform-metered GLM 5.2
+/** Selectable author runtimes. The default is the platform-metered Kimi K3
  * dapr-agent-py loop (near-instant session start); the CLI runtimes bring the
  * user's own subscription auth + a stronger coding model at the cost of a
  * per-session pod cold start. All four get the SAME system prompt and the
@@ -30,7 +30,7 @@ const WORKFLOW_MCP_URL =
 const AUTHOR_RUNTIMES = {
 	'dapr-agent-py': {
 		slug: 'workflow-author-dynamic',
-		name: 'Workflow Author (GLM 5.2)',
+		name: 'Workflow Author (Kimi K3)',
 		description:
 			'Authors dynamic-script workflows from natural language, embedded in the canvas AI panel.'
 	},
@@ -97,8 +97,10 @@ const AUTHOR_MCP_SERVERS = [
 function authorConfig(runtime: AuthorRuntime) {
 	if (runtime === 'dapr-agent-py') {
 		return {
-			model: 'zai/glm-5.2',
-			modelSpec: 'zai/glm-5.2',
+			model: 'kimi/kimi-k3',
+			modelSpec: 'kimi/kimi-k3',
+			reasoningEffort: 'max',
+			contextWindowTokens: 1_048_576,
 			runtime,
 			maxTurns: 60,
 			timeoutMinutes: 60,

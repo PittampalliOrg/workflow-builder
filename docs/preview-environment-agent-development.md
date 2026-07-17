@@ -157,7 +157,9 @@ surface without helping OTLP delivery, so it is not a prerequisite for tracing.
   trusted server state.
 - Do not supply an agent slug. The handoff is fixed to
   `glm-juicefs-builder-agent` on `dapr-agent-py-juicefs` with model
-  `zai/glm-5.2`; caller-selected agents are outside this POC contract.
+  `kimi/kimi-k3`, max reasoning, and a 1,048,576-token context window. The slug
+  remains stable for durable-run compatibility; caller-selected agents are
+  outside this POC contract.
 
 Current preview-native services:
 

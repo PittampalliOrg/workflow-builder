@@ -12940,11 +12940,692 @@ function planProjectSystemWorkflowInstallations(input) {
   }));
 }
 
+// scripts/upsert-3b1b-animation-workflow.ts
+import { pathToFileURL } from "node:url";
+
+// src/lib/server/agents/config-hash.ts
+import { createHash as createHash2 } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(canonicalize(value));
+}
+function hashAgentConfig(config) {
+  return createHash2("sha256").update(canonicalJson(config)).digest("hex");
+}
+function canonicalize(value) {
+  if (value === null || value === void 0) return null;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== void 0).sort(([a], [b2]) => a < b2 ? -1 : a > b2 ? 1 : 0);
+    const out = {};
+    for (const [k, v] of entries) out[k] = canonicalize(v);
+    return out;
+  }
+  return value;
+}
+
+// scripts/upsert-3b1b-animation-workflow.ts
+var DATABASE_URL = process.env.DATABASE_URL;
+var WORKFLOW_ID = process.env.WORKFLOW_ID || "three-b-one-b-skill-animation";
+var WORKFLOW_NAME = process.env.WORKFLOW_NAME || "3Blue1Brown-style Animation";
+var WORKFLOW_DESCRIPTION = process.env.WORKFLOW_DESCRIPTION || "Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
+var KIMI_AGENT_SLUG = "kimi-k3-3b1b-animation-builder";
+var KIMI_AGENT_NAME = "Kimi K3 3B1B Animation Builder";
+var KIMI_AGENT_DESCRIPTION = "Dapr Agents coding agent for building self-contained 3Blue1Brown-style browser animations with Kimi K3.";
+var KIMI_AGENT_CONFIG = {
+  systemPrompt: "You build polished, self-contained mathematical browser animations. Work directly in the supplied sandbox, prefer Canvas or SVG with plain HTML/CSS/JavaScript, preserve the requested stable DOM ids, and verify the generated files before finishing.",
+  runtime: "dapr-agent-py",
+  runtimeClass: "coding",
+  runtimeIsolation: "shared",
+  modelSpec: "kimi/kimi-k3",
+  reasoningEffort: "max",
+  contextWindowTokens: 1048576,
+  maxTurns: 60,
+  timeoutMinutes: 60,
+  cwd: "/sandbox",
+  builtinTools: [
+    "execute_command",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_files",
+    "glob_files",
+    "grep_search"
+  ],
+  tools: [],
+  mcpConnectionMode: "explicit",
+  mcpServers: [],
+  skills: [],
+  memory: { backend: "dapr_state" },
+  runtimeOverridePolicy: {
+    allowToolNarrowing: true,
+    allowServerAdditions: false,
+    allowCredentialBinding: true,
+    allowSkillAdditions: false,
+    allowSkillNarrowing: true
+  }
+};
+function parseArgs(argv) {
+  let userEmail = "";
+  let agentId = "";
+  let agentVersion;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === "--user-email") {
+      userEmail = String(argv[i + 1] || "").trim();
+      i += 1;
+    } else if (argv[i] === "--agent-id") {
+      agentId = String(argv[i + 1] || "").trim();
+      i += 1;
+    } else if (argv[i] === "--agent-version") {
+      agentVersion = Number(String(argv[i + 1] || "").trim());
+      i += 1;
+    }
+  }
+  if (agentVersion !== void 0 && (!Number.isInteger(agentVersion) || agentVersion <= 0)) {
+    throw new Error("--agent-version must be a positive integer");
+  }
+  if (agentVersion !== void 0 && !agentId) {
+    throw new Error("--agent-version requires --agent-id");
+  }
+  return {
+    userEmail,
+    ...agentId ? { agentOverride: { id: agentId, version: agentVersion } } : {}
+  };
+}
+async function resolveOwner(sql2, existing, userEmail) {
+  if (existing?.user_id) {
+    return {
+      userId: String(existing.user_id),
+      projectId: existing.project_id ? String(existing.project_id) : null
+    };
+  }
+  if (userEmail) {
+    const rows = await sql2`
+      select u.id as user_id, pm.project_id
+      from users u
+      left join project_members pm on pm.user_id = u.id
+      where lower(u.email) = lower(${userEmail})
+      order by pm.created_at asc nulls last
+      limit 1
+    `;
+    if (rows[0]?.user_id) {
+      return {
+        userId: String(rows[0].user_id),
+        projectId: rows[0].project_id ? String(rows[0].project_id) : null
+      };
+    }
+  }
+  const memberRows = await sql2`
+    select pm.user_id, pm.project_id
+    from project_members pm
+    order by pm.created_at asc
+    limit 1
+  `;
+  if (memberRows[0]?.user_id) {
+    return {
+      userId: String(memberRows[0].user_id),
+      projectId: memberRows[0].project_id ? String(memberRows[0].project_id) : null
+    };
+  }
+  const userRows = await sql2`
+    select id as user_id
+    from users
+    order by created_at asc
+    limit 1
+  `;
+  if (userRows[0]?.user_id) {
+    return { userId: String(userRows[0].user_id), projectId: null };
+  }
+  throw new Error("Could not resolve a workflow owner.");
+}
+function hashConfig(config) {
+  return hashAgentConfig(config);
+}
+async function ensureKimiAgent(sql2, owner) {
+  const config = KIMI_AGENT_CONFIG;
+  const configHash = hashConfig(config);
+  const existingRows = await sql2`
+    select a.id, av.version, av.config_hash
+    from agents a
+    left join agent_versions av on av.id = a.current_version_id
+    where a.slug = ${KIMI_AGENT_SLUG}
+    limit 1
+  `;
+  const existing = existingRows[0];
+  if (existing?.id && existing.config_hash === configHash) {
+    await sql2`
+      update agents
+      set
+        name = ${KIMI_AGENT_NAME},
+        description = ${KIMI_AGENT_DESCRIPTION},
+        tags = ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        runtime = ${"dapr-agent-py"},
+        registry_status = ${"registered"},
+        is_archived = false,
+        updated_at = now()
+      where id = ${existing.id}
+        and (
+          name is distinct from ${KIMI_AGENT_NAME}
+          or description is distinct from ${KIMI_AGENT_DESCRIPTION}
+          or tags is distinct from ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
+          or runtime is distinct from ${"dapr-agent-py"}
+          or registry_status is distinct from ${"registered"}
+          or is_archived is distinct from false
+        )
+    `;
+    return { id: String(existing.id), version: Number(existing.version) };
+  }
+  if (existing?.id) {
+    const versionRows = await sql2`
+      select coalesce(max(version), 0)::int as version
+      from agent_versions
+      where agent_id = ${existing.id}
+    `;
+    const nextVersion = Number(versionRows[0]?.version ?? 0) + 1;
+    const versionId2 = nanoid();
+    await sql2.begin(async (transaction) => {
+      const tx = transaction;
+      await tx`
+        insert into agent_versions (
+          id, agent_id, version, config, config_hash,
+          changelog, published_at, published_by, created_at
+        ) values (
+          ${versionId2}, ${existing.id}, ${nextVersion},
+          ${sql2.json(config)}, ${configHash},
+          ${"Reconcile the 3B1B animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
+          now(), ${owner.userId}, now()
+        )
+      `;
+      await tx`
+        update agents
+        set
+          name = ${KIMI_AGENT_NAME},
+          description = ${KIMI_AGENT_DESCRIPTION},
+          tags = ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+          runtime = ${"dapr-agent-py"},
+          registry_status = ${"registered"},
+          is_archived = false,
+          current_version_id = ${versionId2},
+          updated_at = now()
+        where id = ${existing.id}
+      `;
+    });
+    return { id: String(existing.id), version: nextVersion };
+  }
+  const agentId = nanoid();
+  const versionId = nanoid();
+  await sql2.begin(async (transaction) => {
+    const tx = transaction;
+    await tx`
+      insert into agents (
+        id, slug, name, description, tags, runtime,
+        created_by, project_id, registry_status, is_archived,
+        default_vault_ids, created_at, updated_at
+      ) values (
+        ${agentId}, ${KIMI_AGENT_SLUG}, ${KIMI_AGENT_NAME},
+        ${KIMI_AGENT_DESCRIPTION},
+        ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        ${"dapr-agent-py"}, ${owner.userId}, ${owner.projectId},
+        ${"registered"}, false, ${sql2.json([])}, now(), now()
+      )
+    `;
+    await tx`
+      insert into agent_versions (
+        id, agent_id, version, config, config_hash,
+        changelog, published_at, published_by, created_at
+      ) values (
+        ${versionId}, ${agentId}, 1,
+        ${sql2.json(config)}, ${configHash},
+        ${"Initial Kimi K3 definition for the 3B1B animation workflow."},
+        now(), ${owner.userId}, now()
+      )
+    `;
+    await tx`
+      update agents
+      set current_version_id = ${versionId}, updated_at = now()
+      where id = ${agentId}
+    `;
+  });
+  return { id: agentId, version: 1 };
+}
+async function resolveAgentOverride(sql2, override) {
+  const rows = override.version !== void 0 ? await sql2`
+          select a.id, av.version
+          from agents a
+          join agent_versions av on av.agent_id = a.id
+          where a.id = ${override.id} and av.version = ${override.version}
+          limit 1
+        ` : await sql2`
+          select a.id, av.version
+          from agents a
+          join agent_versions av on av.id = a.current_version_id
+          where a.id = ${override.id}
+          limit 1
+        `;
+  if (!rows[0]?.id) {
+    throw new Error(
+      `Could not resolve published agent ${override.id}${override.version !== void 0 ? ` version ${override.version}` : ""}`
+    );
+  }
+  return { id: String(rows[0].id), version: Number(rows[0].version) };
+}
+var APP_DIR = "/sandbox/3b1b-style-animation-example";
+var BUILD_OUTPUT_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
+var BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
+function makeWorkspaceProfileTask() {
+  return {
+    call: "workspace/profile",
+    with: {
+      name: "three-b-one-b-animation",
+      rootPath: "/sandbox",
+      sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+      ttlSeconds: 7200,
+      keepAfterRun: true,
+      managedBy: "workflow-builder:demos:3b1b-animation",
+      commandTimeoutMs: 9e5,
+      timeoutMs: 12e5,
+      enabledTools: [
+        "execute_command",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_files",
+        "mkdir",
+        "file_stat"
+      ],
+      sandboxPolicy: {
+        mode: "per-run",
+        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+        ttlSeconds: 7200,
+        keepAfterRun: true
+      }
+    }
+  };
+}
+var BUILD_PROMPT_PARTS = [
+  '${ .trigger.animationDescription + " \u2014 Build a self-contained browser animation in ',
+  APP_DIR,
+  " with index.html, styles.css, script.js, and README.md. ",
+  "Use Canvas or SVG so the result runs via a simple static file server. ",
+  "The browser animation is the required deliverable. ",
+  'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
+  'the play/pause control <button id=\\"btn-play\\">, ',
+  'the restart control <button id=\\"btn-restart\\">. ',
+  "Do NOT install Manim \u2014 if a scene is useful, include scene.py as optional source only. ",
+  "Do not start any preview server; the downstream browser/validate and ",
+  "browser/start-preview steps will do that. ",
+  "The page must work when served as static files (no module imports outside relative script.js). ",
+  "Do NOT create a package.json \u2014 that triggers the runtime's npm-run-dev fallback ",
+  "which expects flags python3's http.server doesn't recognize. ",
+  'Final answer: list the files created and a one-paragraph outline of the animation logic." }'
+];
+var BUILD_PROMPT = BUILD_PROMPT_PARTS.join("");
+function makeBuildAnimationTask(agentRef) {
+  return {
+    call: "durable/run",
+    with: {
+      mode: "execute_direct",
+      cwd: "/sandbox",
+      sandboxName: "${ .workspace_profile.sandboxName }",
+      workspaceRef: "${ .workspace_profile.workspaceRef }",
+      outputSync: {
+        workspaceRef: "${ .workspace_profile.workspaceRef }",
+        paths: [
+          {
+            source: APP_DIR,
+            target: APP_DIR
+          }
+        ],
+        timeoutMs: 12e4
+      },
+      sandboxPolicy: {
+        mode: "per-run",
+        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
+        ttlSeconds: 7200,
+        keepAfterRun: true
+      },
+      body: {
+        agentRef,
+        prompt: BUILD_PROMPT,
+        overrides: {
+          cwd: "/sandbox",
+          maxTurns: 60,
+          timeoutMinutes: 60
+        }
+      }
+    }
+  };
+}
+function makeStartPreviewTask() {
+  return {
+    call: "browser/start-preview",
+    with: {
+      body: {
+        input: {
+          previewId: '${ "3b1b-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
+          repoPath: APP_DIR,
+          rootPath: "/sandbox",
+          workingDir: "/sandbox",
+          // Same omit-devServerCommand pattern as browser/validate — runtime
+          // detects index.html and runs `python3 -m http.server {port} --bind 0.0.0.0`.
+          baseUrl: "http://127.0.0.1:0",
+          keepAlive: true,
+          timeoutSeconds: 7200,
+          timeoutMs: 72e5,
+          sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+          workspaceRef: BUILD_OUTPUT_WORKSPACE_REF
+        }
+      }
+    }
+  };
+}
+function makeBrowserValidateTask() {
+  return {
+    call: "browser/validate",
+    with: {
+      workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
+      sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+      repoPath: APP_DIR,
+      // Skip installCommand + devServerCommand. The runtime's default
+      // `_local_devserver_runner` detects index.html in repoPath and runs
+      // `python3 -m http.server {port} --bind 0.0.0.0` against a port it
+      // allocates itself. baseUrl's port is rewritten to match. Mirrors
+      // the canonical animation-3b1b-v2-managed.workflow.json shape and
+      // avoids the runtime/command port mismatch that broke our prior
+      // canaries OQK3 / FSOMOoo9 / Z1ebywvI / X3EZ5moY / Oa8AnQiR.
+      installCommand: "",
+      baseUrl: "http://127.0.0.1:0",
+      steps: [
+        {
+          id: "initial",
+          label: "Animation loaded",
+          action: "visit",
+          path: "/",
+          goal: "Initial render of the canvas before any interaction.",
+          waitForSelector: "canvas#canvas",
+          pauseMs: 1500,
+          fullPage: true
+        },
+        {
+          id: "after-play",
+          label: "After play",
+          action: "click",
+          selector: "button#btn-play",
+          goal: "Trigger the play control once.",
+          waitForSelector: "canvas#canvas",
+          pauseMs: 2e3,
+          fullPage: true
+        },
+        {
+          id: "after-second-play",
+          label: "After second play",
+          action: "click",
+          selector: "button#btn-play",
+          goal: "Trigger the play control again to capture mid-animation state.",
+          waitForSelector: "canvas#canvas",
+          pauseMs: 1500,
+          fullPage: true
+        },
+        {
+          id: "after-restart",
+          label: "After restart",
+          action: "click",
+          selector: "button#btn-restart",
+          goal: "Restart the animation and capture the reset state.",
+          waitForSelector: "canvas#canvas",
+          pauseMs: 1500,
+          fullPage: true
+        }
+      ],
+      captureVideo: true,
+      captureTrace: true,
+      viewportPreset: "desktop",
+      captureMode: "demo",
+      demoTitle: '${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
+      demoSummary: "Generated 3Blue1Brown-style browser animation; browser/validate captured initial / play / second play / restart states from the retained per-run sandbox.",
+      metadata: {
+        appPath: APP_DIR,
+        workflowStage: "post-3b1b-animation",
+        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }"
+      },
+      timeoutMs: 9e5
+    }
+  };
+}
+function buildSpec(agentRef) {
+  return {
+    document: {
+      dsl: "1.0.0",
+      namespace: "workflow-builder.demos",
+      name: WORKFLOW_ID,
+      version: "1.0.0",
+      title: WORKFLOW_NAME,
+      summary: WORKFLOW_DESCRIPTION,
+      "x-workflow-builder": {
+        architecture: "per-agent-runtime+session-workflow-bridge+browser-validate-capture",
+        notes: "Adapted from the legacy 3pvh53PpHSiz-OoEeSW4z fixture for the per-agent-runtime architecture. Single agent step builds index.html / styles.css / script.js / README.md; browser/validate boots `python3 -m http.server` and captures a 4-screenshot demo (initial / play\xD72 / restart). Sandbox is retained (keepAfterRun=true) so the live preview proxy can attach after completion.",
+        triggerInputs: {
+          animationDescription: "Required. Plain-language description of the 3Blue1Brown-style animation to build (e.g. 'derivative of x^2', 'epsilon-delta limit visualization').",
+          sandboxTemplate: "Optional override (default 'dapr-agent'). Only set this if the cluster has a dedicated animation template installed."
+        },
+        input: {
+          fields: {
+            animationDescription: {
+              type: "textarea",
+              label: "Animation description",
+              description: "Describe the 3Blue1Brown-style animation the agent should build.",
+              defaultValue: "Create a concise 3Blue1Brown-style derivative animation for x^2"
+            }
+          }
+        }
+      }
+    },
+    do: [
+      { workspace_profile: makeWorkspaceProfileTask() },
+      { build_3b1b_animation: makeBuildAnimationTask(agentRef) },
+      { browser_validate_capture: makeBrowserValidateTask() },
+      { start_preview: makeStartPreviewTask() }
+    ],
+    output: {
+      as: {
+        appPath: APP_DIR,
+        workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
+        sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
+        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
+        animation: "${ .build_3b1b_animation }",
+        screenshots: "${ .browser_validate_capture }",
+        preview: "${ .start_preview }"
+      }
+    },
+    input: {
+      schema: {
+        document: {
+          type: "object",
+          required: ["animationDescription"],
+          properties: {
+            animationDescription: {
+              type: "string",
+              title: "Animation description",
+              description: "Describe the 3Blue1Brown-style animation the agent should build.",
+              default: "Create a concise 3Blue1Brown-style derivative animation for x^2"
+            }
+          }
+        },
+        format: "json"
+      }
+    }
+  };
+}
+function buildNodes() {
+  return [
+    {
+      id: "trigger",
+      type: "trigger",
+      position: { x: 80, y: 60 },
+      data: {
+        label: "Animation request trigger",
+        description: "Receives animationDescription (plain-language description of the 3Blue1Brown-style animation to build)."
+      }
+    },
+    {
+      id: "workspace_profile",
+      type: "action",
+      position: { x: 80, y: 200 },
+      data: {
+        label: "Provision retained sandbox",
+        actionType: "workspace/profile",
+        description: "Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run."
+      }
+    },
+    {
+      id: "build_3b1b_animation",
+      type: "action",
+      position: { x: 80, y: 340 },
+      data: {
+        label: "Build 3B1B animation",
+        actionType: "durable/run",
+        description: "Agent generates index.html / styles.css / script.js / README.md in /sandbox/3b1b-style-animation-example with stable DOM ids (canvas#canvas, button#btn-play, button#btn-restart) so browser/validate can wire screenshots reliably."
+      }
+    },
+    {
+      id: "browser_validate_capture",
+      type: "action",
+      position: { x: 80, y: 480 },
+      data: {
+        label: "Capture animation walkthrough",
+        actionType: "browser/validate",
+        description: "Boot `python3 -m http.server` against the generated static files and capture initial / play\xD72 / restart screenshots."
+      }
+    },
+    {
+      id: "start_preview",
+      type: "action",
+      position: { x: 80, y: 620 },
+      data: {
+        label: "Start live preview",
+        actionType: "browser/start-preview",
+        description: "Pre-create the live-preview proxy with correct repoPath/rootPath so the UI's preview button connects to a ready-to-serve instance instead of spawning a racy lazy one."
+      }
+    }
+  ];
+}
+function buildEdges() {
+  return [
+    {
+      id: "e1",
+      source: "trigger",
+      target: "workspace_profile",
+      type: "default"
+    },
+    {
+      id: "e2",
+      source: "workspace_profile",
+      target: "build_3b1b_animation",
+      type: "default"
+    },
+    {
+      id: "e3",
+      source: "build_3b1b_animation",
+      target: "browser_validate_capture",
+      type: "default"
+    },
+    {
+      id: "e4",
+      source: "browser_validate_capture",
+      target: "start_preview",
+      type: "default"
+    }
+  ];
+}
+async function main() {
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL is required");
+  }
+  const args = parseArgs(process.argv.slice(2));
+  const sql2 = src_default(DATABASE_URL, { max: 1, prepare: false });
+  try {
+    const existingRows = await sql2`
+      select user_id, project_id
+      from workflows
+      where id = ${WORKFLOW_ID}
+      limit 1
+    `;
+    const owner = await resolveOwner(sql2, existingRows[0], args.userEmail);
+    const agentRef = args.agentOverride ? await resolveAgentOverride(sql2, args.agentOverride) : await ensureKimiAgent(sql2, owner);
+    const spec = buildSpec(agentRef);
+    const nodes = buildNodes();
+    const edges = buildEdges();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await sql2`
+      insert into workflows (
+        id,
+        name,
+        description,
+        user_id,
+        project_id,
+        nodes,
+        edges,
+        visibility,
+        engine_type,
+        spec_version,
+        spec,
+        created_at,
+        updated_at
+      )
+      values (
+        ${WORKFLOW_ID},
+        ${WORKFLOW_NAME},
+        ${WORKFLOW_DESCRIPTION},
+        ${owner.userId},
+        ${owner.projectId},
+        ${sql2.json(nodes)},
+        ${sql2.json(edges)},
+        ${"public"},
+        ${"dapr"},
+        ${"1.0.0"},
+        ${sql2.json(spec)},
+        ${now},
+        ${now}
+      )
+      on conflict (id) do update
+      set
+        name = excluded.name,
+        description = excluded.description,
+        nodes = excluded.nodes,
+        edges = excluded.edges,
+        visibility = excluded.visibility,
+        engine_type = excluded.engine_type,
+        spec_version = excluded.spec_version,
+        spec = excluded.spec,
+        updated_at = excluded.updated_at
+    `;
+    console.log(`Upserted workflow ${WORKFLOW_ID}`);
+    console.log(
+      `  agentRef        = { id: '${agentRef.id}', version: ${agentRef.version} }`
+    );
+    console.log(
+      `  agent source    = ${args.agentOverride ? "explicit override" : KIMI_AGENT_SLUG}`
+    );
+    console.log(`  owner.userId    = ${owner.userId}`);
+    console.log(`  owner.projectId = ${owner.projectId ?? "(none)"}`);
+    console.log(`  visibility      = public`);
+    console.log(`  UI route        : /workflows/${WORKFLOW_ID}`);
+  } finally {
+    await sql2.end({ timeout: 5 });
+  }
+}
+var invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error("[upsert-3b1b-animation-workflow] Error:", error);
+    process.exitCode = 1;
+  });
+}
+
 // scripts/seed-workflows.ts
-var DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
-var WORKFLOW_ID = "lazxidq045szbb9ke4dny";
-var WORKFLOW_NAME = "Opencode Agent Plan Then Execute PR";
-var WORKFLOW_DESCRIPTION = "Multi-step opencode flow: planning, execution, change verification, then commit/push/PR";
+var DATABASE_URL2 = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+var WORKFLOW_ID2 = "lazxidq045szbb9ke4dny";
+var WORKFLOW_NAME2 = "Opencode Agent Plan Then Execute PR";
+var WORKFLOW_DESCRIPTION2 = "Multi-step opencode flow: planning, execution, change verification, then commit/push/PR";
 var AI_CODING_AGENT_WORKFLOW_ID = "aicodingagent001";
 var AI_CODING_AGENT_WORKFLOW_NAME = "AI Coding Agent";
 var AI_CODING_AGENT_WORKFLOW_DESCRIPTION = "System workflow for ai/main coding sessions. Clones the selected repository into a sandbox, creates an OpenShell coding plan, waits for approval, and then executes the approved plan in the same run.";
@@ -12970,10 +13651,92 @@ var THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION = process.env.SEED_3B1B_CLI_WORKFLOW_
 var THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
 var THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
 var THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
-var THREE_B_ONE_B_DEFAULT_AGENT_ID = process.env.SEED_3B1B_AGENT_ID?.trim() || "agnt_claude_code_sdk_smoke";
-var THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
+var THREE_B_ONE_B_AGENT_OVERRIDE_ID = process.env.SEED_3B1B_AGENT_ID?.trim() || "";
+var THREE_B_ONE_B_AGENT_OVERRIDE_VERSION = Number(
   process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1"
 );
+var PREVIEW_HMR_GATE_FUNCTION_ID = "codefn_preview_hmr_gate";
+var PREVIEW_HMR_GATE_SLUG = "preview-hmr-gate";
+var PREVIEW_HMR_GATE_VERSION = "1.0.0";
+var PREVIEW_HMR_GATE_SOURCE = String.raw`
+import io
+import tarfile
+import time
+import urllib.error
+import urllib.request
+
+
+def _request(url, *, token=None, timeout=30):
+    headers = {}
+    if token:
+        headers["x-sync-token"] = token
+    req = urllib.request.Request(url, headers=headers)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _http_code(url, timeout=20):
+    try:
+        with _request(url, timeout=timeout) as res:
+            body = res.read(512_000).decode("utf-8", "replace")
+            return res.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read(512_000).decode("utf-8", "replace")
+        return exc.code, body
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def main(config):
+    export_url = str(config.get("exportUrl") or "")
+    token = str(config.get("syncCapability") or "")
+    preview_url = str(config.get("previewUrl") or "").rstrip("/")
+    routes = config.get("routes") if isinstance(config.get("routes"), list) else ["/dashboard"]
+    if not export_url or not token or not preview_url:
+        raise RuntimeError("gate configuration is incomplete")
+
+    with _request(export_url, token=token, timeout=45) as res:
+        archive = res.read()
+        generation = res.headers.get("x-sync-generation") or ""
+    if not archive:
+        raise RuntimeError("sidecar export returned no source archive")
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        names = set(tar.getnames())
+        if "src/routes/dashboard/+page.svelte" not in names:
+            raise RuntimeError("dashboard page source is missing from sidecar export")
+        dashboard = tar.extractfile("src/routes/dashboard/+page.svelte").read().decode("utf-8", "replace")
+    if not dashboard.strip():
+        raise RuntimeError("dashboard page source is empty")
+    if not generation:
+        raise RuntimeError("sidecar export did not report a live-sync generation")
+
+    health_status = 0
+    health_body = ""
+    for _ in range(45):
+        health_status, health_body = _http_code(f"{preview_url}/api/health", timeout=10)
+        if health_status == 200:
+            break
+        time.sleep(2)
+    if health_status != 200:
+        raise RuntimeError(f"preview health did not become ready: {health_status} {health_body[:200]}")
+
+    route_results = []
+    for route in routes:
+        path = str(route or "/")
+        status, body = _http_code(f"{preview_url}{path}", timeout=20)
+        route_results.append({"route": path, "status": status})
+        if status == 500:
+            raise RuntimeError(f"{path} returned HTTP 500")
+        if "ReferenceError" in body or "each_key_duplicate" in body:
+            raise RuntimeError(f"{path} contains a client/runtime error marker")
+
+    return {
+        "accepted": True,
+        "summary": "exported dashboard source, observed live-sync generation, and checked preview routes",
+        "generation": generation,
+        "routes": route_results,
+    }
+`;
 var SVELTEKIT_GAME_WORKFLOW_ID = process.env.SEED_SVELTEKIT_GAME_WORKFLOW_ID?.trim() || "sveltekit-game-goal-showcase";
 var SVELTEKIT_GAME_WORKFLOW_NAME = process.env.SEED_SVELTEKIT_GAME_WORKFLOW_NAME?.trim() || "Impressive SvelteKit Game (Goal Loop)";
 var SVELTEKIT_GAME_WORKFLOW_DESCRIPTION = process.env.SEED_SVELTEKIT_GAME_WORKFLOW_DESCRIPTION?.trim() || "Goal-driven workflow: a CLI agent (default codex-cli) iteratively builds a polished, fully-playable SvelteKit game (default: Tetris) as a static site, until it installs, builds, and is verifiably playable; then captures a walkthrough and serves a live static preview. Exercises goal mode (goalSpec) end-to-end.";
@@ -13696,7 +14459,7 @@ function buildOpenShellLangGraphFeatureDeliveryEdges() {
     }
   ];
 }
-function buildNodes(profileVersion) {
+function buildNodes2(profileVersion) {
   const workspaceRef = `{{@${IDs.profile}:Workspace Profile.workspaceRef}}`;
   const clonePath = `{{@${IDs.clone}:Workspace Clone.clonePath}}`;
   const executionId = `{{@${IDs.profile}:Workspace Profile.executionId}}`;
@@ -13958,7 +14721,7 @@ echo REMOTE=$(git remote get-url origin)`,
     }
   ]);
 }
-function buildEdges() {
+function buildEdges2() {
   return [
     {
       id: EDGE_IDS[0],
@@ -14702,10 +15465,10 @@ function makeThreeBOneBWorkspaceProfileTask() {
     }
   };
 }
-function makeThreeBOneBBuildTask() {
-  if (!Number.isInteger(THREE_B_ONE_B_DEFAULT_AGENT_VERSION)) {
+function makeThreeBOneBBuildTask(agentRef) {
+  if (!Number.isInteger(agentRef.version) || agentRef.version <= 0) {
     throw new Error(
-      `SEED_3B1B_AGENT_VERSION must be an integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`
+      `SEED_3B1B_AGENT_VERSION must be a positive integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`
     );
   }
   return {
@@ -14732,10 +15495,7 @@ function makeThreeBOneBBuildTask() {
         keepAfterRun: true
       },
       body: {
-        agentRef: {
-          id: THREE_B_ONE_B_DEFAULT_AGENT_ID,
-          version: THREE_B_ONE_B_DEFAULT_AGENT_VERSION
-        },
+        agentRef,
         prompt: THREE_B_ONE_B_BUILD_PROMPT,
         overrides: {
           cwd: "/sandbox",
@@ -14833,7 +15593,7 @@ function makeThreeBOneBStartPreviewTask() {
     }
   };
 }
-function buildThreeBOneBWorkflowSpec() {
+function buildThreeBOneBWorkflowSpec(agentRef) {
   return {
     document: {
       dsl: "1.0.0",
@@ -14863,7 +15623,7 @@ function buildThreeBOneBWorkflowSpec() {
     },
     do: [
       { workspace_profile: makeThreeBOneBWorkspaceProfileTask() },
-      { build_3b1b_animation: makeThreeBOneBBuildTask() },
+      { build_3b1b_animation: makeThreeBOneBBuildTask(agentRef) },
       { browser_validate_capture: makeThreeBOneBBrowserValidateTask() },
       { start_preview: makeThreeBOneBStartPreviewTask() }
     ],
@@ -16653,6 +17413,132 @@ async function upsertRawWorkflow(params) {
     `[seed-workflows] Reconciled workflow ${params.workflowId} for user ${params.userId}`
   );
 }
+async function upsertPreviewHmrGateCodeFunction(params) {
+  const now = /* @__PURE__ */ new Date();
+  const sourceHash = crypto4.createHash("sha256").update(PREVIEW_HMR_GATE_SOURCE).digest("hex");
+  const semanticModel = {
+    params: [
+      {
+        name: "config",
+        required: true,
+        type: { kind: "object" }
+      }
+    ]
+  };
+  const metadata = {
+    schema: null,
+    return_type: null,
+    imports: [],
+    diagnostics: [],
+    capabilities: {}
+  };
+  const [existing] = await params.db.select({ id: codeFunctions.id }).from(codeFunctions).where(eq(codeFunctions.slug, PREVIEW_HMR_GATE_SLUG)).limit(1);
+  if (!existing) {
+    await params.db.insert(codeFunctions).values({
+      id: PREVIEW_HMR_GATE_FUNCTION_ID,
+      name: "Preview HMR Gate",
+      slug: PREVIEW_HMR_GATE_SLUG,
+      description: "Deterministic preview verifier for exported live-sync source generation and route health.",
+      version: PREVIEW_HMR_GATE_VERSION,
+      language: "python",
+      entrypoint: "main",
+      path: null,
+      source: PREVIEW_HMR_GATE_SOURCE,
+      supportingFiles: {},
+      sourceHash,
+      semanticModel,
+      inputSchema: null,
+      returnType: metadata.return_type,
+      imports: metadata.imports,
+      diagnostics: metadata.diagnostics,
+      capabilities: metadata.capabilities,
+      role: "function",
+      compositionGraph: null,
+      latestPublishedVersion: PREVIEW_HMR_GATE_VERSION,
+      lastPublishedAt: now,
+      isEnabled: true,
+      createdBy: params.userId
+    });
+  } else {
+    await params.db.update(codeFunctions).set({
+      name: "Preview HMR Gate",
+      description: "Deterministic preview verifier for exported live-sync source generation and route health.",
+      version: PREVIEW_HMR_GATE_VERSION,
+      language: "python",
+      entrypoint: "main",
+      path: null,
+      source: PREVIEW_HMR_GATE_SOURCE,
+      supportingFiles: {},
+      sourceHash,
+      semanticModel,
+      inputSchema: null,
+      returnType: metadata.return_type,
+      imports: metadata.imports,
+      diagnostics: metadata.diagnostics,
+      capabilities: metadata.capabilities,
+      role: "function",
+      compositionGraph: null,
+      latestPublishedVersion: PREVIEW_HMR_GATE_VERSION,
+      lastPublishedAt: now,
+      isEnabled: true,
+      updatedAt: now,
+      createdBy: params.userId
+    }).where(eq(codeFunctions.id, existing.id));
+  }
+  await params.db.insert(codeFunctionRevisions).values({
+    id: `${existing?.id ?? PREVIEW_HMR_GATE_FUNCTION_ID}_v1`,
+    codeFunctionId: existing?.id ?? PREVIEW_HMR_GATE_FUNCTION_ID,
+    version: PREVIEW_HMR_GATE_VERSION,
+    name: "Preview HMR Gate",
+    slug: PREVIEW_HMR_GATE_SLUG,
+    description: "Deterministic preview verifier for exported live-sync source generation and route health.",
+    language: "python",
+    entrypoint: "main",
+    path: null,
+    source: PREVIEW_HMR_GATE_SOURCE,
+    supportingFiles: {},
+    sourceHash,
+    semanticModel,
+    inputSchema: null,
+    returnType: metadata.return_type,
+    imports: metadata.imports,
+    diagnostics: metadata.diagnostics,
+    capabilities: metadata.capabilities,
+    role: "function",
+    compositionGraph: null,
+    publishedAt: now,
+    createdBy: params.userId
+  }).onConflictDoUpdate({
+    target: [
+      codeFunctionRevisions.codeFunctionId,
+      codeFunctionRevisions.version
+    ],
+    set: {
+      name: "Preview HMR Gate",
+      slug: PREVIEW_HMR_GATE_SLUG,
+      description: "Deterministic preview verifier for exported live-sync source generation and route health.",
+      language: "python",
+      entrypoint: "main",
+      path: null,
+      source: PREVIEW_HMR_GATE_SOURCE,
+      supportingFiles: {},
+      sourceHash,
+      semanticModel,
+      inputSchema: null,
+      returnType: metadata.return_type,
+      imports: metadata.imports,
+      diagnostics: metadata.diagnostics,
+      capabilities: metadata.capabilities,
+      role: "function",
+      compositionGraph: null,
+      publishedAt: now,
+      createdBy: params.userId
+    }
+  });
+  console.log(
+    `[seed-workflows] Reconciled code function ${PREVIEW_HMR_GATE_SLUG}@${PREVIEW_HMR_GATE_VERSION}`
+  );
+}
 function hostPreviewLifecycleDefinition() {
   const script = fs2.readFileSync(
     path.resolve(
@@ -16711,6 +17597,11 @@ function hostPreviewLifecycleDefinition() {
             type: "boolean",
             title: "Retain environment after completion",
             default: false
+          },
+          retainOnFailure: {
+            type: "boolean",
+            title: "Retain environment after failure",
+            default: false
           }
         }
       }
@@ -16725,7 +17616,7 @@ function previewUiDevelopmentGanDefinition() {
     ),
     "utf8"
   );
-  const description = "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use the GLM JuiceFS Dapr agent to plan and implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
+  const description = "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
   return {
     script,
     description,
@@ -16740,6 +17631,7 @@ function previewUiDevelopmentGanDefinition() {
         { title: "Promote" }
       ],
       launch: { surface: "dev-environment" },
+      estimatedAgentCalls: 2,
       input: {
         type: "object",
         required: ["intent"],
@@ -16952,6 +17844,8 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
   const config = {
     runtime,
     ...opts.modelSpec ? { modelSpec: opts.modelSpec } : {},
+    ...opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {},
+    ...opts.contextWindowTokens ? { contextWindowTokens: opts.contextWindowTokens } : {},
     ...opts.effort ? { effort: opts.effort } : {},
     ...opts.instructions ? { instructions: opts.instructions } : {},
     maxTurns: 50,
@@ -16964,10 +17858,15 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
   const existing = await sqlClient`
 		select id, current_version_id from agents where slug = ${slug} limit 1`;
   if (existing.length && existing[0].current_version_id) {
+    const agentId2 = existing[0].id;
+    await sqlClient`
+			update agents
+			set name = ${name}, description = ${description}, runtime = ${runtime},
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+			where id = ${agentId2}`;
     const cur = await sqlClient`
 			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
     if (cur.length && cur[0].config_hash === configHash) return slug;
-    const agentId2 = existing[0].id;
     const maxV = await sqlClient`
 			select coalesce(max(version), 0)::int as v from agent_versions where agent_id = ${agentId2}`;
     const nextVersion = (maxV[0]?.v ?? 0) + 1;
@@ -16975,7 +17874,7 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
     await sqlClient`
 			insert into agent_versions (id, agent_id, version, config, config_hash)
 			values (${newVersionId}, ${agentId2}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
-    await sqlClient`update agents set current_version_id = ${newVersionId}, runtime = ${runtime}, registry_status = ${"registered"}, instructions = ${opts.instructions ?? null} where id = ${agentId2}`;
+    await sqlClient`update agents set current_version_id = ${newVersionId} where id = ${agentId2}`;
     console.log(
       `[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`
     );
@@ -16990,7 +17889,11 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
 				${description},
 				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
   } else {
-    await sqlClient`update agents set registry_status = ${"registered"}, runtime = ${runtime}, instructions = ${opts.instructions ?? null} where id = ${agentId}`;
+    await sqlClient`
+			update agents
+			set name = ${name}, description = ${description}, runtime = ${runtime},
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+			where id = ${agentId}`;
   }
   await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
@@ -17027,9 +17930,11 @@ async function seedGeneratorCriticShowcases(params) {
   await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
     slug: "glm-juicefs-builder-agent",
     runtime: "dapr-agent-py-juicefs",
-    name: "GLM-5.2 (JuiceFS) Builder Agent",
-    description: "GLM-5.2 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
-    modelSpec: process.env.SEED_GLM_BUILDER_MODEL?.trim() || "zai/glm-5.2"
+    name: "Kimi K3 (JuiceFS) Builder Agent",
+    description: "Kimi K3 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+    modelSpec: "kimi/kimi-k3",
+    reasoningEffort: "max",
+    contextWindowTokens: 1048576
   });
   const PLAYWRIGHT_CRITIC_MCP = [
     {
@@ -17140,6 +18045,7 @@ async function seedGeneratorCriticShowcases(params) {
     engineType: "dynamic-script"
   });
   const previewUiDevelopmentGan = previewUiDevelopmentGanDefinition();
+  await upsertPreviewHmrGateCodeFunction({ db: params.db, userId: params.userId });
   await upsertRawWorkflow({
     db: params.db,
     workflowId: "preview-ui-development-gan",
@@ -17245,7 +18151,7 @@ async function seedGeneratorCriticShowcases(params) {
 }
 async function seedWorkflow() {
   console.log("[seed-workflows] Starting workflow seed...");
-  const sql2 = src_default(DATABASE_URL, { max: 1 });
+  const sql2 = src_default(DATABASE_URL2, { max: 1 });
   const db = drizzle(sql2, {
     schema: {
       agentProfileTemplateVersions,
@@ -17276,23 +18182,23 @@ async function seedWorkflow() {
       );
     }
     const profileVersion = await resolveAgentProfileVersion(db);
-    const nodes = buildNodes(profileVersion);
-    const edges = buildEdges();
+    const nodes = buildNodes2(profileVersion);
+    const edges = buildEdges2();
     await upsertWorkflow({
       db,
-      workflowId: WORKFLOW_ID,
-      name: WORKFLOW_NAME,
-      description: WORKFLOW_DESCRIPTION,
+      workflowId: WORKFLOW_ID2,
+      name: WORKFLOW_NAME2,
+      description: WORKFLOW_DESCRIPTION2,
       userId,
       projectId,
       nodes,
       edges
     });
-    await db.delete(workflowResourceRefs).where(eq(workflowResourceRefs.workflowId, WORKFLOW_ID));
+    await db.delete(workflowResourceRefs).where(eq(workflowResourceRefs.workflowId, WORKFLOW_ID2));
     await db.insert(workflowResourceRefs).values([
       {
         id: generateId(),
-        workflowId: WORKFLOW_ID,
+        workflowId: WORKFLOW_ID2,
         nodeId: IDs.plan,
         resourceType: "agent_profile",
         resourceId: AGENT_PROFILE_TEMPLATE_ID,
@@ -17300,7 +18206,7 @@ async function seedWorkflow() {
       },
       {
         id: generateId(),
-        workflowId: WORKFLOW_ID,
+        workflowId: WORKFLOW_ID2,
         nodeId: IDs.execute,
         resourceType: "agent_profile",
         resourceId: AGENT_PROFILE_TEMPLATE_ID,
@@ -17308,7 +18214,7 @@ async function seedWorkflow() {
       }
     ]);
     console.log(
-      `[seed-workflows] Reconciled workflow_resource_refs for ${WORKFLOW_ID} (profile version ${profileVersion})`
+      `[seed-workflows] Reconciled workflow_resource_refs for ${WORKFLOW_ID2} (profile version ${profileVersion})`
     );
     await upsertWorkflow({
       db,
@@ -17320,6 +18226,10 @@ async function seedWorkflow() {
       nodes: buildAiCodingAgentNodes(),
       edges: buildAiCodingAgentEdges()
     });
+    const threeBOneBAgentRef = THREE_B_ONE_B_AGENT_OVERRIDE_ID ? {
+      id: THREE_B_ONE_B_AGENT_OVERRIDE_ID,
+      version: THREE_B_ONE_B_AGENT_OVERRIDE_VERSION
+    } : await ensureKimiAgent(sql2, { userId, projectId });
     await upsertRawWorkflow({
       db,
       workflowId: THREE_B_ONE_B_WORKFLOW_ID,
@@ -17327,7 +18237,7 @@ async function seedWorkflow() {
       description: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
       userId,
       projectId,
-      spec: buildThreeBOneBWorkflowSpec(),
+      spec: buildThreeBOneBWorkflowSpec(threeBOneBAgentRef),
       nodes: buildThreeBOneBWorkflowNodes(),
       edges: buildThreeBOneBWorkflowEdges(),
       visibility: "public"

@@ -1397,8 +1397,8 @@ def test_claude_code_cli_non_object_schema_stays_prompt_only(monkeypatch):
     assert "structuredOutputMode" not in cfg
 
 # ---------------------------------------------------------------------------
-# StructuredOutput TOOL mode (Tier-2 upgrade): a schema'd call resolved to GLM
-# stamps structuredOutputMode=tool and gets the tool-flavored output contract.
+# StructuredOutput TOOL mode (Tier-2 upgrade): a schema'd call explicitly
+# resolved to GLM stamps structuredOutputMode=tool.
 # ---------------------------------------------------------------------------
 def test_glm_schema_call_gets_structured_tool_mode(monkeypatch):
     import workflows.script_agent_dispatch as d
@@ -1424,18 +1424,17 @@ def test_openai_schema_call_never_gets_tool_mode(monkeypatch):
     assert "structuredOutputMode" not in cfg
 
 
-def test_default_schema_routing_is_glm_tool_mode(monkeypatch):
+def test_default_schema_routing_is_kimi_k3_strict_mode(monkeypatch):
     import workflows.script_agent_dispatch as d
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
     monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
     monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_MODEL", raising=False)
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
-    # schema'd call with no explicit model: default is GLM + StructuredOutput
-    # tool (42/42 spike; keeps schema'd calls on the cheap default provider)
+    # schema'd call with no explicit model uses Kimi K3 strict JSON Schema.
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
-    assert cfg["modelSpec"] == "zai/glm-5.2"
-    assert cfg["structuredOutputMode"] == "tool"
+    assert cfg["modelSpec"] == "kimi/kimi-k3"
+    assert "structuredOutputMode" not in cfg
     assert cfg["responseJsonSchema"] == schema
 
 

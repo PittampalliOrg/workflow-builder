@@ -169,20 +169,13 @@ describe("benchmark agent validation", () => {
 		expect(qwen.effectiveLlmComponent).toBe("llm-alibaba-qwen3-coder-plus");
 	});
 
-	it("accepts direct Kimi models after conformance passes", () => {
-		const k26 = assertDaprAgentPyBenchmarkAgent({
+	it("accepts Kimi K3 after conformance passes", () => {
+		const k3 = assertDaprAgentPyBenchmarkAgent({
 			...baseAgent,
-			modelSpec: "kimi/kimi-k2.6",
+			modelSpec: "kimi/kimi-k3",
 		});
-		expect(k26.effectiveProvider).toBe("kimi");
-		expect(k26.effectiveLlmComponent).toBe("llm-kimi-k26");
-
-		const k25 = assertDaprAgentPyBenchmarkAgent({
-			...baseAgent,
-			modelSpec: "kimi-k2.5",
-		});
-		expect(k25.effectiveProvider).toBe("kimi");
-		expect(k25.effectiveLlmComponent).toBe("llm-kimi-k25");
+		expect(k3.effectiveProvider).toBe("kimi");
+		expect(k3.effectiveLlmComponent).toBe("llm-kimi-k3");
 	});
 
 	it("keeps legacy DeepSeek default out of SWE-bench", () => {
