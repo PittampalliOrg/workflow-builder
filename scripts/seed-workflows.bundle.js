@@ -16766,6 +16766,28 @@ function previewUiDevelopmentGanDefinition() {
           agentSlug: {
             type: "string",
             default: "glm-juicefs-builder-agent"
+          },
+          keepPreview: {
+            anyOf: [
+              { type: "boolean" },
+              { type: "string", enum: ["true", "false"] }
+            ],
+            default: "true"
+          },
+          mode: {
+            type: "string",
+            enum: ["preview-native"]
+          },
+          previewOrigin: {
+            type: "string"
+          },
+          sourceRevision: {
+            type: "string",
+            pattern: "^[0-9a-f]{40}$"
+          },
+          __previewDevelopment: {
+            type: "object",
+            additionalProperties: true
           }
         }
       }

@@ -35,6 +35,39 @@ export const meta = {
         default: ["/dashboard"],
       },
       maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
+      agentSlug: {
+        type: "string",
+        default: "glm-juicefs-builder-agent",
+        description:
+          "Server-selected agent slug. The host lifecycle supplies this; it is not preview authority.",
+      },
+      keepPreview: {
+        anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
+        default: "true",
+      },
+      mode: {
+        type: "string",
+        enum: ["preview-native"],
+        description:
+          "Server-derived launch mode injected by the preview launch policy.",
+      },
+      previewOrigin: {
+        type: "string",
+        description:
+          "Server-derived canonical preview origin injected by the preview launch policy.",
+      },
+      sourceRevision: {
+        type: "string",
+        pattern: "^[0-9a-f]{40}$",
+        description:
+          "Server-derived source revision injected by the preview launch policy.",
+      },
+      __previewDevelopment: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          "Server-derived tuple binding injected by the preview development control plane.",
+      },
     },
   },
 };
@@ -107,7 +140,10 @@ const service = typeof t.service === "string" && t.service ? t.service : DEFAULT
 const services = asStringArray(t.services, [service]);
 const routes = asStringArray(t.targetRoutes, DEFAULT_ROUTES);
 const maxIterations = Math.max(1, Math.min(3, Number(t.maxIterations ?? 2) || 2));
-const agentSlug = DEFAULT_AGENT;
+const agentSlug =
+  typeof t.agentSlug === "string" && t.agentSlug.length > 0
+    ? t.agentSlug
+    : DEFAULT_AGENT;
 
 phase("Dev mode");
 const preview = await action(
