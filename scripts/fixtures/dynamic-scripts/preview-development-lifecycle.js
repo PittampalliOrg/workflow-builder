@@ -61,7 +61,6 @@ const services =
     : ["workflow-builder"];
 const ttlHours = Number.isInteger(t.ttlHours) ? t.ttlHours : 8;
 const retainAfterCompletion = t.retainAfterCompletion === true;
-const developmentAgentSlug = "glm-juicefs-builder-agent";
 
 if (!intent) throw new Error("intent is required");
 if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(environmentName)) {
@@ -381,7 +380,6 @@ try {
       target: environment?.target ?? launch?.target,
       intent,
       services,
-      agentSlug: developmentAgentSlug,
     },
     { label: "start preview development workflow" },
   );
