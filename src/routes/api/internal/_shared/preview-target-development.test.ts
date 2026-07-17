@@ -78,7 +78,7 @@ describe("preview development command boundary", () => {
       actorUserId: "admin-1",
       workflow: {
         executionId: "child-1",
-        workflowName: "microservice-dev-session",
+        workflowName: "preview-ui-development-gan",
         workflowSpecDigest: `sha256:${"c".repeat(64)}`,
       },
     });

@@ -19,7 +19,7 @@ const spec = {
   document: {
     dsl: "1.0.0",
     namespace: "dev",
-    name: "microservice-dev-session",
+    name: "preview-ui-development-gan",
     "x-workflow-builder": { launch: { surface: "dev-environment" } },
   },
   do: [],
@@ -57,8 +57,8 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
     const getDefinitionByRef = vi.fn(
       async () =>
         ({
-          id: "microservice-dev-session",
-          name: "Microservice dev-session: preview-local development",
+          id: "preview-ui-development-gan",
+          name: "Preview UI development GAN",
           spec,
         }) as never,
     );
@@ -102,7 +102,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
     expect(result.workflowSpecDigest).toBe(digest);
     expect(result.executionId).toMatch(/^pdc_[0-9a-f]{60}$/);
     expect(getDefinitionByRef).toHaveBeenCalledWith({
-      workflowId: "microservice-dev-session",
+      workflowId: "preview-ui-development-gan",
     });
     expect(broker.startWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -110,7 +110,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         parentExecutionId: "parent-execution",
         target,
         workflow: expect.objectContaining({
-          workflowName: "microservice-dev-session",
+          workflowName: "preview-ui-development-gan",
           workflowSpecDigest: digest,
         }),
         workflowInput: {
@@ -223,8 +223,8 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     const getByRef = vi.fn(
       async () =>
         ({
-          id: "microservice-dev-session",
-          name: "Microservice dev-session: preview-local development",
+          id: "preview-ui-development-gan",
+          name: "Preview UI development GAN",
           userId: "preview-admin",
           projectId: "preview-project",
           spec,
@@ -235,7 +235,7 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         ...parent(),
         userId: "preview-admin",
         id: input.executionId!,
-        workflowId: "microservice-dev-session",
+        workflowId: "preview-ui-development-gan",
         projectId: "preview-project",
         input: input.triggerData as Record<string, unknown>,
         executionIr: { spec, triggerData: input.triggerData },
@@ -250,8 +250,8 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         ok: true as const,
         executionId: input.executionId!,
         instanceId: "instance-1",
-        workflowId: "microservice-dev-session",
-        workflowName: "Microservice dev-session: preview-local development",
+        workflowId: "preview-ui-development-gan",
+        workflowName: "Preview UI development GAN",
         reused: false,
       };
     });
@@ -300,7 +300,7 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         target,
         workflowSpecDigest: digest,
       }),
-      workflowName: "microservice-dev-session" as const,
+      workflowName: "preview-ui-development-gan" as const,
       workflowSpecDigest: digest,
     };
 
@@ -320,7 +320,7 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     expect(started.executionId).toBe(workflow.executionId);
     expect(startWorkflowRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        workflowId: "microservice-dev-session",
+        workflowId: "preview-ui-development-gan",
         executionId: workflow.executionId,
         idempotent: true,
         launchSurface: "dev-environment",
@@ -330,7 +330,7 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
     );
     expect(startWorkflowRun.mock.calls[0]![0]).not.toHaveProperty("userId");
     expect(getByRef).toHaveBeenCalledWith({
-      workflowId: "microservice-dev-session",
+      workflowId: "preview-ui-development-gan",
     });
     const trigger = startWorkflowRun.mock.calls[0]![0].triggerData as Record<
       string,
@@ -629,7 +629,7 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         target,
         workflow: {
           executionId: "child-execution",
-          workflowName: "microservice-dev-session",
+          workflowName: "preview-ui-development-gan",
           workflowSpecDigest: digest,
         },
       }),
@@ -724,7 +724,7 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
   it("reauthorizes and attests start, status, and signal on the exact physical generation", async () => {
     const workflow = {
       executionId: "child-execution",
-      workflowName: "microservice-dev-session" as const,
+      workflowName: "preview-ui-development-gan" as const,
       workflowSpecDigest: digest,
     };
     const physicalPreview = previewRecord();
@@ -1011,7 +1011,7 @@ describe("preview development session links", () => {
     operationId: operation("get-workflow-status", "a"),
     target,
     executionId: "child-execution",
-    workflowName: "microservice-dev-session",
+    workflowName: "preview-ui-development-gan",
     workflowSpecDigest: digest,
     status: "running",
     phase: "awaiting-control",

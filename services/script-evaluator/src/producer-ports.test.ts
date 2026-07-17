@@ -76,6 +76,14 @@ const ganScript = readFileSync(
 	"utf8",
 );
 
+const previewUiDevelopmentGan = readFileSync(
+	new URL(
+		"../../../scripts/fixtures/dynamic-scripts/preview-ui-development-gan.js",
+		import.meta.url,
+	),
+	"utf8",
+);
+
 describe("GAN generator port (preview-gan-ui-feature)", () => {
 	it("validates through the evaluator", async () => {
 		const v = await validateScript(ganScript);
@@ -142,5 +150,74 @@ describe("GAN generator port (preview-gan-ui-feature)", () => {
 		expect(labels).toBeGreaterThanOrEqual(3);
 		// A generate-labelled agent call must have appeared in the loop.
 		expect(known.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+describe("preview-ui-development-gan port", () => {
+	it("validates through the evaluator", async () => {
+		const v = await validateScript(previewUiDevelopmentGan);
+		expect(v.ok, v.error).toBe(true);
+		expect((v.meta as Record<string, unknown>)?.name).toBe("preview-ui-development-gan");
+	});
+
+	it("first round enters preview-native live-sync mode with adoption", async () => {
+		const res = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: { intent: "improve dashboard status visibility" },
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: {},
+			knownCallIds: [],
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		expect(res.status).toBe("need");
+		const t = res.tasks[0];
+		expect(t.kind).toBe("action");
+		expect(t.actionSlug).toBe("dev/preview");
+		expect((t.args as Record<string, unknown>).mode).toBe("preview-native");
+		expect((t.args as Record<string, unknown>).adopt).toBe(true);
+		expect((t.args as Record<string, unknown>).services).toEqual(["workflow-builder"]);
+	});
+
+	it("uses the GLM JuiceFS agent for plan and generate after live-sync metadata resolves", async () => {
+		const first = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: { intent: "improve dashboard status visibility" },
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: {},
+			knownCallIds: [],
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		const results: Record<string, { status: "done"; value: unknown }> = {};
+		const known: string[] = [];
+		for (const task of first.tasks) {
+			results[task.callId] = {
+				status: "done",
+				value: {
+					ok: true,
+					url: "https://wfb-feature.tail286401.ts.net",
+					browseUrl: "https://wfb-feature.tail286401.ts.net",
+					syncUrl: "https://wfb-feature.tail286401.ts.net/__sync",
+					syncCapability: "capability",
+				},
+			};
+			known.push(task.callId);
+		}
+		const second = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: { intent: "improve dashboard status visibility" },
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: results,
+			knownCallIds: known,
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		expect(second.status).toBe("need");
+		const plan = second.tasks[0];
+		expect(plan.kind).toBe("agent");
+		expect(plan.opts.agent).toBe("glm-juicefs-builder-agent");
+		expect(plan.opts.model).toBe("zai/glm-5.2");
+		expect(plan.opts.isolation).toBe("shared");
 	});
 });

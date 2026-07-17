@@ -1,6 +1,7 @@
 import { json, type RequestHandler } from "@sveltejs/kit";
 import { getApplicationAdapters } from "$lib/server/application";
 import { PreviewTargetDevelopmentError } from "$lib/server/application/preview-target-development";
+import { PREVIEW_DEVELOPMENT_WORKFLOW_NAME } from "$lib/server/application/ports/preview-target-development";
 import { requirePreviewActionInternal } from "$lib/server/internal-auth";
 import {
   BoundedJsonBodyError,
@@ -47,7 +48,7 @@ export const POST: RequestHandler = async ({ request }) => {
             target: parsed.command.target,
             workflow: {
               executionId: parsed.command.executionId,
-              workflowName: "microservice-dev-session",
+              workflowName: PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
               workflowSpecDigest: parsed.command.workflowSpecDigest,
             },
           }),
@@ -61,7 +62,7 @@ export const POST: RequestHandler = async ({ request }) => {
             target: parsed.command.target,
             workflow: {
               executionId: parsed.command.executionId,
-              workflowName: "microservice-dev-session",
+              workflowName: PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
               workflowSpecDigest: parsed.command.workflowSpecDigest,
             },
             action: parsed.command.action,

@@ -13,7 +13,7 @@ const target = {
 };
 const workflow = {
   executionId: "child-1",
-  workflowName: "microservice-dev-session" as const,
+  workflowName: "preview-ui-development-gan" as const,
   workflowSpecDigest: `sha256:${"c".repeat(64)}` as const,
 };
 const operationId = `pdt-start-workflow-${"b".repeat(64)}`;

@@ -240,7 +240,7 @@ import {
 } from "$lib/utils/workflow-input-config";
 
 const PROBLEM_PREVIEW_LEN = 240;
-const DEV_SESSION_WORKFLOW_ID = "microservice-dev-session";
+const DEV_SESSION_WORKFLOW_ID = "preview-ui-development-gan";
 const TOOL_CAPABLE_BENCHMARK_PROVIDERS = new Set([
 	"anthropic",
 	"openai",
@@ -4663,7 +4663,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 					this.findProjectWorkflowIdByIdOrNamePrefix({
 						projectId,
 						workflowId: DEV_SESSION_WORKFLOW_ID,
-						namePrefix: "Microservice dev-session%",
+						namePrefix: "Preview UI development GAN%",
 					}),
 					this.findProjectWorkflowIdByIdOrNamePrefix({
 						projectId,

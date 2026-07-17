@@ -13,7 +13,8 @@ the first dev-cluster proof.
 - [x] Implement the exact-tuple host-to-preview command adapter.
 - [x] Implement the host lifecycle workflow and launch UI.
 - [x] Require a physical durable promotion receipt before successful completion.
-- [x] Make the interactive-session handoff replay-safe and prove one linked session.
+- [x] Replace the manual interactive-session handoff with the automated
+      preview UI development GAN workflow.
 - [x] Pass repository and rendered-manifest validation.
 - [ ] Deploy through GitHub, GHCR, and GitOps to dev.
 - [ ] Prove prompt to HMR to draft PR to teardown on a fresh preview.
@@ -22,14 +23,15 @@ the first dev-cluster proof.
 
 A user submits one task from the physical dev Workflow Builder. One durable host
 workflow provisions an isolated `app-live` PreviewEnvironment, starts the pinned
-`microservice-dev-session` inside it, and reports the preview session. The agent
-runs `zai/glm-5.2` through `dapr-agent-py-juicefs`, receives the submitted task as
-its first work item, changes the selected services through the existing HMR
-receiver, and leaves the preview available for inspection. A durable approval on
-the host run submits or discards the changes. Submission captures the receiver's
-strict source generation, opens an idempotent draft pull request, returns the
-receipt to the host run, and then performs generation-fenced teardown unless the
-launch requested retention.
+`preview-ui-development-gan` workflow inside it, and waits for that child to
+finish. The child runs `zai/glm-5.2` through `dapr-agent-py-juicefs`, receives
+the submitted task as its first work item, plans a dashboard change, applies it
+through the existing HMR receiver, verifies the live preview, captures the strict
+source generation, and opens an idempotent draft pull request. The happy path
+does not pause for manual approval. Discard/cancel remains available as an
+operator control, but approval is no longer required to create the proof PR. The
+host run then verifies the physical promotion receipt and performs
+generation-fenced teardown unless the launch requested retention.
 
 ## Orchestration Boundary
 
@@ -38,9 +40,9 @@ This is one logical lifecycle implemented by two durable executions:
 1. `preview-development-lifecycle` is stored and run on the physical dev cluster.
    It owns provisioning, correlation, approval, receipt reconciliation, and
    whole-environment teardown.
-2. `microservice-dev-session` is stored and run inside the target vCluster. It
-   owns service adoption, the shared HMR workspace, the interactive agent
-   session, source capture, and PR promotion.
+2. `preview-ui-development-gan` is stored and run inside the target vCluster. It
+   owns service adoption, the shared HMR workspace, the GLM plan/generate/verify
+   loop, strict source capture, and PR promotion.
 
 The executions are not related with Dapr `call_child_workflow`. The physical dev
 cluster and every vCluster have separate workflow state stores and task hubs. A
@@ -100,25 +102,29 @@ the child. No caller-supplied URL participates in routing.
 
 ## Typed Control
 
-The preview-local child waits durably on the fixed event
-`preview.development.control`. The only accepted payloads are:
+The primary proof path is automatic. The preview-local child captures and
+promotes the accepted HMR generation itself, then returns only a bounded receipt
+summary to the host. Manual control is still retained for interruption and
+cleanup. If a child run reaches an explicit control point, it waits durably on
+the fixed event `preview.development.control`. The only accepted payloads are:
 
 ```json
 { "action": "submit_preview_pr" }
 { "action": "discard" }
 ```
 
-The host parent exposes this through its normal durable approval surface:
+The host parent exposes this through its normal durable control surface:
 
-- Approve sends `submit_preview_pr`.
+- Approve sends `submit_preview_pr` only for runs that intentionally reached a
+  manual control point.
 - Deny sends `discard`.
 - Cancellation leaves an auditable result and invokes guarded cleanup according
   to the archive policy.
 
-On submission the child runs `dev/preview-snapshot` for the exact selected
-service set, then `dev/preview-promote`. Both actions bind their execution ID
-from trusted activity context. Promotion remains draft-only and the GitHub App
-credential remains in the physical broker.
+On automatic or manual submission the child runs `dev/preview-snapshot` for the
+exact selected service set, then `dev/preview-promote`. Both actions bind their
+execution ID from trusted activity context. Promotion remains draft-only and the
+GitHub App credential remains in the physical broker.
 
 ## Action Contract
 
@@ -154,11 +160,13 @@ inside the existing durable action-runner retry policy. Contract, authorization,
 and generation conflicts are permanent results and are not retried. Both proxy
 hops have fixed deadlines.
 
-When the child reaches `await_control`, status must resolve exactly one session
+When the child exposes a GLM session, status must resolve at most one session
 linked to the child execution. The result includes the preview-local,
-workspace-scoped session URL so the host approval surface can take the operator
-directly to the active GLM session. Zero, duplicate, or ambiguous links fail the
-contract instead of presenting an approval.
+workspace-scoped session URL so the host run detail can take the operator
+directly to the active GLM session. Duplicate or ambiguous links fail the
+contract instead of presenting controls. Normal automated runs may complete
+without a manual handoff session URL if all proof artifacts and the physical
+promotion receipt are present.
 
 Preview application code is mutable and therefore not a trust authority. The
 physical broker reconstructs start, status, signal, session-link, and terminal
@@ -178,6 +186,32 @@ status to fixed messages before crossing the physical boundary.
   typed signal, and physical promotion verification.
 - HTTP, Dapr, database, Kubernetes, and GitHub details remain outbound adapters.
 - Agent pods receive only task text and scoped HMR capabilities.
+
+## Browser And Raystation Access
+
+Browser authority follows the same port-and-adapter boundary as HMR and source
+promotion. Workflows ask for a browser inspection of a preview route; they do not
+receive a raw Raystation endpoint, host browser credential, kubeconfig, or
+Tailscale authority. The application layer resolves the request against the
+exact PreviewEnvironment tuple and returns only a scoped browser session handle,
+allowed origins, and artifact references.
+
+For the first development version, the default browser path remains the existing
+preview-local Playwright/browser action surface plus screenshot or video
+artifacts. When a browser agent session must use Raystation on the host, model it
+as an outbound browser adapter behind the physical broker:
+
+- the host adapter owns the Raystation connection and any host-only credential;
+- the adapter only opens tuple-bound preview URLs or approved external test URLs;
+- the workflow receives observations, screenshots, recordings, and a session
+  handle, not the host browser control channel;
+- the same run/preview/session correlation is persisted so the Dev page can show
+  browser state alongside provisioning, HMR, workflow progress, source capture,
+  and PR receipt.
+
+This keeps Raystation useful for high-fidelity browser-agent sessions without
+turning the host browser into preview input or weakening the preview isolation
+contract.
 
 ## Delivery Topology
 

@@ -4209,7 +4209,7 @@ function hostPreviewLifecycleDefinition() {
 		"utf8",
 	);
 	const description =
-		"Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.";
+		"Provision an isolated app-live preview from the physical dev cluster, start its pinned automated GAN-style UI development workflow with the submitted intent, verify its draft PR receipt, and complete guarded teardown.";
 	return {
 		script,
 		description,
@@ -4219,7 +4219,7 @@ function hostPreviewLifecycleDefinition() {
 			phases: [
 				{ title: "Provision" },
 				{ title: "Start development" },
-				{ title: "Review" },
+				{ title: "Observe" },
 				{ title: "Finalize" },
 			],
 			launch: { surface: "dev-environment", target: "control-plane" },
@@ -4233,7 +4233,7 @@ function hostPreviewLifecycleDefinition() {
 						title: "Development task",
 						minLength: 1,
 						maxLength: 12000,
-						description: "The initial task sent to the preview-local interactive agent.",
+						description: "The initial task sent to the preview-local automated UI development workflow.",
 					},
 					environmentName: {
 						type: "string",
@@ -4259,6 +4259,63 @@ function hostPreviewLifecycleDefinition() {
 						type: "boolean",
 						title: "Retain environment after completion",
 						default: false,
+					},
+				},
+			},
+		},
+	};
+}
+
+function previewUiDevelopmentGanDefinition() {
+	const script = fs.readFileSync(
+		path.resolve(
+			process.cwd(),
+			"scripts/fixtures/dynamic-scripts/preview-ui-development-gan.js",
+		),
+		"utf8",
+	);
+	const description =
+		"Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use the GLM JuiceFS Dapr agent to plan and implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
+	return {
+		script,
+		description,
+		meta: {
+			name: "preview-ui-development-gan",
+			description,
+			phases: [
+				{ title: "Dev mode" },
+				{ title: "Plan" },
+				{ title: "Generate" },
+				{ title: "Verify" },
+				{ title: "Promote" },
+			],
+			launch: { surface: "dev-environment" },
+			input: {
+				type: "object",
+				required: ["intent"],
+				additionalProperties: false,
+				properties: {
+					intent: {
+						type: "string",
+						title: "Dashboard development task",
+						minLength: 1,
+						maxLength: 12000,
+					},
+					service: { type: "string", default: "workflow-builder" },
+					services: {
+						type: "array",
+						items: { type: "string" },
+						default: ["workflow-builder"],
+					},
+					targetRoutes: {
+						type: "array",
+						items: { type: "string" },
+						default: ["/dashboard"],
+					},
+					maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
+					agentSlug: {
+						type: "string",
+						default: "glm-juicefs-builder-agent",
 					},
 				},
 			},
@@ -4817,6 +4874,25 @@ async function seedGeneratorCriticShowcases(params: {
 			engine: "dynamic-script",
 			script: hostPreviewLifecycle.script,
 			meta: hostPreviewLifecycle.meta,
+		},
+		nodes: [],
+		edges: [],
+		visibility: "public",
+		engineType: "dynamic-script",
+	});
+
+	const previewUiDevelopmentGan = previewUiDevelopmentGanDefinition();
+	await upsertRawWorkflow({
+		db: params.db,
+		workflowId: "preview-ui-development-gan",
+		name: "Preview UI development GAN",
+		description: previewUiDevelopmentGan.description,
+		userId: params.userId,
+		projectId: params.projectId,
+		spec: {
+			engine: "dynamic-script",
+			script: previewUiDevelopmentGan.script,
+			meta: previewUiDevelopmentGan.meta,
 		},
 		nodes: [],
 		edges: [],

@@ -1,11 +1,11 @@
 export const meta = {
   name: "preview-development-lifecycle",
   description:
-    "Provision an isolated app-live preview from the physical dev cluster, start its pinned microservice development workflow with the submitted intent, and durably submit or discard the resulting source before guarded teardown.",
+    "Provision an isolated app-live preview from the physical dev cluster, start its pinned automated GAN-style UI development workflow with the submitted intent, verify its draft PR receipt, and complete guarded teardown.",
   phases: [
     { title: "Provision" },
     { title: "Start development" },
-    { title: "Review" },
+    { title: "Observe" },
     { title: "Finalize" },
   ],
   launch: { surface: "dev-environment", target: "control-plane" },
@@ -20,7 +20,7 @@ export const meta = {
         minLength: 1,
         maxLength: 12000,
         description:
-          "The initial task sent to the preview-local interactive agent.",
+          "The initial task sent to the preview-local automated UI development workflow.",
       },
       environmentName: {
         type: "string",
@@ -78,8 +78,6 @@ if (new Set(services).size !== services.length)
 if (!Number.isInteger(ttlHours) || ttlHours < 2 || ttlHours > 24) {
   throw new Error("ttlHours must be an integer between 2 and 24");
 }
-const approvalTimeoutMinutes = Math.max(10, Math.min(480, ttlHours * 60 - 110));
-
 function stateOf(value) {
   return String(value?.status ?? value?.phase ?? "")
     .trim()
@@ -203,7 +201,6 @@ function childControlReady(value) {
     state === "control-ready"
   );
 }
-
 function childFinished(value) {
   const state = stateOf(value);
   return (
@@ -340,8 +337,6 @@ let environmentLaunched = false;
 let launch = null;
 let environment = null;
 let child = null;
-let childReady = null;
-let control = null;
 let outcome = null;
 let promotionVerification = null;
 let teardown = null;
@@ -385,54 +380,7 @@ try {
   );
   const childFailure = failureOf(child);
   if (childFailure) throw new Error(`preview/workflow-start: ${childFailure}`);
-  childReady = await waitForStatus(
-    "preview/workflow-status",
-    {
-      target: environment?.target ?? launch?.target,
-      executionId: child?.executionId,
-      workflowSpecDigest: child?.workflowSpecDigest,
-    },
-    childControlReady,
-    "observe development session",
-    481,
-    5,
-  );
-  if (
-    typeof childReady?.sessionId !== "string" ||
-    childReady.sessionId.length < 1 ||
-    typeof childReady?.sessionUrl !== "string" ||
-    !childReady.sessionUrl.startsWith(
-      `https://wfb-${(environment?.target ?? launch?.target)?.previewName}.`,
-    ) ||
-    !childReady.sessionUrl.includes(".ts.net/workspaces/")
-  ) {
-    throw new Error(
-      "preview development child reached control without one trusted interactive session link",
-    );
-  }
-
-  phase("Review");
-  const decision = await approve({
-    label: "Submit preview changes",
-    message: `Inspect the preview-local interactive session at ${childReady.sessionUrl} and the live application first. Approve only after the agent has finished its sync and tests; approval captures the selected services and opens a draft pull request. Reject to discard the changes.`,
-    timeoutMinutes: approvalTimeoutMinutes,
-  });
-  const actionName =
-    decision?.approved === true && decision?.timedOut !== true
-      ? "submit_preview_pr"
-      : "discard";
-  control = await signalPreviewWorkflow(
-    {
-      target: environment?.target ?? launch?.target,
-      executionId: child?.executionId,
-      workflowSpecDigest: child?.workflowSpecDigest,
-      action: actionName,
-    },
-    actionName,
-  );
-  const controlFailure = failureOf(control);
-  if (controlFailure)
-    throw new Error(`preview/workflow-signal: ${controlFailure}`);
+  phase("Observe");
   outcome = await waitForStatus(
     "preview/workflow-status",
     {
@@ -446,35 +394,33 @@ try {
     5,
     { maxTransientFailures: 240 },
   );
-  const childPromotionReceipt = assertChildOutcome(actionName, outcome, {
+  const childPromotionReceipt = assertChildOutcome("submit_preview_pr", outcome, {
     target: environment?.target ?? launch?.target,
     executionId: child?.executionId,
     services,
   });
-  if (actionName === "submit_preview_pr") {
-    promotionVerification = await action(
-      "preview/workflow-verify-promotion",
-      {
-        target: environment?.target ?? launch?.target,
-        childExecutionId: child?.executionId,
-        receiptId: childPromotionReceipt?.receiptId,
-        services,
-      },
-      { label: "verify physical promotion receipt" },
-    );
-    const verificationFailure = failureOf(promotionVerification);
-    if (verificationFailure) {
-      throw new Error(
-        `preview/workflow-verify-promotion: ${verificationFailure}`,
-      );
-    }
-    assertPromotionVerification(promotionVerification, {
+  promotionVerification = await action(
+    "preview/workflow-verify-promotion",
+    {
       target: environment?.target ?? launch?.target,
-      executionId: child?.executionId,
+      childExecutionId: child?.executionId,
       receiptId: childPromotionReceipt?.receiptId,
       services,
-    });
+    },
+    { label: "verify physical promotion receipt" },
+  );
+  const verificationFailure = failureOf(promotionVerification);
+  if (verificationFailure) {
+    throw new Error(
+      `preview/workflow-verify-promotion: ${verificationFailure}`,
+    );
   }
+  assertPromotionVerification(promotionVerification, {
+    target: environment?.target ?? launch?.target,
+    executionId: child?.executionId,
+    receiptId: childPromotionReceipt?.receiptId,
+    services,
+  });
   completedNormally = true;
 } finally {
   phase("Finalize");
@@ -518,8 +464,6 @@ return {
   launch,
   environment,
   child,
-  childReady,
-  control,
   outcome,
   promotionVerification,
   teardown,

@@ -3,8 +3,8 @@
  * function so the list page, the kind filter, and the session-detail badge all
  * agree on what a session "is". Four kinds, most-specific-first:
  *
- *   dev         — a Microservice dev-session run (workflowId resolves to the
- *                 `microservice-dev-session` template; see workflow-data.ts
+ *   dev         — a Preview UI development run (workflowId resolves to the
+ *                 `preview-ui-development-gan` template; see workflow-data.ts
  *                 `getDevPreviewHubReadModel`). Checked first because a dev
  *                 session is also a workflow session.
  *   experiment  — a forked/tweaked agent (slug `exp-…`), matching the
@@ -17,7 +17,7 @@ export type SessionKind = "interactive" | "workflow" | "experiment" | "dev";
 /** The dev-session workflow template id (mirrors the private constant in
  * workflow-data.ts). A project-forked dev workflow resolves to a distinct id,
  * so callers pass that resolved id too — either match classifies as dev. */
-export const DEV_SESSION_WORKFLOW_ID = "microservice-dev-session";
+export const DEV_SESSION_WORKFLOW_ID = "preview-ui-development-gan";
 
 export type SessionKindInput = {
 	workflowId?: string | null;
