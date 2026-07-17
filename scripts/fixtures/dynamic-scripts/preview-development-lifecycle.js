@@ -104,6 +104,7 @@ function errorMessage(error) {
 
 function transientPreviewWorkflowError(slug, error) {
   if (
+    slug !== "preview/workflow-start" &&
     slug !== "preview/workflow-status" &&
     slug !== "preview/workflow-signal"
   )
@@ -115,6 +116,33 @@ function transientPreviewWorkflowError(slug, error) {
     message.includes("preview development endpoint returned HTTP 502") ||
     message.includes("preview development request timed out")
   );
+}
+
+async function startPreviewWorkflow(input) {
+  const attempts = 25;
+  const pollSeconds = 5;
+  let transientFailures = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const result = await action("preview/workflow-start", input, {
+        label: `start preview development workflow ${attempt + 1}`,
+      });
+      const failure = failureOf(result);
+      if (failure) throw new Error(`preview/workflow-start: ${failure}`);
+      return result;
+    } catch (error) {
+      if (
+        transientPreviewWorkflowError("preview/workflow-start", error) &&
+        transientFailures < attempts - 1
+      ) {
+        transientFailures += 1;
+        if (attempt + 1 < attempts) await sleep(pollSeconds);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(`preview/workflow-start timed out after ${attempts} attempts`);
 }
 
 async function waitForStatus(
@@ -369,17 +397,11 @@ try {
   );
 
   phase("Start development");
-  child = await action(
-    "preview/workflow-start",
-    {
-      target: environment?.target ?? launch?.target,
-      intent,
-      services,
-    },
-    { label: "start preview development workflow" },
-  );
-  const childFailure = failureOf(child);
-  if (childFailure) throw new Error(`preview/workflow-start: ${childFailure}`);
+  child = await startPreviewWorkflow({
+    target: environment?.target ?? launch?.target,
+    intent,
+    services,
+  });
   phase("Observe");
   outcome = await waitForStatus(
     "preview/workflow-status",
