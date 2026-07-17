@@ -13011,6 +13011,15 @@ function executionSafeBrowserHeaders(headers, probe) {
   if (probe) retained["X-Wfb-Browser-Lane"] = "per-node";
   return Object.keys(retained).length ? retained : void 0;
 }
+function jsonbParameter(value) {
+  const serialized = JSON.stringify(value);
+  if (serialized === void 0) {
+    throw new TypeError(
+      "Cannot serialize an undefined browser migration value"
+    );
+  }
+  return serialized;
+}
 function buildKimiK3BrowserAgentConfig(sourceConfig, options) {
   const source = sourceConfig ? structuredClone(sourceConfig) : {};
   delete source.model;
@@ -13143,7 +13152,7 @@ async function ensureBrowserAgent(sql2, owner, definition) {
     await sql2`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-				tags = ${sql2.json(tags)}, runtime = ${"dapr-agent-py"},
+					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				updated_at = now()
 			where id = ${existing.id}
@@ -13168,9 +13177,9 @@ async function ensureBrowserAgent(sql2, owner, definition) {
 					created_at, updated_at
 				) values (
 					${agentId}, ${definition.slug}, ${definition.name},
-					${definition.description}, ${sql2.json(tags)}, ${"dapr-agent-py"},
-					${owner.userId}, ${owner.projectId}, ${"registered"}, false,
-					${sql2.json([])}, now(), now()
+						${definition.description}, ${jsonbParameter(tags)}::jsonb, ${"dapr-agent-py"},
+						${owner.userId}, ${owner.projectId}, ${"registered"}, false,
+						${jsonbParameter([])}::jsonb, now(), now()
 				)
 			`;
     }
@@ -13180,7 +13189,7 @@ async function ensureBrowserAgent(sql2, owner, definition) {
 				published_at, published_by, created_at
 			) values (
 				${versionId}, ${agentId}, ${nextVersion},
-				${sql2.json(config)}, ${configHash},
+					${jsonbParameter(config)}::jsonb, ${configHash},
 				${"Migrate browser automation to Kimi K3 vision with max reasoning and a 1M-token context window."},
 				now(), ${owner.userId}, now()
 			)
@@ -13188,7 +13197,7 @@ async function ensureBrowserAgent(sql2, owner, definition) {
     await tx`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-				tags = ${sql2.json(tags)}, runtime = ${"dapr-agent-py"},
+					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				current_version_id = ${versionId}, updated_at = now()
 			where id = ${agentId}
@@ -13226,9 +13235,9 @@ async function migrateKimiK3BrowserAgentsAndWorkflows(sql2, owner) {
 			update workflows set
 				name = ${migratedName},
 				description = ${migratedDescription},
-				spec = ${sql2.json(migratedSpec)},
-				nodes = ${sql2.json(migratedNodes)},
-				edges = ${sql2.json(migratedEdges)},
+					spec = ${jsonbParameter(migratedSpec)}::jsonb,
+					nodes = ${jsonbParameter(migratedNodes)}::jsonb,
+					edges = ${jsonbParameter(migratedEdges)}::jsonb,
 				updated_at = now()
 			where id = ${workflow.id}
 		`;
@@ -13376,6 +13385,13 @@ async function resolveOwner(sql2, existing, userEmail) {
 function hashConfig(config) {
   return hashAgentConfig(config);
 }
+function jsonbParameter2(value) {
+  const serialized = JSON.stringify(value);
+  if (serialized === void 0) {
+    throw new TypeError("Cannot serialize an undefined 3B1B seed value");
+  }
+  return serialized;
+}
 async function ensureKimiAgent(sql2, owner) {
   const config = KIMI_AGENT_CONFIG;
   const configHash = hashConfig(config);
@@ -13393,7 +13409,7 @@ async function ensureKimiAgent(sql2, owner) {
       set
         name = ${KIMI_AGENT_NAME},
         description = ${KIMI_AGENT_DESCRIPTION},
-        tags = ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        tags = ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
         runtime = ${"dapr-agent-py"},
         registry_status = ${"registered"},
         is_archived = false,
@@ -13402,7 +13418,7 @@ async function ensureKimiAgent(sql2, owner) {
         and (
           name is distinct from ${KIMI_AGENT_NAME}
           or description is distinct from ${KIMI_AGENT_DESCRIPTION}
-          or tags is distinct from ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
+          or tags is distinct from ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
           or runtime is distinct from ${"dapr-agent-py"}
           or registry_status is distinct from ${"registered"}
           or is_archived is distinct from false
@@ -13426,7 +13442,7 @@ async function ensureKimiAgent(sql2, owner) {
           changelog, published_at, published_by, created_at
         ) values (
           ${versionId2}, ${existing.id}, ${nextVersion},
-          ${sql2.json(config)}, ${configHash},
+          ${jsonbParameter2(config)}::jsonb, ${configHash},
           ${"Reconcile the 3B1B animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
           now(), ${owner.userId}, now()
         )
@@ -13436,7 +13452,7 @@ async function ensureKimiAgent(sql2, owner) {
         set
           name = ${KIMI_AGENT_NAME},
           description = ${KIMI_AGENT_DESCRIPTION},
-          tags = ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+          tags = ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
           runtime = ${"dapr-agent-py"},
           registry_status = ${"registered"},
           is_archived = false,
@@ -13459,9 +13475,9 @@ async function ensureKimiAgent(sql2, owner) {
       ) values (
         ${agentId}, ${KIMI_AGENT_SLUG}, ${KIMI_AGENT_NAME},
         ${KIMI_AGENT_DESCRIPTION},
-        ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
+        ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
         ${"dapr-agent-py"}, ${owner.userId}, ${owner.projectId},
-        ${"registered"}, false, ${sql2.json([])}, now(), now()
+        ${"registered"}, false, ${jsonbParameter2([])}::jsonb, now(), now()
       )
     `;
     await tx`
@@ -13470,7 +13486,7 @@ async function ensureKimiAgent(sql2, owner) {
         changelog, published_at, published_by, created_at
       ) values (
         ${versionId}, ${agentId}, 1,
-        ${sql2.json(config)}, ${configHash},
+        ${jsonbParameter2(config)}::jsonb, ${configHash},
         ${"Initial Kimi K3 definition for the 3B1B animation workflow."},
         now(), ${owner.userId}, now()
       )
@@ -13873,12 +13889,12 @@ async function main() {
         ${WORKFLOW_DESCRIPTION},
         ${owner.userId},
         ${owner.projectId},
-        ${sql2.json(nodes)},
-        ${sql2.json(edges)},
+        ${jsonbParameter2(nodes)}::jsonb,
+        ${jsonbParameter2(edges)}::jsonb,
         ${"public"},
         ${"dapr"},
         ${"1.0.0"},
-        ${sql2.json(spec)},
+        ${jsonbParameter2(spec)}::jsonb,
         ${now},
         ${now}
       )
