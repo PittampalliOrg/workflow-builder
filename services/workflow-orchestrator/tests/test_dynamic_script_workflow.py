@@ -1962,3 +1962,160 @@ def test_transient_workspace_profile_skips_session_recording():
     result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
     assert result["success"] is True
     assert ctx.persist_workspace_inputs == []
+
+
+# ---------------------------------------------------------------------------
+# Teardown headroom (preview-lifecycle hardening 1b/1c): compensation-slug
+# actions still dispatch past the lifetime action cap (their own small budget)
+# and cancel runs ONE bounded compensation evaluation round before persisting
+# terminal 'cancelled'.
+# ---------------------------------------------------------------------------
+def test_cap_exhaustion_teardown_compensation_slug_still_dispatches():
+    """cap-exhaustion-teardown: with the lifetime action cap exhausted, a
+    non-compensation action journals the cap dispatchError while a
+    compensation-slug action (preview/environment-teardown) still dispatches
+    from its own reserved budget."""
+    act1 = action_task("a1" * 20 + "_0", "workspace/command", {"command": "true"})
+    act2 = action_task("b2" * 20 + "_0", "workspace/command", {"command": "ls"})
+    teardown = action_task(
+        "c3" * 20 + "_0",
+        "preview/environment-teardown",
+        {"environmentName": "feature-one"},
+        label="teardown",
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([act1, act2, teardown], {"ok": True}))
+    inp = base_input(**FEAT_INPUT)
+    inp["limits"] = {**inp["limits"], "maxLifetimeActions": 1}
+
+    def complete_teardown(c: FakeCtx):
+        c.complete_child("c3" * 20 + "_0", {"success": True, "data": {"tornDown": True}})
+
+    result = drive(dynamic_script_workflow(ctx, inp), ctx, [complete_teardown])
+    assert result["success"] is True
+    raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
+    # act1 consumed the whole lifetime budget; act2 hit the cap...
+    assert "action lifetime cap reached" in raws["b2" * 20 + "_0"]["error"]
+    # ...while the teardown slug still dispatched (runner child) + succeeded.
+    iid = script_child_instance_id(ctx.instance_id, "c3" * 20 + "_0", 0)
+    assert iid in ctx.children
+    assert raws["c3" * 20 + "_0"] == {"success": True, "data": {"tornDown": True}}
+
+
+def test_compensation_budget_caps_runaway_teardown_calls(monkeypatch):
+    """Compensation slugs bypass the lifetime cap but carry their OWN budget —
+    a runaway teardown/status loop still terminates with a dispatchError."""
+    import workflows.dynamic_script_workflow as w
+
+    monkeypatch.setattr(w, "DEFAULT_MAX_COMPENSATION_ACTIONS", 1)
+    t1 = action_task(
+        "d1" * 20 + "_0", "preview/environment-teardown", {"environmentName": "x"}
+    )
+    t2 = action_task(
+        "e2" * 20 + "_0", "preview/environment-teardown-status", {"ticket": "t"}
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([t1, t2], {"ok": True}))
+
+    def complete_first(c: FakeCtx):
+        c.complete_child("d1" * 20 + "_0", {"success": True, "data": {"ok": True}})
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [complete_first]
+    )
+    assert result["success"] is True
+    raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
+    assert raws["d1" * 20 + "_0"]["success"] is True
+    assert "compensation action budget reached" in raws["e2" * 20 + "_0"]["error"]
+
+
+def test_cancel_compensation_round_dispatches_teardown_then_persists_cancelled():
+    """cancel-compensation: workflow.cancel triggers exactly ONE compensation
+    evaluation round; the script's finally-block teardown (compensation slug)
+    dispatches and journals, a non-compensation call gets the dispatchError,
+    and the run still persists terminal 'cancelled'."""
+    agent_cid = "a" * 40 + "_0"
+    teardown_cid = "f1" * 20 + "_0"
+    extra_agent_cid = "b" * 40 + "_0"
+    teardown = action_task(
+        teardown_cid, "preview/environment-teardown", {"environmentName": "feature-one"}
+    )
+
+    def evaluator(input_data):
+        known = set(input_data.get("knownCallIds") or [])
+        if agent_cid not in known:
+            return plan_need([agent_task(agent_cid, label="main")])
+        # The finally block: teardown + one non-compensation late call.
+        remaining = [
+            t
+            for t in (teardown, agent_task(extra_agent_cid, label="late"))
+            if t["callId"] not in known
+        ]
+        if not remaining:
+            return plan_done({"ok": True})
+        return plan_need(remaining)
+
+    ctx = FakeCtx(evaluator=evaluator)
+    steps = [
+        lambda c: c.fire_cancel("user stop"),
+        lambda c: c.complete_child(
+            teardown_cid, {"success": True, "data": {"tornDown": True}}
+        ),
+    ]
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, steps)
+
+    # Cancel intent wins: terminal status stays cancelled.
+    assert result["success"] is False
+    assert result["cancelled"] is True
+    assert result["status"] == "cancelled"
+    assert "user stop" in result["error"]
+
+    raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
+    # The in-flight agent call was journaled as cancelled...
+    assert raws[agent_cid] == {"success": False, "cancelled": True}
+    # ...the finally-block teardown dispatched (runner child) and journaled...
+    iid = script_child_instance_id(ctx.instance_id, teardown_cid, 0)
+    assert iid in ctx.children
+    assert raws[teardown_cid] == {"success": True, "data": {"tornDown": True}}
+    # ...and the non-compensation call could NOT start.
+    assert raws[extra_agent_cid]["success"] is False
+    assert "only compensation actions" in raws[extra_agent_cid]["error"]
+
+    # Exactly ONE compensation evaluation round: 2 evaluates total (the main
+    # round + the post-cancel round).
+    evals = [
+        a for a in ctx.action_log if a[0] == "activity" and a[1] == "evaluate_script"
+    ]
+    assert len(evals) == 2
+
+    # The terminal persist ('cancelled') lands AFTER the teardown journal.
+    log = ctx.action_log
+    teardown_rec_i = next(
+        i
+        for i, a in enumerate(log)
+        if a[0] == "activity"
+        and a[1] == "record_script_call_result"
+        and a[2] == teardown_cid
+    )
+    persist_i = next(
+        i
+        for i, a in enumerate(log)
+        if a[0] == "activity" and a[1] == "persist_results_to_db"
+    )
+    assert teardown_rec_i < persist_i
+
+
+def test_cancel_without_pending_compensation_stays_terminal():
+    """A cancel whose compensation evaluate yields no new tasks persists
+    'cancelled' without dispatching anything further."""
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([agent_task(cid)], "x"))
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)),
+        ctx,
+        [lambda c: c.fire_cancel("stop now")],
+    )
+    assert result["status"] == "cancelled"
+    # The lone in-flight call was journaled as cancelled; nothing else dispatched.
+    raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
+    assert raws[cid] == {"success": False, "cancelled": True}
+    assert len([a for a in ctx.action_log if a[0] == "child"]) == 1  # the agent only
