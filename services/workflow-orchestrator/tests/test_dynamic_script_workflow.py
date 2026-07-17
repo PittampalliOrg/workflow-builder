@@ -1424,18 +1424,59 @@ def test_openai_schema_call_never_gets_tool_mode(monkeypatch):
     assert "structuredOutputMode" not in cfg
 
 
-def test_default_schema_routing_is_kimi_k3_strict_mode(monkeypatch):
+def test_default_schema_routing_is_kimi_k3_tool_mode(monkeypatch):
     import workflows.script_agent_dispatch as d
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
     monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
     monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_MODEL", raising=False)
     schema = {"type": "object", "properties": {"x": {"type": "string"}}}
-    # schema'd call with no explicit model uses Kimi K3 strict JSON Schema.
+    # schema'd call with no explicit model uses Kimi K3 and keeps normal tools
+    # available before StructuredOutput finalization.
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "dapr-agent-py", {})
     assert cfg["modelSpec"] == "kimi/kimi-k3"
-    assert "structuredOutputMode" not in cfg
+    assert cfg["structuredOutputMode"] == "tool"
     assert cfg["responseJsonSchema"] == schema
+
+
+@pytest.mark.parametrize("spec", ["kimi/kimi-k3", "kimi-k3", "moonshot/kimi-k3"])
+def test_kimi_k3_aliases_use_structured_tool_mode(monkeypatch, spec):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config(
+        {"schema": schema, "model": spec}, {}, "dapr-agent-py", {}
+    )
+    assert cfg["structuredOutputMode"] == "tool"
+    assert cfg["responseJsonSchema"] == schema
+
+
+def test_kimi_k3_non_object_schema_stays_native_strict(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {"type": "array", "items": {"type": "string"}}
+    cfg = d._build_agent_config(
+        {"schema": schema, "model": "kimi/kimi-k3"}, {}, "dapr-agent-py", {}
+    )
+    assert cfg["responseJsonSchema"] == schema
+    assert "structuredOutputMode" not in cfg
+
+
+def test_kimi_k3_structured_tool_kill_switch_uses_native_strict(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.setenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", "false")
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config(
+        {"schema": schema, "model": "kimi/kimi-k3"}, {}, "dapr-agent-py", {}
+    )
+    assert cfg["responseJsonSchema"] == schema
+    assert "structuredOutputMode" not in cfg
 
 
 def test_anthropic_and_deepseek_schema_calls_get_tool_mode(monkeypatch):

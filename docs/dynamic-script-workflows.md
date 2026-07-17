@@ -109,14 +109,15 @@ Five Workflow-tool alignment gaps were closed (evaluator 1.1.0 + orchestrator + 
   `resolve_llm_metadata` → `effectiveAgentConfig.llm.reasoningEffort` → call_llm stamps
   `self.llm._reasoning_effort` (set/restored alongside `_llm_component` at BOTH seams) → zai/
   deepseek/openai adapters take it as an override to their env default ({low,medium,high}→high,
-  {xhigh,max}→max on GLM/DeepSeek; low/medium/high on OpenAI). Anthropic/Kimi ignore it.
+  {xhigh,max}→max on GLM/DeepSeek; low/medium/high on OpenAI). Kimi K3 always uses
+  `max`; Anthropic ignores this field.
 - **meta.phases[].model is honored**: `_build_agent_config` resolves
   `opts.model → meta.phases[task.phase].model → defaults.model` (last gated to dapr-agent-py).
 
-## Structured output — provider-native (2026-07)
+## Structured output - schema-enforced (2026-07)
 
-Schema'd `agent(..., {schema})` calls get **provider-native** structured output on top of the
-prompt-contract, keyed off the existing `opts.schema` (no callId/contract change):
+Schema'd `agent(..., {schema})` calls get provider or runtime-enforced structured output on top
+of the prompt contract, keyed off the existing `opts.schema` (no callId/contract change):
 
 - **Hybrid routing** (`script_agent_dispatch._build_agent_config`): a schema'd call with no explicit
   model routes to `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `kimi/kimi-k3`); per-call
@@ -125,12 +126,15 @@ prompt-contract, keyed off the existing `opts.schema` (no callId/contract change
 - **Threading:** dispatch stamps `agentConfig.responseJsonSchema` → `effective_agent_config.resolve_llm_metadata`
   carries it into `llm.responseJsonSchema` → `main.py call_llm` stamps `self.llm._response_json_schema`
   at BOTH seams (set/restore alongside `_llm_component`/`_reasoning_effort`) → adapters enforce it.
-- **Adapters:** `kimi_adapter` sends strict `json_schema` to Kimi K3 and `openai_adapter` sets
-  `text.format={type:json_schema, strict:true}`; both return text for journal validation.
-  `zai_adapter` uses its provider-specific structured-output path for explicit GLM routes.
+- **Adapters:** object-shaped Kimi K3 schemas use the synthetic `StructuredOutput` tool so
+  browser/coding/MCP tools remain usable before finalization; Kimi Pydantic calls and non-object
+  schemas retain native strict `json_schema`. `openai_adapter` sets
+  `text.format={type:json_schema, strict:true}`. Explicit GLM, Anthropic, and DeepSeek routes use
+  the same tool-finalization mechanism where supported.
 - **The journal validation + corrective-retry stays the universal authority/fallback** — native
   enforcement is request-side only, so the `agent()`-returns-object-or-null contract is unchanged.
-  Effect: schema'd calls on Kimi K3 or OpenAI use strict provider-side enforcement before journal validation.
+  Effect: schema'd Kimi calls compose tool use with validated finalization, while OpenAI uses
+  strict provider-side enforcement before journal validation.
 - Default prerequisite: `KIMI_API_KEY` (in `dapr-agent-py-secrets`) is injected into per-session
   sandbox pods. Explicit OpenAI routes still require `OPENAI_API_KEY`. Rejected: the
   Dapr Conversation API (we bypass that alpha building block by design).

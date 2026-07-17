@@ -461,6 +461,30 @@ def _convert_tools_for_kimi_chat(
     return converted
 
 
+def _with_structured_output_tool(
+    converted_tools: list[dict[str, Any]] | None,
+    schema: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Add the synthetic final-result tool while preserving normal tools."""
+    from src.structured_output import (
+        STRUCTURED_OUTPUT_TOOL_NAME,
+        structured_output_tool_definition,
+    )
+
+    tools = [
+        tool
+        for tool in (converted_tools or [])
+        if (tool.get("function") or {}).get("name") != STRUCTURED_OUTPUT_TOOL_NAME
+    ]
+    definition = structured_output_tool_definition(schema)
+    # Kimi defaults function schemas to strict MFJS. Dynamic-script schemas
+    # are full JSON Schema and are validated by the durable loop instead.
+    definition["function"]["strict"] = False
+    tools.append(definition)
+    tools.sort(key=lambda item: item["function"].get("name") or "")
+    return tools
+
+
 def _extract_kimi_response(
     response: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]], str | None, str]:
@@ -1071,9 +1095,22 @@ def _call_kimi_chat(
     response_format: Any = None,
     tool_choice: Any = None,
     native_json_schema: dict[str, Any] | None = None,
+    structured_output_tool: bool = False,
 ) -> dict[str, Any]:
     model = _get_kimi_model(component)
     converted_tools = _convert_tools_for_kimi_chat(tools)
+    from src.structured_output import schema_supports_structured_tool
+
+    tool_mode = (
+        response_format is None
+        and structured_output_tool
+        and schema_supports_structured_tool(native_json_schema)
+    )
+    if tool_mode:
+        assert isinstance(native_json_schema, dict)
+        converted_tools = _with_structured_output_tool(
+            converted_tools, native_json_schema
+        )
 
     llm_span = None
     llm_start = time.monotonic()
@@ -1113,7 +1150,8 @@ def _call_kimi_chat(
         "model": model,
         "messages": (
             _ensure_json_instruction(messages)
-            if response_format is not None or native_json_schema is not None
+            if response_format is not None
+            or (native_json_schema is not None and not tool_mode)
             else messages
         ),
         "max_completion_tokens": output_cap,
@@ -1136,7 +1174,11 @@ def _call_kimi_chat(
     _apply_kimi_output_mode(
         request_body,
         response_format=response_format,
-        native_json_schema=native_json_schema,
+        native_json_schema=(
+            native_json_schema
+            if response_format is None and not tool_mode
+            else None
+        ),
     )
 
     logger.info(
@@ -1365,6 +1407,10 @@ def patch_for_kimi(llm_client: Any) -> None:
                     getattr(self, "_response_json_schema", None)
                     if response_format is None
                     else None
+                ),
+                structured_output_tool=(
+                    getattr(self, "_structured_output_mode", None) == "tool"
+                    and response_format is None
                 ),
             )
 
