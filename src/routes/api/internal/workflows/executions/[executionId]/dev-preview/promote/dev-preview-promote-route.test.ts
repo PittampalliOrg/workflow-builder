@@ -3,7 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requirePreviewActionInternal: vi.fn(),
   resolveCanonicalExecutionId: vi.fn(async () => "exec-1"),
-  getExecutionById: vi.fn(async () => ({ id: "exec-1", userId: "admin-1" })),
+  getExecutionById: vi.fn(async () => ({
+    id: "exec-1",
+    userId: "admin-1",
+    input: {
+      __previewDevelopment: {
+        parentExecutionId: "parent-exec-1",
+      },
+    },
+  })),
   isPlatformAdmin: vi.fn(async () => true),
   listWorkflowArtifactsByExecutionId: vi.fn(async () => [
     {
@@ -90,6 +98,7 @@ describe("dev-preview strict source promotion", () => {
     expect(response.status).toBe(200);
     expect(mocks.promote).toHaveBeenCalledWith({
       executionId: "exec-1",
+      hostExecutionId: "parent-exec-1",
       artifactId: "artifact-1",
       title: null,
       bodyMarkdown: null,

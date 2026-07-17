@@ -236,6 +236,13 @@ export function buildPromotionCommand(
     `CANDIDATE_SHA=$(git rev-parse HEAD)`,
     `if [ -n "$BASE_REVISION" ]; then`,
     `  [ "$(git rev-parse HEAD^)" = "$BASE_REVISION" ] || { echo "ERR=base_revision_parent_mismatch"; exit 0; }`,
+    `  DIFF_NAME_STATUS="$WORK/diff-name-status.z"`,
+    `  git diff --name-status -z "$BASE_REVISION" "$CANDIDATE_SHA" > "$DIFF_NAME_STATUS"`,
+    `  if [ -f "${"$"}{SELECTED_TARGETS:-}" ]; then`,
+    `    python3 - "$DIFF_NAME_STATUS" "$SELECTED_TARGETS" <<'PY' || { echo "ERR=unsafe_materialized_deletion"; exit 0; }`,
+    TAR_OVERLAY_SET_DELETION_GUARD,
+    `PY`,
+    `  fi`,
     `  CHANGED_PATHS_B64=$(git diff --name-only -z "$BASE_REVISION" "$CANDIDATE_SHA" | python3 -c 'import base64,json,sys; raw=sys.stdin.buffer.read().split(b"\\0"); print(base64.urlsafe_b64encode(json.dumps([p.decode("utf-8") for p in raw if p], separators=(",", ":")).encode()).decode().rstrip("="))')`,
     `  echo "BASE_REVISION=$BASE_REVISION"`,
     `  echo "CHANGED_PATHS_B64=$CHANGED_PATHS_B64"`,
@@ -324,7 +331,8 @@ function buildTarOverlaySetCloneStep(): string {
     `git merge-base --is-ancestor "$BASE_REVISION" "origin/$PR_BASE" || { echo "ERR=base_revision_not_ancestor"; exit 0; }`,
     `git checkout -q -b "$BR" "$BASE_REVISION"`,
     `[ "$(git rev-parse HEAD)" = "$BASE_REVISION" ] || { echo "ERR=base_revision_checkout_mismatch"; exit 0; }`,
-    `python3 - "$BUNDLE" "$PROMOTE" <<'PY'`,
+    `SELECTED_TARGETS="$WORK/selected-targets.json"`,
+    `python3 - "$BUNDLE" "$PROMOTE" "$SELECTED_TARGETS" <<'PY'`,
     TAR_OVERLAY_SET_APPLIER,
     `PY`,
     `git config user.email agent@workflow-builder.local && git config user.name 'workflow-builder'`,
@@ -579,11 +587,63 @@ try:
             elif source.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
+        selected_paths = [PurePosixPath(*parts).as_posix() for parts in selected.keys()]
+        selected_target_file = Path(sys.argv[3]).resolve()
+        selected_target_file.write_text(json.dumps(selected_paths, separators=(",", ":")), encoding="utf-8")
     print("OVERLAY_SET_APPLIED=" + str(len(prepared)))
 except SystemExit:
     raise
 except Exception:
     fail("malformed_overlay_set")`;
+
+const TAR_OVERLAY_SET_DELETION_GUARD = `import base64
+import json
+import sys
+from pathlib import PurePosixPath
+
+diff_file, selected_file = sys.argv[1:]
+
+def normalize(raw):
+    if not isinstance(raw, str) or raw.startswith("/") or "\\\\x00" in raw or "\\\\" in raw:
+        return None
+    path = PurePosixPath(raw)
+    parts = tuple(part for part in path.parts if part not in ("", "."))
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return parts
+
+def under(path_parts, root_parts):
+    return len(path_parts) >= len(root_parts) and path_parts[:len(root_parts)] == root_parts
+
+try:
+    selected_raw = json.loads(open(selected_file, encoding="utf-8").read())
+except Exception:
+    selected_raw = []
+
+selected = []
+for value in selected_raw:
+    parts = normalize(value)
+    if parts:
+        selected.append(parts)
+
+raw = open(diff_file, "rb").read()
+records = [record.decode("utf-8", "surrogateescape") for record in raw.split(b"\\0") if record]
+unsafe = []
+for record in records:
+    if "\\t" not in record:
+        continue
+    status, path = record.split("\\t", 1)
+    if status != "D":
+        continue
+    parts = normalize(path)
+    if not parts or not any(under(parts, root) for root in selected):
+        unsafe.append(path)
+
+if unsafe:
+    payload = base64.urlsafe_b64encode(json.dumps(unsafe, separators=(",", ":")).encode()).decode().rstrip("=")
+    print("UNSAFE_DELETED_PATHS_B64=" + payload)
+    raise SystemExit(1)
+raise SystemExit(0)`;
 
 function promotionInputError(
   input: SourceBundlePromotionRunnerInput,

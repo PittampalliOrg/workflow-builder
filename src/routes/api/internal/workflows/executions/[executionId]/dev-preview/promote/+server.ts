@@ -19,6 +19,8 @@ import { requirePreviewActionInternal } from "$lib/server/internal-auth";
 import type { WorkflowArtifactRecord } from "$lib/server/application/ports";
 
 const SOURCE_BUNDLE_KIND = "source-bundle";
+const PREVIEW_DEVELOPMENT_CONTEXT_KEY = "__previewDevelopment";
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const ALLOWED_FIELDS = new Set([
   "iteration",
   "bestIteration",
@@ -56,6 +58,14 @@ function normalizeExpectedServices(raw: unknown): string[] {
   ].sort();
 }
 
+function previewDevelopmentHostExecutionId(input: unknown): string | null {
+  const context = asRecord(asRecord(input)[PREVIEW_DEVELOPMENT_CONTEXT_KEY]);
+  const parentExecutionId = context.parentExecutionId;
+  return typeof parentExecutionId === "string" && SAFE_ID.test(parentExecutionId)
+    ? parentExecutionId
+    : null;
+}
+
 function iterationOf(artifact: WorkflowArtifactRecord): number | null {
   const payload = asRecord(artifact.inlinePayload);
   const raw = payload.iteration;
@@ -90,6 +100,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
       { status: 403 },
     );
   }
+  const hostExecutionId = previewDevelopmentHostExecutionId(execution.input);
 
   let body: Body = {};
   try {
@@ -193,6 +204,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
   try {
     const result = await app.previewSourcePromotion.promote({
       executionId,
+      hostExecutionId,
       artifactId: artifact.id,
       title: readString(body.title),
       bodyMarkdown: readString(body.bodyMarkdown),

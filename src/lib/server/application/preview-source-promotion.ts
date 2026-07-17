@@ -63,6 +63,7 @@ export class ApplicationPreviewSourcePromotionService implements PreviewSourcePr
 
   async promote(input: {
     executionId: string;
+    hostExecutionId?: string | null;
     artifactId: string;
     title?: string | null;
     bodyMarkdown?: string | null;
@@ -99,6 +100,9 @@ export class ApplicationPreviewSourcePromotionService implements PreviewSourcePr
       environmentSourceRevision: identity.environmentSourceRevision,
       catalogDigest: identity.catalogDigest,
       executionId: input.executionId,
+      ...(cleanOptional(input.hostExecutionId)
+        ? { hostExecutionId: cleanOptional(input.hostExecutionId) }
+        : {}),
       artifactId: transferred.id,
       artifactIdentity: imported,
       title: cleanOptional(input.title),
@@ -237,6 +241,16 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
     if (replay) {
       assertReceiptScope(replay, receiptScope, input.artifactId, branchName);
       await verifyStoredReceipt(this.deps, replay);
+      await this.persistPromotionDiff(
+        replay,
+        replay.changedPaths,
+        input.hostExecutionId,
+      ).catch((cause) => {
+        console.warn(
+          "[preview-source-promotion] failed to persist replayed promotion diff artifact:",
+          message(cause),
+        );
+      });
       return promotionResult(replay);
     }
     const latest =
@@ -427,7 +441,7 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
         502,
       );
     }
-    await this.persistPromotionDiff(receipt, result.changedPaths).catch(
+    await this.persistPromotionDiff(receipt, result.changedPaths, input.hostExecutionId).catch(
       (cause) => {
         console.warn(
           "[preview-source-promotion] failed to persist promotion diff artifact:",
@@ -441,11 +455,8 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
   private async persistPromotionDiff(
     receipt: PreviewSourcePromotionReceipt,
     changedPaths: readonly string[],
+    hostExecutionId?: string | null,
   ): Promise<void> {
-    const execution = await this.deps.runDiffs.getExecutionById(
-      receipt.executionId,
-    );
-    if (!execution) return;
     const patch = await this.deps.gitDiff.readCommitDiff({
       repository: receipt.repository,
       baseRevision: receipt.sourceRevision,
@@ -453,16 +464,26 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
       expectedChangedPaths: changedPaths,
     });
     if (!patch?.trim()) return;
-    await this.deps.runDiffs.persistRunDiffArtifact({
-      executionId: receipt.executionId,
-      userId: execution.userId,
-      projectId: execution.projectId ?? null,
-      nodeId: PROMOTION_DIFF_NODE_ID,
-      title: PROMOTION_DIFF_TITLE,
-      patch,
-      baseRef: receipt.sourceRevision,
-      headRef: receipt.commitSha,
-    });
+    const targets = [
+      receipt.executionId,
+      ...(hostExecutionId && hostExecutionId !== receipt.executionId
+        ? [hostExecutionId]
+        : []),
+    ];
+    for (const executionId of targets) {
+      const execution = await this.deps.runDiffs.getExecutionById(executionId);
+      if (!execution) continue;
+      await this.deps.runDiffs.persistRunDiffArtifact({
+        executionId,
+        userId: execution.userId,
+        projectId: execution.projectId ?? null,
+        nodeId: PROMOTION_DIFF_NODE_ID,
+        title: PROMOTION_DIFF_TITLE,
+        patch,
+        baseRef: receipt.sourceRevision,
+        headRef: receipt.commitSha,
+      });
+    }
   }
 }
 
@@ -490,6 +511,9 @@ function validateBrokerInput(input: PreviewSourcePromotionBrokerRequest): void {
   validateLocalInput(input);
   if (
     !SAFE_COORDINATE.test(input.operationId) ||
+    (input.hostExecutionId !== undefined &&
+      input.hostExecutionId !== null &&
+      !SAFE_COORDINATE.test(input.hostExecutionId)) ||
     input.operationId !== input.artifactId ||
     input.draft !== true ||
     !PREVIEW_NAME.test(input.previewName) ||
