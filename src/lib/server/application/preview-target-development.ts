@@ -338,16 +338,14 @@ function normalizeWorkflowInput(
 
 function childExecutionId(input: {
   parentExecutionId: string;
-  operationId: string;
   target: PreviewDevelopmentTarget;
   workflowSpecDigest: string;
 }): string {
   const digest = createHash("sha256")
     .update(
       [
-        "preview-development-child/v1",
+        "preview-development-child/v2",
         input.parentExecutionId,
-        input.operationId,
         input.target.previewName,
         input.target.environmentRequestId,
         input.target.platformRevision,
@@ -872,7 +870,6 @@ export class ApplicationPreviewTargetDevelopmentService implements PreviewTarget
     const workflow = Object.freeze({
       executionId: childExecutionId({
         parentExecutionId: input.parentExecutionId,
-        operationId,
         target: input.target,
         workflowSpecDigest: specDigest,
       }),
@@ -1183,14 +1180,13 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     const workflow = validateWorkflowReceipt(input.workflow);
     const expectedExecutionId = childExecutionId({
       parentExecutionId: input.parentExecutionId,
-      operationId: input.operationId,
       target,
       workflowSpecDigest: workflow.workflowSpecDigest,
     });
     if (workflow.executionId !== expectedExecutionId) {
       throw new PreviewTargetDevelopmentError(
         "contract-mismatch",
-        "child execution id is not bound to the start operation",
+        "child execution id is not bound to the parent preview generation",
       );
     }
     const definition = await this.deps.definitions.getByRef({
@@ -1429,7 +1425,6 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     const executedDigest = executionSpecDigest(execution.executionIr);
     const expectedExecutionId = childExecutionId({
       parentExecutionId: context.parentExecutionId,
-      operationId: context.operationId,
       target: context.target,
       workflowSpecDigest: context.workflowSpecDigest,
     });
