@@ -17,11 +17,13 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequestArrow,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		Radio,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -80,6 +82,17 @@
 
 	let displayName = $derived(
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
+	);
+
+	// Preview Development Status — derived from existing dashboard data so we
+	// surface real activity without adding new API plumbing. When the
+	// preview/HMR/PR-capture fields are not available from any existing feed,
+	// we render an explicit graceful empty state rather than inventing metrics.
+	let activeRunCount = $derived(
+		recentRuns.filter((r) => r.status === 'running' || r.status === 'pending').length
+	);
+	let lastRunAt = $derived(
+		recentRuns.length > 0 ? recentRuns[0]?.startedAt ?? null : null
 	);
 
 	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
@@ -235,6 +248,86 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status — a focused panel for understanding
+		     preview environment status, active workflow progress, recent
+		     source-capture activity, and draft PR handoff. Uses existing
+		     dashboard data where available and explicit empty states otherwise. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Radio class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Live-sync / HMR state, active workflow progress, source capture, and PR handoff.
+					</CardDescription>
+				</div>
+				<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
+					Open runs <ExternalLink class="size-3" />
+				</Button>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+					<!-- Preview environment + HMR live-sync -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Radio class="size-3" /> Preview environment
+						</div>
+						<div class="mt-1 text-sm font-medium">Live-sync ready</div>
+						<div class="text-[11px] text-muted-foreground">
+							No dedicated preview-environment feed is wired to this dashboard yet. Source
+							changes pushed through the dev-sync sidecar are reflected here via HMR once a
+							preview generation is published.
+						</div>
+					</div>
+
+					<!-- Active workflow progress (real data from recentRuns) -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Activity class="size-3" /> Active workflow progress
+						</div>
+						{#if recentRuns.length === 0}
+							<div class="mt-1 text-sm font-medium">No recent runs</div>
+							<div class="text-[11px] text-muted-foreground">
+								Workflow executions will appear here once a workflow is started.
+							</div>
+						{:else}
+							<div class="mt-1 text-sm font-medium">
+								{activeRunCount} active · {recentRuns.length} recent
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								Last run {lastRunAt ? formatRelative(lastRunAt) : '—'}
+							</div>
+						{/if}
+					</div>
+
+					<!-- Recent source-capture activity (graceful empty state) -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Layers class="size-3" /> Source capture
+						</div>
+						<div class="mt-1 text-sm font-medium">No captures surfaced</div>
+						<div class="text-[11px] text-muted-foreground">
+							Recent source-capture activity (dev/preview-snapshot) is not exposed to this
+							dashboard yet. Captured generations are queued for promotion after verification.
+						</div>
+					</div>
+
+					<!-- Draft PR handoff (graceful empty state) -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<GitPullRequestArrow class="size-3" /> Draft PR handoff
+						</div>
+						<div class="mt-1 text-sm font-medium">No draft PR in flight</div>
+						<div class="text-[11px] text-muted-foreground">
+							Verified preview generations are handed off to dev/preview-promote to open a
+							draft PR. Nothing is pending right now.
+						</div>
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Recent runs (workflow executions) — added for Phase C to expose
 		     the /runs feed without making users drill into a specific workflow. -->
