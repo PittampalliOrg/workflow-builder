@@ -94,6 +94,10 @@ import {
   LegacyAuthTokenRefresher,
 } from "$lib/server/application/adapters/auth-session";
 import {
+  JwtWorkflowTargetAuthAccessTokenIssuer,
+  PostgresWorkflowTargetAuthIdentityRepository,
+} from "$lib/server/application/adapters/workflow-target-auth";
+import {
   LegacyAgentCompiledCapabilitiesRepository,
   AgentRuntimeRegistrySyncAdapter,
   LegacyAgentCatalogRepository,
@@ -475,7 +479,13 @@ import { ApplicationPreviewActivationDispatchService } from "$lib/server/applica
 import { ApplicationPreviewAcceptedImageReuseService } from "$lib/server/application/preview-accepted-image-reuse";
 import { ApplicationPreviewControlSourceAuthorityService } from "$lib/server/application/preview-control-source-authority";
 import { ApplicationPreviewDevSyncCredentialMintService } from "$lib/server/application/preview-dev-sync-credentials";
-import { ApplicationPreviewRuntimeBrokerService } from "$lib/server/application/preview-runtime-broker";
+import {
+  ApplicationPreviewRuntimeBrokerService,
+  KIMI_K3_CONTEXT_TOKENS,
+  KIMI_K3_MAX_COMPLETION_TOKENS,
+  PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
+  PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES,
+} from "$lib/server/application/preview-runtime-broker";
 import {
   ApplicationPreviewSourcePromotionBrokerService,
   ApplicationPreviewSourcePromotionService,
@@ -555,6 +565,7 @@ import { ApplicationGitOpsDeploymentService } from "$lib/server/application/gito
 import { ApplicationGitOpsPromotionsService } from "$lib/server/application/gitops-promotions";
 import { ApplicationAuthSignInService } from "$lib/server/application/auth-sign-in";
 import { ApplicationAuthSessionService } from "$lib/server/application/auth-session";
+import { ApplicationWorkflowTargetAuthService } from "$lib/server/application/workflow-target-auth";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -781,6 +792,7 @@ export function getApplicationAdapters(
   let cliCredentials: ApplicationCliCredentialsService | undefined;
   let authSignIn: ApplicationAuthSignInService | undefined;
   let authSession: ApplicationAuthSessionService | undefined;
+  let workflowTargetAuth: ApplicationWorkflowTargetAuthService | undefined;
   let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
   let promptPresets: ApplicationPromptPresetService | undefined;
   let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -1439,6 +1451,11 @@ export function getApplicationAdapters(
       sessions: new LegacyAuthSessionReader(),
       tokens: new LegacyAuthTokenRefresher(),
       accessTokens: new LegacyAuthAccessTokenVerifier(),
+    }));
+  const getWorkflowTargetAuth = () =>
+    (workflowTargetAuth ??= new ApplicationWorkflowTargetAuthService({
+      identities: new PostgresWorkflowTargetAuthIdentityRepository(),
+      tokens: new JwtWorkflowTargetAuthAccessTokenIssuer(),
     }));
   const getSettingsCliTokens = () =>
     (settingsCliTokens ??= new ApplicationSettingsCliTokensService({
@@ -2125,24 +2142,24 @@ export function getApplicationAdapters(
     const minuteTokenBudget = boundedPreviewRuntimeInteger(
       env.PREVIEW_RUNTIME_BUDGET_RESERVED_TOKENS_PER_MINUTE ??
         process.env.PREVIEW_RUNTIME_BUDGET_RESERVED_TOKENS_PER_MINUTE,
-      600_000,
+      20_000_000,
       128,
-      2_000_000,
+      100_000_000,
     );
     const totalTokenBudget = boundedPreviewRuntimeInteger(
       env.PREVIEW_RUNTIME_BUDGET_TOTAL_RESERVED_TOKENS ??
         process.env.PREVIEW_RUNTIME_BUDGET_TOTAL_RESERVED_TOKENS,
-      8_000_000,
+      200_000_000,
       128,
-      100_000_000,
+      2_000_000_000,
     );
     const maxCompletionTokens = Math.min(
       boundedPreviewRuntimeInteger(
         env.PREVIEW_RUNTIME_MAX_COMPLETION_TOKENS ??
           process.env.PREVIEW_RUNTIME_MAX_COMPLETION_TOKENS,
-        4_096,
+        KIMI_K3_MAX_COMPLETION_TOKENS,
         128,
-        32_768,
+        KIMI_K3_MAX_COMPLETION_TOKENS,
       ),
       minuteTokenBudget,
       totalTokenBudget,
@@ -2175,23 +2192,23 @@ export function getApplicationAdapters(
           maxPayloadBytes: boundedPreviewRuntimeInteger(
             env.PREVIEW_RUNTIME_MAX_PAYLOAD_BYTES ??
               process.env.PREVIEW_RUNTIME_MAX_PAYLOAD_BYTES,
-            524_288,
+            PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES,
             16_384,
-            2_097_152,
+            PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
           ),
           maxMessages: boundedPreviewRuntimeInteger(
             env.PREVIEW_RUNTIME_MAX_MESSAGES ??
               process.env.PREVIEW_RUNTIME_MAX_MESSAGES,
-            128,
+            512,
             1,
-            256,
+            512,
           ),
           maxContentBytes: boundedPreviewRuntimeInteger(
             env.PREVIEW_RUNTIME_MAX_CONTENT_BYTES ??
               process.env.PREVIEW_RUNTIME_MAX_CONTENT_BYTES,
-            65_536,
+            KIMI_K3_CONTEXT_TOKENS * 8,
             1_024,
-            262_144,
+            PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
           ),
           maxTools: boundedPreviewRuntimeInteger(
             env.PREVIEW_RUNTIME_MAX_TOOLS ??
@@ -2203,18 +2220,18 @@ export function getApplicationAdapters(
           maxToolBytes: boundedPreviewRuntimeInteger(
             env.PREVIEW_RUNTIME_MAX_TOOL_BYTES ??
               process.env.PREVIEW_RUNTIME_MAX_TOOL_BYTES,
-            65_536,
+            KIMI_K3_CONTEXT_TOKENS,
             1_024,
-            262_144,
+            KIMI_K3_CONTEXT_TOKENS * 4,
           ),
           maxCompletionTokens,
           defaultCompletionTokens: Math.min(
             boundedPreviewRuntimeInteger(
               env.PREVIEW_RUNTIME_DEFAULT_COMPLETION_TOKENS ??
                 process.env.PREVIEW_RUNTIME_DEFAULT_COMPLETION_TOKENS,
-              2_048,
+              KIMI_K3_MAX_COMPLETION_TOKENS,
               1,
-              32_768,
+              KIMI_K3_MAX_COMPLETION_TOKENS,
             ),
             maxCompletionTokens,
           ),
@@ -2874,6 +2891,9 @@ export function getApplicationAdapters(
     },
     get authSession() {
       return getAuthSession();
+    },
+    get workflowTargetAuth() {
+      return getWorkflowTargetAuth();
     },
     get settingsCliTokens() {
       return getSettingsCliTokens();

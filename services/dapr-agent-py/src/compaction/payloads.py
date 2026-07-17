@@ -14,6 +14,8 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from src.mcp_multimodal import is_multimodal_tool_content
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOOL_ARGUMENT_BYTES = 12_288
@@ -229,6 +231,13 @@ def compact_save_tool_results_payload(
             content = item.get("content")
             content_text = content if isinstance(content, str) else _to_json(content)
             stats.original_result_chars += len(content_text)
+            # The private multimodal marker is the only durable copy of MCP
+            # image bytes. The generic 12 KiB text clamp would make its JSON
+            # undecodable before the very next LLM turn. The separate 10 MiB
+            # state-budget guard still bounds older visual results.
+            if is_multimodal_tool_content(content_text):
+                stats.compacted_result_chars += len(content_text)
+                continue
             bounded, changed = _truncate_text(
                 content_text,
                 cfg.max_tool_result_chars,

@@ -26,7 +26,7 @@ RUN npm install -g agent-browser@0.31.2
 WORKDIR /app
 COPY package.json ./
 RUN npm install
-COPY bridge.mjs render.mjs ./
+COPY bridge.mjs render.mjs vision-contract.mjs ./
 
 # Pre-download Chrome for Testing into the image (version-matched to the CLI).
 RUN agent-browser install

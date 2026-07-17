@@ -3,6 +3,8 @@ import { json, type RequestHandler } from "@sveltejs/kit";
 import { getApplicationAdapters } from "$lib/server/application";
 import { PreviewControlSourceAuthorityError } from "$lib/server/application/preview-control-source-authority";
 import {
+  PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
+  PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES,
   PreviewRuntimeBrokerError,
   PreviewRuntimeUpstreamError,
 } from "$lib/server/application/preview-runtime-broker";
@@ -18,8 +20,14 @@ const configuredMaxRequestBytes = Number(
 const MAX_REQUEST_BYTES =
   Number.isSafeInteger(configuredMaxRequestBytes) &&
   configuredMaxRequestBytes > 0
-    ? Math.max(16_384, Math.min(2_097_152, configuredMaxRequestBytes))
-    : 524_288;
+    ? Math.max(
+        16_384,
+        Math.min(
+          PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
+          configuredMaxRequestBytes,
+        ),
+      )
+    : PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES;
 
 export const POST: RequestHandler = async ({ request }) => {
   if (env.PREVIEW_CONTROL_BROKER_MODE?.trim().toLowerCase() !== "true") {

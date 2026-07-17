@@ -264,6 +264,12 @@ from dapr_agents.tool.utils.serialization import serialize_tool_result
 from dapr_agents.types import AgentError, DaprWorkflowStatus, ToolMessage
 from dapr_agents.workflow.decorators import message_router, workflow_entry
 from dapr_agents.workflow.runners import AgentRunner
+from src.mcp_multimodal import (
+    multimodal_tool_text,
+    redact_multimodal_tool_result,
+    replace_multimodal_tool_text,
+    serialize_mcp_tool_result,
+)
 
 # Concurrency plan P3: every log line carries the current session id so one
 # session's timeline is reconstructable across shared-pool replicas (pool pods
@@ -3936,7 +3942,11 @@ class OpenShellDurableAgent(DurableAgent):
                   mcp_start = _time_mcp.monotonic()
                   try:
                       mcp_result = self._run_asyncio_task(_execute_mcp_tool())
-                      serialized_result = serialize_tool_result(mcp_result)
+                      mcp_serialization = serialize_mcp_tool_result(
+                          mcp_result,
+                          serialize_tool_result,
+                      )
+                      serialized_result = mcp_serialization.display_text
                       try:
                           publish_session_event(
                               sess_id,
@@ -4022,6 +4032,12 @@ class OpenShellDurableAgent(DurableAgent):
                   except Exception:
                       pass
                   result = tool_result.model_dump()
+                  if mcp_serialization.is_multimodal:
+                      # Dapr Agents' ToolMessage schema is string-only. Persist
+                      # the private marker after Pydantic validation so K3 can
+                      # recover the image while every human-facing surface keeps
+                      # the concise linked text result.
+                      result["content"] = mcp_serialization.durable_content
                 else:
                     result = super().run_tool(ctx, payload)
               _exec_error = _tool_result_error(result)
@@ -4063,7 +4079,8 @@ class OpenShellDurableAgent(DurableAgent):
                   try:
                       _tool_output_for_span: str | None = None
                       if _exec_success and isinstance(result, dict):
-                          _content = result.get("content")
+                          _safe_result = redact_multimodal_tool_result(result)
+                          _content = _safe_result.get("content")
                           if isinstance(_content, str):
                               _tool_output_for_span = _content
                           elif _content is not None:
@@ -4084,15 +4101,18 @@ class OpenShellDurableAgent(DurableAgent):
           if isinstance(result, dict):
               raw = result.get("content", "")
               if isinstance(raw, str):
-                  output = raw[:500]
+                  output = (multimodal_tool_text(raw) or raw)[:500]
           if custom_hooks_enabled and isinstance(result, dict):
               try:
+                  _hook_content = result.get("content")
                   post_agg = execute_post_tool_hooks(
                       hook_snapshot,
                       tool_name=tool_name,
                       tool_use_id=tool_call_id,
                       tool_input=tool_args,
-                      tool_response=result.get("content"),
+                      tool_response=(
+                          multimodal_tool_text(_hook_content) or _hook_content
+                      ),
                       session_id=inst_id,
                       cwd=cwd_for_hooks,
                       project_dir=project_dir_for_hooks,
@@ -4103,15 +4123,30 @@ class OpenShellDurableAgent(DurableAgent):
               if post_agg is not None:
                   if post_agg.updated_tool_output is not None:
                       result = dict(result)
-                      result["content"] = post_agg.updated_tool_output
+                      result["content"] = (
+                          replace_multimodal_tool_text(
+                              result.get("content"),
+                              post_agg.updated_tool_output,
+                          )
+                          or post_agg.updated_tool_output
+                      )
                       output = post_agg.updated_tool_output[:500] if isinstance(post_agg.updated_tool_output, str) else output
                   elif post_agg.additional_contexts:
                       merged = dict(result)
                       suffix = "\n\n[hook context]\n" + "\n".join(post_agg.additional_contexts)
                       if isinstance(merged.get("content"), str):
-                          merged["content"] = merged["content"] + suffix
+                          visible_content = (
+                              multimodal_tool_text(merged["content"])
+                              or merged["content"]
+                          ) + suffix
+                          merged["content"] = (
+                              replace_multimodal_tool_text(
+                                  merged["content"], visible_content
+                              )
+                              or visible_content
+                          )
                           result = merged
-                          output = merged["content"][:500]
+                          output = visible_content[:500]
           checkpoint = None
           if _code_checkpoint_enabled() and should_checkpoint_tool(tool_name):
               try:
@@ -4199,6 +4234,7 @@ class OpenShellDurableAgent(DurableAgent):
                     _tool_result_json = None
                     _res_for_span = locals().get("result")
                     if _res_for_span is not None:
+                        _res_for_span = redact_multimodal_tool_result(_res_for_span)
                         try:
                             _tool_result_json = json.dumps(_res_for_span, default=str)[:16384]
                         except Exception:

@@ -8,6 +8,15 @@ const DEFAULT_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 
+const KIMI_K3_COMPONENT = "llm-kimi-k3";
+const KIMI_K3_MODEL = "kimi-k3";
+const KIMI_K3_REASONING_EFFORT = "max";
+const KIMI_K3_MAX_COMPLETION_TOKENS = 131_072;
+const PROTOBUF_STRING_VALUE =
+	"type.googleapis.com/google.protobuf.StringValue";
+const PROTOBUF_INT64_VALUE =
+	"type.googleapis.com/google.protobuf.Int64Value";
+
 const JsonObjectSchema = z
 	.record(z.string(), z.unknown())
 	.refine((value) => !Array.isArray(value), "Expected a JSON object");
@@ -132,9 +141,73 @@ function buildMessages(input: DaprConverseStructuredOutputInput) {
 	];
 }
 
-function buildDaprRequest(input: DaprConverseStructuredOutputInput) {
+function daprStringParameter(value: string) {
+	return { "@type": PROTOBUF_STRING_VALUE, value };
+}
+
+function daprInt64Parameter(value: number) {
+	return { "@type": PROTOBUF_INT64_VALUE, value: String(value) };
+}
+
+function parameterValue(value: unknown): string | null {
+	if (typeof value === "string") return value;
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		const wrapped = (value as Record<string, unknown>).value;
+		return typeof wrapped === "string" ? wrapped : null;
+	}
+	return null;
+}
+
+function isKimiK3Request(input: DaprConverseStructuredOutputInput): boolean {
+	const component = input.componentName.trim().toLowerCase();
+	const requestedModel = (
+		input.model ?? parameterValue(input.parameters?.model) ?? ""
+	)
+		.trim()
+		.toLowerCase();
+	return (
+		component === KIMI_K3_COMPONENT ||
+		requestedModel === KIMI_K3_MODEL ||
+		requestedModel === `kimi/${KIMI_K3_MODEL}` ||
+		requestedModel === `moonshot/${KIMI_K3_MODEL}`
+	);
+}
+
+function kimiK3Parameters(): Record<string, unknown> {
+	return {
+		model: daprStringParameter(KIMI_K3_MODEL),
+		reasoning_effort: daprStringParameter(KIMI_K3_REASONING_EFFORT),
+		max_completion_tokens: daprInt64Parameter(
+			KIMI_K3_MAX_COMPLETION_TOKENS,
+		),
+	};
+}
+
+export function buildDaprRequest(
+	input: DaprConverseStructuredOutputInput,
+) {
+	const kimiK3 = isKimiK3Request(input);
+	const model = kimiK3 ? KIMI_K3_MODEL : input.model;
 	const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) };
-	if (input.model) metadata.model = input.model;
+	if (kimiK3) delete metadata.model;
+	else if (model) metadata.model = model;
+
+	const parameters: Record<string, unknown> = { ...(input.parameters ?? {}) };
+	if (model) parameters.model = daprStringParameter(model);
+	if (kimiK3) {
+		// K3 always reasons. Force its only supported effort and remove legacy K2
+		// or fixed sampling fields that the K3 API rejects.
+		delete parameters.thinking;
+		delete parameters.thinking_level;
+		delete parameters.reasoningEffort;
+		delete parameters.max_tokens;
+		delete parameters.temperature;
+		delete parameters.top_p;
+		delete parameters.n;
+		delete parameters.presence_penalty;
+		delete parameters.frequency_penalty;
+		Object.assign(parameters, kimiK3Parameters());
+	}
 
 	return {
 		...(input.contextId ? { contextId: input.contextId } : {}),
@@ -146,10 +219,10 @@ function buildDaprRequest(input: DaprConverseStructuredOutputInput) {
 					: {}),
 			},
 		],
-		parameters: input.parameters ?? {},
+		parameters,
 		metadata,
 		...(typeof input.scrubPii === "boolean" ? { scrubPii: input.scrubPii } : {}),
-		...(typeof input.temperature === "number"
+		...(typeof input.temperature === "number" && !kimiK3
 			? { temperature: input.temperature }
 			: {}),
 		...(input.tools ? { tools: input.tools } : {}),
@@ -344,7 +417,101 @@ const structuredOutputInputSchema = {
 	},
 };
 
+const {
+	temperature: _kimiK3FixedTemperature,
+	...kimiK3StructuredOutputProperties
+} = structuredOutputInputSchema.properties;
+
+const kimiK3StructuredOutputInputSchema = {
+	...structuredOutputInputSchema,
+	properties: {
+		...kimiK3StructuredOutputProperties,
+		componentName: {
+			...structuredOutputInputSchema.properties.componentName,
+			default: KIMI_K3_COMPONENT,
+		},
+		model: {
+			...structuredOutputInputSchema.properties.model,
+			default: KIMI_K3_MODEL,
+		},
+		parameters: {
+			...structuredOutputInputSchema.properties.parameters,
+			default: kimiK3Parameters(),
+		},
+	},
+};
+
+function kimiK3ActionInput() {
+	return {
+		componentName: KIMI_K3_COMPONENT,
+		model: KIMI_K3_MODEL,
+		parameters: kimiK3Parameters(),
+		prompt: "",
+		responseFormat: structuredOutputInputSchema.properties.responseFormat.default,
+	};
+}
+
 export const DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS = [
+	{
+		id: "system-dapr-converse-kimi-k3-structured",
+		name: "system-dapr-converse-kimi-k3-structured",
+		slug: "system/dapr-converse-structured-output",
+		displayName: "Kimi K3 Structured Output",
+		description:
+			"Generate typed JSON with Kimi K3 at maximum reasoning and its 1,048,576-token context window through Dapr.",
+		providerId: "system",
+		providerLabel: "System",
+		providerIconUrl: null,
+		category: "LLM",
+		service: "fn-system",
+		runtime: "node-dapr-conversation",
+		kind: "sw-function",
+		visibility: "public-callable",
+		sourceKind: "integration",
+		auth: null,
+		fields: null,
+		tags: ["dapr", "conversation", "kimi", "kimi-k3", "structured-output"],
+		pieceName: "system",
+		actionName: "dapr-converse-structured-output",
+		version: "1.0.0",
+		signature: {
+			parameters: [],
+			inputSchema: kimiK3StructuredOutputInputSchema,
+		},
+		taskConfig: {
+			call: "system/dapr-converse-structured-output",
+			with: {
+				body: {
+					input: kimiK3ActionInput(),
+				},
+			},
+		},
+		definition: {
+			call: "http",
+			with: {
+				method: "post",
+				endpoint: {
+					uri: "http://fn-system.workflow-builder.svc.cluster.local/execute",
+				},
+				body: {
+					step: "dapr-converse-structured-output",
+					input: kimiK3ActionInput(),
+				},
+			},
+			input: {
+				schema: { format: "json", document: kimiK3StructuredOutputInputSchema },
+			},
+		},
+		swCompatibility: {
+			status: "compatible",
+			reasons: [],
+			projection: {
+				functionRefName: "system/dapr-converse-structured-output",
+				call: "system/dapr-converse-structured-output",
+				inputShape: "object",
+			},
+		},
+	},
 	{
 		id: "system-dapr-converse-openai-structured",
 		name: "system-dapr-converse-openai-structured",

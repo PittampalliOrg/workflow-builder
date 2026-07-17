@@ -48,6 +48,16 @@ const MAX_CONTENT_PARTS = 32;
 const MAX_TOOL_CALLS_PER_MESSAGE = 32;
 const encoder = new TextEncoder();
 
+export const KIMI_K3_MODEL = "kimi-k3";
+export const KIMI_K3_CONTEXT_TOKENS = 1_048_576;
+export const KIMI_K3_MAX_COMPLETION_TOKENS = 131_072;
+// A transport byte bound cannot predict provider tokenization. Sixteen bytes
+// per context token leaves room for the full K3 window while staying below the
+// preview broker's BODY_SIZE_LIMIT=25M process ceiling.
+export const PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES =
+  KIMI_K3_CONTEXT_TOKENS * 16;
+export const PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES = 24_000_000;
+
 export type PreviewRuntimeBrokerErrorCode =
   | "unauthorized"
   | "invalid-request"
@@ -286,6 +296,9 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
     validateToolChoice(payload.tool_choice);
     validateResponseFormat(payload.response_format, limits.maxToolBytes);
     validateReasoningEffort(payload.reasoning_effort);
+    if (model === KIMI_K3_MODEL && payload.thinking !== undefined) {
+      return invalid("kimi-k3 does not accept the legacy thinking field");
+    }
     validateThinking(payload.thinking);
 
     if (
@@ -303,9 +316,17 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
     const requestedTokens = tokenKey
       ? validatePositiveInteger(payload[tokenKey], tokenKey)
       : limits.defaultCompletionTokens;
-    const outputTokens = Math.min(requestedTokens, limits.maxCompletionTokens);
+    const modelCompletionLimit =
+      model === KIMI_K3_MODEL
+        ? Math.min(limits.maxCompletionTokens, KIMI_K3_MAX_COMPLETION_TOKENS)
+        : limits.maxCompletionTokens;
+    const outputTokens = Math.min(requestedTokens, modelCompletionLimit);
     const normalized: Record<string, unknown> = { ...payload, model };
     normalized[tokenKey ?? "max_completion_tokens"] = outputTokens;
+    if (model === KIMI_K3_MODEL) {
+      normalized.reasoning_effort = "max";
+      delete normalized.thinking;
+    }
     // One token per encoded UTF-8 byte is deliberately conservative for every
     // tokenizer family. JSON syntax and tool schemas are included, not merely
     // visible message text.

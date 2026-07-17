@@ -37,6 +37,7 @@ import { generateId } from "../lib/utils/id";
 import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
 import { planProjectSystemWorkflowInstallations } from "./lib/project-system-workflows";
+import { migrateKimiK3BrowserAgentsAndWorkflows } from "./kimi-k3-browser-agent";
 import {
 	ensureKimiAgent,
 	type AgentRef as ThreeBOneBAgentRef,
@@ -5311,6 +5312,7 @@ async function seedWorkflow() {
 				"[seed-workflows] No GitHub connection found for the resolved user; the clone proof workflow will require manual connection selection before it can run.",
 			);
 		}
+		await migrateKimiK3BrowserAgentsAndWorkflows(sql, { userId, projectId });
 		const profileVersion = await resolveAgentProfileVersion(db);
 		const nodes = buildNodes(profileVersion);
 		const edges = buildEdges();

@@ -49,6 +49,11 @@ import {
 	CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { renderDemo, readAndRm } from "./render.mjs";
+import {
+	DEFAULT_EXPOSED_TOOLS,
+	inlineImage,
+	preserveMultimodalToolResult,
+} from "./vision-contract.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -99,28 +104,7 @@ function parseTargetAuth(headers) {
 // AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
 // discovery. Empty value = expose everything unfiltered.
 const EXPOSED_TOOLS = (
-	process.env.AGENT_BROWSER_EXPOSED_TOOLS ??
-	[
-		"agent_browser_open",
-		"agent_browser_snapshot",
-		"agent_browser_click",
-		"agent_browser_fill",
-		"agent_browser_type",
-		"agent_browser_press",
-		"agent_browser_hover",
-		"agent_browser_select",
-		"agent_browser_highlight",
-		"agent_browser_scroll",
-		"agent_browser_back",
-		"agent_browser_wait_for_selector",
-		"agent_browser_wait_for_load",
-		"agent_browser_screenshot",
-		"agent_browser_get_text",
-		"agent_browser_get_url",
-		"agent_browser_get_title",
-		"agent_browser_pdf",
-		"agent_browser_close",
-	].join(",")
+	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(",")
 )
 	.split(",")
 	.map((s) => s.trim())
@@ -198,10 +182,6 @@ function resultText(result) {
 		.filter((c) => c && c.type === "text" && typeof c.text === "string")
 		.map((c) => c.text)
 		.join("\n");
-}
-function inlineImage(result) {
-	const img = (result?.content || []).find((c) => c && c.type === "image" && c.data);
-	return img ? { data: img.data, mime: img.mimeType || "image/png" } : null;
 }
 // agent-browser echoes the saved path in its text output (e.g. "HAR saved to
 // /root/.agent-browser/tmp/har/har-….har", "Recording saved to …").
@@ -784,7 +764,7 @@ async function makeProxy(ctxRef, browserSession) {
 			}
 		}
 		armIdleStop(browserSession);
-		return result;
+		return preserveMultimodalToolResult(result);
 	});
 	const cleanup = async () => {
 		// Transport closes after every dapr-agent-py tool call — the run (and

@@ -66,7 +66,12 @@ import {
  */
 function stampAgentBrowserRunHeaders(
 	servers: unknown[],
-	ctx: { executionId: string; workflowId: string | null; nodeId: string | null },
+	ctx: {
+		executionId: string | null;
+		workflowId: string | null;
+		nodeId: string | null;
+	},
+	targetAccessToken: string | null,
 ): unknown[] {
 	if (!Array.isArray(servers)) return servers;
 	return servers.map((entry) => {
@@ -74,19 +79,65 @@ function stampAgentBrowserRunHeaders(
 		const e = entry as Record<string, unknown>;
 		const url = typeof e.url === "string" ? e.url : "";
 		if (!url.includes("agent-browser-mcp")) return entry;
+		const sourceHeaders =
+			e.headers && typeof e.headers === "object" && !Array.isArray(e.headers)
+				? (e.headers as Record<string, unknown>)
+				: {};
+		const targetHost = Object.entries(sourceHeaders).find(
+			([name, value]) =>
+				name.toLowerCase() === "x-wfb-target-auth-host" &&
+				typeof value === "string" &&
+				value.trim().length > 0,
+		)?.[1];
 		const headers = {
-			...((e.headers as Record<string, unknown> | undefined) ?? {}),
-			"X-Wfb-Execution-Id": ctx.executionId,
+			...Object.fromEntries(
+				Object.entries(sourceHeaders).filter(
+					([name]) => name.toLowerCase() !== "x-wfb-target-auth",
+				),
+			),
+			...(ctx.executionId
+				? { "X-Wfb-Execution-Id": ctx.executionId }
+				: {}),
 			...(ctx.workflowId ? { "X-Wfb-Workflow-Id": ctx.workflowId } : {}),
 			...(ctx.nodeId ? { "X-Wfb-Node-Id": ctx.nodeId } : {}),
+			...(typeof targetHost === "string" && targetAccessToken
+				? { "X-Wfb-Target-Auth": `Bearer ${targetAccessToken}` }
+				: {}),
 		};
 		return { ...e, headers };
 	});
 }
+
+function hasAgentBrowserTargetAuthHost(servers: unknown[]): boolean {
+	return servers.some((entry) => {
+		if (!entry || typeof entry !== "object") return false;
+		const server = entry as Record<string, unknown>;
+		if (
+			typeof server.url !== "string" ||
+			!server.url.includes("agent-browser-mcp") ||
+			!server.headers ||
+			typeof server.headers !== "object" ||
+			Array.isArray(server.headers)
+		) {
+			return false;
+		}
+		return Object.entries(server.headers as Record<string, unknown>).some(
+			([name, value]) =>
+				name.toLowerCase() === "x-wfb-target-auth-host" &&
+				typeof value === "string" &&
+				value.trim().length > 0,
+		);
+	});
+}
 export const POST: RequestHandler = async ({ request }) => {
 	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const { workflowData, sessionGoals, sessionCommands, promptStackCompiler } =
-		getApplicationAdapters();
+	const {
+		workflowData,
+		sessionGoals,
+		sessionCommands,
+		promptStackCompiler,
+		workflowTargetAuth,
+	} = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
 	const body = (await request.json().catch(() => ({}))) as Record<
@@ -527,16 +578,39 @@ export const POST: RequestHandler = async ({ request }) => {
 			),
 		} as AgentConfig;
 	}
-	// Give the agent-browser MCP service this run's identity so it can persist
-	// produced artifacts (screenshot/video/pdf/HAR) to the run's browser-artifacts.
-	if (workflowExecutionId) {
-		dispatchAgentConfig = {
-			...dispatchAgentConfig,
-			mcpServers: stampAgentBrowserRunHeaders(
-				(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
-				{ executionId: workflowExecutionId, workflowId, nodeId },
-			),
-		} as AgentConfig;
+	// Give agent-browser this run's artifact identity, while always deleting any
+	// persisted target credential before config/version persistence. A fresh JWT
+	// is added only to the execution config below.
+	dispatchAgentConfig = {
+		...dispatchAgentConfig,
+		mcpServers: stampAgentBrowserRunHeaders(
+			(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [],
+			{ executionId: workflowExecutionId, workflowId, nodeId },
+			null,
+		),
+	} as AgentConfig;
+	let executionDispatchAgentConfig = dispatchAgentConfig;
+	const dispatchMcpServers =
+		(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [];
+	if (
+		workflowExecutionId &&
+		hasAgentBrowserTargetAuthHost(dispatchMcpServers)
+	) {
+		const targetAccessToken = await workflowTargetAuth.mintAccessToken({
+			executionId: workflowExecutionId,
+			expectedUserId: userId,
+			expectedProjectId: projectId,
+		});
+		if (targetAccessToken) {
+			executionDispatchAgentConfig = {
+				...dispatchAgentConfig,
+				mcpServers: stampAgentBrowserRunHeaders(
+					dispatchMcpServers,
+					{ executionId: workflowExecutionId, workflowId, nodeId },
+					targetAccessToken,
+				),
+			} as AgentConfig;
+		}
 	}
 	// Goal-mode sessions run multi-turn (no auto-terminate) capped by the goal's
 	// maxIterations; native-`/goal` runs get the objective as a `/goal` kickoff.
@@ -650,7 +724,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 		const reuseHost = await maybeProvisionAgentWorkflowHost({
 			sessionId: existing.id,
-			agentConfig: dispatchAgentConfig,
+			agentConfig: executionDispatchAgentConfig,
 			workflowExecutionId,
 			benchmarkRunId,
 			benchmarkInstanceId,
@@ -722,7 +796,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentHostStatus: reuseHost?.status ?? null,
 			childInput: buildChildInput({
 				sessionId: existing.id,
-				agentConfig: dispatchAgentConfig,
+				agentConfig: executionDispatchAgentConfig,
 				instructionBundle,
 				environmentConfig,
 				workflowId,
@@ -841,7 +915,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
 	const sessionHost = await maybeProvisionAgentWorkflowHost({
 		sessionId,
-		agentConfig: dispatchAgentConfig,
+		agentConfig: executionDispatchAgentConfig,
 		workflowExecutionId,
 		benchmarkRunId,
 		benchmarkInstanceId,
@@ -961,7 +1035,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentHostStatus: sessionHost?.status ?? null,
 		childInput: buildChildInput({
 			sessionId,
-			agentConfig: dispatchAgentConfig,
+			agentConfig: executionDispatchAgentConfig,
 			instructionBundle,
 			environmentConfig,
 			workflowId,
