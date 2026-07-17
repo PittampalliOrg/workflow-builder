@@ -249,9 +249,12 @@ def _custom_status_payload(
     resolved: int,
     budget: dict[str, Any],
     estimated: int | None,
+    progress_override: int | None = None,
 ) -> dict[str, Any]:
     progress = 0
-    if estimated and estimated > 0:
+    if progress_override is not None:
+        progress = progress_override
+    elif estimated and estimated > 0:
         progress = min(100, round(100 * dispatched / estimated))
     return {
         "phase": phase,
@@ -331,7 +334,9 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
     cancel_task = ctx.wait_for_external_event(CANCEL_EVENT_NAME)
     control_task = ctx.wait_for_external_event(CONTROL_EVENT_NAME)
 
-    def _set_status(phase: str, budget: dict[str, Any]) -> None:
+    def _set_status(
+        phase: str, budget: dict[str, Any], progress_override: int | None = None
+    ) -> None:
         nonlocal last_status_json
         payload = _custom_status_payload(
             phase=phase,
@@ -341,6 +346,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             resolved=len(resolved),
             budget=budget,
             estimated=estimated,
+            progress_override=progress_override,
         )
         encoded = json.dumps(payload, sort_keys=True)
         if encoded != last_status_json:
@@ -434,7 +440,11 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         # nested child's result reaches the parent via the child-workflow return
         # value -> record_script_call_result; the row belongs to the root alone.
         if status == "done":
-            _set_status(current_phase or "completed", budget)
+            # Explicit terminal status: with `current_phase` the payload equals
+            # the pre-terminal emit (same phase, progress 0 without
+            # estimatedAgentCalls) and the JSON dedup drops it, leaving runtime
+            # consumers stuck on the last script phase (e.g. "Finalize"/0%).
+            _set_status("completed", budget, progress_override=100)
             yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
@@ -464,7 +474,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             }
         if status == "script_error":
             error = plan.get("error") if isinstance(plan.get("error"), dict) else {}
-            _set_status(current_phase or "failed", budget)
+            _set_status("failed", budget)
             yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
             if not nested:
                 yield ctx.call_activity(
