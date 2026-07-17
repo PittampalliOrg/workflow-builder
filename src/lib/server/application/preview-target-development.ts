@@ -483,6 +483,12 @@ function terminalOutputPayload(
   if (!direct) return null;
   if (typeof direct.controlOutcome === "string") return direct;
 
+  const returnValue = record(direct.returnValue);
+  if (typeof returnValue?.controlOutcome === "string") return returnValue;
+
+  const workflowOutput = record(direct.workflowOutput);
+  if (typeof workflowOutput?.controlOutcome === "string") return workflowOutput;
+
   const outputs = record(direct.outputs);
   const state = record(outputs?.state);
   const stateData = record(state?.data);

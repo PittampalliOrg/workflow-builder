@@ -529,6 +529,8 @@ try:
         for stage, mappings in staged:
             for source_parts, target_parts in mappings:
                 source = stage.joinpath(*source_parts)
+                if not source.exists():
+                    continue
                 signature = tree_signature(source)
                 if target_parts in signatures and signatures[target_parts] != signature:
                     fail("overlay_target_conflict")

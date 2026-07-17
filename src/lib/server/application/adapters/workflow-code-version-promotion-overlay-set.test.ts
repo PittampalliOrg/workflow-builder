@@ -176,10 +176,19 @@ function makeTar(
   return readFileSync(archive);
 }
 
-function runApplier(manifest: unknown, root: string) {
+function runApplier(
+  manifest: unknown,
+  root: string,
+  initialFiles: Record<string, string> = {},
+) {
   const bundle = join(root, "overlay-set.json.gz");
   const repo = join(root, "repo");
   mkdirSync(repo, { recursive: true });
+  for (const [path, content] of Object.entries(initialFiles)) {
+    const target = join(repo, path);
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, content);
+  }
   writeFileSync(bundle, gzipSync(Buffer.from(JSON.stringify(manifest))));
   return {
     repo,
@@ -495,6 +504,63 @@ describe("tar-overlay-set promotion shell", () => {
     expect(() =>
       readFileSync(join(repo, ".preview-capture/development.Dockerfile")),
     ).toThrow();
+  });
+
+  it("does not delete canonical files when optional staged capture inputs are absent", () => {
+    const root = mkdtempSync(join(tmpdir(), "wfb-overlay-missing-capture-"));
+    roots.push(root);
+    const archive = makeTar(root, "missing-capture", {
+      "src/index.ts": "export const value = 2;\n",
+    });
+    const { repo, result } = runApplier(
+      {
+        version: 1,
+        tier: "tar-overlay-set",
+        captureId: "capture-missing-build-input",
+        capturedAt: "2026-07-09T12:00:00.000Z",
+        repoUrl: "PittampalliOrg/workflow-builder",
+        base: "main",
+        services: [
+          {
+            service: "workflow-builder",
+            repoSubdir: ".",
+            syncPaths: ["src"],
+            captureMappings: [
+              { from: "src", to: "src" },
+              {
+                from: ".preview-capture/production.Dockerfile",
+                to: "Dockerfile",
+              },
+              {
+                from: ".preview-capture/development.Dockerfile",
+                to: "skaffold/dev/workflow-builder/Dockerfile.dev",
+              },
+            ],
+            tarGzipBase64: archive.toString("base64"),
+          },
+        ],
+      },
+      root,
+      {
+        Dockerfile: "FROM node:22-alpine\n",
+        "skaffold/dev/workflow-builder/Dockerfile.dev":
+          "FROM node:22-alpine\nRUN echo dev\n",
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(repo, "src/index.ts"), "utf8")).toBe(
+      "export const value = 2;\n",
+    );
+    expect(readFileSync(join(repo, "Dockerfile"), "utf8")).toBe(
+      "FROM node:22-alpine\n",
+    );
+    expect(
+      readFileSync(
+        join(repo, "skaffold/dev/workflow-builder/Dockerfile.dev"),
+        "utf8",
+      ),
+    ).toBe("FROM node:22-alpine\nRUN echo dev\n");
   });
 
   it("rejects malformed sets and unsafe paths before extraction", () => {
