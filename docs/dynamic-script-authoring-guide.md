@@ -345,7 +345,7 @@ synthesis. (Script-spawned `agent()`s set no `allowedTools`, so they get every d
   votes + report must stay under the deployment cap (dev 50) — trim dimensions or `verifyVotes` for
   large diffs.
 
-Both default to GLM 5.2 (the platform `DYNAMIC_SCRIPT_DEFAULT_MODEL`); set `agent(..., {model})` or
+Both default to Kimi K3 (the platform `DYNAMIC_SCRIPT_DEFAULT_MODEL`); set `agent(..., {model})` or
 a per-phase `meta.phases[].model` to run a heavier synthesis/verify step on a different key.
 
 ## Team primitives (script-led Agent Teams)

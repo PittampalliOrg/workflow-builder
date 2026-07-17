@@ -113,6 +113,218 @@ def test_kimi_component_map_only_contains_k3() -> None:
     assert adapter.COMPONENT_MODEL_MAP == {"llm-kimi-k3": "kimi-k3"}
 
 
+def test_kimi_normalizer_preserves_supported_inline_vision_parts() -> None:
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Inspect this UI"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,AAAA",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect this UI"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        }
+    ]
+
+
+def test_kimi_normalizer_moves_mcp_screenshot_after_linked_tool_result() -> None:
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {"role": "user", "content": "Judge the rendered page."},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "I need visual evidence.",
+                "tool_calls": [
+                    {
+                        "id": "shot_1",
+                        "type": "function",
+                        "function": {
+                            "name": "browser_agent_browser_screenshot",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "shot_1",
+                "content": [
+                    {"type": "text", "text": "Screenshot captured"},
+                    {
+                        "type": "image",
+                        "data": "BBBB",
+                        "mimeType": "image/jpeg",
+                    },
+                ],
+            },
+        ],
+    )
+
+    assert messages[1]["reasoning_content"] == "I need visual evidence."
+    assert messages[2] == {
+        "role": "tool",
+        "tool_call_id": "shot_1",
+        "content": "Screenshot captured",
+    }
+    assert messages[3] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": "Visual media returned by a tool (most recent last):",
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,BBBB"},
+            },
+        ],
+    }
+
+
+def test_kimi_normalizer_does_not_forward_public_or_unsupported_images() -> None:
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/page.png"},
+                    },
+                    {
+                        "type": "image",
+                        "data": "CCCC",
+                        "mimeType": "image/svg+xml",
+                    },
+                ],
+            }
+        ],
+    )
+
+    content = messages[0]["content"]
+    assert isinstance(content, list)
+    serialized = json.dumps(content)
+    assert "base64 or ms://" in serialized
+    assert "example.com" not in serialized
+
+
+def test_kimi_normalizer_preserves_k3_video_file_reference() -> None:
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": "ms://file_kimi_demo"},
+                    },
+                    {"type": "text", "text": "Review the interaction flow."},
+                ],
+            }
+        ],
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "video_url",
+                    "video_url": {"url": "ms://file_kimi_demo"},
+                },
+                {"type": "text", "text": "Review the interaction flow."},
+            ],
+        }
+    ]
+
+
+def test_kimi_normalizer_rejects_base64_video_input() -> None:
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": "data:video/mp4;base64,AAAA",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert "uploaded ms:// video" in json.dumps(messages)
+    assert "AAAA" not in json.dumps(messages)
+
+
+def test_kimi_chat_http_body_keeps_vision_content_as_an_array(monkeypatch) -> None:
+    bodies: list[dict] = []
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response(
+            {
+                "id": "chatcmpl_vision",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "visible"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Inspect the layout."},
+                    {
+                        "type": "image",
+                        "data": "DDDD",
+                        "mimeType": "image/png",
+                    },
+                ],
+            }
+        ],
+    )
+
+    adapter._call_kimi_chat("llm-kimi-k3", messages)
+
+    content = bodies[0]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,DDDD"},
+    }
+
+
 def test_kimi_chat_accepts_dict_tool_choice(monkeypatch) -> None:
     bodies: list[dict] = []
     tool_choice = {"type": "function", "function": {"name": "read_file"}}

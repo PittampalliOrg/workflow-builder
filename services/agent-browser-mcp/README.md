@@ -1,10 +1,10 @@
 # agent-browser-mcp
 
 Vercel's [agent-browser](https://github.com/vercel-labs/agent-browser) CLI exposed as a
-**streamable-HTTP MCP server**, so the platform's non-CLI agents (`dapr-agent-py`, e.g. a
-GLM 5.2 browser agent) can drive a real Chrome browser through their `config.mcpServers` —
-with the artifacts the browser produces (screenshot / video / PDF / HAR) **deterministically
-persisted to the owning workflow run**.
+**streamable-HTTP MCP server**, so the platform's non-CLI agents (`dapr-agent-py`, including
+Kimi K3 vision agents) can drive a real Chrome browser through their `config.mcpServers`.
+Screenshot results retain their raw MCP image blocks for model vision, while screenshot /
+video / PDF / HAR artifacts are **deterministically persisted to the owning workflow run**.
 
 ## Why a service (not in the agent image)
 
@@ -42,12 +42,10 @@ persists across calls within the session). On top of plain proxying it adds:
    video + HAR unconditional.
 3. **Curated tool surface.** The child runs the full `core,network,debug` profiles (the
    bridge needs the record/HAR tools), but `tools/list` shown to the LLM is filtered to a
-   small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 11 tools: open, snapshot, click,
-   fill, scroll, screenshot, get_text, get_url, get_title, pdf, close) with schemas pruned
+   small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 19 tools) with schemas pruned
    to the properties that matter (`url`, `selector`, `text`, `path`, …). 77 tools × a dozen
-   plumbing props each measurably degraded small-model tool choice (observed: GLM 5.2
-   stall-looping). Calls to unlisted tools still pass through — filtering only trims
-   discovery.
+   plumbing props each measurably degraded small-model tool choice. Calls to unlisted tools
+   still pass through — filtering only trims discovery.
 
 4. **Demo scenes + auto-editor.** A bridge-implemented virtual tool `demo_scene`
    ({title, caption, focus?}) lets the agent mark scene boundaries with ONE semantic
@@ -91,13 +89,24 @@ persists across calls within the session). On top of plain proxying it adds:
 The agent then calls `browser_agent_browser_open`, `browser_agent_browser_snapshot`, etc.
 Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's Browser tab.
 
+## Vision contract
+
+- `agent_browser_screenshot` returns a structured MCP `image` block with base64 bytes. The
+  bridge forwards that result unchanged to the agent and separately persists a copy as a run
+  artifact. Kimi K3 therefore receives the pixels, not a JSON string describing the file.
+- `agent_browser_snapshot` and `agent_browser_get_text` remain available for accessibility-tree
+  refs, exact text, and deterministic assertions. They do not replace screenshots for layout,
+  color, clipping, spacing, responsive behavior, or any other visual judgment.
+- The service intentionally exposes no OCR, image-caption, screenshot-description, or visual
+  analysis proxy action. Visual interpretation belongs to the model.
+
 ## Env
 
 | var | default | meaning |
 | --- | --- | --- |
 | `PORT` | `8000` | HTTP port for the MCP endpoint |
 | `AGENT_BROWSER_TOOLS` | `core,network,debug` | tool profiles the **child** runs (record/HAR live in debug/network) |
-| `AGENT_BROWSER_EXPOSED_TOOLS` | 11 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
+| `AGENT_BROWSER_EXPOSED_TOOLS` | 19 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
 | `WORKFLOW_BUILDER_URL` | in-cluster BFF | artifact sink base URL |

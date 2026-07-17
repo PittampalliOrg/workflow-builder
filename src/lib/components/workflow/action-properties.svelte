@@ -176,12 +176,18 @@
 			const providerMatch = matches.find((a) => {
 				const haystack = `${a.id} ${a.name} ${a.displayName}`.toLowerCase();
 				return (
+					(componentName.includes('kimi') && haystack.includes('kimi')) ||
 					(componentName.includes('openai') && haystack.includes('openai')) ||
 					(componentName.includes('anthropic') && haystack.includes('anthropic'))
 				);
 			});
 			if (providerMatch) return providerMatch;
 		}
+
+		const kimiK3Default = matches.find(
+			(a) => a.id === 'system-dapr-converse-kimi-k3-structured',
+		);
+		if (kimiK3Default) return kimiK3Default;
 
 		return matches[0] || null;
 	}

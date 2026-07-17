@@ -21,11 +21,25 @@ from src.provider_conformance import (
     parse_structured_response,
     strict_json_schema,
 )
+from src.mcp_multimodal import decode_multimodal_tool_content
 
 logger = logging.getLogger(__name__)
 
 COMPONENT_MODEL_MAP: dict[str, str] = {
     "llm-kimi-k3": "kimi-k3",
+}
+
+# Browser MCP screenshots are typically hundreds of kilobytes once base64
+# encoded. Keep the latest visual evidence without replaying every screenshot
+# from a long browser session into K3's prompt.
+MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT = int(
+    os.environ.get("DAPR_AGENT_PY_MAX_IMAGE_TOOL_RESULTS", "3")
+)
+KIMI_SUPPORTED_IMAGE_MEDIA_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
 }
 
 _KIMI_REASONING_MESSAGE_MODEL: Any = None
@@ -97,8 +111,22 @@ def _as_text(content: Any) -> str:
         parts: list[str] = []
         for item in content:
             if isinstance(item, dict):
-                if item.get("type") in {"text", "input_text", "output_text"}:
+                item_type = item.get("type")
+                if item_type in {"text", "input_text", "output_text"}:
                     parts.append(str(item.get("text", "")))
+                elif item_type in {
+                    "image",
+                    "image_url",
+                    "input_image",
+                }:
+                    # Never serialize base64 image bytes into a text prompt.
+                    parts.append("[image]")
+                elif item_type in {
+                    "video",
+                    "video_url",
+                    "input_video",
+                }:
+                    parts.append("[video]")
                 elif "content" in item:
                     parts.append(str(item.get("content", "")))
                 else:
@@ -107,6 +135,134 @@ def _as_text(content: Any) -> str:
                 parts.append(str(item))
         return "\n".join(part for part in parts if part)
     return str(content)
+
+
+def _kimi_image_url(block: dict[str, Any]) -> str | None:
+    """Return a K3-supported base64/file image URL from common message shapes."""
+    source = block.get("source")
+    if isinstance(source, dict):
+        if source.get("url"):
+            candidate = str(source["url"])
+        elif source.get("data"):
+            media_type = str(
+                source.get("media_type") or source.get("mediaType") or "image/png"
+            ).lower()
+            candidate = f"data:{media_type};base64,{source['data']}"
+        else:
+            candidate = ""
+    elif block.get("data"):
+        media_type = str(
+            block.get("mimeType")
+            or block.get("mediaType")
+            or block.get("media_type")
+            or "image/png"
+        ).lower()
+        candidate = f"data:{media_type};base64,{block['data']}"
+    else:
+        raw_image_url = block.get("image_url")
+        if isinstance(raw_image_url, dict):
+            candidate = str(raw_image_url.get("url") or "")
+        else:
+            candidate = str(raw_image_url or "")
+
+    candidate = candidate.strip()
+    if candidate.startswith("ms://"):
+        return candidate
+    if not candidate.startswith("data:"):
+        # K3 vision deliberately does not accept public image URLs.
+        return None
+    header = candidate.split(",", 1)[0].lower()
+    if ";base64" not in header:
+        return None
+    media_type = header[5:].split(";", 1)[0]
+    return candidate if media_type in KIMI_SUPPORTED_IMAGE_MEDIA_TYPES else None
+
+
+def _kimi_video_url(block: dict[str, Any]) -> str | None:
+    """Return a K3 uploaded-file video URL from common message shapes."""
+    source = block.get("source")
+    if isinstance(source, dict):
+        if source.get("url"):
+            candidate = str(source["url"])
+        else:
+            candidate = ""
+    else:
+        raw_video_url = block.get("video_url")
+        if isinstance(raw_video_url, dict):
+            candidate = str(raw_video_url.get("url") or "")
+        else:
+            candidate = str(raw_video_url or "")
+
+    candidate = candidate.strip()
+    return candidate if candidate.startswith("ms://") else None
+
+
+def _to_kimi_content_parts(content: Any) -> tuple[list[dict[str, Any]], bool]:
+    """Normalize OpenAI, Anthropic, and MCP image blocks for K3 vision."""
+    decoded_tool_content = decode_multimodal_tool_content(content)
+    if decoded_tool_content is not None:
+        content = decoded_tool_content
+    if not isinstance(content, list):
+        text = _as_text(content)
+        return ([{"type": "text", "text": text}] if text else [], False)
+
+    parts: list[dict[str, Any]] = []
+    has_media = False
+    for item in content:
+        if not isinstance(item, dict):
+            text = str(item)
+            if text:
+                parts.append({"type": "text", "text": text})
+            continue
+
+        item_type = item.get("type")
+        looks_like_video = item_type in {"video", "video_url", "input_video"}
+        if looks_like_video:
+            has_media = True
+            video_url = _kimi_video_url(item)
+            if video_url:
+                parts.append({"type": "video_url", "video_url": {"url": video_url}})
+            else:
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "[video omitted: Kimi K3 vision requires a supported "
+                            "uploaded ms:// video]"
+                        ),
+                    }
+                )
+            continue
+
+        looks_like_image = (
+            item_type in {"image", "image_url", "input_image"}
+            or isinstance(item.get("source"), dict)
+            or bool(item.get("mimeType") or item.get("mediaType"))
+        )
+        if looks_like_image:
+            has_media = True
+            image_url = _kimi_image_url(item)
+            if image_url:
+                parts.append({"type": "image_url", "image_url": {"url": image_url}})
+            else:
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "[image omitted: Kimi K3 vision requires a supported "
+                            "base64 or ms:// image]"
+                        ),
+                    }
+                )
+            continue
+
+        if item_type in {"text", "input_text", "output_text"}:
+            text = str(item.get("text", ""))
+        else:
+            text = _as_text(item)
+        if text:
+            parts.append({"type": "text", "text": text})
+    return parts, has_media
 
 
 def _normalize_tool_call(call: Any) -> dict[str, Any] | None:
@@ -144,9 +300,14 @@ def _normalize_messages_for_kimi(
         source = [{"role": "user", "content": "Continue."}]
 
     messages: list[dict[str, Any]] = []
+    # Chat-completions tool results must remain text messages linked to their
+    # tool_call_id. Move image blocks into one trailing user vision message so
+    # linkage and role ordering stay valid while K3 receives the screenshots.
+    pending_media: list[dict[str, Any]] = []
     for message in source:
         role = str(_message_attr(message, "role", "user") or "user")
-        text = _as_text(_message_attr(message, "content", ""))
+        raw_content = _message_attr(message, "content", "")
+        text = _as_text(raw_content)
 
         if role == "system":
             if text:
@@ -174,6 +335,21 @@ def _normalize_messages_for_kimi(
             continue
 
         if role == "tool":
+            parts, has_media = _to_kimi_content_parts(raw_content)
+            if has_media:
+                pending_media.extend(
+                    part
+                    for part in parts
+                    if part.get("type") in {"image_url", "video_url"}
+                )
+                text = (
+                    "\n".join(
+                        str(part.get("text") or "")
+                        for part in parts
+                        if part.get("type") == "text"
+                    ).strip()
+                    or "[screenshot returned; image attached below]"
+                )
             call_id = str(_message_attr(message, "tool_call_id", "") or "").strip()
             if call_id:
                 messages.append(
@@ -187,10 +363,25 @@ def _normalize_messages_for_kimi(
                 messages.append({"role": "user", "content": text or "ok"})
             continue
 
+        parts, has_media = _to_kimi_content_parts(raw_content)
         messages.append(
             {
                 "role": "user" if role not in {"user", "assistant"} else role,
-                "content": text or "Continue.",
+                "content": parts if has_media else (text or "Continue."),
+            }
+        )
+
+    if pending_media and MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT > 0:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": ("Visual media returned by a tool (most recent last):"),
+                    },
+                    *pending_media[-MAX_IMAGE_TOOL_RESULTS_IN_CONTEXT:],
+                ],
             }
         )
 

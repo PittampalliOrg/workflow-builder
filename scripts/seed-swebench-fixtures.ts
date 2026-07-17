@@ -784,6 +784,16 @@ function validateFixtures(fixtures: Fixtures) {
         `Required SWE-bench canary agent ${slug} expected modelSpec=${expectedModelSpec}`,
       );
     }
+    if (
+      expectedModelSpec === "kimi/kimi-k3" &&
+      ((config as { reasoningEffort?: unknown }).reasoningEffort !== "max" ||
+        (config as { contextWindowTokens?: unknown }).contextWindowTokens !==
+          1_048_576)
+    ) {
+      throw new Error(
+        `Required SWE-bench canary agent ${slug} must use Kimi K3 max reasoning and a 1,048,576-token context window`,
+      );
+    }
   }
   for (const version of fixtures.agent_versions) {
     if (!agentIds.has(String(version.agent_id))) {

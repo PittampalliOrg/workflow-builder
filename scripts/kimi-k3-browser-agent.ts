@@ -1,0 +1,392 @@
+import { nanoid } from "nanoid";
+import type postgres from "postgres";
+import { hashAgentConfig } from "../src/lib/server/agents/config-hash";
+import type { AgentConfig } from "../src/lib/types/agents";
+
+type JsonRecord = Record<string, unknown>;
+
+export const KIMI_K3_BROWSER_AGENT_SLUG = "kimi-k3-browser-agent";
+export const KIMI_K3_BROWSER_PROBE_AGENT_SLUG = "kimi-k3-browser-probe-agent";
+
+const LEGACY_BROWSER_AGENT_SLUG = "glm-browser-agent";
+const LEGACY_BROWSER_PROBE_AGENT_SLUG = "glm-browser-probe-agent";
+const BROWSER_MCP_URL =
+  "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp";
+
+export const KIMI_K3_BROWSER_ALLOWED_TOOLS = [
+  "browser_agent_browser_open",
+  "browser_agent_browser_snapshot",
+  "browser_agent_browser_click",
+  "browser_agent_browser_fill",
+  "browser_agent_browser_type",
+  "browser_agent_browser_press",
+  "browser_agent_browser_hover",
+  "browser_agent_browser_select",
+  "browser_agent_browser_highlight",
+  "browser_agent_browser_scroll",
+  "browser_agent_browser_back",
+  "browser_agent_browser_wait_for_selector",
+  "browser_agent_browser_wait_for_load",
+  "browser_agent_browser_screenshot",
+  "browser_agent_browser_get_text",
+  "browser_agent_browser_get_url",
+  "browser_agent_browser_get_title",
+  "browser_agent_browser_pdf",
+  "browser_agent_browser_close",
+  "browser_demo_scene",
+  "browser_agent_browser_console",
+  "browser_agent_browser_errors",
+];
+
+export const KIMI_K3_BROWSER_SYSTEM_PROMPT =
+  'You are a Kimi K3 vision browser automation agent. Your browser tools are MCP tools whose names begin with "browser_"; always call them by their exact names. Use browser_agent_browser_snapshot to discover stable accessibility-tree refs and browser_agent_browser_screenshot whenever visual appearance, layout, spacing, color, clipping, responsive behavior, or rendered state matters. Screenshot results are supplied directly to your vision model, while the platform also persists them as run artifacts. Use browser_agent_browser_open, click, fill, type, press, hover, select, scroll, back, wait, get_text, get_url, and get_title for navigation and interaction. Use browser_agent_browser_highlight immediately before an interaction the viewer should notice. browser_demo_scene marks the start of a recorded demo scene. The platform automatically records video and a network HAR; never start, stop, save, or upload recordings yourself. Work in short deliberate steps, do not repeat completed actions, and call browser_agent_browser_close when finished so capture is finalized. Report only concrete observations from DOM evidence and screenshots.';
+
+function defaultBrowserMcpServer(probe: boolean): JsonRecord {
+  return {
+    name: "browser",
+    transport: "streamable_http",
+    url: BROWSER_MCP_URL,
+    headers: {
+      "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
+      ...(probe ? { "X-Wfb-Browser-Lane": "per-node" } : {}),
+    },
+  };
+}
+
+function executionSafeBrowserHeaders(
+  headers: unknown,
+  probe: boolean,
+): JsonRecord | undefined {
+  const retained =
+    headers && typeof headers === "object" && !Array.isArray(headers)
+      ? Object.fromEntries(
+          Object.entries(headers as JsonRecord).filter(
+            ([name]) => name.toLowerCase() !== "x-wfb-target-auth",
+          ),
+        )
+      : {};
+  if (probe) retained["X-Wfb-Browser-Lane"] = "per-node";
+  return Object.keys(retained).length ? retained : undefined;
+}
+
+/**
+ * Build the canonical K3 browser config while retaining deployment-specific
+ * non-secret MCP headers from the existing GLM agent. Target auth is minted
+ * per execution and must never be copied into a durable agent version.
+ */
+export function buildKimiK3BrowserAgentConfig(
+  sourceConfig: JsonRecord | null,
+  options: { probe: boolean },
+): JsonRecord {
+  const source = sourceConfig ? structuredClone(sourceConfig) : {};
+  delete source.model;
+  delete source.provider;
+  delete source.thinking;
+  delete source.llmComponent;
+  delete source.providerModel;
+  delete source.llm_component;
+  delete source.provider_model;
+  const sourceServers = Array.isArray(source.mcpServers)
+    ? structuredClone(source.mcpServers)
+    : [];
+  const mcpServers = sourceServers.length
+    ? sourceServers.map((entry) => {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          !("url" in entry) ||
+          !String((entry as JsonRecord).url).includes("agent-browser-mcp")
+        ) {
+          return entry;
+        }
+        const { headers: sourceHeaders, ...server } = entry as JsonRecord;
+        const headers = executionSafeBrowserHeaders(
+          sourceHeaders,
+          options.probe,
+        );
+        return { ...server, ...(headers ? { headers } : {}) };
+      })
+    : [defaultBrowserMcpServer(options.probe)];
+
+  return {
+    ...source,
+    systemPrompt: KIMI_K3_BROWSER_SYSTEM_PROMPT,
+    runtime: "dapr-agent-py",
+    runtimeClass: "coding",
+    runtimeIsolation: "shared",
+    modelSpec: "kimi/kimi-k3",
+    reasoningEffort: "max",
+    contextWindowTokens: 1_048_576,
+    maxTurns: 120,
+    timeoutMinutes: 120,
+    builtinTools: [],
+    tools: [],
+    skills: [],
+    memory: { backend: "dapr_state" },
+    mcpConnectionMode: "auto",
+    mcpServers,
+    allowedTools: [...KIMI_K3_BROWSER_ALLOWED_TOOLS],
+    runtimeOverridePolicy: {
+      allowToolNarrowing: true,
+      allowServerAdditions: false,
+      allowCredentialBinding: true,
+      allowSkillAdditions: false,
+      allowSkillNarrowing: true,
+    },
+  };
+}
+
+const TEXT_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+  [LEGACY_BROWSER_PROBE_AGENT_SLUG, KIMI_K3_BROWSER_PROBE_AGENT_SLUG],
+  [LEGACY_BROWSER_AGENT_SLUG, KIMI_K3_BROWSER_AGENT_SLUG],
+  ["GLM 5.2 browser agent", "Kimi K3 vision browser agent"],
+  ["GLM 5.2 + agent-browser", "Kimi K3 vision + agent-browser"],
+  ["all-GLM/ZAI", "Kimi K3 vision/browser critic plus coding agent"],
+  ["max ~10 tool calls TOTAL", "max ~14 tool calls TOTAL"],
+  [
+    "(2) browser_agent_browser_snapshot, (3) at most ONE obvious interaction",
+    "(2) browser_agent_browser_snapshot, (3) browser_agent_browser_screenshot, (4) at most ONE obvious interaction",
+  ],
+  ["max ~8 tool calls TOTAL", "max ~12 tool calls TOTAL"],
+  [
+    "open each reference route ONCE + snapshot, open each target route ONCE + snapshot",
+    "open each reference route ONCE + snapshot + screenshot, open each target route ONCE + snapshot + screenshot",
+  ],
+];
+
+export function migrateLegacyBrowserAgentReferences(value: unknown): unknown {
+  if (typeof value === "string") {
+    return TEXT_REPLACEMENTS.reduce(
+      (result, [from, to]) => result.replaceAll(from, to),
+      value,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map(migrateLegacyBrowserAgentReferences);
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as JsonRecord).map(([key, entry]) => [
+      key,
+      migrateLegacyBrowserAgentReferences(entry),
+    ]),
+  );
+}
+
+type BrowserAgentDefinition = {
+  slug: string;
+  legacySlug: string;
+  name: string;
+  description: string;
+  probe: boolean;
+};
+
+const BROWSER_AGENT_DEFINITIONS: BrowserAgentDefinition[] = [
+  {
+    slug: KIMI_K3_BROWSER_AGENT_SLUG,
+    legacySlug: LEGACY_BROWSER_AGENT_SLUG,
+    name: "Kimi K3 Vision Browser Agent",
+    description:
+      "Kimi K3 dapr-agent-py browser agent with native screenshot understanding, agent-browser MCP navigation, and durable browser artifacts.",
+    probe: false,
+  },
+  {
+    slug: KIMI_K3_BROWSER_PROBE_AGENT_SLUG,
+    legacySlug: LEGACY_BROWSER_PROBE_AGENT_SLUG,
+    name: "Kimi K3 Vision Browser Probe Agent",
+    description:
+      "Kimi K3 dapr-agent-py browser probe with native screenshot understanding and per-node BrowserStation lane isolation.",
+    probe: true,
+  },
+];
+
+async function ensureBrowserAgent(
+  sql: postgres.Sql,
+  owner: { userId: string; projectId: string | null },
+  definition: BrowserAgentDefinition,
+): Promise<void> {
+  const rows = await sql<
+    {
+      id: string;
+      version: number | null;
+      config: JsonRecord | null;
+      config_hash: string | null;
+      legacy_config: JsonRecord | null;
+    }[]
+  >`
+		select a.id, av.version, av.config, av.config_hash,
+			legacy_av.config as legacy_config
+		from agents a
+		left join agent_versions av on av.id = a.current_version_id
+		left join agents legacy on legacy.slug = ${definition.legacySlug}
+		left join agent_versions legacy_av on legacy_av.id = legacy.current_version_id
+		where a.slug = ${definition.slug}
+		limit 1
+	`;
+  const existing = rows[0];
+  let legacyConfig = existing?.legacy_config ?? null;
+  if (!existing) {
+    const legacyRows = await sql<{ config: JsonRecord | null }[]>`
+			select av.config
+			from agents a
+			left join agent_versions av on av.id = a.current_version_id
+			where a.slug = ${definition.legacySlug}
+			limit 1
+		`;
+    legacyConfig = legacyRows[0]?.config ?? null;
+  }
+  // Once created, treat the K3 config as the credential/header authority so a
+  // later seed cannot overwrite a rotated binding with stale legacy material.
+  const config = buildKimiK3BrowserAgentConfig(
+    existing?.config ?? legacyConfig,
+    { probe: definition.probe },
+  );
+  const configHash = hashAgentConfig(config as AgentConfig);
+  const tags = ["dapr-agent-py", "kimi-k3", "vision", "browser"];
+
+  if (existing?.id && existing.config_hash === configHash) {
+    await sql`
+			update agents set
+				name = ${definition.name}, description = ${definition.description},
+				tags = ${sql.json(tags)}, runtime = ${"dapr-agent-py"},
+				registry_status = ${"registered"}, is_archived = false,
+				updated_at = now()
+			where id = ${existing.id}
+		`;
+    return;
+  }
+
+  const agentId = existing?.id ?? nanoid();
+  const nextVersion = existing?.id
+    ? Number(
+        (
+          await sql<{ version: number }[]>`
+						select coalesce(max(version), 0)::int as version
+						from agent_versions where agent_id = ${existing.id}
+					`
+        )[0]?.version ?? 0,
+      ) + 1
+    : 1;
+  const versionId = nanoid();
+  await sql.begin(async (transaction) => {
+    const tx = transaction as unknown as postgres.Sql;
+    if (!existing?.id) {
+      await tx`
+				insert into agents (
+					id, slug, name, description, tags, runtime, created_by,
+					project_id, registry_status, is_archived, default_vault_ids,
+					created_at, updated_at
+				) values (
+					${agentId}, ${definition.slug}, ${definition.name},
+					${definition.description}, ${sql.json(tags)}, ${"dapr-agent-py"},
+					${owner.userId}, ${owner.projectId}, ${"registered"}, false,
+					${sql.json([])}, now(), now()
+				)
+			`;
+    }
+    await tx`
+			insert into agent_versions (
+				id, agent_id, version, config, config_hash, changelog,
+				published_at, published_by, created_at
+			) values (
+				${versionId}, ${agentId}, ${nextVersion},
+				${sql.json(config as postgres.JSONValue)}, ${configHash},
+				${"Migrate browser automation to Kimi K3 vision with max reasoning and a 1M-token context window."},
+				now(), ${owner.userId}, now()
+			)
+		`;
+    await tx`
+			update agents set
+				name = ${definition.name}, description = ${definition.description},
+				tags = ${sql.json(tags)}, runtime = ${"dapr-agent-py"},
+				registry_status = ${"registered"}, is_archived = false,
+				current_version_id = ${versionId}, updated_at = now()
+			where id = ${agentId}
+		`;
+  });
+}
+
+export async function migrateKimiK3BrowserAgentsAndWorkflows(
+  sql: postgres.Sql,
+  owner: { userId: string; projectId: string | null },
+): Promise<{ workflowsUpdated: number }> {
+  for (const definition of BROWSER_AGENT_DEFINITIONS) {
+    await ensureBrowserAgent(sql, owner, definition);
+  }
+
+  const workflowRows = await sql<
+    {
+      id: string;
+      name: string;
+      description: string | null;
+      spec: unknown;
+      nodes: unknown;
+      edges: unknown;
+    }[]
+  >`
+		select id, name, description, spec, nodes, edges
+		from workflows
+		where coalesce(spec::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(spec::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+			or coalesce(nodes::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(nodes::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+			or coalesce(edges::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(edges::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+			or name in (${"gan-ui-logic-test"}, ${"site-demo-video"}, ${"agent-browser-smoke"})
+	`;
+  let workflowsUpdated = 0;
+  for (const workflow of workflowRows) {
+    const migratedName = migrateLegacyBrowserAgentReferences(
+      workflow.name,
+    ) as string;
+    const migratedDescription = workflow.description
+      ? (migrateLegacyBrowserAgentReferences(workflow.description) as string)
+      : null;
+    const migratedSpec = migrateLegacyBrowserAgentReferences(workflow.spec);
+    const migratedNodes = migrateLegacyBrowserAgentReferences(workflow.nodes);
+    const migratedEdges = migrateLegacyBrowserAgentReferences(workflow.edges);
+    if (
+      migratedName === workflow.name &&
+      migratedDescription === workflow.description &&
+      JSON.stringify(migratedSpec) === JSON.stringify(workflow.spec) &&
+      JSON.stringify(migratedNodes) === JSON.stringify(workflow.nodes) &&
+      JSON.stringify(migratedEdges) === JSON.stringify(workflow.edges)
+    ) {
+      continue;
+    }
+    await sql`
+			update workflows set
+				name = ${migratedName},
+				description = ${migratedDescription},
+				spec = ${sql.json(migratedSpec as postgres.JSONValue)},
+				nodes = ${sql.json(migratedNodes as postgres.JSONValue)},
+				edges = ${sql.json(migratedEdges as postgres.JSONValue)},
+				updated_at = now()
+			where id = ${workflow.id}
+		`;
+    workflowsUpdated += 1;
+  }
+
+  const remainingRows = await sql<{ count: number }[]>`
+		select count(*)::int as count from workflows
+		where coalesce(spec::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(spec::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+			or coalesce(nodes::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(nodes::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+			or coalesce(edges::text, '') like ${`%${LEGACY_BROWSER_AGENT_SLUG}%`}
+			or coalesce(edges::text, '') like ${`%${LEGACY_BROWSER_PROBE_AGENT_SLUG}%`}
+	`;
+  if (Number(remainingRows[0]?.count ?? 0) > 0) {
+    throw new Error(
+      "Refusing to archive GLM browser agents while workflow references remain.",
+    );
+  }
+  await sql`
+		update agents set is_archived = true, updated_at = now()
+		where slug in (${LEGACY_BROWSER_AGENT_SLUG}, ${LEGACY_BROWSER_PROBE_AGENT_SLUG})
+	`;
+  console.log(
+    `[seed-workflows] Reconciled Kimi K3 vision browser agents; migrated ${workflowsUpdated} workflow(s) and archived the GLM browser definitions`,
+  );
+  return { workflowsUpdated };
+}

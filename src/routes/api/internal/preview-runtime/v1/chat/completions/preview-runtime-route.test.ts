@@ -18,7 +18,10 @@ vi.mock("$lib/server/application", () => ({
 }));
 
 import { POST } from "./+server";
-import { PreviewRuntimeBrokerError } from "$lib/server/application/preview-runtime-broker";
+import {
+  PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES,
+  PreviewRuntimeBrokerError,
+} from "$lib/server/application/preview-runtime-broker";
 
 const identityHeaders = {
   "x-preview-runtime-capability": "d".repeat(64),
@@ -86,11 +89,31 @@ describe("preview runtime route", () => {
   it("rejects a declared oversized body before reading it", async () => {
     const response = (await POST({
       request: request(undefined, {
-        "content-length": String(524_288 + 1),
+        "content-length": String(PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES + 1),
       }),
     } as never)) as Response;
     expect(response.status).toBe(413);
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("accepts Kimi context bodies larger than the retired 2 MiB cap", async () => {
+    const content = "x".repeat(2_097_152);
+    const response = (await POST({
+      request: request({
+        model: "kimi-k3",
+        messages: [{ role: "user", content }],
+      }),
+    } as never)) as Response;
+
+    expect(response.status).toBe(200);
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          model: "kimi-k3",
+          messages: [{ role: "user", content }],
+        },
+      }),
+    );
   });
 
   it("maps exhausted and unavailable distributed budgets without leaking causes", async () => {

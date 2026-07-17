@@ -6,6 +6,10 @@ import type {
 } from "$lib/server/application/ports";
 import {
   ApplicationPreviewRuntimeBrokerService,
+  KIMI_K3_CONTEXT_TOKENS,
+  KIMI_K3_MAX_COMPLETION_TOKENS,
+  PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES,
+  PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES,
   type PreviewRuntimeRequestLimits,
 } from "$lib/server/application/preview-runtime-broker";
 
@@ -168,7 +172,7 @@ describe("preview runtime broker application policy", () => {
     ).rejects.toMatchObject({ code: "invalid-request" });
   });
 
-  it("accepts Kimi K3 max reasoning and preserves bounded assistant reasoning", async () => {
+  it("forces Kimi K3 max reasoning and preserves bounded assistant reasoning", async () => {
     const h = harness();
     const kimiPayload = {
       model: "kimi-k3",
@@ -192,7 +196,7 @@ describe("preview runtime broker application policy", () => {
         { role: "tool", tool_call_id: "call-1", content: "contents" },
       ],
       max_completion_tokens: 131_072,
-      reasoning_effort: "max",
+      reasoning_effort: "low",
     };
 
     await expect(
@@ -200,11 +204,32 @@ describe("preview runtime broker application policy", () => {
     ).resolves.toMatchObject({ status: 200 });
     expect(h.upstream.complete).toHaveBeenCalledWith({
       identity,
-      payload: { ...kimiPayload, max_completion_tokens: 512 },
+      payload: {
+        ...kimiPayload,
+        max_completion_tokens: 512,
+        reasoning_effort: "max",
+      },
+    });
+
+    const { reasoning_effort: _reasoningEffort, ...kimiWithoutReasoning } =
+      kimiPayload;
+    const withoutReasoning = {
+      ...kimiWithoutReasoning,
+      max_completion_tokens: 256,
+    };
+    await h.service.complete({ ...request, payload: withoutReasoning });
+    expect(h.upstream.complete).toHaveBeenLastCalledWith({
+      identity,
+      payload: {
+        ...withoutReasoning,
+        max_completion_tokens: 256,
+        reasoning_effort: "max",
+      },
     });
 
     for (const payload of [
       { ...kimiPayload, reasoning_effort: "ultra" },
+      { ...kimiPayload, thinking: { type: "disabled" } },
       {
         ...kimiPayload,
         messages: [
@@ -226,6 +251,91 @@ describe("preview runtime broker application policy", () => {
         h.service.complete({ ...request, payload }),
       ).rejects.toMatchObject({ code: "invalid-request" });
     }
+  });
+
+  it("admits the full Kimi K3 completion budget when configured", async () => {
+    const h = harness({
+      requestLimits: {
+        maxPayloadBytes: 2_000_000,
+        maxContentBytes: 1_100_000,
+        maxCompletionTokens: KIMI_K3_MAX_COMPLETION_TOKENS,
+        defaultCompletionTokens: KIMI_K3_MAX_COMPLETION_TOKENS,
+      },
+      budgetLimits: {
+        reservedTokensPerMinute: 2_000_000,
+        totalReservedTokens: 4_000_000,
+      },
+    });
+    const content = "x".repeat(KIMI_K3_CONTEXT_TOKENS);
+
+    await h.service.complete({
+      ...request,
+      payload: {
+        model: "kimi-k3",
+        messages: [{ role: "user", content }],
+      },
+    });
+
+    expect(h.upstream.complete).toHaveBeenCalledWith({
+      identity,
+      payload: {
+        model: "kimi-k3",
+        messages: [{ role: "user", content }],
+        max_completion_tokens: KIMI_K3_MAX_COMPLETION_TOKENS,
+        reasoning_effort: "max",
+      },
+    });
+    expect(h.budget.reserve).toHaveBeenCalledWith({
+      identity,
+      reservedTokens: expect.any(Number),
+      limits: {
+        ...budgetLimits,
+        reservedTokensPerMinute: 2_000_000,
+        totalReservedTokens: 4_000_000,
+      },
+    });
+    expect(h.budget.reserve.mock.calls[0][0].reservedTokens).toBeGreaterThan(
+      KIMI_K3_CONTEXT_TOKENS + KIMI_K3_MAX_COMPLETION_TOKENS,
+    );
+    expect(h.budget.reserve.mock.calls[0][0].reservedTokens).toBeLessThan(
+      2_000_000,
+    );
+  });
+
+  it("never forwards a Kimi K3 completion budget above its model limit", async () => {
+    const h = harness({
+      requestLimits: {
+        maxCompletionTokens: 200_000,
+        defaultCompletionTokens: 150_000,
+      },
+      budgetLimits: {
+        reservedTokensPerMinute: 500_000,
+        totalReservedTokens: 1_000_000,
+      },
+    });
+
+    await h.service.complete({
+      ...request,
+      payload: {
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "hello" }],
+        max_completion_tokens: 200_000,
+      },
+    });
+
+    expect(h.upstream.complete).toHaveBeenCalledWith({
+      identity,
+      payload: expect.objectContaining({
+        max_completion_tokens: KIMI_K3_MAX_COMPLETION_TOKENS,
+        reasoning_effort: "max",
+      }),
+    });
+  });
+
+  it("keeps the Kimi context transport bound below BODY_SIZE_LIMIT=25M", () => {
+    expect(PREVIEW_RUNTIME_DEFAULT_MAX_PAYLOAD_BYTES).toBe(16_777_216);
+    expect(PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES).toBe(24_000_000);
+    expect(PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES).toBeLessThan(25_000_000);
   });
 
   it("enforces payload, message-content, and tool shape/size bounds", async () => {

@@ -132,6 +132,9 @@ const mocks = vi.hoisted(() => {
 				dynamicManifest: [],
 			})),
 		},
+		workflowTargetAuth: {
+			mintAccessToken: vi.fn(async () => "fresh-target-access-token"),
+		},
 	};
 });
 
@@ -146,8 +149,9 @@ vi.mock("$lib/server/application", () => ({
 		cliCredentials: mocks.cliCredentials,
 		sessionCommands: mocks.sessionCommands,
 		promptStackCompiler: mocks.promptStackCompiler,
-			teamStore: mocks.teamStore,
-			capabilityBundles: mocks.capabilityBundles,
+		workflowTargetAuth: mocks.workflowTargetAuth,
+		teamStore: mocks.teamStore,
+		capabilityBundles: mocks.capabilityBundles,
 	}),
 }));
 
@@ -602,6 +606,130 @@ describe("dynamic-script spawn MCP wiring", () => {
 		mocks.state.hostCalls.length = 0;
 		mocks.workflowData.getWorkflowByRef.mockReset();
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
+		mocks.workflowTargetAuth.mintAccessToken.mockReset();
+		mocks.workflowTargetAuth.mintAccessToken.mockResolvedValue(
+			"fresh-target-access-token",
+		);
+	});
+
+	it("replaces stale browser target auth only in execution-scoped config", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "openai",
+			token: "unused",
+			body: {
+				workflowExecutionId: "execution-1",
+				agentConfig: {
+					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+					mcpServers: [
+						{
+							name: "browser",
+							url: "http://agent-browser-mcp:8000/mcp",
+							headers: {
+								"X-Wfb-Target-Auth": "Bearer stale-persisted-token",
+								"X-Wfb-Target-Auth-Host": "workflow-builder:3000",
+								"X-Wfb-Browser-Lane": "per-node",
+							},
+						},
+						{
+							name: "other",
+							url: "http://other-mcp:8000/mcp",
+							headers: { "X-Wfb-Target-Auth": "non-browser-untouched" },
+						},
+					],
+				},
+			},
+		});
+
+		expect(mocks.workflowTargetAuth.mintAccessToken).toHaveBeenCalledWith({
+			executionId: "execution-1",
+			expectedUserId: "user-1",
+			expectedProjectId: "project-1",
+		});
+		const persistedCall = mocks.sessionCommands.resolveWorkflowSessionAgent.mock
+			.calls.at(-1)?.[0] as unknown as {
+			agentConfig: { mcpServers: Array<Record<string, unknown>> };
+		};
+		const persisted = persistedCall.agentConfig;
+		const persistedBrowserHeaders = persisted.mcpServers[0]
+			.headers as Record<string, string>;
+		expect(persistedBrowserHeaders["X-Wfb-Target-Auth"]).toBeUndefined();
+		expect(persistedBrowserHeaders["X-Wfb-Target-Auth-Host"]).toBe(
+			"workflow-builder:3000",
+		);
+
+		const childInput = payload.childInput as Record<string, unknown>;
+		const childConfig = childInput.agentConfig as {
+			mcpServers: Array<Record<string, unknown>>;
+		};
+		const browserHeaders = childConfig.mcpServers[0]
+			.headers as Record<string, string>;
+		expect(browserHeaders["X-Wfb-Target-Auth"]).toBe(
+			"Bearer fresh-target-access-token",
+		);
+		expect(browserHeaders["X-Wfb-Browser-Lane"]).toBe("per-node");
+		expect(childConfig.mcpServers[1]).toEqual({
+			name: "other",
+			url: "http://other-mcp:8000/mcp",
+			headers: { "X-Wfb-Target-Auth": "non-browser-untouched" },
+		});
+		const hostConfig = (mocks.state.hostCalls.at(-1) as {
+			agentConfig: { mcpServers: Array<Record<string, unknown>> };
+		}).agentConfig;
+		expect(
+			(hostConfig.mcpServers[0].headers as Record<string, string>)[
+				"X-Wfb-Target-Auth"
+			],
+		).toBe("Bearer fresh-target-access-token");
+
+		const { childInput: _childInput, ...topLevel } = payload;
+		expect(JSON.stringify(topLevel)).not.toContain("fresh-target-access-token");
+		expect(JSON.stringify(log.mock.calls)).not.toContain(
+			"fresh-target-access-token",
+		);
+		expect(JSON.stringify(info.mock.calls)).not.toContain(
+			"fresh-target-access-token",
+		);
+		expect(JSON.stringify(warn.mock.calls)).not.toContain(
+			"fresh-target-access-token",
+		);
+		log.mockRestore();
+		info.mockRestore();
+		warn.mockRestore();
+	});
+
+	it("strips stale auth without minting when the browser target host is absent", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "openai",
+			token: "unused",
+			body: {
+				workflowExecutionId: "execution-1",
+				agentConfig: {
+					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+					mcpServers: [
+						{
+							url: "http://agent-browser-mcp:8000/mcp",
+							headers: {
+								"X-Wfb-Target-Auth": "Bearer stale-persisted-token",
+							},
+						},
+					],
+				},
+			},
+		});
+
+		expect(mocks.workflowTargetAuth.mintAccessToken).not.toHaveBeenCalled();
+		const config = (payload.childInput as Record<string, unknown>)
+			.agentConfig as { mcpServers: Array<Record<string, unknown>> };
+		expect(config.mcpServers[0].headers).not.toHaveProperty(
+			"X-Wfb-Target-Auth",
+		);
 	});
 
 	it("leaves CLI dynamic-script spawns without default goal MCP wiring", async () => {
@@ -649,12 +777,14 @@ describe("dynamic-script spawn MCP wiring", () => {
 		// The script names a registered agent by slug; the orchestrator only sends
 		// a minimal per-call config (no mcpServers/systemPrompt/builtinTools).
 		mocks.teamStore.resolveAgentIdBySlug.mockResolvedValue({
-			id: "glm-browser-agent-id",
+			id: "kimi-k3-browser-agent-id",
 		});
 		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
 			config: {
 				runtime: "dapr-agent-py",
-				modelSpec: "zai/glm-5.2",
+				modelSpec: "kimi/kimi-k3",
+				reasoningEffort: "max",
+				contextWindowTokens: 1_048_576,
 				systemPrompt: "You are a browser automation agent.",
 				builtinTools: ["execute_command", "read_file"],
 				skills: [],
@@ -672,20 +802,26 @@ describe("dynamic-script spawn MCP wiring", () => {
 		});
 		const payload = await callEnsureForWorkflow({
 			runtime: "dapr-agent-py",
-			modelSpec: "zai/glm-5.2",
+			modelSpec: "kimi/kimi-k3",
 			provider: "openai",
 			token: "unused",
-			body: { resolveAgentSlug: "glm-browser-agent" },
+			body: { resolveAgentSlug: "kimi-k3-browser-agent" },
 		});
 		const childInput = payload.childInput as Record<string, unknown>;
 		const config = childInput.agentConfig as {
 			mcpServers?: Array<Record<string, unknown>>;
 			systemPrompt?: string;
 			builtinTools?: string[];
+			modelSpec?: string;
+			reasoningEffort?: string;
+			contextWindowTokens?: number;
 		};
 		// The DB agent's own systemPrompt + builtinTools survive (were dropped before).
 		expect(config.systemPrompt).toBe("You are a browser automation agent.");
 		expect(config.builtinTools).toEqual(["execute_command", "read_file"]);
+		expect(config.modelSpec).toBe("kimi/kimi-k3");
+		expect(config.reasoningEffort).toBe("max");
+		expect(config.contextWindowTokens).toBe(1_048_576);
 		// The DB agent's agent-browser MCP server survives, PLUS the auto-wired goal server.
 		const servers = config.mcpServers ?? [];
 		const urls = servers.map((s) => String(s.url));
@@ -693,7 +829,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(urls.some((u) => u.includes("workflow-mcp-server"))).toBe(true);
 		// The resolved agent id flows to the child session.
 		expect(childInput.resolvedAgentSlug ?? payload.resolvedAgentSlug).toBe(
-			"glm-browser-agent",
+			"kimi-k3-browser-agent",
 		);
 	});
 
