@@ -416,6 +416,15 @@ export const POST: RequestHandler = async ({ request }) => {
 						merged[key] = overrides[key];
 					}
 				}
+				if (typeof dbAgent.runtime === "string" && dbAgent.runtime.trim()) {
+					merged.runtime = dbAgent.runtime.trim();
+				}
+				if (
+					typeof dbAgent.runtimeAppId === "string" &&
+					dbAgent.runtimeAppId.trim()
+				) {
+					merged.agentAppId = dbAgent.runtimeAppId.trim();
+				}
 				agentConfig = await prepareAgentConfig(merged as AgentConfig);
 				// Re-derive config-sourced fallbacks from the now-full config so the
 				// session inherits the agent's own timeout / max-turns.

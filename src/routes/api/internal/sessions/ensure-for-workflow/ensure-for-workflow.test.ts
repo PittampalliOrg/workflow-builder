@@ -697,6 +697,48 @@ describe("dynamic-script spawn MCP wiring", () => {
 		);
 	});
 
+	it("uses the resolved named agent runtime instead of the generic dynamic-script runtime", async () => {
+		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
+			engineType: "dynamic-script",
+		} as never);
+		mocks.teamStore.resolveAgentIdBySlug.mockResolvedValue({
+			id: "glm-juicefs-agent-id",
+		});
+		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+			config: {
+				runtime: "dapr-agent-py",
+				modelSpec: "zai/glm-5.2",
+				skills: [],
+				mcpServers: [],
+				runtimeOverridePolicy: RUNTIME_POLICY,
+			},
+			projectId: "project-1",
+			runtime: "dapr-agent-py-juicefs",
+			runtimeAppId: "agent-runtime-glm-juicefs-builder-agent",
+		} as never);
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "zai/glm-5.2",
+			provider: "openai",
+			token: "unused",
+			body: { resolveAgentSlug: "glm-juicefs-builder-agent" },
+		});
+
+		expect(payload.agentAppId).toBe("agent-session-test");
+		const hostCall = mocks.state.hostCalls.at(-1) as {
+			agentConfig?: Record<string, unknown>;
+		};
+		expect(hostCall.agentConfig?.runtime).toBe("dapr-agent-py-juicefs");
+		expect(hostCall.agentConfig?.agentAppId).toBe(
+			"agent-runtime-glm-juicefs-builder-agent",
+		);
+		const childInput = payload.childInput as Record<string, unknown>;
+		const config = childInput.agentConfig as Record<string, unknown>;
+		expect(config.runtime).toBe("dapr-agent-py-juicefs");
+		expect(config.agentAppId).toBe("agent-runtime-glm-juicefs-builder-agent");
+		expect(childInput.sandboxName).toBe("dapr-agent-py-juicefs");
+	});
+
 	it("leaves single-shot SW-1.0 spawns without MCP wiring", async () => {
 		const payload = await callEnsureForWorkflow({
 			runtime: "claude-code-cli",
