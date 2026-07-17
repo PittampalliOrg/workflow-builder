@@ -619,6 +619,7 @@ def test_manifests_are_constant_derived_owned_and_digest_pinned() -> None:
     assert app_project["spec"] == {
         "description": "Default project for preview environment feature-x",
         "sourceRepos": ["*"],
+        "sourceNamespaces": ["*"],
         "destinations": [{"server": "*", "namespace": "*"}],
         "clusterResourceWhitelist": [{"group": "*", "kind": "*"}],
         "namespaceResourceWhitelist": [{"group": "*", "kind": "*"}],
