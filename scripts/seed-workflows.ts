@@ -24,6 +24,8 @@ import postgres from "postgres";
 import {
 	agentProfileTemplateVersions,
 	appConnections,
+	codeFunctionRevisions,
+	codeFunctions,
 	projectMembers,
 	projects,
 	userIdentities,
@@ -90,6 +92,89 @@ const THREE_B_ONE_B_DEFAULT_AGENT_ID =
 const THREE_B_ONE_B_DEFAULT_AGENT_VERSION = Number(
 	process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1",
 );
+
+const PREVIEW_HMR_GATE_FUNCTION_ID = "codefn_preview_hmr_gate";
+const PREVIEW_HMR_GATE_SLUG = "preview-hmr-gate";
+const PREVIEW_HMR_GATE_VERSION = "1.0.0";
+const PREVIEW_HMR_GATE_SOURCE = String.raw`
+import io
+import tarfile
+import time
+import urllib.error
+import urllib.request
+
+
+def _request(url, *, token=None, timeout=30):
+    headers = {}
+    if token:
+        headers["x-sync-token"] = token
+    req = urllib.request.Request(url, headers=headers)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _http_code(url, timeout=20):
+    try:
+        with _request(url, timeout=timeout) as res:
+            body = res.read(512_000).decode("utf-8", "replace")
+            return res.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read(512_000).decode("utf-8", "replace")
+        return exc.code, body
+    except Exception as exc:
+        return 0, str(exc)
+
+
+def main(config):
+    export_url = str(config.get("exportUrl") or "")
+    token = str(config.get("syncCapability") or "")
+    preview_url = str(config.get("previewUrl") or "").rstrip("/")
+    routes = config.get("routes") if isinstance(config.get("routes"), list) else ["/dashboard"]
+    if not export_url or not token or not preview_url:
+        raise RuntimeError("gate configuration is incomplete")
+
+    with _request(export_url, token=token, timeout=45) as res:
+        archive = res.read()
+        generation = res.headers.get("x-sync-generation") or ""
+    if not archive:
+        raise RuntimeError("sidecar export returned no source archive")
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        names = set(tar.getnames())
+        if "src/routes/dashboard/+page.svelte" not in names:
+            raise RuntimeError("dashboard page source is missing from sidecar export")
+        dashboard = tar.extractfile("src/routes/dashboard/+page.svelte").read().decode("utf-8", "replace")
+    if not dashboard.strip():
+        raise RuntimeError("dashboard page source is empty")
+    if not generation:
+        raise RuntimeError("sidecar export did not report a live-sync generation")
+
+    health_status = 0
+    health_body = ""
+    for _ in range(45):
+        health_status, health_body = _http_code(f"{preview_url}/api/health", timeout=10)
+        if health_status == 200:
+            break
+        time.sleep(2)
+    if health_status != 200:
+        raise RuntimeError(f"preview health did not become ready: {health_status} {health_body[:200]}")
+
+    route_results = []
+    for route in routes:
+        path = str(route or "/")
+        status, body = _http_code(f"{preview_url}{path}", timeout=20)
+        route_results.append({"route": path, "status": status})
+        if status == 500:
+            raise RuntimeError(f"{path} returned HTTP 500")
+        if "ReferenceError" in body or "each_key_duplicate" in body:
+            raise RuntimeError(f"{path} contains a client/runtime error marker")
+
+    return {
+        "accepted": True,
+        "summary": "exported dashboard source, observed live-sync generation, and checked preview routes",
+        "generation": generation,
+        "routes": route_results,
+    }
+`;
 
 // --- Impressive SvelteKit Game (goal-loop showcase) -------------------------
 // A goal-driven workflow that has a CLI agent (default codex-cli) iteratively
@@ -4200,6 +4285,153 @@ async function upsertRawWorkflow(params: {
 	);
 }
 
+async function upsertPreviewHmrGateCodeFunction(params: {
+	db: ReturnType<typeof drizzle>;
+	userId: string;
+}) {
+	const now = new Date();
+	const sourceHash = crypto
+		.createHash("sha256")
+		.update(PREVIEW_HMR_GATE_SOURCE)
+		.digest("hex");
+	const semanticModel = {
+		params: [
+			{
+				name: "config",
+				required: true,
+				type: { kind: "object" },
+			},
+		],
+	};
+	const metadata = {
+		schema: null,
+		return_type: null,
+		imports: [],
+		diagnostics: [],
+		capabilities: {},
+	};
+	const existing = await params.db.query.codeFunctions.findFirst({
+		where: eq(codeFunctions.slug, PREVIEW_HMR_GATE_SLUG),
+	});
+
+	if (!existing) {
+		await params.db.insert(codeFunctions).values({
+			id: PREVIEW_HMR_GATE_FUNCTION_ID,
+			name: "Preview HMR Gate",
+			slug: PREVIEW_HMR_GATE_SLUG,
+			description:
+				"Deterministic preview verifier for exported live-sync source generation and route health.",
+			version: PREVIEW_HMR_GATE_VERSION,
+			language: "python",
+			entrypoint: "main",
+			path: null,
+			source: PREVIEW_HMR_GATE_SOURCE,
+			supportingFiles: {},
+			sourceHash,
+			semanticModel,
+			inputSchema: null,
+			returnType: metadata.return_type,
+			imports: metadata.imports,
+			diagnostics: metadata.diagnostics,
+			capabilities: metadata.capabilities,
+			role: "function",
+			compositionGraph: null,
+			latestPublishedVersion: PREVIEW_HMR_GATE_VERSION,
+			lastPublishedAt: now,
+			isEnabled: true,
+			createdBy: params.userId,
+		});
+	} else {
+		await params.db
+			.update(codeFunctions)
+			.set({
+				name: "Preview HMR Gate",
+				description:
+					"Deterministic preview verifier for exported live-sync source generation and route health.",
+				version: PREVIEW_HMR_GATE_VERSION,
+				language: "python",
+				entrypoint: "main",
+				path: null,
+				source: PREVIEW_HMR_GATE_SOURCE,
+				supportingFiles: {},
+				sourceHash,
+				semanticModel,
+				inputSchema: null,
+				returnType: metadata.return_type,
+				imports: metadata.imports,
+				diagnostics: metadata.diagnostics,
+				capabilities: metadata.capabilities,
+				role: "function",
+				compositionGraph: null,
+				latestPublishedVersion: PREVIEW_HMR_GATE_VERSION,
+				lastPublishedAt: now,
+				isEnabled: true,
+				updatedAt: now,
+				createdBy: params.userId,
+			})
+			.where(eq(codeFunctions.id, existing.id));
+	}
+
+	await params.db
+		.insert(codeFunctionRevisions)
+		.values({
+			id: `${existing?.id ?? PREVIEW_HMR_GATE_FUNCTION_ID}_v1`,
+			codeFunctionId: existing?.id ?? PREVIEW_HMR_GATE_FUNCTION_ID,
+			version: PREVIEW_HMR_GATE_VERSION,
+			name: "Preview HMR Gate",
+			slug: PREVIEW_HMR_GATE_SLUG,
+			description:
+				"Deterministic preview verifier for exported live-sync source generation and route health.",
+			language: "python",
+			entrypoint: "main",
+			path: null,
+			source: PREVIEW_HMR_GATE_SOURCE,
+			supportingFiles: {},
+			sourceHash,
+			semanticModel,
+			inputSchema: null,
+			returnType: metadata.return_type,
+			imports: metadata.imports,
+			diagnostics: metadata.diagnostics,
+			capabilities: metadata.capabilities,
+			role: "function",
+			compositionGraph: null,
+			publishedAt: now,
+			createdBy: params.userId,
+		})
+		.onConflictDoUpdate({
+			target: [
+				codeFunctionRevisions.codeFunctionId,
+				codeFunctionRevisions.version,
+			],
+			set: {
+				name: "Preview HMR Gate",
+				slug: PREVIEW_HMR_GATE_SLUG,
+				description:
+					"Deterministic preview verifier for exported live-sync source generation and route health.",
+				language: "python",
+				entrypoint: "main",
+				path: null,
+				source: PREVIEW_HMR_GATE_SOURCE,
+				supportingFiles: {},
+				sourceHash,
+				semanticModel,
+				inputSchema: null,
+				returnType: metadata.return_type,
+				imports: metadata.imports,
+				diagnostics: metadata.diagnostics,
+				capabilities: metadata.capabilities,
+				role: "function",
+				compositionGraph: null,
+				publishedAt: now,
+				createdBy: params.userId,
+			},
+		});
+	console.log(
+		`[seed-workflows] Reconciled code function ${PREVIEW_HMR_GATE_SLUG}@${PREVIEW_HMR_GATE_VERSION}`,
+	);
+}
+
 function hostPreviewLifecycleDefinition() {
 	const script = fs.readFileSync(
 		path.resolve(
@@ -4909,6 +5141,7 @@ async function seedGeneratorCriticShowcases(params: {
 	});
 
 	const previewUiDevelopmentGan = previewUiDevelopmentGanDefinition();
+	await upsertPreviewHmrGateCodeFunction({ db: params.db, userId: params.userId });
 	await upsertRawWorkflow({
 		db: params.db,
 		workflowId: "preview-ui-development-gan",

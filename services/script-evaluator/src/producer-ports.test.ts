@@ -332,6 +332,17 @@ describe("preview-ui-development-gan port", () => {
 		expect(gate.kind).toBe("action");
 		expect(gate.actionSlug).toBe("code/run");
 		expect(gate.opts.label).toBe("deterministic gate #1");
-		expect((gate.args as Record<string, unknown>).language).toBe("python");
+		expect((gate.args as Record<string, unknown>).functionRef).toEqual({
+			slug: "preview-hmr-gate",
+			version: "1.0.0",
+		});
+		expect((gate.args as Record<string, unknown>).input).toMatchObject({
+			config: {
+				exportUrl: "http://10.0.0.8:8001/__export",
+				syncCapability: "capability",
+				previewUrl: "http://10.0.0.8:3000",
+				routes: ["/dashboard"],
+			},
+		});
 	});
 });
