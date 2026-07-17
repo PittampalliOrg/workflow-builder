@@ -75,6 +75,17 @@ export interface PreviewControlGitSourceVerificationPort {
   ): Promise<boolean>;
 }
 
+export interface PreviewControlGitDiffPort {
+  readCommitDiff(
+    input: Readonly<{
+      repository: string;
+      baseRevision: ImmutableGitSha;
+      commitSha: ImmutableGitSha;
+      expectedChangedPaths: readonly string[];
+    }>,
+  ): Promise<string | null>;
+}
+
 export type PreviewControlSourceAuthorityInput = Readonly<{
   previewName: string;
   environmentRequestId: string;

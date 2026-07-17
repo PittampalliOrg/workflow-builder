@@ -176,6 +176,36 @@ function makeTar(
   return readFileSync(archive);
 }
 
+function makeTarWithDirs(
+  root: string,
+  name: string,
+  files: Record<string, string>,
+  dirs: readonly string[],
+  members?: string[],
+): Buffer {
+  const source = join(root, `${name}-source`);
+  mkdirSync(source, { recursive: true });
+  for (const dir of dirs) mkdirSync(join(source, dir), { recursive: true });
+  for (const [path, content] of Object.entries(files)) {
+    const target = join(source, path);
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, content);
+  }
+  const archive = join(root, `${name}.tar.gz`);
+  const tops =
+    members ??
+    [
+      ...new Set(
+        [...Object.keys(files), ...dirs].map((path) => path.split("/")[0]),
+      ),
+    ];
+  const result = spawnSync("tar", ["-czf", archive, "-C", source, ...tops], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(result.stderr || "tar failed");
+  return readFileSync(archive);
+}
+
 function runApplier(
   manifest: unknown,
   root: string,
@@ -561,6 +591,124 @@ describe("tar-overlay-set promotion shell", () => {
         "utf8",
       ),
     ).toBe("FROM node:22-alpine\nRUN echo dev\n");
+  });
+
+  it("does not replace canonical files when optional staged capture inputs are directories", () => {
+    const root = mkdtempSync(join(tmpdir(), "wfb-overlay-dir-capture-"));
+    roots.push(root);
+    const archive = makeTarWithDirs(
+      root,
+      "dir-capture",
+      {
+        "src/index.ts": "export const value = 3;\n",
+      },
+      [
+        ".preview-capture/production.Dockerfile",
+        ".preview-capture/development.Dockerfile",
+      ],
+      [
+        "src",
+        ".preview-capture/production.Dockerfile",
+        ".preview-capture/development.Dockerfile",
+      ],
+    );
+    const { repo, result } = runApplier(
+      {
+        version: 1,
+        tier: "tar-overlay-set",
+        captureId: "capture-dir-build-input",
+        capturedAt: "2026-07-09T12:00:00.000Z",
+        repoUrl: "PittampalliOrg/workflow-builder",
+        base: "main",
+        services: [
+          {
+            service: "workflow-builder",
+            repoSubdir: ".",
+            syncPaths: ["src"],
+            captureMappings: [
+              { from: "src", to: "src" },
+              {
+                from: ".preview-capture/production.Dockerfile",
+                to: "Dockerfile",
+              },
+              {
+                from: ".preview-capture/development.Dockerfile",
+                to: "skaffold/dev/workflow-builder/Dockerfile.dev",
+              },
+            ],
+            tarGzipBase64: archive.toString("base64"),
+          },
+        ],
+      },
+      root,
+      {
+        Dockerfile: "FROM node:22-alpine\n",
+        "skaffold/dev/workflow-builder/Dockerfile.dev":
+          "FROM node:22-alpine\nRUN echo dev\n",
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(repo, "src/index.ts"), "utf8")).toBe(
+      "export const value = 3;\n",
+    );
+    expect(readFileSync(join(repo, "Dockerfile"), "utf8")).toBe(
+      "FROM node:22-alpine\n",
+    );
+    expect(
+      readFileSync(
+        join(repo, "skaffold/dev/workflow-builder/Dockerfile.dev"),
+        "utf8",
+      ),
+    ).toBe("FROM node:22-alpine\nRUN echo dev\n");
+  });
+
+  it("does not replace canonical files for project-agnostic captured directory placeholders", () => {
+    const root = mkdtempSync(join(tmpdir(), "wfb-overlay-generic-dir-capture-"));
+    roots.push(root);
+    const archive = makeTarWithDirs(
+      root,
+      "generic-dir-capture",
+      {
+        "src/index.ts": "export const value = 4;\n",
+      },
+      ["generated/build-input"],
+      ["src", "generated/build-input"],
+    );
+    const { repo, result } = runApplier(
+      {
+        version: 1,
+        tier: "tar-overlay-set",
+        captureId: "capture-generic-dir-input",
+        capturedAt: "2026-07-09T12:00:00.000Z",
+        repoUrl: "PittampalliOrg/example-service",
+        base: "main",
+        services: [
+          {
+            service: "example-service",
+            repoSubdir: ".",
+            syncPaths: ["src"],
+            captureMappings: [
+              { from: "src", to: "src" },
+              { from: "generated/build-input", to: "build.config.ts" },
+            ],
+            tarGzipBase64: archive.toString("base64"),
+          },
+        ],
+      },
+      root,
+      {
+        "build.config.ts": "export default { target: 'node' };\n",
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(repo, "src/index.ts"), "utf8")).toBe(
+      "export const value = 4;\n",
+    );
+    expect(readFileSync(join(repo, "build.config.ts"), "utf8")).toBe(
+      "export default { target: 'node' };\n",
+    );
   });
 
   it("rejects malformed sets and unsafe paths before extraction", () => {

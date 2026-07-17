@@ -399,6 +399,20 @@ def tree_signature(path):
             fail("unsafe_overlay_path")
     return ("dir", tuple(entries))
 
+def tree_has_files(path):
+    if path.is_file():
+        return True
+    if not path.is_dir():
+        fail("unsafe_overlay_path")
+    for child in path.rglob("*"):
+        if child.is_symlink():
+            fail("unsafe_overlay_path")
+        if child.is_file():
+            return True
+        if not child.is_dir():
+            fail("unsafe_overlay_path")
+    return False
+
 try:
     with gzip.open(sys.argv[1], "rb") as stream:
         raw = stream.read(MAX_MANIFEST_BYTES + 1)
@@ -531,6 +545,18 @@ try:
                 source = stage.joinpath(*source_parts)
                 if not source.exists():
                     continue
+                if not tree_has_files(source):
+                    continue
+                target = root.joinpath(*target_parts)
+                try:
+                    target.resolve(strict=False).relative_to(root)
+                except ValueError:
+                    fail("unsafe_overlay_path")
+                if target.exists() or target.is_symlink():
+                    if source.is_dir() and not target.is_dir():
+                        continue
+                    if source.is_file() and target.is_dir():
+                        continue
                 signature = tree_signature(source)
                 if target_parts in signatures and signatures[target_parts] != signature:
                     fail("overlay_target_conflict")

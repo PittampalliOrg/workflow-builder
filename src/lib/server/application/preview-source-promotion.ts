@@ -5,6 +5,7 @@ import type {
   PreviewAcceptanceChangedServiceCatalogPort,
   PreviewAcceptancePromotionPreparationPort,
   PreviewArtifactTransferPort,
+  PreviewControlGitDiffPort,
   PreviewControlGitSourceVerificationPort,
   PreviewControlPullRequestInspectionPort,
   PreviewControlSourceAuthorityPort,
@@ -19,6 +20,7 @@ import type {
   PreviewSourcePromotionReceiptScope,
   PreviewSourcePromotionReceiptStorePort,
   PreviewSourcePromotionResult,
+  PersistWorkflowRunDiffInput,
   SourceBundlePromotionRunnerPort,
 } from "$lib/server/application/ports";
 import { isPreviewResourceId } from "$lib/server/application/preview-resource-id";
@@ -30,6 +32,8 @@ const PREVIEW_NAME = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const MAX_TITLE = 240;
 const MAX_BODY = 64 * 1024;
+const PROMOTION_DIFF_NODE_ID = "dev-preview-promote";
+const PROMOTION_DIFF_TITLE = "Preview source promotion";
 
 export class PreviewSourcePromotionError extends Error {
   constructor(
@@ -109,11 +113,20 @@ type BrokerDeps = Readonly<{
   trust: PreviewAcceptancePromotionPreparationPort;
   promotions: SourceBundlePromotionRunnerPort;
   git: PreviewControlGitSourceVerificationPort;
+  gitDiff: PreviewControlGitDiffPort;
   pullRequests: PreviewControlPullRequestInspectionPort;
   receipts: PreviewSourcePromotionReceiptStorePort;
   exclusivity: PreviewSourcePromotionExclusivityPort;
   catalog: PreviewEnvironmentVersionedServiceCatalogPort &
     PreviewAcceptanceChangedServiceCatalogPort;
+  runDiffs: Readonly<{
+    getExecutionById(
+      executionId: string,
+    ): Promise<{ userId: string; projectId?: string | null } | null>;
+    persistRunDiffArtifact(
+      input: PersistWorkflowRunDiffInput,
+    ): Promise<{ id: string; fileId: string | null; bytes: number; truncated: boolean }>;
+  }>;
   sourceRepository: string;
   baseBranch: string;
 }>;
@@ -414,7 +427,42 @@ export class ApplicationPreviewSourcePromotionBrokerService implements PreviewSo
         502,
       );
     }
+    await this.persistPromotionDiff(receipt, result.changedPaths).catch(
+      (cause) => {
+        console.warn(
+          "[preview-source-promotion] failed to persist promotion diff artifact:",
+          message(cause),
+        );
+      },
+    );
     return promotionResult(receipt);
+  }
+
+  private async persistPromotionDiff(
+    receipt: PreviewSourcePromotionReceipt,
+    changedPaths: readonly string[],
+  ): Promise<void> {
+    const execution = await this.deps.runDiffs.getExecutionById(
+      receipt.executionId,
+    );
+    if (!execution) return;
+    const patch = await this.deps.gitDiff.readCommitDiff({
+      repository: receipt.repository,
+      baseRevision: receipt.sourceRevision,
+      commitSha: receipt.commitSha,
+      expectedChangedPaths: changedPaths,
+    });
+    if (!patch?.trim()) return;
+    await this.deps.runDiffs.persistRunDiffArtifact({
+      executionId: receipt.executionId,
+      userId: execution.userId,
+      projectId: execution.projectId ?? null,
+      nodeId: PROMOTION_DIFF_NODE_ID,
+      title: PROMOTION_DIFF_TITLE,
+      patch,
+      baseRef: receipt.sourceRevision,
+      headRef: receipt.commitSha,
+    });
   }
 }
 

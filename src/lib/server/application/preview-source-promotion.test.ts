@@ -198,6 +198,17 @@ function brokerHarness() {
     })),
   };
   const git = { verifyBranch: vi.fn(async () => true) };
+  const gitDiff = {
+    readCommitDiff: vi.fn(
+      async () =>
+        "diff --git a/src/routes/feature.ts b/src/routes/feature.ts\n" +
+        "--- a/src/routes/feature.ts\n" +
+        "+++ b/src/routes/feature.ts\n" +
+        "@@ -1 +1 @@\n" +
+        "-export const value = 1;\n" +
+        "+export const value = 2;\n",
+    ),
+  };
   const inspectOpen = vi.fn(async () => ({
     repository: "PittampalliOrg/workflow-builder",
     number: 42,
@@ -258,15 +269,29 @@ function brokerHarness() {
     })),
   };
   const exclusivity = testExclusivity();
+  const runDiffs = {
+    getExecutionById: vi.fn(async () => ({
+      userId: "admin-1",
+      projectId: "project-1",
+    })),
+    persistRunDiffArtifact: vi.fn(async () => ({
+      id: "diff-artifact-1",
+      fileId: null,
+      bytes: 173,
+      truncated: false,
+    })),
+  };
   return {
     authority,
     trust,
     promotions,
     git,
+    gitDiff,
     pullRequests,
     receipts,
     exclusivity,
     catalog,
+    runDiffs,
     setPullRequestHead: (head: ImmutableGitSha) => {
       pullRequestHead = head;
     },
@@ -275,10 +300,12 @@ function brokerHarness() {
       trust,
       promotions,
       git,
+      gitDiff,
       pullRequests,
       receipts: receipts as never,
       exclusivity: exclusivity as never,
       catalog,
+      runDiffs,
       sourceRepository: "PittampalliOrg/workflow-builder",
       baseBranch: "main",
     }),
@@ -416,6 +443,22 @@ describe("preview source promotion", () => {
       number: 42,
       baseSha: SOURCE,
       headSha: COMMIT,
+    });
+    expect(h.gitDiff.readCommitDiff).toHaveBeenCalledWith({
+      repository: "PittampalliOrg/workflow-builder",
+      baseRevision: SOURCE,
+      commitSha: COMMIT,
+      expectedChangedPaths: ["src/routes/feature.ts"],
+    });
+    expect(h.runDiffs.persistRunDiffArtifact).toHaveBeenCalledWith({
+      executionId: "execution-1",
+      userId: "admin-1",
+      projectId: "project-1",
+      nodeId: "dev-preview-promote",
+      title: "Preview source promotion",
+      patch: expect.stringContaining("diff --git a/src/routes/feature.ts"),
+      baseRef: SOURCE,
+      headRef: COMMIT,
     });
   });
 
