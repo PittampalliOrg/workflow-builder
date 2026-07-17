@@ -41,9 +41,14 @@ const buildSchema = {
   additionalProperties: false,
   required: ["files", "summary", "verification"],
   properties: {
-    files: { type: "array", items: { type: "string" } },
-    summary: { type: "string" },
-    verification: { type: "string" },
+    files: {
+      type: "array",
+      minItems: 4,
+      uniqueItems: true,
+      items: { type: "string", minLength: 1 },
+    },
+    summary: { type: "string", minLength: 1 },
+    verification: { type: "string", minLength: 1 },
   },
 };
 
@@ -126,8 +131,16 @@ const animation = await agent(
     },
   },
 );
-if (!animation) {
-  throw new Error("Kimi K3 did not produce an animation result");
+if (
+  !animation ||
+  !Array.isArray(animation.files) ||
+  animation.files.length < 4 ||
+  typeof animation.summary !== "string" ||
+  !animation.summary.trim() ||
+  typeof animation.verification !== "string" ||
+  !animation.verification.trim()
+) {
+  throw new Error("Kimi K3 did not produce a complete animation result");
 }
 
 phase("Validate");

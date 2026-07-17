@@ -5,6 +5,7 @@ from io import BytesIO
 import json
 import os
 import sys
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 from pydantic import BaseModel
@@ -1018,6 +1019,296 @@ def test_kimi_dynamic_script_schema_uses_native_strict_json_schema(monkeypatch) 
     }
     assert bodies[0]["reasoning_effort"] == "max"
     assert "thinking" not in bodies[0]
+
+
+def test_kimi_structured_output_tool_composes_with_normal_tools(monkeypatch) -> None:
+    bodies: list[dict] = []
+    schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response(
+            {
+                "id": "chatcmpl_test",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call_structured",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "StructuredOutput",
+                                        "arguments": '{"ok":true}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "inspect, then return status"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        native_json_schema=schema,
+        structured_output_tool=True,
+    )
+
+    body = bodies[0]
+    tools_by_name = {
+        tool["function"]["name"]: tool["function"] for tool in body["tools"]
+    }
+    assert set(tools_by_name) == {"StructuredOutput", "read_file"}
+    assert tools_by_name["StructuredOutput"]["parameters"] == schema
+    assert tools_by_name["StructuredOutput"]["strict"] is False
+    assert body["messages"] == [
+        {"role": "user", "content": "inspect, then return status"}
+    ]
+    assert body["tool_choice"] == "auto"
+    assert body["reasoning_effort"] == "max"
+    assert body["stream"] is True
+    assert "response_format" not in body
+
+
+def test_kimi_patch_forwards_structured_output_tool_mode(monkeypatch) -> None:
+    from dapr_agents.llm.dapr.chat import DaprChatClient
+
+    captured: dict = {}
+    original_generate = DaprChatClient.generate
+    missing = object()
+    original_marker = getattr(DaprChatClient, "_kimi_patched", missing)
+
+    def call_kimi(component, messages, **kwargs):
+        captured.update({"component": component, "messages": messages, **kwargs})
+        return {
+            "content": '{"ok":true}',
+            "reasoning_content": "done",
+            "tool_calls": [],
+            "metadata": {"model": "kimi-k3"},
+        }
+
+    monkeypatch.setattr(adapter, "_call_kimi_chat", call_kimi)
+    monkeypatch.setattr(adapter, "_build_kimi_chat_response", lambda **kwargs: kwargs)
+
+    try:
+        DaprChatClient._kimi_patched = False
+        adapter.patch_for_kimi(None)
+        client = SimpleNamespace(
+            _llm_component="llm-kimi-k3",
+            _response_json_schema={
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+            },
+            _structured_output_mode="tool",
+        )
+
+        response = DaprChatClient.generate(client, prompt="Return status")
+
+        assert captured["component"] == "llm-kimi-k3"
+        assert captured["native_json_schema"] == client._response_json_schema
+        assert captured["structured_output_tool"] is True
+        assert response["content"] == '{"ok":true}'
+    finally:
+        DaprChatClient.generate = original_generate
+        if original_marker is missing:
+            delattr(DaprChatClient, "_kimi_patched")
+        else:
+            DaprChatClient._kimi_patched = original_marker
+
+
+def test_kimi_structured_output_tool_replaces_duplicate_and_sorts() -> None:
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    tools = adapter._with_structured_output_tool(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "zebra",
+                    "description": "Last",
+                    "parameters": {"type": "object"},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "StructuredOutput",
+                    "description": "stale",
+                    "parameters": {"type": "object"},
+                },
+            },
+        ],
+        schema,
+    )
+
+    assert [tool["function"]["name"] for tool in tools] == [
+        "StructuredOutput",
+        "zebra",
+    ]
+    assert tools[0]["function"]["parameters"] == schema
+    assert tools[0]["function"]["description"] != "stale"
+
+
+def test_kimi_structured_output_tool_from_empty_toolset() -> None:
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+    tools = adapter._with_structured_output_tool(None, schema)
+
+    assert [tool["function"]["name"] for tool in tools] == ["StructuredOutput"]
+    assert tools[0]["function"]["parameters"] == schema
+    assert tools[0]["function"]["strict"] is False
+
+
+def test_kimi_non_object_schema_does_not_enter_tool_mode(monkeypatch) -> None:
+    bodies: list[dict] = []
+    schema = {"type": "array", "items": {"type": "string"}}
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response(
+            {
+                "id": "chatcmpl_test",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "[]"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "return an array"}],
+        native_json_schema=schema,
+        structured_output_tool=True,
+    )
+
+    assert "tools" not in bodies[0]
+    assert bodies[0]["response_format"]["type"] == "json_schema"
+    assert bodies[0]["messages"][0]["role"] == "system"
+    assert "JSON" in bodies[0]["messages"][0]["content"]
+
+
+def test_kimi_structured_tool_preserves_screenshot_pixels(monkeypatch) -> None:
+    bodies: list[dict] = []
+    schema = {
+        "type": "object",
+        "required": ["observation"],
+        "properties": {"observation": {"type": "string"}},
+    }
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    messages = adapter._normalize_messages_for_kimi(
+        None,
+        [
+            {"role": "user", "content": "Inspect the page."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "shot_1",
+                        "type": "function",
+                        "function": {
+                            "name": "browser_agent_browser_screenshot",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "shot_1",
+                "content": [
+                    {"type": "text", "text": "Screenshot captured"},
+                    {"type": "image", "data": "PIXELS", "mimeType": "image/png"},
+                ],
+            },
+        ],
+    )
+
+    def urlopen(req, timeout: int):
+        bodies.append(json.loads(req.data.decode()))
+        return _Response(
+            {
+                "id": "chatcmpl_test",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "structured_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "StructuredOutput",
+                                        "arguments": '{"observation":"visible"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        messages,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_agent_browser_screenshot",
+                    "description": "Capture a screenshot",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        native_json_schema=schema,
+        structured_output_tool=True,
+    )
+
+    body = bodies[0]
+    assert body["messages"][2] == {
+        "role": "tool",
+        "tool_call_id": "shot_1",
+        "content": "Screenshot captured",
+    }
+    assert body["messages"][3]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,PIXELS"},
+    }
+    assert {
+        tool["function"]["name"] for tool in body["tools"]
+    } == {"StructuredOutput", "browser_agent_browser_screenshot"}
+    assert "response_format" not in body
 
 
 def test_kimi_chat_retries_429_with_retry_after_ms(monkeypatch) -> None:

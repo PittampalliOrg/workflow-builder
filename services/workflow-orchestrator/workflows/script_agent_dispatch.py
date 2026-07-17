@@ -114,7 +114,8 @@ def _native_structured_enabled() -> bool:
 
 def _structured_model() -> str:
     """The model schema'd calls route to for first-class structured output.
-    Kimi K3 is the platform default and supports strict JSON Schema directly.
+    Kimi K3 is the platform default; dynamic-script calls use its structured
+    final-result tool so normal tools remain available before finalization.
     Set DYNAMIC_SCRIPT_STRUCTURED_MODEL=openai/gpt-5.5 to route schema'd calls
     to OpenAI strict json_schema instead. Read per-call so tests/env can
     override; empty falls back to the Kimi K3 default."""
@@ -122,9 +123,11 @@ def _structured_model() -> str:
 
 
 def _structured_tool_enabled() -> bool:
-    """Kill-switch for StructuredOutput TOOL mode on non-strict providers
-    (default ON). Off reverts schema'd GLM-routed calls to json_object +
-    prompt contract (the pre-tool behavior)."""
+    """Kill-switch for StructuredOutput TOOL mode (default ON).
+
+    Off reverts schema'd Kimi/GLM-routed calls to provider-native structured
+    output plus the prompt contract.
+    """
     raw = os.environ.get("DYNAMIC_SCRIPT_STRUCTURED_TOOL", "true").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
@@ -142,6 +145,14 @@ def _schema_supports_structured_tool(schema: dict[str, Any]) -> bool:
     if schema_type == "object":
         return True
     return schema_type is None and isinstance(schema.get("properties"), dict)
+
+
+def _is_kimi_k3_model(model: str) -> bool:
+    return model.strip().lower() in {
+        "kimi/kimi-k3",
+        "kimi-k3",
+        "moonshot/kimi-k3",
+    }
 
 
 def _is_cli_structured_runtime(agent_runtime: str) -> bool:
@@ -184,9 +195,9 @@ def _build_agent_config(
     model = ""
     phase_model = _phase_model(meta, opts.get("phase"))
     # A schema'd call on the multi-provider runtime gets provider-native
-    # structured output (Tier 1 Kimi/OpenAI strict json_schema / Tier 2 GLM
-    # tool mode). The <output-contract> prompt block + jsonschema validation
-    # remain the universal Tier-3 authority/fallback either way.
+    # structured output (Kimi/GLM/Anthropic/DeepSeek tool finalization or
+    # OpenAI strict json_schema). The <output-contract> prompt block +
+    # jsonschema validation remain the universal authority/fallback either way.
     schema = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
     native_structured = (
         schema is not None
@@ -207,8 +218,8 @@ def _build_agent_config(
         model = phase_model
     elif native_structured:
         # Hybrid routing: a schema'd call with no explicit model defaults to
-        # the configured structured model (Kimi K3 strict JSON Schema by
-        # default). A per-call opts.model / phase model above still wins.
+        # the configured structured model (Kimi K3 by default). A per-call
+        # opts.model / phase model above still wins.
         model = _structured_model()
     elif (
         isinstance((defaults or {}).get("model"), str)
@@ -230,19 +241,20 @@ def _build_agent_config(
     if isinstance(opts.get("effort"), str) and opts.get("effort").strip():
         agent_config["reasoningEffort"] = opts["effort"].strip()
     if native_structured:
-        # The raw JSON Schema the adapter enforces provider-side (Kimi/OpenAI
-        # strict json_schema; tool mode elsewhere). Read back in call_llm and
-        # stamped on the chat client alongside _llm_component / _reasoning_effort.
+        # The raw JSON Schema the adapter enforces provider-side. Read back in
+        # call_llm and stamped on the chat client alongside _llm_component /
+        # _reasoning_effort.
         agent_config["responseJsonSchema"] = schema
-        # Tier 2 tool mode: providers without a strict json_schema mode (GLM,
-        # Anthropic, DeepSeek) deliver the result via the synthetic
-        # StructuredOutput tool (Claude Code mechanism): the adapter injects a
-        # per-request tool definition whose parameters ARE the schema, the
-        # runtime validates the call args in-loop, and the agent loop finalizes
-        # the session with the canonical JSON. Object schemas only (tool args
-        # are JSON objects); Kimi and OpenAI keep strict json_schema (stronger).
+        # Tool mode lets Kimi and providers without a strict json_schema mode
+        # use normal coding/MCP tools before submitting the final schema via the
+        # synthetic StructuredOutput tool. The runtime validates arguments
+        # in-loop and finalizes the session with canonical JSON. OpenAI keeps
+        # native strict json_schema. Object schemas only: tool args are objects.
         if (
-            model.startswith(("zai/", "anthropic/", "deepseek/"))
+            (
+                _is_kimi_k3_model(model)
+                or model.startswith(("zai/", "anthropic/", "deepseek/"))
+            )
             and _structured_tool_enabled()
             and _schema_supports_structured_tool(schema)
         ):

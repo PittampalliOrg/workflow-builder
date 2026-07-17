@@ -77,6 +77,8 @@ describe("fresh Kimi K3 animation workflow upsert", () => {
     expect(spec.script).toContain('model: "kimi/kimi-k3"');
     expect(spec.script).toContain('effort: "max"');
     expect(spec.script).toContain("schema: buildSchema");
+    expect(spec.script).toContain("minItems: 4");
+    expect(spec.script).toContain("animation.files.length < 4");
     expect(spec.script).toContain('action(\n  "browser/validate"');
     expect(spec.script).toContain('action(\n  "browser/start-preview"');
     expect(spec.script).not.toContain("agnt_claude_code_sdk_smoke");

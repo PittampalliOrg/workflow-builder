@@ -1,12 +1,12 @@
 """StructuredOutput tool — the Claude Code structured-output mechanism, ported
 to the durable runtime.
 
-A dynamic-script ``agent(..., {schema})`` call routed to a provider WITHOUT a
-strict schema mode (GLM today) gets a synthetic ``StructuredOutput`` tool whose
-per-request definition carries the call's JSON Schema as its ``parameters``
-(injected adapter-side from ``_response_json_schema``; the tool is never
-registered on the tool executor). The model delivers its final result by
-calling the tool:
+A dynamic-script ``agent(..., {schema})`` call in tool mode gets a synthetic
+``StructuredOutput`` tool whose per-request definition carries the call's JSON
+Schema as its ``parameters`` (injected adapter-side from
+``_response_json_schema``; the tool is never registered on the tool executor).
+This also lets Kimi K3 use coding/MCP/vision tools before it submits its final
+structured result. The model delivers that result by calling the tool:
 
 - invalid arguments -> an error ToolMessage (in-loop retry: the model sees the
   validation errors on its next turn, same session);
@@ -17,10 +17,9 @@ Enforcement of "you must call the tool" lives in the durable agent loop
 (``_agent_workflow_strict_sequential``): when the model tries to finish without
 a valid StructuredOutput call, the loop injects a corrective user message and
 continues, capped at MAX_STRUCTURED_OUTPUT_NUDGES. That guard plays the role of
-Claude Code's Stop hook (advisory-only in this runtime); GLM's API honors only
-``tool_choice: "auto"`` so the tool cannot be forced — availability + prompt +
-loop guard is exactly Claude Code's own design, and it composes with agents
-that need Read/Bash/MCP tools before emitting their result.
+Claude Code's Stop hook (advisory-only in this runtime). Tool choice remains
+``auto`` so intermediate calls can use the tools needed to complete the task;
+availability + prompt + the loop guard enforce eventual finalization.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ _TOOL_DESCRIPTION = (
 def structured_output_tool_definition(schema: dict[str, Any]) -> dict[str, Any]:
     """OpenAI-function-format tool definition whose parameters ARE the call's
     JSON Schema (the Claude Code ``inputJSONSchema`` pattern). Used by the
-    OpenAI-compatible chat adapters (zai/GLM, DeepSeek)."""
+    OpenAI-compatible chat adapters (Kimi, Z.AI/GLM, DeepSeek)."""
     return {
         "type": "function",
         "function": {
