@@ -5,6 +5,7 @@ import {
   KIMI_K3_BROWSER_ALLOWED_TOOLS,
   KIMI_K3_BROWSER_PROBE_AGENT_SLUG,
   jsonbParameter,
+  migrateKimiK3BrowserWorkflowValue,
   migrateLegacyBrowserAgentReferences,
 } from "./kimi-k3-browser-agent";
 
@@ -140,5 +141,49 @@ describe("Kimi K3 browser-agent migration", () => {
     );
     expect(migrated).toContain("max ~14 tool calls TOTAL");
     expect(migrated).toContain("max ~12 tool calls TOTAL");
+  });
+
+  it("uses isolated K3 vision lanes and the current capacity route for GAN critics", () => {
+    const migrated = migrateKimiK3BrowserWorkflowValue("gan-ui-logic-test", {
+      meta: {
+        input: {
+          properties: {
+            criticAgent: { default: KIMI_K3_BROWSER_AGENT_SLUG },
+            referenceRoutes: {
+              default: ["/workspaces/default/workflows", "/capacity/active"],
+            },
+          },
+        },
+      },
+      script: `const critic = t.criticAgent ?? '${KIMI_K3_BROWSER_AGENT_SLUG}'`,
+    });
+
+    expect(migrated).toMatchObject({
+      meta: {
+        input: {
+          properties: {
+            criticAgent: { default: KIMI_K3_BROWSER_PROBE_AGENT_SLUG },
+            referenceRoutes: {
+              default: [
+                "/workspaces/default/workflows",
+                "/workspaces/default/capacity/active",
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(migrated)).not.toContain(KIMI_K3_BROWSER_AGENT_SLUG);
+    expect(
+      migrateKimiK3BrowserWorkflowValue("gan-ui-logic-test", migrated),
+    ).toEqual(migrated);
+  });
+
+  it("keeps non-GAN browser workflows on the regular K3 browser agent", () => {
+    expect(
+      migrateKimiK3BrowserWorkflowValue("agent-browser-smoke", {
+        browserAgent: KIMI_K3_BROWSER_AGENT_SLUG,
+      }),
+    ).toEqual({ browserAgent: KIMI_K3_BROWSER_AGENT_SLUG });
   });
 });

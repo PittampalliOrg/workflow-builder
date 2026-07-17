@@ -13103,6 +13103,28 @@ function migrateLegacyBrowserAgentReferences(value) {
     ])
   );
 }
+function migrateKimiK3BrowserWorkflowValue(workflowName, value) {
+  const migrated = migrateLegacyBrowserAgentReferences(value);
+  if (workflowName !== "gan-ui-logic-test") return migrated;
+  if (typeof migrated === "string") {
+    return migrated.replaceAll(KIMI_K3_BROWSER_AGENT_SLUG, KIMI_K3_BROWSER_PROBE_AGENT_SLUG).replace(
+      /(?<!\/workspaces\/default)\/capacity\/active/g,
+      "/workspaces/default/capacity/active"
+    );
+  }
+  if (Array.isArray(migrated)) {
+    return migrated.map(
+      (entry) => migrateKimiK3BrowserWorkflowValue(workflowName, entry)
+    );
+  }
+  if (!migrated || typeof migrated !== "object") return migrated;
+  return Object.fromEntries(
+    Object.entries(migrated).map(([key, entry]) => [
+      key,
+      migrateKimiK3BrowserWorkflowValue(workflowName, entry)
+    ])
+  );
+}
 var BROWSER_AGENT_DEFINITIONS = [
   {
     slug: KIMI_K3_BROWSER_AGENT_SLUG,
@@ -13221,13 +13243,26 @@ async function migrateKimiK3BrowserAgentsAndWorkflows(sql2, owner) {
 	`;
   let workflowsUpdated = 0;
   for (const workflow of workflowRows) {
-    const migratedName = migrateLegacyBrowserAgentReferences(
+    const migratedName = migrateKimiK3BrowserWorkflowValue(
+      workflow.name,
       workflow.name
     );
-    const migratedDescription = workflow.description ? migrateLegacyBrowserAgentReferences(workflow.description) : null;
-    const migratedSpec = migrateLegacyBrowserAgentReferences(workflow.spec);
-    const migratedNodes = migrateLegacyBrowserAgentReferences(workflow.nodes);
-    const migratedEdges = migrateLegacyBrowserAgentReferences(workflow.edges);
+    const migratedDescription = workflow.description ? migrateKimiK3BrowserWorkflowValue(
+      workflow.name,
+      workflow.description
+    ) : null;
+    const migratedSpec = migrateKimiK3BrowserWorkflowValue(
+      workflow.name,
+      workflow.spec
+    );
+    const migratedNodes = migrateKimiK3BrowserWorkflowValue(
+      workflow.name,
+      workflow.nodes
+    );
+    const migratedEdges = migrateKimiK3BrowserWorkflowValue(
+      workflow.name,
+      workflow.edges
+    );
     if (migratedName === workflow.name && migratedDescription === workflow.description && JSON.stringify(migratedSpec) === JSON.stringify(workflow.spec) && JSON.stringify(migratedNodes) === JSON.stringify(workflow.nodes) && JSON.stringify(migratedEdges) === JSON.stringify(workflow.edges)) {
       continue;
     }
