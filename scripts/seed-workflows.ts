@@ -4534,11 +4534,7 @@ async function seedGeneratorCriticShowcases(params: {
 async function seedWorkflow() {
 	console.log("[seed-workflows] Starting workflow seed...");
 	const sql = postgres(DATABASE_URL, { max: 1 });
-	// Drizzle installs identity JSON serializers on its postgres-js client.
-	// Keep raw sql.json() writes on an untouched client so arrays and objects
-	// remain valid JSON parameters.
-	const drizzleSql = postgres(DATABASE_URL, { max: 1 });
-	const db = drizzle(drizzleSql, {
+	const db = drizzle(sql, {
 		schema: {
 			agentProfileTemplateVersions,
 			appConnections,
@@ -4806,7 +4802,7 @@ async function seedWorkflow() {
 
 		console.log("[seed-workflows] Completed successfully");
 	} finally {
-		await Promise.all([sql.end(), drizzleSql.end()]);
+		await sql.end();
 	}
 }
 
