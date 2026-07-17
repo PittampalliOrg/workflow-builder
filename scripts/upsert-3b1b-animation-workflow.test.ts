@@ -1,21 +1,24 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
   buildSpec,
-  jsonbParameter,
   KIMI_AGENT_CONFIG,
   KIMI_AGENT_SLUG,
   parseArgs,
 } from "./upsert-3b1b-animation-workflow";
 
 describe("3B1B Kimi K3 workflow upsert", () => {
-  it("serializes JSONB arrays as strings for postgres parameters", () => {
-    expect(jsonbParameter(["kimi-k3", "animation"])).toBe(
-      '["kimi-k3","animation"]',
+  it("binds structured values with postgres JSON parameters", () => {
+    const source = readFileSync(
+      new URL("./upsert-3b1b-animation-workflow.ts", import.meta.url),
+      "utf8",
     );
-    expect(() => jsonbParameter(undefined)).toThrow(
-      "Cannot serialize an undefined 3B1B seed value",
-    );
+    expect(source).toContain("sql.json(");
+    expect(source).toContain("tx.json(");
+    expect(source).toContain("jsonb_typeof(av.config) as config_type");
+    expect(source).toContain('existing.config_type === "object"');
+    expect(source).not.toContain("jsonbParameter");
   });
 
   it("defines a dapr-agent-py Kimi K3 agent at max reasoning and 1M context", () => {

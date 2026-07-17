@@ -8,6 +8,7 @@ import sys
 from urllib.error import HTTPError
 
 from pydantic import BaseModel
+import pytest
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -19,6 +20,34 @@ adapter = importlib.import_module("src.kimi_adapter")
 class _Response:
     def __init__(self, payload: dict):
         self.payload = payload
+        choices = payload.get("choices") or []
+        choice = choices[0] if choices else {}
+        message = dict(choice.get("message") or {})
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            message["tool_calls"] = [
+                {"index": index, **tool_call}
+                for index, tool_call in enumerate(tool_calls)
+            ]
+        chunk = {
+            "id": payload.get("id"),
+            "object": "chat.completion.chunk",
+            "model": payload.get("model", "kimi-k3"),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": message,
+                    "finish_reason": choice.get("finish_reason"),
+                    "usage": payload.get("usage"),
+                }
+            ],
+        }
+        self.lines = [
+            f"data: {json.dumps(chunk)}\n".encode(),
+            b"\n",
+            b"data: [DONE]\n",
+            b"\n",
+        ]
 
     def __enter__(self):
         return self
@@ -28,6 +57,33 @@ class _Response:
 
     def read(self) -> bytes:
         return json.dumps(self.payload).encode()
+
+    def readline(self) -> bytes:
+        return self.lines.pop(0) if self.lines else b""
+
+
+class _RawSseResponse:
+    def __init__(self, lines: list[bytes | BaseException]):
+        self.lines = list(lines)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def readline(self) -> bytes:
+        if not self.lines:
+            return b""
+        item = self.lines.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def _sse_event(payload: dict | str) -> list[bytes]:
+    serialized = payload if isinstance(payload, str) else json.dumps(payload)
+    return [f"data: {serialized}\n".encode(), b"\n"]
 
 
 def test_kimi_auth_headers_require_api_key(monkeypatch) -> None:
@@ -56,15 +112,18 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
 ) -> None:
     bodies: list[dict] = []
     auth_headers: list[str] = []
+    accept_headers: list[str | None] = []
     user_agents: list[str | None] = []
     urls: list[str] = []
-    timeouts: list[int] = []
+    timeouts: list[float] = []
 
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    monkeypatch.delenv("KIMI_STREAM_IDLE_TIMEOUT_SECONDS", raising=False)
 
     def urlopen(req, timeout: int):
         urls.append(req.full_url)
         auth_headers.append(req.headers["Authorization"])
+        accept_headers.append(req.get_header("Accept"))
         user_agents.append(req.get_header("User-agent"))
         bodies.append(json.loads(req.data.decode()))
         timeouts.append(timeout)
@@ -93,8 +152,9 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     )
 
     assert urls == ["https://api.moonshot.ai/v1/chat/completions"]
-    assert timeouts == [300]
+    assert timeouts == [900.0]
     assert auth_headers == ["Bearer kimi-test"]
+    assert accept_headers == ["text/event-stream"]
     assert user_agents == ["workflow-builder-dapr-agent-py/1.0"]
     assert bodies[0]["model"] == "kimi-k3"
     assert bodies[0]["messages"] == [{"role": "user", "content": "hello"}]
@@ -103,10 +163,461 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     assert bodies[0]["max_completion_tokens"] == 131072
     assert "max_tokens" not in bodies[0]
     assert "prompt_cache_key" not in bodies[0]
-    assert bodies[0]["stream"] is False
+    assert bodies[0]["stream"] is True
+    assert "stream_options" not in bodies[0]
     assert result["content"] == "ok"
     assert result["reasoning_content"] == "reasoning"
     assert result["metadata"]["provider"] == "kimi-chat"
+
+
+def test_kimi_sse_accumulates_reasoning_content_and_content(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = [
+        *_sse_event(
+            {
+                "id": "chatcmpl_stream",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "Inspect ",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_stream",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "carefully."},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_stream",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "All "},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_stream",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "done."},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_stream",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 20,
+                            "total_tokens": 30,
+                        },
+                    }
+                ],
+            }
+        ),
+        *_sse_event("[DONE]"),
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    result = adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "Inspect the result."}],
+    )
+
+    assert result["reasoning_content"] == "Inspect carefully."
+    assert result["content"] == "All done."
+    assert result["metadata"]["finish_reason"] == "stop"
+    assert result["metadata"]["usage"] == {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+    }
+
+
+def test_kimi_sse_publishes_coalesced_nonterminal_deltas(monkeypatch) -> None:
+    published: list[tuple[str, dict, str | None]] = []
+    publisher = importlib.import_module("src.event_publisher")
+    monkeypatch.setattr(adapter, "_STREAM_DELTAS_ENABLED", True)
+    monkeypatch.setattr(adapter, "_DELTA_COALESCE_MS", 60_000)
+    monkeypatch.setattr(adapter, "_DELTA_COALESCE_BYTES", 1_000_000)
+    monkeypatch.setattr(adapter, "_publish_llm_usage", lambda **kwargs: None)
+    monkeypatch.setattr(
+        publisher,
+        "get_scoped_session",
+        lambda: ("session-kimi", "instance-kimi"),
+    )
+    monkeypatch.setattr(
+        publisher,
+        "publish_session_event",
+        lambda session_id, event_type, data, instance_id=None: published.append(
+            (event_type, data, instance_id)
+        ),
+    )
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = [
+        *_sse_event(
+            {
+                "id": "chatcmpl_deltas",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "Think "},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_deltas",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"reasoning_content": "carefully."},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_deltas",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "Answer "},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_deltas",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "ready."},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_deltas",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        ),
+        *_sse_event("[DONE]"),
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    result = adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert result["reasoning_content"] == "Think carefully."
+    assert result["content"] == "Answer ready."
+    assert published == [
+        (
+            "agent.thinking_delta",
+            {
+                "content_block_index": 0,
+                "text": "Think carefully.",
+                "cumulative_len": 16,
+            },
+            "instance-kimi",
+        ),
+        (
+            "agent.message_delta",
+            {
+                "content_block_index": 1,
+                "text": "Answer ready.",
+                "cumulative_len": 13,
+            },
+            "instance-kimi",
+        ),
+    ]
+    assert not any(event_type == "agent.message" for event_type, _, _ in published)
+
+
+def test_kimi_sse_accumulates_indexed_tool_call_fragments(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = [
+        *_sse_event(
+            {
+                "id": "chatcmpl_tools",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "I need both files.",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"',
+                                    },
+                                },
+                                {
+                                    "index": 1,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"',
+                                    },
+                                },
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_tools",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 1,
+                                    "function": {"arguments": 'README.md"}'},
+                                },
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": 'main.py"}'},
+                                },
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_tools",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+        ),
+        *_sse_event("[DONE]"),
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    result = adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "Read the files."}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert result["reasoning_content"] == "I need both files."
+    assert result["metadata"]["finish_reason"] == "tool_calls"
+    assert result["tool_calls"] == [
+        {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"main.py"}',
+            },
+        },
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "arguments": '{"path":"README.md"}',
+            },
+        },
+    ]
+
+
+def test_kimi_sse_requires_done_even_after_finish_reason(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = _sse_event(
+        {
+            "id": "chatcmpl_incomplete",
+            "model": "kimi-k3",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "partial"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    with pytest.raises(RuntimeError, match=r"before the required data: \[DONE\]"):
+        adapter._call_kimi_chat(
+            "llm-kimi-k3",
+            [{"role": "user", "content": "hello"}],
+        )
+
+
+def test_kimi_sse_preserves_multiline_data_continuations(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = [
+        b"event: ignored-before-data\n",
+        b"\n",
+        b'data: {"id":"chatcmpl_multiline",\n',
+        b'"model":"kimi-k3",\n',
+        b'"choices":[{"index":0,"delta":{"content":"ok"},\n',
+        b'"finish_reason":"stop","usage":{"total_tokens":3}}]}\n',
+        b"\n",
+        *_sse_event("[DONE]"),
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    result = adapter._call_kimi_chat(
+        "llm-kimi-k3",
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert result["content"] == "ok"
+    assert result["metadata"]["finish_reason"] == "stop"
+    assert result["metadata"]["usage"] == {"total_tokens": 3}
+
+
+def test_kimi_sse_surfaces_provider_error_event(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    lines = [
+        *_sse_event(
+            {
+                "error": {
+                    "type": "server_error",
+                    "message": "upstream generation failed",
+                }
+            }
+        ),
+        *_sse_event("[DONE]"),
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Kimi Chat API stream failed: upstream generation failed",
+    ):
+        adapter._call_kimi_chat(
+            "llm-kimi-k3",
+            [{"role": "user", "content": "hello"}],
+        )
+
+
+def test_kimi_sse_uses_per_read_idle_timeout(monkeypatch) -> None:
+    observed_timeouts: list[float] = []
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    monkeypatch.setenv("KIMI_STREAM_IDLE_TIMEOUT_SECONDS", "42.5")
+
+    def urlopen(req, timeout: float):
+        observed_timeouts.append(timeout)
+        return _RawSseResponse([b": keep-alive\n", b"\n", TimeoutError()])
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(
+        TimeoutError,
+        match="Kimi SSE stream was idle for 42.5 seconds before completion",
+    ):
+        adapter._call_kimi_chat(
+            "llm-kimi-k3",
+            [{"role": "user", "content": "hello"}],
+        )
+
+    assert observed_timeouts == [42.5]
 
 
 def test_kimi_component_map_only_contains_k3() -> None:

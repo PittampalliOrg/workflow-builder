@@ -13011,15 +13011,6 @@ function executionSafeBrowserHeaders(headers, probe) {
   if (probe) retained["X-Wfb-Browser-Lane"] = "per-node";
   return Object.keys(retained).length ? retained : void 0;
 }
-function jsonbParameter(value) {
-  const serialized = JSON.stringify(value);
-  if (serialized === void 0) {
-    throw new TypeError(
-      "Cannot serialize an undefined browser migration value"
-    );
-  }
-  return serialized;
-}
 function buildKimiK3BrowserAgentConfig(sourceConfig, options) {
   const source = sourceConfig ? structuredClone(sourceConfig) : {};
   delete source.model;
@@ -13144,6 +13135,7 @@ var BROWSER_AGENT_DEFINITIONS = [
 async function ensureBrowserAgent(sql2, owner, definition) {
   const rows = await sql2`
 		select a.id, av.version, av.config, av.config_hash,
+			jsonb_typeof(av.config) as config_type,
 			legacy_av.config as legacy_config
 		from agents a
 		left join agent_versions av on av.id = a.current_version_id
@@ -13170,11 +13162,11 @@ async function ensureBrowserAgent(sql2, owner, definition) {
   );
   const configHash = hashAgentConfig(config);
   const tags = ["dapr-agent-py", "kimi-k3", "vision", "browser"];
-  if (existing?.id && existing.config_hash === configHash) {
+  if (existing?.id && existing.config_hash === configHash && existing.config_type === "object") {
     await sql2`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
+				tags = ${sql2.json(tags)}, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				updated_at = now()
 			where id = ${existing.id}
@@ -13199,9 +13191,9 @@ async function ensureBrowserAgent(sql2, owner, definition) {
 					created_at, updated_at
 				) values (
 					${agentId}, ${definition.slug}, ${definition.name},
-						${definition.description}, ${jsonbParameter(tags)}::jsonb, ${"dapr-agent-py"},
+					${definition.description}, ${tx.json(tags)}, ${"dapr-agent-py"},
 						${owner.userId}, ${owner.projectId}, ${"registered"}, false,
-						${jsonbParameter([])}::jsonb, now(), now()
+					${tx.json([])}, now(), now()
 				)
 			`;
     }
@@ -13211,7 +13203,7 @@ async function ensureBrowserAgent(sql2, owner, definition) {
 				published_at, published_by, created_at
 			) values (
 				${versionId}, ${agentId}, ${nextVersion},
-					${jsonbParameter(config)}::jsonb, ${configHash},
+				${tx.json(config)}, ${configHash},
 				${"Migrate browser automation to Kimi K3 vision with max reasoning and a 1M-token context window."},
 				now(), ${owner.userId}, now()
 			)
@@ -13219,7 +13211,7 @@ async function ensureBrowserAgent(sql2, owner, definition) {
     await tx`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
+				tags = ${tx.json(tags)}, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				current_version_id = ${versionId}, updated_at = now()
 			where id = ${agentId}
@@ -13270,9 +13262,9 @@ async function migrateKimiK3BrowserAgentsAndWorkflows(sql2, owner) {
 			update workflows set
 				name = ${migratedName},
 				description = ${migratedDescription},
-					spec = ${jsonbParameter(migratedSpec)}::jsonb,
-					nodes = ${jsonbParameter(migratedNodes)}::jsonb,
-					edges = ${jsonbParameter(migratedEdges)}::jsonb,
+				spec = ${sql2.json(migratedSpec)},
+				nodes = ${sql2.json(migratedNodes)},
+				edges = ${sql2.json(migratedEdges)},
 				updated_at = now()
 			where id = ${workflow.id}
 		`;
@@ -13302,15 +13294,16 @@ async function migrateKimiK3BrowserAgentsAndWorkflows(sql2, owner) {
   return { workflowsUpdated };
 }
 
-// scripts/upsert-3b1b-animation-workflow.ts
+// scripts/upsert-kimi-k3-3blue1brown-animation-workflow.ts
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 var DATABASE_URL = process.env.DATABASE_URL;
-var WORKFLOW_ID = process.env.WORKFLOW_ID || "three-b-one-b-skill-animation";
-var WORKFLOW_NAME = process.env.WORKFLOW_NAME || "3Blue1Brown-style Animation";
-var WORKFLOW_DESCRIPTION = process.env.WORKFLOW_DESCRIPTION || "Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
-var KIMI_AGENT_SLUG = "kimi-k3-3b1b-animation-builder";
-var KIMI_AGENT_NAME = "Kimi K3 3B1B Animation Builder";
-var KIMI_AGENT_DESCRIPTION = "Dapr Agents coding agent for building self-contained 3Blue1Brown-style browser animations with Kimi K3.";
+var WORKFLOW_ID = "kimi-k3-3blue1brown-animation";
+var WORKFLOW_NAME = "Kimi K3 3Blue1Brown-style Animation";
+var WORKFLOW_DESCRIPTION = "Use a dynamic-script workflow and Kimi K3 to generate a self-contained 3Blue1Brown-style browser animation in a retained sandbox, capture its play/restart states, and start a live preview.";
+var KIMI_AGENT_SLUG = "kimi-k3-dynamic-animation-builder";
+var KIMI_AGENT_NAME = "Kimi K3 Dynamic Animation Builder";
+var KIMI_AGENT_DESCRIPTION = "Dapr Agents coding agent for fresh dynamic-script mathematical browser animations with Kimi K3.";
 var KIMI_AGENT_CONFIG = {
   systemPrompt: "You build polished, self-contained mathematical browser animations. Work directly in the supplied sandbox, prefer Canvas or SVG with plain HTML/CSS/JavaScript, preserve the requested stable DOM ids, and verify the generated files before finishing.",
   runtime: "dapr-agent-py",
@@ -13420,31 +13413,24 @@ async function resolveOwner(sql2, existing, userEmail) {
 function hashConfig(config) {
   return hashAgentConfig(config);
 }
-function jsonbParameter2(value) {
-  const serialized = JSON.stringify(value);
-  if (serialized === void 0) {
-    throw new TypeError("Cannot serialize an undefined 3B1B seed value");
-  }
-  return serialized;
-}
 async function ensureKimiAgent(sql2, owner) {
   const config = KIMI_AGENT_CONFIG;
   const configHash = hashConfig(config);
   const existingRows = await sql2`
-    select a.id, av.version, av.config_hash
+    select a.id, av.version, av.config_hash, jsonb_typeof(av.config) as config_type
     from agents a
     left join agent_versions av on av.id = a.current_version_id
     where a.slug = ${KIMI_AGENT_SLUG}
     limit 1
   `;
   const existing = existingRows[0];
-  if (existing?.id && existing.config_hash === configHash) {
+  if (existing?.id && existing.config_hash === configHash && existing.config_type === "object") {
     await sql2`
       update agents
       set
         name = ${KIMI_AGENT_NAME},
         description = ${KIMI_AGENT_DESCRIPTION},
-        tags = ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+        tags = ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
         runtime = ${"dapr-agent-py"},
         registry_status = ${"registered"},
         is_archived = false,
@@ -13453,7 +13439,7 @@ async function ensureKimiAgent(sql2, owner) {
         and (
           name is distinct from ${KIMI_AGENT_NAME}
           or description is distinct from ${KIMI_AGENT_DESCRIPTION}
-          or tags is distinct from ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
+          or tags is distinct from ${sql2.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}
           or runtime is distinct from ${"dapr-agent-py"}
           or registry_status is distinct from ${"registered"}
           or is_archived is distinct from false
@@ -13477,8 +13463,8 @@ async function ensureKimiAgent(sql2, owner) {
           changelog, published_at, published_by, created_at
         ) values (
           ${versionId2}, ${existing.id}, ${nextVersion},
-          ${jsonbParameter2(config)}::jsonb, ${configHash},
-          ${"Reconcile the 3B1B animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
+          ${tx.json(config)}, ${configHash},
+          ${"Reconcile the dynamic animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
           now(), ${owner.userId}, now()
         )
       `;
@@ -13487,7 +13473,7 @@ async function ensureKimiAgent(sql2, owner) {
         set
           name = ${KIMI_AGENT_NAME},
           description = ${KIMI_AGENT_DESCRIPTION},
-          tags = ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+          tags = ${tx.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
           runtime = ${"dapr-agent-py"},
           registry_status = ${"registered"},
           is_archived = false,
@@ -13510,9 +13496,9 @@ async function ensureKimiAgent(sql2, owner) {
       ) values (
         ${agentId}, ${KIMI_AGENT_SLUG}, ${KIMI_AGENT_NAME},
         ${KIMI_AGENT_DESCRIPTION},
-        ${jsonbParameter2(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+        ${tx.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
         ${"dapr-agent-py"}, ${owner.userId}, ${owner.projectId},
-        ${"registered"}, false, ${jsonbParameter2([])}::jsonb, now(), now()
+        ${"registered"}, false, ${tx.json([])}, now(), now()
       )
     `;
     await tx`
@@ -13521,8 +13507,8 @@ async function ensureKimiAgent(sql2, owner) {
         changelog, published_at, published_by, created_at
       ) values (
         ${versionId}, ${agentId}, 1,
-        ${jsonbParameter2(config)}::jsonb, ${configHash},
-        ${"Initial Kimi K3 definition for the 3B1B animation workflow."},
+        ${tx.json(config)}, ${configHash},
+        ${"Initial Kimi K3 definition for the fresh dynamic animation workflow."},
         now(), ${owner.userId}, now()
       )
     `;
@@ -13536,13 +13522,13 @@ async function ensureKimiAgent(sql2, owner) {
 }
 async function resolveAgentOverride(sql2, override) {
   const rows = override.version !== void 0 ? await sql2`
-          select a.id, av.version
+          select a.id, a.runtime, av.version, av.config
           from agents a
           join agent_versions av on av.agent_id = a.id
           where a.id = ${override.id} and av.version = ${override.version}
           limit 1
         ` : await sql2`
-          select a.id, av.version
+          select a.id, a.runtime, av.version, av.config
           from agents a
           join agent_versions av on av.id = a.current_version_id
           where a.id = ${override.id}
@@ -13553,335 +13539,64 @@ async function resolveAgentOverride(sql2, override) {
       `Could not resolve published agent ${override.id}${override.version !== void 0 ? ` version ${override.version}` : ""}`
     );
   }
-  return { id: String(rows[0].id), version: Number(rows[0].version) };
+  const row = rows[0];
+  const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
+  if (row.runtime !== "dapr-agent-py" || !config || typeof config !== "object" || config.modelSpec !== "kimi/kimi-k3" || config.reasoningEffort !== "max" || config.contextWindowTokens !== 1048576) {
+    throw new Error(
+      "The K3 animation agent override must be dapr-agent-py with kimi/kimi-k3, max reasoning, and a 1,048,576-token context window"
+    );
+  }
+  return { id: String(row.id), version: Number(row.version) };
 }
-var APP_DIR = "/sandbox/3b1b-style-animation-example";
-var BUILD_OUTPUT_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
-var BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
-function makeWorkspaceProfileTask() {
-  return {
-    call: "workspace/profile",
-    with: {
-      name: "three-b-one-b-animation",
-      rootPath: "/sandbox",
-      sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-      ttlSeconds: 7200,
-      keepAfterRun: true,
-      managedBy: "workflow-builder:demos:3b1b-animation",
-      commandTimeoutMs: 9e5,
-      timeoutMs: 12e5,
-      enabledTools: [
-        "execute_command",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_files",
-        "mkdir",
-        "file_stat"
-      ],
-      sandboxPolicy: {
-        mode: "per-run",
-        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-        ttlSeconds: 7200,
-        keepAfterRun: true
+var DYNAMIC_SCRIPT_URL = new URL(
+  "./fixtures/dynamic-scripts/kimi-k3-3blue1brown-animation.js",
+  import.meta.url
+);
+var DYNAMIC_SCRIPT_META = {
+  name: WORKFLOW_ID,
+  description: "Build a 3Blue1Brown-style Canvas or SVG animation with Kimi K3 in a retained sandbox, capture the play and restart states, and start a live preview.",
+  phases: [
+    { title: "Setup" },
+    { title: "Build", model: "kimi/kimi-k3" },
+    { title: "Validate" },
+    { title: "Preview" }
+  ],
+  input: {
+    type: "object",
+    required: ["animationDescription"],
+    additionalProperties: false,
+    properties: {
+      animationDescription: {
+        type: "string",
+        title: "Animation description",
+        minLength: 1,
+        maxLength: 12e3,
+        default: "Create a concise 3Blue1Brown-style derivative animation for x^2",
+        description: "Describe the 3Blue1Brown-style animation the agent should build."
+      },
+      sandboxTemplate: {
+        type: "string",
+        title: "Sandbox template",
+        default: "dapr-agent"
       }
     }
-  };
-}
-var BUILD_PROMPT_PARTS = [
-  '${ .trigger.animationDescription + " \u2014 Build a self-contained browser animation in ',
-  APP_DIR,
-  " with index.html, styles.css, script.js, and README.md. ",
-  "Use Canvas or SVG so the result runs via a simple static file server. ",
-  "The browser animation is the required deliverable. ",
-  'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
-  'the play/pause control <button id=\\"btn-play\\">, ',
-  'the restart control <button id=\\"btn-restart\\">. ',
-  "Do NOT install Manim \u2014 if a scene is useful, include scene.py as optional source only. ",
-  "Do not start any preview server; the downstream browser/validate and ",
-  "browser/start-preview steps will do that. ",
-  "The page must work when served as static files (no module imports outside relative script.js). ",
-  "Do NOT create a package.json \u2014 that triggers the runtime's npm-run-dev fallback ",
-  "which expects flags python3's http.server doesn't recognize. ",
-  'Final answer: list the files created and a one-paragraph outline of the animation logic." }'
-];
-var BUILD_PROMPT = BUILD_PROMPT_PARTS.join("");
-function makeBuildAnimationTask(agentRef) {
-  return {
-    call: "durable/run",
-    with: {
-      mode: "execute_direct",
-      cwd: "/sandbox",
-      sandboxName: "${ .workspace_profile.sandboxName }",
-      workspaceRef: "${ .workspace_profile.workspaceRef }",
-      outputSync: {
-        workspaceRef: "${ .workspace_profile.workspaceRef }",
-        paths: [
-          {
-            source: APP_DIR,
-            target: APP_DIR
-          }
-        ],
-        timeoutMs: 12e4
-      },
-      sandboxPolicy: {
-        mode: "per-run",
-        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-        ttlSeconds: 7200,
-        keepAfterRun: true
-      },
-      body: {
-        agentRef,
-        prompt: BUILD_PROMPT,
-        overrides: {
-          cwd: "/sandbox",
-          maxTurns: 60,
-          timeoutMinutes: 60
-        }
-      }
-    }
-  };
-}
-function makeStartPreviewTask() {
-  return {
-    call: "browser/start-preview",
-    with: {
-      body: {
-        input: {
-          previewId: '${ "3b1b-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
-          repoPath: APP_DIR,
-          rootPath: "/sandbox",
-          workingDir: "/sandbox",
-          // Same omit-devServerCommand pattern as browser/validate — runtime
-          // detects index.html and runs `python3 -m http.server {port} --bind 0.0.0.0`.
-          baseUrl: "http://127.0.0.1:0",
-          keepAlive: true,
-          timeoutSeconds: 7200,
-          timeoutMs: 72e5,
-          sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
-          workspaceRef: BUILD_OUTPUT_WORKSPACE_REF
-        }
-      }
-    }
-  };
-}
-function makeBrowserValidateTask() {
-  return {
-    call: "browser/validate",
-    with: {
-      workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
-      sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
-      repoPath: APP_DIR,
-      // Skip installCommand + devServerCommand. The runtime's default
-      // `_local_devserver_runner` detects index.html in repoPath and runs
-      // `python3 -m http.server {port} --bind 0.0.0.0` against a port it
-      // allocates itself. baseUrl's port is rewritten to match. Mirrors
-      // the canonical animation-3b1b-v2-managed.workflow.json shape and
-      // avoids the runtime/command port mismatch that broke our prior
-      // canaries OQK3 / FSOMOoo9 / Z1ebywvI / X3EZ5moY / Oa8AnQiR.
-      installCommand: "",
-      baseUrl: "http://127.0.0.1:0",
-      steps: [
-        {
-          id: "initial",
-          label: "Animation loaded",
-          action: "visit",
-          path: "/",
-          goal: "Initial render of the canvas before any interaction.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-play",
-          label: "After play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control once.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 2e3,
-          fullPage: true
-        },
-        {
-          id: "after-second-play",
-          label: "After second play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control again to capture mid-animation state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-restart",
-          label: "After restart",
-          action: "click",
-          selector: "button#btn-restart",
-          goal: "Restart the animation and capture the reset state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        }
-      ],
-      captureVideo: true,
-      captureTrace: true,
-      viewportPreset: "desktop",
-      captureMode: "demo",
-      demoTitle: '${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
-      demoSummary: "Generated 3Blue1Brown-style browser animation; browser/validate captured initial / play / second play / restart states from the retained per-run sandbox.",
-      metadata: {
-        appPath: APP_DIR,
-        workflowStage: "post-3b1b-animation",
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }"
-      },
-      timeoutMs: 9e5
-    }
-  };
-}
+  }
+};
 function buildSpec(agentRef) {
+  const script = readFileSync(DYNAMIC_SCRIPT_URL, "utf8").replaceAll("__KIMI_AGENT_ID_JSON__", JSON.stringify(agentRef.id)).replaceAll("__KIMI_AGENT_VERSION__", String(agentRef.version));
+  if (/__KIMI_AGENT_(?:ID_JSON|VERSION)__/.test(script)) {
+    throw new Error("Kimi agent placeholders were not fully resolved");
+  }
   return {
-    document: {
-      dsl: "1.0.0",
-      namespace: "workflow-builder.demos",
-      name: WORKFLOW_ID,
-      version: "1.0.0",
-      title: WORKFLOW_NAME,
-      summary: WORKFLOW_DESCRIPTION,
-      "x-workflow-builder": {
-        architecture: "per-agent-runtime+session-workflow-bridge+browser-validate-capture",
-        notes: "Adapted from the legacy 3pvh53PpHSiz-OoEeSW4z fixture for the per-agent-runtime architecture. Single agent step builds index.html / styles.css / script.js / README.md; browser/validate boots `python3 -m http.server` and captures a 4-screenshot demo (initial / play\xD72 / restart). Sandbox is retained (keepAfterRun=true) so the live preview proxy can attach after completion.",
-        triggerInputs: {
-          animationDescription: "Required. Plain-language description of the 3Blue1Brown-style animation to build (e.g. 'derivative of x^2', 'epsilon-delta limit visualization').",
-          sandboxTemplate: "Optional override (default 'dapr-agent'). Only set this if the cluster has a dedicated animation template installed."
-        },
-        input: {
-          fields: {
-            animationDescription: {
-              type: "textarea",
-              label: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              defaultValue: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        }
-      }
-    },
-    do: [
-      { workspace_profile: makeWorkspaceProfileTask() },
-      { build_3b1b_animation: makeBuildAnimationTask(agentRef) },
-      { browser_validate_capture: makeBrowserValidateTask() },
-      { start_preview: makeStartPreviewTask() }
-    ],
-    output: {
-      as: {
-        appPath: APP_DIR,
-        workspaceRef: BUILD_OUTPUT_WORKSPACE_REF,
-        sandboxName: BUILD_OUTPUT_SANDBOX_NAME,
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
-        animation: "${ .build_3b1b_animation }",
-        screenshots: "${ .browser_validate_capture }",
-        preview: "${ .start_preview }"
-      }
-    },
-    input: {
-      schema: {
-        document: {
-          type: "object",
-          required: ["animationDescription"],
-          properties: {
-            animationDescription: {
-              type: "string",
-              title: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              default: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        },
-        format: "json"
-      }
+    engine: "dynamic-script",
+    script,
+    meta: DYNAMIC_SCRIPT_META,
+    defaults: {
+      model: "kimi/kimi-k3",
+      agentRuntime: "dapr-agent-py",
+      timeoutMinutes: 60
     }
   };
-}
-function buildNodes() {
-  return [
-    {
-      id: "trigger",
-      type: "trigger",
-      position: { x: 80, y: 60 },
-      data: {
-        label: "Animation request trigger",
-        description: "Receives animationDescription (plain-language description of the 3Blue1Brown-style animation to build)."
-      }
-    },
-    {
-      id: "workspace_profile",
-      type: "action",
-      position: { x: 80, y: 200 },
-      data: {
-        label: "Provision retained sandbox",
-        actionType: "workspace/profile",
-        description: "Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run."
-      }
-    },
-    {
-      id: "build_3b1b_animation",
-      type: "action",
-      position: { x: 80, y: 340 },
-      data: {
-        label: "Build 3B1B animation",
-        actionType: "durable/run",
-        description: "Agent generates index.html / styles.css / script.js / README.md in /sandbox/3b1b-style-animation-example with stable DOM ids (canvas#canvas, button#btn-play, button#btn-restart) so browser/validate can wire screenshots reliably."
-      }
-    },
-    {
-      id: "browser_validate_capture",
-      type: "action",
-      position: { x: 80, y: 480 },
-      data: {
-        label: "Capture animation walkthrough",
-        actionType: "browser/validate",
-        description: "Boot `python3 -m http.server` against the generated static files and capture initial / play\xD72 / restart screenshots."
-      }
-    },
-    {
-      id: "start_preview",
-      type: "action",
-      position: { x: 80, y: 620 },
-      data: {
-        label: "Start live preview",
-        actionType: "browser/start-preview",
-        description: "Pre-create the live-preview proxy with correct repoPath/rootPath so the UI's preview button connects to a ready-to-serve instance instead of spawning a racy lazy one."
-      }
-    }
-  ];
-}
-function buildEdges() {
-  return [
-    {
-      id: "e1",
-      source: "trigger",
-      target: "workspace_profile",
-      type: "default"
-    },
-    {
-      id: "e2",
-      source: "workspace_profile",
-      target: "build_3b1b_animation",
-      type: "default"
-    },
-    {
-      id: "e3",
-      source: "build_3b1b_animation",
-      target: "browser_validate_capture",
-      type: "default"
-    },
-    {
-      id: "e4",
-      source: "browser_validate_capture",
-      target: "start_preview",
-      type: "default"
-    }
-  ];
 }
 async function main() {
   if (!DATABASE_URL) {
@@ -13899,8 +13614,8 @@ async function main() {
     const owner = await resolveOwner(sql2, existingRows[0], args.userEmail);
     const agentRef = args.agentOverride ? await resolveAgentOverride(sql2, args.agentOverride) : await ensureKimiAgent(sql2, owner);
     const spec = buildSpec(agentRef);
-    const nodes = buildNodes();
-    const edges = buildEdges();
+    const nodes = [];
+    const edges = [];
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await sql2`
       insert into workflows (
@@ -13924,12 +13639,12 @@ async function main() {
         ${WORKFLOW_DESCRIPTION},
         ${owner.userId},
         ${owner.projectId},
-        ${jsonbParameter2(nodes)}::jsonb,
-        ${jsonbParameter2(edges)}::jsonb,
+        ${sql2.json(nodes)},
+        ${sql2.json(edges)},
         ${"public"},
-        ${"dapr"},
+        ${"dynamic-script"},
         ${"1.0.0"},
-        ${jsonbParameter2(spec)}::jsonb,
+        ${sql2.json(spec)},
         ${now},
         ${now}
       )
@@ -13955,6 +13670,7 @@ async function main() {
     console.log(`  owner.userId    = ${owner.userId}`);
     console.log(`  owner.projectId = ${owner.projectId ?? "(none)"}`);
     console.log(`  visibility      = public`);
+    console.log(`  engine          = dynamic-script`);
     console.log(`  UI route        : /workflows/${WORKFLOW_ID}`);
   } finally {
     await sql2.end({ timeout: 5 });
@@ -13963,7 +13679,10 @@ async function main() {
 var invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (import.meta.url === invokedPath) {
   main().catch((error) => {
-    console.error("[upsert-3b1b-animation-workflow] Error:", error);
+    console.error(
+      "[upsert-kimi-k3-3blue1brown-animation-workflow] Error:",
+      error
+    );
     process.exitCode = 1;
   });
 }
@@ -13989,19 +13708,6 @@ var GITHUB_SANDBOX_REVIEW_WORKFLOW_DESCRIPTION = "Reference workflow that clones
 var AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
 var AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "OpenShell Feature Delivery Demo";
 var AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION = "Demo workflow for the Workflow Builder UI that clones PittampalliOrg/stacks and runs an OpenShell-backed plan, approval, and implementation loop that emits code artifacts.";
-var THREE_B_ONE_B_WORKFLOW_ID = "three-b-one-b-skill-animation";
-var THREE_B_ONE_B_WORKFLOW_NAME = "3Blue1Brown-style Animation";
-var THREE_B_ONE_B_WORKFLOW_DESCRIPTION = "Generate a self-contained browser animation in the 3Blue1Brown style (Canvas/SVG, no Manim) inside a retained per-run sandbox, then capture screenshots of the play/restart interaction via browser/validate.";
-var THREE_B_ONE_B_CLI_WORKFLOW_ID = process.env.SEED_3B1B_CLI_WORKFLOW_ID?.trim() || "three-b-one-b-skill-animation-cli";
-var THREE_B_ONE_B_CLI_WORKFLOW_NAME = process.env.SEED_3B1B_CLI_WORKFLOW_NAME?.trim() || "3Blue1Brown-style Animation (CLI agents)";
-var THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION = process.env.SEED_3B1B_CLI_WORKFLOW_DESCRIPTION?.trim() || "Generate a self-contained browser animation in the 3Blue1Brown style using a runtime-selected CLI agent, then verify, capture, and preview the copied app files from the retained workspace.";
-var THREE_B_ONE_B_APP_DIR = "/sandbox/3b1b-style-animation-example";
-var THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME = '${ .workspace_profile.sandboxName // "" }';
-var THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF = "${ .workspace_profile.workspaceRef }";
-var THREE_B_ONE_B_AGENT_OVERRIDE_ID = process.env.SEED_3B1B_AGENT_ID?.trim() || "";
-var THREE_B_ONE_B_AGENT_OVERRIDE_VERSION = Number(
-  process.env.SEED_3B1B_AGENT_VERSION?.trim() || "1"
-);
 var PREVIEW_HMR_GATE_FUNCTION_ID = "codefn_preview_hmr_gate";
 var PREVIEW_HMR_GATE_SLUG = "preview-hmr-gate";
 var PREVIEW_HMR_GATE_VERSION = "1.0.0";
@@ -14806,7 +14512,7 @@ function buildOpenShellLangGraphFeatureDeliveryEdges() {
     }
   ];
 }
-function buildNodes2(profileVersion) {
+function buildNodes(profileVersion) {
   const workspaceRef = `{{@${IDs.profile}:Workspace Profile.workspaceRef}}`;
   const clonePath = `{{@${IDs.clone}:Workspace Clone.clonePath}}`;
   const executionId = `{{@${IDs.profile}:Workspace Profile.executionId}}`;
@@ -15068,7 +14774,7 @@ echo REMOTE=$(git remote get-url origin)`,
     }
   ]);
 }
-function buildEdges2() {
+function buildEdges() {
   return [
     {
       id: EDGE_IDS[0],
@@ -15717,7 +15423,7 @@ function buildAgentSystemDemoEdges() {
     }
   ];
 }
-var THREE_B_ONE_B_CLI_RUNTIMES = [
+var CLI_RUNTIME_DESCRIPTORS = [
   {
     runtime: "codex-cli",
     label: "Codex CLI"
@@ -15731,684 +15437,19 @@ var THREE_B_ONE_B_CLI_RUNTIMES = [
     label: "Antigravity CLI"
   }
 ];
-var THREE_B_ONE_B_CLI_RUNTIME_OPTIONS = THREE_B_ONE_B_CLI_RUNTIMES.map(
+var CLI_RUNTIME_OPTIONS = CLI_RUNTIME_DESCRIPTORS.map(
   (item) => ({
     label: item.label,
     value: item.runtime
   })
 );
-var THREE_B_ONE_B_CLI_DEFAULT_RUNTIME = parseCliRuntime(
-  process.env.SEED_3B1B_CLI_DEFAULT_RUNTIME?.trim() || "codex-cli"
-);
-var THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT = "${ .build_3b1b_animation }";
-var THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME = "${ .build_3b1b_animation.runtimeSandboxName // null }";
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
 function parseCliRuntime(value) {
   if (value === "codex-cli" || value === "claude-code-cli" || value === "agy-cli") {
     return value;
   }
   throw new Error(
-    `Invalid SEED_3B1B_CLI_DEFAULT_RUNTIME "${value}". Expected codex-cli, claude-code-cli, or agy-cli.`
+    `Invalid CLI runtime "${value}". Expected codex-cli, claude-code-cli, or agy-cli.`
   );
-}
-function selectedCliRuntimeExpression() {
-  return `\${ .trigger.cliRuntime // "${THREE_B_ONE_B_CLI_DEFAULT_RUNTIME}" }`;
-}
-var THREE_B_ONE_B_BUILD_PROMPT = [
-  '${ .trigger.animationDescription + " - Build a self-contained browser animation in ',
-  THREE_B_ONE_B_APP_DIR,
-  " with index.html, styles.css, script.js, and README.md. ",
-  "Use Canvas or SVG so the result runs via a simple static file server. ",
-  "The browser animation is the required deliverable. ",
-  'Use stable DOM ids for validation: the main canvas must be <canvas id=\\"canvas\\">, ',
-  'the play/pause control <button id=\\"btn-play\\">, ',
-  'the restart control <button id=\\"btn-restart\\">. ',
-  "Do NOT install Manim; if a scene is useful, include scene.py as optional source only. ",
-  "Do not start any preview server; the downstream browser/validate and ",
-  "browser/start-preview steps will do that. ",
-  "The page must work when served as static files (no module imports outside relative script.js). ",
-  "Do NOT create a package.json; that triggers the runtime's npm-run-dev fallback ",
-  "which expects flags python3's http.server doesn't recognize. ",
-  'Final answer: list the files created and a one-paragraph outline of the animation logic." }'
-].join("");
-var THREE_B_ONE_B_CLI_BUILD_STOP_CONDITION = [
-  `Stop only when ${THREE_B_ONE_B_APP_DIR} exists with index.html, styles.css, script.js, and README.md `,
-  "created or updated through file-writing tools. ",
-  "index.html must include canvas#canvas, button#btn-play, and button#btn-restart. ",
-  "The final answer must list the files created and outline the animation logic."
-].join("");
-function makeThreeBOneBWorkspaceProfileTask() {
-  return {
-    call: "workspace/profile",
-    with: {
-      name: "three-b-one-b-animation",
-      rootPath: "/sandbox",
-      sandboxTemplate: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-      ttlSeconds: 7200,
-      keepAfterRun: true,
-      managedBy: "workflow-builder:demos:3b1b-animation",
-      commandTimeoutMs: 9e5,
-      timeoutMs: 12e5,
-      enabledTools: [
-        "execute_command",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_files",
-        "mkdir",
-        "file_stat"
-      ],
-      sandboxPolicy: {
-        mode: "per-run",
-        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-        ttlSeconds: 7200,
-        keepAfterRun: true
-      }
-    }
-  };
-}
-function makeThreeBOneBBuildTask(agentRef) {
-  if (!Number.isInteger(agentRef.version) || agentRef.version <= 0) {
-    throw new Error(
-      `SEED_3B1B_AGENT_VERSION must be a positive integer; got ${process.env.SEED_3B1B_AGENT_VERSION}`
-    );
-  }
-  return {
-    call: "durable/run",
-    with: {
-      mode: "execute_direct",
-      cwd: "/sandbox",
-      sandboxName: "${ .workspace_profile.sandboxName }",
-      workspaceRef: "${ .workspace_profile.workspaceRef }",
-      outputSync: {
-        workspaceRef: "${ .workspace_profile.workspaceRef }",
-        paths: [
-          {
-            source: THREE_B_ONE_B_APP_DIR,
-            target: THREE_B_ONE_B_APP_DIR
-          }
-        ],
-        timeoutMs: 12e4
-      },
-      sandboxPolicy: {
-        mode: "per-run",
-        template: '${ .trigger.sandboxTemplate // "dapr-agent" }',
-        ttlSeconds: 7200,
-        keepAfterRun: true
-      },
-      body: {
-        agentRef,
-        prompt: THREE_B_ONE_B_BUILD_PROMPT,
-        overrides: {
-          cwd: "/sandbox",
-          maxTurns: 60,
-          timeoutMinutes: 60
-        }
-      }
-    }
-  };
-}
-function makeThreeBOneBBrowserValidateTask() {
-  return {
-    call: "browser/validate",
-    with: {
-      workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-      sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-      repoPath: THREE_B_ONE_B_APP_DIR,
-      installCommand: "",
-      baseUrl: "http://127.0.0.1:0",
-      steps: [
-        {
-          id: "initial",
-          label: "Animation loaded",
-          action: "visit",
-          path: "/",
-          goal: "Initial render of the canvas before any interaction.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-play",
-          label: "After play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control once.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 2e3,
-          fullPage: true
-        },
-        {
-          id: "after-second-play",
-          label: "After second play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control again to capture mid-animation state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-restart",
-          label: "After restart",
-          action: "click",
-          selector: "button#btn-restart",
-          goal: "Restart the animation and capture the reset state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        }
-      ],
-      captureVideo: true,
-      captureTrace: true,
-      viewportPreset: "desktop",
-      captureMode: "demo",
-      demoTitle: '${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
-      demoSummary: "Generated 3Blue1Brown-style browser animation; browser/validate captured initial / play / second play / restart states from the retained per-run sandbox.",
-      metadata: {
-        appPath: THREE_B_ONE_B_APP_DIR,
-        workflowStage: "post-3b1b-animation",
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }"
-      },
-      timeoutMs: 9e5
-    }
-  };
-}
-function makeThreeBOneBStartPreviewTask() {
-  return {
-    call: "browser/start-preview",
-    with: {
-      body: {
-        input: {
-          previewId: '${ "3b1b-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
-          repoPath: THREE_B_ONE_B_APP_DIR,
-          rootPath: "/sandbox",
-          workingDir: "/sandbox",
-          baseUrl: "http://127.0.0.1:0",
-          keepAlive: true,
-          timeoutSeconds: 7200,
-          timeoutMs: 72e5,
-          sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-          workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF
-        }
-      }
-    }
-  };
-}
-function buildThreeBOneBWorkflowSpec(agentRef) {
-  return {
-    document: {
-      dsl: "1.0.0",
-      namespace: "workflow-builder.demos",
-      name: THREE_B_ONE_B_WORKFLOW_ID,
-      version: "1.0.0",
-      title: THREE_B_ONE_B_WORKFLOW_NAME,
-      summary: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
-      "x-workflow-builder": {
-        architecture: "per-agent-runtime+session-workflow-bridge+browser-validate-capture",
-        notes: "Adapted from the legacy 3pvh53PpHSiz-OoEeSW4z fixture for the per-agent-runtime architecture. Single agent step builds index.html / styles.css / script.js / README.md; browser/validate boots the static-file server and captures a 4-screenshot demo. Sandbox is retained so the live preview proxy can attach after completion.",
-        triggerInputs: {
-          animationDescription: "Required. Plain-language description of the 3Blue1Brown-style animation to build.",
-          sandboxTemplate: "Optional override (default 'dapr-agent'). Only set this if the cluster has a dedicated animation template installed."
-        },
-        input: {
-          fields: {
-            animationDescription: {
-              type: "textarea",
-              label: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              defaultValue: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        }
-      }
-    },
-    do: [
-      { workspace_profile: makeThreeBOneBWorkspaceProfileTask() },
-      { build_3b1b_animation: makeThreeBOneBBuildTask(agentRef) },
-      { browser_validate_capture: makeThreeBOneBBrowserValidateTask() },
-      { start_preview: makeThreeBOneBStartPreviewTask() }
-    ],
-    output: {
-      as: {
-        appPath: THREE_B_ONE_B_APP_DIR,
-        workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-        sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-        runtimeSandboxName: "${ .build_3b1b_animation.runtimeSandboxName // null }",
-        animation: "${ .build_3b1b_animation }",
-        screenshots: "${ .browser_validate_capture }",
-        preview: "${ .start_preview }"
-      }
-    },
-    input: {
-      schema: {
-        document: {
-          type: "object",
-          required: ["animationDescription"],
-          properties: {
-            animationDescription: {
-              type: "string",
-              title: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              default: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        },
-        format: "json"
-      }
-    }
-  };
-}
-function buildThreeBOneBWorkflowNodes() {
-  return [
-    {
-      id: "trigger",
-      type: "trigger",
-      position: { x: 80, y: 60 },
-      data: {
-        label: "Animation request trigger",
-        description: "Receives animationDescription for the 3Blue1Brown-style animation."
-      }
-    },
-    {
-      id: "workspace_profile",
-      type: "action",
-      position: { x: 80, y: 200 },
-      data: {
-        label: "Provision retained sandbox",
-        actionType: "workspace/profile",
-        description: "Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run."
-      }
-    },
-    {
-      id: "build_3b1b_animation",
-      type: "action",
-      position: { x: 80, y: 340 },
-      data: {
-        label: "Build 3B1B animation",
-        actionType: "durable/run",
-        description: "Agent generates index.html / styles.css / script.js / README.md with stable DOM ids for validation."
-      }
-    },
-    {
-      id: "browser_validate_capture",
-      type: "action",
-      position: { x: 80, y: 480 },
-      data: {
-        label: "Capture animation walkthrough",
-        actionType: "browser/validate",
-        description: "Boot the generated static files and capture initial / play / second play / restart screenshots."
-      }
-    },
-    {
-      id: "start_preview",
-      type: "action",
-      position: { x: 80, y: 620 },
-      data: {
-        label: "Start live preview",
-        actionType: "browser/start-preview",
-        description: "Pre-create the live-preview proxy with correct repoPath/rootPath."
-      }
-    }
-  ];
-}
-function buildThreeBOneBWorkflowEdges() {
-  return [
-    {
-      id: "e_three_b_one_b_1",
-      source: "trigger",
-      target: "workspace_profile",
-      type: "default"
-    },
-    {
-      id: "e_three_b_one_b_2",
-      source: "workspace_profile",
-      target: "build_3b1b_animation",
-      type: "default"
-    },
-    {
-      id: "e_three_b_one_b_3",
-      source: "build_3b1b_animation",
-      target: "browser_validate_capture",
-      type: "default"
-    },
-    {
-      id: "e_three_b_one_b_4",
-      source: "browser_validate_capture",
-      target: "start_preview",
-      type: "default"
-    }
-  ];
-}
-function makeThreeBOneBCliWorkspaceProfileTask() {
-  const task = cloneJson(makeThreeBOneBWorkspaceProfileTask());
-  const withBlock = isRecord2(task.with) ? task.with : {};
-  task.with = withBlock;
-  withBlock.sandboxTemplate = "dapr-agent";
-  const sandboxPolicy = isRecord2(withBlock.sandboxPolicy) ? withBlock.sandboxPolicy : {};
-  withBlock.sandboxPolicy = sandboxPolicy;
-  sandboxPolicy.template = "dapr-agent";
-  return task;
-}
-function makeThreeBOneBCliBuildTask() {
-  return {
-    call: "durable/run",
-    with: {
-      mode: "execute_direct",
-      cwd: "/sandbox",
-      sandboxName: "${ .workspace_profile.sandboxName }",
-      workspaceRef: "${ .workspace_profile.workspaceRef }",
-      outputSync: {
-        workspaceRef: "${ .workspace_profile.workspaceRef }",
-        paths: [
-          {
-            source: THREE_B_ONE_B_APP_DIR,
-            target: THREE_B_ONE_B_APP_DIR
-          }
-        ],
-        timeoutSeconds: 120
-      },
-      sandboxPolicy: {
-        mode: "per-run",
-        template: "dapr-agent",
-        ttlSeconds: 7200,
-        keepAfterRun: true
-      },
-      body: {
-        agentRef: {
-          slug: selectedCliRuntimeExpression()
-        },
-        prompt: THREE_B_ONE_B_BUILD_PROMPT,
-        stopCondition: THREE_B_ONE_B_CLI_BUILD_STOP_CONDITION,
-        requireFileChanges: true,
-        overrides: {
-          cwd: "/sandbox",
-          maxTurns: 60,
-          timeoutMinutes: 60
-        }
-      }
-    }
-  };
-}
-function makeThreeBOneBCliVerifyTask() {
-  return {
-    call: "workspace/command",
-    with: {
-      workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-      cwd: "/sandbox",
-      timeoutMs: 12e4,
-      command: [
-        "set -eu",
-        `app=${JSON.stringify(THREE_B_ONE_B_APP_DIR)}`,
-        'test -f "$app/index.html"',
-        'test -f "$app/styles.css"',
-        'test -f "$app/script.js"',
-        'test -f "$app/README.md"',
-        'node --check "$app/script.js"',
-        'grep -q "id=\\"canvas\\"" "$app/index.html"',
-        'grep -q "id=\\"btn-play\\"" "$app/index.html"',
-        'grep -q "id=\\"btn-restart\\"" "$app/index.html"',
-        'find "$app" -maxdepth 1 -type f -printf "%f %s bytes\\n" | sort'
-      ].join("\n")
-    }
-  };
-}
-function makeThreeBOneBCliBrowserValidateTask() {
-  return {
-    call: "browser/validate",
-    with: {
-      workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-      sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-      repoPath: THREE_B_ONE_B_APP_DIR,
-      rootPath: "/sandbox",
-      workingDir: "/sandbox",
-      installCommand: "",
-      baseUrl: "http://127.0.0.1:0",
-      steps: [
-        {
-          id: "initial",
-          label: "Animation loaded",
-          action: "visit",
-          path: "/",
-          goal: "Initial render of the canvas before any interaction.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-play",
-          label: "After play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control once.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 2e3,
-          fullPage: true
-        },
-        {
-          id: "after-second-play",
-          label: "After second play",
-          action: "click",
-          selector: "button#btn-play",
-          goal: "Trigger the play control again to capture mid-animation state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        },
-        {
-          id: "after-restart",
-          label: "After restart",
-          action: "click",
-          selector: "button#btn-restart",
-          goal: "Restart the animation and capture the reset state.",
-          waitForSelector: "canvas#canvas",
-          pauseMs: 1500,
-          fullPage: true
-        }
-      ],
-      captureVideo: true,
-      captureTrace: true,
-      viewportPreset: "desktop",
-      captureMode: "demo",
-      demoTitle: '${ "3Blue1Brown-style animation: " + .trigger.animationDescription }',
-      demoSummary: "Generated 3Blue1Brown-style browser animation from a CLI-agent run; browser/validate captured initial / play / second play / restart states from the retained workspace.",
-      metadata: {
-        appPath: THREE_B_ONE_B_APP_DIR,
-        workflowStage: "post-cli-3b1b-animation",
-        runtimeSandboxName: THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME,
-        selectedCliRuntime: selectedCliRuntimeExpression()
-      },
-      timeoutMs: 9e5
-    }
-  };
-}
-function makeThreeBOneBCliStartPreviewTask() {
-  return {
-    call: "browser/start-preview",
-    with: {
-      body: {
-        input: {
-          previewId: '${ "3b1b-cli-animation-preview-" + (.runtime.dbExecutionId // .workspace_profile.workspaceRef) }',
-          repoPath: THREE_B_ONE_B_APP_DIR,
-          rootPath: "/sandbox",
-          workingDir: "/sandbox",
-          baseUrl: "http://127.0.0.1:0",
-          keepAlive: true,
-          timeoutSeconds: 7200,
-          timeoutMs: 72e5,
-          sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-          workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-          installCommand: "",
-          devServerCommand: ""
-        }
-      }
-    }
-  };
-}
-function buildThreeBOneBCliWorkflowSpec() {
-  return {
-    document: {
-      dsl: "1.0.0",
-      namespace: "workflow-builder.demos",
-      name: THREE_B_ONE_B_CLI_WORKFLOW_ID,
-      version: "1.0.0",
-      title: THREE_B_ONE_B_CLI_WORKFLOW_NAME,
-      summary: THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION,
-      "x-workflow-builder": {
-        architecture: "per-agent-runtime+cli-runtime-selector+session-workflow-bridge+browser-validate-capture+static-preview",
-        notes: "CLI variant of the canonical 3Blue1Brown workflow. The cliRuntime trigger input resolves one durable/run agentRef.slug before dispatch; outputSync copies the app into the retained OpenShell workspace for verification, browser capture, and live preview.",
-        triggerInputs: {
-          animationDescription: "Required. Plain-language description of the 3Blue1Brown-style animation to build.",
-          cliRuntime: "Optional. Selects the CLI agent runtime: codex-cli, claude-code-cli, or agy-cli."
-        },
-        input: {
-          fields: {
-            cliRuntime: {
-              type: "select",
-              label: "CLI agent",
-              description: "Choose which CLI agent builds the animation.",
-              defaultValue: THREE_B_ONE_B_CLI_DEFAULT_RUNTIME,
-              options: THREE_B_ONE_B_CLI_RUNTIME_OPTIONS
-            },
-            animationDescription: {
-              type: "textarea",
-              label: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              defaultValue: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        }
-      }
-    },
-    do: [
-      { workspace_profile: makeThreeBOneBCliWorkspaceProfileTask() },
-      { build_3b1b_animation: makeThreeBOneBCliBuildTask() },
-      { verify_copied_animation: makeThreeBOneBCliVerifyTask() },
-      { browser_validate_capture: makeThreeBOneBCliBrowserValidateTask() },
-      { start_preview: makeThreeBOneBCliStartPreviewTask() }
-    ],
-    output: {
-      as: {
-        appPath: THREE_B_ONE_B_APP_DIR,
-        workspaceRef: THREE_B_ONE_B_BUILD_OUTPUT_WORKSPACE_REF,
-        sandboxName: THREE_B_ONE_B_BUILD_OUTPUT_SANDBOX_NAME,
-        runtimeSandboxName: THREE_B_ONE_B_CLI_SELECTED_BUILD_RUNTIME_SANDBOX_NAME,
-        selectedCliRuntime: selectedCliRuntimeExpression(),
-        animation: THREE_B_ONE_B_CLI_SELECTED_BUILD_OUTPUT,
-        verification: "${ .verify_copied_animation }",
-        screenshots: "${ .browser_validate_capture }",
-        preview: "${ .start_preview }"
-      }
-    },
-    input: {
-      schema: {
-        document: {
-          type: "object",
-          required: ["animationDescription"],
-          properties: {
-            cliRuntime: {
-              type: "string",
-              title: "CLI agent",
-              description: "Selects the CLI agent runtime for the build step.",
-              enum: THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.runtime),
-              default: THREE_B_ONE_B_CLI_DEFAULT_RUNTIME
-            },
-            animationDescription: {
-              type: "string",
-              title: "Animation description",
-              description: "Describe the 3Blue1Brown-style animation the agent should build.",
-              default: "Create a concise 3Blue1Brown-style derivative animation for x^2"
-            }
-          }
-        },
-        format: "json"
-      }
-    }
-  };
-}
-function buildThreeBOneBCliWorkflowNodes() {
-  return [
-    {
-      id: "trigger",
-      type: "trigger",
-      position: { x: 80, y: 60 },
-      data: {
-        label: "Animation request trigger",
-        description: "Receives animationDescription and cliRuntime for the 3Blue1Brown-style animation."
-      }
-    },
-    {
-      id: "workspace_profile",
-      type: "action",
-      position: { x: 80, y: 200 },
-      data: {
-        label: "Provision retained sandbox",
-        actionType: "workspace/profile",
-        description: "Stand up a per-run sandbox with file/exec tools; keepAfterRun=true so the live preview can attach after the run."
-      }
-    },
-    {
-      id: "build_3b1b_animation",
-      type: "action",
-      position: { x: 80, y: 340 },
-      data: {
-        label: "Build with selected CLI",
-        actionType: "durable/run",
-        description: "Resolve cliRuntime to a managed CLI agent and generate the browser animation."
-      }
-    },
-    {
-      id: "verify_copied_animation",
-      type: "action",
-      position: { x: 80, y: 480 },
-      data: {
-        label: "Verify copied animation",
-        actionType: "workspace/command",
-        description: "Run file and syntax checks against the retained workspace after CLI output sync."
-      }
-    },
-    {
-      id: "browser_validate_capture",
-      type: "action",
-      position: { x: 80, y: 620 },
-      data: {
-        label: "Capture animation walkthrough",
-        actionType: "browser/validate",
-        description: "Boot a static server against the copied files and capture initial / play / second play / restart screenshots."
-      }
-    },
-    {
-      id: "start_preview",
-      type: "action",
-      position: { x: 80, y: 760 },
-      data: {
-        label: "Start live preview",
-        actionType: "browser/start-preview",
-        description: "Start a keep-alive preview proxy for the retained workspace so the run page can open the generated animation."
-      }
-    }
-  ];
-}
-function buildThreeBOneBCliWorkflowEdges() {
-  const ordered = [
-    "trigger",
-    "workspace_profile",
-    "build_3b1b_animation",
-    "verify_copied_animation",
-    "browser_validate_capture",
-    "start_preview"
-  ];
-  return ordered.slice(0, -1).map((source, index2) => ({
-    id: `e_cli_3b1b_${index2 + 1}`,
-    source,
-    target: ordered[index2 + 1],
-    type: "default"
-  }));
 }
 function selectedGameRuntimeExpression() {
   return `\${ .trigger.cliRuntime // "${SVELTEKIT_GAME_DEFAULT_RUNTIME}" }`;
@@ -16642,7 +15683,7 @@ function buildSvelteKitGameWorkflowSpec() {
               label: "CLI agent",
               description: "Choose which CLI agent builds the game in goal mode.",
               defaultValue: SVELTEKIT_GAME_DEFAULT_RUNTIME,
-              options: THREE_B_ONE_B_CLI_RUNTIME_OPTIONS
+              options: CLI_RUNTIME_OPTIONS
             },
             gameDescription: {
               type: "textarea",
@@ -16684,7 +15725,7 @@ function buildSvelteKitGameWorkflowSpec() {
               type: "string",
               title: "CLI agent",
               description: "Selects the CLI agent runtime for the build step.",
-              enum: THREE_B_ONE_B_CLI_RUNTIMES.map((item) => item.runtime),
+              enum: CLI_RUNTIME_DESCRIPTORS.map((item) => item.runtime),
               default: SVELTEKIT_GAME_DEFAULT_RUNTIME
             },
             gameDescription: {
@@ -18530,8 +17571,8 @@ async function seedWorkflow() {
     }
     await migrateKimiK3BrowserAgentsAndWorkflows(sql2, { userId, projectId });
     const profileVersion = await resolveAgentProfileVersion(db);
-    const nodes = buildNodes2(profileVersion);
-    const edges = buildEdges2();
+    const nodes = buildNodes(profileVersion);
+    const edges = buildEdges();
     await upsertWorkflow({
       db,
       workflowId: WORKFLOW_ID2,
@@ -18574,33 +17615,22 @@ async function seedWorkflow() {
       nodes: buildAiCodingAgentNodes(),
       edges: buildAiCodingAgentEdges()
     });
-    const threeBOneBAgentRef = THREE_B_ONE_B_AGENT_OVERRIDE_ID ? {
-      id: THREE_B_ONE_B_AGENT_OVERRIDE_ID,
-      version: THREE_B_ONE_B_AGENT_OVERRIDE_VERSION
-    } : await ensureKimiAgent(sql2, { userId, projectId });
-    await upsertRawWorkflow({
-      db,
-      workflowId: THREE_B_ONE_B_WORKFLOW_ID,
-      name: THREE_B_ONE_B_WORKFLOW_NAME,
-      description: THREE_B_ONE_B_WORKFLOW_DESCRIPTION,
+    const kimiK3AnimationAgentRef = await ensureKimiAgent(sql2, {
       userId,
-      projectId,
-      spec: buildThreeBOneBWorkflowSpec(threeBOneBAgentRef),
-      nodes: buildThreeBOneBWorkflowNodes(),
-      edges: buildThreeBOneBWorkflowEdges(),
-      visibility: "public"
+      projectId
     });
     await upsertRawWorkflow({
       db,
-      workflowId: THREE_B_ONE_B_CLI_WORKFLOW_ID,
-      name: THREE_B_ONE_B_CLI_WORKFLOW_NAME,
-      description: THREE_B_ONE_B_CLI_WORKFLOW_DESCRIPTION,
+      workflowId: WORKFLOW_ID,
+      name: WORKFLOW_NAME,
+      description: WORKFLOW_DESCRIPTION,
       userId,
       projectId,
-      spec: buildThreeBOneBCliWorkflowSpec(),
-      nodes: buildThreeBOneBCliWorkflowNodes(),
-      edges: buildThreeBOneBCliWorkflowEdges(),
-      visibility: "public"
+      spec: buildSpec(kimiK3AnimationAgentRef),
+      nodes: [],
+      edges: [],
+      visibility: "public",
+      engineType: "dynamic-script"
     });
     await upsertRawWorkflow({
       db,

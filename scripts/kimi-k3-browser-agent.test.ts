@@ -1,20 +1,25 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildKimiK3BrowserAgentConfig,
   KIMI_K3_BROWSER_AGENT_SLUG,
   KIMI_K3_BROWSER_ALLOWED_TOOLS,
   KIMI_K3_BROWSER_PROBE_AGENT_SLUG,
-  jsonbParameter,
   migrateKimiK3BrowserWorkflowValue,
   migrateLegacyBrowserAgentReferences,
 } from "./kimi-k3-browser-agent";
 
 describe("Kimi K3 browser-agent migration", () => {
-  it("serializes JSONB arrays as strings for postgres parameters", () => {
-    expect(jsonbParameter(["kimi-k3", "vision"])).toBe('["kimi-k3","vision"]');
-    expect(() => jsonbParameter(undefined)).toThrow(
-      "Cannot serialize an undefined browser migration value",
+  it("binds structured values with postgres JSON parameters", () => {
+    const source = readFileSync(
+      new URL("./kimi-k3-browser-agent.ts", import.meta.url),
+      "utf8",
     );
+    expect(source).toContain("sql.json(");
+    expect(source).toContain("tx.json(");
+    expect(source).toContain("jsonb_typeof(av.config) as config_type");
+    expect(source).toContain('existing.config_type === "object"');
+    expect(source).not.toContain("jsonbParameter");
   });
 
   it("strips persistent target credentials while retaining host scope", () => {

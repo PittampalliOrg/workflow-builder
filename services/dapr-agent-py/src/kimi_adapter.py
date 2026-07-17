@@ -8,9 +8,11 @@ LLMChatResponse and structured calls return the requested Pydantic model.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import logging
 import os
+import socket
 import time
 from typing import Any
 from urllib.error import HTTPError
@@ -513,12 +515,395 @@ def _make_kimi_request(
         data=json.dumps(body).encode("utf-8"),
         headers={
             **auth_headers,
-            "Accept": "application/json",
+            "Accept": (
+                "text/event-stream" if body.get("stream") else "application/json"
+            ),
             "Content-Type": "application/json",
             "User-Agent": _user_agent(),
         },
         method="POST",
     )
+
+
+def _stream_idle_timeout_seconds() -> float:
+    """Return the maximum silence allowed between Kimi SSE bytes.
+
+    ``urllib`` applies this timeout to each blocking socket operation, not to
+    the lifetime of the response. A K3 request can therefore reason for much
+    longer than this value as long as the provider continues sending SSE data.
+    """
+    raw_value = os.environ.get("KIMI_STREAM_IDLE_TIMEOUT_SECONDS", "900")
+    try:
+        timeout = float(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "KIMI_STREAM_IDLE_TIMEOUT_SECONDS must be a positive number."
+        ) from exc
+    if timeout <= 0:
+        raise RuntimeError(
+            "KIMI_STREAM_IDLE_TIMEOUT_SECONDS must be a positive number."
+        )
+    return timeout
+
+
+_STREAM_DELTAS_ENABLED = os.environ.get(
+    "DAPR_AGENT_PY_STREAM_DELTAS", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+_DELTA_COALESCE_MS = int(os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_MS", "80"))
+_DELTA_COALESCE_BYTES = int(
+    os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_BYTES", "2048")
+)
+
+
+class _KimiStreamDeltaEmitter:
+    """Publish bounded K3 deltas without duplicating the terminal message."""
+
+    def __init__(self) -> None:
+        self._session_id: str | None = None
+        self._instance_id: str | None = None
+        self._publish: Any = None
+        self._buffers: dict[tuple[str, int], dict[str, Any]] = {}
+        if not _STREAM_DELTAS_ENABLED:
+            return
+        try:
+            from src.event_publisher import (
+                get_scoped_session,
+                publish_session_event,
+            )
+
+            self._session_id, self._instance_id = get_scoped_session()
+            if self._session_id:
+                self._publish = publish_session_event
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[delta-emit] Kimi session lookup failed: %s", exc)
+
+    def append(
+        self,
+        event_type: str,
+        index: int,
+        text: str,
+        *,
+        tool_use_id: str | None = None,
+    ) -> None:
+        if self._publish is None or not text:
+            return
+        key = (event_type, index)
+        entry = self._buffers.setdefault(
+            key,
+            {
+                "buf": "",
+                "cumulative": 0,
+                "opened_at_ns": time.monotonic_ns(),
+                "tool_use_id": tool_use_id,
+            },
+        )
+        if tool_use_id:
+            entry["tool_use_id"] = tool_use_id
+        entry["buf"] += text
+        entry["cumulative"] += len(text)
+
+        buffered_bytes = len(entry["buf"].encode("utf-8", "ignore"))
+        age_ms = (time.monotonic_ns() - entry["opened_at_ns"]) / 1_000_000
+        if buffered_bytes >= _DELTA_COALESCE_BYTES or age_ms >= _DELTA_COALESCE_MS:
+            self._flush(key)
+            entry["opened_at_ns"] = time.monotonic_ns()
+
+    def _flush(self, key: tuple[str, int]) -> None:
+        entry = self._buffers.get(key)
+        if self._publish is None or not entry or not entry.get("buf"):
+            return
+        event_type, index = key
+        payload: dict[str, Any] = {
+            "content_block_index": index,
+            "text": entry["buf"],
+            "cumulative_len": entry["cumulative"],
+        }
+        if entry.get("tool_use_id"):
+            payload["tool_use_id"] = entry["tool_use_id"]
+            payload["partial_json"] = entry["buf"]
+        try:
+            self._publish(
+                self._session_id,
+                event_type,
+                payload,
+                instance_id=self._instance_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[delta-emit] Kimi publish failed: %s", exc)
+        entry["buf"] = ""
+
+    def flush_all(self) -> None:
+        for key in list(self._buffers):
+            self._flush(key)
+
+
+def _iter_kimi_sse_data(
+    response: Any,
+    *,
+    idle_timeout_seconds: float,
+) -> Iterator[str]:
+    """Yield JSON payload strings until Kimi's required ``[DONE]`` event."""
+    data_lines: list[str] = []
+    while True:
+        try:
+            raw_line = response.readline()
+        except (TimeoutError, socket.timeout) as exc:
+            raise TimeoutError(
+                "Kimi SSE stream was idle for "
+                f"{idle_timeout_seconds:g} seconds before completion."
+            ) from exc
+
+        if raw_line == b"" or raw_line == "":
+            if data_lines:
+                payload = "\n".join(data_lines)
+                if payload == "[DONE]":
+                    return
+                yield payload
+            raise RuntimeError(
+                "Kimi SSE stream ended before the required data: [DONE] event."
+            )
+
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = str(raw_line)
+        line = line.rstrip("\r\n")
+
+        if not line:
+            if not data_lines:
+                continue
+            payload = "\n".join(data_lines)
+            data_lines = []
+            if payload == "[DONE]":
+                return
+            yield payload
+            continue
+
+        # SSE comments are valid keep-alives. Reading them resets the socket's
+        # per-operation idle timeout without producing a chat-completion chunk.
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+        elif data_lines:
+            # Kimi's no-SDK example treats a non-prefixed line as a
+            # continuation of the open data payload. Ignore unsupported SSE
+            # fields only when no data event is currently being assembled.
+            data_lines.append(line)
+
+
+def _merge_kimi_stream_tool_calls(
+    accumulated: dict[int, dict[str, Any]],
+    fragments: Any,
+) -> None:
+    if not isinstance(fragments, list):
+        return
+    for position, fragment in enumerate(fragments):
+        if not isinstance(fragment, dict):
+            continue
+        try:
+            index = int(fragment.get("index", position))
+        except (TypeError, ValueError):
+            index = position
+        if index < 0:
+            continue
+
+        call = accumulated.setdefault(
+            index,
+            {
+                "id": "",
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            },
+        )
+        call_id = fragment.get("id")
+        if call_id:
+            call["id"] += str(call_id)
+        call_type = fragment.get("type")
+        if call_type:
+            call["type"] = str(call_type)
+
+        raw_function = fragment.get("function")
+        if not isinstance(raw_function, dict):
+            continue
+        function = call["function"]
+        name = raw_function.get("name")
+        if name:
+            function["name"] += str(name)
+        arguments = raw_function.get("arguments")
+        if arguments is not None:
+            function["arguments"] += (
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, ensure_ascii=False)
+            )
+
+
+def _read_kimi_sse_response(
+    response: Any,
+    *,
+    idle_timeout_seconds: float,
+    request_started_at: float,
+) -> tuple[dict[str, Any], float | None]:
+    """Aggregate Kimi's OpenAI-compatible chat-completion SSE response."""
+    response_id: Any = None
+    response_model: Any = None
+    response_object: Any = "chat.completion"
+    response_created: Any = None
+    role = "assistant"
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    streamed_tool_calls: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    usage: dict[str, Any] = {}
+    first_token_at: float | None = None
+    received_chunk = False
+    delta_emitter = _KimiStreamDeltaEmitter()
+
+    for payload in _iter_kimi_sse_data(
+        response,
+        idle_timeout_seconds=idle_timeout_seconds,
+    ):
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Kimi SSE stream returned invalid JSON: {payload[:200]}"
+            ) from exc
+        if not isinstance(chunk, dict):
+            raise RuntimeError("Kimi SSE stream returned a non-object JSON chunk.")
+        received_chunk = True
+
+        stream_error = chunk.get("error")
+        if stream_error:
+            if isinstance(stream_error, dict):
+                detail = stream_error.get("message") or json.dumps(stream_error)
+            else:
+                detail = str(stream_error)
+            raise RuntimeError(f"Kimi Chat API stream failed: {detail}")
+
+        response_id = chunk.get("id") or response_id
+        response_model = chunk.get("model") or response_model
+        response_object = chunk.get("object") or response_object
+        response_created = chunk.get("created") or response_created
+        top_level_usage = chunk.get("usage")
+        if isinstance(top_level_usage, dict):
+            usage = top_level_usage
+
+        choices = chunk.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            try:
+                choice_index = int(choice.get("index", 0))
+            except (TypeError, ValueError):
+                choice_index = 0
+            if choice_index != 0:
+                continue
+
+            choice_usage = choice.get("usage")
+            if isinstance(choice_usage, dict):
+                usage = choice_usage
+            if choice.get("finish_reason") is not None:
+                finish_reason = str(choice["finish_reason"])
+
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            if delta.get("role"):
+                role = str(delta["role"])
+
+            reasoning_delta = _as_text(
+                delta.get("reasoning_content")
+                or delta.get("reasoning")
+                or delta.get("thinking")
+            )
+            content_delta = _as_text(delta.get("content"))
+            tool_fragments = delta.get("tool_calls")
+            if reasoning_delta or content_delta or tool_fragments:
+                first_token_at = first_token_at or time.monotonic()
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+                delta_emitter.append("agent.thinking_delta", 0, reasoning_delta)
+            if content_delta:
+                content_parts.append(content_delta)
+                delta_emitter.append("agent.message_delta", 1, content_delta)
+            _merge_kimi_stream_tool_calls(streamed_tool_calls, tool_fragments)
+            if isinstance(tool_fragments, list):
+                for position, fragment in enumerate(tool_fragments):
+                    if not isinstance(fragment, dict):
+                        continue
+                    try:
+                        tool_index = int(fragment.get("index", position))
+                    except (TypeError, ValueError):
+                        tool_index = position
+                    if tool_index < 0:
+                        continue
+                    raw_function = fragment.get("function")
+                    if not isinstance(raw_function, dict):
+                        continue
+                    raw_arguments = raw_function.get("arguments")
+                    if raw_arguments is None:
+                        continue
+                    argument_delta = (
+                        raw_arguments
+                        if isinstance(raw_arguments, str)
+                        else json.dumps(raw_arguments, ensure_ascii=False)
+                    )
+                    accumulated_call = streamed_tool_calls.get(tool_index) or {}
+                    delta_emitter.append(
+                        "agent.tool_input_delta",
+                        tool_index + 2,
+                        argument_delta,
+                        tool_use_id=str(accumulated_call.get("id") or "") or None,
+                    )
+
+    delta_emitter.flush_all()
+
+    if not received_chunk:
+        raise RuntimeError("Kimi SSE stream completed without a response chunk.")
+
+    tool_calls: list[dict[str, Any]] = []
+    for index in sorted(streamed_tool_calls):
+        normalized = _normalize_tool_call(streamed_tool_calls[index])
+        if normalized is None:
+            raise RuntimeError(
+                f"Kimi SSE stream returned an incomplete tool call at index {index}."
+            )
+        tool_calls.append(normalized)
+
+    message: dict[str, Any] = {
+        "role": role,
+        "content": "".join(content_parts),
+    }
+    reasoning_content = "".join(reasoning_parts)
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    data: dict[str, Any] = {
+        "id": response_id,
+        "object": response_object,
+        "created": response_created,
+        "model": response_model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": usage,
+    }
+    ttft_ms = (
+        (first_token_at - request_started_at) * 1000.0
+        if first_token_at is not None
+        else None
+    )
+    return data, ttft_ms
 
 
 def _header(exc: HTTPError, *names: str) -> str | None:
@@ -717,7 +1102,7 @@ def _call_kimi_chat(
         "KIMI_CHAT_COMPLETIONS_URL",
         f"{base_url.rstrip('/')}/chat/completions",
     )
-    timeout = int(os.environ.get("KIMI_TIMEOUT_SECONDS", "300"))
+    idle_timeout_seconds = _stream_idle_timeout_seconds()
     output_cap = max_tokens or int(
         os.environ.get(
             "KIMI_MAX_COMPLETION_TOKENS",
@@ -732,7 +1117,7 @@ def _call_kimi_chat(
             else messages
         ),
         "max_completion_tokens": output_cap,
-        "stream": False,
+        "stream": True,
     }
     if converted_tools:
         request_body["tools"] = converted_tools
@@ -762,14 +1147,22 @@ def _call_kimi_chat(
         auth_mode,
     )
     data: dict[str, Any]
+    ttft_ms: float | None = None
     rate_limit_retries = _rate_limit_max_retries()
     attempt = 0
     try:
         while True:
             req = _make_kimi_request(url, request_body, headers)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    data = json.loads(resp.read() or b"{}")
+                with urllib.request.urlopen(
+                    req,
+                    timeout=idle_timeout_seconds,
+                ) as resp:
+                    data, ttft_ms = _read_kimi_sse_response(
+                        resp,
+                        idle_timeout_seconds=idle_timeout_seconds,
+                        request_started_at=llm_start,
+                    )
                 break
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
@@ -795,7 +1188,7 @@ def _call_kimi_chat(
         _publish_llm_usage(
             model=model,
             usage=None,
-            ttft_ms=elapsed,
+            ttft_ms=ttft_ms if ttft_ms is not None else elapsed,
             duration_ms=elapsed,
             success=False,
             error=str(exc),
@@ -805,6 +1198,7 @@ def _call_kimi_chat(
     content, tool_calls, finish_reason, reasoning_content = _extract_kimi_response(data)
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     duration_ms = (time.monotonic() - llm_start) * 1000.0
+    effective_ttft_ms = ttft_ms if ttft_ms is not None else duration_ms
     if response_format is not None and not content.strip():
         error = (
             "Kimi Chat API returned empty assistant content for "
@@ -815,7 +1209,7 @@ def _call_kimi_chat(
         _publish_llm_usage(
             model=model,
             usage=usage,
-            ttft_ms=duration_ms,
+            ttft_ms=effective_ttft_ms,
             duration_ms=duration_ms,
             success=False,
             error=error,
@@ -838,7 +1232,7 @@ def _call_kimi_chat(
                 output_tokens=output_tokens or None,
                 success=True,
                 has_tool_call=bool(tool_calls),
-                ttft_ms=duration_ms,
+                ttft_ms=effective_ttft_ms,
                 model_output=content or None,
                 thinking_output=reasoning_content or None,
             )
@@ -850,7 +1244,7 @@ def _call_kimi_chat(
     _publish_llm_usage(
         model=model,
         usage=usage,
-        ttft_ms=duration_ms,
+        ttft_ms=effective_ttft_ms,
         duration_ms=duration_ms,
         success=True,
     )
@@ -884,7 +1278,7 @@ def _call_kimi_chat(
             request_model=model,
             max_tokens=max_tokens,
             tools_count=len(tools) if tools else None,
-            streaming=False,
+            streaming=True,
         )
         set_genai_response_attrs(
             response_model=data.get("model") or model,

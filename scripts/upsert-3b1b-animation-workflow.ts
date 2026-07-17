@@ -202,14 +202,6 @@ function hashConfig(config: JsonRecord): string {
   return hashAgentConfig(config as AgentConfig);
 }
 
-export function jsonbParameter(value: unknown): string {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined) {
-    throw new TypeError("Cannot serialize an undefined 3B1B seed value");
-  }
-  return serialized;
-}
-
 export async function ensureKimiAgent(
   sql: postgres.Sql,
   owner: { userId: string; projectId: string | null },
@@ -217,7 +209,7 @@ export async function ensureKimiAgent(
   const config = KIMI_AGENT_CONFIG as unknown as JsonRecord;
   const configHash = hashConfig(config);
   const existingRows = await sql`
-    select a.id, av.version, av.config_hash
+    select a.id, av.version, av.config_hash, jsonb_typeof(av.config) as config_type
     from agents a
     left join agent_versions av on av.id = a.current_version_id
     where a.slug = ${KIMI_AGENT_SLUG}
@@ -225,13 +217,17 @@ export async function ensureKimiAgent(
   `;
   const existing = existingRows[0];
 
-  if (existing?.id && existing.config_hash === configHash) {
+  if (
+    existing?.id &&
+    existing.config_hash === configHash &&
+    existing.config_type === "object"
+  ) {
     await sql`
       update agents
       set
         name = ${KIMI_AGENT_NAME},
         description = ${KIMI_AGENT_DESCRIPTION},
-        tags = ${jsonbParameter(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+        tags = ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
         runtime = ${"dapr-agent-py"},
         registry_status = ${"registered"},
         is_archived = false,
@@ -240,7 +236,7 @@ export async function ensureKimiAgent(
         and (
           name is distinct from ${KIMI_AGENT_NAME}
           or description is distinct from ${KIMI_AGENT_DESCRIPTION}
-          or tags is distinct from ${jsonbParameter(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb
+          or tags is distinct from ${sql.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}
           or runtime is distinct from ${"dapr-agent-py"}
           or registry_status is distinct from ${"registered"}
           or is_archived is distinct from false
@@ -265,7 +261,7 @@ export async function ensureKimiAgent(
           changelog, published_at, published_by, created_at
         ) values (
           ${versionId}, ${existing.id}, ${nextVersion},
-          ${jsonbParameter(config)}::jsonb, ${configHash},
+          ${tx.json(config as postgres.JSONValue)}, ${configHash},
           ${"Reconcile the 3B1B animation agent to Kimi K3 with max reasoning and a 1M-token context window."},
           now(), ${owner.userId}, now()
         )
@@ -275,7 +271,7 @@ export async function ensureKimiAgent(
         set
           name = ${KIMI_AGENT_NAME},
           description = ${KIMI_AGENT_DESCRIPTION},
-          tags = ${jsonbParameter(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+          tags = ${tx.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
           runtime = ${"dapr-agent-py"},
           registry_status = ${"registered"},
           is_archived = false,
@@ -299,9 +295,9 @@ export async function ensureKimiAgent(
       ) values (
         ${agentId}, ${KIMI_AGENT_SLUG}, ${KIMI_AGENT_NAME},
         ${KIMI_AGENT_DESCRIPTION},
-        ${jsonbParameter(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])}::jsonb,
+        ${tx.json(["dapr-agent-py", "kimi-k3", "animation", "3b1b"])},
         ${"dapr-agent-py"}, ${owner.userId}, ${owner.projectId},
-        ${"registered"}, false, ${jsonbParameter([])}::jsonb, now(), now()
+        ${"registered"}, false, ${tx.json([])}, now(), now()
       )
     `;
     await tx`
@@ -310,7 +306,7 @@ export async function ensureKimiAgent(
         changelog, published_at, published_by, created_at
       ) values (
         ${versionId}, ${agentId}, 1,
-        ${jsonbParameter(config)}::jsonb, ${configHash},
+        ${tx.json(config as postgres.JSONValue)}, ${configHash},
         ${"Initial Kimi K3 definition for the 3B1B animation workflow."},
         now(), ${owner.userId}, now()
       )
@@ -780,12 +776,12 @@ async function main() {
         ${WORKFLOW_DESCRIPTION},
         ${owner.userId},
         ${owner.projectId},
-        ${jsonbParameter(nodes)}::jsonb,
-        ${jsonbParameter(edges)}::jsonb,
+        ${sql.json(nodes as postgres.JSONValue)},
+        ${sql.json(edges as postgres.JSONValue)},
         ${"public"},
         ${"dapr"},
         ${"1.0.0"},
-        ${jsonbParameter(spec)}::jsonb,
+        ${sql.json(spec as postgres.JSONValue)},
         ${now},
         ${now}
       )
