@@ -268,9 +268,9 @@ describe("preview-ui-development-gan port", () => {
 				status: "done",
 				value: {
 					ok: true,
-					url: "https://wfb-feature.tail286401.ts.net",
+					url: "http://10.0.0.8:3000",
 					browseUrl: "https://wfb-feature.tail286401.ts.net",
-					syncUrl: "https://wfb-feature.tail286401.ts.net/__sync",
+					syncUrl: "http://10.0.0.8:8001/__sync",
 					syncCapability: "capability",
 				},
 			};
@@ -291,5 +291,45 @@ describe("preview-ui-development-gan port", () => {
 		expect(plan.opts.agent).toBe("glm-juicefs-builder-agent");
 		expect(plan.opts.model).toBe("zai/glm-5.2");
 		expect(plan.opts.isolation).toBe("shared");
+		expect(plan.prompt).toContain("http://10.0.0.8:8001/__export");
+		expect(plan.prompt).not.toContain("http://10.0.0.8:3000/__export");
+		results[plan.callId] = { status: "done", value: "planned" };
+		known.push(plan.callId);
+
+		const third = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: { intent: "improve dashboard status visibility" },
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: results,
+			knownCallIds: known,
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		expect(third.status).toBe("need");
+		const ensureContract = third.tasks[0];
+		expect(ensureContract.kind).toBe("action");
+		expect(ensureContract.actionSlug).toBe("workspace/command");
+		expect(ensureContract.opts.label).toBe("ensure dashboard contract");
+		results[ensureContract.callId] = {
+			status: "done",
+			value: { exitCode: 0, stdout: "{}" },
+		};
+		known.push(ensureContract.callId);
+
+		const fourth = await evaluateScript({
+			script: previewUiDevelopmentGan,
+			args: { intent: "improve dashboard status visibility" },
+			budget: { total: 5_000_000, spent: 0 },
+			completedResults: results,
+			knownCallIds: known,
+			seenLogCount: 0,
+			features: { actions: true },
+		});
+		expect(fourth.status).toBe("need");
+		const generate = fourth.tasks[0];
+		expect(generate.kind).toBe("agent");
+		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
+		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
+		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");
 	});
 });

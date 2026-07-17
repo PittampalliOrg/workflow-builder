@@ -65,8 +65,11 @@ const services =
     ? t.services
     : ["workflow-builder"];
 const ttlHours = Number.isInteger(t.ttlHours) ? t.ttlHours : 8;
-const retainAfterCompletion = t.retainAfterCompletion === true;
-const retainOnFailure = t.retainOnFailure === true;
+function asBoolean(value) {
+  return value === true || String(value).trim().toLowerCase() === "true";
+}
+const retainAfterCompletion = asBoolean(t.retainAfterCompletion);
+const retainOnFailure = asBoolean(t.retainOnFailure);
 
 if (!intent) throw new Error("intent is required");
 if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(environmentName)) {
