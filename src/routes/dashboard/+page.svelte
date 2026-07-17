@@ -155,6 +155,34 @@
 		</Alert>
 	{/if}
 
+	<!-- Preview lifecycle PR proof panel: compact, demonstrable marker
+	     that HMR live-sync is active. Uses dashboard data when loaded,
+	     otherwise renders a graceful static/empty state. -->
+	<Card class="border-primary/40 bg-primary/5">
+		<CardHeader class="pb-2">
+			<CardTitle class="text-sm flex items-center gap-2">
+				<Activity class="size-4" /> Preview lifecycle PR proof
+			</CardTitle>
+		</CardHeader>
+		<CardContent class="text-xs text-muted-foreground">
+			<div class="flex items-center gap-2 flex-wrap">
+				<Badge variant="outline" class="bg-emerald-500/10 text-emerald-600">
+					HMR live-sync active
+				</Badge>
+				{#if loading}
+					<span>Dashboard loading…</span>
+				{:else if data}
+					<span>
+						{data.stats.totalAgents} agent{data.stats.totalAgents === 1 ? '' : 's'} ·
+						{data.stats.activeSessions} active session{data.stats.activeSessions === 1 ? '' : 's'}
+					</span>
+				{:else}
+					<span>No dashboard data yet — empty state.</span>
+				{/if}
+			</div>
+		</CardContent>
+	</Card>
+
 	{#if loading}
 		<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
 			{#each Array(4) as _, i (i)}
