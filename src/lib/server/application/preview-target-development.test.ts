@@ -926,6 +926,69 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
     expect(getWorkflowStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("reports only mismatch field names for preview-local start responses", async () => {
+    const workflow = {
+      executionId: "child-execution",
+      workflowName: "preview-ui-development-gan" as const,
+      workflowSpecDigest: digest,
+    };
+    const authorizeRuntime = vi.fn(async () => ({
+      previewName: target.previewName,
+      requestId: target.environmentRequestId,
+      owner: "admin-1",
+      platformRevision: target.platformRevision as ImmutableGitSha,
+      sourceRevision: target.sourceRevision as ImmutableGitSha,
+      catalogDigest: target.catalogDigest,
+      services: ["workflow-builder"],
+    }));
+    const service = new ApplicationPreviewTargetDevelopmentBrokerService({
+      previews: { get: vi.fn(async () => previewRecord() as never) },
+      authority: {
+        authorizeRuntime,
+        authorizeRuntimeTuple: vi.fn(),
+      } as never,
+      capabilities: { mintControl: vi.fn(() => "leaf-capability") },
+      transport: {
+        startWorkflow: vi.fn(async (input) => ({
+          kind: "start-workflow",
+          operationId: input.operationId,
+          target: {
+            ...input.target,
+            catalogDigest: `sha256:${"f".repeat(64)}`,
+          },
+          ...input.workflow,
+          workflowSpecDigest: `sha256:${"e".repeat(64)}`,
+          instanceId: "instance-1",
+          status: "running",
+          reused: false,
+          leaked: "candidate-controlled-secret",
+        })),
+        getWorkflowStatus: vi.fn(),
+        signalWorkflow: vi.fn(),
+      },
+      receipts: { getScoped: vi.fn() },
+    });
+    const startInput = {
+      parentExecutionId: "parent-execution",
+      actorUserId: "admin-1",
+      operationId: operation("start-workflow", "1"),
+      target,
+      workflow,
+      workflowInput: {
+        intent: "Change the dashboard",
+        services: ["workflow-builder"],
+        keepPreview: true,
+      },
+    } as const;
+
+    await expect(service.startWorkflow(startInput)).rejects.toThrow(
+      "preview-local response does not match the dispatched command: target.catalogDigest, workflowSpecDigest",
+    );
+    await expect(service.startWorkflow(startInput)).rejects.not.toThrow(
+      "candidate-controlled-secret",
+    );
+  });
+
   it("rejects a same-owner command from a different parent workflow", async () => {
     const h = harness();
 

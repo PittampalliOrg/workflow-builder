@@ -578,26 +578,55 @@ function remoteResultRecord(
 ): Record<string, unknown> {
   const value = record(result);
   const remoteTarget = record(value?.target);
-  if (
-    !value ||
-    value.kind !== kind ||
-    value.operationId !== input.operationId ||
-    !remoteTarget ||
-    remoteTarget.previewName !== input.target.previewName ||
-    remoteTarget.environmentRequestId !== input.target.environmentRequestId ||
-    remoteTarget.platformRevision !== input.target.platformRevision ||
-    remoteTarget.sourceRevision !== input.target.sourceRevision ||
-    remoteTarget.catalogDigest !== input.target.catalogDigest ||
-    value.executionId !== input.workflow.executionId ||
-    value.workflowName !== input.workflow.workflowName ||
-    value.workflowSpecDigest !== input.workflow.workflowSpecDigest
-  ) {
+  const mismatches = remoteResultMismatches(value, remoteTarget, input, kind);
+  if (mismatches.length > 0) {
     throw new PreviewTargetDevelopmentError(
       "contract-mismatch",
-      "preview-local response does not match the dispatched command",
+      `preview-local response does not match the dispatched command: ${mismatches.join(", ")}`,
     );
   }
-  return value;
+  return value!;
+}
+
+function remoteResultMismatches(
+  value: Record<string, unknown> | null,
+  remoteTarget: Record<string, unknown> | null,
+  input: PreviewDevelopmentBrokerStatusInput,
+  kind: OperationKind,
+): string[] {
+  if (!value) return ["response"];
+  const mismatches: string[] = [];
+  if (value.kind !== kind) mismatches.push("kind");
+  if (value.operationId !== input.operationId) mismatches.push("operationId");
+  if (!remoteTarget) {
+    mismatches.push("target");
+  } else {
+    if (remoteTarget.previewName !== input.target.previewName) {
+      mismatches.push("target.previewName");
+    }
+    if (remoteTarget.environmentRequestId !== input.target.environmentRequestId) {
+      mismatches.push("target.environmentRequestId");
+    }
+    if (remoteTarget.platformRevision !== input.target.platformRevision) {
+      mismatches.push("target.platformRevision");
+    }
+    if (remoteTarget.sourceRevision !== input.target.sourceRevision) {
+      mismatches.push("target.sourceRevision");
+    }
+    if (remoteTarget.catalogDigest !== input.target.catalogDigest) {
+      mismatches.push("target.catalogDigest");
+    }
+  }
+  if (value.executionId !== input.workflow.executionId) {
+    mismatches.push("executionId");
+  }
+  if (value.workflowName !== input.workflow.workflowName) {
+    mismatches.push("workflowName");
+  }
+  if (value.workflowSpecDigest !== input.workflow.workflowSpecDigest) {
+    mismatches.push("workflowSpecDigest");
+  }
+  return mismatches;
 }
 
 function canonicalRemoteStartResult(
