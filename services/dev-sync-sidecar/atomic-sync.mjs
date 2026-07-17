@@ -261,7 +261,7 @@ function filesHaveEqualContents(left, right, size) {
 	}
 }
 
-function buildReconciliationPlan(live, staged, relativePath, plan) {
+function buildReconciliationPlan(live, staged, relativePath, plan, options = {}) {
 	const liveStat = lstatIfPresent(live);
 	const stagedStat = lstatIfPresent(staged);
 	if (!liveStat && !stagedStat) return;
@@ -270,6 +270,7 @@ function buildReconciliationPlan(live, staged, relativePath, plan) {
 		return;
 	}
 	if (!stagedStat) {
+		if (!options.pruneMissing) return;
 		plan.push({ operation: 'delete', relativePath });
 		return;
 	}
@@ -304,12 +305,13 @@ function buildReconciliationPlan(live, staged, relativePath, plan) {
 			path.join(live, entry),
 			path.join(staged, entry),
 			`${relativePath}/${entry}`,
-			plan
+			plan,
+			options
 		);
 	}
 }
 
-function reconciliationPlan(root, stageRoot, roots) {
+function reconciliationPlan(root, stageRoot, roots, options = {}) {
 	const plan = [];
 	const changedRoots = [];
 	for (const relativeRoot of roots) {
@@ -318,7 +320,8 @@ function reconciliationPlan(root, stageRoot, roots) {
 			path.join(root, relativeRoot),
 			path.join(stageRoot, relativeRoot),
 			relativeRoot,
-			plan
+			plan,
+			options
 		);
 		if (plan.length !== before) changedRoots.push(relativeRoot);
 	}
@@ -472,7 +475,9 @@ export async function applyAtomicDevSync(options) {
 	let changedRoots;
 	try {
 		for (const root of roots) assertSafeLiveParents(options.root, root);
-		({ plan, changedRoots } = reconciliationPlan(options.root, stageRoot, roots));
+		({ plan, changedRoots } = reconciliationPlan(options.root, stageRoot, roots, {
+			pruneMissing: options.pruneMissing === true
+		}));
 	} catch (error) {
 		bestEffortRemove(transactionRoot);
 		throw new DevSyncTransactionError(

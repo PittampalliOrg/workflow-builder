@@ -17,6 +17,8 @@
 #   EXTRASYNC  optional: space-separated  from:to  pairs (from rel to SUBDIR, to rel
 #              to the tar root/pod workdir) staged into the tar before it is built
 #   SYNC_TOKEN x-sync-token capability used for uploads and status proof
+#   SYNC_MODE  optional sync mode, defaults to "replace" because this script sends
+#              authoritative full snapshots of the declared PATHS/EXTRASYNC roots.
 #
 # On each run, per service: stage extraSync → tar existing paths → POST /__sync →
 # if a dep manifest changed since the last run, POST /__run?cmd=deps (the sidecar
@@ -158,7 +160,7 @@ maybe_deps() {
 load_config() {
 	_cfg=$1
 	_config_service=${2:-}
-	SUBDIR="" PATHS="" SYNCURL="" HEALTHURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE=""
+	SUBDIR="" PATHS="" SYNCURL="" HEALTHURL="" EXTRASYNC="" SYNC_TOKEN="" SERVICE="" SYNC_MODE=""
 	# shellcheck disable=SC1090
 	. "$_cfg"
 	: "${SUBDIR:=.}"
@@ -168,6 +170,7 @@ load_config() {
 	: "${EXTRASYNC:=}"
 	: "${SYNC_TOKEN:=}"
 	: "${SERVICE:=}"
+	: "${SYNC_MODE:=replace}"
 	_sync_service=$SERVICE
 	[ -n "$_sync_service" ] || _sync_service=$_config_service
 	if [ -z "$_sync_service" ]; then
@@ -318,6 +321,7 @@ upload_one() {
 		-H "x-sync-generation: $SYNC_GENERATION_VALUE" \
 		-H "x-sync-service: $_sync_service" \
 		-H "x-sync-roots: $_expected_roots" \
+		-H "x-sync-mode: $SYNC_MODE" \
 		${SYNC_TOKEN:+-H "x-sync-token: $SYNC_TOKEN"} "$SYNCURL" 2>"$_sync_error")
 	_curl_exit=$?
 	case "$result" in

@@ -95,6 +95,7 @@ const MAX_REPORTED_CHANGED_PATHS = 50;
 const GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FREEZE_OPERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SERVICE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const SYNC_MODES = new Set(['merge', 'replace']);
 
 /**
  * The /__run allowlist. Parsed ONCE at boot — SEA stamps it into the pod's env
@@ -452,6 +453,14 @@ function handleSync(req, res) {
 			error: `x-sync-service ${syncService} does not match ${CONFIGURED_SERVICE}`
 		});
 	}
+	const syncMode = readHeader(req, 'x-sync-mode') || 'merge';
+	if (!SYNC_MODES.has(syncMode)) {
+		req.resume();
+		return reply(res, 400, {
+			ok: false,
+			error: 'x-sync-mode must be merge or replace'
+		});
+	}
 	let declaredRoots;
 	try {
 		declaredRoots = parseDeclaredSyncRoots(readHeader(req, 'x-sync-roots'), ALLOWED_ROOTS);
@@ -535,6 +544,7 @@ function handleSync(req, res) {
 					bytes: buf.length,
 					generation,
 					service: syncService,
+					syncMode,
 					contentSha256
 				});
 			}
@@ -564,6 +574,7 @@ function handleSync(req, res) {
 			nextState,
 			stateFile: SYNC_STATE_FILE,
 			persistState: persistSyncState,
+			pruneMissing: syncMode === 'replace',
 			beforeCommit: (entries) => {
 				addedRoutes = detectAddedRouteFiles(entries);
 			}
@@ -601,6 +612,7 @@ function handleSync(req, res) {
 					dest: DEST,
 					generation,
 					service: syncService,
+					syncMode,
 					contentSha256,
 					changedRoots,
 					changedPathCount: changedPaths.length,

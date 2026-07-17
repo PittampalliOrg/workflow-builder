@@ -230,6 +230,64 @@ test('POST /__sync requires the token and untars into the dest', async (t) => {
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/nested/b.txt'), 'utf8'), 'nested');
 });
 
+test('POST /__sync defaults to merge mode so patch archives do not prune source roots', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	fs.mkdirSync(path.join(s.dest, 'src/routes/dashboard'), { recursive: true });
+	fs.mkdirSync(path.join(s.dest, 'src/lib'), { recursive: true });
+	fs.writeFileSync(path.join(s.dest, 'src/app.html'), '<div id="svelte">%sveltekit.body%</div>');
+	fs.writeFileSync(path.join(s.dest, 'src/lib/keep.ts'), 'export const keep = true;');
+	fs.writeFileSync(path.join(s.dest, 'src/routes/dashboard/+page.svelte'), '<h1>before</h1>');
+
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('patch-generation-1'),
+		body: makeTarGz({ 'src/routes/dashboard/+page.svelte': '<h1>after</h1>' }, {}, ['src'])
+	});
+	assert.equal(response.status, 200);
+	const body = await response.json();
+	assert.equal(body.ok, true);
+	assert.equal(body.syncMode, 'merge');
+	assert.deepEqual(body.changedRoots, ['src']);
+	assert.deepEqual(body.changedPaths, ['src/routes/dashboard/+page.svelte']);
+	assert.equal(
+		fs.readFileSync(path.join(s.dest, 'src/routes/dashboard/+page.svelte'), 'utf8'),
+		'<h1>after</h1>'
+	);
+	assert.equal(
+		fs.readFileSync(path.join(s.dest, 'src/app.html'), 'utf8'),
+		'<div id="svelte">%sveltekit.body%</div>'
+	);
+	assert.equal(fs.readFileSync(path.join(s.dest, 'src/lib/keep.ts'), 'utf8'), 'export const keep = true;');
+});
+
+test('POST /__sync supports explicit replace mode for full root snapshots', async (t) => {
+	const s = await startSidecar();
+	t.after(() => s.stop());
+	fs.mkdirSync(path.join(s.dest, 'src/routes/dashboard'), { recursive: true });
+	fs.mkdirSync(path.join(s.dest, 'src/lib'), { recursive: true });
+	fs.writeFileSync(path.join(s.dest, 'src/app.html'), '<div id="svelte">%sveltekit.body%</div>');
+	fs.writeFileSync(path.join(s.dest, 'src/lib/keep.ts'), 'export const keep = true;');
+	fs.writeFileSync(path.join(s.dest, 'src/routes/dashboard/+page.svelte'), '<h1>before</h1>');
+
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { ...syncHeaders('replace-generation-1'), 'x-sync-mode': 'replace' },
+		body: makeTarGz({ 'src/routes/dashboard/+page.svelte': '<h1>after</h1>' }, {}, ['src'])
+	});
+	assert.equal(response.status, 200);
+	const body = await response.json();
+	assert.equal(body.ok, true);
+	assert.equal(body.syncMode, 'replace');
+	assert.ok(body.changedPaths.includes('src/app.html'));
+	assert.ok(!fs.existsSync(path.join(s.dest, 'src/app.html')));
+	assert.ok(!fs.existsSync(path.join(s.dest, 'src/lib/keep.ts')));
+	assert.equal(
+		fs.readFileSync(path.join(s.dest, 'src/routes/dashboard/+page.svelte'), 'utf8'),
+		'<h1>after</h1>'
+	);
+});
+
 test('POST /__sync accepts the preview-scoped agent capability without exposing the root token', async (t) => {
 	const agentToken = '2'.repeat(64);
 	const s = await startSidecar({
@@ -574,7 +632,7 @@ test('file-granular reconciliation propagates deletions without replacing kept f
 
 	const second = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
-		headers: syncHeaders('deletion-2', SERVICE, roots),
+		headers: { ...syncHeaders('deletion-2', SERVICE, roots), 'x-sync-mode': 'replace' },
 		body: makeTarGz({ 'src/keep.txt': 'old' })
 	});
 	assert.equal(second.status, 200);
