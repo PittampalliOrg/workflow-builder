@@ -16,6 +16,10 @@ vi.mock("$lib/server/kube/client", () => ({
 }));
 vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
   maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
+  sessionHostAppId: (sessionId: string) =>
+    sessionId === "exec-1__preview-source-promotion"
+      ? "agent-session-derived"
+      : `agent-session-${sessionId}`,
 }));
 vi.mock("$lib/server/workflows/github-token", () => ({
   resolveWorkflowGithubToken: mocks.resolveWorkflowGithubToken,
@@ -104,7 +108,26 @@ describe("workspace helper provisioning boundary", () => {
     );
   });
 
-  it("skips cleanup when provisioning never returned a sandbox name", async () => {
+  it("derives the helper sandbox from the helper session id when SEA omits it", async () => {
+    mocks.deleteKubernetesSandbox.mockResolvedValue("deleted");
+
+    await expect(
+      cleanupWorkspaceHelperPod({
+        helperSessionId: "exec-1__preview-source-promotion",
+      }),
+    ).resolves.toBe("deleted");
+    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
+      "agent-host-agent-session-derived",
+    );
+    expect(mocks.waitForKubernetesSandboxDeleted).toHaveBeenCalledWith(
+      "agent-host-agent-session-derived",
+    );
+    expect(mocks.deleteCliStorageForSession).toHaveBeenCalledWith(
+      "exec-1__preview-source-promotion",
+    );
+  });
+
+  it("skips cleanup when provisioning returned no cleanup identity", async () => {
     await expect(cleanupWorkspaceHelperPod(null)).resolves.toBe("skipped");
     await expect(cleanupWorkspaceHelperPod({ sandboxName: "" })).resolves.toBe(
       "skipped",
