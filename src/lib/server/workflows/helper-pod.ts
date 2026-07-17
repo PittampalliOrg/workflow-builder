@@ -13,6 +13,7 @@
 
 import http from "node:http";
 import https from "node:https";
+import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { AgentConfig } from "$lib/types/agents";
@@ -41,6 +42,7 @@ export async function provisionWorkspaceHelperPod(
   baseUrl: string;
   token: string;
   githubToken: string | null;
+  sandboxName: string | null;
 } | null> {
   const helperSessionId = `${executionId}__${suffix}`;
   const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
@@ -61,7 +63,12 @@ export async function provisionWorkspaceHelperPod(
         opts?.sharedWorkspaceKey ?? `${executionId}__${suffix}`,
     });
     if (prov?.status === "ready" && prov.baseUrl) {
-      return { baseUrl: prov.baseUrl, token, githubToken };
+      return {
+        baseUrl: prov.baseUrl,
+        token,
+        githubToken,
+        sandboxName: prov.sandboxName ?? null,
+      };
     }
   } catch (err) {
     console.warn(
@@ -70,6 +77,23 @@ export async function provisionWorkspaceHelperPod(
     );
   }
   return null;
+}
+
+/** Delete the helper Sandbox CR after the fixed helper command has completed. */
+export async function cleanupWorkspaceHelperPod(
+  helper: { sandboxName?: string | null } | null,
+): Promise<"deleted" | "missing" | "skipped" | "failed"> {
+  const sandboxName = helper?.sandboxName?.trim();
+  if (!sandboxName) return "skipped";
+  try {
+    return await deleteKubernetesSandbox(sandboxName);
+  } catch (err) {
+    console.warn(
+      `[helper-pod] cleanup failed for ${sandboxName}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return "failed";
+  }
 }
 
 /** Run a fixed command in a helper pod via cli-agent-py /internal/workspace/command. */

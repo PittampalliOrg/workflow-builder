@@ -8,6 +8,7 @@ import type {
 } from "$lib/server/application/ports";
 import { evaluatePromotionGate } from "$lib/server/workflows/promotion-gates";
 import {
+  cleanupWorkspaceHelperPod,
   internalBffBaseUrl,
   provisionWorkspaceHelperPod,
   runHelperCommand,
@@ -78,13 +79,18 @@ export class HelperPodSourceBundlePromotionRunner implements SourceBundlePromoti
       bundleUrl,
       this.opts,
     );
-    const result = await runHelperCommand(
-      helper.baseUrl,
-      helper.token,
-      command,
-      "/tmp",
-      300_000,
-    );
+    let result: Awaited<ReturnType<typeof runHelperCommand>>;
+    try {
+      result = await runHelperCommand(
+        helper.baseUrl,
+        helper.token,
+        command,
+        "/tmp",
+        300_000,
+      );
+    } finally {
+      await cleanupWorkspaceHelperPod(helper);
+    }
     if (!result) {
       return {
         status: "unavailable",
