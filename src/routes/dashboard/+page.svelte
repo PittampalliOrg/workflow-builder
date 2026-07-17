@@ -17,11 +17,16 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequest,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		Power,
+		RefreshCw,
+		Rocket,
+		Server,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -65,8 +70,33 @@
 		sessionCount: number;
 	};
 
+	// Preview environment catalog + fast-path capability descriptor, served by
+	// GET /api/v1/fast-path/services. All fields optional/guarded so a missing
+	// or partial payload renders a graceful empty state instead of crashing.
+	type PreviewService = {
+		service?: string;
+		primaryCluster?: string;
+		previewTier?: string;
+		needsDapr?: boolean;
+		port?: number;
+		syncMode?: string;
+		repoUrl?: string;
+		repoSubdir?: string;
+		tailnetHost?: string | null;
+	};
+	type PreviewServicesPayload = {
+		services?: PreviewService[];
+		capabilities?: {
+			preview?: string[];
+			sync?: { contentTypes?: string[]; maxBytes?: number };
+			run?: string;
+			promote?: string[];
+		};
+	};
+
 	let data = $state<DashboardPayload | null>(null);
 	let recentRuns = $state<RecentRun[]>([]);
+	let previewServices = $state<PreviewServicesPayload | null>(null);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
@@ -82,6 +112,30 @@
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
 	);
 
+	// Derived helpers for the Preview Development Status panel. All guarded so
+	// a null/empty payload yields a graceful empty state.
+	let previewServiceList = $derived(previewServices?.services ?? []);
+	let previewCapability = $derived(previewServices?.capabilities ?? null);
+	let previewSupportsTeardown = $derived(
+		Array.isArray(previewCapability?.preview) &&
+			(previewCapability?.preview ?? []).includes('teardown')
+	);
+	let previewSupportsPromote = $derived(
+		Array.isArray(previewCapability?.promote) && (previewCapability?.promote ?? []).length > 0
+	);
+	let previewSyncModes = $derived(
+		Array.from(
+			new Set(
+				previewServiceList
+					.map((s) => s?.syncMode)
+					.filter((m): m is string => typeof m === 'string' && m.length > 0)
+			)
+		)
+	);
+	let recentTeardownSignals = $derived(
+		recentRuns.filter((r) => r.status === 'error' || r.status === 'cancelled')
+	);
+
 	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
 	// slug — hooks.server.ts resolves it to the caller's active workspace.
 	const slug = DEFAULT_WORKSPACE_SLUG;
@@ -90,10 +144,11 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const [dRes, uRes, rRes] = await Promise.all([
+			const [dRes, uRes, rRes, pRes] = await Promise.all([
 				fetch('/api/v1/dashboard'),
 				fetch('/api/v1/auth/session').catch(() => null),
-				fetch('/api/v1/runs?limit=5').catch(() => null)
+				fetch('/api/v1/runs?limit=5').catch(() => null),
+				fetch('/api/v1/fast-path/services').catch(() => null)
 			]);
 			if (!dRes.ok) {
 				errorMessage = `Failed to load dashboard (${dRes.status})`;
@@ -103,6 +158,9 @@
 			if (rRes && rRes.ok) {
 				const rPayload = (await rRes.json()) as { runs: RecentRun[] };
 				recentRuns = rPayload.runs ?? [];
+			}
+			if (pRes && pRes.ok) {
+				previewServices = (await pRes.json()) as PreviewServicesPayload;
 			}
 			if (uRes && uRes.ok) {
 				const payload = (await uRes.json()) as {
@@ -293,6 +351,162 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status — surfaces fast-path preview provisioning,
+		     HMR/live-sync mode, PR capture (promote), and teardown progress using
+		     the existing /api/v1/fast-path/services catalog + recentRuns. All
+		     data sources are guarded; missing data renders an empty state. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Rocket class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Preview environment provisioning, live-sync/HMR, PR capture, and teardown progress.
+					</CardDescription>
+				</div>
+				<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
+					Open runs <ExternalLink class="size-3" />
+				</Button>
+			</CardHeader>
+			<CardContent class="space-y-4">
+				{#if !previewServices}
+					<!-- Fast-path services API unavailable: explicit graceful empty state. -->
+					<p class="text-sm text-muted-foreground py-4 text-center">
+						Preview environment status is not available right now.
+					</p>
+				{:else if previewServiceList.length === 0}
+					<p class="text-sm text-muted-foreground py-4 text-center">
+						No preview environments provisioned yet.
+					</p>
+				{:else}
+					<!-- Provisioned preview services -->
+					<div>
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2 flex items-center gap-1">
+							<Server class="size-3" /> Provisioned services ({previewServiceList.length})
+						</div>
+						<ul class="divide-y">
+							{#each previewServiceList as svc, i (`${svc.service ?? 'svc'}-${i}`)}
+								<li class="py-2 flex items-center justify-between gap-2">
+									<div class="min-w-0">
+										<div class="text-sm truncate" title={svc.service ?? 'Unnamed service'}>
+											{svc.service ?? 'Unnamed service'}
+										</div>
+										<div class="text-[11px] text-muted-foreground truncate">
+											{svc.primaryCluster ?? 'unknown cluster'}
+											{#if svc.previewTier}· {svc.previewTier}{/if}
+											{#if svc.needsDapr}· dapr{/if}
+										</div>
+									</div>
+									<div class="flex items-center gap-1 flex-shrink-0">
+										{#if svc.syncMode}
+											<Badge variant="outline" class="text-[10px] gap-1" title="HMR/live-sync mode">
+												<RefreshCw class="size-2.5" />{svc.syncMode}
+											</Badge>
+										{/if}
+										{#if typeof svc.port === 'number'}
+											<Badge variant="outline" class="text-[10px]">:{svc.port}</Badge>
+										{/if}
+									</div>
+								</li>
+							{/each}
+						</ul>
+					</div>
+
+					<!-- HMR / live-sync summary -->
+					<div class="rounded-md border bg-muted/30 p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
+							<RefreshCw class="size-3" /> Live-sync / HMR
+						</div>
+						{#if previewSyncModes.length > 0}
+							<div class="flex flex-wrap gap-1">
+								{#each previewSyncModes as mode (mode)}
+									<Badge variant="secondary" class="text-[10px]">{mode}</Badge>
+								{/each}
+							</div>
+							<p class="text-[11px] text-muted-foreground mt-1">
+								{#if previewCapability?.sync?.contentTypes}
+									Accepts {previewCapability.sync.contentTypes.join(', ')}.
+								{/if}
+							</p>
+						{:else}
+							<p class="text-[11px] text-muted-foreground">
+								No live-sync modes reported for provisioned services.
+							</p>
+						{/if}
+					</div>
+
+					<!-- PR capture + teardown capability -->
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+						<div class="rounded-md border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
+								<GitPullRequest class="size-3" /> PR capture
+							</div>
+							{#if previewSupportsPromote}
+								<p class="text-xs text-muted-foreground">
+									Promote supported via
+									{previewCapability?.promote?.join(', ')}.
+								</p>
+							{:else}
+								<p class="text-xs text-muted-foreground">
+									PR capture not advertised for this workspace.
+								</p>
+							{/if}
+						</div>
+						<div class="rounded-md border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1">
+								<Power class="size-3" /> Teardown
+							</div>
+							{#if previewSupportsTeardown}
+								<p class="text-xs text-muted-foreground">
+									Teardown is available for preview environments.
+								</p>
+							{:else}
+								<p class="text-xs text-muted-foreground">
+									Teardown capability not advertised.
+								</p>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Teardown progress signal: derived from recent failed/cancelled
+				     runs when present. Explicit empty state otherwise. -->
+				<div>
+					<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+						Recent teardown / abort signals
+					</div>
+					{#if recentTeardownSignals.length === 0}
+						<p class="text-[11px] text-muted-foreground">
+							No recent aborted or failed runs to review.
+						</p>
+					{:else}
+						<ul class="space-y-1">
+							{#each recentTeardownSignals as r (r.executionId)}
+								<li class="text-xs flex items-center justify-between gap-2">
+									<a
+										href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+										class="truncate hover:underline"
+										title={r.workflowName}
+									>
+										{r.workflowName}
+									</a>
+									<Badge
+										variant="outline"
+										class="text-[10px] {r.status === 'error'
+											? 'bg-red-500/10 text-red-600'
+											: 'bg-muted text-muted-foreground'}"
+									>
+										{r.status}
+									</Badge>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
