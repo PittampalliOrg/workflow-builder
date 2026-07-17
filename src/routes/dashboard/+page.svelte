@@ -17,12 +17,15 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequestDraft,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Radio,
+		Sparkles,
+		Wifi
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -65,8 +68,30 @@
 		sessionCount: number;
 	};
 
+	// Preview Development Status — drives the dedicated dashboard section.
+	// `previewGroups` come from the existing project-scoped
+	// /api/dev-environments endpoint (no new API route). Each group is one
+	// active per-run dev preview with N services. `previewSynced` tracks
+	// whether the dev-sync sidecar (HMR) is reachable for any environment.
+	type PreviewGroup = {
+		executionId: string;
+		ready: boolean;
+		sessionId: string | null;
+		sessionUrl: string | null;
+		runStatus: string | null;
+		createdAt: string;
+		primary: {
+			service: string;
+			browseUrl: string | null;
+			syncUrl: string | null;
+		};
+	};
+
 	let data = $state<DashboardPayload | null>(null);
 	let recentRuns = $state<RecentRun[]>([]);
+	let previewGroups = $state<PreviewGroup[]>([]);
+	let previewLoading = $state(false);
+	let previewError = $state<string | null>(null);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
@@ -89,6 +114,8 @@
 	async function load() {
 		loading = true;
 		errorMessage = null;
+		previewLoading = true;
+		previewError = null;
 		try {
 			const [dRes, uRes, rRes] = await Promise.all([
 				fetch('/api/v1/dashboard'),
@@ -115,6 +142,22 @@
 		} finally {
 			loading = false;
 		}
+
+		// Preview environments are loaded independently so a failure here never
+		// blocks the rest of the dashboard — the section renders an empty state.
+		try {
+			const pRes = await fetch('/api/dev-environments');
+			if (pRes.ok) {
+				const pPayload = (await pRes.json()) as { groups?: PreviewGroup[] };
+				previewGroups = pPayload.groups ?? [];
+			} else if (pRes.status !== 401 && pRes.status !== 403) {
+				previewError = `Preview status unavailable (${pRes.status})`;
+			}
+		} catch {
+			previewError = 'Preview status could not be loaded.';
+		} finally {
+			previewLoading = false;
+		}
 	}
 
 	function formatRelative(iso: string): string {
@@ -123,6 +166,18 @@
 		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
 		return new Date(iso).toLocaleDateString();
+	}
+
+	// HMR / live-sync indicator: a preview is "live-syncing" when its dev-sync
+	// sidecar syncUrl is present (the sidecar pushes HMR generations). We only
+	// assert what the existing data exposes — never fabricate a sync state.
+	function previewSyncState(g: PreviewGroup): {
+		label: string;
+		on: boolean;
+	} {
+		if (g.primary.syncUrl) return { label: 'Live-sync (HMR)', on: true };
+		if (g.primary.browseUrl) return { label: 'Browse only', on: false };
+		return { label: 'No sidecar', on: false };
 	}
 
 	onMount(load);
@@ -294,7 +349,176 @@
 			</Card>
 		{/if}
 
-		<!-- Two-column: active sessions + recent changes -->
+			<!-- Preview Development Status — surfaces active per-run dev preview
+			     environments, live-sync/HMR state, recent workflow/session
+			     activity, and draft PR capture status. Uses the existing
+			     project-scoped /api/dev-environments feed and recentRuns; every
+			     sub-section renders an explicit empty state when no data is
+			     available rather than fake metrics. -->
+			<Card>
+				<CardHeader class="pb-2 flex-row items-center justify-between">
+					<div>
+						<CardTitle class="text-base flex items-center gap-2">
+							<Radio class="size-4" /> Preview Development Status
+						</CardTitle>
+						<CardDescription class="text-xs">
+							Active preview environments, live-sync/HMR, recent activity, and draft PR capture.
+						</CardDescription>
+					</div>
+					<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/dev`)}>
+						Dev hub <ExternalLink class="size-3" />
+					</Button>
+				</CardHeader>
+				<CardContent class="space-y-4">
+					<!-- Active preview environments + HMR -->
+					<div>
+						<div class="flex items-center gap-2 mb-2">
+							<Wifi class="size-3.5 text-muted-foreground" />
+							<span class="text-xs font-medium uppercase tracking-wide">
+								Active previews
+							</span>
+							{#if !previewLoading && previewGroups.length > 0}
+								<Badge variant="outline" class="text-[10px]">
+									{previewGroups.length}
+								</Badge>
+							{/if}
+						</div>
+						{#if previewLoading}
+							<Skeleton class="h-16" />
+						{:else if previewError}
+							<p class="text-xs text-muted-foreground py-3">{previewError}</p>
+						{:else if previewGroups.length === 0}
+							<p class="text-xs text-muted-foreground py-3">
+								No active preview environments right now. Launch one from the
+								<button
+									type="button"
+									class="text-primary hover:underline"
+									onclick={() => goto(`/workspaces/${slug}/dev`)}
+								>
+									Dev hub
+								</button>.
+							</p>
+						{:else}
+							<ul class="divide-y">
+								{#each previewGroups as g (g.executionId)}
+									{@const sync = previewSyncState(g)}
+									<li class="py-2 flex items-center justify-between gap-2">
+										<div class="flex items-center gap-2 min-w-0 flex-1">
+											<span
+												class="size-2 rounded-full shrink-0 {g.ready
+													? 'bg-emerald-500'
+													: 'bg-amber-500 animate-pulse'}"
+											></span>
+											<div class="min-w-0">
+												<div class="text-sm truncate" title={g.executionId}>
+													{g.primary.service}
+												</div>
+												<div class="text-[11px] text-muted-foreground">
+													{formatRelative(g.createdAt)}
+													{#if g.runStatus}
+														· {g.runStatus}
+													{/if}
+												</div>
+											</div>
+										</div>
+										<div class="flex items-center gap-2 shrink-0">
+											<Badge
+												variant="outline"
+												class={sync.on
+													? 'bg-emerald-500/10 text-emerald-600'
+													: 'bg-muted text-muted-foreground'}
+											>
+												{sync.label}
+											</Badge>
+											{#if g.sessionUrl}
+												<a
+													href={g.sessionUrl}
+													class="text-[11px] text-primary hover:underline"
+													target="_blank"
+													rel="noreferrer"
+												>
+													Open session
+												</a>
+											{:else if g.primary.browseUrl}
+												<a
+													href={g.primary.browseUrl}
+													class="text-[11px] text-primary hover:underline"
+													target="_blank"
+													rel="noreferrer"
+												>
+													Open preview
+												</a>
+											{/if}
+										</div>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+
+					<!-- Recent workflow / session activity (reuses recentRuns) -->
+					<div>
+						<div class="flex items-center gap-2 mb-2">
+							<Activity class="size-3.5 text-muted-foreground" />
+							<span class="text-xs font-medium uppercase tracking-wide">
+								Recent workflow activity
+							</span>
+						</div>
+						{#if recentRuns.length === 0}
+							<p class="text-xs text-muted-foreground py-3">
+								No recent workflow runs in this workspace.
+							</p>
+						{:else}
+							<ul class="space-y-1">
+								{#each recentRuns.slice(0, 3) as r (r.executionId)}
+									<li class="flex items-center justify-between gap-2 text-xs">
+										<a
+											href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+											class="truncate hover:underline flex-1 min-w-0"
+											title={r.workflowName}
+										>
+											{r.workflowName}
+										</a>
+										<Badge
+											variant="outline"
+											class="text-[10px] {r.status === 'running' || r.status === 'pending'
+												? 'bg-blue-500/10 text-blue-600'
+												: r.status === 'success'
+													? 'bg-emerald-500/10 text-emerald-600'
+													: r.status === 'error'
+														? 'bg-red-500/10 text-red-600'
+														: 'bg-muted text-muted-foreground'}"
+										>
+											{r.status}
+										</Badge>
+										<span class="text-[10px] text-muted-foreground whitespace-nowrap">
+											{formatRelative(r.startedAt)}
+										</span>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+
+					<!-- Draft PR capture status — no client PR-capture feed exists
+					     yet, so render an explicit graceful empty state instead
+					     of inventing capture metrics. -->
+					<div>
+						<div class="flex items-center gap-2 mb-2">
+							<GitPullRequestDraft class="size-3.5 text-muted-foreground" />
+							<span class="text-xs font-medium uppercase tracking-wide">
+								Draft PR capture
+							</span>
+						</div>
+						<p class="text-xs text-muted-foreground py-3">
+							No draft PR captures in this workspace yet. Captures are created
+							by the dev/preview-snapshot step after a verified live-sync.
+						</p>
+					</div>
+				</CardContent>
+			</Card>
+
+			<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
 			<Card>
 				<CardHeader class="pb-2 flex-row items-center justify-between">
