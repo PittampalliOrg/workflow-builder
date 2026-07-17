@@ -17,12 +17,16 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequestArrow,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Radio,
+		RefreshCw,
+		Sparkles,
+		Trash2
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -80,6 +84,19 @@
 
 	let displayName = $derived(
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
+	);
+
+	// Preview Development Status — derived from existing client-side data
+	// (recentRuns) plus explicit graceful empty states for preview-environment
+	// provisioning, HMR/live-sync, PR capture, and teardown. No new API routes
+	// are wired here: when live preview/session/sync data is not available the
+	// section renders a non-crashing empty state rather than inventing metrics.
+	let previewActiveRuns = $derived(
+		recentRuns.filter((r) => r.status === 'running' || r.status === 'pending')
+	);
+	let previewRunCount = $derived(previewActiveRuns.length);
+	let previewCompletedRuns = $derived(
+		recentRuns.filter((r) => r.status === 'success' || r.status === 'error' || r.status === 'cancelled')
 	);
 
 	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
@@ -291,8 +308,112 @@
 						{/each}
 					</ul>
 				</CardContent>
-			</Card>
+				</Card>
 		{/if}
+
+		<!-- Preview Development Status — surfaces preview-environment
+		     provisioning, active workflow runs, HMR/live-sync, PR capture,
+		     and teardown progress. Uses existing recentRuns data where
+		     available and renders explicit graceful empty states otherwise;
+		     no new backend plumbing is required. -->
+		<Card>
+			<CardHeader class="pb-2">
+				<CardTitle class="text-base flex items-center gap-2">
+					<Radio class="size-4" /> Preview Development Status
+				</CardTitle>
+				<CardDescription class="text-xs">
+					Provisioning, live-sync, PR capture, and teardown for preview environments.
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<!-- Active workflow runs feeding previews -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-2">
+							<Activity class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">Active workflow runs</span>
+						</div>
+						{#if previewRunCount > 0}
+							<div class="text-2xl font-semibold">{previewRunCount}</div>
+							<div class="text-xs text-muted-foreground">
+								{previewRunCount === 1 ? 'run is' : 'runs are'} currently running or pending.
+							</div>
+							<ul class="mt-2 space-y-1">
+								{#each previewActiveRuns.slice(0, 3) as r (r.executionId)}
+									<li class="text-[11px] truncate">
+										<span class="truncate" title={r.workflowName}>{r.workflowName}</span>
+										<Badge
+											variant="outline"
+											class="ml-1 text-[9px] bg-blue-500/10 text-blue-600"
+										>
+											{r.status}
+										</Badge>
+									</li>
+								{/each}
+							</ul>
+						{:else if previewCompletedRuns.length > 0}
+							<div class="text-2xl font-semibold">0</div>
+							<div class="text-xs text-muted-foreground">
+								No active runs. {previewCompletedRuns.length} recent run{previewCompletedRuns.length === 1 ? '' : 's'} completed.
+							</div>
+						{:else}
+							<div class="text-2xl font-semibold text-muted-foreground">—</div>
+							<div class="text-xs text-muted-foreground">
+								No workflow runs yet.
+							</div>
+						{/if}
+					</div>
+
+					<!-- HMR / live-sync status -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-2">
+							<RefreshCw class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">HMR / live-sync</span>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="size-2 rounded-full bg-muted-foreground/40"></span>
+							<span class="text-xs text-muted-foreground">Status unknown</span>
+						</div>
+						<p class="text-[11px] text-muted-foreground mt-2">
+							Live preview sync state is not reported to the dashboard. Live-sync
+							happens automatically through the dev-sync sidecar when source changes.
+						</p>
+					</div>
+
+					<!-- PR capture status -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-2">
+							<GitPullRequestArrow class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">PR capture</span>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="size-2 rounded-full bg-muted-foreground/40"></span>
+							<span class="text-xs text-muted-foreground">No active capture</span>
+						</div>
+						<p class="text-[11px] text-muted-foreground mt-2">
+							Preview-to-PR capture runs on demand after verification. No capture is in
+							progress; source is synced to the preview generation only.
+						</p>
+					</div>
+
+					<!-- Teardown progress -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-2 mb-2">
+							<Trash2 class="size-4 text-muted-foreground" />
+							<span class="text-sm font-medium">Teardown progress</span>
+						</div>
+						<div class="flex items-center gap-2">
+							<span class="size-2 rounded-full bg-emerald-500/70"></span>
+							<span class="text-xs text-muted-foreground">Idle</span>
+						</div>
+						<p class="text-[11px] text-muted-foreground mt-2">
+							No preview environments are scheduled for teardown. Teardown activity will
+							appear here when environments are decommissioned.
+						</p>
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
