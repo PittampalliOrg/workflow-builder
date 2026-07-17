@@ -299,8 +299,8 @@ describe("host preview development lifecycle", () => {
       target,
       intent: "Add a deployment health panel",
       services: ["workflow-builder"],
-      agentSlug: "glm-juicefs-builder-agent",
     });
+    expect(start?.args).not.toHaveProperty("agentSlug");
     const signal = tasks.find(
       (task) => task.actionSlug === "preview/workflow-signal",
     );
