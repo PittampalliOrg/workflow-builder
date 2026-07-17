@@ -460,6 +460,36 @@ def test_ambiguous_exact_job_create_is_reread_and_keeps_identity(
     ] == "true"
 
 
+def test_down_job_is_ttl_bounded(monkeypatch) -> None:
+    core = FakeCore()
+    rbac = FakeRbac(core)
+    batch = FakeBatch()
+    _seed_identity(core, rbac, "feature-one")
+    monkeypatch.setattr(app_module, "_load_k8s_rbac_client", lambda: rbac)
+    request = VclusterPreviewRequest(
+        name="feature-one",
+        action="down",
+        teardownExpectedRequestId="request-one",
+        teardownExpectedSourceRevision="a" * 40,
+    )
+    manifest = app_module._vcluster_preview_job_manifest(
+        request, namespace=CONTROL_NAMESPACE
+    )
+
+    app_module._submit_preview_job(
+        batch,
+        core,
+        namespace=CONTROL_NAMESPACE,
+        manifest=manifest,
+        lifecycle="ephemeral",
+        create_only=True,
+    )
+
+    assert batch.jobs[0]["metadata"]["name"] == "vcpreview-down-feature-one"
+    assert batch.jobs[0]["spec"]["ttlSecondsAfterFinished"] == 1800
+    assert batch.jobs[0]["spec"]["activeDeadlineSeconds"] == 900
+
+
 def test_ambiguous_mismatched_job_is_compensated_with_identity(
     monkeypatch,
 ) -> None:

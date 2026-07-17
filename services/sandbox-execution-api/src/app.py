@@ -9404,19 +9404,14 @@ def _vcluster_preview_job_manifest(
         },
         "spec": {
             "backoffLimit": 0,
-            # A successful down Job is the durable cleanup receipt used by an
+            # A successful down Job is a short-lived cleanup receipt used by an
             # idempotent repeated teardown after namespace and identity deletion.
-            # The next down replaces it. Non-destructive Jobs remain TTL-bounded.
-            **(
-                {}
-                if req.action == "down"
-                else {
-                    # Profiled up Jobs are immutable preinitialization evidence.
-                    # Keep them for one day; the bounded expired-reservation path
-                    # exists only for evidence already removed by the old 30m TTL.
-                    "ttlSecondsAfterFinished": 86400 if req.profile else 1800
-                }
-            ),
+            # Keep it long enough for retries, but do not leave proof runs behind
+            # indefinitely. Profiled up Jobs are immutable preinitialization
+            # evidence; keep them for one day.
+            "ttlSecondsAfterFinished": 1800
+            if req.action == "down"
+            else (86400 if req.profile else 1800),
             # Teardown must reclaim its slot promptly, so a wedged down-Job gets a much shorter
             # deadline than a provision (task #25 — a hung teardown was silently holding a
             # preview slot for the full 30 min). runner.sh ACTION=down now bounds each hang-prone

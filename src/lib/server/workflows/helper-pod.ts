@@ -18,7 +18,10 @@ import {
   deleteKubernetesSandbox,
   waitForKubernetesSandboxDeleted,
 } from "$lib/server/kube/client";
-import { maybeProvisionAgentWorkflowHost } from "$lib/server/sessions/agent-workflow-host";
+import {
+  maybeProvisionAgentWorkflowHost,
+  sessionHostAppId,
+} from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { AgentConfig } from "$lib/types/agents";
 import { env } from "$env/dynamic/private";
@@ -95,8 +98,11 @@ export async function cleanupWorkspaceHelperPod(
     helperSessionId?: string | null;
   } | null,
 ): Promise<"deleted" | "missing" | "skipped" | "failed"> {
-  const sandboxName = helper?.sandboxName?.trim();
+  const explicitSandboxName = helper?.sandboxName?.trim();
   const helperSessionId = helper?.helperSessionId?.trim();
+  const sandboxName =
+    explicitSandboxName ||
+    (helperSessionId ? `agent-host-${sessionHostAppId(helperSessionId)}` : null);
   if (!sandboxName && !helperSessionId) return "skipped";
   let sandboxStatus: "deleted" | "missing" | "skipped" = "skipped";
   try {
