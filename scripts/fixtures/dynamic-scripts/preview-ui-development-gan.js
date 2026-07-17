@@ -124,6 +124,12 @@ function agentOptions(label, agentSlug, extra = {}) {
   };
 }
 
+function sidecarExportUrlFromSyncUrl(value) {
+  const sync = String(value ?? "").trim();
+  if (!sync) return "";
+  return sync.replace(/\/__sync\/?$/, "/__export");
+}
+
 function strictReceipt(value) {
   const receipt = dataOf(value);
   if (receipt?.ok !== true || receipt?.draft !== true || !receipt?.pullRequest) {
@@ -171,7 +177,10 @@ const syncCapability = String(info.syncCapability ?? "");
 if (!previewUrl || !syncUrl || !syncCapability) {
   throw new Error("preview live-sync metadata is incomplete");
 }
-const exportUrl = `${previewUrl.replace(/\/+$/, "")}/__export`;
+const exportUrl = sidecarExportUrlFromSyncUrl(syncUrl);
+if (!exportUrl || exportUrl === syncUrl) {
+  throw new Error("preview live-sync sidecar export endpoint is incomplete");
+}
 
 phase("Plan");
 const plan = await agent(
@@ -190,7 +199,58 @@ SCRATCH=/tmp/preview-ui-gan-plan; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/repo"; c
 
 User task:
 ${intent}`,
-  agentOptions("plan dashboard change", agentSlug, { maxTurns: 12, timeoutMinutes: 15 }),
+  agentOptions("plan dashboard change", agentSlug, { maxTurns: 20, timeoutMinutes: 20 }),
+);
+
+const fallbackContract = {
+  objective: intent,
+  targetRoutes: routes,
+  acceptanceCriteria: [
+    {
+      id: "visible-dashboard-enhancement",
+      description: "The dashboard visibly includes useful new functionality for understanding preview development activity.",
+      verify: "Load the dashboard route and confirm the new section or controls are present.",
+    },
+    {
+      id: "real-data-or-empty-state",
+      description: "The UI uses existing application data where available and otherwise renders an explicit graceful empty state.",
+      verify: "Inspect the implementation and dashboard response for guarded data sources and non-crashing empty states.",
+    },
+    {
+      id: "hmr-reflected",
+      description: "The change is pushed through the preview live-sync sidecar and reflected by the HMR-served preview app.",
+      verify: "Export the sidecar source after sync and smoke the live dashboard route.",
+    },
+    {
+      id: "focused-diff",
+      description: "The source diff is scoped to dashboard UI and required supporting code; auth/sign-in code is untouched.",
+      verify: "Inspect captured source and generated PR diff.",
+    },
+  ],
+  dataSources: ["existing workflow-builder dashboard, run, session, and preview-environment APIs where available"],
+  diffScope: "workflow-builder dashboard source and narrowly necessary supporting application/adapter code",
+  hmrVerification: "sync via the dev-sync sidecar, export the synced source generation, then smoke the dashboard route",
+};
+await action(
+  "workspace/command",
+  {
+    cliWorkspace: true,
+    helperPod: true,
+    helperTimeoutMinutes: 10,
+    workspaceRef: workspace,
+    cwd: "/sandbox/work",
+    timeoutMs: 120000,
+    command: `set -eu
+mkdir -p /sandbox/work
+if [ ! -s /sandbox/work/dashboard-gan-contract.json ]; then
+  cat > /sandbox/work/dashboard-gan-contract.json <<'JSON'
+${JSON.stringify(fallbackContract, null, 2)}
+JSON
+fi
+jq -e 'type == "object" and (.acceptanceCriteria | type == "array") and (.acceptanceCriteria | length > 0)' /sandbox/work/dashboard-gan-contract.json >/dev/null
+cat /sandbox/work/dashboard-gan-contract.json`,
+  },
+  { label: "ensure dashboard contract" },
 );
 
 phase("Generate");
@@ -219,7 +279,7 @@ while (!accepted && iterations < maxIterations) {
 You are running inside the preview workflow with a shared JuiceFS workspace. Implement the requested dashboard enhancement against the live preview and push exactly one HMR generation before stopping.
 
 Hard rules:
-- Edit only receiver-owned source pulled from ${exportUrl}; never use Kubernetes, GitHub, root broker, host credentials, or raw preview authority.
+- Edit only receiver-owned source pulled from the dev-sync sidecar export endpoint ${exportUrl}; never use Kubernetes, GitHub, root broker, host credentials, or raw preview authority.
 - Keep changes focused on workflow-builder dashboard functionality and necessary supporting components/ports/adapters.
 - Preserve hexagonal architecture. Do not put database or external HTTP details into domain/application code.
 - Use real existing data or explicit graceful empty states. Do not invent fake metrics.

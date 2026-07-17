@@ -57,6 +57,14 @@ async function drive(
 		promotionVerification?: Record<string, unknown>;
 	} = {},
 ) {
+	const args = {
+		intent: "Add a deployment health panel",
+		environmentName: "feature-one",
+		services: ["workflow-builder"],
+		ttlHours: options.ttlHours ?? 8,
+		retainAfterCompletion: false,
+		...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
+	};
   const completedResults: Record<
     string,
     | { status: "done"; value: unknown }
@@ -68,14 +76,7 @@ async function drive(
 	let statusFailures = 0;
   let result = await evaluateScript({
     script,
-    args: {
-      intent: "Add a deployment health panel",
-      environmentName: "feature-one",
-      services: ["workflow-builder"],
-      ttlHours: options.ttlHours ?? 8,
-      retainAfterCompletion: false,
-      ...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
-    },
+    args,
     budget: { total: 1_000_000, spent: 0 },
     completedResults,
     knownCallIds,
@@ -217,13 +218,7 @@ async function drive(
     }
     result = await evaluateScript({
       script,
-      args: {
-        intent: "Add a deployment health panel",
-        environmentName: "feature-one",
-        services: ["workflow-builder"],
-        ttlHours: options.ttlHours ?? 8,
-        retainAfterCompletion: false,
-      },
+      args,
       budget: { total: 1_000_000, spent: 0 },
       completedResults,
       knownCallIds,
