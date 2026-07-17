@@ -4260,6 +4260,11 @@ function hostPreviewLifecycleDefinition() {
 						title: "Retain environment after completion",
 						default: false,
 					},
+					retainOnFailure: {
+						type: "boolean",
+						title: "Retain environment after failure",
+						default: false,
+					},
 				},
 			},
 		},
