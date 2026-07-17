@@ -69,16 +69,6 @@ function executionSafeBrowserHeaders(
   return Object.keys(retained).length ? retained : undefined;
 }
 
-export function jsonbParameter(value: unknown): string {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined) {
-    throw new TypeError(
-      "Cannot serialize an undefined browser migration value",
-    );
-  }
-  return serialized;
-}
-
 /**
  * Build the canonical K3 browser config while retaining deployment-specific
  * non-secret MCP headers from the existing GLM agent. Target auth is minted
@@ -249,10 +239,12 @@ async function ensureBrowserAgent(
       version: number | null;
       config: JsonRecord | null;
       config_hash: string | null;
+      config_type: string | null;
       legacy_config: JsonRecord | null;
     }[]
   >`
 		select a.id, av.version, av.config, av.config_hash,
+			jsonb_typeof(av.config) as config_type,
 			legacy_av.config as legacy_config
 		from agents a
 		left join agent_versions av on av.id = a.current_version_id
@@ -282,11 +274,15 @@ async function ensureBrowserAgent(
   const configHash = hashAgentConfig(config as AgentConfig);
   const tags = ["dapr-agent-py", "kimi-k3", "vision", "browser"];
 
-  if (existing?.id && existing.config_hash === configHash) {
+  if (
+    existing?.id &&
+    existing.config_hash === configHash &&
+    existing.config_type === "object"
+  ) {
     await sql`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
+				tags = ${sql.json(tags)}, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				updated_at = now()
 			where id = ${existing.id}
@@ -316,9 +312,9 @@ async function ensureBrowserAgent(
 					created_at, updated_at
 				) values (
 					${agentId}, ${definition.slug}, ${definition.name},
-						${definition.description}, ${jsonbParameter(tags)}::jsonb, ${"dapr-agent-py"},
+					${definition.description}, ${tx.json(tags)}, ${"dapr-agent-py"},
 						${owner.userId}, ${owner.projectId}, ${"registered"}, false,
-						${jsonbParameter([])}::jsonb, now(), now()
+					${tx.json([])}, now(), now()
 				)
 			`;
     }
@@ -328,7 +324,7 @@ async function ensureBrowserAgent(
 				published_at, published_by, created_at
 			) values (
 				${versionId}, ${agentId}, ${nextVersion},
-					${jsonbParameter(config)}::jsonb, ${configHash},
+				${tx.json(config as postgres.JSONValue)}, ${configHash},
 				${"Migrate browser automation to Kimi K3 vision with max reasoning and a 1M-token context window."},
 				now(), ${owner.userId}, now()
 			)
@@ -336,7 +332,7 @@ async function ensureBrowserAgent(
     await tx`
 			update agents set
 				name = ${definition.name}, description = ${definition.description},
-					tags = ${jsonbParameter(tags)}::jsonb, runtime = ${"dapr-agent-py"},
+				tags = ${tx.json(tags)}, runtime = ${"dapr-agent-py"},
 				registry_status = ${"registered"}, is_archived = false,
 				current_version_id = ${versionId}, updated_at = now()
 			where id = ${agentId}
@@ -409,9 +405,9 @@ export async function migrateKimiK3BrowserAgentsAndWorkflows(
 			update workflows set
 				name = ${migratedName},
 				description = ${migratedDescription},
-					spec = ${jsonbParameter(migratedSpec)}::jsonb,
-					nodes = ${jsonbParameter(migratedNodes)}::jsonb,
-					edges = ${jsonbParameter(migratedEdges)}::jsonb,
+				spec = ${sql.json(migratedSpec as postgres.JSONValue)},
+				nodes = ${sql.json(migratedNodes as postgres.JSONValue)},
+				edges = ${sql.json(migratedEdges as postgres.JSONValue)},
 				updated_at = now()
 			where id = ${workflow.id}
 		`;
