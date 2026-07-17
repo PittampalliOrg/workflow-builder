@@ -4514,7 +4514,7 @@ function previewUiDevelopmentGanDefinition() {
 		"utf8",
 	);
 	const description =
-		"Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use the GLM JuiceFS Dapr agent to plan and implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
+		"Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
 	return {
 		script,
 		description,
@@ -4529,6 +4529,7 @@ function previewUiDevelopmentGanDefinition() {
 				{ title: "Promote" },
 			],
 			launch: { surface: "dev-environment" },
+			estimatedAgentCalls: 2,
 			input: {
 				type: "object",
 				required: ["intent"],

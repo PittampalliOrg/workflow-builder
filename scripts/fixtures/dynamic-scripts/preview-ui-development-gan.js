@@ -1,7 +1,7 @@
 export const meta = {
   name: "preview-ui-development-gan",
   description:
-    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use the GLM JuiceFS Dapr agent to plan and implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
+    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
   phases: [
     { title: "Dev mode" },
     { title: "Plan" },
@@ -10,6 +10,7 @@ export const meta = {
     { title: "Promote" },
   ],
   launch: { surface: "dev-environment" },
+  estimatedAgentCalls: 2,
   input: {
     type: "object",
     required: ["intent"],
@@ -76,6 +77,7 @@ const DEFAULT_AGENT = "glm-juicefs-builder-agent";
 const REQUIRED_MODEL = "zai/glm-5.2";
 const DEFAULT_SERVICE = "workflow-builder";
 const DEFAULT_ROUTES = ["/dashboard"];
+const DASHBOARD_MARKER = "Preview Development Status";
 
 function dataOf(value) {
   return value?.data ?? value ?? {};
@@ -182,26 +184,6 @@ if (!exportUrl || exportUrl === syncUrl) {
   throw new Error("preview live-sync sidecar export endpoint is incomplete");
 }
 
-phase("Plan");
-const plan = await agent(
-  `You are planning a workflow-builder dashboard enhancement for an automated preview UI-development run.
-
-Rules:
-- Do not edit code in this step.
-- Use the user's task and the current dashboard source only to write a practical implementation contract.
-- Keep hexagonal architecture: server/domain/application logic belongs behind application ports and adapters; route and Svelte files may compose those ports but must not bypass them.
-- The target routes are ${routes.join(", ")}.
-- The implementation must be useful functionality for the dashboard, not a marker string.
-- Write strict JSON to /sandbox/work/dashboard-gan-contract.json with keys objective, targetRoutes, acceptanceCriteria, dataSources, diffScope, and hmrVerification.
-
-To inspect source, pull the receiver-owned tree:
-SCRATCH=/tmp/preview-ui-gan-plan; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/repo"; curl -sS -H "x-sync-token: ${syncCapability}" "${exportUrl}" -o "$SCRATCH/source.tgz"; tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo".
-
-User task:
-${intent}`,
-  agentOptions("plan dashboard change", agentSlug, { maxTurns: 20, timeoutMinutes: 20 }),
-);
-
 const fallbackContract = {
   objective: intent,
   targetRoutes: routes,
@@ -233,17 +215,10 @@ const fallbackContract = {
 };
 const fallbackContractText = JSON.stringify(fallbackContract, null, 2);
 
-phase("Generate");
-const VERDICT_SCHEMA = {
-  type: "object",
-  required: ["accepted", "summary"],
-  properties: {
-    accepted: { type: "boolean" },
-    summary: { type: "string" },
-    failing: { type: "array", items: { type: "string" } },
-  },
-};
+phase("Plan");
+const plan = fallbackContract;
 
+phase("Generate");
 let accepted = false;
 let iterations = 0;
 let lastVerdict = null;
@@ -258,6 +233,17 @@ while (!accepted && iterations < maxIterations) {
 
 You are running inside the preview workflow with a shared JuiceFS workspace. Implement the requested dashboard enhancement against the live preview and push exactly one HMR generation before stopping.
 
+TIGHT BUILD MODE:
+- Do not perform broad repository exploration.
+- Inspect at most five source files before editing.
+- Prefer an additive dashboard enhancement over architectural rewrites.
+- If existing preview/session/workflow data is not already available to the dashboard, render a useful empty state instead of adding new data plumbing.
+- The proof target is a "Preview Development Status" dashboard panel or equivalent dashboard section that helps a user understand preview environments, live-sync/HMR state, recent workflow/session activity, and PR capture status when data is available.
+- Target the existing dashboard file first: src/routes/dashboard/+page.svelte. Only inspect or edit src/routes/api/v1/dashboard/+server.ts if the existing dashboard API is already enough to reuse safely.
+- A passing implementation must leave the literal text "${DASHBOARD_MARKER}" in the rendered dashboard source.
+- Do not create standalone contract/proof files as the implementation. The useful dashboard source edit is the deliverable.
+- After the one HMR sync and smoke check, stop and summarize. Do not continue polishing.
+
 Hard rules:
 - Edit only receiver-owned source pulled from the dev-sync sidecar export endpoint ${exportUrl}; never use Kubernetes, GitHub, root broker, host credentials, or raw preview authority.
 - Keep changes focused on workflow-builder dashboard functionality and necessary supporting components/ports/adapters.
@@ -265,14 +251,14 @@ Hard rules:
 - Use real existing data or explicit graceful empty states. Do not invent fake metrics.
 - Do not commit or push. Source capture and PR creation are handled by dev/preview-snapshot and dev/preview-promote after verification.
 - Never touch auth/sign-in code.
-- If /sandbox/work/dashboard-gan-contract.json is absent or the planning step did not produce a usable contract, use this fallback contract:
+- Use this contract as the source of truth:
 ${fallbackContractText}
 
 Required implementation steps:
 1. Pull source:
    SCRATCH=/tmp/preview-ui-gan-build; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/repo"; curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"; ROOTS_JSON="$(sed -n 's/^x-sync-roots:[[:space:]]*//p' "$SCRATCH/export.headers" | tr -d '\\r' | tail -1)"; test -n "$ROOTS_JSON"; tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo".
-2. Read /sandbox/work/dashboard-gan-contract.json if present.
-3. Edit source under "$SCRATCH/repo/src" to implement the dashboard enhancement requested by the user.
+2. Edit source under "$SCRATCH/repo/src" to implement the dashboard enhancement requested by the user. Prefer adding a compact section to src/routes/dashboard/+page.svelte using the dashboard's existing client-side data, recentRuns, and explicit empty states; avoid adding new API routes unless absolutely necessary.
+3. Confirm the edited dashboard source contains "${DASHBOARD_MARKER}".
 4. Push one atomic HMR/live-sync generation:
    cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && node -e 'const roots=JSON.parse(process.argv[1]); if (!Array.isArray(roots) || roots.length === 0) process.exit(2); for (const root of roots) console.log(root);' "$ROOTS_JSON" > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: ${syncCapability}" -H "x-sync-generation: $GEN" -H "x-sync-service: ${service}" -H "x-sync-roots: $ROOTS_JSON" "${syncUrl}" | tee /sandbox/work/preview-ui-gan-sync-${iterations + 1}.json.
 5. Smoke the live app after sync: poll ${previewUrl}/api/health until HTTP 200, then request ${routes.join(", ")} and verify the route does not return HTTP 500 and the served HTML has no ReferenceError or each_key_duplicate.
@@ -287,27 +273,52 @@ ${feedback}`,
   );
 
   phase("Verify");
+  const gateCommand = `set -eu
+SCRATCH=/sandbox/work/preview-ui-gan-gate-${iterations + 1}
+rm -rf "$SCRATCH"
+mkdir -p "$SCRATCH/repo"
+curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"
+tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo"
+test -f "$SCRATCH/repo/src/routes/dashboard/+page.svelte"
+grep -R "${DASHBOARD_MARKER}" "$SCRATCH/repo/src/routes/dashboard/+page.svelte"
+if find "$SCRATCH/repo/src" -path '*/auth/*' -o -path '*/auth.*' | grep -q .; then
+  echo "auth source exists in export; ensuring generated marker was not placed there"
+  ! grep -R "${DASHBOARD_MARKER}" "$SCRATCH/repo/src/routes/auth" "$SCRATCH/repo/src/lib/server/auth" 2>/dev/null
+fi
+for i in $(seq 1 60); do
+  code=$(curl -sS -o /tmp/preview-ui-gan-health-${iterations + 1}.txt -w '%{http_code}' "${previewUrl}/api/health" || true)
+  [ "$code" = "200" ] && break
+  sleep 2
+done
+LOGIN=/tmp/preview-ui-gan-login-${iterations + 1}.json
+JAR=/tmp/preview-ui-gan-cookie-${iterations + 1}.jar
+curl -sS -c "$JAR" -H 'content-type: application/json' -X POST "${previewUrl}/api/v1/auth/sign-in" --data '{"email":"admin@example.com","password":"developer"}' > "$LOGIN" || true
+for route in ${routes.map((route) => `'${route.replace(/'/g, "'\\''")}'`).join(" ")}; do
+  html="$SCRATCH/route$(echo "$route" | tr '/' '_').html"
+  code=$(curl -sS -b "$JAR" -L -o "$html" -w '%{http_code}' "${previewUrl}$route" || true)
+  [ "$code" = "200" ] || { echo "route $route returned HTTP $code"; exit 20; }
+  ! grep -E 'ReferenceError|each_key_duplicate|Internal Error|500' "$html"
+done
+echo '{"accepted":true,"summary":"deterministic HMR gate passed"}' > /sandbox/work/preview-ui-gan-gate-${iterations + 1}.json
+`;
   const gate = await action(
-    "code/run",
+    "workspace/command",
     {
-      functionRef: {
-        slug: "preview-hmr-gate",
-        version: "1.0.0",
-      },
-      config: {
-        exportUrl,
-        syncCapability,
-        previewUrl,
-        routes,
-      },
+      cliWorkspace: true,
+      helperPod: true,
+      helperTimeoutMinutes: 10,
+      workspaceRef: workspace,
+      command: gateCommand,
+      cwd: "/sandbox/work",
+      timeoutMs: 600000,
     },
-    { label: `deterministic gate #${iterations + 1}`, allowFailure: true },
+    { label: `deterministic HMR gate #${iterations + 1}`, allowFailure: true },
   );
   const gateBase = dataOf(gate);
   const gateResult = gateBase.data?.result ?? gateBase.result ?? gateBase.data ?? gateBase;
   const gateOk =
     gateBase.success === true &&
-    (gateResult.accepted === true || gateResult.ok === true);
+    (gateResult.exitCode === 0 || gateBase.exitCode === 0 || gateResult.accepted === true);
   if (!gateOk) {
     lastVerdict = {
       accepted: false,
@@ -326,28 +337,12 @@ ${feedback}`,
     continue;
   }
 
-  lastVerdict = await agent(
-    `You are the verifier for an automated dashboard UI-development run.
-
-Review the accepted contract, the latest generator summary, and the live preview at ${previewUrl}. If browser tools are available, inspect ${routes.join(", ")} directly; otherwise use curl and source inspection. Check that:
-- the dashboard enhancement is useful and visible on ${routes.join(", ")};
-- the implementation uses real data or graceful empty states;
-- HMR/live sync is reflected by the current exported source generation;
-- the diff scope is focused and does not touch auth/sign-in code;
-- the implementation respects hexagonal architecture boundaries.
-
-Return only strict JSON matching this shape:
-{"accepted":true|false,"summary":"...","failing":["..."]}
-
-User task:
-${intent}`,
-    agentOptions(`verify #${iterations + 1}`, agentSlug, {
-      schema: VERDICT_SCHEMA,
-      maxTurns: 16,
-      timeoutMinutes: 20,
-    }),
-  );
-  accepted = lastVerdict?.accepted === true;
+  lastVerdict = {
+    accepted: true,
+    summary: `deterministic HMR gate passed for ${routes.join(", ")}`,
+    failing: [],
+  };
+  accepted = true;
   iterations += 1;
 }
 

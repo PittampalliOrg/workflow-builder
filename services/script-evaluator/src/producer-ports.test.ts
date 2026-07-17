@@ -251,7 +251,7 @@ describe("preview-ui-development-gan port", () => {
 		expect(res.tasks[0]?.kind).toBe("action");
 	});
 
-	it("uses the GLM JuiceFS agent for plan and generate after live-sync metadata resolves", async () => {
+	it("uses the GLM JuiceFS agent for generate after deterministic planning and live-sync metadata resolves", async () => {
 		const first = await evaluateScript({
 			script: previewUiDevelopmentGan,
 			args: { intent: "improve dashboard status visibility" },
@@ -286,15 +286,22 @@ describe("preview-ui-development-gan port", () => {
 			features: { actions: true },
 		});
 		expect(second.status).toBe("need");
-		const plan = second.tasks[0];
-		expect(plan.kind).toBe("agent");
-		expect(plan.opts.agent).toBe("glm-juicefs-builder-agent");
-		expect(plan.opts.model).toBe("zai/glm-5.2");
-		expect(plan.opts.isolation).toBe("shared");
-		expect(plan.prompt).toContain("http://10.0.0.8:8001/__export");
-		expect(plan.prompt).not.toContain("http://10.0.0.8:3000/__export");
-		results[plan.callId] = { status: "done", value: "planned" };
-		known.push(plan.callId);
+		const generate = second.tasks[0];
+		expect(generate.kind).toBe("agent");
+		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
+		expect(generate.opts.model).toBe("zai/glm-5.2");
+		expect(generate.opts.isolation).toBe("shared");
+		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
+		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");
+		expect(generate.prompt).toContain("TIGHT BUILD MODE");
+		expect(generate.prompt).toContain("Use this contract as the source of truth");
+		expect(generate.prompt).toContain("src/routes/dashboard/+page.svelte");
+		expect(generate.prompt).toContain("Preview Development Status");
+		results[generate.callId] = {
+			status: "done",
+			value: "implemented dashboard enhancement",
+		};
+		known.push(generate.callId);
 
 		const third = await evaluateScript({
 			script: previewUiDevelopmentGan,
@@ -306,41 +313,14 @@ describe("preview-ui-development-gan port", () => {
 			features: { actions: true },
 		});
 		expect(third.status).toBe("need");
-		const generate = third.tasks[0];
-		expect(generate.kind).toBe("agent");
-		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
-		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");
-		expect(generate.prompt).not.toContain("http://10.0.0.8:3000/__export");
-		expect(generate.prompt).toContain("fallback contract");
-		results[generate.callId] = {
-			status: "done",
-			value: "implemented dashboard enhancement",
-		};
-		known.push(generate.callId);
-
-		const fourth = await evaluateScript({
-			script: previewUiDevelopmentGan,
-			args: { intent: "improve dashboard status visibility" },
-			budget: { total: 5_000_000, spent: 0 },
-			completedResults: results,
-			knownCallIds: known,
-			seenLogCount: 0,
-			features: { actions: true },
-		});
-		expect(fourth.status).toBe("need");
-		const gate = fourth.tasks[0];
+		const gate = third.tasks[0];
 		expect(gate.kind).toBe("action");
-		expect(gate.actionSlug).toBe("code/run");
-		expect(gate.opts.label).toBe("deterministic gate #1");
-		expect((gate.args as Record<string, unknown>).functionRef).toEqual({
-			slug: "preview-hmr-gate",
-			version: "1.0.0",
-		});
-		expect((gate.args as Record<string, unknown>).config).toMatchObject({
-			exportUrl: "http://10.0.0.8:8001/__export",
-			syncCapability: "capability",
-			previewUrl: "http://10.0.0.8:3000",
-			routes: ["/dashboard"],
-		});
+		expect(gate.actionSlug).toBe("workspace/command");
+		expect(gate.opts.label).toBe("deterministic HMR gate #1");
+		const gateArgs = gate.args as Record<string, unknown>;
+		expect(gateArgs.command).toContain("http://10.0.0.8:8001/__export");
+		expect(gateArgs.command).toContain("Preview Development Status");
+		expect(gateArgs.command).toContain("/api/v1/auth/sign-in");
+		expect(gateArgs.command).toContain("admin@example.com");
 	});
 });
