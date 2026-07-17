@@ -22,7 +22,10 @@
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Radio,
+		RefreshCw,
+		Sparkles,
+		GitPullRequest
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -65,6 +68,30 @@
 		sessionCount: number;
 	};
 
+	// Dev-environment (preview) summaries surfaced by /api/dev-environments.
+	// The endpoint is additive and may 401/403 from a preview deployment or
+	// return [] when no per-run dev previews exist — both render as graceful
+	// empty states rather than crashing the dashboard.
+	type DevEnvironmentService = {
+		executionId: string;
+		service: string;
+		browseUrl: string | null;
+		syncUrl: string | null;
+		ready: boolean;
+		sessionId: string | null;
+		runStatus: string | null;
+		createdAt: string;
+	};
+	type DevEnvironmentGroup = {
+		executionId: string;
+		primary: DevEnvironmentService;
+		services: DevEnvironmentService[];
+		ready: boolean;
+	};
+
+	let devEnvironments = $state<DevEnvironmentGroup[]>([]);
+	let devEnvironmentsError = $state(false);
+
 	let data = $state<DashboardPayload | null>(null);
 	let recentRuns = $state<RecentRun[]>([]);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
@@ -90,10 +117,15 @@
 		loading = true;
 		errorMessage = null;
 		try {
-			const [dRes, uRes, rRes] = await Promise.all([
+			const [dRes, uRes, rRes, devRes] = await Promise.all([
 				fetch('/api/v1/dashboard'),
 				fetch('/api/v1/auth/session').catch(() => null),
-				fetch('/api/v1/runs?limit=5').catch(() => null)
+				fetch('/api/v1/runs?limit=5').catch(() => null),
+				// Additive: pull per-run dev preview environments for the
+				// "Preview Development Status" panel. Failures (401/403/500
+				// from a preview deployment, or DB-not-configured) degrade to
+				// an explicit empty state — they never block the dashboard.
+				fetch('/api/dev-environments').catch(() => null)
 			]);
 			if (!dRes.ok) {
 				errorMessage = `Failed to load dashboard (${dRes.status})`;
@@ -109,6 +141,16 @@
 					user?: { name: string | null; email: string | null };
 				};
 				user = payload.user ?? null;
+			}
+			if (devRes && devRes.ok) {
+				const devPayload = (await devRes.json()) as {
+					groups?: DevEnvironmentGroup[];
+				};
+				devEnvironments = devPayload.groups ?? [];
+				devEnvironmentsError = false;
+			} else {
+				devEnvironments = [];
+				devEnvironmentsError = !devRes; // only flag a transport failure, not a 4xx/5xx
 			}
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
@@ -293,6 +335,161 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status: a compact operator panel that
+		     surfaces active preview environments, HMR/live-sync readiness,
+		     recent workflow activity, and draft PR / source-promotion
+		     status. Uses the existing /api/dev-environments and /api/v1/runs
+		     feeds; renders explicit graceful empty states whenever the
+		     underlying data is unavailable (preview deployment, DB not
+		     configured, or no activity yet). -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Radio class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Active preview environments, live-sync/HMR state, and promotion status.
+					</CardDescription>
+				</div>
+				<Button variant="ghost" size="sm" onclick={load}>
+					<RefreshCw class="size-3" /> Refresh
+				</Button>
+			</CardHeader>
+			<CardContent class="space-y-4">
+				<!-- Active preview environments + HMR/live-sync readiness -->
+				<div>
+					<div class="flex items-center justify-between mb-2">
+						<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+							Preview environments
+						</span>
+						<Badge variant="outline" class="text-[10px]">
+							{devEnvironments.length} active
+						</Badge>
+					</div>
+					{#if devEnvironmentsError}
+						<p class="text-sm text-muted-foreground py-3">
+							Couldn't reach the dev-environments service. Retrying will attempt the fetch again.
+						</p>
+					{:else if devEnvironments.length === 0}
+						<p class="text-sm text-muted-foreground py-3">
+							No active preview environments. Preview environments appear here when a workflow
+							execution launches a per-run dev preview.
+						</p>
+					{:else}
+						<ul class="divide-y">
+							{#each devEnvironments as env (env.executionId)}
+								<li class="py-2 flex items-center justify-between gap-2">
+									<div class="min-w-0 flex-1">
+										<div class="text-sm truncate" title={env.executionId}>
+											{env.primary.service ?? 'preview'} ·
+											<span class="text-muted-foreground font-mono text-[11px]">
+												{env.executionId.slice(0, 8)}
+											</span>
+										</div>
+										<div class="text-[11px] text-muted-foreground">
+											{env.services.length} service{env.services.length === 1 ? '' : 's'}
+											· {formatRelative(env.primary.createdAt)}
+										</div>
+									</div>
+									<div class="flex items-center gap-2 shrink-0">
+										<!-- HMR / live-sync readiness badge -->
+										<Badge
+											variant="outline"
+											class={env.ready
+												? 'bg-emerald-500/10 text-emerald-600'
+												: 'bg-amber-500/10 text-amber-600'}
+										>
+											{env.ready ? 'HMR live' : 'syncing'}
+										</Badge>
+										{#if env.primary.browseUrl}
+											<a
+												href={env.primary.browseUrl}
+												target="_blank"
+												rel="noopener noreferrer"
+												class="text-muted-foreground hover:text-primary"
+												title="Open preview"
+											>
+												<ExternalLink class="size-3" />
+											</a>
+										{/if}
+									</div>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<!-- Recent workflow activity (reuses recentRuns; empty state) -->
+				<div class="border-t pt-3">
+					<div class="flex items-center justify-between mb-2">
+						<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+							Recent workflow activity
+						</span>
+						<Button
+							variant="ghost"
+							size="sm"
+							onclick={() => goto(`/workspaces/${slug}/runs`)}
+						>
+							View all <ExternalLink class="size-3" />
+						</Button>
+					</div>
+					{#if recentRuns.length === 0}
+						<p class="text-sm text-muted-foreground py-2">
+							No recent workflow executions in this workspace.
+						</p>
+					{:else}
+						<ul class="space-y-1.5">
+							{#each recentRuns.slice(0, 3) as r (r.executionId)}
+								<li class="flex items-center justify-between gap-2 text-xs">
+									<a
+										href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+										class="truncate hover:underline flex-1"
+										title={r.workflowName}
+									>
+										{r.workflowName}
+									</a>
+									<Badge
+										variant="outline"
+										class="text-[9px] {r.status === 'running' || r.status === 'pending'
+											? 'bg-blue-500/10 text-blue-600'
+											: r.status === 'success'
+												? 'bg-emerald-500/10 text-emerald-600'
+												: r.status === 'error'
+													? 'bg-red-500/10 text-red-600'
+													: 'bg-muted text-muted-foreground'}"
+									>
+										{r.status}
+									</Badge>
+									<span class="text-muted-foreground whitespace-nowrap">
+										{formatRelative(r.startedAt)}
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<!-- Draft PR / source-promotion status. No first-class
+				     promotion API is wired to the dashboard today, so we
+				     render an explicit graceful empty state that points
+				     operators at the preview-promote flow rather than
+				     inventing metrics. -->
+				<div class="border-t pt-3">
+					<div class="flex items-center justify-between mb-2">
+						<span class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+							Draft PR / source promotion
+						</span>
+						<GitPullRequest class="size-3 text-muted-foreground" />
+					</div>
+					<p class="text-sm text-muted-foreground py-1">
+						No draft PRs pending promotion. Source capture and PR creation run
+						automatically after a preview is verified.
+					</p>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
