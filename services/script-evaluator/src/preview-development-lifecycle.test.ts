@@ -50,6 +50,8 @@ async function drive(
 		terminalOutput?: Record<string, unknown>;
 		ttlHours?: number;
 		runningPolls?: number;
+		retainOnFailure?: boolean;
+		startFailureMessage?: string;
 		transientStartFailures?: number;
 		transientStatusFailures?: number;
 		promotionVerification?: Record<string, unknown>;
@@ -72,6 +74,7 @@ async function drive(
       services: ["workflow-builder"],
       ttlHours: options.ttlHours ?? 8,
       retainAfterCompletion: false,
+      ...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
     },
     budget: { total: 1_000_000, spent: 0 },
     completedResults,
@@ -100,6 +103,14 @@ async function drive(
             value = { ok: true, phase: "Ready", ready: true, target };
             break;
 				case "preview/workflow-start":
+					if (options.startFailureMessage) {
+						status = "error";
+						errorCode = "action_error";
+						value = {
+							message: options.startFailureMessage,
+						};
+						break;
+					}
 					if (startFailures < (options.transientStartFailures ?? 0)) {
 						startFailures += 1;
 						status = "error";
@@ -302,6 +313,25 @@ describe("host preview development lifecycle", () => {
 		expect(
 			tasks.some((task) => task.actionSlug === "preview/workflow-status"),
 		).toBe(true);
+	});
+
+	it("can retain the preview for debugging after a non-transient start failure", async () => {
+		const { result, tasks } = await drive({
+			retainOnFailure: true,
+			startFailureMessage: "preview-local response does not match the dispatched command",
+		});
+		expect(result.status).toBe("script_error");
+		expect(result.error?.message).toContain(
+			"preview-local response does not match the dispatched command",
+		);
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
+		).toBe(false);
+		expect(
+			tasks.some(
+				(task) => task.actionSlug === "preview/environment-teardown-status",
+			),
+		).toBe(false);
 	});
 
 	it("accepts an already-absent environment without polling a null teardown ticket", async () => {
