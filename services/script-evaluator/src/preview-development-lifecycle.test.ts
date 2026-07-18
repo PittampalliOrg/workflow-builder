@@ -56,6 +56,9 @@ async function drive(
 		retainAfterCompletion?: boolean;
 		retainOnFailure?: boolean;
 		interactiveHandoff?: boolean;
+		impactReview?: boolean;
+		diffScope?: string[];
+		maxIterations?: number;
 		startFailureMessage?: string;
 		transientStartFailures?: number;
 		transientStartFailureMessage?: string;
@@ -76,6 +79,11 @@ async function drive(
 		retainAfterCompletion: options.retainAfterCompletion === true,
 		...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
 		...(options.interactiveHandoff === true ? { interactiveHandoff: true } : {}),
+		...(options.impactReview === true ? { impactReview: true } : {}),
+		...(options.diffScope ? { diffScope: options.diffScope } : {}),
+		...(options.maxIterations != null
+			? { maxIterations: options.maxIterations }
+			: {}),
 	};
   const completedResults: Record<
     string,
@@ -259,6 +267,9 @@ describe("host preview development lifecycle", () => {
       input: {
         properties: {
           interactiveHandoff: { type: "boolean", default: false },
+          impactReview: { type: "boolean", default: false },
+          diffScope: { type: "array" },
+          maxIterations: { type: "integer", default: 2 },
         },
       },
     });
@@ -450,6 +461,27 @@ describe("host preview development lifecycle", () => {
 		expect(result.returnValue).toMatchObject({
 			retained: true,
 			retainedReason: "completed",
+		});
+	});
+
+	it("passes opt-in impact-review controls to the preview-local child", async () => {
+		const { result, tasks } = await drive({
+			selectedServices: ["workflow-builder", "workflow-orchestrator"],
+			promotedServices: ["workflow-builder"],
+			impactReview: true,
+			diffScope: ["src/routes/dashboard"],
+			maxIterations: 2,
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		const start = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-start",
+		);
+		expect(start?.args).toMatchObject({
+			target,
+			services: ["workflow-builder", "workflow-orchestrator"],
+			impactReview: true,
+			diffScope: ["src/routes/dashboard"],
+			maxIterations: 2,
 		});
 	});
 

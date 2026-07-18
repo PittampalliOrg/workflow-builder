@@ -58,6 +58,27 @@ export const meta = {
         title: "Hand off an interactive session after completion",
         default: false,
       },
+      impactReview: {
+        type: "boolean",
+        title: "Run multi-service impact-review gates",
+        default: false,
+        description:
+          "Forward the opt-in convergence, route-smoke, probe, and diff-scope gates to the preview-local development workflow.",
+      },
+      diffScope: {
+        type: "array",
+        title: "Captured-path allowlist",
+        items: { type: "string", minLength: 1 },
+        description:
+          "Optional path-prefix allowlist forwarded to the preview-local diff-scope gate.",
+      },
+      maxIterations: {
+        type: "integer",
+        title: "Maximum development iterations",
+        minimum: 1,
+        maximum: 3,
+        default: 2,
+      },
     },
   },
 };
@@ -77,6 +98,9 @@ function asBoolean(value) {
 const retainAfterCompletion = asBoolean(t.retainAfterCompletion);
 const retainOnFailure = asBoolean(t.retainOnFailure);
 const interactiveHandoff = asBoolean(t.interactiveHandoff);
+const impactReview = asBoolean(t.impactReview);
+const diffScope = t.diffScope == null ? null : t.diffScope;
+const maxIterations = t.maxIterations == null ? null : t.maxIterations;
 // Always-on upper bound (matches the server gate MAX_SERVICES). Whether >1
 // service is admitted is decided by the server flag, not here.
 const MAX_SERVICES = 16;
@@ -107,6 +131,19 @@ if (services.length > MAX_SERVICES) {
 if (!Number.isInteger(ttlHours) || ttlHours < 2 || ttlHours > 24) {
   throw new Error("ttlHours must be an integer between 2 and 24");
 }
+if (
+  diffScope !== null &&
+  (!Array.isArray(diffScope) ||
+    !diffScope.every((path) => typeof path === "string" && path.length > 0))
+) {
+  throw new Error("diffScope must be a list of non-empty path prefixes");
+}
+if (
+  maxIterations !== null &&
+  (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 3)
+) {
+  throw new Error("maxIterations must be an integer between 1 and 3");
+}
 
 // Deterministic exponential poll backoff. Delays derive ONLY from the attempt
 // index (no Date.now()/Math.random()) so durable replays schedule identical
@@ -120,9 +157,9 @@ const PROVISION_BUDGET_SECONDS = 20 * 60;
 const TEARDOWN_BUDGET_SECONDS = 20 * 60;
 // The pinned GAN child's documented worst-case budget: up to 3 agent
 // iterations x 35-minute per-iteration timeout plus ~15 minutes of
-// snapshot/promote overhead. The parent only sends {target, intent, services}
-// (the child's maxIterations/timeoutMinutes inputs are not visible here), so
-// this stays a named constant — keep it in sync with
+// snapshot/promote overhead. The parent may cap maxIterations below three, but
+// reserves the child's maximum documented budget so the observation schedule
+// remains conservative and deterministic. Keep this in sync with
 // preview-ui-development-gan.js.
 const CHILD_MAX_ITERATIONS = 3;
 const CHILD_ITERATION_TIMEOUT_MINUTES = 35;
@@ -530,6 +567,9 @@ try {
     ...(retainAfterCompletion || interactiveHandoff
       ? { ttlHours, retainAfterCompletion, interactiveHandoff }
       : {}),
+    ...(impactReview ? { impactReview: true } : {}),
+    ...(diffScope !== null ? { diffScope } : {}),
+    ...(maxIterations !== null ? { maxIterations } : {}),
   });
   phase("Observe");
   outcome = await waitForStatus(
