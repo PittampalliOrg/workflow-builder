@@ -241,7 +241,11 @@ export function devPreviewSandboxName(
   );
 }
 
-/** Build inputs staged under a hidden pod path for capture, never hot-applied. */
+/**
+ * Build inputs staged under a hidden pod path for capture, never hot-applied.
+ * Every dev image seeds these target paths from its build revision so receiver
+ * source receipts ignore unchanged transport copies but still detect real edits.
+ */
 export function devPreviewCaptureOnly(
   d: DevPreviewDescriptor,
 ): DevPreviewExtraSync[] {

@@ -267,6 +267,22 @@ describe("dev-preview registry", () => {
     );
   });
 
+  it("seeds capture-only Dockerfile baselines into every dev image", () => {
+    for (const service of canonicalDevPreviewServices()) {
+      const descriptor = DEV_PREVIEW_SERVICES[service];
+      const dockerfile = readFileSync(
+        join(process.cwd(), descriptor.devBuild.dockerfile),
+        "utf8",
+      );
+      expect(dockerfile).toContain(
+        `COPY ${descriptor.capabilities.acceptanceBuild.dockerfile} /app/.preview-capture/production.Dockerfile`,
+      );
+      expect(dockerfile).toContain(
+        `COPY ${descriptor.devBuild.dockerfile} /app/.preview-capture/development.Dockerfile`,
+      );
+    }
+  });
+
   it("canonicalizes requested service sets and reports every unsupported entry", () => {
     expect(canonicalDevPreviewServices("preview-native")).toEqual([
       "function-router",

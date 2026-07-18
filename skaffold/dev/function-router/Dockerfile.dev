@@ -18,6 +18,11 @@ RUN --mount=type=cache,target=/app/.pnpm-store \
 
 COPY services/function-router/ ./
 
+# Baseline capture-only build inputs in the same hidden paths used by sync.sh.
+# Receiver diff receipts can then distinguish unchanged transport files from edits.
+COPY services/function-router/Dockerfile /app/.preview-capture/production.Dockerfile
+COPY skaffold/dev/function-router/Dockerfile.dev /app/.preview-capture/development.Dockerfile
+
 # #40 exec bridge: /__run commands (registry `deps` = pnpm install) execute
 # HERE with the app container's pnpm/node_modules instead of the bare
 # dev-sync-sidecar. Outside /app so the emptyDir workdir mount can't mask it;

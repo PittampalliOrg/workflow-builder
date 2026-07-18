@@ -52,6 +52,11 @@ COPY src ./src
 # fixture change can be re-checked in-pod via `/__run?cmd=contract`.
 COPY services/shared/workflow-data-contract ./services/shared/workflow-data-contract
 
+# Baseline capture-only build inputs in the same hidden paths used by sync.sh.
+# Receiver diff receipts can then distinguish unchanged transport files from edits.
+COPY Dockerfile /app/.preview-capture/production.Dockerfile
+COPY skaffold/dev/workflow-builder/Dockerfile.dev /app/.preview-capture/development.Dockerfile
+
 # #40 exec bridge: /__run commands execute HERE (the app container's real
 # toolchain: node_modules, pnpm) instead of the node-only dev-sync-sidecar.
 # Lives OUTSIDE /app so the sidecar-transport emptyDir mount can never mask it.

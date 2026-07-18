@@ -23,6 +23,11 @@ RUN --mount=type=cache,target=/app/.pnpm-store \
 # Source layer — /__sync delivers per-file updates on top of these baked copies.
 COPY services/workflow-mcp-server/ ./
 
+# Baseline capture-only build inputs in the same hidden paths used by sync.sh.
+# Receiver diff receipts can then distinguish unchanged transport files from edits.
+COPY services/workflow-mcp-server/Dockerfile /app/.preview-capture/production.Dockerfile
+COPY skaffold/dev/workflow-mcp-server/Dockerfile.dev /app/.preview-capture/development.Dockerfile
+
 # #40 exec bridge: /__run commands (registry `deps` = pnpm install) execute
 # HERE with the app container's pnpm/node_modules instead of the bare
 # dev-sync-sidecar. Outside /app so the emptyDir workdir mount can't mask it;
