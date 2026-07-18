@@ -82,6 +82,20 @@
 		user?.name?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there'
 	);
 
+	// Compact preview development status marker: summarizes the run activity
+	// already fetched for this dashboard so reviewers can gauge preview health
+	// at a glance. Purely derived from existing state — no new requests.
+	let runStatusCounts = $derived.by(() => {
+		const counts: Record<string, number> = {};
+		for (const r of recentRuns) counts[r.status] = (counts[r.status] ?? 0) + 1;
+		return counts;
+	});
+	let latestRunAt = $derived(
+		recentRuns.length > 0
+			? recentRuns.map((r) => r.startedAt).sort().slice(-1)[0]
+			: null
+	);
+
 	// Dashboard is platform-scoped (no [slug] in URL). Use the magic default
 	// slug — hooks.server.ts resolves it to the caller's active workspace.
 	const slug = DEFAULT_WORKSPACE_SLUG;
@@ -154,6 +168,39 @@
 			<AlertDescription>{errorMessage}</AlertDescription>
 		</Alert>
 	{/if}
+
+	<!-- Preview Development Status: compact marker summarizing live preview run
+	     activity from the existing /api/v1/runs feed (graceful empty state
+	     when no runs are present). -->
+	<div
+		data-testid="proof-d-gate-p6"
+		class="flex items-center gap-2 rounded border px-3 py-1.5 text-xs w-fit"
+	>
+		<Activity class="size-3.5 text-muted-foreground" />
+		<span class="font-medium">Preview Development Status</span>
+		{#if loading}
+			<Badge variant="outline" class="bg-muted text-muted-foreground">checking…</Badge>
+		{:else if recentRuns.length === 0}
+			<Badge variant="outline" class="bg-muted text-muted-foreground">
+				no preview runs yet
+			</Badge>
+		{:else if (runStatusCounts['error'] ?? 0) > 0}
+			<Badge variant="outline" class="bg-red-500/10 text-red-600">
+				{runStatusCounts['error']} error{(runStatusCounts['error'] ?? 0) === 1 ? '' : 's'}
+			</Badge>
+		{:else if (runStatusCounts['running'] ?? 0) > 0 || (runStatusCounts['pending'] ?? 0) > 0}
+			<Badge variant="outline" class="bg-blue-500/10 text-blue-600">
+				{(runStatusCounts['running'] ?? 0) + (runStatusCounts['pending'] ?? 0)} active
+			</Badge>
+		{:else}
+			<Badge variant="outline" class="bg-emerald-500/10 text-emerald-600">
+				{runStatusCounts['success'] ?? 0} recent success{(runStatusCounts['success'] ?? 0) === 1 ? '' : 'es'}
+			</Badge>
+		{/if}
+		{#if latestRunAt}
+			<span class="text-muted-foreground">last run {formatRelative(latestRunAt)}</span>
+		{/if}
+	</div>
 
 	{#if loading}
 		<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
