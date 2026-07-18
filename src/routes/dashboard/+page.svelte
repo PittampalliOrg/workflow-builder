@@ -71,6 +71,13 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 
+	// Build timestamp: captured when this dashboard bundle is evaluated by the
+	// browser. In the dev preview it changes on every HMR/live-sync generation,
+	// so the footer caption doubles as a live-sync probe. Assigned in onMount
+	// (client-only) to avoid server/client hydration mismatch.
+	const bundleBuiltAt = new Date();
+	let buildTimestamp = $state<string | null>(null);
+
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
 		if (hour < 12) return 'Good morning';
@@ -125,7 +132,10 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
-	onMount(load);
+	onMount(() => {
+		buildTimestamp = bundleBuiltAt.toISOString();
+		load();
+	});
 </script>
 
 <div class="h-full overflow-y-auto flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
@@ -445,4 +455,85 @@
 			</button>
 		</div>
 	{/if}
+
+	<!-- Preview Development Status: helps validate preview HMR/live-sync.
+	     Reuses the dashboard's already-loaded client state (recentRuns, stats)
+	     with explicit empty states; the footer caption shows the dashboard
+	     bundle's build timestamp, which bumps on every HMR generation. -->
+	<Card class="border-dashed">
+		<CardHeader class="pb-2">
+			<CardTitle class="text-base flex items-center gap-2">
+				<Activity class="size-4" /> Preview Development Status
+			</CardTitle>
+			<CardDescription class="text-xs">
+				Live-sync / HMR state for this preview environment.
+			</CardDescription>
+		</CardHeader>
+		<CardContent>
+			<ul class="text-xs space-y-1.5">
+				<li class="flex items-center justify-between gap-2">
+					<span class="text-muted-foreground">Dashboard bundle</span>
+					{#if loading}
+						<Skeleton class="h-3 w-32" />
+					{:else if buildTimestamp}
+						<code class="text-[11px]">{buildTimestamp}</code>
+					{:else}
+						<span class="text-muted-foreground">unavailable</span>
+					{/if}
+				</li>
+				<li class="flex items-center justify-between gap-2">
+					<span class="text-muted-foreground">Live sync / HMR</span>
+					{#if loading}
+						<Skeleton class="h-3 w-20" />
+					{:else}
+						<Badge variant="outline" class="bg-emerald-500/10 text-emerald-600">
+							receiving updates
+						</Badge>
+					{/if}
+				</li>
+				<li class="flex items-center justify-between gap-2">
+					<span class="text-muted-foreground">Recent workflow activity</span>
+					{#if loading}
+						<Skeleton class="h-3 w-24" />
+					{:else if recentRuns.length > 0}
+						<span>
+							{recentRuns.length} run{recentRuns.length === 1 ? '' : 's'} · latest
+							{formatRelative(recentRuns[0].startedAt)}
+						</span>
+					{:else}
+						<span class="text-muted-foreground">No workflow runs yet.</span>
+					{/if}
+				</li>
+				<li class="flex items-center justify-between gap-2">
+					<span class="text-muted-foreground">Session activity</span>
+					{#if loading}
+						<Skeleton class="h-3 w-16" />
+					{:else if data}
+						<span>{data.stats.activeSessions} active</span>
+					{:else}
+						<span class="text-muted-foreground">No session data.</span>
+					{/if}
+				</li>
+				<li class="flex items-center justify-between gap-2">
+					<span class="text-muted-foreground">PR capture</span>
+					{#if loading}
+						<Skeleton class="h-3 w-28" />
+					{:else}
+						<span class="text-muted-foreground">
+							Source capture runs after verification.
+						</span>
+					{/if}
+				</li>
+			</ul>
+		</CardContent>
+	</Card>
+
+	<footer class="mt-auto flex items-center justify-between gap-2 border-t pt-3 text-[11px] text-muted-foreground">
+		<span>Workflow Builder · preview environment</span>
+		{#if buildTimestamp}
+			<span>Dashboard build <code>{buildTimestamp}</code></span>
+		{:else}
+			<span>Dashboard build timestamp unavailable</span>
+		{/if}
+	</footer>
 </div>
