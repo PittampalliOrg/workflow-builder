@@ -221,6 +221,7 @@ async function main() {
 		return payload;
 	});
 
+	// Health endpoint for liveness/readiness probes (preview-proof-c-five-service).
 	app.get("/health", async () => ({ status: "healthy" }));
 
 	app.post<{
