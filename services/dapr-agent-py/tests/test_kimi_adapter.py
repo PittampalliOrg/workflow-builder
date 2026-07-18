@@ -16,6 +16,17 @@ if root not in sys.path:
     sys.path.insert(0, root)
 
 adapter = importlib.import_module("src.kimi_adapter")
+formulas = importlib.import_module("src.kimi_formulas")
+
+
+@pytest.fixture(autouse=True)
+def _disable_kimi_formula_tools(monkeypatch):
+    """Keep these chat-completions tests hermetic: no /formulas traffic through
+    the mocked urlopen. Formula behavior is covered in test_kimi_formulas.py."""
+    monkeypatch.setenv("KIMI_FORMULAS", "")
+    formulas.reset_formula_cache()
+    yield
+    formulas.reset_formula_cache()
 
 
 class _Response:
@@ -165,7 +176,7 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     assert "max_tokens" not in bodies[0]
     assert "prompt_cache_key" not in bodies[0]
     assert bodies[0]["stream"] is True
-    assert "stream_options" not in bodies[0]
+    assert bodies[0]["stream_options"] == {"include_usage": True}
     assert result["content"] == "ok"
     assert result["reasoning_content"] == "reasoning"
     assert result["metadata"]["provider"] == "kimi-chat"
@@ -1530,3 +1541,168 @@ def test_kimi_normalizer_collapses_invalid_tool_history() -> None:
     assert messages[1]["role"] == "user"
     assert "tool-call ordering was invalid" in messages[1]["content"]
     assert "[tool] file contents" in messages[1]["content"]
+
+
+def test_kimi_publish_llm_usage_maps_cached_tokens(monkeypatch) -> None:
+    """Kimi's top-level cached_tokens lands in cache_read_input_tokens, and
+    input_tokens is netted (prompt_tokens minus cache hits) — the Session
+    Pulse llm_usage schema shared with the other provider adapters."""
+    import src.event_publisher as event_publisher
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        event_publisher, "get_scoped_session", lambda: ("sess-1", "inst-1")
+    )
+    monkeypatch.setattr(event_publisher, "get_scoped_audit_fields", lambda: {})
+    monkeypatch.setattr(
+        event_publisher,
+        "publish_session_event",
+        lambda sid, event_type, payload, **kwargs: events.append(
+            (event_type, payload)
+        ),
+    )
+
+    adapter._publish_llm_usage(
+        model="kimi-k3",
+        usage={
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cached_tokens": 40,
+        },
+        ttft_ms=12.0,
+        duration_ms=34.0,
+        success=True,
+    )
+
+    assert len(events) == 1
+    event_type, payload = events[0]
+    assert event_type == "agent.llm_usage"
+    assert payload["input_tokens"] == 60
+    assert payload["output_tokens"] == 5
+    assert payload["cache_read_input_tokens"] == 40
+    assert payload["cache_creation_input_tokens"] == 0
+    assert payload["success"] is True
+
+
+def test_kimi_sse_captures_usage_only_trailing_chunk(monkeypatch) -> None:
+    """With stream_options.include_usage, Kimi sends a final usage chunk with
+    empty choices; the reader must capture its cached_tokens."""
+    import src.event_publisher as event_publisher
+
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        event_publisher, "get_scoped_session", lambda: ("sess-1", "inst-1")
+    )
+    monkeypatch.setattr(event_publisher, "get_scoped_audit_fields", lambda: {})
+    monkeypatch.setattr(
+        event_publisher,
+        "publish_session_event",
+        lambda sid, event_type, payload, **kwargs: events.append(
+            (event_type, payload)
+        ),
+    )
+
+    lines = [
+        *_sse_event(
+            {
+                "id": "chatcmpl_usage",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": None,
+            }
+        ),
+        *_sse_event(
+            {
+                "id": "chatcmpl_usage",
+                "model": "kimi-k3",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "total_tokens": 105,
+                    "cached_tokens": 40,
+                },
+            }
+        ),
+        b"data: [DONE]\n",
+        b"\n",
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    result = adapter._call_kimi_chat(
+        "llm-kimi-k3", [{"role": "user", "content": "hello"}]
+    )
+
+    assert result["content"] == "ok"
+    assert result["metadata"]["usage"]["cached_tokens"] == 40
+    llm_usage = [p for t, p in events if t == "agent.llm_usage"]
+    assert llm_usage[-1]["cache_read_input_tokens"] == 40
+    assert llm_usage[-1]["input_tokens"] == 60
+
+
+def test_kimi_span_records_cache_read_tokens(monkeypatch) -> None:
+    import src.telemetry as telemetry
+
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    end_kwargs: list[dict] = []
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        telemetry, "start_llm_request_span", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        telemetry,
+        "end_llm_request_span",
+        lambda span, **kwargs: end_kwargs.append(kwargs),
+    )
+    monkeypatch.setattr(
+        telemetry,
+        "record_tokens",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    lines = [
+        *_sse_event(
+            {
+                "id": "chatcmpl_cache",
+                "model": "kimi-k3",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "total_tokens": 105,
+                    "cached_tokens": 40,
+                },
+            }
+        ),
+        b"data: [DONE]\n",
+        b"\n",
+    ]
+    monkeypatch.setattr(
+        adapter.urllib.request,
+        "urlopen",
+        lambda req, timeout: _RawSseResponse(lines),
+    )
+
+    adapter._call_kimi_chat("llm-kimi-k3", [{"role": "user", "content": "hello"}])
+
+    assert end_kwargs[0]["cache_read_tokens"] == 40
+    cache_records = [r for r in recorded if r["type_"] == "cacheRead"]
+    assert cache_records[0]["count"] == 40
