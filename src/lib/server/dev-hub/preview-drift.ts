@@ -8,7 +8,8 @@
  *   polling the Dev hub; the query itself stays admin-gated).
  * - Dev release pins + repo main HEADs: `github-sources` (raw fetches, 60s).
  * - Pin history (behind-pin vs diverged): exported `loadPinHistory` (10min).
- * - Promotion receipts: direct table read (`promotion-receipts.ts`).
+ * - Promotion receipts: application surface (`vclusterPreviews.listPromotionReceipts`
+ *   through the `promotion-receipts.ts` seam).
  * - Active dev sandboxes: host dev-environment groups (per-request DB read).
  */
 import { getApplicationAdapters } from "$lib/server/application";

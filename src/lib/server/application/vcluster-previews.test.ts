@@ -10,6 +10,7 @@ import type {
   PreviewDeploymentScopePort,
   PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentTeardownStatusPort,
+  PreviewSourcePromotionReceiptListingPort,
   VclusterPreviewGatewayPort,
   VclusterPreviewSleepOutcome,
   VclusterPreviewTouchResult,
@@ -598,6 +599,122 @@ describe("ApplicationVclusterPreviewService", () => {
       name: "feat-x",
       state: "slept",
       resuming: true,
+    });
+  });
+
+  it("resolves the host->preview API base URL from the backing pool member", () => {
+    const svc = service(gateway());
+    expect(
+      svc.apiBaseUrl({
+        name: "feat-x",
+        url: "https://wfb-feat-x.ts.net",
+        pool: "pool-2",
+      }),
+    ).toBe(
+      "http://workflow-builder-x-workflow-builder-x-pool-2.vcluster-pool-2.svc.cluster.local:3000",
+    );
+    expect(
+      svc.apiBaseUrl({ name: "feat-x", url: null, pool: null }),
+    ).toBe(
+      "http://workflow-builder-x-workflow-builder-x-feat-x.vcluster-feat-x.svc.cluster.local:3000",
+    );
+  });
+
+  describe("listPromotionReceipts", () => {
+    const receiptRow = (over: {
+      previewName?: string;
+      executionId?: string;
+      pullRequestNumber?: number;
+      createdAt?: string;
+    }) => ({
+      previewName: "feat-x",
+      executionId: "execution-1",
+      pullRequestNumber: 42,
+      prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+      commitSha: "c".repeat(40),
+      createdAt: "2026-07-16T10:00:00.000Z",
+      ...over,
+    });
+
+    const receiptsService = (
+      listRecentByPreview: PreviewSourcePromotionReceiptListingPort["listRecentByPreview"],
+    ) =>
+      new ApplicationVclusterPreviewService({
+        gateway: gateway(),
+        access: {
+          authorize: vi.fn(async () => {
+            throw new Error("unused");
+          }),
+        },
+        scope: {
+          isControlPlane: () => true,
+          allowsPreviewName: () => true,
+        },
+        previewRepo: "PittampalliOrg/workflow-builder",
+        maxPreviews: 6,
+        receipts: { listRecentByPreview },
+      });
+
+    it("groups newest-first receipts and execution ids per preview", async () => {
+      const listRecentByPreview = vi.fn(async () => [
+        receiptRow({ executionId: "execution-2", pullRequestNumber: 43 }),
+        receiptRow({ createdAt: "2026-07-15T10:00:00.000Z" }),
+        receiptRow({
+          previewName: "feat-y",
+          executionId: "execution-2",
+          pullRequestNumber: 41,
+        }),
+        // Same execution again: listed once in executionIdsByPreview.
+        receiptRow({
+          executionId: "execution-2",
+          pullRequestNumber: 40,
+          createdAt: "2026-07-14T10:00:00.000Z",
+        }),
+      ]);
+
+      const listing = await receiptsService(listRecentByPreview)
+        .listPromotionReceipts(["feat-x", "feat-x", "feat-y", ""]);
+
+      expect(listRecentByPreview).toHaveBeenCalledWith({
+        previewNames: ["feat-x", "feat-y"],
+        limitPerPreview: 10,
+      });
+      expect(
+        listing.receiptsByPreview
+          .get("feat-x")
+          ?.map((receipt) => receipt.prNumber),
+      ).toEqual([43, 42, 40]);
+      expect(listing.receiptsByPreview.get("feat-x")?.[0]).toEqual({
+        prNumber: 43,
+        prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+        commitSha: "c".repeat(40),
+        createdAt: "2026-07-16T10:00:00.000Z",
+      });
+      expect(listing.executionIdsByPreview.get("feat-x")).toEqual([
+        "execution-2",
+        "execution-1",
+      ]);
+      expect(listing.executionIdsByPreview.get("feat-y")).toEqual([
+        "execution-2",
+      ]);
+    });
+
+    it("degrades to empty maps when the listing is unavailable", async () => {
+      const listRecentByPreview = vi.fn(async () => {
+        throw new Error("database unavailable");
+      });
+      const listing = await receiptsService(listRecentByPreview)
+        .listPromotionReceipts(["feat-x"]);
+      expect(listing.receiptsByPreview.size).toBe(0);
+      expect(listing.executionIdsByPreview.size).toBe(0);
+    });
+
+    it("answers an empty name set without touching the listing port", async () => {
+      const listRecentByPreview = vi.fn(async () => []);
+      const listing = await receiptsService(listRecentByPreview)
+        .listPromotionReceipts(["", ""]);
+      expect(listRecentByPreview).not.toHaveBeenCalled();
+      expect(listing.receiptsByPreview.size).toBe(0);
     });
   });
 });

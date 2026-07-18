@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedFromCommit": "09841ff2fda85eb2c1c9c99bd6f32cabba67c382",
+  "generatedFromCommit": "6742b56df48ebc40e48c2cb8421b51707c75def5",
   "command": "pnpm exec depcruise src/lib/server src/routes --config .dependency-cruiser.cjs --output-type json",
   "counts": {
     "error": 0,
@@ -636,6 +636,18 @@
       "severity": "warn",
       "rule": "routes-through-application",
       "type": "dependency",
+      "from": "src/routes/(admin)/admin/gitops/data.remote.ts",
+      "to": "src/lib/server/gitops/fleet-drift.ts",
+      "unresolvedTo": "$lib/server/gitops/fleet-drift",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
       "from": "src/routes/api/admin/agent-skills/import/zip/+server.ts",
       "to": "src/lib/server/skill-ingest.ts",
       "unresolvedTo": "$lib/server/skill-ingest",
@@ -771,42 +783,6 @@
       "from": "src/routes/api/dapr-system/events/+server.ts",
       "to": "src/lib/server/dapr-event-stream.ts",
       "unresolvedTo": "$lib/server/dapr-event-stream",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/dev-environments/[executionId]/+server.ts",
-      "to": "src/lib/server/lifecycle/index.ts",
-      "unresolvedTo": "$lib/server/lifecycle",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/events/ingest/+server.ts",
-      "to": "src/lib/server/dapr-client.ts",
-      "unresolvedTo": "$lib/server/dapr-client",
-      "dependencyTypes": [
-        "import",
-        "undetermined"
-      ]
-    },
-    {
-      "severity": "warn",
-      "rule": "routes-through-application",
-      "type": "dependency",
-      "from": "src/routes/api/events/ingest/+server.ts",
-      "to": "src/lib/server/workflows/external-event-registry.ts",
-      "unresolvedTo": "$lib/server/workflows/external-event-registry",
       "dependencyTypes": [
         "import",
         "undetermined"
@@ -2487,6 +2463,30 @@
       "from": "src/routes/workspaces/[slug]/+layout.server.ts",
       "to": "src/lib/server/workspaces/resolve.ts",
       "unresolvedTo": "$lib/server/workspaces/resolve",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/workspaces/[slug]/dev/data.remote.ts",
+      "to": "src/lib/server/dev-hub/preview-drift.ts",
+      "unresolvedTo": "$lib/server/dev-hub/preview-drift",
+      "dependencyTypes": [
+        "import",
+        "undetermined"
+      ]
+    },
+    {
+      "severity": "warn",
+      "rule": "routes-through-application",
+      "type": "dependency",
+      "from": "src/routes/workspaces/[slug]/dev/data.remote.ts",
+      "to": "src/lib/server/dev-hub/preview-retention.ts",
+      "unresolvedTo": "$lib/server/dev-hub/preview-retention",
       "dependencyTypes": [
         "import",
         "undetermined"

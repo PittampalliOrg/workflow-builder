@@ -13,13 +13,13 @@
  *     Freezes live-sync source receivers without tearing anything down.
  *
  * Routing reuses the existing host->preview base-URL resolution
- * (`previewApiBaseUrl`: synced in-cluster Service first, tailnet fallback).
- * Anything not reachable yet — missing endpoint, missing credential, no
- * associated execution — returns `reason: "unsupported"` as data.
+ * (`vclusterPreviews.apiBaseUrl`: synced in-cluster Service first, tailnet
+ * fallback). Anything not reachable yet — missing endpoint, missing
+ * credential, no associated execution — returns `reason: "unsupported"` as
+ * data.
  */
 import { env } from "$env/dynamic/private";
 import { getApplicationAdapters } from "$lib/server/application";
-import { previewApiBaseUrl } from "$lib/server/application/adapters/preview-read-proxy";
 import { listPromotionReceiptsForPreviews } from "$lib/server/dev-hub/promotion-receipts";
 import type {
 	PreviewRetentionActionResult,
@@ -91,7 +91,7 @@ async function resolveTarget(
 			`preview ${previewName} is slept; wake it before managing its dev leases`,
 		);
 	}
-	const baseUrl = previewApiBaseUrl({
+	const baseUrl = adapters.vclusterPreviews.apiBaseUrl({
 		name: preview.name,
 		url: preview.url,
 		pool: preview.pool,
