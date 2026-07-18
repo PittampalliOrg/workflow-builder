@@ -51,6 +51,10 @@ const OPERATION_ID =
   /^pdt-(start-workflow|get-workflow-status|signal-workflow|verify-promotion)-[0-9a-f]{64}$/;
 const MAX_INTENT_CHARS = 12_000;
 const MAX_SERVICES = 16;
+// Services that can never be driven by a preview development run because they
+// are not preview-native adoptable (catalog previewNative is null). Rejecting
+// them here yields a precise error instead of a dead-end deeper in the runner.
+const EXCLUDED_SERVICES: ReadonlySet<string> = new Set(["swebench-coordinator"]);
 const CONTEXT_KEY = "__previewDevelopment";
 const SOURCE_REPOSITORY = "PittampalliOrg/workflow-builder" as const;
 const SOURCE_BASE_BRANCH = "main" as const;
@@ -313,10 +317,24 @@ function normalizeWorkflowInput(
   ) {
     return invalid("preview development workflow input is invalid");
   }
-  // The pinned child only plumbs the PRIMARY service's sync/export endpoints,
-  // so a multi-service request would deterministically dead-end after burning
-  // the full agent iteration budget. Fail fast before dispatching anything.
-  if (input.services.length > 1) {
+  // swebench-coordinator (and any other non-adoptable service) can never be
+  // driven by a preview development run; reject it before dispatching anything.
+  const excluded = input.services.find((service) =>
+    EXCLUDED_SERVICES.has(service),
+  );
+  if (excluded !== undefined) {
+    return invalid(
+      `preview development does not support ${excluded} (not preview-native adoptable)`,
+    );
+  }
+  // The pinned child now seeds every requested service's sync config into the
+  // workspace (.syncenv.d/<service>) and drives one shared sync.sh generation,
+  // so multi-service is supported when explicitly enabled. It stays OFF by
+  // default so the proven single-service flow is byte-for-byte unchanged; the
+  // PREVIEW_DEV_MULTISERVICE env flag is the single opt-in switch. MAX_SERVICES
+  // is enforced above regardless of the flag.
+  const multiServiceEnabled = process.env.PREVIEW_DEV_MULTISERVICE === "true";
+  if (!multiServiceEnabled && input.services.length > 1) {
     return invalid(
       `multi-service preview development is not yet supported: only 1 service may be requested (got ${input.services.length})`,
     );

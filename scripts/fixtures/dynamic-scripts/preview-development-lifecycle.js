@@ -31,6 +31,7 @@ export const meta = {
         type: "array",
         title: "Microservices to develop",
         minItems: 1,
+        maxItems: 16,
         uniqueItems: true,
         items: { type: "string" },
         default: ["workflow-builder"],
@@ -76,6 +77,9 @@ function asBoolean(value) {
 const retainAfterCompletion = asBoolean(t.retainAfterCompletion);
 const retainOnFailure = asBoolean(t.retainOnFailure);
 const interactiveHandoff = asBoolean(t.interactiveHandoff);
+// Always-on upper bound (matches the server gate MAX_SERVICES). Whether >1
+// service is admitted is decided by the server flag, not here.
+const MAX_SERVICES = 16;
 
 if (!intent) throw new Error("intent is required");
 if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(environmentName)) {
@@ -90,12 +94,14 @@ if (
 }
 if (new Set(services).size !== services.length)
   throw new Error("services must be unique");
-// Fail fast BEFORE provisioning anything: the pinned child only plumbs the
-// primary service's sync/export endpoints, so a multi-service run dead-ends
-// after burning the whole agent budget.
-if (services.length > 1) {
+// The server gate (PREVIEW_DEV_MULTISERVICE) is the authoritative switch for
+// whether more than one service is admitted; this fixture only enforces the
+// always-on bounds (non-empty, unique, <= MAX_SERVICES) and lets the server
+// reject a multi-service request when the flag is off. The pinned child seeds
+// every requested service and drives one shared sync.sh generation.
+if (services.length > MAX_SERVICES) {
   throw new Error(
-    `multi-service preview development is not yet supported: only 1 service may be requested (got ${services.length})`,
+    `too many services requested: at most ${MAX_SERVICES} may be developed at once (got ${services.length})`,
   );
 }
 if (!Number.isInteger(ttlHours) || ttlHours < 2 || ttlHours > 24) {
@@ -121,14 +127,24 @@ const TEARDOWN_BUDGET_SECONDS = 20 * 60;
 const CHILD_MAX_ITERATIONS = 3;
 const CHILD_ITERATION_TIMEOUT_MINUTES = 35;
 const CHILD_OVERHEAD_MINUTES = 15;
+// The pinned child edits + syncs EVERY requested service, so its worst-case
+// runtime scales with the service count: each of the (up to 3) agent iterations
+// touches all services within its per-iteration timeout. Size the observation
+// window from the service count so a legitimately-still-working multi-service
+// child is not declared timed-out. A single-service run keeps the exact
+// documented budget (byte-for-byte: (3*35+15)*60 = 7200s).
+const CHILD_SERVICE_COUNT = Math.max(1, services.length);
 const CHILD_BUDGET_SECONDS =
-  (CHILD_MAX_ITERATIONS * CHILD_ITERATION_TIMEOUT_MINUTES +
+  (CHILD_MAX_ITERATIONS *
+    CHILD_ITERATION_TIMEOUT_MINUTES *
+    CHILD_SERVICE_COUNT +
     CHILD_OVERHEAD_MINUTES) *
   60;
-// At the 30s cap the ~2h child window alone would cost ~480 action-calls; a
-// 60s cap keeps the whole run inside the engine cap (sleep LENGTH is free,
-// sleep CALLS are not).
-const CHILD_POLL_CAP_SECONDS = 60;
+// The poll cap scales with the service count too, so the poll COUNT (and thus
+// the engine action-call cost) stays flat regardless of how long the window is:
+// count ≈ budget / cap. At 60s per service the single-service cap is the proven
+// 60s. sleep LENGTH is free; sleep CALLS are not.
+const CHILD_POLL_CAP_SECONDS = 60 * CHILD_SERVICE_COUNT;
 
 function pollDelaySeconds(attempt, capSeconds) {
   let delay = POLL_START_SECONDS;
