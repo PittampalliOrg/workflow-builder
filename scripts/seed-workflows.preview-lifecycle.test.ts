@@ -1,20 +1,45 @@
-import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { extractMeta } from "../services/script-evaluator/src/meta";
+import {
+	hostPreviewLifecycleDefinition,
+	previewUiDevelopmentGanDefinition,
+} from "./lib/preview-lifecycle-definitions";
+
+function inputProperties(meta: Record<string, unknown>): Record<string, unknown> {
+	return (
+		(meta.input as { properties?: Record<string, unknown> } | undefined)
+			?.properties ?? {}
+	);
+}
 
 describe("seed-workflows preview lifecycle schema", () => {
-	it("exposes retainOnFailure in the host lifecycle launch input", () => {
-		const source = fs.readFileSync(
-			path.resolve(process.cwd(), "scripts/seed-workflows.ts"),
-			"utf8",
-		);
-		const lifecycleStart = source.indexOf("function hostPreviewLifecycleDefinition()");
-		const ganStart = source.indexOf("function previewUiDevelopmentGanDefinition()");
-		expect(lifecycleStart).toBeGreaterThanOrEqual(0);
-		expect(ganStart).toBeGreaterThan(lifecycleStart);
-		const lifecycleSource = source.slice(lifecycleStart, ganStart);
+	it("persists the authoritative fixture metadata without a second schema copy", () => {
+		for (const definition of [
+			hostPreviewLifecycleDefinition(),
+			previewUiDevelopmentGanDefinition(),
+		]) {
+			const extracted = extractMeta(definition.script);
+			expect(extracted.ok, extracted.error).toBe(true);
+			expect(definition.meta).toEqual(extracted.meta);
+			expect(definition.description).toBe(extracted.meta?.description);
+		}
+	});
 
-		expect(lifecycleSource).toContain("retainAfterCompletion");
-		expect(lifecycleSource).toContain("retainOnFailure");
+	it("seeds every retained and impact-review child input", () => {
+		const child = inputProperties(previewUiDevelopmentGanDefinition().meta);
+		expect(child).toHaveProperty("ttlHours");
+		expect(child).toHaveProperty("retainAfterCompletion");
+		expect(child).toHaveProperty("interactiveHandoff");
+		expect(child).toHaveProperty("impactReview");
+		expect(child).toHaveProperty("diffScope");
+	});
+
+	it("keeps the host launcher schema aligned with its fixture", () => {
+		const host = hostPreviewLifecycleDefinition().meta;
+		const properties = inputProperties(host);
+		expect(properties).toHaveProperty("retainAfterCompletion");
+		expect(properties).toHaveProperty("retainOnFailure");
+		expect(properties).toHaveProperty("interactiveHandoff");
+		expect(properties.services).toMatchObject({ maxItems: 16 });
 	});
 });

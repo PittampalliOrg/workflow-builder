@@ -36,6 +36,10 @@ import { generateId } from "../lib/utils/id";
 import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
 import { planProjectSystemWorkflowInstallations } from "./lib/project-system-workflows";
+import {
+	hostPreviewLifecycleDefinition,
+	previewUiDevelopmentGanDefinition,
+} from "./lib/preview-lifecycle-definitions";
 import { migrateKimiK3BrowserAgentsAndWorkflows } from "./kimi-k3-browser-agent";
 import {
 	buildSpec as buildKimiK3AnimationSpec,
@@ -3686,157 +3690,6 @@ async function upsertPreviewHmrGateCodeFunction(params: {
 	console.log(
 		`[seed-workflows] Reconciled code function ${PREVIEW_HMR_GATE_SLUG}@${PREVIEW_HMR_GATE_VERSION}`,
 	);
-}
-
-function hostPreviewLifecycleDefinition() {
-	const script = fs.readFileSync(
-		path.resolve(
-			process.cwd(),
-			"scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js",
-		),
-		"utf8",
-	);
-	const description =
-		"Provision an isolated app-live preview from the physical dev cluster, start its pinned automated GAN-style UI development workflow with the submitted intent, verify its draft PR receipt, and complete guarded teardown.";
-	return {
-		script,
-		description,
-		meta: {
-			name: "preview-development-lifecycle",
-			description,
-			phases: [
-				{ title: "Provision" },
-				{ title: "Start development" },
-				{ title: "Observe" },
-				{ title: "Finalize" },
-			],
-			launch: { surface: "dev-environment", target: "control-plane" },
-			input: {
-				type: "object",
-				required: ["intent", "environmentName"],
-				additionalProperties: false,
-				properties: {
-					intent: {
-						type: "string",
-						title: "Development task",
-						minLength: 1,
-						maxLength: 12000,
-						description: "The initial task sent to the preview-local automated UI development workflow.",
-					},
-					environmentName: {
-						type: "string",
-						title: "Preview environment name",
-						pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$",
-					},
-					services: {
-						type: "array",
-						title: "Microservices to develop",
-						minItems: 1,
-						uniqueItems: true,
-						items: { type: "string" },
-						default: ["workflow-builder"],
-					},
-					ttlHours: {
-						type: "integer",
-						title: "Preview lifetime in hours",
-						minimum: 2,
-						maximum: 24,
-						default: 8,
-					},
-					retainAfterCompletion: {
-						type: "boolean",
-						title: "Retain environment after completion",
-						default: false,
-					},
-					retainOnFailure: {
-						type: "boolean",
-						title: "Retain environment after failure",
-						default: false,
-					},
-				},
-			},
-		},
-	};
-}
-
-function previewUiDevelopmentGanDefinition() {
-	const script = fs.readFileSync(
-		path.resolve(
-			process.cwd(),
-			"scripts/fixtures/dynamic-scripts/preview-ui-development-gan.js",
-		),
-		"utf8",
-	);
-	const description =
-		"Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
-	return {
-		script,
-		description,
-		meta: {
-			name: "preview-ui-development-gan",
-			description,
-			phases: [
-				{ title: "Dev mode" },
-				{ title: "Plan" },
-				{ title: "Generate" },
-				{ title: "Verify" },
-				{ title: "Promote" },
-			],
-			launch: { surface: "dev-environment" },
-			estimatedAgentCalls: 2,
-			input: {
-				type: "object",
-				required: ["intent"],
-				additionalProperties: false,
-				properties: {
-					intent: {
-						type: "string",
-						title: "Dashboard development task",
-						minLength: 1,
-						maxLength: 12000,
-					},
-					service: { type: "string", default: "workflow-builder" },
-					services: {
-						type: "array",
-						items: { type: "string" },
-						default: ["workflow-builder"],
-					},
-					targetRoutes: {
-						type: "array",
-						items: { type: "string" },
-						default: ["/dashboard"],
-					},
-					maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
-					agentSlug: {
-						type: "string",
-						default: "glm-juicefs-builder-agent",
-					},
-					keepPreview: {
-						anyOf: [
-							{ type: "boolean" },
-							{ type: "string", enum: ["true", "false"] },
-						],
-						default: "true",
-					},
-					mode: {
-						type: "string",
-						enum: ["preview-native"],
-					},
-					previewOrigin: {
-						type: "string",
-					},
-					sourceRevision: {
-						type: "string",
-						pattern: "^[0-9a-f]{40}$",
-					},
-					__previewDevelopment: {
-						type: "object",
-						additionalProperties: true,
-					},
-				},
-			},
-		},
-	};
 }
 
 async function seedHostPreviewLifecycleForAdminProjects(params: {
