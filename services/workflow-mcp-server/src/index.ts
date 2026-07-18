@@ -13,6 +13,20 @@ import http from "node:http";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { PostgresWorkflowPersistenceAdapter } from "./adapters/postgres-workflow-persistence.js";
+import {
+  hasWorkflowMcpScope,
+  resolveWorkflowMcpContext,
+  runWithWorkflowMcpContext,
+  workflowMcpSessionToolAccess,
+  type WorkflowMcpRequestContext,
+  type WorkflowMcpPrincipal,
+  WORKFLOW_MCP_SCOPES,
+} from "./auth-context.js";
+import {
+  registerWorkflowContextTool,
+  WORKFLOW_MCP_INSTRUCTIONS,
+} from "./context-tools.js";
 import { initDb } from "./db.js";
 import {
 	registerWorkflowTools,
@@ -24,20 +38,28 @@ import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
 } from "./script-tools.js";
-import { registerTargetTools } from "./target-tools.js";
 import {
 	createStructuredOutputMcpServer,
 	parseStructuredOutputContext,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 } from "./structured-output-tools.js";
 import { runWithGoalContext } from "./goal-context.js";
-import { runWithTeamContext, teamRoleFromHeaders } from "./team-context.js";
+import { runWithTeamContext } from "./team-context.js";
 import { registerTeamTools } from "./team-tools.js";
 import { setSpanInput, setSpanOutput } from "./observability/content.js";
+import type { WorkflowPersistencePort } from "./ports/workflow-persistence.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const RESPONSE_CAPTURE_MAX_BYTES = 60_000;
+const TOOL_CATALOG_PRINCIPAL: WorkflowMcpPrincipal = {
+  authMode: "workspace_api_key",
+  userId: "tool-catalog",
+  projectId: "tool-catalog",
+  scopes: [...WORKFLOW_MCP_SCOPES],
+  principalAssertion: "tool-catalog",
+  capabilities: { scriptDepth: 0, teamId: null, teamRole: "none" },
+};
 
 // STATELESS transport (SDK "Stateless Mode"): every POST gets a fresh
 // transport + server derived entirely from that request's headers (user id,
@@ -61,10 +83,35 @@ const STRUCTURED_OUTPUT_HEALTH_TOOLS: RegisteredTool[] = [
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function setCorsHeaders(res: http.ServerResponse): void {
-	res.setHeader("Access-Control-Allow-Origin", "*");
+function setCorsHeaders(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  const configuredOrigin = process.env.WORKFLOW_MCP_ALLOWED_ORIGIN?.trim();
+  const requestOrigin = req.headers.origin;
+  if (
+    configuredOrigin &&
+    typeof requestOrigin === "string" &&
+    requestOrigin === configuredOrigin
+  ) {
+    res.setHeader("Access-Control-Allow-Origin", configuredOrigin);
+    res.setHeader("Vary", "Origin");
+  }
 	res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-	res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    [
+      "Accept",
+      "Authorization",
+      "Content-Type",
+      "Mcp-Protocol-Version",
+      "Mcp-Session-Id",
+      "X-Wfb-Mcp-Mode",
+      "X-Wfb-Structured-Output-Schema-B64",
+      "X-Wfb-Session-Id",
+      "X-Wfb-Session-Token",
+    ].join(", "),
+  );
 	res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 }
 
@@ -105,9 +152,7 @@ function installResponseCapture(res: http.ServerResponse): void {
 
 	res.write = ((
 		chunk: unknown,
-		encodingOrCallback?:
-			| BufferEncoding
-			| ((error?: Error | null) => void),
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
 		callback?: (error?: Error | null) => void,
 	) => {
 		capture(
@@ -161,45 +206,55 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
 
 /** Options controlling which tool groups a server instance exposes. */
 type CreateMcpServerOptions = {
-	// Recursion guard: script-spawned sessions carry X-Wfb-Script-Depth, which
-	// suppresses run_workflow_script so a running script can't launch more.
+  // Recursion guard from the BFF-signed platform-session capability.
 	suppressScriptTools?: boolean;
-	// Team role (from X-Wfb-Team-Id / X-Wfb-Team-Depth): "none" registers no team
-	// tools, "lead" registers all, "member" registers worker tools only (no
-	// spawn_teammate/shutdown_teammate — the nesting guard).
+  // Verified team role: "none" registers no team tools, "lead" registers all,
+  // and "member" registers only worker tools.
 	teamRole?: "none" | "lead" | "member";
 };
 
 /** Create a new MCP Server instance with workflow tools. */
 function createMcpServer(
-	userId?: string,
+  context: WorkflowMcpRequestContext,
+  persistence: WorkflowPersistencePort,
 	opts?: CreateMcpServerOptions,
 ): Server {
 	const mcpServer = new McpServer(
 		{ name: "workflow-builder-mcp", version: "1.0.0" },
-		{ capabilities: { tools: {}, resources: {} } },
+    {
+      capabilities: { tools: {}, resources: {} },
+      instructions: WORKFLOW_MCP_INSTRUCTIONS,
+    },
 	);
+  registerWorkflowContextTool(mcpServer, context);
+
+  const principal = context.principal;
+  if (!principal) return mcpServer.server;
+  const sessionTools = workflowMcpSessionToolAccess(principal);
 
 	// Current workflow tools are UI-independent. The legacy Remote DOM/canvas
 	// authoring tools are no longer registered by workflow-tools.ts.
-	registerTargetTools(mcpServer);
-	registerWorkflowTools(mcpServer, undefined, userId);
+  registerWorkflowTools(mcpServer, { persistence, principal });
 	// Goal tools register regardless of the UI so any MCP-capable agent runtime
 	// can drive the Codex-/goal-parity loop. Session scope comes from the
-	// per-request X-Wfb-Session-Id header (see runWithGoalContext wraps below).
+  // authenticated principal (see runWithGoalContext below).
+  if (sessionTools.goal) {
 	registerGoalTools(mcpServer);
+  }
+  if (sessionTools.trace) {
 	registerTraceTools(mcpServer);
+  }
 
 	// Dynamic workflow script tool — also UI-independent. Suppressed inside
 	// script-spawned sessions (recursion guard) via suppressScriptTools.
 	if (opts?.suppressScriptTools !== true) {
-		registerScriptTools(mcpServer);
+    registerScriptTools(mcpServer, { persistence, principal });
 	}
 
 	// Team tools register by role: none → no team tools (not in a team), lead →
 	// all, member → worker tools only (nesting guard). Role comes from
-	// X-Wfb-Team-Id / X-Wfb-Team-Depth (see handleMcpPost + runWithTeamContext).
-	if (opts?.teamRole && opts.teamRole !== "none") {
+  // the BFF-signed platform-session capabilities.
+  if (sessionTools.team && opts?.teamRole && opts.teamRole !== "none") {
 		registerTeamTools(mcpServer, { role: opts.teamRole });
 	}
 
@@ -211,8 +266,9 @@ function createMcpServer(
 async function handleRequest(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
+  persistence: WorkflowPersistencePort,
 ): Promise<void> {
-	setCorsHeaders(res);
+  setCorsHeaders(req, res);
 	installResponseCapture(res);
 
 	const url = req.url ?? "/";
@@ -251,7 +307,7 @@ async function handleRequest(
 
 	if (url === "/mcp") {
 		if (method === "POST") {
-			await handleMcpPost(req, res);
+      await handleMcpPost(req, res, persistence);
 		} else if (method === "GET") {
 			await handleMcpGet(req, res);
 		} else if (method === "DELETE") {
@@ -270,16 +326,20 @@ async function handleRequest(
 async function handleMcpPost(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
+  persistence: WorkflowPersistencePort,
 ): Promise<void> {
 	const body = await parseBody(req);
 	setSpanInput({ body });
 
-	const userId = (req.headers["x-user-id"] as string) || undefined;
-	// Recursion guard: a present X-Wfb-Script-Depth header (stamped by the BFF
-	// on the MCP entry for script-spawned sessions) suppresses the dynamic
-	// script tool so a running script can't launch further scripts.
-	const suppressScriptTools = shouldSuppressScriptTools(req.headers);
-	const teamRole = teamRoleFromHeaders(req.headers);
+  const context = await resolveWorkflowMcpContext(req.headers);
+  // Recursion and team privileges come only from BFF-signed session claims.
+  // Caller-controlled depth/team headers are deliberately ignored.
+  const suppressScriptTools = shouldSuppressScriptTools(
+    context.principal?.capabilities,
+  );
+  const teamRole = context.principal?.sessionId
+    ? context.principal.capabilities.teamRole
+    : "none";
 
 	let structuredOutputContext;
 	try {
@@ -301,9 +361,13 @@ async function handleMcpPost(
 	const transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: undefined,
 	});
-	const server = structuredOutputContext
+  const server =
+    structuredOutputContext && context.principal
 		? createStructuredOutputMcpServer(structuredOutputContext.schema)
-		: createMcpServer(userId, { suppressScriptTools, teamRole });
+      : createMcpServer(context, persistence, {
+          suppressScriptTools,
+          teamRole,
+        });
 	res.on("close", () => {
 		void transport.close();
 		void server.close();
@@ -312,12 +376,14 @@ async function handleMcpPost(
 
 	// Bind the workflow-builder session (codex thread) for this request so the
 	// goal tools can resolve which session they act on.
-	const wfbSessionId = req.headers["x-wfb-session-id"] as string | undefined;
-	const wfbTeamId = req.headers["x-wfb-team-id"] as string | undefined;
-	await runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
-		runWithTeamContext({ teamId: wfbTeamId ?? null }, () =>
+  const wfbSessionId = context.principal?.sessionId;
+  const wfbTeamId = context.principal?.capabilities.teamId ?? null;
+  await runWithWorkflowMcpContext(context, () =>
+    runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
+      runWithTeamContext({ teamId: wfbSessionId ? wfbTeamId : null }, () =>
 			transport.handleRequest(req, res, body),
 		),
+    ),
 	);
 }
 
@@ -348,6 +414,7 @@ async function main(): Promise<void> {
 	// Initialize database pool
 	console.log("[wf-mcp] Initializing database connection...");
 	initDb();
+  const workflowPersistence = new PostgresWorkflowPersistenceAdapter();
 
 	// Dry-run registration to count the normal-mode MCP surface. Structured
 	// output is a separate header-selected mode and is reported separately by
@@ -358,8 +425,11 @@ async function main(): Promise<void> {
 			{ capabilities: { tools: {}, resources: {} } },
 		);
 		registeredTools = [
-			...registerTargetTools(dryServer),
-			...registerWorkflowTools(dryServer),
+      ...registerWorkflowContextTool(dryServer),
+      ...registerWorkflowTools(dryServer, {
+        persistence: workflowPersistence,
+        principal: TOOL_CATALOG_PRINCIPAL,
+      }),
 		];
 	}
 	// Always count the goal tools.
@@ -391,7 +461,10 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [
 			...registeredTools,
-			...registerScriptTools(dryScriptServer),
+      ...registerScriptTools(dryScriptServer, {
+        persistence: workflowPersistence,
+        principal: TOOL_CATALOG_PRINCIPAL,
+      }),
 		];
 	}
 	// Count the team tools (suppressed only for teammate sessions carrying
@@ -410,7 +483,7 @@ async function main(): Promise<void> {
 	// Start HTTP server
 	const httpServer = http.createServer(async (req, res) => {
 		try {
-			await handleRequest(req, res);
+      await handleRequest(req, res, workflowPersistence);
 		} catch (error) {
 			console.error("[wf-mcp] Unhandled error:", error);
 			if (!res.headersSent) {

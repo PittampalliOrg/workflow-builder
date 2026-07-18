@@ -1,6 +1,5 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import {
 	addMember,
@@ -21,6 +20,10 @@ import {
 	linkSessionToTeamRun,
 } from "$lib/server/teams/team-run";
 import { getTeamBudget } from "$lib/server/teams/team-budget";
+import {
+  authorizeTeamActionRequest,
+  publicPeerSpawnProjection,
+} from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/spawn
@@ -37,7 +40,6 @@ import { getTeamBudget } from "$lib/server/teams/team-budget";
  * docs/agent-teams-phase1.md § "remaining wiring".
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		leadSessionId?: string;
 		agentSlug?: string;
@@ -46,19 +48,27 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		model?: string;
 		planModeRequired?: boolean;
 	};
-	if (!body.leadSessionId || !body.agentSlug || !body.name || !body.prompt) {
-		return error(400, "leadSessionId, agentSlug, name, and prompt are required");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.leadSessionId,
+      requiredRole: "lead",
+      allowUnformedLeadTeam: true,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  const leadSessionId = authorization.principal.sessionId;
+  if (!body.agentSlug || !body.name || !body.prompt) {
+    return error(400, "agentSlug, name, and prompt are required");
 	}
 
-	// Resolve the lead session's project (teams are project-scoped).
-	const projectId = await getApplicationAdapters().teamStore.getSessionProjectId(
-		body.leadSessionId,
-	);
-	if (!projectId) return error(400, "lead session not found or has no project");
+  const projectId = authorization.principal.projectId;
 
 	await ensureTeam({
 		teamId: params.teamId,
-		leadSessionId: body.leadSessionId,
+    leadSessionId,
 		projectId,
 	});
 
@@ -89,7 +99,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const teamExecId = await ensureTeamRunExecution({
 		teamId: params.teamId,
 		projectId,
-		leadSessionId: body.leadSessionId,
+    leadSessionId,
 		name: body.name,
 		prompt: body.prompt,
 	});
@@ -119,24 +129,34 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		? "\n\n# Plan approval required\nYou are in PLAN MODE. Before doing any work: study the task, write a concrete plan, and call submit_plan with it. You cannot claim tasks until the lead approves your plan (you will receive an approval or revision-request message). If revisions are requested, update the plan and submit_plan again."
 		: "";
 
-	const spawn = await getApplicationAdapters().peerSessionSpawn.spawnPeerSession({
+  const spawn =
+    await getApplicationAdapters().peerSessionSpawn.spawnPeerSession(
+      {
 		sessionId: teammateSessionId,
 		peerAgentId: agent.id,
 		prompt: `${body.prompt}${planFragment}`,
-		parentSessionId: body.leadSessionId,
+        parentSessionId: leadSessionId,
 		title: `teammate:${body.name}`,
 		// Teammates do real file/command work — give each its own OpenShell
 		// workspace sandbox (otherwise the runtime's filesystem/bash tools fail
 		// with "OpenShell sandboxName is required").
 		provisionSandbox: true,
-	});
+      },
+      authorization.principal,
+      { kind: "team", teamId: params.teamId },
+    );
 	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
 
 	// Roll the teammate session up under the team run.
 	await linkSessionToTeamRun(teammateSessionId, teamExecId);
 
 	return json(
-		{ ok: true, name: member.name, sessionId: teammateSessionId, spawn: spawn.body },
+    {
+      ok: true,
+      name: member.name,
+      sessionId: teammateSessionId,
+      spawn: publicPeerSpawnProjection(spawn.body),
+    },
 		{ status: spawn.httpStatus ?? 200 },
 	);
 };

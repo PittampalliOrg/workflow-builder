@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	validateInternalOrPreviewControlRead: vi.fn(),
+  validateInternalToken: vi.fn(),
 	workflowData: {
 		getExecutionById: vi.fn(),
+    getScopedExecutionById: vi.fn(),
 		getWorkflowByRef: vi.fn(),
+    getScopedWorkflowById: vi.fn(),
 		updateExecutionReadModel: vi.fn(),
 	},
 	daprFetch: vi.fn(),
@@ -12,7 +15,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
-	validateInternalOrPreviewControlRead: mocks.validateInternalOrPreviewControlRead,
+  validateInternalOrPreviewControlRead:
+    mocks.validateInternalOrPreviewControlRead,
+  validateInternalToken: mocks.validateInternalToken,
+}));
+
+vi.mock("../../../workflow-mcp-principal", () => ({
+  resolveInternalWorkflowPrincipal: vi.fn(),
 }));
 
 vi.mock("$lib/server/application", () => ({
@@ -57,6 +66,7 @@ describe("internal agent workflow execution status route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.validateInternalOrPreviewControlRead.mockReturnValue(true);
+    mocks.validateInternalToken.mockReturnValue(false);
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
 		mocks.workflowData.updateExecutionReadModel.mockResolvedValue(undefined);
 		mocks.getOrchestratorUrl.mockReturnValue("http://orchestrator");
@@ -101,13 +111,19 @@ describe("internal agent workflow execution status route", () => {
 			);
 			mocks.daprFetch.mockResolvedValue({
 				ok: true,
-				json: async () => ({ runtimeStatus: "RUNNING", phase: "Finalize", progress: 0 }),
+        json: async () => ({
+          runtimeStatus: "RUNNING",
+          phase: "Finalize",
+          progress: 0,
+        }),
 			});
 
 			const response = await callGet();
 
 			expect(response.status).toBe(200);
-			expect(mocks.workflowData.updateExecutionReadModel).not.toHaveBeenCalled();
+      expect(
+        mocks.workflowData.updateExecutionReadModel,
+      ).not.toHaveBeenCalled();
 		}
 	});
 
@@ -125,7 +141,9 @@ describe("internal agent workflow execution status route", () => {
 		const response = await callGet();
 
 		expect(response.status).toBe(200);
-		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledTimes(1);
+    expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledTimes(
+      1,
+    );
 		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith(
 			"exec-1",
 			expect.objectContaining({
@@ -159,7 +177,9 @@ describe("internal agent workflow execution status route", () => {
 	});
 
 	it("fills a null output from runtime outputs on a running row", async () => {
-		mocks.workflowData.getExecutionById.mockResolvedValue(makeExecution({ output: null }));
+    mocks.workflowData.getExecutionById.mockResolvedValue(
+      makeExecution({ output: null }),
+    );
 		mocks.daprFetch.mockResolvedValue({
 			ok: true,
 			json: async () => ({

@@ -39,17 +39,14 @@ async function listStale(sql: postgres.Sql) {
 async function terminate(sql: postgres.Sql, row: RunRow) {
 	const instance = row.dapr_instance_id || row.id;
 	try {
-		const res = await fetch(
-			`${ORCH}/api/v2/workflows/${instance}/terminate`,
-			{
+    const res = await fetch(`${ORCH}/api/v2/workflows/${instance}/terminate`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
 					reason: "purged for streaming-enhancement smoke test",
 				}),
 				signal: AbortSignal.timeout(5000),
-			},
-		);
+    });
 		const text = await res.text().catch(() => "");
 		console.log(
 			`terminate ${row.id} (${row.workflow_id}, instance=${instance}): HTTP ${res.status} ${text.slice(0, 120)}`,
@@ -72,13 +69,16 @@ async function trigger(workflowId: string): Promise<string> {
 		headers: {
 			"content-type": "application/json",
 			"x-internal-token": INTERNAL_API_TOKEN,
+      "x-wfb-system-principal": "workflow-trigger",
 		},
 		body: JSON.stringify({ workflowId, triggerData: {} }),
 		signal: AbortSignal.timeout(30_000),
 	});
 	const body = await res.text();
 	if (!res.ok) {
-		throw new Error(`execute ${workflowId}: HTTP ${res.status}: ${body.slice(0, 300)}`);
+    throw new Error(
+      `execute ${workflowId}: HTTP ${res.status}: ${body.slice(0, 300)}`,
+    );
 	}
 	const j = JSON.parse(body) as { executionId: string; instanceId?: string };
 	console.log(
@@ -90,7 +90,9 @@ async function trigger(workflowId: string): Promise<string> {
 async function main() {
 	const sql = postgres(DATABASE_URL, { max: 1 });
 	try {
-		console.log("=== stale workflow_executions (status in running/scheduled) ===");
+    console.log(
+      "=== stale workflow_executions (status in running/scheduled) ===",
+    );
 		const stale = await listStale(sql);
 		console.log(`found ${stale.length} stale`);
 		for (const row of stale) {

@@ -94,6 +94,11 @@ import {
   LegacyAuthTokenRefresher,
 } from "$lib/server/application/adapters/auth-session";
 import {
+  EnvironmentLegacyWorkflowRuntimeCompatibilityPolicy,
+  HmacWorkflowMcpPrincipalAssertionAdapter,
+  HmacWorkflowMcpSessionTokenAdapter,
+} from "$lib/server/application/adapters/workflow-mcp-auth";
+import {
   JwtWorkflowTargetAuthAccessTokenIssuer,
   PostgresWorkflowTargetAuthIdentityRepository,
 } from "$lib/server/application/adapters/workflow-target-auth";
@@ -453,14 +458,10 @@ import {
   KubernetesPreviewEnvironmentDesiredStateAdapter,
   previewEnvironmentHubKubeFetch,
 } from "$lib/server/application/adapters/preview-environment-desired-state";
-import {
-  KubernetesPreviewHeadlampRegistrationAdapter,
-} from "$lib/server/application/adapters/preview-headlamp-registration";
+import { KubernetesPreviewHeadlampRegistrationAdapter } from "$lib/server/application/adapters/preview-headlamp-registration";
 import { ApplicationPreviewEnvironmentLifecycleBrokerService } from "$lib/server/application/preview-environment-lifecycle-broker";
 import { ApplicationPreviewEnvironmentObservationBrokerService } from "$lib/server/application/preview-environment-observation-broker";
-import {
-  ApplicationPreviewHeadlampRegistrationService,
-} from "$lib/server/application/preview-headlamp-registration";
+import { ApplicationPreviewHeadlampRegistrationService } from "$lib/server/application/preview-headlamp-registration";
 import { ApplicationPreviewEnvironmentDeletionReconcilerService } from "$lib/server/application/preview-environment-deletion-reconciler";
 import { ManifestCandidatePathPolicyAdapter } from "$lib/server/application/adapters/preview-candidate-paths";
 import { ApplicationPreviewEnvironmentService } from "$lib/server/application/preview-environments";
@@ -566,6 +567,9 @@ import { ApplicationGitOpsPromotionsService } from "$lib/server/application/gito
 import { ApplicationAuthSignInService } from "$lib/server/application/auth-sign-in";
 import { ApplicationAuthSessionService } from "$lib/server/application/auth-session";
 import { ApplicationWorkflowTargetAuthService } from "$lib/server/application/workflow-target-auth";
+import { ApplicationWorkflowMcpPrincipalService } from "$lib/server/application/workflow-mcp-principal";
+import { ApplicationInternalWorkflowPrincipalService } from "$lib/server/application/internal-workflow-principal";
+import { ApplicationTeamActionAuthorizationService } from "$lib/server/application/team-action-authorization";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -613,6 +617,12 @@ export function getApplicationAdapters(
       `Dapr PostgreSQL binding adapters are not wired for: ${stagedDaprAdapters.map(([key]) => key).join(", ")}`,
     );
   }
+
+  const workflowMcpSessionTokens = new HmacWorkflowMcpSessionTokenAdapter();
+  const workflowMcpPrincipalAssertions =
+    new HmacWorkflowMcpPrincipalAssertionAdapter();
+  const legacyWorkflowRuntimePolicy =
+    new EnvironmentLegacyWorkflowRuntimeCompatibilityPolicy();
 
   let database: ReturnType<typeof requirePostgresDb> | undefined;
   let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
@@ -793,6 +803,13 @@ export function getApplicationAdapters(
   let authSignIn: ApplicationAuthSignInService | undefined;
   let authSession: ApplicationAuthSessionService | undefined;
   let workflowTargetAuth: ApplicationWorkflowTargetAuthService | undefined;
+  let workflowMcpPrincipal: ApplicationWorkflowMcpPrincipalService | undefined;
+  let internalWorkflowPrincipal:
+    | ApplicationInternalWorkflowPrincipalService
+    | undefined;
+  let teamActionAuthorization:
+    | ApplicationTeamActionAuthorizationService
+    | undefined;
   let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
   let promptPresets: ApplicationPromptPresetService | undefined;
   let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -843,12 +860,18 @@ export function getApplicationAdapters(
   let prPreviewCommands: PrPreviewCommandPort | undefined;
   let previewReadProxy: ApplicationPreviewReadProxyService | undefined;
   let previewReadBroker: ApplicationPreviewReadBrokerService | undefined;
-	let previewTargetDevelopment: ApplicationPreviewTargetDevelopmentService | undefined;
+  let previewTargetDevelopment:
+    | ApplicationPreviewTargetDevelopmentService
+    | undefined;
 	let previewTargetDevelopmentBroker:
 		| ApplicationPreviewTargetDevelopmentBrokerService
 		| undefined;
-	let previewTargetDevelopmentLocal: ApplicationPreviewTargetDevelopmentLocalService | undefined;
-	let previewDevelopmentEnvironment: ApplicationPreviewDevelopmentEnvironmentService | undefined;
+  let previewTargetDevelopmentLocal:
+    | ApplicationPreviewTargetDevelopmentLocalService
+    | undefined;
+  let previewDevelopmentEnvironment:
+    | ApplicationPreviewDevelopmentEnvironmentService
+    | undefined;
   let previewTraces: ApplicationPreviewTraceService | undefined;
   let previewTraceBroker: ApplicationPreviewTraceBrokerService | undefined;
   let previewArchive: ApplicationPreviewArchiveService | undefined;
@@ -1503,6 +1526,7 @@ export function getApplicationAdapters(
     (peerSessionSpawn ??= new ApplicationPeerSessionSpawnService({
       workflowData: getWorkflowData(),
       workflowSpawner: getWorkflowSpawner(),
+      workflowMcpSessionTokens,
       sandboxProvisioner: getSandboxProvisioner(),
       sessions: getSessions(),
     }));
@@ -2079,24 +2103,29 @@ export function getApplicationAdapters(
       transport: new HttpPreviewCapabilityReadTransportAdapter(),
     }));
 	const getPreviewTargetDevelopment = () =>
-		(previewTargetDevelopment ??= new ApplicationPreviewTargetDevelopmentService({
+    (previewTargetDevelopment ??=
+      new ApplicationPreviewTargetDevelopmentService({
 			executions: getWorkflowExecutions(),
 			definitions: getWorkflowDefinitions(),
 			admins: {
-				isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+          isPlatformAdmin: (userId) =>
+            getWorkflowData().isPlatformAdmin(userId),
 			},
 			broker: new HttpPreviewTargetDevelopmentBrokerAdapter(),
 			scope: previewDeploymentScope,
 		}));
 	const getPreviewDevelopmentEnvironment = () =>
-		(previewDevelopmentEnvironment ??= new ApplicationPreviewDevelopmentEnvironmentService({
+    (previewDevelopmentEnvironment ??=
+      new ApplicationPreviewDevelopmentEnvironmentService({
 			executions: getWorkflowExecutions(),
 			admins: {
-				isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+          isPlatformAdmin: (userId) =>
+            getWorkflowData().isPlatformAdmin(userId),
 			},
 			scope: {
 				isControlPlane: () =>
-					previewDeploymentScope.isControlPlane() && !isPreviewControlBroker(),
+            previewDeploymentScope.isControlPlane() &&
+            !isPreviewControlBroker(),
 			},
 			environments: getPreviewEnvironments(),
 			previews: getVclusterPreviewGateway(),
@@ -2119,7 +2148,9 @@ export function getApplicationAdapters(
 	};
 	const getPreviewTargetDevelopmentLocal = () => {
 		if (isPreviewControlBroker() || previewDeploymentScope.isControlPlane()) {
-			throw new Error("preview-local development commands require a preview deployment");
+      throw new Error(
+        "preview-local development commands require a preview deployment",
+      );
 		}
 		return (previewTargetDevelopmentLocal ??=
 			new ApplicationPreviewTargetDevelopmentLocalService({
@@ -2438,8 +2469,7 @@ export function getApplicationAdapters(
         }),
       }));
   const getDevEnvironmentTeardown = () =>
-    (devEnvironmentTeardown ??=
-      new ApplicationDevEnvironmentTeardownService({
+    (devEnvironmentTeardown ??= new ApplicationDevEnvironmentTeardownService({
         workflowData: getWorkflowData(),
         continuation: getPreviewSessionContinuation(),
         previews: getPreviewEnvironmentProvisioner(),
@@ -2708,6 +2738,27 @@ export function getApplicationAdapters(
       goalFlow: getGoalFlow(),
       workflowScheduler,
     }));
+  const getWorkflowMcpPrincipal = () =>
+    (workflowMcpPrincipal ??= new ApplicationWorkflowMcpPrincipalService({
+      data: getWorkflowData(),
+      teamMembers: getTeamStore(),
+      sessionTokens: workflowMcpSessionTokens,
+      principalAssertions: workflowMcpPrincipalAssertions,
+    }));
+  const getInternalWorkflowPrincipal = () =>
+    (internalWorkflowPrincipal ??=
+      new ApplicationInternalWorkflowPrincipalService({
+        principalAssertions: workflowMcpPrincipalAssertions,
+        sessionOwners: getWorkflowData(),
+        platformPrincipals: getWorkflowMcpPrincipal(),
+        legacyResources: getWorkflowData(),
+        legacyPolicy: legacyWorkflowRuntimePolicy,
+      }));
+  const getTeamActionAuthorization = () =>
+    (teamActionAuthorization ??= new ApplicationTeamActionAuthorizationService({
+      workflowPrincipals: getInternalWorkflowPrincipal(),
+      teams: getTeamStore(),
+    }));
   const getPreviewEnvironmentProvisioner = () =>
     (previewEnvironmentProvisioner ??=
       config.previewProvisionerAdapter === "kro"
@@ -2895,6 +2946,16 @@ export function getApplicationAdapters(
     get workflowTargetAuth() {
       return getWorkflowTargetAuth();
     },
+    get workflowMcpPrincipal() {
+      return getWorkflowMcpPrincipal();
+    },
+    get internalWorkflowPrincipal() {
+      return getInternalWorkflowPrincipal();
+    },
+    get teamActionAuthorization() {
+      return getTeamActionAuthorization();
+    },
+    workflowMcpSessionTokenSigner: workflowMcpSessionTokens,
     get settingsCliTokens() {
       return getSettingsCliTokens();
     },

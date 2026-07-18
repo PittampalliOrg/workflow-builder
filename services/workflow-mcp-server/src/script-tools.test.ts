@@ -8,16 +8,36 @@ vi.hoisted(() => {
 });
 import {
 	registerScriptTools,
+  runWorkflowScriptShape,
 	runWorkflowScriptSchema,
 	shouldSuppressScriptTools,
 	type ScriptToolsContext,
 } from "./script-tools.js";
+import type { WorkflowMcpPrincipal } from "./auth-context.js";
+import type { ScriptWorkflowPersistencePort } from "./ports/workflow-persistence.js";
+
+const TEST_PRINCIPAL: WorkflowMcpPrincipal = {
+  authMode: "workspace_api_key",
+  userId: "user-1",
+  projectId: "project-1",
+  scopes: [
+    "workflow:read",
+    "workflow:write",
+    "workflow:execute",
+    "agent:write",
+  ],
+  principalAssertion: "signed-principal-assertion",
+  capabilities: { scriptDepth: 0, teamId: null, teamRole: "none" },
+};
 
 // ── Fake McpServer capturing registerTool(...) ───────────────
 type CapturedTool = {
 	name: string;
 	config: { inputSchema?: unknown; description?: string };
-	handler: (args: unknown, extra?: unknown) => Promise<{
+  handler: (
+    args: unknown,
+    extra?: unknown,
+  ) => Promise<{
 		content: { type: "text"; text: string }[];
 		isError?: boolean;
 	}>;
@@ -49,9 +69,29 @@ function parseResult(res: {
 	return JSON.parse(res.content[0].text);
 }
 
-function getHandler(ctx?: ScriptToolsContext) {
+function fakePersistence(
+  findWorkflow: ScriptWorkflowPersistencePort["findWorkflow"] = async () => ({
+    id: "wf-1",
+    name: "Demo",
+    description: null,
+    nodes: [],
+    edges: [],
+    visibility: "private",
+    engineType: "dynamic-script",
+    created_at: "2026-07-18T00:00:00.000Z",
+    updated_at: "2026-07-18T00:00:00.000Z",
+  }),
+): ScriptWorkflowPersistencePort {
+  return { findWorkflow };
+}
+
+function getHandler(ctx?: Partial<ScriptToolsContext>) {
 	const { server, captured } = fakeServer();
-	const tools = registerScriptTools(server as any, ctx);
+  const tools = registerScriptTools(server as any, {
+    principal: TEST_PRINCIPAL,
+    persistence: fakePersistence(),
+    ...ctx,
+  });
 	const tool = captured.find((t) => t.name === "run_workflow_script")!;
 	return { tool, tools, captured };
 }
@@ -62,6 +102,10 @@ describe("runWorkflowScriptSchema refine", () => {
 		const r = runWorkflowScriptSchema.safeParse({});
 		expect(r.success).toBe(false);
 	});
+
+  it("does not expose sessionId as a workflow authoring argument", () => {
+    expect("sessionId" in runWorkflowScriptShape).toBe(false);
+  });
 
 	it("rejects when BOTH workflowName and script are provided", () => {
 		const r = runWorkflowScriptSchema.safeParse({
@@ -83,18 +127,15 @@ describe("runWorkflowScriptSchema refine", () => {
 	});
 });
 
-// ── Recursion-guard suppression by header ────────────────────
+// ── Recursion-guard suppression by signed capability ─────────
 describe("shouldSuppressScriptTools", () => {
-	it("suppresses when X-Wfb-Script-Depth is present", () => {
-		expect(shouldSuppressScriptTools({ "x-wfb-script-depth": "1" })).toBe(true);
+  it("suppresses when signed script depth is positive", () => {
+    expect(shouldSuppressScriptTools({ scriptDepth: 1 })).toBe(true);
 	});
 
-	it("suppresses even when the header value is empty string", () => {
-		expect(shouldSuppressScriptTools({ "x-wfb-script-depth": "" })).toBe(true);
-	});
-
-	it("does NOT suppress when the header is absent", () => {
-		expect(shouldSuppressScriptTools({ "x-user-id": "u1" })).toBe(false);
+  it("does not suppress without a signed depth", () => {
+    expect(shouldSuppressScriptTools()).toBe(false);
+    expect(shouldSuppressScriptTools({ scriptDepth: 0 })).toBe(false);
 	});
 });
 
@@ -120,16 +161,39 @@ describe("script tools registration", () => {
 });
 
 // ── validate_workflow_script + get_workflow_script_spec ───────
+
+it("registers tools according to workspace scopes", () => {
+  const { server, captured } = fakeServer();
+  registerScriptTools(server as any, {
+    persistence: fakePersistence(),
+    principal: { ...TEST_PRINCIPAL, scopes: ["workflow:read"] },
+  });
+  expect(captured.map((tool) => tool.name)).toEqual([
+    "get_workflow_script_spec",
+  ]);
+});
+
+it("registers no script tools without a principal", () => {
+  const { server, captured } = fakeServer();
+  registerScriptTools(server as any, { persistence: fakePersistence() });
+  expect(captured).toEqual([]);
+});
 describe("validate_workflow_script tool", () => {
-	function getTool(name: string, ctx?: ScriptToolsContext) {
+  function getTool(name: string, ctx?: Partial<ScriptToolsContext>) {
 		const { server, captured } = fakeServer();
-		registerScriptTools(server as any, ctx);
+    registerScriptTools(server as any, {
+      principal: TEST_PRINCIPAL,
+      persistence: fakePersistence(),
+      ...ctx,
+    });
 		return captured.find((t) => t.name === name)!;
 	}
 
 	it("rejects an empty script without calling the BFF", async () => {
 		const fetchImpl = vi.fn();
-		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
+    const tool = getTool("validate_workflow_script", {
+      fetchImpl: fetchImpl as any,
+    });
 		const res = await tool.handler({ script: "   " });
 		expect(res.isError).toBe(true);
 		expect(fetchImpl).not.toHaveBeenCalled();
@@ -139,32 +203,58 @@ describe("validate_workflow_script tool", () => {
 		const fetchImpl = vi
 			.fn()
 			.mockResolvedValue(
-				jsonResponse(200, { ok: true, meta: { name: "x" }, estimatedAgentCalls: 3 }),
+        jsonResponse(200, {
+          ok: true,
+          meta: { name: "x" },
+          estimatedAgentCalls: 3,
+        }),
 			);
-		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
-		const res = await tool.handler({ script: "export const meta = { name: 'x' }\nawait agent('hi')" });
+    const tool = getTool("validate_workflow_script", {
+      fetchImpl: fetchImpl as any,
+    });
+    const res = await tool.handler({
+      script: "export const meta = { name: 'x' }\nawait agent('hi')",
+    });
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		const [url, init] = fetchImpl.mock.calls[0];
-		expect(String(url)).toContain("/api/internal/agent/workflows/validate-script");
-		expect(JSON.parse((init as any).body).script).toContain("export const meta");
-		expect(parseResult(res)).toEqual({ ok: true, meta: { name: "x" }, estimatedAgentCalls: 3 });
+    expect(String(url)).toContain(
+      "/api/internal/agent/workflows/validate-script",
+    );
+    expect(JSON.parse((init as any).body).script).toContain(
+      "export const meta",
+    );
+    expect(parseResult(res)).toEqual({
+      ok: true,
+      meta: { name: "x" },
+      estimatedAgentCalls: 3,
+    });
 	});
 
 	it("surfaces a validation failure body (ok:false) as a normal result", async () => {
 		const fetchImpl = vi
 			.fn()
-			.mockResolvedValue(jsonResponse(200, { ok: false, error: "Date.now() is banned" }));
-		const tool = getTool("validate_workflow_script", { fetchImpl: fetchImpl as any });
+      .mockResolvedValue(
+        jsonResponse(200, { ok: false, error: "Date.now() is banned" }),
+      );
+    const tool = getTool("validate_workflow_script", {
+      fetchImpl: fetchImpl as any,
+    });
 		const res = await tool.handler({ script: "Date.now()" });
 		expect(res.isError).toBeUndefined();
-		expect(parseResult(res)).toEqual({ ok: false, error: "Date.now() is banned" });
+    expect(parseResult(res)).toEqual({
+      ok: false,
+      error: "Date.now() is banned",
+    });
 	});
 });
 
 describe("get_workflow_script_spec tool", () => {
 	it("returns the dialect guide text with the platform deltas", async () => {
 		const { server, captured } = fakeServer();
-		registerScriptTools(server as any);
+    registerScriptTools(server as any, {
+      persistence: fakePersistence(),
+      principal: TEST_PRINCIPAL,
+    });
 		const tool = captured.find((t) => t.name === "get_workflow_script_spec")!;
 		const res = await tool.handler({});
 		const text = res.content[0].text;
@@ -175,7 +265,11 @@ describe("get_workflow_script_spec tool", () => {
 });
 
 describe("run_workflow_script request body shape", () => {
-	it("saved mode POSTs workflowName/triggerData/budgetTotal to the execute endpoint", async () => {
+  it("saved mode resolves the workspace workflow and POSTs workflowId to the execute endpoint", async () => {
+    const getScopedWorkflow = vi.fn(async () => ({
+      id: "wf-project-1",
+      engineType: "dynamic-script" as const,
+    }));
 		const fetchImpl = vi.fn(async () =>
 			jsonResponse(200, {
 				success: true,
@@ -186,7 +280,10 @@ describe("run_workflow_script request body shape", () => {
 				status: "running",
 			}),
 		);
-		const { tool } = getHandler({ fetchImpl: fetchImpl as any });
+    const { tool } = getHandler({
+      fetchImpl: fetchImpl as any,
+      persistence: fakePersistence(getScopedWorkflow),
+    });
 		const res = await tool.handler({
 			workflowName: "demo",
 			args: { topic: "x" },
@@ -194,14 +291,17 @@ describe("run_workflow_script request body shape", () => {
 		});
 
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
-		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
 		expect(url).toMatch(/\/api\/internal\/agent\/workflows\/execute$/);
 		expect(init.method).toBe("POST");
 		expect((init.headers as Record<string, string>)["X-Internal-Token"]).toBe(
 			"test-token",
 		);
 		expect(JSON.parse(init.body as string)).toEqual({
-			workflowName: "demo",
+      workflowId: "wf-project-1",
 			triggerData: { topic: "x" },
 			budgetTotal: 500,
 		});
@@ -227,7 +327,16 @@ describe("run_workflow_script request body shape", () => {
 		const res = await tool.handler({ script: "agent('hi')", args: {} });
 
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
-		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(
+      (init.headers as Record<string, string>)["X-Wfb-Principal-Assertion"],
+    ).toBe("signed-principal-assertion");
+    expect(
+      (init.headers as Record<string, string>)["X-Wfb-Session-Id"],
+    ).toBeUndefined();
 		expect(url).toMatch(/\/api\/internal\/agent\/workflows\/execute-script$/);
 		// budgetTotal omitted → JSON.stringify drops the undefined key.
 		expect(JSON.parse(init.body as string)).toEqual({
@@ -239,6 +348,51 @@ describe("run_workflow_script request body shape", () => {
 		expect(out.status).toBe("started");
 		expect(out.executionId).toBe("exec-2");
 	});
+
+  it("fails closed when a duplicate workflow name exists only outside the workspace", async () => {
+    const getScopedWorkflow = vi.fn(async () => null);
+    const fetchImpl = vi.fn();
+    const { tool } = getHandler({
+      fetchImpl: fetchImpl as any,
+      persistence: fakePersistence(getScopedWorkflow),
+    });
+
+    const result = await tool.handler({ workflowName: "duplicate-name" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "not found in the authenticated workspace",
+    );
+    expect(getScopedWorkflow).toHaveBeenCalledWith(
+      "duplicate-name",
+      "project-1",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-name non-script workflow", async () => {
+    const fetchImpl = vi.fn();
+    const { tool } = getHandler({
+      fetchImpl: fetchImpl as any,
+      persistence: fakePersistence(async () => ({
+        id: "wf-canvas",
+        name: "Demo",
+        description: null,
+        nodes: [],
+        edges: [],
+        visibility: "private",
+        engineType: "dapr",
+        created_at: "2026-07-18T00:00:00.000Z",
+        updated_at: "2026-07-18T00:00:00.000Z",
+      })),
+    });
+
+    const result = await tool.handler({ workflowName: "demo" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not a dynamic-script workflow");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
 	it("returns isError when the execute endpoint fails", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse(400, { error: "bad" }));
@@ -291,6 +445,11 @@ describe("run_workflow_script wait mode", () => {
 		expect(
 			(statusInit.headers as Record<string, string>)["X-Internal-Token"],
 		).toBe("test-token");
+    expect(
+      (statusInit.headers as Record<string, string>)[
+        "X-Wfb-Principal-Assertion"
+      ],
+    ).toBe("signed-principal-assertion");
 
 		const out = parseResult(res);
 		expect(out.status).toBe("success");

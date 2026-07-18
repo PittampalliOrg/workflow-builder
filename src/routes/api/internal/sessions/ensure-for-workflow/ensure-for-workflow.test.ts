@@ -135,6 +135,9 @@ const mocks = vi.hoisted(() => {
 		workflowTargetAuth: {
 			mintAccessToken: vi.fn(async () => "fresh-target-access-token"),
 		},
+    workflowMcpSessionTokenSigner: {
+      sign: vi.fn(() => "signed-workflow-mcp-session"),
+    },
 	};
 });
 
@@ -150,6 +153,7 @@ vi.mock("$lib/server/application", () => ({
 		sessionCommands: mocks.sessionCommands,
 		promptStackCompiler: mocks.promptStackCompiler,
 		workflowTargetAuth: mocks.workflowTargetAuth,
+    workflowMcpSessionTokenSigner: mocks.workflowMcpSessionTokenSigner,
 		teamStore: mocks.teamStore,
 		capabilityBundles: mocks.capabilityBundles,
 	}),
@@ -207,7 +211,11 @@ function agentConfig(
 	};
 }
 
-function expectSourceCall(source: string, objectName: string, methodName: string) {
+function expectSourceCall(
+  source: string,
+  objectName: string,
+  methodName: string,
+) {
 	expect(source).toMatch(new RegExp(`${objectName}\\s*\\.\\s*${methodName}`));
 }
 
@@ -261,12 +269,24 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			"workflowData",
 			"getWorkflowExecutionSessionOwnerContext",
 		);
-		expectSourceCall(source, "workflowData", "checkBenchmarkSessionProvisioningGate");
+    expectSourceCall(
+      source,
+      "workflowData",
+      "checkBenchmarkSessionProvisioningGate",
+    );
 		expectSourceCall(source, "workflowData", "getWorkflowAgentRuntimeIdentity");
-		expectSourceCall(source, "workflowData", "resolvePublishedWorkflowAgentForEnsure");
+    expectSourceCall(
+      source,
+      "workflowData",
+      "resolvePublishedWorkflowAgentForEnsure",
+    );
 		expectSourceCall(source, "workflowData", "getWorkflowEnsureSession");
 		expectSourceCall(source, "workflowData", "createWorkflowEnsureSession");
-		expectSourceCall(source, "workflowData", "updateWorkflowEnsureSessionRuntime");
+    expectSourceCall(
+      source,
+      "workflowData",
+      "updateWorkflowEnsureSessionRuntime",
+    );
 		expectSourceCall(source, "sessionGoals", "ensureWorkflowEvaluatorGoal");
 		expectSourceCall(
 			source,
@@ -289,7 +309,11 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			"appendWorkflowSessionSwapDegradedEvent",
 		);
 		expectSourceCall(source, "sessionCommands", "resolveWorkflowSessionAgent");
-		expectSourceCall(source, "sessionCommands", "syncWorkflowSessionAgentRuntime");
+    expectSourceCall(
+      source,
+      "sessionCommands",
+      "syncWorkflowSessionAgentRuntime",
+    );
 		expectSourceCall(source, "promptStackCompiler", "compilePromptStack");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/prompt-presets");
@@ -650,13 +674,17 @@ describe("dynamic-script spawn MCP wiring", () => {
 			expectedUserId: "user-1",
 			expectedProjectId: "project-1",
 		});
-		const persistedCall = mocks.sessionCommands.resolveWorkflowSessionAgent.mock
-			.calls.at(-1)?.[0] as unknown as {
+    const persistedCall =
+      mocks.sessionCommands.resolveWorkflowSessionAgent.mock.calls.at(
+        -1,
+      )?.[0] as unknown as {
 			agentConfig: { mcpServers: Array<Record<string, unknown>> };
 		};
 		const persisted = persistedCall.agentConfig;
-		const persistedBrowserHeaders = persisted.mcpServers[0]
-			.headers as Record<string, string>;
+    const persistedBrowserHeaders = persisted.mcpServers[0].headers as Record<
+      string,
+      string
+    >;
 		expect(persistedBrowserHeaders["X-Wfb-Target-Auth"]).toBeUndefined();
 		expect(persistedBrowserHeaders["X-Wfb-Target-Auth-Host"]).toBe(
 			"workflow-builder:3000",
@@ -666,8 +694,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 		const childConfig = childInput.agentConfig as {
 			mcpServers: Array<Record<string, unknown>>;
 		};
-		const browserHeaders = childConfig.mcpServers[0]
-			.headers as Record<string, string>;
+    const browserHeaders = childConfig.mcpServers[0].headers as Record<
+      string,
+      string
+    >;
 		expect(browserHeaders["X-Wfb-Target-Auth"]).toBe(
 			"Bearer fresh-target-access-token",
 		);
@@ -677,9 +707,11 @@ describe("dynamic-script spawn MCP wiring", () => {
 			url: "http://other-mcp:8000/mcp",
 			headers: { "X-Wfb-Target-Auth": "non-browser-untouched" },
 		});
-		const hostConfig = (mocks.state.hostCalls.at(-1) as {
+    const hostConfig = (
+      mocks.state.hostCalls.at(-1) as {
 			agentConfig: { mcpServers: Array<Record<string, unknown>> };
-		}).agentConfig;
+      }
+    ).agentConfig;
 		expect(
 			(hostConfig.mcpServers[0].headers as Record<string, string>)[
 				"X-Wfb-Target-Auth"
@@ -743,7 +775,9 @@ describe("dynamic-script spawn MCP wiring", () => {
 			token: "claude-token",
 		});
 		const childInput = payload.childInput as Record<string, unknown>;
-		const config = childInput.agentConfig as { mcpServers?: Array<Record<string, unknown>> };
+    const config = childInput.agentConfig as {
+      mcpServers?: Array<Record<string, unknown>>;
+    };
 		const servers = config.mcpServers ?? [];
 		expect(servers).toEqual([]);
 	});

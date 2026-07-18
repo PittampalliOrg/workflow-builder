@@ -12,6 +12,8 @@ describe("settings API keys route", () => {
 
 		expect(source).toContain("workflowData.listUserApiKeys");
 		expect(source).toContain("workflowData.createUserApiKey");
+    expect(source).toContain("locals.session?.projectId");
+    expect(source).toContain("Current session does not include a project");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

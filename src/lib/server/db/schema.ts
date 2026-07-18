@@ -622,7 +622,10 @@ export const workflowScriptCalls = pgTable(
     // 1.2.0, cutover P2): the static-graph <-> journal join key for the canvas
     // overlay. NEVER part of callId identity; stale after resume-after-edit
     // imports (the overlay falls back to label/phase heuristics then).
-    callSite: jsonb("call_site").$type<{ line: number; column: number } | null>(),
+    callSite: jsonb("call_site").$type<{
+      line: number;
+      column: number;
+    } | null>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -1639,20 +1642,33 @@ export const pieceImages = pgTable(
   }),
 );
 
-// API Keys table for webhook authentication
-export const apiKeys = pgTable("api_keys", {
+// Workspace API keys. project_id remains nullable so pre-workspace webhook
+// credentials retain their owner-scoped behavior during migration.
+export const apiKeys = pgTable(
+  "api_keys",
+  {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => generateId()),
   userId: text("user_id")
     .notNull()
     .references(() => users.id),
+    projectId: text("project_id").references(() => projects.id, {
+      onDelete: "cascade",
+    }),
+    createdByUserId: text("created_by_user_id").references(() => users.id),
+    scopes: text("scopes").array().notNull().default([]),
   name: text("name"), // Optional label for the API key
   keyHash: text("key_hash").notNull(), // Store hashed version of the key
-  keyPrefix: text("key_prefix").notNull(), // Store first few chars for display (e.g., "wf_abc...")
+    keyPrefix: text("key_prefix").notNull(), // Store first few chars for display (e.g., "wfb_abc...")
   createdAt: timestamp("created_at").notNull().defaultNow(),
   lastUsedAt: timestamp("last_used_at"),
-});
+  },
+  (table) => ({
+    projectIdx: index("idx_api_keys_project").on(table.projectId),
+    createdByIdx: index("idx_api_keys_created_by").on(table.createdByUserId),
+  }),
+);
 
 // ============================================================================
 // Reusable Resource Library

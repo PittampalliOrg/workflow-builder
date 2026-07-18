@@ -250,7 +250,9 @@ type PostgresSqlClient = typeof defaultSql;
 export class PostgresAgentRuntimeRepository implements AgentRuntimeRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async listProjectAgents(projectId: string): Promise<AgentRuntimeAgentRecord[]> {
+  async listProjectAgents(
+    projectId: string,
+  ): Promise<AgentRuntimeAgentRecord[]> {
 		const rows = await this.database
 			.select({
 				id: agents.id,
@@ -338,7 +340,9 @@ export function requirePostgresDb(database: Database = defaultDb): Database {
 	return database;
 }
 
-function requirePostgresSql(sqlClient: PostgresSqlClient = defaultSql): PostgresSqlClient {
+function requirePostgresSql(
+  sqlClient: PostgresSqlClient = defaultSql,
+): PostgresSqlClient {
 	if (!sqlClient) throw new Error("Database not configured");
 	return sqlClient;
 }
@@ -367,7 +371,9 @@ function isBenchmarkAnnotationVerdict(
 	);
 }
 
-function parseSessionEventNotification(payload: string): { sessionId: string | null } {
+function parseSessionEventNotification(payload: string): {
+  sessionId: string | null;
+} {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(payload);
@@ -378,20 +384,25 @@ function parseSessionEventNotification(payload: string): { sessionId: string | n
 		return { sessionId: null };
 	}
 	const sessionId = (parsed as { sessionId?: unknown }).sessionId;
-	return { sessionId: typeof sessionId === "string" && sessionId ? sessionId : null };
+  return {
+    sessionId: typeof sessionId === "string" && sessionId ? sessionId : null,
+  };
 }
 
-export class PostgresWorkflowSessionEventNotificationSource
-	implements WorkflowSessionEventNotificationSource
-{
-	constructor(private readonly sqlClient: PostgresSqlClient = requirePostgresSql()) {}
+export class PostgresWorkflowSessionEventNotificationSource implements WorkflowSessionEventNotificationSource {
+  constructor(
+    private readonly sqlClient: PostgresSqlClient = requirePostgresSql(),
+  ) {}
 
 	async listenSessionEvents(
 		onNotification: (notification: { sessionId: string | null }) => void,
 	) {
-		const listener = await this.sqlClient.listen("session_events", (payload) => {
+    const listener = await this.sqlClient.listen(
+      "session_events",
+      (payload) => {
 			onNotification(parseSessionEventNotification(payload));
-		});
+      },
+    );
 		return {
 			unlisten: () => listener.unlisten(),
 		};
@@ -504,9 +515,14 @@ function adapterNumber(value: unknown): number | null {
 	return null;
 }
 
-function normalizeCodeCheckpointStatus(value: unknown): WorkflowCodeCheckpointStatus {
+function normalizeCodeCheckpointStatus(
+  value: unknown,
+): WorkflowCodeCheckpointStatus {
 	const text = adapterString(value);
-	if (text && CODE_CHECKPOINT_STATUSES.has(text as WorkflowCodeCheckpointStatus)) {
+  if (
+    text &&
+    CODE_CHECKPOINT_STATUSES.has(text as WorkflowCodeCheckpointStatus)
+  ) {
 		return text as WorkflowCodeCheckpointStatus;
 	}
 	return "skipped";
@@ -564,13 +580,16 @@ function codeCheckpointRowToReadModel(
 export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpointStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async persistFromAgentEvent(input: PersistCodeCheckpointInput): Promise<void> {
+  async persistFromAgentEvent(
+    input: PersistCodeCheckpointInput,
+  ): Promise<void> {
 		if (!adapterRecord(input.payload)) return;
 
 		const changedFiles = normalizeChangedFiles(input.payload.changedFiles);
 		const sourceEventId =
 			adapterString(input.payload.sourceEventId) ?? input.sourceEventId;
-		const fileCount = adapterNumber(input.payload.fileCount) ?? changedFiles.length;
+    const fileCount =
+      adapterNumber(input.payload.fileCount) ?? changedFiles.length;
 
 		await this.database
 			.insert(workflowCodeCheckpoints)
@@ -578,7 +597,8 @@ export class PostgresWorkflowCodeCheckpointStore implements WorkflowCodeCheckpoi
 				workflowExecutionId: input.workflowExecutionId,
 				workflowAgentRunId: input.workflowAgentRunId ?? null,
 				parentExecutionId:
-					input.parentExecutionId ?? adapterString(input.payload.parentExecutionId),
+          input.parentExecutionId ??
+          adapterString(input.payload.parentExecutionId),
 				daprInstanceId: input.daprInstanceId,
 				workspaceRef: adapterString(input.payload.workspaceRef),
 				sandboxName: adapterString(input.payload.sandboxName),
@@ -662,7 +682,9 @@ export class PostgresEvaluationArtifactStore implements EvaluationArtifactStore 
 				runId: evaluationRunItems.runId,
 			})
 			.from(evaluationRunItems)
-			.where(eq(evaluationRunItems.workflowExecutionId, input.workflowExecutionId))
+      .where(
+        eq(evaluationRunItems.workflowExecutionId, input.workflowExecutionId),
+      )
 			.limit(1);
 		if (!evalItem) return;
 
@@ -725,7 +747,9 @@ export class PostgresUsageReportingRepository implements UsageReportingRepositor
 				AND se.created_at <= ${endIso}
 		`);
 
-		const [sessionTotals] = await this.database.execute<{ session_count: number }>(sql`
+    const [sessionTotals] = await this.database.execute<{
+      session_count: number;
+    }>(sql`
 			SELECT count(*)::int AS session_count
 			FROM ${sessions} s
 			WHERE ${scopeClause}
@@ -935,11 +959,16 @@ export class PostgresUsageReportingRepository implements UsageReportingRepositor
 export class PostgresSandboxInventoryRepository implements SandboxInventoryRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async listRecentExecutionsForSandbox(sandboxName: string): Promise<SandboxExecutionRecord[]> {
+  async listRecentExecutionsForSandbox(
+    sandboxName: string,
+  ): Promise<SandboxExecutionRecord[]> {
 		const runtimeName = sandboxName.trim();
 		if (!runtimeName) return [];
 		let executionIds: string[] | null = null;
-		if (runtimeName === "dapr-agent-py" || runtimeName === "dapr-agent-py-testing") {
+    if (
+      runtimeName === "dapr-agent-py" ||
+      runtimeName === "dapr-agent-py-testing"
+    ) {
 			const sessionRows = await this.database
 				.select({ workflowExecutionId: sessions.workflowExecutionId })
 				.from(sessions)
@@ -952,7 +981,9 @@ export class PostgresSandboxInventoryRepository implements SandboxInventoryRepos
 				...new Set(
 					sessionRows
 						.map((row) => row.workflowExecutionId)
-						.filter((id): id is string => typeof id === "string" && id.length > 0),
+            .filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            ),
 				),
 			].slice(0, 10);
 			if (executionIds.length === 0) return [];
@@ -1060,7 +1091,9 @@ function parseNumericDurationMs(value: string | null): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function mapExecutionLog(row: WorkflowExecutionLog): WorkflowExecutionLogRecord {
+function mapExecutionLog(
+  row: WorkflowExecutionLog,
+): WorkflowExecutionLogRecord {
 	return {
 		id: row.id,
 		executionId: row.executionId,
@@ -1117,7 +1150,9 @@ function mapArtifact(row: WorkflowArtifactRow): WorkflowArtifactRecord {
 	};
 }
 
-function mapPlanArtifact(row: WorkflowPlanArtifact): WorkflowPlanArtifactRecord {
+function mapPlanArtifact(
+  row: WorkflowPlanArtifact,
+): WorkflowPlanArtifactRecord {
 	return {
 		artifactRef: row.id,
 		workflowExecutionId: row.workflowExecutionId,
@@ -1142,7 +1177,9 @@ function mapPlanArtifact(row: WorkflowPlanArtifact): WorkflowPlanArtifactRecord 
 	};
 }
 
-function mapTrigger(row: typeof workflowTriggers.$inferSelect): WorkflowTriggerRecord {
+function mapTrigger(
+  row: typeof workflowTriggers.$inferSelect,
+): WorkflowTriggerRecord {
 	return {
 		id: row.id,
 		workflowId: row.workflowId,
@@ -1328,14 +1365,18 @@ export class PostgresSettingsRepository implements SettingsRepository {
 	}
 
 	async deletePlatformOAuthApp(id: string) {
-		await this.database.delete(platformOauthApps).where(eq(platformOauthApps.id, id));
+    await this.database
+      .delete(platformOauthApps)
+      .where(eq(platformOauthApps.id, id));
 	}
 }
 
 export class PostgresMcpConnectionRepository implements McpConnectionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	private mapConnection(row: typeof mcpConnections.$inferSelect): McpConnectionRecord {
+  private mapConnection(
+    row: typeof mcpConnections.$inferSelect,
+  ): McpConnectionRecord {
 		return {
 			id: row.id,
 			projectId: row.projectId,
@@ -1441,10 +1482,14 @@ export class PostgresMcpConnectionRepository implements McpConnectionRepository 
 		if (Object.hasOwn(input, "connectionExternalId")) {
 			updates.connectionExternalId = input.connectionExternalId ?? null;
 		}
-		if (input.displayName !== undefined) updates.displayName = input.displayName;
-		if (Object.hasOwn(input, "registryRef")) updates.registryRef = input.registryRef ?? null;
-		if (Object.hasOwn(input, "serverUrl")) updates.serverUrl = input.serverUrl ?? null;
-		if (Object.hasOwn(input, "metadata")) updates.metadata = input.metadata ?? null;
+    if (input.displayName !== undefined)
+      updates.displayName = input.displayName;
+    if (Object.hasOwn(input, "registryRef"))
+      updates.registryRef = input.registryRef ?? null;
+    if (Object.hasOwn(input, "serverUrl"))
+      updates.serverUrl = input.serverUrl ?? null;
+    if (Object.hasOwn(input, "metadata"))
+      updates.metadata = input.metadata ?? null;
 
 		const [row] = await this.database
 			.update(mcpConnections)
@@ -1487,7 +1532,9 @@ export class PostgresMcpConnectionRepository implements McpConnectionRepository 
 				),
 			)
 			.limit(1);
-		return Boolean(row && connectionBelongsToProject(row.projectIds, input.projectId));
+    return Boolean(
+      row && connectionBelongsToProject(row.projectIds, input.projectId),
+    );
 	}
 
 	async listActiveAppConnectionCatalogSummaries(
@@ -1532,7 +1579,9 @@ export class PostgresMcpConnectionRepository implements McpConnectionRepository 
 export class PostgresHostedMcpServerRepository implements HostedMcpServerRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	private mapServer(row: typeof mcpServers.$inferSelect): HostedMcpServerRecord {
+  private mapServer(
+    row: typeof mcpServers.$inferSelect,
+  ): HostedMcpServerRecord {
 		return {
 			id: row.id,
 			projectId: row.projectId,
@@ -1543,7 +1592,9 @@ export class PostgresHostedMcpServerRepository implements HostedMcpServerReposit
 		};
 	}
 
-	private mapConnection(row: typeof mcpConnections.$inferSelect): McpConnectionRecord {
+  private mapConnection(
+    row: typeof mcpConnections.$inferSelect,
+  ): McpConnectionRecord {
 		return {
 			id: row.id,
 			projectId: row.projectId,
@@ -1569,7 +1620,9 @@ export class PostgresHostedMcpServerRepository implements HostedMcpServerReposit
 		const [row] = await this.database
 			.select({ id: projects.id, externalId: projects.externalId })
 			.from(projects)
-			.where(or(eq(projects.id, projectRef), eq(projects.externalId, projectRef)))
+      .where(
+        or(eq(projects.id, projectRef), eq(projects.externalId, projectRef)),
+      )
 			.limit(1);
 		return row ?? null;
 	}
@@ -1807,7 +1860,9 @@ export class PostgresMcpRunRepository implements McpRunRepository {
 export class PostgresAppConnectionRepository implements AppConnectionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	private mapConnection(row: typeof appConnections.$inferSelect): AppConnectionRecord {
+  private mapConnection(
+    row: typeof appConnections.$inferSelect,
+  ): AppConnectionRecord {
 		return {
 			id: row.id,
 			externalId: row.externalId,
@@ -1878,7 +1933,9 @@ export class PostgresAppConnectionRepository implements AppConnectionRepository 
 			.orderBy(pieceMetadata.name, desc(pieceMetadata.updatedAt));
 	}
 
-	async findConnectionById(id: string): Promise<AppConnectionSecretRecord | null> {
+  async findConnectionById(
+    id: string,
+  ): Promise<AppConnectionSecretRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(appConnections)
@@ -1997,7 +2054,10 @@ export class PostgresAppConnectionRepository implements AppConnectionRepository 
 			.from(appConnections)
 			.where(eq(appConnections.id, input.id))
 			.limit(1);
-		if (!existing || !connectionBelongsToProject(existing.projectIds, input.projectId)) {
+    if (
+      !existing ||
+      !connectionBelongsToProject(existing.projectIds, input.projectId)
+    ) {
 			return null;
 		}
 
@@ -2065,7 +2125,10 @@ export class PostgresAppConnectionRepository implements AppConnectionRepository 
 			.from(appConnections)
 			.where(eq(appConnections.id, input.id))
 			.limit(1);
-		if (!existing || !connectionBelongsToProject(existing.projectIds, input.projectId)) {
+    if (
+      !existing ||
+      !connectionBelongsToProject(existing.projectIds, input.projectId)
+    ) {
 			return false;
 		}
 
@@ -2107,7 +2170,9 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 		const rows = await this.database
 			.selectDistinct({ pieceName: workflowConnectionRefs.pieceName })
 			.from(workflowConnectionRefs);
-		return rows.map((row) => row.pieceName).filter((name): name is string => Boolean(name));
+    return rows
+      .map((row) => row.pieceName)
+      .filter((name): name is string => Boolean(name));
 	}
 
 	async listEnabledMcpPieceNames(): Promise<string[]> {
@@ -2120,7 +2185,9 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 					eq(mcpConnections.status, "ENABLED"),
 				),
 			);
-		return rows.map((row) => row.pieceName).filter((name): name is string => Boolean(name));
+    return rows
+      .map((row) => row.pieceName)
+      .filter((name): name is string => Boolean(name));
 	}
 
 	async listLatestImageStatuses(pieceNames: string[]) {
@@ -2160,7 +2227,9 @@ export class PostgresAdminPieceRepository implements AdminPieceRepository {
 		return [...latest.values()];
 	}
 
-	async getLatestCatalogPieceVersion(pieceName: string): Promise<string | null> {
+  async getLatestCatalogPieceVersion(
+    pieceName: string,
+  ): Promise<string | null> {
 		const [row] = await this.database
 			.select({ version: pieceMetadata.version })
 			.from(pieceMetadata)
@@ -2429,7 +2498,9 @@ export class PostgresWorkspaceProjectRepository implements WorkspaceProjectRepos
 					eq(projectMembers.userId, input.userId),
 				),
 			)
-			.where(or(eq(projects.externalId, input.slug), eq(projects.id, input.slug)))
+      .where(
+        or(eq(projects.externalId, input.slug), eq(projects.id, input.slug)),
+      )
 			.limit(1);
 		return row?.projectId ?? null;
 	}
@@ -2494,7 +2565,28 @@ export class PostgresWorkspaceProjectRepository implements WorkspaceProjectRepos
 		return (row?.role as ProjectMembershipRole | undefined) ?? null;
 	}
 
-	async listProjectMembers(projectId: string): Promise<ProjectMemberListItem[]> {
+  async hasActiveProjectMembership(input: {
+    projectId: string;
+    userId: string;
+  }): Promise<boolean> {
+    const [membership] = await this.database
+      .select({ id: projectMembers.id })
+      .from(projectMembers)
+      .innerJoin(users, eq(projectMembers.userId, users.id))
+      .where(
+        and(
+          eq(projectMembers.projectId, input.projectId),
+          eq(projectMembers.userId, input.userId),
+          eq(users.status, "ACTIVE"),
+        ),
+      )
+      .limit(1);
+    return Boolean(membership);
+  }
+
+  async listProjectMembers(
+    projectId: string,
+  ): Promise<ProjectMemberListItem[]> {
 		const rows = await this.database
 			.select({
 				id: projectMembers.id,
@@ -2799,7 +2891,9 @@ export class PostgresPieceCatalogRepository implements PieceCatalogRepository {
 export class PostgresCodeFunctionCatalogRepository implements CodeFunctionCatalogRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async listEnabledForCatalog(userId: string): Promise<CodeCatalogFunctionRecord[]> {
+  async listEnabledForCatalog(
+    userId: string,
+  ): Promise<CodeCatalogFunctionRecord[]> {
 		const rows = await this.database
 			.select({
 				id: codeFunctions.id,
@@ -2812,7 +2906,12 @@ export class PostgresCodeFunctionCatalogRepository implements CodeFunctionCatalo
 				language: codeFunctions.language,
 			})
 			.from(codeFunctions)
-			.where(and(eq(codeFunctions.isEnabled, true), eq(codeFunctions.createdBy, userId)));
+      .where(
+        and(
+          eq(codeFunctions.isEnabled, true),
+          eq(codeFunctions.createdBy, userId),
+        ),
+      );
 		return rows.map((row) => ({
 			id: row.id,
 			name: row.name,
@@ -2871,9 +2970,7 @@ export class PostgresBenchmarkRunRepository implements BenchmarkRunRepository {
 	}
 }
 
-export class PostgresBenchmarkArtifactMetadataRepository
-	implements BenchmarkArtifactMetadataRepository
-{
+export class PostgresBenchmarkArtifactMetadataRepository implements BenchmarkArtifactMetadataRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async recordArtifact(input: BenchmarkArtifactMetadataInput): Promise<void> {
@@ -2905,9 +3002,7 @@ export class PostgresBenchmarkArtifactMetadataRepository
 	}
 }
 
-export class PostgresBenchmarkEvaluationResultRepository
-	implements BenchmarkEvaluationResultRepository
-{
+export class PostgresBenchmarkEvaluationResultRepository implements BenchmarkEvaluationResultRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async getRunForEvaluationIngestion(
@@ -3016,11 +3111,15 @@ export class PostgresBenchmarkEvaluationResultRepository
 		return Number(row?.value ?? 0);
 	}
 
-	async getRunForResponse(runId: string): Promise<BenchmarkEvaluationRunRecord | null> {
+  async getRunForResponse(
+    runId: string,
+  ): Promise<BenchmarkEvaluationRunRecord | null> {
 		return this.getRun(runId);
 	}
 
-	private async getRun(runId: string): Promise<BenchmarkEvaluationRunRecord | null> {
+  private async getRun(
+    runId: string,
+  ): Promise<BenchmarkEvaluationRunRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(benchmarkRuns)
@@ -3153,9 +3252,7 @@ export class PostgresBenchmarkBrowserRepository implements BenchmarkBrowserRepos
 	}
 }
 
-export class PostgresBenchmarkInstanceDetailReadRepository
-	implements BenchmarkInstanceDetailReadRepository
-{
+export class PostgresBenchmarkInstanceDetailReadRepository implements BenchmarkInstanceDetailReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async getBenchmarkInstanceDetail(input: {
@@ -3202,9 +3299,7 @@ export class PostgresBenchmarkInstanceDetailReadRepository
 	}
 }
 
-export class PostgresBenchmarkRunInstanceScoreReadRepository
-	implements BenchmarkRunInstanceScoreReadRepository
-{
+export class PostgresBenchmarkRunInstanceScoreReadRepository implements BenchmarkRunInstanceScoreReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async listRunInstanceScores(input: {
@@ -3215,7 +3310,8 @@ export class PostgresBenchmarkRunInstanceScoreReadRepository
 		const runId = input.runId.trim();
 		const instanceId = input.instanceId.trim();
 		const projectId = input.projectId.trim();
-		if (!runId || !instanceId || !projectId) return { status: "run_not_found" as const };
+    if (!runId || !instanceId || !projectId)
+      return { status: "run_not_found" as const };
 
 		const [runRow] = await this.database
 			.select({ id: benchmarkRuns.id })
@@ -3265,9 +3361,7 @@ export class PostgresBenchmarkRunInstanceScoreReadRepository
 	}
 }
 
-export class PostgresBenchmarkRunInstanceDetailReadRepository
-	implements BenchmarkRunInstanceDetailReadRepository
-{
+export class PostgresBenchmarkRunInstanceDetailReadRepository implements BenchmarkRunInstanceDetailReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async getRunInstanceDetail(input: {
@@ -3278,7 +3372,8 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 		const runId = input.runId.trim();
 		const instanceId = input.instanceId.trim();
 		const projectId = input.projectId.trim();
-		if (!runId || !instanceId || !projectId) return { status: "run_not_found" as const };
+    if (!runId || !instanceId || !projectId)
+      return { status: "run_not_found" as const };
 
 		const [runRow] = await this.database
 			.select({
@@ -3336,7 +3431,9 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 			runInstance: {
 				...row.run,
 				traceIds: Array.isArray(row.run.traceIds)
-					? row.run.traceIds.filter((item): item is string => typeof item === "string")
+          ? row.run.traceIds.filter(
+              (item): item is string => typeof item === "string",
+            )
 					: null,
 			},
 			instance: {
@@ -3354,9 +3451,7 @@ export class PostgresBenchmarkRunInstanceDetailReadRepository
 	}
 }
 
-export class PostgresBenchmarkRunInstanceProgressReadRepository
-	implements BenchmarkRunInstanceProgressReadRepository
-{
+export class PostgresBenchmarkRunInstanceProgressReadRepository implements BenchmarkRunInstanceProgressReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async getRunInstanceProgress(input: {
@@ -3423,9 +3518,7 @@ export class PostgresBenchmarkRunInstanceProgressReadRepository
 	}
 }
 
-export class PostgresBenchmarkDatasetPromotionRepository
-	implements BenchmarkDatasetPromotionRepository
-{
+export class PostgresBenchmarkDatasetPromotionRepository implements BenchmarkDatasetPromotionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async promoteRunInstanceToDataset(input: {
@@ -3446,15 +3539,15 @@ export class PostgresBenchmarkDatasetPromotionRepository
 				hintsText: benchmarkInstances.hintsText,
 			})
 			.from(benchmarkRunInstances)
-			.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
+      .innerJoin(
+        benchmarkRuns,
+        eq(benchmarkRuns.id, benchmarkRunInstances.runId),
+      )
 			.leftJoin(
 				benchmarkInstances,
 				and(
 					eq(benchmarkInstances.suiteId, benchmarkRuns.suiteId),
-					eq(
-						benchmarkInstances.instanceId,
-						benchmarkRunInstances.instanceId,
-					),
+          eq(benchmarkInstances.instanceId, benchmarkRunInstances.instanceId),
 				),
 			)
 			.where(
@@ -3535,9 +3628,7 @@ export class PostgresBenchmarkDatasetPromotionRepository
 	}
 }
 
-export class PostgresBenchmarkRunInstanceAnnotationRepository
-	implements BenchmarkRunInstanceAnnotationRepository
-{
+export class PostgresBenchmarkRunInstanceAnnotationRepository implements BenchmarkRunInstanceAnnotationRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	private async resolveRunInstanceId(input: {
@@ -3704,11 +3795,30 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 			.orderBy(desc(workflows.updatedAt))
 			.limit(20);
 		if (candidates.length === 0) return null;
-		const row = candidates.find((workflow) => workflow.visibility === "public") ?? candidates[0] ?? null;
+    const row =
+      candidates.find((workflow) => workflow.visibility === "public") ??
+      candidates[0] ??
+      null;
+    return row ? mapWorkflow(row) : null;
+  }
+
+  async getLatestByNameInProject(
+    name: string,
+    projectId: string,
+  ): Promise<WorkflowDefinition | null> {
+    const [row] = await this.database
+      .select()
+      .from(workflows)
+      .where(and(eq(workflows.name, name), eq(workflows.projectId, projectId)))
+      .orderBy(desc(workflows.updatedAt), desc(workflows.id))
+      .limit(1);
 		return row ? mapWorkflow(row) : null;
 	}
 
-	async getByRef(ref: { workflowId?: string | null; workflowName?: string | null }): Promise<WorkflowDefinition | null> {
+  async getByRef(ref: {
+    workflowId?: string | null;
+    workflowName?: string | null;
+  }): Promise<WorkflowDefinition | null> {
 		const workflowId = ref.workflowId?.trim();
 		if (workflowId) return this.getById(workflowId);
 		const workflowName = ref.workflowName?.trim();
@@ -3754,7 +3864,10 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 				input.projectId
 					? or(
 							eq(workflows.projectId, input.projectId),
-							and(isNull(workflows.projectId), eq(workflows.userId, input.userId)),
+              and(
+                isNull(workflows.projectId),
+                eq(workflows.userId, input.userId),
+              ),
 						)
 					: eq(workflows.userId, input.userId),
 			)
@@ -3783,7 +3896,9 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 		return row?.id ?? null;
 	}
 
-	async create(input: CreateWorkflowDefinitionInput): Promise<WorkflowDefinition> {
+  async create(
+    input: CreateWorkflowDefinitionInput,
+  ): Promise<WorkflowDefinition> {
 		const [row] = await this.database
 			.insert(workflows)
 			.values({
@@ -3809,7 +3924,8 @@ export class PostgresWorkflowDefinitionRepository implements WorkflowDefinitionR
 		if (input.nodes !== undefined) values.nodes = input.nodes;
 		if (input.edges !== undefined) values.edges = input.edges;
 		if (input.spec !== undefined) values.spec = input.spec;
-		if (input.daprWorkflowName !== undefined) values.daprWorkflowName = input.daprWorkflowName;
+    if (input.daprWorkflowName !== undefined)
+      values.daprWorkflowName = input.daprWorkflowName;
 		const [row] = await this.database
 			.update(workflows)
 			.set(values)
@@ -3861,7 +3977,9 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 		return rows.map(mapTrigger);
 	}
 
-	async create(input: CreateWorkflowTriggerInput): Promise<WorkflowTriggerRecord> {
+  async create(
+    input: CreateWorkflowTriggerInput,
+  ): Promise<WorkflowTriggerRecord> {
 		const [row] = await this.database
 			.insert(workflowTriggers)
 			.values({
@@ -3935,14 +4053,18 @@ export class PostgresWorkflowTriggerStore implements WorkflowTriggerStore {
 	}
 
 	async delete(triggerId: string): Promise<void> {
-		await this.database.delete(workflowTriggers).where(eq(workflowTriggers.id, triggerId));
+    await this.database
+      .delete(workflowTriggers)
+      .where(eq(workflowTriggers.id, triggerId));
 	}
 }
 
 export class PostgresPieceExecutionRepository implements PieceExecutionRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async getByIdempotencyKey(idempotencyKey: string): Promise<PieceExecutionReadModel | null> {
+  async getByIdempotencyKey(
+    idempotencyKey: string,
+  ): Promise<PieceExecutionReadModel | null> {
 		const [row] = await this.database
 			.select()
 			.from(pieceExecution)
@@ -3966,15 +4088,21 @@ export class PostgresPieceExecutionRepository implements PieceExecutionRepositor
 
 const BROWSER_ARTIFACT_BLOB_PREFIX = "workflow-browser-artifacts";
 
-function browserArtifactContentType(asset: WorkflowBrowserArtifactAssetInput): string {
+function browserArtifactContentType(
+  asset: WorkflowBrowserArtifactAssetInput,
+): string {
 	if (asset.contentType?.trim()) return asset.contentType.trim();
 	if (asset.kind === "trace") return "application/zip";
-	if (asset.kind === "video" || asset.kind === "video-annotated") return "video/webm";
+  if (asset.kind === "video" || asset.kind === "video-annotated")
+    return "video/webm";
 	if (asset.kind === "caption") return "text/vtt; charset=utf-8";
 	return "image/png";
 }
 
-function browserArtifactExtension(contentType: string, fileName?: string): string {
+function browserArtifactExtension(
+  contentType: string,
+  fileName?: string,
+): string {
 	if (fileName?.includes(".")) return fileName.split(".").pop() || "bin";
 	if (contentType === "application/zip") return "zip";
 	if (contentType.startsWith("text/vtt")) return "vtt";
@@ -3991,14 +4119,23 @@ function browserArtifactStorageRef(input: {
 	contentType: string;
 	fileName?: string;
 }): string {
-	const safeExecution = input.workflowExecutionId.replace(/[^a-zA-Z0-9._-]/g, "-");
+  const safeExecution = input.workflowExecutionId.replace(
+    /[^a-zA-Z0-9._-]/g,
+    "-",
+  );
 	const ext = browserArtifactExtension(input.contentType, input.fileName);
 	return `${BROWSER_ARTIFACT_BLOB_PREFIX}/${safeExecution}/${input.artifactId}/${input.kind}-${input.index + 1}.${ext}`;
 }
 
-function browserArtifactStep(input: WorkflowBrowserCaptureStepInput, index: number) {
+function browserArtifactStep(
+  input: WorkflowBrowserCaptureStepInput,
+  index: number,
+) {
 	return {
-		id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : `step-${index + 1}`,
+    id:
+      typeof input.id === "string" && input.id.trim()
+        ? input.id.trim()
+        : `step-${index + 1}`,
 		label:
 			typeof input.label === "string" && input.label.trim()
 				? input.label.trim()
@@ -4013,7 +4150,8 @@ function browserArtifactStep(input: WorkflowBrowserCaptureStepInput, index: numb
 		...(typeof input.title === "string" && input.title.trim()
 			? { title: input.title.trim() }
 			: {}),
-		...(typeof input.waitForSelector === "string" && input.waitForSelector.trim()
+    ...(typeof input.waitForSelector === "string" &&
+    input.waitForSelector.trim()
 			? { waitForSelector: input.waitForSelector.trim() }
 			: {}),
 		...(typeof input.waitForText === "string" && input.waitForText.trim()
@@ -4025,14 +4163,16 @@ function browserArtifactStep(input: WorkflowBrowserCaptureStepInput, index: numb
 		...(typeof input.pauseMs === "number" && Number.isFinite(input.pauseMs)
 			? { pauseMs: input.pauseMs }
 			: {}),
-		...(typeof input.successCriteria === "string" && input.successCriteria.trim()
+    ...(typeof input.successCriteria === "string" &&
+    input.successCriteria.trim()
 			? { successCriteria: input.successCriteria.trim() }
 			: {}),
 		...(typeof input.capturedAt === "string" && input.capturedAt.trim()
 			? { capturedAt: input.capturedAt.trim() }
 			: {}),
 		status: input.status === "failed" ? "failed" : "completed",
-		...(typeof input.screenshotStorageRef === "string" && input.screenshotStorageRef.trim()
+    ...(typeof input.screenshotStorageRef === "string" &&
+    input.screenshotStorageRef.trim()
 			? { screenshotStorageRef: input.screenshotStorageRef.trim() }
 			: {}),
 		...(typeof input.error === "string" && input.error.trim()
@@ -4062,10 +4202,14 @@ function toWorkflowBrowserArtifactRecord(
 export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArtifactStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async save(input: SaveWorkflowBrowserArtifactInput): Promise<WorkflowBrowserArtifactRecord> {
+  async save(
+    input: SaveWorkflowBrowserArtifactInput,
+  ): Promise<WorkflowBrowserArtifactRecord> {
 		const artifactId = `bwf_${nanoid(12)}`;
 		const now = new Date().toISOString();
-		const steps = input.steps.map((step, index) => browserArtifactStep(step, index));
+    const steps = input.steps.map((step, index) =>
+      browserArtifactStep(step, index),
+    );
 		const manifest: Record<string, unknown> = {
 			baseUrl: input.baseUrl,
 			startedAt: now,
@@ -4149,7 +4293,9 @@ export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArti
 		const rows = await this.database
 			.select()
 			.from(workflowBrowserArtifacts)
-			.where(eq(workflowBrowserArtifacts.workflowExecutionId, workflowExecutionId))
+      .where(
+        eq(workflowBrowserArtifacts.workflowExecutionId, workflowExecutionId),
+      )
 			.orderBy(desc(workflowBrowserArtifacts.createdAt));
 		return rows.map((row) => toWorkflowBrowserArtifactRecord(row));
 	}
@@ -4173,7 +4319,13 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 
 	async getByKeyHash(keyHash: string): Promise<ApiKeyRecord | null> {
 		const [row] = await this.database
-			.select({ id: apiKeys.id, userId: apiKeys.userId })
+      .select({
+        id: apiKeys.id,
+        userId: apiKeys.userId,
+        projectId: apiKeys.projectId,
+        createdByUserId: sql<string>`coalesce(${apiKeys.createdByUserId}, ${apiKeys.userId})`,
+        scopes: apiKeys.scopes,
+      })
 			.from(apiKeys)
 			.where(eq(apiKeys.keyHash, keyHash))
 			.limit(1);
@@ -4187,23 +4339,43 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 			.where(eq(apiKeys.id, apiKeyId));
 	}
 
-	listByUserId(userId: string) {
+  listVisibleInProject(input: { userId: string; projectId: string }) {
 		return this.database
 			.select({
 				id: apiKeys.id,
 				name: apiKeys.name,
 				keyPrefix: apiKeys.keyPrefix,
+        projectId: apiKeys.projectId,
+        createdByUserId: sql<string>`coalesce(${apiKeys.createdByUserId}, ${apiKeys.userId})`,
+        scopes: apiKeys.scopes,
 				createdAt: apiKeys.createdAt,
 				lastUsedAt: apiKeys.lastUsedAt,
 			})
 			.from(apiKeys)
-			.where(eq(apiKeys.userId, userId))
+      .where(
+        or(
+          and(
+            eq(apiKeys.projectId, input.projectId),
+            or(
+              eq(apiKeys.createdByUserId, input.userId),
+              and(
+                isNull(apiKeys.createdByUserId),
+                eq(apiKeys.userId, input.userId),
+              ),
+            ),
+          ),
+          and(isNull(apiKeys.projectId), eq(apiKeys.userId, input.userId)),
+        ),
+      )
 			.orderBy(desc(apiKeys.createdAt));
 	}
 
-	async createUserApiKey(input: {
+  async createProjectApiKey(input: {
 		id: string;
 		userId: string;
+    projectId: string;
+    createdByUserId: string;
+    scopes: string[];
 		name: string;
 		keyHash: string;
 		keyPrefix: string;
@@ -4213,6 +4385,9 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 			.values({
 				id: input.id,
 				userId: input.userId,
+        projectId: input.projectId,
+        createdByUserId: input.createdByUserId,
+        scopes: input.scopes,
 				name: input.name,
 				keyHash: input.keyHash,
 				keyPrefix: input.keyPrefix,
@@ -4221,6 +4396,9 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 				id: apiKeys.id,
 				name: apiKeys.name,
 				keyPrefix: apiKeys.keyPrefix,
+        projectId: apiKeys.projectId,
+        createdByUserId: sql<string>`coalesce(${apiKeys.createdByUserId}, ${apiKeys.userId})`,
+        scopes: apiKeys.scopes,
 				createdAt: apiKeys.createdAt,
 				lastUsedAt: apiKeys.lastUsedAt,
 			});
@@ -4228,17 +4406,39 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 		return created;
 	}
 
-	async deleteForUser(input: { id: string; userId: string }): Promise<boolean> {
+  async deleteForProject(input: {
+    id: string;
+    userId: string;
+    projectId: string;
+  }): Promise<boolean> {
 		const deleted = await this.database
 			.delete(apiKeys)
-			.where(and(eq(apiKeys.id, input.id), eq(apiKeys.userId, input.userId)))
+      .where(
+        and(
+          eq(apiKeys.id, input.id),
+          or(
+            and(
+              eq(apiKeys.projectId, input.projectId),
+              or(
+                eq(apiKeys.createdByUserId, input.userId),
+                and(
+                  isNull(apiKeys.createdByUserId),
+                  eq(apiKeys.userId, input.userId),
+                ),
+              ),
+            ),
+            and(isNull(apiKeys.projectId), eq(apiKeys.userId, input.userId)),
+          ),
+        ),
+      )
 			.returning({ id: apiKeys.id });
 		return deleted.length > 0;
 	}
 
-	async updateSecretForUser(input: {
+  async updateSecretForProject(input: {
 		id: string;
 		userId: string;
+    projectId: string;
 		keyHash: string;
 		keyPrefix: string;
 	}) {
@@ -4249,11 +4449,31 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 				keyPrefix: input.keyPrefix,
 				lastUsedAt: null,
 			})
-			.where(and(eq(apiKeys.id, input.id), eq(apiKeys.userId, input.userId)))
+      .where(
+        and(
+          eq(apiKeys.id, input.id),
+          or(
+            and(
+              eq(apiKeys.projectId, input.projectId),
+              or(
+                eq(apiKeys.createdByUserId, input.userId),
+                and(
+                  isNull(apiKeys.createdByUserId),
+                  eq(apiKeys.userId, input.userId),
+                ),
+              ),
+            ),
+            and(isNull(apiKeys.projectId), eq(apiKeys.userId, input.userId)),
+          ),
+        ),
+      )
 			.returning({
 				id: apiKeys.id,
 				name: apiKeys.name,
 				keyPrefix: apiKeys.keyPrefix,
+        projectId: apiKeys.projectId,
+        createdByUserId: sql<string>`coalesce(${apiKeys.createdByUserId}, ${apiKeys.userId})`,
+        scopes: apiKeys.scopes,
 				createdAt: apiKeys.createdAt,
 				lastUsedAt: apiKeys.lastUsedAt,
 			});
@@ -4262,13 +4482,14 @@ export class PostgresApiKeyStore implements ApiKeyStore {
 }
 
 function workflowActivityRateSessionHostAppId(sessionId: string): string {
-	const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 20);
+  const digest = createHash("sha256")
+    .update(sessionId)
+    .digest("hex")
+    .slice(0, 20);
 	return `agent-session-${digest}`;
 }
 
-export class PostgresWorkflowActivityRateTargetRepository
-	implements WorkflowActivityRateTargetRepository
-{
+export class PostgresWorkflowActivityRateTargetRepository implements WorkflowActivityRateTargetRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async resolveWorkflowActivityRateTarget(input: {
@@ -4326,11 +4547,18 @@ export class PostgresObservabilityTraceRepository implements ObservabilityTraceR
 		executionLimit?: number;
 	}): Promise<ObservabilityTraceScopeReadModel | null> {
 		const userId = input.userId.trim();
-		if (!userId) return { sessionIds: [], executionIds: [], sessionIdFilter: null };
+    if (!userId)
+      return { sessionIds: [], executionIds: [], sessionIdFilter: null };
 		const projectId = input.projectId ?? null;
 		const sessionIdFilter = input.sessionIdFilter?.trim() || null;
-		const sessionLimit = Math.max(1, Math.min(Math.trunc(input.sessionLimit ?? 1000), 1000));
-		const executionLimit = Math.max(1, Math.min(Math.trunc(input.executionLimit ?? 1000), 1000));
+    const sessionLimit = Math.max(
+      1,
+      Math.min(Math.trunc(input.sessionLimit ?? 1000), 1000),
+    );
+    const executionLimit = Math.max(
+      1,
+      Math.min(Math.trunc(input.executionLimit ?? 1000), 1000),
+    );
 		const sessionScopeWhere = projectId
 			? or(
 					eq(sessions.projectId, projectId),
@@ -4433,7 +4661,9 @@ export class PostgresObservabilityTraceRepository implements ObservabilityTraceR
 	async listTraceGoalChips(input: {
 		sessionIds: string[];
 	}): Promise<ObservabilityTraceGoalChipReadModel[]> {
-		const ids = [...new Set(input.sessionIds.map((id) => id.trim()).filter(Boolean))];
+    const ids = [
+      ...new Set(input.sessionIds.map((id) => id.trim()).filter(Boolean)),
+    ];
 		if (ids.length === 0) return [];
 		const rows = await this.database
 			.select({
@@ -4500,10 +4730,7 @@ function promptPresetRefs(
 export class PostgresResourceUsageReadRepository implements ResourceUsageReadRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async getPromptPresetUsages(input: {
-		presetId: string;
-		projectId: string;
-	}) {
+  async getPromptPresetUsages(input: { presetId: string; projectId: string }) {
 		const presetId = input.presetId.trim();
 		const projectId = input.projectId.trim();
 		if (!presetId || !projectId) return null;
@@ -4540,11 +4767,16 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 			})
 			.from(agents)
 			.leftJoin(agentVersions, eq(agentVersions.id, agents.currentVersionId))
-			.where(and(eq(agents.projectId, projectId), eq(agents.isArchived, false)));
+      .where(
+        and(eq(agents.projectId, projectId), eq(agents.isArchived, false)),
+      );
 
 		const usages = [];
 		for (const row of rows) {
-			for (const ref of promptPresetRefs(row.config, "staticPromptPresetRefs")) {
+      for (const ref of promptPresetRefs(
+        row.config,
+        "staticPromptPresetRefs",
+      )) {
 				if (ref.id !== presetId) continue;
 				usages.push({
 					id: row.id,
@@ -4556,7 +4788,10 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 					isStale: ref.version < latestVersion,
 				});
 			}
-			for (const ref of promptPresetRefs(row.config, "dynamicPromptPresetRefs")) {
+      for (const ref of promptPresetRefs(
+        row.config,
+        "dynamicPromptPresetRefs",
+      )) {
 				if (ref.id !== presetId) continue;
 				usages.push({
 					id: row.id,
@@ -4594,7 +4829,10 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 			),
 		);
 		const skillScope = projectId
-			? or(isNull(agentSkillRegistry.projectId), eq(agentSkillRegistry.projectId, projectId))
+      ? or(
+          isNull(agentSkillRegistry.projectId),
+          eq(agentSkillRegistry.projectId, projectId),
+        )
 			: isNull(agentSkillRegistry.projectId);
 
 		const [skill] = await this.database
@@ -4606,7 +4844,10 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 			.where(
 				and(
 					skillScope,
-					or(eq(agentSkillRegistry.id, skillRef), eq(agentSkillRegistry.slug, skillRef)),
+          or(
+            eq(agentSkillRegistry.id, skillRef),
+            eq(agentSkillRegistry.slug, skillRef),
+          ),
 				),
 			)
 			.limit(1);
@@ -4668,7 +4909,9 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 			this.database
 				.select({ count: sql<number>`count(*)` })
 				.from(sessions)
-				.where(sql`${sessions.vaultIds} @> ${JSON.stringify([vaultId])}::jsonb`),
+        .where(
+          sql`${sessions.vaultIds} @> ${JSON.stringify([vaultId])}::jsonb`,
+        ),
 		]);
 
 		return {
@@ -4684,9 +4927,7 @@ export class PostgresResourceUsageReadRepository implements ResourceUsageReadRep
 	}
 }
 
-export class PostgresWorkflowAiAssistantMessageRepository
-	implements WorkflowAiAssistantMessageRepository
-{
+export class PostgresWorkflowAiAssistantMessageRepository implements WorkflowAiAssistantMessageRepository {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
 	async listMessages(input: {
@@ -4858,12 +5099,16 @@ export class PostgresDashboardReadRepository implements DashboardReadRepository 
 				this.database
 					.select({ n: sql<number>`count(*)` })
 					.from(sessions)
-					.where(and(eq(sessions.userId, userId), eq(sessions.status, "running")))
+          .where(
+            and(eq(sessions.userId, userId), eq(sessions.status, "running")),
+          )
 					.then((rows) => rows[0]),
 				this.database
 					.select({ n: sql<number>`count(*)` })
 					.from(sessions)
-					.where(and(eq(sessions.userId, userId), gte(sessions.createdAt, dayAgo)))
+          .where(
+            and(eq(sessions.userId, userId), gte(sessions.createdAt, dayAgo)),
+          )
 					.then((rows) => rows[0]),
 				this.database
 					.select({ n: sql<number>`count(*)` })
@@ -4882,7 +5127,9 @@ export class PostgresDashboardReadRepository implements DashboardReadRepository 
 						inTokens: sql<number>`coalesce(sum((usage->>'input_tokens')::int), 0)`,
 					})
 					.from(sessions)
-					.where(and(eq(sessions.userId, userId), gte(sessions.createdAt, weekAgo)))
+          .where(
+            and(eq(sessions.userId, userId), gte(sessions.createdAt, weekAgo)),
+          )
 					.then((rows) => rows[0]),
 				this.database
 					.select({
@@ -4941,7 +5188,9 @@ export class PostgresDashboardReadRepository implements DashboardReadRepository 
 				.limit(10),
 		]);
 
-		const agentLookup = new Map(agentRows.map((agent) => [agent.id, agent.name]));
+    const agentLookup = new Map(
+      agentRows.map((agent) => [agent.id, agent.name]),
+    );
 		const missingAgentIds = Array.from(
 			new Set(
 				recentAgentVersions
@@ -4980,7 +5229,8 @@ export class PostgresDashboardReadRepository implements DashboardReadRepository 
 			...recentEnvVersions.map((version) => ({
 				kind: "environment" as const,
 				resourceId: version.environmentId,
-				resourceName: envLookup.get(version.environmentId) ?? version.environmentId,
+        resourceName:
+          envLookup.get(version.environmentId) ?? version.environmentId,
 				version: version.version,
 				publishedAt: version.publishedAt?.toISOString() ?? null,
 			})),
@@ -5046,7 +5296,8 @@ export class PostgresHomePageReadRepository implements HomePageReadRepository {
 			eq(sessions.userId, input.userId),
 			isNull(sessions.archivedAt),
 		];
-		if (input.projectId) conditions.push(eq(sessions.projectId, input.projectId));
+    if (input.projectId)
+      conditions.push(eq(sessions.projectId, input.projectId));
 		const limit = Math.min(Math.max(input.limit, 1), 20);
 		return this.database
 			.select({
@@ -5092,7 +5343,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				and table_name = 'workflow_executions'
 		`);
 		const existing = new Set(rows.map((row) => row.column_name));
-		const missing = EXECUTION_READ_MODEL_COLUMNS.filter((column) => !existing.has(column));
+    const missing = EXECUTION_READ_MODEL_COLUMNS.filter(
+      (column) => !existing.has(column),
+    );
 		if (missing.length > 0) {
 			throw new Error(
 				`Execution read-model schema is missing required workflow_executions columns: ${missing.join(", ")}. ` +
@@ -5110,7 +5363,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		return row ? mapExecution(row) : null;
 	}
 
-	async getByDaprInstanceId(instanceId: string): Promise<WorkflowExecutionRecord | null> {
+  async getByDaprInstanceId(
+    instanceId: string,
+  ): Promise<WorkflowExecutionRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(workflowExecutions)
@@ -5160,7 +5415,8 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.id, executionId))
 			.limit(1);
 
-		const projectId = execution?.executionProjectId || execution?.workflowProjectId;
+    const projectId =
+      execution?.executionProjectId || execution?.workflowProjectId;
 		if (!execution || !projectId) return null;
 
 		const [project] = await this.database
@@ -5176,7 +5432,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		};
 	}
 
-	async getRunningByWorkflowId(workflowId: string): Promise<{ id: string; status: string } | null> {
+  async getRunningByWorkflowId(
+    workflowId: string,
+  ): Promise<{ id: string; status: string } | null> {
 		const [row] = await this.database
 			.select({ id: workflowExecutions.id, status: workflowExecutions.status })
 			.from(workflowExecutions)
@@ -5190,7 +5448,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		return row ?? null;
 	}
 
-	async countActiveTriggeredRuns(input: { statuses: WorkflowExecutionStatus[] }): Promise<number> {
+  async countActiveTriggeredRuns(input: {
+    statuses: WorkflowExecutionStatus[];
+  }): Promise<number> {
 		if (input.statuses.length === 0) return 0;
 		const [row] = await this.database
 			.select({ n: sql<number>`count(*)::int` })
@@ -5204,7 +5464,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		return row?.n ?? 0;
 	}
 
-	async getLineage(executionId: string): Promise<WorkflowExecutionLineage | null> {
+  async getLineage(
+    executionId: string,
+  ): Promise<WorkflowExecutionLineage | null> {
 		const [self] = await this.database
 			.select({
 				id: workflowExecutions.id,
@@ -5218,8 +5480,12 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		let rootId = self.id;
 		let cursor: string | null = self.rerunOfExecutionId ?? null;
 		for (let hops = 0; hops < 50 && cursor; hops++) {
-			const [parent]: Array<{ id: string; parent: string | null }> = await this.database
-				.select({ id: workflowExecutions.id, parent: workflowExecutions.rerunOfExecutionId })
+      const [parent]: Array<{ id: string; parent: string | null }> =
+        await this.database
+          .select({
+            id: workflowExecutions.id,
+            parent: workflowExecutions.rerunOfExecutionId,
+          })
 				.from(workflowExecutions)
 				.where(eq(workflowExecutions.id, cursor))
 				.limit(1);
@@ -5266,7 +5532,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				.select({ id: workflowExecutions.id })
 				.from(workflowExecutions)
 				.where(inArray(workflowExecutions.rerunOfExecutionId, next));
-			frontier = children.map((child) => child.id).filter((id) => !collected.has(id));
+      frontier = children
+        .map((child) => child.id)
+        .filter((id) => !collected.has(id));
 		}
 
 		return {
@@ -5286,14 +5554,18 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 					parentId: row.rerunOfExecutionId ?? null,
 					startedAt: row.startedAt?.toISOString() ?? null,
 					completedAt: row.completedAt?.toISOString() ?? null,
-					durationMs: Number.isFinite(durationMs as number) ? (durationMs as number) : null,
+          durationMs: Number.isFinite(durationMs as number)
+            ? (durationMs as number)
+            : null,
 					isCurrent: row.id === executionId,
 				};
 			}),
 		};
 	}
 
-	async listActiveForUser(userId: string): Promise<ActiveWorkflowExecutionReadModel[]> {
+  async listActiveForUser(
+    userId: string,
+  ): Promise<ActiveWorkflowExecutionReadModel[]> {
 		const rows = await this.database
 			.select({
 				id: workflowExecutions.id,
@@ -5334,8 +5606,14 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			filters.push(eq(workflowExecutions.status, input.status));
 		}
 		const whereClause = filters.length > 0 ? and(...filters) : undefined;
-		const limit = Math.max(1, Math.min(Number.isFinite(input.limit) ? input.limit : 100, 500));
-		const offset = Math.max(0, Number.isFinite(input.offset) ? input.offset : 0);
+    const limit = Math.max(
+      1,
+      Math.min(Number.isFinite(input.limit) ? input.limit : 100, 500),
+    );
+    const offset = Math.max(
+      0,
+      Number.isFinite(input.offset) ? input.offset : 0,
+    );
 
 		const [executions, totalRows] = await Promise.all([
 			this.database
@@ -5415,7 +5693,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			duration: row.duration,
 			...(includeFull
 				? {
-						input: "input" in row ? row.input ?? null : null,
+            input: "input" in row ? (row.input ?? null) : null,
 						output: "output" in row ? row.output : null,
 					}
 				: {}),
@@ -5454,7 +5732,11 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(inArray(sessions.workflowExecutionId, execIds));
 
 		const agentIds = Array.from(
-			new Set(sessionRows.map((session) => session.agentId).filter((id): id is string => !!id)),
+      new Set(
+        sessionRows
+          .map((session) => session.agentId)
+          .filter((id): id is string => !!id),
+      ),
 		);
 		const agentNameById = new Map<string, string>();
 		if (agentIds.length > 0) {
@@ -5474,7 +5756,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			if (!execId) continue;
 			const bucket = byExecution.get(execId) ?? { sessionIds: [], agents: [] };
 			bucket.sessionIds.push(session.id);
-			if (session.agentId && !bucket.agents.find((agent) => agent.id === session.agentId)) {
+      if (
+        session.agentId &&
+        !bucket.agents.find((agent) => agent.id === session.agentId)
+      ) {
 				bucket.agents.push({
 					id: session.agentId,
 					name: agentNameById.get(session.agentId) ?? session.agentId,
@@ -5484,7 +5769,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		}
 
 		return execRows.map((execution) => {
-			const extras = byExecution.get(execution.id) ?? { sessionIds: [], agents: [] };
+      const extras = byExecution.get(execution.id) ?? {
+        sessionIds: [],
+        agents: [],
+      };
 			return {
 				id: execution.id,
 				workflowId: execution.workflowId,
@@ -5502,12 +5790,16 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		input: ListProjectWorkflowRunsInput,
 	): Promise<ProjectWorkflowRunSummary[]> {
 		const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
-		const conditions: SQL[] = [eq(workflowExecutions.projectId, input.projectId)];
+    const conditions: SQL[] = [
+      eq(workflowExecutions.projectId, input.projectId),
+    ];
 		if (input.workflowId) {
 			conditions.push(eq(workflowExecutions.workflowId, input.workflowId));
 		}
-		if (input.status) conditions.push(eq(workflowExecutions.status, input.status));
-		if (input.since) conditions.push(gte(workflowExecutions.startedAt, input.since));
+    if (input.status)
+      conditions.push(eq(workflowExecutions.status, input.status));
+    if (input.since)
+      conditions.push(gte(workflowExecutions.startedAt, input.since));
 		if (input.q && input.q.trim().length >= 2) {
 			const needle = `%${input.q.trim()}%`;
 			const textCondition = or(
@@ -5546,7 +5838,11 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(inArray(sessions.workflowExecutionId, executionIds));
 
 		const agentIds = Array.from(
-			new Set(sessionRows.map((session) => session.agentId).filter((id): id is string => !!id)),
+      new Set(
+        sessionRows
+          .map((session) => session.agentId)
+          .filter((id): id is string => !!id),
+      ),
 		);
 		const agentById = new Map<string, ProjectWorkflowRunAgent>();
 		if (agentIds.length > 0) {
@@ -5790,7 +6086,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		let liveSandbox: { name: string } | null = null;
 		if (!cliWorkspace) {
 			for (const session of sessionRows) {
-				if (!nonTerminalStatuses.has(String(session.status ?? "").toLowerCase())) continue;
+        if (
+          !nonTerminalStatuses.has(String(session.status ?? "").toLowerCase())
+        )
+          continue;
 				if (session.workspaceSandboxName) {
 					liveSandbox = { name: session.workspaceSandboxName };
 					break;
@@ -5876,11 +6175,15 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				executionIrVersion: input.executionIrVersion ?? null,
 				workflowSessionId: input.workflowSessionId ?? input.id ?? null,
 				...(input.triggerSource ? { triggerSource: input.triggerSource } : {}),
-				...(input.rerunOfExecutionId ? { rerunOfExecutionId: input.rerunOfExecutionId } : {}),
+        ...(input.rerunOfExecutionId
+          ? { rerunOfExecutionId: input.rerunOfExecutionId }
+          : {}),
 				...(input.rerunSourceInstanceId
 					? { rerunSourceInstanceId: input.rerunSourceInstanceId }
 					: {}),
-				...(input.resumeFromNode ? { resumeFromNode: input.resumeFromNode } : {}),
+        ...(input.resumeFromNode
+          ? { resumeFromNode: input.resumeFromNode }
+          : {}),
 			})
 			.returning({ id: workflowExecutions.id });
 		if (!row) throw new Error("Failed to create workflow execution");
@@ -5905,7 +6208,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.id, input.executionId));
 	}
 
-	async markStartFailed(input: { executionId: string; error: string }): Promise<void> {
+  async markStartFailed(input: {
+    executionId: string;
+    error: string;
+  }): Promise<void> {
 		await this.database
 			.update(workflowExecutions)
 			.set({
@@ -5920,8 +6226,12 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 
 	async listStaleRunningExecutions(input: {
 		olderThanMinutes: number;
-	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]> {
-		const cutoff = new Date(Date.now() - Math.max(0, input.olderThanMinutes) * 60_000);
+  }): Promise<
+    Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]
+  > {
+    const cutoff = new Date(
+      Date.now() - Math.max(0, input.olderThanMinutes) * 60_000,
+    );
 		const rows = await this.database
 			.select({
 				id: workflowExecutions.id,
@@ -5929,10 +6239,12 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				input: workflowExecutions.input,
 			})
 			.from(workflowExecutions)
-			.where(and(
+      .where(
+        and(
 				eq(workflowExecutions.status, "running"),
 				lt(workflowExecutions.startedAt, cutoff),
-			));
+        ),
+      );
 		return rows.map((row) => ({
 			id: row.id,
 			daprInstanceId: row.daprInstanceId,
@@ -5950,7 +6262,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.where(eq(workflowExecutions.id, executionId));
 	}
 
-	async appendLog(input: AppendWorkflowExecutionLogInput): Promise<WorkflowExecutionLogRecord> {
+  async appendLog(
+    input: AppendWorkflowExecutionLogInput,
+  ): Promise<WorkflowExecutionLogRecord> {
 		const [row] = await this.database
 			.insert(workflowExecutionLogs)
 			.values({
@@ -5965,7 +6279,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				output: input.output,
 				error: input.error ?? null,
 				...(input.startedAt ? { startedAt: input.startedAt } : {}),
-				...(input.completedAt !== undefined ? { completedAt: input.completedAt } : {}),
+        ...(input.completedAt !== undefined
+          ? { completedAt: input.completedAt }
+          : {}),
 				duration: input.duration ?? null,
 				credentialFetchMs: input.credentialFetchMs ?? null,
 				routingMs: input.routingMs ?? null,
@@ -5987,15 +6303,19 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		const [row] = await this.database
 			.update(workflowExecutionLogs)
 			.set(patch)
-			.where(and(
+      .where(
+        and(
 				eq(workflowExecutionLogs.id, id),
 				eq(workflowExecutionLogs.executionId, executionId),
-			))
+        ),
+      )
 			.returning();
 		return row ? mapExecutionLog(row) : null;
 	}
 
-	async listLogsByExecutionId(executionId: string): Promise<WorkflowExecutionLogRecord[]> {
+  async listLogsByExecutionId(
+    executionId: string,
+  ): Promise<WorkflowExecutionLogRecord[]> {
 		const rows = await this.database
 			.select()
 			.from(workflowExecutionLogs)
@@ -6012,10 +6332,12 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		const executionRows = await this.database
 			.select({ id: workflowExecutions.id })
 			.from(workflowExecutions)
-			.where(and(
+      .where(
+        and(
 				eq(workflowExecutions.workflowId, input.workflowId),
 				gte(workflowExecutions.startedAt, input.since),
-			))
+        ),
+      )
 			.orderBy(desc(workflowExecutions.startedAt))
 			.limit(input.executionLimit);
 		const executionIds = executionRows.map((row) => row.id);
@@ -6153,7 +6475,9 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 		return { file: mapWorkflowFile(row), deduplicated: false };
 	}
 
-	async listFiles(filter: ListWorkflowFilesFilter): Promise<WorkflowFileRecord[]> {
+  async listFiles(
+    filter: ListWorkflowFilesFilter,
+  ): Promise<WorkflowFileRecord[]> {
 		const conditions = [eq(files.userId, filter.userId)];
 		if (filter.purpose) conditions.push(eq(files.purpose, filter.purpose));
 		if (filter.scopeId) conditions.push(eq(files.scopeId, filter.scopeId));
@@ -6188,14 +6512,22 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 	}
 
 	async getFile(id: string): Promise<WorkflowFileRecord | null> {
-		const [row] = await this.database.select().from(files).where(eq(files.id, id)).limit(1);
+    const [row] = await this.database
+      .select()
+      .from(files)
+      .where(eq(files.id, id))
+      .limit(1);
 		return row ? mapWorkflowFile(row) : null;
 	}
 
 	async getFileContent(
 		id: string,
 	): Promise<{ summary: WorkflowFileRecord; bytes: Buffer } | null> {
-		const [row] = await this.database.select().from(files).where(eq(files.id, id)).limit(1);
+    const [row] = await this.database
+      .select()
+      .from(files)
+      .where(eq(files.id, id))
+      .limit(1);
 		if (!row) return null;
 		const [payload] = await this.database
 			.select({ bytes: filePayloads.payloadBytes })
@@ -6233,13 +6565,16 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 export class PostgresArtifactStore implements ArtifactStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async upsertWorkflowArtifact(input: WorkflowArtifactInput): Promise<{ id: string }> {
+  async upsertWorkflowArtifact(
+    input: WorkflowArtifactInput,
+  ): Promise<{ id: string }> {
 		const [execution] = await this.database
 			.select({ id: workflowExecutions.id })
 			.from(workflowExecutions)
 			.where(eq(workflowExecutions.id, input.workflowExecutionId))
 			.limit(1);
-		if (!execution) throw new Error(`execution ${input.workflowExecutionId} not found`);
+    if (!execution)
+      throw new Error(`execution ${input.workflowExecutionId} not found`);
 
 		await this.database
 			.insert(workflowArtifacts)
@@ -6275,7 +6610,9 @@ export class PostgresArtifactStore implements ArtifactStore {
 		return { id: input.id };
 	}
 
-	async listWorkflowArtifactsByExecutionId(executionId: string): Promise<WorkflowArtifactRecord[]> {
+  async listWorkflowArtifactsByExecutionId(
+    executionId: string,
+  ): Promise<WorkflowArtifactRecord[]> {
 		const rows = await this.database
 			.select()
 			.from(workflowArtifacts)
@@ -6284,7 +6621,9 @@ export class PostgresArtifactStore implements ArtifactStore {
 		return rows.map(mapArtifact);
 	}
 
-	async listSourceBundleArtifactsByWorkflowId(workflowId: string): Promise<WorkflowArtifactRecord[]> {
+  async listSourceBundleArtifactsByWorkflowId(
+    workflowId: string,
+  ): Promise<WorkflowArtifactRecord[]> {
 		const executions = await this.database
 			.select({ id: workflowExecutions.id })
 			.from(workflowExecutions)
@@ -6390,7 +6729,9 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 			sandboxState: input.sandboxState ?? null,
 			updatedAt: new Date(),
 			lastAccessedAt: new Date(),
-			...(input.status == null || input.status === "active" ? { cleanedAt: null } : {}),
+      ...(input.status == null || input.status === "active"
+        ? { cleanedAt: null }
+        : {}),
 		};
 		await this.database
 			.insert(workflowWorkspaceSessions)
@@ -6428,7 +6769,8 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 				clonePath: workflowWorkspaceSessions.clonePath,
 				backend: workflowWorkspaceSessions.backend,
 				enabledTools: workflowWorkspaceSessions.enabledTools,
-				requireReadBeforeWrite: workflowWorkspaceSessions.requireReadBeforeWrite,
+        requireReadBeforeWrite:
+          workflowWorkspaceSessions.requireReadBeforeWrite,
 				commandTimeoutMs: workflowWorkspaceSessions.commandTimeoutMs,
 				status: workflowWorkspaceSessions.status,
 				lastError: workflowWorkspaceSessions.lastError,
@@ -6439,7 +6781,9 @@ export class PostgresWorkspaceSessionStore implements WorkspaceSessionStore {
 				cleanedAt: workflowWorkspaceSessions.cleanedAt,
 			})
 			.from(workflowWorkspaceSessions)
-			.where(eq(workflowWorkspaceSessions.workflowExecutionId, input.executionId))
+      .where(
+        eq(workflowWorkspaceSessions.workflowExecutionId, input.executionId),
+      )
 			.orderBy(
 				input.order === "asc"
 					? asc(workflowWorkspaceSessions.createdAt)
@@ -6541,7 +6885,15 @@ export class PostgresWorkflowAgentRunStore implements WorkflowAgentRunStore {
 
 	async updateAgentRunLifecycle(
 		input: UpdateWorkflowAgentRunLifecycleInput,
-	): Promise<{ id: string; status: "scheduled" | "running" | "completed" | "failed" | "event_published" }> {
+  ): Promise<{
+    id: string;
+    status:
+      | "scheduled"
+      | "running"
+      | "completed"
+      | "failed"
+      | "event_published";
+  }> {
 		if (input.status === "running") {
 			await this.database
 				.update(workflowAgentRuns)
@@ -6615,7 +6967,8 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 			.from(workflowExecutions)
 			.where(eq(workflowExecutions.id, input.workflowExecutionId))
 			.limit(1);
-		if (!execution) throw new Error(`execution ${input.workflowExecutionId} not found`);
+    if (!execution)
+      throw new Error(`execution ${input.workflowExecutionId} not found`);
 
 		const artifactType = input.artifactType?.trim() || "claude_task_graph_v1";
 		const status = input.status ?? "draft";
@@ -6661,7 +7014,9 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 		};
 	}
 
-	async listPlanArtifactsByExecutionId(executionId: string): Promise<WorkflowPlanArtifactRecord[]> {
+  async listPlanArtifactsByExecutionId(
+    executionId: string,
+  ): Promise<WorkflowPlanArtifactRecord[]> {
 		const rows = await this.database
 			.select()
 			.from(workflowPlanArtifacts)
@@ -6674,7 +7029,10 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 		artifactRef: string;
 		status: "draft" | "approved" | "superseded" | "executed" | "failed";
 		metadata?: Record<string, unknown> | null;
-	}): Promise<{ artifactRef: string; status: "draft" | "approved" | "superseded" | "executed" | "failed" }> {
+  }): Promise<{
+    artifactRef: string;
+    status: "draft" | "approved" | "superseded" | "executed" | "failed";
+  }> {
 		const [row] = await this.database
 			.update(workflowPlanArtifacts)
 			.set({
@@ -6688,7 +7046,9 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 		return { artifactRef: input.artifactRef, status: input.status };
 	}
 
-	async getPlanArtifact(artifactRef: string): Promise<WorkflowPlanArtifactRecord | null> {
+  async getPlanArtifact(
+    artifactRef: string,
+  ): Promise<WorkflowPlanArtifactRecord | null> {
 		const [row] = await this.database
 			.select()
 			.from(workflowPlanArtifacts)
@@ -6701,7 +7061,9 @@ export class PostgresWorkflowPlanArtifactStore implements WorkflowPlanArtifactSt
 export class PostgresTraceLineageStore implements TraceLineageStore {
 	constructor(private readonly database: Database = requirePostgresDb()) {}
 
-	async getTraceTargetsForExecution(executionId: string): Promise<TraceLinkTarget[]> {
+  async getTraceTargetsForExecution(
+    executionId: string,
+  ): Promise<TraceLinkTarget[]> {
 		const targets: TraceLinkTarget[] = [];
 		const [execution] = await this.database
 			.select({

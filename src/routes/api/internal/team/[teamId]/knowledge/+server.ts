@@ -1,12 +1,12 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import {
 	KNOWLEDGE_MAX_BODY_BYTES,
 	renderConcept,
 	sanitizeKnowledgePath,
 } from "$lib/server/teams/team-okf";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * Team knowledge (OKF-shaped content layer).
@@ -23,7 +23,6 @@ import {
  *   `okf` is the rendered OKF markdown — agents see the exact wire format.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		sessionId?: string;
 		path?: string;
@@ -34,17 +33,30 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		tags?: string[];
 		body?: string;
 	};
-	if (!body.sessionId) return error(400, "sessionId is required");
-	if (!body.type || !body.type.trim()) return error(400, "type is required (OKF's one required field)");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.sessionId,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  const sessionId = authorization.principal.sessionId;
+  if (!body.type || !body.type.trim())
+    return error(400, "type is required (OKF's one required field)");
 	const sanitized = sanitizeKnowledgePath(body.path ?? "");
 	if ("error" in sanitized) return error(400, sanitized.error);
 	const content = String(body.body ?? "");
 	if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_MAX_BODY_BYTES) {
-		return error(400, `body exceeds ${KNOWLEDGE_MAX_BODY_BYTES} bytes — split the concept`);
+    return error(
+      400,
+      `body exceeds ${KNOWLEDGE_MAX_BODY_BYTES} bytes — split the concept`,
+    );
 	}
 
 	const store = getApplicationAdapters().teamStore;
-	const member = await store.getMemberBySession(body.sessionId);
+  const member = await store.getMemberBySession(sessionId);
 	if (!member || member.team_id !== params.teamId) {
 		return error(403, "only members of this team can publish knowledge");
 	}
@@ -58,13 +70,23 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		resource: body.resource?.trim() || null,
 		tags: Array.isArray(body.tags) ? body.tags.map(String).slice(0, 20) : [],
 		body: content,
-		createdBySessionId: body.sessionId,
+    createdBySessionId: sessionId,
+  });
+  return json({
+    ok: true,
+    path: row.path,
+    type: row.type,
+    updatedAt: row.updated_at,
 	});
-	return json({ ok: true, path: row.path, type: row.type, updatedAt: row.updated_at });
 };
 
 export const GET: RequestHandler = async ({ params, request, url }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
 	const store = getApplicationAdapters().teamStore;
 	const path = url.searchParams.get("path");
 	if (path) {
@@ -75,6 +97,9 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 		return json({ entry, okf: renderConcept(entry) });
 	}
 	const type = url.searchParams.get("type") ?? undefined;
-	const entries = await store.listKnowledge(params.teamId, type ? { type } : undefined);
+  const entries = await store.listKnowledge(
+    params.teamId,
+    type ? { type } : undefined,
+  );
 	return json({ entries });
 };

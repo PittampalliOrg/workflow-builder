@@ -1,16 +1,7 @@
-import type {
-	AgentSkillConfig,
-} from "$lib/agent-skill-presets";
-import type {
-	McpServerProfileConfig,
-} from "$lib/server/agent-profiles";
-import type {
-	RuntimeConfigCloudEvent,
-} from "$lib/server/sessions/runtime-config";
-import type {
-	AgentConfig,
-	AgentToolChoice,
-} from "$lib/types/agents";
+import type { AgentSkillConfig } from "$lib/agent-skill-presets";
+import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
+import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-config";
+import type { AgentConfig, AgentToolChoice } from "$lib/types/agents";
 import type {
 	PendingInput,
 	SessionDetail,
@@ -23,15 +14,9 @@ import type {
 	SessionUsage,
 	UserEvent,
 } from "$lib/types/sessions";
-import type {
-	SessionControlSettingsEnvironment,
-} from "./benchmarks";
-import type {
-	SessionRuntimeCliAuthCredentialKind,
-} from "./connections";
-import type {
-	SandboxSessionOwnerRecord,
-} from "./sandboxes";
+import type { SessionControlSettingsEnvironment } from "./benchmarks";
+import type { SessionRuntimeCliAuthCredentialKind } from "./connections";
+import type { SandboxSessionOwnerRecord } from "./sandboxes";
 
 export type ObservabilityTraceGoalVerdict =
 	| "pass"
@@ -164,7 +149,9 @@ export type GoalFlowEventRecord = {
 };
 
 export interface GoalFlowReadStore {
-	getCurrentGoalForSessions(sessionIds: string[]): Promise<GoalFlowGoalRecord | null>;
+  getCurrentGoalForSessions(
+    sessionIds: string[],
+  ): Promise<GoalFlowGoalRecord | null>;
 	listGoalFlowEvents(input: {
 		sessionId: string;
 		limit?: number;
@@ -244,8 +231,13 @@ export interface SessionRepository {
 	getSession(id: string): Promise<SessionDetail | null>;
 	createSession(input: CreateSessionRecordInput): Promise<SessionDetail>;
 	/** Atomically inserts a caller-keyed session or returns the existing row. */
-	ensureSession(input: EnsureSessionRecordInput): Promise<EnsureSessionRecordResult>;
-	updateSessionTitle(input: { id: string; title: string }): Promise<SessionDetail | null>;
+  ensureSession(
+    input: EnsureSessionRecordInput,
+  ): Promise<EnsureSessionRecordResult>;
+  updateSessionTitle(input: {
+    id: string;
+    title: string;
+  }): Promise<SessionDetail | null>;
 	archiveSession(id: string): Promise<boolean>;
 	deleteSession(id: string): Promise<boolean>;
 	listSessionResources(sessionId: string): Promise<SessionResource[]>;
@@ -309,8 +301,12 @@ export interface SessionRepository {
 	listSandboxSessionOwners(input: {
 		sandboxNames: string[];
 	}): Promise<SandboxSessionOwnerRecord[]>;
-	getWorkflowEnsureSession(sessionId: string): Promise<WorkflowEnsureSessionRecord | null>;
-	createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void>;
+  getWorkflowEnsureSession(
+    sessionId: string,
+  ): Promise<WorkflowEnsureSessionRecord | null>;
+  createWorkflowEnsureSession(
+    input: CreateWorkflowEnsureSessionInput,
+  ): Promise<void>;
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
 	): Promise<void>;
@@ -325,10 +321,16 @@ export interface SessionRepository {
 		runtimeAppId?: string | null;
 		sessionId?: string | null;
 	}): Promise<string | null>;
-	getSessionFileOwner(
+  getSessionFileOwner(sessionId: string): Promise<{
+    id: string;
+    userId: string;
+    projectId: string | null;
+    status?: SessionStatus;
+    completedAt?: Date | null;
+  } | null>;
+  getSessionWorkflowContext(
 		sessionId: string,
-	): Promise<{ id: string; userId: string; projectId: string | null } | null>;
-	getSessionWorkflowContext(sessionId: string): Promise<SessionWorkflowContext | null>;
+  ): Promise<SessionWorkflowContext | null>;
 	updateSessionStatus(input: UpdateSessionStatusInput): Promise<void>;
 	updateSessionStatusUnlessTerminated(
 		input: UpdateSessionStatusUnlessTerminatedInput,
@@ -636,6 +638,7 @@ export type PeerSessionRecord = {
 	vaultIds: string[];
 	daprInstanceId: string | null;
 	natsSubject: string | null;
+  parentExecutionId: string | null;
 };
 
 export type CreatePeerSessionInput = {
@@ -699,7 +702,9 @@ export interface SessionRuntimePodLocator {
 	getSessionRuntimePod(
 		target: Pick<SessionRuntimeDebugTarget, "appId" | "agentSlug">,
 	): Promise<SessionRuntimePodTarget | null>;
-	getAgentWorkflowHostPod(appId: string): Promise<SessionRuntimePodTarget | null>;
+  getAgentWorkflowHostPod(
+    appId: string,
+  ): Promise<SessionRuntimePodTarget | null>;
 }
 
 export interface SessionRuntimeCapabilityReader {
@@ -815,7 +820,9 @@ export interface SessionEventLog {
 	): Promise<SessionEventEnvelope[]>;
 	/** Atomically claim unraised team-origin user events (processed_at stamp) —
 	 * the raise-side dedup for the Agent Teams wake-on-deliver path. */
-	claimUnraisedTeamEvents(sessionId: string): Promise<ClaimedSessionEventRecord[]>;
+  claimUnraisedTeamEvents(
+    sessionId: string,
+  ): Promise<ClaimedSessionEventRecord[]>;
 	/** Roll back a claim after a failed raise (JetStream will redeliver). */
 	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
 }
@@ -849,7 +856,14 @@ export interface SessionRepositoryMounter {
 export interface SessionWorkflowSpawner {
 	spawnSessionWorkflow(
 		sessionId: string,
-		options?: { persistentHost?: boolean },
+    options?: {
+      persistentHost?: boolean;
+      workflowMcpCapabilities?: {
+        scriptDepth: number;
+        teamId: string | null;
+        teamRole: "none" | "lead" | "member";
+      };
+    },
 	): Promise<{
 		instanceId: string;
 		natsSubject: string;
@@ -922,7 +936,9 @@ export interface SessionLifecycleController {
 		},
 	): Promise<SessionLifecycleStopResult>;
 	confirmSessionStop(sessionId: string): Promise<SessionLifecycleStopStatus>;
-	getCoordinatorOwner(sessionId: string): Promise<SessionCoordinatorOwner | null>;
+  getCoordinatorOwner(
+    sessionId: string,
+  ): Promise<SessionCoordinatorOwner | null>;
 	pauseSessionGoal(sessionId: string): Promise<void>;
 }
 
@@ -966,7 +982,9 @@ export type CreateSessionGoalInput = {
 
 export interface SessionGoalStore {
 	getCurrentGoal(sessionId: string): Promise<SessionGoalRecord | null>;
-	createOrReplaceGoal(input: CreateSessionGoalInput): Promise<SessionGoalRecord>;
+  createOrReplaceGoal(
+    input: CreateSessionGoalInput,
+  ): Promise<SessionGoalRecord>;
 	markGoalComplete(sessionId: string): Promise<SessionGoalRecord | null>;
 	pauseGoal(sessionId: string): Promise<SessionGoalRecord | null>;
 }

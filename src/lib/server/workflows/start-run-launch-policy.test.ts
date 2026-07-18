@@ -24,8 +24,18 @@ describe("startWorkflowRun launch policy", () => {
         getByRef: vi.fn(async () => ({
           id: "workflow-1",
           name: "microservice-dev-session",
+          projectId: "project-1",
           spec: {},
         })),
+        getLatestByNameInProject: vi.fn(async () => ({
+          id: "workflow-1",
+          name: "microservice-dev-session",
+          projectId: "project-1",
+          spec: {},
+        })),
+      },
+      workflowExecutions: {
+        getById: vi.fn(async () => null),
       },
       workflowLaunchPolicy: { prepare },
     });
@@ -60,8 +70,59 @@ describe("startWorkflowRun launch policy", () => {
 		expect(result).toEqual({
 			ok: false,
 			status: 409,
-			error: "Workflow spec digest does not match the expected executable contract",
+      error:
+        "Workflow spec digest does not match the expected executable contract",
+    });
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the workflow is outside the authenticated project", async () => {
+    const result = await startWorkflowRun({
+      workflowId: "workflow-1",
+      projectId: "project-2",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 404,
+      error: "Workflow not found",
 		});
 		expect(prepare).not.toHaveBeenCalled();
 	});
+
+  it("resolves workflow names inside the authenticated project", async () => {
+    await startWorkflowRun({
+      workflowName: " microservice-dev-session ",
+      projectId: "project-1",
+    });
+
+    const app = mocks.getApplicationAdapters.mock.results[0].value;
+    expect(
+      app.workflowDefinitions.getLatestByNameInProject,
+    ).toHaveBeenCalledWith("microservice-dev-session", "project-1");
+    expect(app.workflowDefinitions.getByRef).not.toHaveBeenCalled();
+  });
+
+  it("rejects an idempotency key already used in another workflow scope", async () => {
+    prepare.mockReturnValue({ ok: true, triggerData: {} });
+    const app = mocks.getApplicationAdapters();
+    app.workflowExecutions.getById.mockResolvedValue({
+      id: "execution-1",
+      workflowId: "workflow-other",
+      projectId: "project-other",
+    });
+
+    const result = await startWorkflowRun({
+      workflowId: "workflow-1",
+      projectId: "project-1",
+      executionId: "execution-1",
+      idempotent: true,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: "Execution id already belongs to a different workflow scope",
+    });
+  });
 });

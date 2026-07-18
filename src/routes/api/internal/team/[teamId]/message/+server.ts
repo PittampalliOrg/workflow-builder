@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
-import { getMemberByName, getMemberBySession } from "$lib/server/teams/team-repo";
+import {
+  getMemberByName,
+  getMemberBySession,
+} from "$lib/server/teams/team-repo";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/message  { fromSessionId?, to, content }
@@ -13,19 +16,26 @@ import { injectTeamMessage } from "$lib/server/teams/team-messaging";
  * sourceEventId so Dapr replay / dual ingest dedupe.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		fromSessionId?: string;
 		to?: string;
 		content?: string;
 	};
-	if (!body.to || !body.content) return error(400, "to and content are required");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.fromSessionId,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  if (!body.to || !body.content)
+    return error(400, "to and content are required");
 
 	const recipient = await getMemberByName(params.teamId, body.to);
 	if (!recipient) return error(404, `no teammate '${body.to}' in this team`);
-	const from = body.fromSessionId
-		? await getMemberBySession(body.fromSessionId)
-		: null;
+  const from = await getMemberBySession(authorization.principal.sessionId);
 
 	await injectTeamMessage({
 		recipientSessionId: recipient.session_id,

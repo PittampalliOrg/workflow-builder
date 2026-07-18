@@ -101,12 +101,22 @@ def call_agent(name: str, prompt: str) -> str:
                 )
             }
         )
+    session_token = str(ctx.workflow_mcp_session_token or "").strip()
+    parent_session_id = str(ctx.parent_session_id or "").strip()
+    if not parent_session_id:
+        return json.dumps(
+            {
+                "error": (
+                    "Workflow Builder session lineage is required to spawn a peer agent."
+                )
+            }
+        )
 
     payload: dict[str, Any] = {
         "sessionId": child_session_id,
         "peerAgentId": peer_agent_id,
         "prompt": prompt.strip(),
-        "parentSessionId": ctx.parent_session_id,
+        "parentSessionId": parent_session_id,
         "parentInstanceId": ctx.parent_instance_id,
         "title": f"Delegated from {ctx.parent_session_id or 'agent'}: {prompt.strip()[:40]}",
     }
@@ -116,13 +126,17 @@ def call_agent(name: str, prompt: str) -> str:
         f"http://localhost:{dapr_http}/v1.0/invoke/{_WORKFLOW_BUILDER_APP_ID}"
         "/method/api/internal/sessions/spawn-peer"
     )
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Token": token,
+        "X-Wfb-Session-Id": parent_session_id,
+    }
+    if session_token:
+        headers["X-Wfb-Session-Token"] = session_token
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Token": token,
-        },
+        headers=headers,
         method="POST",
     )
     try:

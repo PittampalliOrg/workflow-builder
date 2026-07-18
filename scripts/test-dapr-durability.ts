@@ -16,7 +16,8 @@ const NAMESPACE = process.env.NAMESPACE ?? "workflow-builder";
 const WORKFLOW_ID =
 	process.env.WORKFLOW_ID ?? "durableagenthydratedanalysisdemo1";
 
-const WORKFLOW_BUILDER_APP = process.env.WORKFLOW_BUILDER_APP ?? "workflow-builder";
+const WORKFLOW_BUILDER_APP =
+  process.env.WORKFLOW_BUILDER_APP ?? "workflow-builder";
 const WORKFLOW_BUILDER_CONTAINER =
 	process.env.WORKFLOW_BUILDER_CONTAINER ?? "workflow-builder";
 const DURABLE_AGENT_APP = process.env.DURABLE_AGENT_APP ?? "durable-agent";
@@ -142,25 +143,21 @@ function getNewestRunningPod(appName: string): string {
 	const data = kubectlJson<{
 		items: Array<{
 			metadata?: { name?: string; creationTimestamp?: string };
-			status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean }> };
+      status?: {
+        phase?: string;
+        containerStatuses?: Array<{ ready?: boolean }>;
+      };
 		}>;
-	}>([
-		"-n",
-		NAMESPACE,
-		"get",
-		"pods",
-		"-l",
-		`app=${appName}`,
-		"-o",
-		"json",
-	]);
+  }>(["-n", NAMESPACE, "get", "pods", "-l", `app=${appName}`, "-o", "json"]);
 
 	const running = (data.items ?? [])
 		.filter(
 			(item) =>
 				item.metadata?.name &&
 				item.status?.phase === "Running" &&
-				(item.status.containerStatuses ?? []).every((status) => status.ready === true),
+        (item.status.containerStatuses ?? []).every(
+          (status) => status.ready === true,
+        ),
 		)
 		.sort((a, b) =>
 			String(a.metadata?.creationTimestamp ?? "").localeCompare(
@@ -170,7 +167,9 @@ function getNewestRunningPod(appName: string): string {
 
 	const pod = running.at(-1)?.metadata?.name;
 	if (!pod) {
-		fail(`No ready running pod found for app=${appName} in namespace ${NAMESPACE}`);
+    fail(
+      `No ready running pod found for app=${appName} in namespace ${NAMESPACE}`,
+    );
 	}
 	return pod;
 }
@@ -249,11 +248,12 @@ function fetchViaWorkflowBuilderPod<T>(
 		method?: string;
 		body?: Record<string, unknown>;
 		internalAuth?: boolean;
+    headers?: Record<string, string>;
 	},
 ): T {
 	const pod = getNewestRunningPod(WORKFLOW_BUILDER_APP);
 	const script = `
-const headers = { "Content-Type": "application/json" };
+const headers = { "Content-Type": "application/json", ...${JSON.stringify(options?.headers ?? {})} };
 if (${options?.internalAuth === true}) headers["X-Internal-Token"] = process.env.INTERNAL_API_TOKEN;
 const opts = {
   method: ${JSON.stringify(options?.method ?? "GET")},
@@ -321,6 +321,7 @@ function startExecution() {
 	}>("/api/internal/agent/workflows/execute", {
 		method: "POST",
 		internalAuth: true,
+    headers: { "x-wfb-system-principal": "workflow-trigger" },
 		body: {
 			workflowId: WORKFLOW_ID,
 			triggerData: {},
@@ -369,7 +370,9 @@ async function waitForAgentRun(executionId: string, timeoutSeconds = 120) {
 		}
 		await sleep(3000);
 	}
-	fail(`Timed out waiting for workflow_agent_runs row for execution ${executionId}`);
+  fail(
+    `Timed out waiting for workflow_agent_runs row for execution ${executionId}`,
+  );
 }
 
 async function waitForExecutionToBeRunning(
@@ -383,7 +386,9 @@ async function waitForExecutionToBeRunning(
 			return status;
 		}
 		if (status.status === "error" || status.status === "cancelled") {
-			fail(`Execution ${executionId} failed before durability drill: ${status.status}`);
+      fail(
+        `Execution ${executionId} failed before durability drill: ${status.status}`,
+      );
 		}
 		await sleep(3000);
 	}
@@ -391,24 +396,20 @@ async function waitForExecutionToBeRunning(
 }
 
 async function waitForReadyReplacement(appName: string, oldPodName: string) {
-	log(`waiting for replacement pod for ${appName} after deleting ${oldPodName}`);
+  log(
+    `waiting for replacement pod for ${appName} after deleting ${oldPodName}`,
+  );
 	const deadline = Date.now() + 180_000;
 	while (Date.now() < deadline) {
 		const data = kubectlJson<{
 			items: Array<{
 				metadata?: { name?: string; creationTimestamp?: string };
-				status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean }> };
+        status?: {
+          phase?: string;
+          containerStatuses?: Array<{ ready?: boolean }>;
+        };
 			}>;
-		}>([
-			"-n",
-			NAMESPACE,
-			"get",
-			"pods",
-			"-l",
-			`app=${appName}`,
-			"-o",
-			"json",
-		]);
+    }>(["-n", NAMESPACE, "get", "pods", "-l", `app=${appName}`, "-o", "json"]);
 		const replacement = (data.items ?? [])
 			.filter(
 				(item) =>
@@ -416,7 +417,9 @@ async function waitForReadyReplacement(appName: string, oldPodName: string) {
 					item.metadata.name !== oldPodName &&
 					item.status?.phase === "Running" &&
 					(item.status.containerStatuses ?? []).length > 0 &&
-					(item.status.containerStatuses ?? []).every((status) => status.ready === true),
+          (item.status.containerStatuses ?? []).every(
+            (status) => status.ready === true,
+          ),
 			)
 			.sort((a, b) =>
 				String(a.metadata?.creationTimestamp ?? "").localeCompare(
@@ -485,13 +488,19 @@ function verifyReportArtifact(agentStep: Record<string, unknown> | null) {
 	}
 
 	const outputs = executeCalls.map((call) => ({
-		command: String(((call.args ?? {}) as Record<string, unknown>).command ?? ""),
+    command: String(
+      ((call.args ?? {}) as Record<string, unknown>).command ?? "",
+    ),
 		success: Boolean(((call.result ?? {}) as Record<string, unknown>).success),
-		stdout: String(((call.result ?? {}) as Record<string, unknown>).stdout ?? ""),
+    stdout: String(
+      ((call.result ?? {}) as Record<string, unknown>).stdout ?? "",
+    ),
 	}));
 
 	const successfulOutputs = outputs.filter((entry) => entry.success);
-	const combinedStdout = successfulOutputs.map((entry) => entry.stdout).join("\n---\n");
+  const combinedStdout = successfulOutputs
+    .map((entry) => entry.stdout)
+    .join("\n---\n");
 	const requiredHeadings = [
 		"Scope",
 		"Key Files Reviewed",
@@ -514,9 +523,13 @@ function verifyReportArtifact(agentStep: Record<string, unknown> | null) {
 		Number(combinedStdout.match(/PATH_COUNT=(\d+)/)?.[1] ?? "0") ||
 		Number(combinedStdout.match(/path_count:\s*(\d+)/i)?.[1] ?? "0") ||
 		Number(combinedStdout.match(/path count:\s*(\d+)/i)?.[1] ?? "0") ||
-		Number(combinedStdout.match(/File path count:\s*\n?\s*(\d+)/i)?.[1] ?? "0") ||
+    Number(
+      combinedStdout.match(/File path count:\s*\n?\s*(\d+)/i)?.[1] ?? "0",
+    ) ||
 		Number(combinedStdout.match(/unique_path_count=(\d+)/i)?.[1] ?? "0") ||
-		Number(combinedStdout.match(/Unique repo-like paths:\s*(\d+)/i)?.[1] ?? "0");
+    Number(
+      combinedStdout.match(/Unique repo-like paths:\s*(\d+)/i)?.[1] ?? "0",
+    );
 	const pathCheck =
 		(combinedStdout.includes("PATHS_OK") ||
 			combinedStdout.includes("path count ok") ||
@@ -542,15 +555,13 @@ function verifyReportArtifact(agentStep: Record<string, unknown> | null) {
 		success,
 		error: success
 			? undefined
-			: `Missing verification markers: ${
-					[
+      : `Missing verification markers: ${[
 						headingCheck ? null : "required headings",
 						pathCheck ? null : "path count >= 8",
 						existenceCheck ? null : "report existence",
 					]
 						.filter(Boolean)
-						.join(", ")
-				}`,
+          .join(", ")}`,
 		stdout: combinedStdout,
 		command: successfulOutputs.map((entry) => entry.command).join("\n---\n"),
 	};
@@ -565,9 +576,13 @@ async function main() {
 	console.log(`  Skip child kill:          ${SKIP_CHILD_KILL}`);
 	console.log(`  Skip parent kill:         ${SKIP_PARENT_KILL}`);
 	console.log(`  Pre-child kill wait:      ${PRE_CHILD_KILL_WAIT_SECONDS}s`);
-	console.log(`  Post-child restart wait:  ${POST_CHILD_RESTART_WAIT_SECONDS}s`);
+  console.log(
+    `  Post-child restart wait:  ${POST_CHILD_RESTART_WAIT_SECONDS}s`,
+  );
 	console.log(`  Pre-parent kill wait:     ${PRE_PARENT_KILL_WAIT_SECONDS}s`);
-	console.log(`  Post-parent restart wait: ${POST_PARENT_RESTART_WAIT_SECONDS}s`);
+  console.log(
+    `  Post-parent restart wait: ${POST_PARENT_RESTART_WAIT_SECONDS}s`,
+  );
 	console.log(`  Workflow timeout:         ${WORKFLOW_TIMEOUT_SECONDS}s`);
 	console.log();
 
@@ -588,7 +603,9 @@ async function main() {
 	);
 
 	if (!SKIP_CHILD_KILL) {
-		log(`waiting ${PRE_CHILD_KILL_WAIT_SECONDS}s before deleting durable-agent`);
+    log(
+      `waiting ${PRE_CHILD_KILL_WAIT_SECONDS}s before deleting durable-agent`,
+    );
 		await sleep(PRE_CHILD_KILL_WAIT_SECONDS * 1000);
 		const oldChildPod = deletePod(DURABLE_AGENT_APP);
 		await waitForReadyReplacement(DURABLE_AGENT_APP, oldChildPod);
@@ -604,7 +621,9 @@ async function main() {
 			);
 		}
 
-		const childRunAfterChildRestart = await waitForAgentRun(started.executionId);
+    const childRunAfterChildRestart = await waitForAgentRun(
+      started.executionId,
+    );
 		if (
 			childRunAfterChildRestart.dapr_instance_id !==
 				childRunBeforeKill.dapr_instance_id ||
@@ -621,7 +640,9 @@ async function main() {
 	}
 
 	if (!SKIP_PARENT_KILL) {
-		log(`waiting ${PRE_PARENT_KILL_WAIT_SECONDS}s before deleting workflow-orchestrator`);
+    log(
+      `waiting ${PRE_PARENT_KILL_WAIT_SECONDS}s before deleting workflow-orchestrator`,
+    );
 		await sleep(PRE_PARENT_KILL_WAIT_SECONDS * 1000);
 		const preParentKillStatus = getExecutionStatus(started.executionId);
 		if (preParentKillStatus.status !== "running") {
@@ -637,7 +658,9 @@ async function main() {
 		);
 		await sleep(POST_PARENT_RESTART_WAIT_SECONDS * 1000);
 
-		const childRunAfterParentRestart = await waitForAgentRun(started.executionId);
+    const childRunAfterParentRestart = await waitForAgentRun(
+      started.executionId,
+    );
 		if (
 			childRunAfterParentRestart.dapr_instance_id !==
 				childRunBeforeKill.dapr_instance_id ||
@@ -671,8 +694,10 @@ async function main() {
 		{
 			name: "Child workflow instance stayed stable",
 			ok:
-				finalChildRun.dapr_instance_id === childRunBeforeKill.dapr_instance_id &&
-				finalChildRun.agent_workflow_id === childRunBeforeKill.agent_workflow_id,
+        finalChildRun.dapr_instance_id ===
+          childRunBeforeKill.dapr_instance_id &&
+        finalChildRun.agent_workflow_id ===
+          childRunBeforeKill.agent_workflow_id,
 		},
 		{
 			name: "Decision summary captured at least four tool-driven turns",
@@ -705,7 +730,9 @@ async function main() {
 	console.log(`  decisionTurns:           ${decisions.summary.totalTurns}`);
 	console.log(`  toolCallTurns:           ${decisions.summary.toolCallTurns}`);
 	console.log(`  totalToolCalls:          ${decisions.summary.totalToolCalls}`);
-	console.log(`  stopReason:              ${decisions.summary.stopReason ?? "n/a"}`);
+  console.log(
+    `  stopReason:              ${decisions.summary.stopReason ?? "n/a"}`,
+  );
 	console.log(`  totalTokens:             ${decisions.summary.totalTokens}`);
 	console.log(
 		`  reportVerified:          ${Boolean((reportVerification as { success?: boolean }).success) ? "yes" : "no"}`,
@@ -721,7 +748,9 @@ async function main() {
 	console.log();
 
 	if (!checks.every((check) => check.ok)) {
-		const failed = checks.filter((check) => !check.ok).map((check) => check.name);
+    const failed = checks
+      .filter((check) => !check.ok)
+      .map((check) => check.name);
 		fail(`Failed checks: ${failed.join(", ")}`);
 	}
 

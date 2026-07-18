@@ -202,6 +202,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		expect(workflowData.validateApiKeyForUser).toHaveBeenCalledWith({
 			authorizationHeader: "Bearer wfb_secret",
 			userId: "user-1",
+      projectId: "project-1",
 		});
 		expect(workflowSpecs.isServerlessWorkflow).toHaveBeenCalledWith(
 			workflowDefinition().spec,
@@ -1012,7 +1013,10 @@ describe("dynamic-script approval gates", () => {
 			approvalEvents,
 			coordinatorOwners: { getCoordinatorOwner: vi.fn(async () => null) },
 			executionLifecycle: {
-				checkExecutionAccess: vi.fn(async () => ({ status: "ok" as const, active: true })),
+        checkExecutionAccess: vi.fn(async () => ({
+          status: "ok" as const,
+          active: true,
+        })),
 				stopExecution: vi.fn(async () => ({
 					confirmed: true,
 					notFound: false,
@@ -1022,8 +1026,12 @@ describe("dynamic-script approval gates", () => {
 			executionReadModels: {
 				assertMigrated: vi.fn(async () => undefined),
 			} as unknown as WorkflowExecutionReadModelPort,
-			runStarter: { startWorkflowRun: vi.fn() } as unknown as WorkflowRunStarterPort,
-			workflowSpecs: { validate: vi.fn() } as unknown as WorkflowSpecValidatorPort,
+      runStarter: {
+        startWorkflowRun: vi.fn(),
+      } as unknown as WorkflowRunStarterPort,
+      workflowSpecs: {
+        validate: vi.fn(),
+      } as unknown as WorkflowSpecValidatorPort,
 			scriptCalls: { listInternal: vi.fn(async () => rows) } as never,
 		});
 		return { service, approvalEvents };
@@ -1058,8 +1066,8 @@ describe("dynamic-script approval gates", () => {
 			projectId: "project-1",
 			body: { approved: false },
 		});
-		const call = (approvalEvents.raiseWorkflowEvent as ReturnType<typeof vi.fn>).mock
-			.calls[0][0];
+    const call = (approvalEvents.raiseWorkflowEvent as ReturnType<typeof vi.fn>)
+      .mock.calls[0][0];
 		expect(call.eventData.approved).toBe(false);
 	});
 
@@ -1097,8 +1105,18 @@ describe("dynamic-script approval gates", () => {
 			body: {
 				awaiting: true,
 				gates: [
-					{ callId: "abc_0", name: "approval", label: "ship gate", message: "ship it?" },
-					{ callId: "def_0", name: "approval", label: "ship gate", message: "ship it?" },
+          {
+            callId: "abc_0",
+            name: "approval",
+            label: "ship gate",
+            message: "ship it?",
+          },
+          {
+            callId: "def_0",
+            name: "approval",
+            label: "ship gate",
+            message: "ship it?",
+          },
 				],
 			},
 		});

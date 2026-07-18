@@ -1,8 +1,8 @@
 # Dynamic Script Authoring Guide (platform dialect)
 
 **Audience:** an agent (or a human) authoring a `dynamic-script` workflow to run on
-workflow-builder. This is the SOURCE OF TRUTH for *how to write a script that runs
-correctly here.*
+workflow-builder. This is the SOURCE OF TRUTH for _how to write a script that runs
+correctly here._
 
 This platform runs the **Claude Code Workflow-tool dialect** (`agent()`, `parallel()`,
 `pipeline()`, `phase()`, `log()`, `workflow()`, globals `args`/`budget`). The full upstream
@@ -10,7 +10,7 @@ contract is in [`claude-code-workflow-tool-spec.md`](./claude-code-workflow-tool
 the engine internals are in [`dynamic-script-workflows.md`](./dynamic-script-workflows.md).
 
 **A script written to the Claude Code spec is ~portable here — with a handful of deltas that
-change what a script *observes*.** Those deltas are almost all in the `opts` vocabulary and the
+change what a script _observes_.** Those deltas are almost all in the `opts` vocabulary and the
 `budget` unit. Read [§ Platform deltas](#platform-deltas-read-this) before you write anything;
 the rest of the dialect matches the upstream spec exactly.
 
@@ -20,29 +20,46 @@ the rest of the dialect matches the upstream spec exactly.
 
 ```js
 export const meta = {
-  name: 'my-workflow',                 // REQUIRED, must be a pure literal (no vars/calls)
-  description: 'What this does',        // shown in the run UI + permission dialog
-  phases: [{ title: 'Draft' }, { title: 'Judge' }],
-}
+  name: "my-workflow", // REQUIRED, must be a pure literal (no vars/calls)
+  description: "What this does", // shown in the run UI + permission dialog
+  phases: [{ title: "Draft" }, { title: "Judge" }],
+};
 
-const topic = typeof args?.topic === 'string' ? args.topic : 'default topic'
+const topic = typeof args?.topic === "string" ? args.topic : "default topic";
 
-phase('Draft')
+phase("Draft");
 const drafts = await parallel(
-  ['mvp', 'risk', 'scale'].map((lens) => () =>
-    agent(`Draft a plan for ${topic}, framed around ${lens}.`, { label: `draft:${lens}`, phase: 'Draft' }),
+  ["mvp", "risk", "scale"].map(
+    (lens) => () =>
+      agent(`Draft a plan for ${topic}, framed around ${lens}.`, {
+        label: `draft:${lens}`,
+        phase: "Draft",
+      }),
   ),
+);
+
+phase("Judge");
+const SCORE = {
+  type: "object",
+  required: ["score"],
+  properties: { score: { type: "number" } },
+};
+const best = (
+  await parallel(
+    drafts
+      .filter(Boolean)
+      .map(
+        (d) => () =>
+          agent(`Score 0-10:\n${d}`, { phase: "Judge", schema: SCORE }).then(
+            (s) => ({ d, score: s?.score ?? 0 }),
+  ),
+  ),
+  )
 )
+  .filter(Boolean)
+  .sort((a, b) => b.score - a.score)[0];
 
-phase('Judge')
-const SCORE = { type: 'object', required: ['score'], properties: { score: { type: 'number' } } }
-const best = (await parallel(
-  drafts.filter(Boolean).map((d) => () =>
-    agent(`Score 0-10:\n${d}`, { phase: 'Judge', schema: SCORE }).then((s) => ({ d, score: s?.score ?? 0 })),
-  ),
-)).filter(Boolean).sort((a, b) => b.score - a.score)[0]
-
-return { winner: best?.d }
+return { winner: best?.d };
 ```
 
 Working, idiomatic exemplars live in `scripts/fixtures/dynamic-scripts/`:
@@ -62,7 +79,7 @@ the engine rejects completed scripts with un-awaited calls, Promises inside the
 previously these "succeeded" with silent garbage).
 
 | Primitive | Contract |
-| --- | --- |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `agent(prompt, opts?)` | Returns the agent's final text (string), or — with `opts.schema` — the schema-validated object, or `null` (skipped / died / exceeded structured-retry cap). `.filter(Boolean)` results you fan out. |
 | `parallel(thunks)` | **Barrier.** Runs all thunks concurrently, awaits all. A thunk that throws (or whose agent errors) resolves to `null` — the call itself never rejects. `.filter(Boolean)` before use. |
 | `pipeline(items, ...stages)` | **Per-item, NO barrier.** Each item flows through all stages independently. Each stage callback receives `(prevResult, originalItem, index)`. A stage that throws drops that item to `null` and skips its remaining stages. Default for multi-stage work. |
@@ -79,7 +96,7 @@ Determinism, `meta`, and structured output are covered in their own sections bel
 ## Platform deltas (READ THIS)
 
 Everything here differs from the Claude Code spec in a way a script author must know. Get these
-wrong and the script is still *syntactically valid* — it just does the wrong thing silently.
+wrong and the script is still _syntactically valid_ — it just does the wrong thing silently.
 
 ### 1. `opts.model` is a platform model KEY, not a tier alias
 
@@ -108,8 +125,8 @@ selects the agent runtime** (`script_agent_dispatch.py`: `agentType or defaults.
 - `browser-use-agent` (vision/browser, warm-pool)
 - `claude-code-cli` (real Claude Code TUI in a sandbox; requires a linked CLI credential)
 
-There is no persona/subagent-type dimension in the script surface. To vary *behavior*, vary the
-prompt (and `model`); to vary the *engine*, set `agentType`. An **unresolvable** `agentType` (a
+There is no persona/subagent-type dimension in the script surface. To vary _behavior_, vary the
+prompt (and `model`); to vary the _engine_, set `agentType`. An **unresolvable** `agentType` (a
 persona name, or a typo'd runtime id) makes **that one `agent()` call resolve to `null`** (with a
 warning in the run logs) — it no longer crashes the whole run. So `.filter(Boolean)` still protects
 you, but a silently-null agent usually means a bad `agentType`.
@@ -136,15 +153,16 @@ resume purposes — but only `'shared'` changes runtime behavior.
 wins over the provider env default). Each provider clamps to its accepted set:
 
 | Provider | `low`/`medium`/`high` | `xhigh`/`max` |
-| --- | --- | --- |
+| ----------------------- | --------------------- | ------------- |
 | GLM (`zai/*`) | `high` | `max` |
 | DeepSeek | `high` | `max` |
 | OpenAI (gpt-5/o-series) | as given | `high` |
-| Anthropic / Kimi | ignored (adaptive thinking) | ignored |
+| Anthropic               | ignored               | ignored       |
+| Kimi K3                 | `max`                 | `max`         |
 
-So `effort` differentiates only between the ≤`high` band and `xhigh`/`max` on GLM/DeepSeek, and
-low/medium/high on OpenAI. It participates in the callId hash — changing it between resume
-attempts re-runs that call.
+Kimi K3 always uses max thinking. For GLM/DeepSeek, `effort` differentiates between the
+≤`high` band and `xhigh`/`max`; OpenAI accepts low/medium/high. The requested value still
+participates in the callId hash, so changing it between resume attempts re-runs that call.
 
 ### 5. `budget` counts more than output tokens
 
@@ -155,13 +173,13 @@ So a budget sized for Claude Code will be reached **sooner** here. Size `budgetT
 
 Semantics that DO match the spec: `budget` is a hard ceiling — once the run has spent `>= total`,
 unresolved `agent()` calls **throw** (`BudgetExhaustedError`) so the script can `catch` and wrap up.
-**In-flight overshoot is by design:** exhaustion stops *new* dispatch, but agents already running
+**In-flight overshoot is by design:** exhaustion stops _new_ dispatch, but agents already running
 complete and their tokens still count. Guard loops with `while (budget.total && budget.remaining() > N)`.
 
 ### 6. Caps
 
 | Cap | Claude Code | Here |
-| --- | --- | --- |
+| ----------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
 | Concurrent agents | `min(16, cores−2)` | `DYNAMIC_SCRIPT_MAX_CONCURRENCY` (dev **5**); a politeness cap above Kueue admission |
 | Lifetime agents | 1000 | code default **1000** (spec-aligned), narrowed per-deployment via `DYNAMIC_SCRIPT_MAX_AGENT_CALLS` (dev **50**) |
 | Items per `parallel()`/`pipeline()` | 4096 | **4096** (identical); passing more is an explicit error, not a silent truncation |
@@ -253,12 +271,14 @@ Pass `opts.schema` (a JSON Schema) to get a validated object back. `agent(prompt
 a schema-valid object or `null` — never an invalid object. Enforcement is layered (all keyed off the
 same `opts.schema`; the return contract is identical regardless of which tier fires):
 
-- **Tier 1 — strict `json_schema` (the default).** A schema'd call with no model override routes to
-  `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `kimi/kimi-k3`). Kimi K3 applies the supplied JSON
-  Schema natively; OpenAI models use the same strict constrained-decoding tier when selected.
-- **Tier 2 — the `StructuredOutput` tool (the Claude Code mechanism).** For object-shaped schemas
-  on GLM / Anthropic / DeepSeek, the runtime injects a synthetic **`StructuredOutput` tool whose
-  parameters ARE your schema** into the request; the agent delivers its result by *calling the tool* (it can use
+- **Default routing.** A schema'd call with no model override routes to
+  `DYNAMIC_SCRIPT_STRUCTURED_MODEL` (default `kimi/kimi-k3`). Object-shaped Kimi K3 schemas use
+  the tool-finalization path so the agent can use vision, browser, coding, and MCP tools first.
+  Kimi Pydantic calls and non-object schemas retain native strict `json_schema`; OpenAI uses strict
+  provider-side `json_schema` when selected.
+- **The `StructuredOutput` tool (the Claude Code mechanism).** For object-shaped schemas on Kimi
+  K3, GLM, Anthropic, and DeepSeek, the runtime injects a synthetic **`StructuredOutput` tool whose
+  parameters ARE your schema** into the request; the agent delivers its result by _calling the tool_ (it can use
   Read/Bash/WebSearch etc. first). Invalid arguments come back as a tool error with the exact
   validation failures, so the model corrects **in the same session** (a new turn, not a new
   session); a model that tries to finish in plain text is re-prompted (up to 5 nudges — the durable
@@ -272,7 +292,7 @@ same `opts.schema`; the return contract is identical regardless of which tier fi
   shape-enforced; note `json_object` never applies to tool-carrying sessions anyway).
 - **Tier 3 — universal fallback (always on).** The `<output-contract>` prompt block +
   `jsonschema` validation + **corrective retry session** (up to `maxStructuredRetries`, default **5**;
-  then `null` with `error_max_structured_output_retries`) run for *every* schema'd call regardless of
+  then `null` with `error_max_structured_output_retries`) run for _every_ schema'd call regardless of
   provider. This is the response-side authority — native enforcement (Tiers 1-2) is a request-side
   optimization that just makes it pass first try.
 
@@ -327,13 +347,13 @@ zero, or "compare against the others").
 
 The two flagship built-ins port directly onto these primitives — and, importantly, our
 dapr-agent-py agents ship the **full Claude Code tool set** (`WebSearch`, `WebFetch`, `Read`,
-`Grep`, `Glob`, `Bash`, …), so the research recipe does *genuine* web research, not just knowledge
+`Grep`, `Glob`, `Bash`, …), so the research recipe does _genuine_ web research, not just knowledge
 synthesis. (Script-spawned `agent()`s set no `allowedTools`, so they get every default tool.)
 
 - **deep-research** (`deep-research.js`) — decompose → parallel web sweep (`WebSearch`+`WebFetch`)
   → completeness critic → loop until saturated/budget → synthesize a sourced brief. Shape:
   `agent(plan, schema)` → `while (rounds && budget) { parallel(research) → agent(critic, schema) }`
-  → `agent(synthesize)`. The critic (`{saturated, gaps}`) is what makes it *deep* — gaps become the
+  → `agent(synthesize)`. The critic (`{saturated, gaps}`) is what makes it _deep_ — gaps become the
   next round's sub-questions. Verified live on GLM 5.2: cited real URLs, 4 phases, saturated in 1
   round on a well-scoped question.
 - **code-review** (`code-review.js`) — the canonical `pipeline()` pattern: one finder per review

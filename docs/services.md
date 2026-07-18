@@ -226,9 +226,13 @@ Deployed MCP server (stacks `Deployment-workflow-mcp-server.yaml` + `Service-wor
 
 - Port: `3200`
 - Responsibilities:
-  - goal MCP tools `create_goal` / `update_goal` / `get_goal` — the goal-loop completion contract, session-scoped via the `X-Wfb-Session-Id` header (see `docs/goal-loop.md`)
-  - workflow MCP tools
-- `DATABASE_URL` + `INTERNAL_API_TOKEN` via `envFrom workflow-builder-secrets`
+  - workspace-authenticated workflow authoring and execution tools
+  - goal MCP tools `create_goal` / `update_goal` / `get_goal` — the goal-loop completion contract; these tools are registered only when the authenticated MCP connection has a validated session attachment (see `docs/goal-loop.md`)
+  - `get_workflow_context` for inspecting the authenticated workspace and optional session context
+- `DATABASE_URL` + `INTERNAL_API_TOKEN` via explicit secret refs. The BFF's JWT
+  signing key is intentionally not exposed to this service; it receives opaque,
+  short-lived principal assertions instead.
+- External client setup and identity rules: `docs/workflow-mcp-server.md`
 
 ## piece-mcp-server (role: piece-runtime)
 

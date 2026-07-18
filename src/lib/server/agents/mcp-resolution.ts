@@ -70,6 +70,13 @@ function allowedToolsFrom(value: unknown): string[] {
 	return value.map((item) => String(item || "").trim()).filter(Boolean);
 }
 
+function explicitlyDisablesAllTools(server: Record<string, unknown>): boolean {
+	const value = Object.hasOwn(server, "allowedTools")
+		? server.allowedTools
+		: server.allowed_tools;
+	return Array.isArray(value) && allowedToolsFrom(value).length === 0;
+}
+
 function serverIdentityValues(server: Record<string, unknown>): Set<string> {
 	const values = new Set<string>();
 	for (const key of [
@@ -355,6 +362,7 @@ export function resolveMcpServerConfigsFromRows(params: {
 	const warnings: string[] = [];
 	const servers: McpServerProfileConfig[] = [];
 	const seenNames = new Set<string>();
+	const disabledConnectionIds = new Set<string>();
 
 	const connectionConfigs: Array<{ config: McpServerProfileConfig; row: AgentMcpConnectionRow }> = [];
 	for (const row of params.rows) {
@@ -366,6 +374,7 @@ export function resolveMcpServerConfigsFromRows(params: {
 	for (const requested of requestedServers) {
 		let config: McpServerProfileConfig | null = null;
 		if (hasDirectEndpoint(requested)) {
+			if (explicitlyDisablesAllTools(requested)) continue;
 			config = sanitizeRequestedServer(requested);
 		} else {
 			const connectionId = requestedMcpConnectionId(requested);
@@ -395,6 +404,10 @@ export function resolveMcpServerConfigsFromRows(params: {
 				);
 				continue;
 			}
+			if (explicitlyDisablesAllTools(requested)) {
+				disabledConnectionIds.add(match.row.id);
+				continue;
+			}
 			config = mergeRequestedOverResolved(match.config, requested);
 		}
 
@@ -412,7 +425,8 @@ export function resolveMcpServerConfigsFromRows(params: {
 	}
 
 	if (params.includeProjectConnections) {
-		for (const { config } of connectionConfigs) {
+		for (const { config, row } of connectionConfigs) {
+			if (disabledConnectionIds.has(row.id)) continue;
 			const key = normalizeMcpName(config.server_name ?? config.serverName ?? config.name);
 			if (seenNames.has(key)) continue;
 			config.server_name = key;

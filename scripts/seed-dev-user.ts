@@ -550,6 +550,7 @@ async function seedApiKeysForUser(
 
 		await db.insert(apiKeys).values({
 			userId,
+      createdByUserId: userId,
 			name: entry.name,
 			keyHash,
 			keyPrefix,

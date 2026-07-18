@@ -6,6 +6,21 @@ import type {
 	SessionWorkflowSpawner,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
+import type {
+  WorkflowMcpSessionCapabilities,
+  WorkflowMcpSessionTokenSigner,
+} from "$lib/server/application/ports/workflow-mcp-auth";
+
+export type PeerSessionSpawnPrincipal = {
+  userId: string;
+  projectId: string;
+  sessionId: string;
+  capabilities: WorkflowMcpSessionCapabilities;
+};
+
+export type PeerSessionSpawnPolicy =
+  | { kind: "call_agent" }
+  | { kind: "team"; teamId: string };
 
 export type PeerSessionSpawnResult =
 	| {
@@ -24,9 +39,13 @@ export class ApplicationPeerSessionSpawnService {
 		private readonly deps: {
 			workflowData: Pick<
 				WorkflowDataService,
-				"ensurePeerSession" | "resolvePeerAgentDispatchContext"
+        | "ensurePeerSession"
+        | "resolvePeerAgentDispatchContext"
+        | "getSessionDetail"
+        | "getSessionFileOwner"
 			>;
 			workflowSpawner: SessionWorkflowSpawner;
+      workflowMcpSessionTokens: WorkflowMcpSessionTokenSigner;
 			sandboxProvisioner: SandboxProvisioner;
 			sessions: Pick<
 				SessionRepository,
@@ -35,23 +54,79 @@ export class ApplicationPeerSessionSpawnService {
 		},
 	) {}
 
-	async spawnPeerSession(body: unknown): Promise<PeerSessionSpawnResult> {
+  async spawnPeerSession(
+    body: unknown,
+    principal: PeerSessionSpawnPrincipal,
+    policy: PeerSessionSpawnPolicy,
+  ): Promise<PeerSessionSpawnResult> {
 		const request = parsePeerSpawnRequest(body);
 		if (!request.sessionId) return peerSpawnError(400, "sessionId is required");
-		if (!request.peerAgentId) return peerSpawnError(400, "peerAgentId is required");
+    if (!request.peerAgentId)
+      return peerSpawnError(400, "peerAgentId is required");
 		if (request.sessionId.length > 64) {
 			return peerSpawnError(
 				400,
 				"sessionId must be ≤64 chars (Dapr workflow cap)",
 			);
 		}
+    if (
+      !request.parentSessionId ||
+      request.parentSessionId !== principal.sessionId
+    ) {
+      return peerSpawnError(
+        403,
+        "Peer spawn lineage must match the signed parent session",
+      );
+    }
+    const [parentOwner, parentSession] = await Promise.all([
+      this.deps.workflowData.getSessionFileOwner(request.parentSessionId),
+      this.deps.workflowData.getSessionDetail({
+        sessionId: request.parentSessionId,
+      }),
+    ]);
+    if (
+      !parentOwner ||
+      !parentSession ||
+      parentOwner.userId !== principal.userId ||
+      parentOwner.projectId !== principal.projectId
+    ) {
+      return peerSpawnError(
+        403,
+        "Peer spawn parent is outside the signed workspace",
+      );
+    }
+    if (policy.kind === "call_agent") {
+      const parentDispatch =
+        await this.deps.workflowData.resolvePeerAgentDispatchContext({
+          agentId: parentSession.agentId,
+          agentVersion: parentSession.agentVersion,
+        });
+      if (
+        !parentDispatch?.callableAgents.some(
+          (agent) => agent.agentId === request.peerAgentId,
+        )
+      ) {
+        return peerSpawnError(
+          403,
+          "Peer agent is not in the parent session's callable allowlist",
+        );
+      }
+    } else if (
+      principal.capabilities.teamId !== policy.teamId ||
+      principal.capabilities.teamRole !== "lead"
+    ) {
+      return peerSpawnError(403, "Peer spawn requires the signed team lead");
+    }
 
 		const ensureResult = await this.deps.workflowData.ensurePeerSession({
 			sessionId: request.sessionId,
 			peerAgentId: request.peerAgentId,
 			prompt: request.prompt,
 			parentSessionId: request.parentSessionId,
-			parentInstanceId: request.parentInstanceId,
+      // The signed parent session is server-authoritative lineage. A runtime's
+      // nested Dapr instance id is caller-controlled and must not become the
+      // durable parent pointer.
+      parentInstanceId: null,
 			title: request.title,
 		});
 		if (!ensureResult.ok) {
@@ -59,9 +134,47 @@ export class ApplicationPeerSessionSpawnService {
 		}
 
 		const session = ensureResult.session;
+    const expectedParent = request.parentSessionId ?? null;
+    if (
+      ensureResult.reused &&
+      (session.agentId !== request.peerAgentId ||
+        session.parentExecutionId !== expectedParent)
+    ) {
+      return peerSpawnError(
+        409,
+        "Existing peer session does not match the requested agent and lineage",
+      );
+    }
+    const childOwner = await this.deps.workflowData.getSessionFileOwner(
+      session.id,
+    );
+    if (
+      !childOwner ||
+      childOwner.userId !== principal.userId ||
+      childOwner.projectId !== principal.projectId
+    ) {
+      return peerSpawnError(
+        403,
+        "Peer session is outside the signed workspace",
+      );
+    }
+    const workflowMcpCapabilities: WorkflowMcpSessionCapabilities = {
+      scriptDepth: principal.capabilities.scriptDepth,
+      teamId: policy.kind === "team" ? policy.teamId : null,
+      teamRole: policy.kind === "team" ? "member" : "none",
+    };
+    const workflowMcpSessionToken = this.deps.workflowMcpSessionTokens.sign({
+      userId: principal.userId,
+      projectId: principal.projectId,
+      sessionId: session.id,
+      capabilities: workflowMcpCapabilities,
+    });
 		const base = baseResponse(session, ensureResult.reused);
 		if (ensureResult.reused && !request.skipSpawnOnReplay) {
-			return { status: "ok", body: base };
+      return {
+        status: "ok",
+        body: { ...base, workflowMcpSessionToken },
+      };
 		}
 
 		if (request.skipSpawn) {
@@ -73,11 +186,17 @@ export class ApplicationPeerSessionSpawnService {
 					environmentVersion: session.environmentVersion,
 				});
 			if (!dispatch) {
-				return peerSpawnError(500, `could not re-resolve peer ${session.agentId}`);
+        return peerSpawnError(
+          500,
+          `could not re-resolve peer ${session.agentId}`,
+        );
 			}
 			return {
 				status: "ok",
-				body: skipSpawnResponse(base, session, dispatch),
+        body: {
+          ...skipSpawnResponse(base, session, dispatch),
+          workflowMcpSessionToken,
+        },
 			};
 		}
 
@@ -126,7 +245,9 @@ export class ApplicationPeerSessionSpawnService {
 
 		try {
 			const { instanceId, natsSubject } =
-				await this.deps.workflowSpawner.spawnSessionWorkflow(session.id);
+        await this.deps.workflowSpawner.spawnSessionWorkflow(session.id, {
+          workflowMcpCapabilities,
+        });
 			return {
 				status: "ok",
 				body: {
@@ -136,6 +257,7 @@ export class ApplicationPeerSessionSpawnService {
 					daprInstanceId: instanceId,
 					natsSubject,
 					sandboxName,
+          workflowMcpSessionToken,
 					reused: false,
 				},
 			};
@@ -149,6 +271,7 @@ export class ApplicationPeerSessionSpawnService {
 					agentVersion: session.agentVersion,
 					daprInstanceId: null,
 					natsSubject: null,
+          workflowMcpSessionToken,
 					reused: false,
 					error:
 						spawnErr instanceof Error

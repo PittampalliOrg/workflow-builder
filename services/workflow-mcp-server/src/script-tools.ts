@@ -14,20 +14,21 @@
  *    internal execute-script endpoint.
  *
  * Recursion guard: this tool is deliberately SUPPRESSED inside sessions that a
- * script itself spawned. The BFF stamps `X-Wfb-Script-Depth` on the
- * workflow-mcp-server MCP entry for those sessions, and index.ts omits the
- * script tools at `initialize` when that header is present (see
- * suppressScriptTools). So a script cannot recursively launch more scripts
- * through this surface.
+ * script itself spawned. The BFF signs script depth into the session credential,
+ * and index.ts omits the script tools when that verified claim is nonzero. An
+ * unsigned caller header cannot enable or suppress this surface.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import {
+  hasWorkflowMcpScope,
+  type WorkflowMcpPrincipal,
+  type WorkflowMcpScope,
+} from "./auth-context.js";
 import { setSpanOutput } from "./observability/content.js";
+import type { ScriptWorkflowPersistencePort } from "./ports/workflow-persistence.js";
 import type { RegisteredTool } from "./workflow-tools.js";
-import { currentGoalSessionId } from "./goal-context.js";
-import { callRemoteWorkflowTargetTool } from "./remote-mcp.js";
-import { resolveWorkflowTarget } from "./targets.js";
 
 // Same in-cluster BFF service the other tool modules target (the MCP server is
 // NOT co-located with the BFF, so localhost is wrong). The deployment does not
@@ -54,7 +55,7 @@ const targetInput = z
 	.string()
 	.optional()
 	.describe(
-		'Workflow runtime target. Omit or use "dev" for the host dev cluster; use "preview:<name>" for a vCluster preview.',
+    'Workflow runtime target. Omit or use "dev" for local execution. Preview values return direct-connect guidance because credentials are never forwarded across targets.',
 	);
 
 // Compact authoring reference for the dynamic-script (Claude Code Workflow) dialect
@@ -111,7 +112,7 @@ scripts with un-awaited calls, Promises in the returnValue, and "[object Promise
 - Return a value at the end (bare top-level \`return {...}\`) — it becomes the run's output.
 
 PLATFORM DELTAS (differ from the Claude Code spec — get these right):
-1. opts.model = a platform MODEL KEY (e.g. 'zai/glm-5.2', 'anthropic/claude-opus-4-8'), NOT a tier
+1. opts.model = a platform MODEL KEY (e.g. 'kimi/kimi-k3', 'anthropic/claude-opus-4-8'), NOT a tier
    alias ('opus'/'sonnet' silently fall back to the default). Omit to inherit the run default.
    meta.phases[].model IS honored as a fallback: opts.model > meta.phases[phase].model >
    defaults.model (the last only on dapr-agent-py).
@@ -122,7 +123,8 @@ PLATFORM DELTAS (differ from the Claude Code spec — get these right):
    'worktree' is a no-op here.
 4. opts.effort ('low'|'medium'|'high'|'xhigh'|'max') is honored, clamped per provider:
    GLM/DeepSeek {low,medium,high}->high, {xhigh,max}->max; OpenAI low/medium/high (xhigh/max->high);
-   Anthropic/Kimi ignore it (adaptive thinking). It is part of the resume cache key.
+   Anthropic ignores it; Kimi K3 always runs at max thinking regardless of the requested value.
+   It is part of the resume cache key.
 5. budget.spent() counts input+output+cache_creation (net of cache reads), NOT output-only — a budget
    sized for Claude Code is reached SOONER here. Exhaustion makes unresolved agent() calls throw;
    in-flight agents still finish. Guard loops: while (budget.total && budget.remaining() > N) {...}.
@@ -181,19 +183,19 @@ nested-parent + summarize-child, demo-review, team-research).`;
 /** Fetch implementation is injectable for tests; defaults to global fetch. */
 export type ScriptToolsContext = {
 	fetchImpl?: typeof fetch;
+  persistence: ScriptWorkflowPersistencePort;
+  principal?: WorkflowMcpPrincipal;
 };
 
 /**
- * Recursion guard decision: the BFF stamps `X-Wfb-Script-Depth` on the
- * workflow-mcp-server MCP entry for sessions a script spawned. When that header
- * is present at `initialize`, the script tool is suppressed so a running script
- * cannot launch further scripts through this surface. (Pure + exported for
- * testing; index.ts consumes it in handleMcpPost.)
+ * Recursion guard decision from the capabilities returned by the BFF after it
+ * verifies the signed platform-session credential. Request headers are not
+ * consulted because callers can omit or forge them.
  */
-export function shouldSuppressScriptTools(
-	headers: Record<string, string | string[] | undefined>,
-): boolean {
-	return headers["x-wfb-script-depth"] !== undefined;
+export function shouldSuppressScriptTools(capabilities?: {
+  scriptDepth?: number;
+}): boolean {
+  return (capabilities?.scriptDepth ?? 0) > 0;
 }
 
 function textResult(data: unknown) {
@@ -249,37 +251,28 @@ export const runWorkflowScriptShape = {
 			"When true, block (bounded) until the run reaches a terminal state and return its final status/output. Default false (returns immediately after start).",
 		),
 	target: targetInput,
-	sessionId: z
-		.string()
-		.optional()
-		.describe(
-			"Optional workflow-builder session id to forward as X-Wfb-Session-Id. Useful when targeting a preview session.",
-		),
 };
 
 export const runWorkflowScriptSchema = z
 	.object(runWorkflowScriptShape)
-	.refine(
-		(v) => (v.workflowName != null) !== (v.script != null),
-		{
+  .refine((v) => (v.workflowName != null) !== (v.script != null), {
 			message:
 				"Provide exactly one of `workflowName` (saved workflow) or `script` (inline source).",
-		},
-	);
+  });
 
 export type RunWorkflowScriptArgs = z.infer<typeof runWorkflowScriptSchema>;
 
 // ── Internal HTTP helpers ────────────────────────────────────
 
-function internalHeaders(sessionIdOverride?: string | null): Record<string, string> {
+function internalHeaders(
+  principal: WorkflowMcpPrincipal,
+): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"X-Internal-Token": INTERNAL_API_TOKEN,
+    "X-Wfb-Principal-Assertion": principal.principalAssertion,
 	};
-	// Forward the spawning session (codex thread) for run lineage, exactly like
-	// the goal tools resolve it from the AsyncLocalStorage request context.
-	const sessionId = sessionIdOverride ?? currentGoalSessionId();
-	if (sessionId) headers["X-Wfb-Session-Id"] = sessionId;
+  if (principal.sessionId) headers["X-Wfb-Session-Id"] = principal.sessionId;
 	return headers;
 }
 
@@ -287,7 +280,7 @@ function internalHeaders(sessionIdOverride?: string | null): Record<string, stri
 async function waitForTerminal(
 	fetchImpl: typeof fetch,
 	executionId: string,
-	sessionId?: string | null,
+  principal: WorkflowMcpPrincipal,
 ): Promise<{ status: string; output?: unknown; timedOut?: boolean }> {
 	const deadline = Date.now() + WAIT_TIMEOUT_MS;
 	let lastStatus = "running";
@@ -299,7 +292,7 @@ async function waitForTerminal(
 				`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/executions/${encodeURIComponent(
 					executionId,
 				)}/status`,
-				{ headers: internalHeaders(sessionId) },
+        { headers: internalHeaders(principal) },
 			);
 			if (resp.ok) {
 				const body = (await resp.json()) as {
@@ -323,29 +316,53 @@ async function waitForTerminal(
 }
 
 async function maybeProxyScriptTool(
-	toolName: string,
+  _toolName: string,
 	args: Record<string, unknown>,
+  _principal: WorkflowMcpPrincipal,
 ) {
-	const target = await resolveWorkflowTarget(
-		typeof args.target === "string" ? args.target : undefined,
+  const target = typeof args.target === "string" ? args.target.trim() : "";
+  if (!target || ["dev", "host", "local"].includes(target.toLowerCase())) {
+    return null;
+  }
+  throw new Error(
+    "Cross-target workflow calls are disabled. No source credential was forwarded; connect your MCP client directly to the intended preview endpoint with a key created for that target.",
 	);
-	if (target.local) return null;
-	return callRemoteWorkflowTargetTool(target, toolName, args, {
-		sessionId:
-			typeof args.sessionId === "string" ? args.sessionId : currentGoalSessionId(),
-	});
+}
+
+const SCRIPT_TOOL_SCOPES: Record<string, WorkflowMcpScope> = {
+  run_workflow_script: "workflow:execute",
+  validate_workflow_script: "workflow:write",
+  save_workflow_script: "workflow:write",
+  get_workflow_script_spec: "workflow:read",
+};
+
+function scopedToolServer(
+  server: McpServer,
+  principal?: WorkflowMcpPrincipal,
+): McpServer {
+  return {
+    registerTool(name: string, ...args: unknown[]) {
+      const scope = SCRIPT_TOOL_SCOPES[name];
+      if (scope && hasWorkflowMcpScope(principal, scope)) {
+        return (server as any).registerTool(name, ...args);
+      }
+      return undefined;
+    },
+  } as unknown as McpServer;
 }
 
 // ── Registration ─────────────────────────────────────────────
 
 export function registerScriptTools(
 	server: McpServer,
-	ctx?: ScriptToolsContext,
+  ctx: ScriptToolsContext,
 ): RegisteredTool[] {
+  const principal = ctx.principal;
+  const toolServer = scopedToolServer(server, principal);
 	const tools: RegisteredTool[] = [];
-	const fetchImpl = ctx?.fetchImpl ?? fetch;
+  const fetchImpl = ctx.fetchImpl ?? fetch;
 
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"run_workflow_script",
 		{
 			title: "Run Workflow Script",
@@ -360,11 +377,17 @@ export function registerScriptTools(
 					parsed.error.issues.map((i) => i.message).join("; "),
 				);
 			}
+      if (!principal) {
+        return errorResult(
+          "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+        );
+      }
 			const args = parsed.data;
 
 			const proxied = await maybeProxyScriptTool(
 				"run_workflow_script",
 				args as Record<string, unknown>,
+        principal,
 			);
 			if (proxied) return proxied;
 
@@ -380,16 +403,30 @@ export function registerScriptTools(
 				let workflowId: string;
 
 				if (args.workflowName != null) {
-					// Saved mode — reuse the existing internal execute endpoint
-					// (mirrors workflow-tools.ts execute_workflow), which accepts a
-					// workflowName directly and resolves it server-side.
+          // Resolve names inside the authenticated project before calling the
+          // BFF. Global latest-by-name resolution can otherwise select a
+          // same-named workflow from another workspace.
+          const workflow = await ctx.persistence.findWorkflow(
+            args.workflowName,
+            principal.projectId,
+          );
+          if (!workflow) {
+            return errorResult(
+              `Saved workflow "${args.workflowName}" was not found in the authenticated workspace.`,
+            );
+          }
+          if (workflow.engineType !== "dynamic-script") {
+            return errorResult(
+              `Saved workflow "${args.workflowName}" is not a dynamic-script workflow. Use execute_workflow for non-script workflows.`,
+            );
+          }
 					const resp = await fetchImpl(
 						`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute`,
 						{
 							method: "POST",
-							headers: internalHeaders(args.sessionId),
+              headers: internalHeaders(principal),
 							body: JSON.stringify({
-								workflowName: args.workflowName,
+                workflowId: workflow.id,
 								// Verbatim any-JSON args; JSON.stringify drops the key when
 								// undefined so the script's `args` global is undefined.
 								triggerData: args.args,
@@ -418,7 +455,7 @@ export function registerScriptTools(
 						`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute-script`,
 						{
 							method: "POST",
-							headers: internalHeaders(args.sessionId),
+              headers: internalHeaders(principal),
 							body: JSON.stringify({
 								script: args.script,
 								// Verbatim any-JSON args; omitted entirely when not provided.
@@ -447,7 +484,7 @@ export function registerScriptTools(
 					const terminal = await waitForTerminal(
 						fetchImpl,
 						executionId,
-						args.sessionId,
+            principal,
 					);
 					return textResult({
 						executionId,
@@ -478,19 +515,17 @@ export function registerScriptTools(
 	});
 
 	// ── validate_workflow_script — author-time syntactic check ──────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"validate_workflow_script",
 		{
 			title: "Validate Workflow Script",
 			description:
 				"Check a dynamic workflow script (Claude Code Workflow dialect) for syntactic correctness WITHOUT running it. Returns { ok, meta, estimatedAgentCalls } on success or { ok:false, error } with the reason (banned API like Date.now()/fetch/import, missing or non-literal `export const meta`, bad meta shape, size over the limit). Use this in an author→validate→fix loop before `run_workflow_script`. Call `get_workflow_script_spec` for the dialect rules + platform deltas.",
 			inputSchema: {
-				script: z.string().describe("Dynamic workflow script source to validate."),
-				target: targetInput,
-				sessionId: z
+        script: z
 					.string()
-					.optional()
-					.describe("Optional workflow-builder session id to forward."),
+          .describe("Dynamic workflow script source to validate."),
+        target: targetInput,
 			},
 		},
 		async (rawArgs: unknown) => {
@@ -503,15 +538,19 @@ export function registerScriptTools(
 				rawArgs && typeof (rawArgs as any).target === "string"
 					? (rawArgs as any).target
 					: undefined;
-			const sessionId =
-				rawArgs && typeof (rawArgs as any).sessionId === "string"
-					? (rawArgs as any).sessionId
-					: undefined;
-			const proxied = await maybeProxyScriptTool("validate_workflow_script", {
+      if (!principal) {
+        return errorResult(
+          "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+        );
+      }
+      const proxied = await maybeProxyScriptTool(
+        "validate_workflow_script",
+        {
 				script,
 				...(target ? { target } : {}),
-				...(sessionId ? { sessionId } : {}),
-			});
+        },
+        principal,
+      );
 			if (proxied) return proxied;
 			if (!INTERNAL_API_TOKEN) {
 				return errorResult(
@@ -523,17 +562,18 @@ export function registerScriptTools(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/validate-script`,
 					{
 						method: "POST",
-						headers: internalHeaders(sessionId),
+            headers: internalHeaders(principal),
 						body: JSON.stringify({ script }),
 					},
 				);
-				const data = (await resp.json().catch(() => null)) as
-					| { ok?: boolean; error?: string; meta?: unknown; estimatedAgentCalls?: number }
-					| null;
+        const data = (await resp.json().catch(() => null)) as {
+          ok?: boolean;
+          error?: string;
+          meta?: unknown;
+          estimatedAgentCalls?: number;
+        } | null;
 				if (!resp.ok && (!data || typeof data.ok !== "boolean")) {
-					return errorResult(
-						`Validation request failed (HTTP ${resp.status})`,
-					);
+          return errorResult(`Validation request failed (HTTP ${resp.status})`);
 				}
 				return textResult(
 					data ?? { ok: false, error: "empty validation response" },
@@ -549,12 +589,12 @@ export function registerScriptTools(
 	});
 
 	// ── save_workflow_script — persist a REUSABLE dynamic-script workflow ───
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"save_workflow_script",
 		{
 			title: "Save Workflow Script",
 			description:
-				"Save (upsert) a dynamic workflow script as a REUSABLE named workflow WITHOUT running it — the persistence step of author → validate → save → run-by-name. The workflow is owned by this session's user + project and appears in the Workflows UI. An existing dynamic-script workflow with the same name in the same project is updated in place; otherwise a new one is created. Validation runs on save (a 400 carries the validator's reason — fix the script and retry). Run it later with run_workflow_script { workflowName } or your native Workflow tool.",
+        "Save (upsert) a dynamic workflow script as a REUSABLE named workflow WITHOUT running it — the persistence step of author → validate → save → run-by-name. The workflow is owned by the authenticated workspace principal and appears in the Workflows UI; no sessionId argument is required. An existing dynamic-script workflow with the same name in the same project is updated in place; otherwise a new one is created. Validation runs on save (a 400 carries the validator's reason — fix the script and retry). Run it later with run_workflow_script { workflowName } or your native Workflow tool.",
 			inputSchema: {
 				script: z.string().describe("Dynamic workflow script source to save."),
 				name: z
@@ -562,10 +602,6 @@ export function registerScriptTools(
 					.optional()
 					.describe("Workflow name (defaults to the script's meta.name)."),
 				target: targetInput,
-				sessionId: z
-					.string()
-					.optional()
-					.describe("Optional workflow-builder session id to forward."),
 			},
 		},
 		async (rawArgs: unknown) => {
@@ -581,27 +617,25 @@ export function registerScriptTools(
 				rawArgs && typeof (rawArgs as any).target === "string"
 					? (rawArgs as any).target
 					: undefined;
-			const sessionId =
-				rawArgs && typeof (rawArgs as any).sessionId === "string"
-					? (rawArgs as any).sessionId
-					: undefined;
 			if (!script.trim()) return errorResult("script is required");
-			const proxied = await maybeProxyScriptTool("save_workflow_script", {
+      if (!principal) {
+        return errorResult(
+          "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+        );
+      }
+      const proxied = await maybeProxyScriptTool(
+        "save_workflow_script",
+        {
 				script,
 				...(name ? { name } : {}),
 				...(target ? { target } : {}),
-				...(sessionId ? { sessionId } : {}),
-			});
+        },
+        principal,
+      );
 			if (proxied) return proxied;
 			if (!INTERNAL_API_TOKEN) {
 				return errorResult(
 					"INTERNAL_API_TOKEN is not configured; cannot save a workflow script.",
-				);
-			}
-			if (!sessionId && !currentGoalSessionId()) {
-				return errorResult(
-					"No session context (X-Wfb-Session-Id) — a saved workflow must be " +
-						"attributed to the calling session's user + project.",
 				);
 			}
 			try {
@@ -609,13 +643,16 @@ export function registerScriptTools(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/save-script`,
 					{
 						method: "POST",
-						headers: internalHeaders(sessionId),
+            headers: internalHeaders(principal),
 						body: JSON.stringify({ script, ...(name ? { name } : {}) }),
 					},
 				);
-				const data = (await resp.json().catch(() => null)) as
-					| { workflowId?: string; name?: string; action?: string; error?: string }
-					| null;
+        const data = (await resp.json().catch(() => null)) as {
+          workflowId?: string;
+          name?: string;
+          action?: string;
+          error?: string;
+        } | null;
 				if (!resp.ok) {
 					return errorResult(
 						`Failed to save workflow script (HTTP ${resp.status}): ${data?.error ?? "unknown error"}`,
@@ -633,7 +670,7 @@ export function registerScriptTools(
 	});
 
 	// ── get_workflow_script_spec — serve the dialect reference ──────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"get_workflow_script_spec",
 		{
 			title: "Get Workflow Script Spec",

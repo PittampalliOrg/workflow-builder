@@ -1,10 +1,10 @@
 /**
- * Team MCP wiring — stamp team scope onto the workflow-mcp-server entry.
+ * Team MCP compatibility wiring for the staged server rollout.
  *
- * The team tools live on the SAME workflow-mcp-server that hosts the goal/script
- * tools, so `ensureGoalMcpServer` already adds the server entry; we only stamp
- * the team scope headers on it (mirrors stampGoalMcpSessionHeader /
- * stampScriptGuardHeader in goals/mcp-wiring.ts):
+ * The current server derives team authority from BFF-signed session claims.
+ * These unsigned headers grant no capability; they remain temporarily so older
+ * MCP pods keep the same nesting behavior while BFF and MCP images roll out in
+ * phases:
  *   • X-Wfb-Team-Id   — which team the session acts in (lead + teammates)
  *   • X-Wfb-Team-Depth — teammates only; suppresses the team tools so a teammate
  *                        cannot spawn a nested team (Claude Code forbids that too).

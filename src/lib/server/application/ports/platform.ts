@@ -32,9 +32,7 @@ export interface ResourceUsageReadRepository {
 		projectId?: string | null;
 		limit: number;
 	}): Promise<AgentSkillUsedByReadModel | null>;
-	getVaultUsages(input: {
-		vaultId: string;
-	}): Promise<VaultUsagesReadModel>;
+  getVaultUsages(input: { vaultId: string }): Promise<VaultUsagesReadModel>;
 }
 
 export type SecurityAuditEventKind =
@@ -138,20 +136,36 @@ export interface HomePageReadRepository {
 	}): Promise<HomePageRecentRunRecord[]>;
 }
 
+export const WORKFLOW_MCP_AUTHORING_API_KEY_SCOPES = [
+  "workflow:read",
+  "workflow:write",
+  "workflow:execute",
+  "agent:write",
+] as const;
+
 export type ApiKeyRecord = {
 	id: string;
 	userId: string;
+  projectId: string | null;
+  createdByUserId: string;
+  scopes: string[];
 };
 
 export type UserApiKeyListItem = {
 	id: string;
+  projectId: string | null;
+  createdByUserId: string;
+  scopes: string[];
 	name: string | null;
 	keyPrefix: string;
 	createdAt: Date;
 	lastUsedAt: Date | null;
 };
 
-export type CreateUserApiKeySecretInput = {
+export type CreateProjectApiKeySecretInput = {
+  projectId: string;
+  createdByUserId: string;
+  scopes: string[];
 	id: string;
 	userId: string;
 	name: string;
@@ -159,7 +173,8 @@ export type CreateUserApiKeySecretInput = {
 	keyPrefix: string;
 };
 
-export type UpdateUserApiKeySecretInput = {
+export type UpdateProjectApiKeySecretInput = {
+  projectId: string;
 	id: string;
 	userId: string;
 	keyHash: string;
@@ -257,14 +272,33 @@ export type ApiKeyValidationResult =
 	| { valid: true; apiKeyId: string }
 	| { valid: false; error: string; statusCode: number };
 
+export type ApiKeyResolutionResult =
+  | {
+      valid: true;
+      apiKeyId: string;
+      userId: string;
+      projectId: string | null;
+      scopes: string[];
+    }
+  | { valid: false; error: string; statusCode: number };
+
 export interface ApiKeyStore {
 	getByKeyHash(keyHash: string): Promise<ApiKeyRecord | null>;
 	markUsed(apiKeyId: string, usedAt: Date): Promise<void>;
-	listByUserId(userId: string): Promise<UserApiKeyListItem[]>;
-	createUserApiKey(input: CreateUserApiKeySecretInput): Promise<UserApiKeyListItem>;
-	deleteForUser(input: { id: string; userId: string }): Promise<boolean>;
-	updateSecretForUser(
-		input: UpdateUserApiKeySecretInput,
+  listVisibleInProject(input: {
+    userId: string;
+    projectId: string;
+  }): Promise<UserApiKeyListItem[]>;
+  createProjectApiKey(
+    input: CreateProjectApiKeySecretInput,
+  ): Promise<UserApiKeyListItem>;
+  deleteForProject(input: {
+    id: string;
+    userId: string;
+    projectId: string;
+  }): Promise<boolean>;
+  updateSecretForProject(
+    input: UpdateProjectApiKeySecretInput,
 	): Promise<UserApiKeyListItem | null>;
 }
 
@@ -290,6 +324,10 @@ export type CreateWorkspaceProjectInput = {
 };
 
 export interface WorkspaceProjectRepository {
+  hasActiveProjectMembership(input: {
+    projectId: string;
+    userId: string;
+  }): Promise<boolean>;
 	getMemberProjectId(input: {
 		projectId: string;
 		userId: string;
@@ -325,7 +363,10 @@ export interface WorkspaceProjectRepository {
 	email?: string | null;
 	}): Promise<
 		| { ok: true; userId: string }
-		| { ok: false; reason: "project_not_found" | "user_not_found" | "different_platform" }
+    | {
+        ok: false;
+        reason: "project_not_found" | "user_not_found" | "different_platform";
+      }
 	>;
 	getProjectMember(input: {
 		projectId: string;

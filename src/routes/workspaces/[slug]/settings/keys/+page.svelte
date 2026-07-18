@@ -30,6 +30,9 @@
 		id: string;
 		name: string | null;
 		keyPrefix: string;
+		projectId: string | null;
+		createdByUserId: string;
+		scopes: string[];
 		createdAt: string;
 		lastUsedAt: string | null;
 	};
@@ -154,7 +157,7 @@
 				<Key class="size-4" /> API keys
 			</h2>
 			<p class="text-xs text-muted-foreground mt-1">
-				API keys are owned by workspaces and remain active even after the creator is removed.
+				Keys you create are bound to this workspace and stop working if you lose access.
 			</p>
 		</div>
 		<Button onclick={() => (createOpen = true)}>
@@ -193,6 +196,9 @@
 							<td class="p-3">
 								<div class="font-medium">{key.name ?? 'Unnamed'}</div>
 								<div class="font-mono text-[11px] text-muted-foreground">{key.keyPrefix}</div>
+								<div class="mt-1 text-[11px] text-muted-foreground">
+									{key.projectId ? key.scopes.join(' · ') : 'Legacy owner-scoped webhook key'}
+								</div>
 							</td>
 							<td class="p-3 text-xs text-muted-foreground">
 								{new Date(key.createdAt).toLocaleDateString()}
@@ -215,8 +221,10 @@
 									size="icon"
 									class="size-7"
 									onclick={() => (toRotate = key)}
-									disabled={busyId === key.id}
-									title="Rotate key"
+									disabled={busyId === key.id || !key.projectId}
+									title={key.projectId
+										? 'Rotate key'
+										: 'Create a new workspace key to replace this legacy key'}
 								>
 									<RefreshCw class="size-3.5" />
 								</Button>

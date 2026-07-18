@@ -9,11 +9,13 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import * as db from "./db.js";
-import { currentGoalSessionId } from "./goal-context.js";
+import {
+  hasWorkflowMcpScope,
+  type WorkflowMcpPrincipal,
+  type WorkflowMcpScope,
+} from "./auth-context.js";
 import { setSpanOutput } from "./observability/content.js";
-import { callRemoteWorkflowTargetTool } from "./remote-mcp.js";
-import { resolveWorkflowTarget } from "./targets.js";
+import type { WorkflowPersistencePort } from "./ports/workflow-persistence.js";
 
 export type RegisteredTool = {
 	name: string;
@@ -28,7 +30,7 @@ const targetInput = z
 	.string()
 	.optional()
 	.describe(
-		'Workflow runtime target. Omit or use "dev" for the host dev cluster; use "preview:<name>" for a vCluster preview.',
+    'Workflow runtime target. Omit or use "dev" for local execution. Preview values return direct-connect guidance because credentials are never forwarded across targets.',
 	);
 
 /** Helper: JSON text response */
@@ -48,15 +50,53 @@ function errorResult(msg: string) {
 	};
 }
 
-function internalHeaders(userId?: string): Record<string, string> {
+function internalHeaders(
+  principal: WorkflowMcpPrincipal,
+): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"X-Internal-Token": INTERNAL_API_TOKEN,
+    "X-Wfb-Principal-Assertion": principal.principalAssertion,
 	};
-	const sessionId = currentGoalSessionId();
-	if (sessionId) headers["X-Wfb-Session-Id"] = sessionId;
-	if (userId) headers["X-User-Id"] = userId;
+  if (principal.sessionId) headers["X-Wfb-Session-Id"] = principal.sessionId;
 	return headers;
+}
+
+const WORKFLOW_TOOL_SCOPES: Record<string, WorkflowMcpScope> = {
+  list_workflows: "workflow:read",
+  get_workflow: "workflow:read",
+  list_available_actions: "workflow:read",
+  create_agent: "agent:write",
+  execute_workflow: "workflow:execute",
+  get_execution_status: "workflow:read",
+  get_execution_results: "workflow:read",
+};
+
+function scopedToolServer(
+  server: McpServer,
+  principal?: WorkflowMcpPrincipal,
+): McpServer {
+  return {
+    registerTool(name: string, ...args: unknown[]) {
+      const scope = WORKFLOW_TOOL_SCOPES[name];
+      if (
+        name === "execute_workflow" &&
+        (principal?.capabilities.scriptDepth ?? 0) > 0
+      ) {
+        return undefined;
+      }
+      if (scope && hasWorkflowMcpScope(principal, scope)) {
+        return (server as any).registerTool(name, ...args);
+      }
+      return undefined;
+    },
+  } as unknown as McpServer;
+}
+
+function requirePrincipal(
+  principal?: WorkflowMcpPrincipal,
+): WorkflowMcpPrincipal | null {
+  return principal ?? null;
 }
 
 function resolveExecutionRef(args: {
@@ -68,19 +108,17 @@ function resolveExecutionRef(args: {
 }
 
 async function proxyTargetTool(
-	toolName: string,
+  _toolName: string,
 	args: Record<string, unknown>,
-	userId?: string,
+  _principal: WorkflowMcpPrincipal,
 ) {
-	const target = await resolveWorkflowTarget(
-		typeof args.target === "string" ? args.target : undefined,
-	);
-	if (target.local) return null;
-	return callRemoteWorkflowTargetTool(target, toolName, args, {
-		userId,
-		sessionId:
-			typeof args.sessionId === "string" ? args.sessionId : currentGoalSessionId(),
-	});
+  const target = typeof args.target === "string" ? args.target.trim() : "";
+  if (!target || ["dev", "host", "local"].includes(target.toLowerCase())) {
+    return null;
+  }
+  throw new Error(
+    "Cross-target workflow calls are disabled. No source credential was forwarded; connect your MCP client directly to the intended preview endpoint with a key created for that target.",
+  );
 }
 
 /**
@@ -90,17 +128,23 @@ async function proxyTargetTool(
  * resource wiring, but this module no longer registers Remote DOM or canvas
  * mutation tools.
  */
+export type WorkflowToolsContext = {
+  persistence: WorkflowPersistencePort;
+  principal?: WorkflowMcpPrincipal;
+  fetchImpl?: typeof fetch;
+};
+
 export function registerWorkflowTools(
 	server: McpServer,
-	_uiHtmlPath?: string,
-	userId?: string,
-	_uiSession?: unknown,
+  ctx: WorkflowToolsContext,
 ): RegisteredTool[] {
-	const effectiveUserId = userId ?? process.env.USER_ID ?? undefined;
+  const { persistence, principal } = ctx;
+  const fetchImpl = ctx.fetchImpl ?? fetch;
+  const toolServer = scopedToolServer(server, principal);
 	const tools: RegisteredTool[] = [];
 
 	// ── list_workflows ─────────────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"list_workflows",
 		{
 			title: "List Workflows",
@@ -108,22 +152,44 @@ export function registerWorkflowTools(
 				"List workflows with summary metadata, engine type, and node/edge counts. Does not return full spec/node data. Defaults to the 50 most recently updated in COMPACT form (id | name | engine); pass summary:false for full metadata rows, and limit to change the cap (max 500).",
 			inputSchema: {
 				target: targetInput,
-				limit: z.number().int().positive().max(500).optional()
-					.describe("Max workflows returned, most recently updated first (default 50)."),
-				summary: z.boolean().optional()
-					.describe("true (default): compact 'id | name | engine' lines. false: full metadata objects."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(500)
+          .optional()
+          .describe(
+            "Max workflows returned, most recently updated first (default 50).",
+          ),
+        summary: z
+          .boolean()
+          .optional()
+          .describe(
+            "true (default): compact 'id | name | engine' lines. false: full metadata objects.",
+          ),
 			},
 		},
-		async (args: { target?: string; limit?: number; summary?: boolean } = {}) => {
+    async (
+      args: { target?: string; limit?: number; summary?: boolean } = {},
+    ) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"list_workflows",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
 				const limit = args.limit ?? 50;
-				const workflows = await db.listWorkflows(effectiveUserId, limit);
+        const workflows = await persistence.listWorkflows(
+          actor.projectId,
+          limit,
+        );
 				if (args.summary !== false) {
 					return textResult(
 						workflows
@@ -143,7 +209,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── get_workflow ────────────────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"get_workflow",
 		{
 			title: "Get Workflow",
@@ -156,13 +222,22 @@ export function registerWorkflowTools(
 		},
 		async (args: { workflow_id: string; target?: string }) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"get_workflow",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
-				const wf = await db.getWorkflow(args.workflow_id);
+        const wf = await persistence.findWorkflow(
+          args.workflow_id,
+          actor.projectId,
+        );
 				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
@@ -176,7 +251,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── list_available_actions ─────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"list_available_actions",
 		{
 			title: "List Available Actions",
@@ -192,13 +267,19 @@ export function registerWorkflowTools(
 		},
 		async (args: { search?: string; target?: string }) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"list_available_actions",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
-				const actions = await db.listAvailableActions(args.search);
+        const actions = await persistence.listAvailableActions(args.search);
 				return textResult(actions);
 			} catch (err) {
 				return errorResult(`Failed to list actions: ${err}`);
@@ -211,12 +292,12 @@ export function registerWorkflowTools(
 	});
 
 	// ── create_agent ───────────────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"create_agent",
 		{
 			title: "Create Agent",
 			description:
-				"Register a new agent in the catalog so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (e.g. 'zai/glm-5.2' for GLM 5.2). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Use `skills` to attach agent skills. Returns the created agent's id and slug. Owner is resolved from the MCP connection (X-User-Id) or the active session (X-Wfb-Session-Id) — you cannot create an agent for another user.",
+        "Register a new agent in the authenticated workspace so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (for example 'kimi/kimi-k3'). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Use `skills` to attach agent skills. Returns the created agent's id and slug. Ownership always comes from the authenticated MCP connection.",
 			inputSchema: {
 				name: z.string().describe("Human-readable agent name."),
 				slug: z
@@ -228,7 +309,7 @@ export function registerWorkflowTools(
 					.string()
 					.optional()
 					.describe(
-						"modelSpec, e.g. 'zai/glm-5.2'. Ignored for CLI runtimes (native subscription auth).",
+            "modelSpec, e.g. 'kimi/kimi-k3'. Ignored for CLI runtimes (native subscription auth).",
 					),
 				runtime: z
 					.string()
@@ -257,10 +338,6 @@ export function registerWorkflowTools(
 				tools: z.array(z.string()).optional(),
 				skills: z.array(z.string()).optional(),
 				tags: z.array(z.string()).optional(),
-				project_id: z
-					.string()
-					.optional()
-					.describe("Owning project (defaults to the session's project)."),
 			},
 		},
 		async (args: {
@@ -274,27 +351,17 @@ export function registerWorkflowTools(
 			tools?: string[];
 			skills?: string[];
 			tags?: string[];
-			project_id?: string;
 		}) => {
 			try {
-				if (!INTERNAL_API_TOKEN) {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
 					return errorResult(
-						"INTERNAL_API_TOKEN is not configured for agent creation",
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
 					);
 				}
-				// Resolve the owner server-side: the connection's X-User-Id, else the
-				// active session's owner. Never trust a client-supplied user id.
-				const sessionId = currentGoalSessionId();
-				let userId = effectiveUserId;
-				let projectId = args.project_id ?? null;
-				if ((!userId || !projectId) && sessionId) {
-					const owner = await db.getSessionOwner(sessionId);
-					userId = userId ?? owner?.userId ?? undefined;
-					projectId = projectId ?? owner?.projectId ?? null;
-				}
-				if (!userId) {
+        if (!INTERNAL_API_TOKEN) {
 					return errorResult(
-						"No user context: create_agent needs an authenticated MCP connection (X-User-Id) or a session (X-Wfb-Session-Id).",
+            "INTERNAL_API_TOKEN is not configured for agent creation",
 					);
 				}
 
@@ -326,13 +393,20 @@ export function registerWorkflowTools(
 				if (args.slug) agentBody.slug = args.slug;
 				if (args.description) agentBody.description = args.description;
 				if (args.tags) agentBody.tags = args.tags;
-				if (projectId) agentBody.projectId = projectId;
+        agentBody.projectId = actor.projectId;
 
-				const resp = await fetch(`${WORKFLOW_BUILDER_URL}/api/internal/agents`, {
+        const resp = await fetchImpl(
+          `${WORKFLOW_BUILDER_URL}/api/internal/agents`,
+          {
 					method: "POST",
-					headers: internalHeaders(userId),
-					body: JSON.stringify({ userId, projectId, agent: agentBody }),
-				});
+            headers: internalHeaders(actor),
+            body: JSON.stringify({
+              userId: actor.userId,
+              projectId: actor.projectId,
+              agent: agentBody,
+            }),
+          },
+        );
 				const data = (await resp.json().catch(() => ({}))) as {
 					agent?: { id?: string; slug?: string; name?: string };
 					message?: string;
@@ -358,7 +432,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── execute_workflow ───────────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"execute_workflow",
 		{
 			title: "Execute Workflow",
@@ -379,10 +453,16 @@ export function registerWorkflowTools(
 			target?: string;
 		}) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"execute_workflow",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
 				if (!INTERNAL_API_TOKEN) {
@@ -390,13 +470,20 @@ export function registerWorkflowTools(
 						"INTERNAL_API_TOKEN is not configured for workflow execution",
 					);
 				}
-				const resp = await fetch(
+        const workflow = await persistence.findWorkflow(
+          args.workflow_id,
+          actor.projectId,
+        );
+        if (!workflow) {
+          return errorResult(`Workflow "${args.workflow_id}" not found`);
+        }
+        const resp = await fetchImpl(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute`,
 					{
 						method: "POST",
-						headers: internalHeaders(effectiveUserId),
+            headers: internalHeaders(actor),
 						body: JSON.stringify({
-							workflowId: args.workflow_id,
+              workflowId: workflow.id,
 							triggerData: args.trigger_data ?? {},
 						}),
 					},
@@ -420,7 +507,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── get_execution_status ──────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"get_execution_status",
 		{
 			title: "Get Execution Status",
@@ -434,7 +521,9 @@ export function registerWorkflowTools(
 				instance_id: z
 					.string()
 					.optional()
-					.describe("Legacy Dapr instanceId; resolved to execution_id when possible"),
+          .describe(
+            "Legacy Dapr instanceId; resolved to execution_id when possible",
+          ),
 				target: targetInput,
 			},
 		},
@@ -444,10 +533,16 @@ export function registerWorkflowTools(
 			target?: string;
 		}) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"get_execution_status",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
 				if (!INTERNAL_API_TOKEN) {
@@ -459,13 +554,13 @@ export function registerWorkflowTools(
 				if (!ref) {
 					return errorResult("Provide execution_id or instance_id.");
 				}
-				const execution = await db.getExecutionByInstanceId(ref);
-				const executionId = execution?.id ?? ref;
-				const resp = await fetch(
+        const execution = await persistence.findExecution(ref, actor.projectId);
+        if (!execution) return errorResult(`Execution not found for "${ref}"`);
+        const resp = await fetchImpl(
 					`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/executions/${encodeURIComponent(
-						executionId,
+            execution.id,
 					)}/status`,
-					{ headers: internalHeaders(effectiveUserId) },
+          { headers: internalHeaders(actor) },
 				);
 				if (!resp.ok) {
 					const text = await resp.text();
@@ -484,7 +579,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── get_execution_results ─────────────────────────────
-	(server as any).registerTool(
+  (toolServer as any).registerTool(
 		"get_execution_results",
 		{
 			title: "Get Execution Results",
@@ -508,21 +603,27 @@ export function registerWorkflowTools(
 			target?: string;
 		}) => {
 			try {
+        const actor = requirePrincipal(principal);
+        if (!actor) {
+          return errorResult(
+            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
+          );
+        }
 				const proxied = await proxyTargetTool(
 					"get_execution_results",
 					args as Record<string, unknown>,
-					effectiveUserId,
+          actor,
 				);
 				if (proxied) return proxied;
 				const ref = resolveExecutionRef(args);
 				if (!ref) {
 					return errorResult("Provide execution_id or instance_id.");
 				}
-				const execution = await db.getExecutionByInstanceId(ref);
+        const execution = await persistence.findExecution(ref, actor.projectId);
 				if (!execution) {
 					return errorResult(`Execution not found for "${ref}"`);
 				}
-				const logs = await db.getExecutionLogs(execution.id);
+        const logs = await persistence.listExecutionLogs(execution.id);
 				return textResult({ execution, logs });
 			} catch (err) {
 				return errorResult(`Failed to get execution results: ${err}`);

@@ -147,6 +147,24 @@ def test_session_bridge_uses_child_workflow_for_non_swebench_only() -> None:
     assert '"reason": "cancelled"' in source
 
 
+def test_workflow_tool_direct_bff_calls_carry_session_lineage_and_token_when_available() -> None:
+    source = MAIN_SOURCE.read_text()
+    bridge_start = source.index("def run_workflow_script_bridge")
+    bridge_end = source.index("def seed_mcp_for_instance", bridge_start)
+    bridge_source = source[bridge_start:bridge_end]
+
+    assert '"parentInstanceId": message.get("parentInstanceId")' in bridge_source
+    assert "session_id = self._workflow_tool_session_id(parent_instance)" in bridge_source
+    assert "session_token = self._workflow_tool_session_token(parent_instance)" in bridge_source
+    assert '"X-Wfb-Session-Id": session_id' in bridge_source
+    assert 'headers["X-Wfb-Session-Token"] = session_token' in bridge_source
+    assert "if session_token:" in bridge_source
+    assert "if not session_id:" in bridge_source
+    assert "requires Workflow Builder session lineage" in bridge_source
+    assert "A token is mandatory at workflow-mcp-server" in bridge_source
+    assert "bounded legacy-resource" in bridge_source
+
+
 def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() -> None:
     source = MAIN_SOURCE.read_text()
 

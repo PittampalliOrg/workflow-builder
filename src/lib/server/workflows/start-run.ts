@@ -13,38 +13,45 @@
  * orchestrator stamps the Dapr instance id as `sw-<name>-exec-<executionId>`, the
  * instance id is deterministic too, so Dapr also dedups the start.
  */
-import { env } from '$env/dynamic/private';
-import { getOrchestratorUrl } from '$lib/server/dapr-client';
-import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
-import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
-import { validateTriggerModel } from '$lib/server/workflows/model-validation';
-import { AgentRefResolutionError, resolveSpecAgentRefs } from '$lib/server/agents/resolver';
-import { getApplicationAdapters } from '$lib/server/application';
-import type { WorkflowDefinition } from '$lib/server/application/ports';
+import { env } from "$env/dynamic/private";
+import { getOrchestratorUrl } from "$lib/server/dapr-client";
+import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
+import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
+import { validateTriggerModel } from "$lib/server/workflows/model-validation";
+import {
+  AgentRefResolutionError,
+  resolveSpecAgentRefs,
+} from "$lib/server/agents/resolver";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { WorkflowDefinition } from "$lib/server/application/ports";
 import {
 	applyWorkflowInputDefaults,
-	getPromptExpansionConfig
-} from '$lib/utils/workflow-input-config';
-import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
+  getPromptExpansionConfig,
+} from "$lib/utils/workflow-input-config";
+import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import {
 	buildWorkflowSessionId,
 	ensureWorkflowTraceparentHeader,
-	injectWorkflowSessionHeaders
-} from '$lib/server/observability/workflow-session';
-import { prewarmWorkflowEntrySessions } from '$lib/server/sessions/prewarm';
+  injectWorkflowSessionHeaders,
+} from "$lib/server/observability/workflow-session";
+import { prewarmWorkflowEntrySessions } from "$lib/server/sessions/prewarm";
 import {
 	validateArgsAgainstMetaInput,
 	validateDynamicScriptSpec,
-	validateWithEvaluator
-} from '$lib/server/workflows/dynamic-script-validation';
-import { workflowSpecDigest } from '$lib/server/application/workflow-spec-digest';
+  validateWithEvaluator,
+} from "$lib/server/workflows/dynamic-script-validation";
+import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest";
 
 export function isSWWorkflow(spec: unknown): boolean {
-	if (typeof spec !== 'object' || spec === null) return false;
+  if (typeof spec !== "object" || spec === null) return false;
 	const w = spec as Record<string, unknown>;
-	if (typeof w.document !== 'object' || w.document === null) return false;
+  if (typeof w.document !== "object" || w.document === null) return false;
 	const doc = w.document as Record<string, unknown>;
-	return doc.dsl === '1.0.0' && typeof doc.namespace === 'string' && typeof doc.name === 'string';
+  return (
+    doc.dsl === "1.0.0" &&
+    typeof doc.namespace === "string" &&
+    typeof doc.name === "string"
+  );
 }
 
 /** Resolve a workflow by ID or by name (preferring public visibility). */
@@ -62,7 +69,7 @@ export type StartWorkflowResult =
 			instanceId: string | null;
 			workflowId: string;
 			workflowName: string;
-			status: 'running';
+      status: "running";
 			reused: boolean;
 	  }
 	| { ok: false; status: number; error: string };
@@ -83,6 +90,8 @@ export interface StartWorkflowOptions {
 	triggerSource?: string;
 	/** Interactive caller to stamp on the execution row; defaults to workflow owner. */
 	userId?: string;
+  /** When provided, fail closed unless the resolved workflow belongs to this project. */
+  projectId?: string;
 	/** Resume/fork: skip every top-level node before this one (the interpreter
 	 *  reuses the retained workspace and runs only from here onward). */
 	resumeFromNode?: string;
@@ -110,7 +119,7 @@ export interface StartWorkflowOptions {
 }
 
 export async function startWorkflowRun(
-	opts: StartWorkflowOptions
+  opts: StartWorkflowOptions,
 ): Promise<StartWorkflowResult> {
 	let app: ReturnType<typeof getApplicationAdapters>;
 	try {
@@ -119,7 +128,10 @@ export async function startWorkflowRun(
 		return {
 			ok: false,
 			status: 503,
-			error: adapterError instanceof Error ? adapterError.message : 'Application adapters unavailable'
+      error:
+        adapterError instanceof Error
+          ? adapterError.message
+          : "Application adapters unavailable",
 		};
 	}
 	try {
@@ -131,15 +143,25 @@ export async function startWorkflowRun(
 			error:
 				schemaError instanceof Error
 					? schemaError.message
-					: 'Execution read-model migration is required'
+          : "Execution read-model migration is required",
 		};
 	}
 
-	const workflow = await app.workflowDefinitions.getByRef({
+  const scopedWorkflowName = opts.workflowName?.trim();
+  const workflow =
+    opts.projectId && scopedWorkflowName && !opts.workflowId
+      ? await app.workflowDefinitions.getLatestByNameInProject(
+          scopedWorkflowName,
+          opts.projectId,
+        )
+      : await app.workflowDefinitions.getByRef({
 		workflowId: opts.workflowId,
-		workflowName: opts.workflowName
+          workflowName: opts.workflowName,
 	});
-	if (!workflow) return { ok: false, status: 404, error: 'Workflow not found' };
+  if (!workflow) return { ok: false, status: 404, error: "Workflow not found" };
+  if (opts.projectId && workflow.projectId !== opts.projectId) {
+    return { ok: false, status: 404, error: "Workflow not found" };
+  }
 	if (
 		opts.expectedWorkflowSpecDigest &&
 		workflowSpecDigest(workflow.spec) !== opts.expectedWorkflowSpecDigest
@@ -147,14 +169,15 @@ export async function startWorkflowRun(
 		return {
 			ok: false,
 			status: 409,
-			error: "Workflow spec digest does not match the expected executable contract",
+      error:
+        "Workflow spec digest does not match the expected executable contract",
 		};
 	}
 	const launch = app.workflowLaunchPolicy.prepare({
 		workflow,
 		triggerData: opts.triggerData,
 		launchSurface: opts.launchSurface,
-		launchOrigin: opts.launchOrigin
+    launchOrigin: opts.launchOrigin,
 	});
 	if (!launch.ok) return launch;
 
@@ -162,14 +185,24 @@ export async function startWorkflowRun(
 	if (opts.executionId && opts.idempotent) {
 		const existing = await app.workflowExecutions.getById(opts.executionId);
 		if (existing) {
+      if (
+        existing.workflowId !== workflow.id ||
+        (opts.projectId && existing.projectId !== opts.projectId)
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          error: "Execution id already belongs to a different workflow scope",
+        };
+      }
 			return {
 				ok: true,
 				executionId: existing.id,
 				instanceId: existing.daprInstanceId ?? null,
 				workflowId: workflow.id,
 				workflowName: workflow.name,
-				status: 'running',
-				reused: true
+        status: "running",
+        reused: true,
 			};
 		}
 	}
@@ -180,14 +213,14 @@ export async function startWorkflowRun(
 	if (workflow.engineType === "dynamic-script") {
 		return startDynamicScriptRun(app, workflow, {
 			...opts,
-			triggerData: launch.triggerData
+      triggerData: launch.triggerData,
 		});
 	}
 
 	// SW 1.0 trigger inputs are field-keyed objects; coerce non-objects to {}.
 	let triggerData: Record<string, unknown> =
 		launch.triggerData &&
-		typeof launch.triggerData === 'object' &&
+    typeof launch.triggerData === "object" &&
 		!Array.isArray(launch.triggerData)
 			? (launch.triggerData as Record<string, unknown>)
 			: {};
@@ -196,28 +229,33 @@ export async function startWorkflowRun(
 		// P4 freeze (cutover item 18): the last stop before the interpreter is
 		// retired. SHIPPED OFF — flip SW_START_DISABLED=true only when every
 		// system producer has flipped to a script (docs/code-first-cutover.md).
-		const swStartDisabled = (env.SW_START_DISABLED ?? '').trim().toLowerCase();
-		if (['1', 'true', 'yes', 'on'].includes(swStartDisabled)) {
+    const swStartDisabled = (env.SW_START_DISABLED ?? "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(swStartDisabled)) {
 			return {
 				ok: false,
 				status: 410,
 				error:
-					'SW 1.0 execution is disabled on this deployment — convert this workflow ' +
-					'to a dynamic-script (docs/code-first-cutover.md).'
+          "SW 1.0 execution is disabled on this deployment — convert this workflow " +
+          "to a dynamic-script (docs/code-first-cutover.md).",
 			};
 		}
 		const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
-		if (removedAgentCallsError) return { ok: false, status: 400, error: removedAgentCallsError };
+    if (removedAgentCallsError)
+      return { ok: false, status: 400, error: removedAgentCallsError };
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
 		}
 		const missing = getMissingRequiredTriggerFields(spec, triggerData);
 		if (missing.length > 0) {
-			return { ok: false, status: 400, error: `Missing required workflow input fields: ${missing.join(', ')}` };
+      return {
+        ok: false,
+        status: 400,
+        error: `Missing required workflow input fields: ${missing.join(", ")}`,
+      };
 		}
 		const modelError = await validateTriggerModel(spec, triggerData, {
-			modelCatalog: app.workflowData
+      modelCatalog: app.workflowData,
 		});
 		if (modelError) return { ok: false, status: 400, error: modelError };
 		try {
@@ -229,7 +267,10 @@ export async function startWorkflowRun(
 			return {
 				ok: false,
 				status: 500,
-				error: resolveErr instanceof Error ? resolveErr.message : 'Agent ref resolution failed'
+        error:
+          resolveErr instanceof Error
+            ? resolveErr.message
+            : "Agent ref resolution failed",
 			};
 		}
 	}
@@ -239,7 +280,7 @@ export async function startWorkflowRun(
 			ok: false,
 			status: 400,
 			error:
-				'Workflow does not have a valid SW 1.0 spec. Save or publish the workflow before executing it.'
+        "Workflow does not have a valid SW 1.0 spec. Save or publish the workflow before executing it.",
 		};
 	}
 
@@ -253,8 +294,8 @@ export async function startWorkflowRun(
 		// workspace in the UI — the workspace-scoped run pages filter by projectId,
 		// so a null here renders the run invisible ("empty" run page).
 		projectId: workflow.projectId ?? null,
-		status: 'running',
-		phase: 'running',
+    status: "running",
+    phase: "running",
 		progress: 0,
 		input: triggerData,
 		// Snapshot the EXECUTED spec (agent-refs resolved) so each run — and each
@@ -262,14 +303,16 @@ export async function startWorkflowRun(
 		// parent" diffs. Evals/benchmarks create their own rows with a richer
 		// executionIr, so this generic path never clobbers them.
 		executionIr: { spec, triggerData },
-		executionIrVersion: 'sw-1.0.0',
+    executionIrVersion: "sw-1.0.0",
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
-		...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
+    ...(opts.rerunOfExecutionId
+      ? { rerunOfExecutionId: opts.rerunOfExecutionId }
+      : {}),
 		...(opts.rerunSourceInstanceId
 			? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
 			: {}),
 		// Persist the fork point so the lineage tree can label "fork @<node>".
-		...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {})
+    ...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
 	});
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
@@ -278,18 +321,18 @@ export async function startWorkflowRun(
 	let instanceId: string | undefined;
 	try {
 		const headers = injectWorkflowSessionHeaders(
-			ensureWorkflowTraceparentHeader({ 'Content-Type': 'application/json' }),
+      ensureWorkflowTraceparentHeader({ "Content-Type": "application/json" }),
 			{
 				sessionId,
 				workflowExecutionId: execution.id,
 				workflowId: workflow.id,
-				traceGroupId: execution.id
-			}
+        traceGroupId: execution.id,
+      },
 		);
 		const traceContext = {
 			traceparent: headers.traceparent,
 			tracestate: headers.tracestate,
-			baggage: headers.baggage
+      baggage: headers.baggage,
 		};
 		void prewarmWorkflowEntrySessions({
 			spec,
@@ -311,18 +354,26 @@ export async function startWorkflowRun(
 			...(opts.workspaceExecutionId
 				? { workspaceExecutionId: opts.workspaceExecutionId }
 				: {}),
-			...(opts.seedWorkspaceFrom ? { seedWorkspaceFrom: opts.seedWorkspaceFrom } : {})
+      ...(opts.seedWorkspaceFrom
+        ? { seedWorkspaceFrom: opts.seedWorkspaceFrom }
+        : {}),
 		});
 		instanceId = result.instanceId;
 	} catch (err) {
 		await app.workflowExecutions.markStartFailed({
 			executionId: execution.id,
-			error: err instanceof Error ? err.message : 'Failed to start workflow execution'
+      error:
+        err instanceof Error
+          ? err.message
+          : "Failed to start workflow execution",
 		});
 		return {
 			ok: false,
 			status: 500,
-			error: err instanceof Error ? err.message : 'Failed to start workflow execution'
+      error:
+        err instanceof Error
+          ? err.message
+          : "Failed to start workflow execution",
 		};
 	}
 
@@ -330,7 +381,7 @@ export async function startWorkflowRun(
 		await app.workflowExecutions.attachSchedulerInstance({
 			executionId: execution.id,
 			instanceId,
-			workflowSessionId: sessionId ?? execution.id
+      workflowSessionId: sessionId ?? execution.id,
 		});
 	}
 
@@ -340,8 +391,8 @@ export async function startWorkflowRun(
 		instanceId: instanceId ?? null,
 		workflowId: workflow.id,
 		workflowName: workflow.name,
-		status: 'running',
-		reused: false
+    status: "running",
+    reused: false,
 	};
 }
 
@@ -355,7 +406,7 @@ export async function startWorkflowRun(
 async function startDynamicScriptRun(
 	app: ReturnType<typeof getApplicationAdapters>,
 	workflow: WorkflowDefinition,
-	opts: StartWorkflowOptions
+  opts: StartWorkflowOptions,
 ): Promise<StartWorkflowResult> {
 	const spec = (workflow.spec ?? null) as Record<string, unknown> | null;
 	const validation = validateDynamicScriptSpec(spec);
@@ -364,13 +415,13 @@ async function startDynamicScriptRun(
 	}
 	const script = String((spec as Record<string, unknown>).script);
 	const evaluatorValidation = await validateWithEvaluator(script, {
-		degradeOnUnavailable: false
+    degradeOnUnavailable: false,
 	});
 	if (!evaluatorValidation.ok) {
 		return {
 			ok: false,
 			status: evaluatorValidation.status,
-			error: evaluatorValidation.error
+      error: evaluatorValidation.error,
 		};
 	}
 	// The evaluator returns a NORMALIZED meta (name/description/phases/
@@ -384,9 +435,9 @@ async function startDynamicScriptRun(
 	const meta = {
 		...evaluatorValidation.meta,
 		...(specTeam !== undefined ? { team: specTeam } : {}),
-		...(specInput !== undefined ? { input: specInput } : {})
+    ...(specInput !== undefined ? { input: specInput } : {}),
 	};
-	const dispatchMode = 'batch-v2';
+  const dispatchMode = "batch-v2";
 	// args is the script's VERBATIM input — any JSON value. undefined means "not
 	// provided": the key is omitted end-to-end so the script's `args` global is
 	// undefined (Workflow-tool parity). JSON serialization drops undefined keys,
@@ -395,10 +446,10 @@ async function startDynamicScriptRun(
 	// meta.input (cutover P1f): an optional JSON Schema for the run's args —
 	// enforced HERE so every launch surface (UI / MCP / trigger spine / resume)
 	// shares one contract; the execute dialog renders the same schema as a form.
-	if (specInput && typeof specInput === 'object' && !Array.isArray(specInput)) {
+  if (specInput && typeof specInput === "object" && !Array.isArray(specInput)) {
 		const checked = validateArgsAgainstMetaInput(
 			specInput as Record<string, unknown>,
-			args
+      args,
 		);
 		if (!checked.ok) return { ok: false, status: 400, error: checked.error };
 		args = checked.args;
@@ -407,24 +458,34 @@ async function startDynamicScriptRun(
 		| { budgetTotal?: number | null }
 		| undefined;
 	const budgetTotal =
-		opts.budgetTotal ?? (defaults?.budgetTotal != null ? defaults.budgetTotal : null);
+    opts.budgetTotal ??
+    (defaults?.budgetTotal != null ? defaults.budgetTotal : null);
 
 	const execution = await app.workflowExecutions.create({
 		...(opts.executionId ? { id: opts.executionId } : {}),
 		workflowId: workflow.id,
 		userId: opts.userId ?? workflow.userId,
 		projectId: workflow.projectId ?? null,
-		status: 'running',
-		phase: 'running',
+    status: "running",
+    phase: "running",
 		progress: 0,
 		input: (args ?? undefined) as Record<string, unknown> | undefined,
-		executionIr: { engine: 'dynamic-script', script, meta, args, budgetTotal, dispatchMode },
-		executionIrVersion: 'dynamic-script-2',
+    executionIr: {
+      engine: "dynamic-script",
+      script,
+      meta,
+      args,
+      budgetTotal,
+      dispatchMode,
+    },
+    executionIrVersion: "dynamic-script-2",
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
-		...(opts.rerunOfExecutionId ? { rerunOfExecutionId: opts.rerunOfExecutionId } : {}),
+    ...(opts.rerunOfExecutionId
+      ? { rerunOfExecutionId: opts.rerunOfExecutionId }
+      : {}),
 		...(opts.rerunSourceInstanceId
 			? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
-			: {})
+      : {}),
 	});
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
@@ -433,18 +494,18 @@ async function startDynamicScriptRun(
 	let instanceId: string | undefined;
 	try {
 		const headers = injectWorkflowSessionHeaders(
-			ensureWorkflowTraceparentHeader({ 'Content-Type': 'application/json' }),
+      ensureWorkflowTraceparentHeader({ "Content-Type": "application/json" }),
 			{
 				sessionId,
 				workflowExecutionId: execution.id,
 				workflowId: workflow.id,
-				traceGroupId: execution.id
-			}
+        traceGroupId: execution.id,
+      },
 		);
 		const traceContext = {
 			traceparent: headers.traceparent,
 			tracestate: headers.tracestate,
-			baggage: headers.baggage
+      baggage: headers.baggage,
 		};
 		const result = await app.workflowScheduler.startScriptWorkflow({
 			orchestratorUrl,
@@ -462,18 +523,24 @@ async function startDynamicScriptRun(
 			workflowId: workflow.id,
 			userId: opts.userId ?? workflow.userId,
 			projectId: workflow.projectId ?? null,
-			traceContext
+      traceContext,
 		});
 		instanceId = result.instanceId;
 	} catch (err) {
 		await app.workflowExecutions.markStartFailed({
 			executionId: execution.id,
-			error: err instanceof Error ? err.message : 'Failed to start dynamic-script execution'
+      error:
+        err instanceof Error
+          ? err.message
+          : "Failed to start dynamic-script execution",
 		});
 		return {
 			ok: false,
 			status: 500,
-			error: err instanceof Error ? err.message : 'Failed to start dynamic-script execution'
+      error:
+        err instanceof Error
+          ? err.message
+          : "Failed to start dynamic-script execution",
 		};
 	}
 
@@ -481,7 +548,7 @@ async function startDynamicScriptRun(
 		await app.workflowExecutions.attachSchedulerInstance({
 			executionId: execution.id,
 			instanceId,
-			workflowSessionId: sessionId ?? execution.id
+      workflowSessionId: sessionId ?? execution.id,
 		});
 	}
 
@@ -491,7 +558,7 @@ async function startDynamicScriptRun(
 		instanceId: instanceId ?? null,
 		workflowId: workflow.id,
 		workflowName: workflow.name,
-		status: 'running',
-		reused: false
+    status: "running",
+    reused: false,
 	};
 }

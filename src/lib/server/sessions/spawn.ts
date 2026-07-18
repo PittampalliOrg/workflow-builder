@@ -3,7 +3,10 @@ import {
 	ensureGoalMcpServer,
 	stampGoalMcpSessionHeader,
 } from "$lib/server/goals/mcp-wiring";
-import { deriveLeadTeamId, stampTeamMcpHeaders } from "$lib/server/teams/mcp-wiring";
+import {
+  deriveLeadTeamId,
+  stampTeamMcpHeaders,
+} from "$lib/server/teams/mcp-wiring";
 import { getMemberBySession } from "$lib/server/teams/team-repo";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
@@ -89,6 +92,12 @@ export interface SpawnSessionWorkflowOptions {
 	 * configured shared pool or dedicated runtime app id.
 	 */
 	requireWorkflowHost?: boolean;
+  /** Signed capabilities inherited from a principalized peer-spawn request. */
+  workflowMcpCapabilities?: {
+    scriptDepth: number;
+    teamId: string | null;
+    teamRole: "none" | "lead" | "member";
+  };
 }
 
 export async function spawnSessionWorkflow(
@@ -103,15 +112,12 @@ export async function spawnSessionWorkflow(
 		sessionId,
 	});
 	if (!session) throw new Error(`Session ${sessionId} not found`);
-
-	// If we already have a Dapr instance ID recorded, short-circuit.
 	if (session.daprInstanceId) {
 		return {
 			instanceId: session.daprInstanceId,
 			natsSubject: session.natsSubject ?? `session.events.${sessionId}`,
 		};
 	}
-
 	const agent = await workflowData.resolveSessionAgent({
 		agentId: session.agentId,
 		agentVersion: session.agentVersion ?? undefined,
@@ -143,19 +149,21 @@ export async function spawnSessionWorkflow(
 	})();
 
 	const environment = session.environmentId
-		? (await getApplicationAdapters().environments.resolveRuntimeByRef({
+    ? (
+        await getApplicationAdapters().environments.resolveRuntimeByRef({
 				id: session.environmentId,
 				version: session.environmentVersion ?? undefined,
-			})).environment
+        })
+      ).environment
 		: null;
 
 	// Seed the workflow with any events the user already posted between
 	// session.create and workflow spawn (e.g. an `initialMessage` sent via
 	// POST /api/v1/sessions).
-	const existingEvents = await getApplicationAdapters().workflowData.listSessionEvents(
-		sessionId,
-		{ limit: 50 },
-	);
+  const existingEvents =
+    await getApplicationAdapters().workflowData.listSessionEvents(sessionId, {
+      limit: 50,
+    });
 	const initialEvents = existingEvents
 		.filter((e) => e.type.startsWith("user."))
 		.map((e) => e.data);
@@ -239,7 +247,8 @@ export async function spawnSessionWorkflow(
 			// session_events + visible in the UI (the WARN-phase audit dataset).
 			// Fire-and-forget with a deterministic sourceEventId (dedupes re-spawns);
 			// an event-write failure must never block the spawn.
-			void getApplicationAdapters().workflowData.appendSessionEvent(sessionId, {
+      void getApplicationAdapters()
+        .workflowData.appendSessionEvent(sessionId, {
 				type: "runtime.swap_degraded",
 				data: {
 					runtimeId: swapTarget.id,
@@ -247,7 +256,8 @@ export async function spawnSessionWorkflow(
 					drops: verdict.drops,
 				},
 				sourceEventId: `swap:${sessionId}:${swapTarget.id}`,
-			}).catch((err) =>
+        })
+        .catch((err) =>
 				console.warn(
 					`[swap-safety] swap_degraded event emit failed: ${err instanceof Error ? err.message : err}`,
 				),
@@ -306,6 +316,30 @@ export async function spawnSessionWorkflow(
 	// A lead opts into the team tools per-agent via agentConfig.teamsEnabled.
 	const teamsEnabled =
 		(resolvedAgentConfig as { teamsEnabled?: boolean }).teamsEnabled === true;
+  const teamMcpEnabled =
+    isTeammate || teamsEnabled || process.env.TEAM_MCP_AUTO_WIRE === "true";
+  const sessionOwner = await workflowData.getSessionFileOwner(sessionId);
+  const workflowMcpSessionToken = (() => {
+    if (!sessionOwner?.projectId) return null;
+    try {
+      return getApplicationAdapters().workflowMcpSessionTokenSigner.sign({
+        userId: sessionOwner.userId,
+        projectId: sessionOwner.projectId,
+        sessionId,
+        capabilities: options.workflowMcpCapabilities ?? {
+          scriptDepth: 0,
+          teamId: teamMcpEnabled ? teamId : null,
+          teamRole: isTeammate ? "member" : teamMcpEnabled ? "lead" : "none",
+        },
+      });
+    } catch (err) {
+      console.warn(
+        `[session-spawn] workflow MCP session token unavailable for ${sessionId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  })();
 	// The Codex-"ultra" policy dial: teamMode 'proactive' injects ONE system
 	// fragment flipping the default only-when-asked posture — deliberately
 	// prompt-text-only (mirrors Codex's MultiAgentMode developer message).
@@ -322,7 +356,8 @@ export async function spawnSessionWorkflow(
 		...(teamModeFragment
 			? {
 					systemPrompt: `${
-						(resolvedAgentConfig as { systemPrompt?: string }).systemPrompt ?? ""
+            (resolvedAgentConfig as { systemPrompt?: string }).systemPrompt ??
+            ""
 					}${teamModeFragment}`.trim(),
 				}
 			: {}),
@@ -338,6 +373,7 @@ export async function spawnSessionWorkflow(
 					swapTarget?.capabilities?.interactiveTerminal === true,
 				),
 				sessionId,
+        workflowMcpSessionToken,
 			),
 			{ teamId, isTeammate, teamsEnabled },
 		),
@@ -472,10 +508,7 @@ export async function spawnSessionWorkflow(
 					`Runtime auth descriptor resolved for ${provider}, but no runtime target was selected`,
 				);
 			}
-			sessionSecretEnv = buildCliSessionSecretEnv(
-				swapTarget,
-				credential.token,
-			);
+      sessionSecretEnv = buildCliSessionSecretEnv(swapTarget, credential.token);
 		}
 	}
 
@@ -551,6 +584,7 @@ export async function spawnSessionWorkflow(
 		agentRuntimeClass: runtimeRoute.runtimeClass,
 		agentRuntimeIsolation: runtimeRoute.isolation,
 		runtimeConfigInspectionVersion: 1,
+    workflowMcpSessionToken,
 		agentConfig: agentConfigForDispatch,
 		// Flat metadata the call_agent tool needs to dispatch peers by name.
 		callableAgents,
@@ -590,10 +624,12 @@ export async function spawnSessionWorkflow(
 	// failures emit session events, never block the spawn.
 	if (directRuntimeBaseUrl && swapTarget?.capabilities?.interactiveTerminal) {
 		try {
-			await getApplicationAdapters().sessionCommands.materializeSessionRepositoriesViaHost({
+      await getApplicationAdapters().sessionCommands.materializeSessionRepositoriesViaHost(
+        {
 				sessionId,
 				hostBaseUrl: directRuntimeBaseUrl,
-			});
+        },
+      );
 		} catch (err) {
 			console.warn(
 				`[session-spawn] host repository mount failed for ${sessionId}:`,

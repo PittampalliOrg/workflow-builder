@@ -16,7 +16,10 @@ import {
 import { normalizeSwebenchSuiteSlug } from "$lib/server/benchmarks/swebench";
 import { estimateBenchmarkRuntimeCapacity } from "$lib/server/benchmarks/runtime-capacity";
 import { buildSwebenchEnvironmentSpec } from "$lib/server/environments/swebench-environment-spec";
-import { connectionBelongsToProject, mergeConnectionProjectId } from "$lib/server/app-connection-scope";
+import {
+  connectionBelongsToProject,
+  mergeConnectionProjectId,
+} from "$lib/server/app-connection-scope";
 import {
 	buildOAuth2AuthorizationUrl,
 	exchangeOAuth2CodePlatform,
@@ -76,6 +79,7 @@ import type {
 	AppConnectionListItem,
 	AppConnectionRepository,
 	AppConnectionSummary,
+  ApiKeyRecord,
 	ApiKeyStore,
 	AppendSessionEventInput,
 	ArtifactStore,
@@ -226,6 +230,7 @@ import type {
 	CodeCatalogFunctionRecord,
 	CatalogFunctionSummary,
 } from "$lib/server/application/ports";
+import { WORKFLOW_MCP_AUTHORING_API_KEY_SCOPES } from "$lib/server/application/ports/platform";
 import type { AgentConfig } from "$lib/types/agents";
 import type { BenchmarkInstanceRow } from "$lib/types/benchmark-instance";
 import type {
@@ -261,14 +266,11 @@ const PROJECT_MEMBERSHIP_ROLES: readonly ProjectMembershipRole[] = [
 	"OPERATOR",
 	"VIEWER",
 ];
-const BENCHMARK_INSTANCE_ANNOTATION_VERDICTS: BenchmarkInstanceAnnotationVerdict[] = [
-	"correct",
-	"incorrect",
-	"partial",
-	"unsure",
-];
+const BENCHMARK_INSTANCE_ANNOTATION_VERDICTS: BenchmarkInstanceAnnotationVerdict[] =
+  ["correct", "incorrect", "partial", "unsure"];
 
-type BenchmarkInstanceEnvironmentStatus = BenchmarkInstanceRow["environmentStatus"];
+type BenchmarkInstanceEnvironmentStatus =
+  BenchmarkInstanceRow["environmentStatus"];
 
 function trimProblem(s: string | null): string {
 	if (!s) return "";
@@ -393,7 +395,9 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
 	return trimmed ? trimTrailingSlash(trimmed) : null;
 }
 
-function resolvePublicMcpGatewayBaseUrl(requestUrl?: string | null): string | null {
+function resolvePublicMcpGatewayBaseUrl(
+  requestUrl?: string | null,
+): string | null {
 	const explicit =
 		normalizeBaseUrl(env.MCP_GATEWAY_BASE_URL) ?? normalizeBaseUrl(env.APP_URL);
 	if (explicit) return explicit;
@@ -442,7 +446,10 @@ function humanizeMcpPieceName(pieceName: string): string {
 
 function metadataFromMcpBody(value: unknown): Record<string, unknown> {
 	if (value && typeof value === "object" && !Array.isArray(value)) {
-		return { transport: "streamable_http", ...(value as Record<string, unknown>) };
+    return {
+      transport: "streamable_http",
+      ...(value as Record<string, unknown>),
+    };
 	}
 	return { transport: "streamable_http" };
 }
@@ -458,19 +465,29 @@ function serverKeyFromDisplayName(value: string): string {
 
 function parseMcpToolSelection(
 	value: unknown,
-): { ok: true; value: { tools: string[] } | null } | { ok: false; message: string } {
+):
+  | { ok: true; value: { tools: string[] } | null }
+  | { ok: false; message: string } {
 	if (value === null) return { ok: true, value: null };
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return { ok: false, message: "toolSelection must be null or { tools: string[] }" };
+    return {
+      ok: false,
+      message: "toolSelection must be null or { tools: string[] }",
+    };
 	}
 	const tools = (value as Record<string, unknown>).tools;
 	if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string")) {
-		return { ok: false, message: "toolSelection.tools must be an array of tool names" };
+    return {
+      ok: false,
+      message: "toolSelection.tools must be an array of tool names",
+    };
 	}
 	return {
 		ok: true,
 		value: {
-			tools: Array.from(new Set(tools.map((tool) => tool.trim()).filter(Boolean))),
+      tools: Array.from(
+        new Set(tools.map((tool) => tool.trim()).filter(Boolean)),
+      ),
 		},
 	};
 }
@@ -508,7 +525,8 @@ function mcpToolNameFromUnknown(value: unknown): string | null {
 		const record = value as Record<string, unknown>;
 		for (const key of ["name", "toolName", "id", "title"]) {
 			const candidate = record[key];
-			if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+      if (typeof candidate === "string" && candidate.trim())
+        return candidate.trim();
 		}
 	}
 	return null;
@@ -522,8 +540,14 @@ function normalizeMcpToolNames(value: unknown): string[] {
 	return Array.from(new Set(names));
 }
 
-function mcpToolsFromMetadata(metadata: Record<string, unknown> | null): string[] {
-	const candidates = [metadata?.toolNames, metadata?.tools, metadata?.allowedTools];
+function mcpToolsFromMetadata(
+  metadata: Record<string, unknown> | null,
+): string[] {
+  const candidates = [
+    metadata?.toolNames,
+    metadata?.tools,
+    metadata?.allowedTools,
+  ];
 	for (const candidate of candidates) {
 		if (Array.isArray(candidate)) return normalizeMcpToolNames(candidate);
 	}
@@ -615,7 +639,9 @@ function computePendingInputUpdate(
 			return {
 				kind: "permission",
 				toolUseId:
-					stringOrNull(data?.tool_use_id) ?? stringOrNull(data?.toolUseId) ?? undefined,
+          stringOrNull(data?.tool_use_id) ??
+          stringOrNull(data?.toolUseId) ??
+          undefined,
 				prompt: stringOrNull(data?.tool_name) ?? undefined,
 				eventId: event.id,
 				since: event.createdAt,
@@ -654,7 +680,9 @@ function computePendingInputUpdate(
 	}
 }
 
-function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null {
+function checkpointRemoteWarning(
+  value: unknown,
+): Record<string, unknown> | null {
 	if (!isRecord(value)) return null;
 	const remoteStatus = stringOrNull(value.remoteStatus);
 	const remoteError = stringOrNull(value.remoteError);
@@ -669,7 +697,9 @@ function checkpointRemoteWarning(value: unknown): Record<string, unknown> | null
 	};
 }
 
-function isServerlessWorkflow10Spec(value: unknown): value is Record<string, unknown> {
+function isServerlessWorkflow10Spec(
+  value: unknown,
+): value is Record<string, unknown> {
 	if (!isRecord(value)) return false;
 	const document = value.document;
 	if (!isRecord(document)) return false;
@@ -687,7 +717,9 @@ function hostedMcpToolInput(value: unknown): Record<string, unknown> {
 function hostedMcpTraceHeaders(
 	traceHeaders: Record<string, string> | undefined,
 ): Record<string, string> {
-	const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
 	for (const name of ["traceparent", "tracestate", "baggage"]) {
 		const value = traceHeaders?.[name];
 		if (value) headers[name] = value;
@@ -716,12 +748,16 @@ function mcpPieceAuthDisplayName(auth: unknown): string | null {
 }
 
 function isOAuth2AuthType(authType: string | null | undefined): boolean {
-	return String(authType || "").toUpperCase().includes("OAUTH2");
+  return String(authType || "")
+    .toUpperCase()
+    .includes("OAUTH2");
 }
 
 function mcpPieceRequiresAuth(authType: string | null | undefined): boolean {
 	const normalized = String(authType || "").toUpperCase();
-	return Boolean(normalized && normalized !== "NONE" && normalized !== "NO_AUTH");
+  return Boolean(
+    normalized && normalized !== "NONE" && normalized !== "NO_AUTH",
+  );
 }
 
 function mcpActionCount(actions: unknown): number {
@@ -772,8 +808,8 @@ function appConnectionMatchesPieceFilter(
 	const normalizedFilter = filter.trim().toLowerCase();
 	if (!normalizedFilter) return true;
 
-	const candidates = appConnectionPieceCandidates(connectionPieceName).map((item) =>
-		item.toLowerCase(),
+  const candidates = appConnectionPieceCandidates(connectionPieceName).map(
+    (item) => item.toLowerCase(),
 	);
 	if (
 		candidates.some(
@@ -829,7 +865,8 @@ function resolveAppConnectionClientSecret(value: unknown): string {
 
 function isTokenExpired(token: Record<string, unknown>): boolean {
 	const claimedAt = typeof token.claimed_at === "number" ? token.claimed_at : 0;
-	const expiresIn = typeof token.expires_in === "number" ? token.expires_in : 3600;
+  const expiresIn =
+    typeof token.expires_in === "number" ? token.expires_in : 3600;
 	if (!claimedAt) return false;
 	const now = Math.floor(Date.now() / 1000);
 	return now + REFRESH_THRESHOLD_SECONDS >= claimedAt + expiresIn;
@@ -846,7 +883,11 @@ function hasAdminPieceName(piece: {
 	name: string | null;
 	displayName: string | null;
 	logoUrl: string | null;
-}): piece is { name: string; displayName: string | null; logoUrl: string | null } {
+}): piece is {
+  name: string;
+  displayName: string | null;
+  logoUrl: string | null;
+} {
 	return typeof piece.name === "string" && piece.name.length > 0;
 }
 
@@ -873,7 +914,10 @@ function classifyEnvironmentBuild(
 	return "failed";
 }
 
-const ENVIRONMENT_STATUS_RANK: Record<BenchmarkInstanceEnvironmentStatus, number> = {
+const ENVIRONMENT_STATUS_RANK: Record<
+  BenchmarkInstanceEnvironmentStatus,
+  number
+> = {
 	validated: 4,
 	building: 3,
 	failed: 2,
@@ -889,14 +933,19 @@ function createPlaintextWorkflowBuilderApiKey() {
 	};
 }
 
-function isProjectMembershipRole(value: unknown): value is ProjectMembershipRole {
+function isProjectMembershipRole(
+  value: unknown,
+): value is ProjectMembershipRole {
 	return (
 		typeof value === "string" &&
 		(PROJECT_MEMBERSHIP_ROLES as readonly string[]).includes(value)
 	);
 }
 
-function parseDateOrDefault(value: string | null | undefined, fallback: Date): Date {
+function parseDateOrDefault(
+  value: string | null | undefined,
+  fallback: Date,
+): Date {
 	if (!value) return fallback;
 	const parsed = new Date(value);
 	return Number.isNaN(parsed.getTime()) ? fallback : parsed;
@@ -927,7 +976,9 @@ function workspaceSlugify(name: string): string {
 			.toLowerCase()
 			.replace(/[^a-z0-9-]+/g, "-")
 			.replace(/^-+|-+$/g, "")
-			.slice(0, 40) + "-" + generateId().slice(0, 8)
+      .slice(0, 40) +
+    "-" +
+    generateId().slice(0, 8)
 	);
 }
 
@@ -984,7 +1035,9 @@ function workflowDevSessionKickoffMatches(
 	expected: Record<string, unknown>,
 ): boolean {
 	const actualContent = Array.isArray(actual.content) ? actual.content : [];
-	const expectedContent = Array.isArray(expected.content) ? expected.content : [];
+  const expectedContent = Array.isArray(expected.content)
+    ? expected.content
+    : [];
 	const actualProvenance = actual.provenance;
 	const expectedProvenance = expected.provenance;
 	return (
@@ -1174,35 +1227,45 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	private requireBenchmarkInstanceDetails(): BenchmarkInstanceDetailReadRepository {
 		if (!this.deps.benchmarkInstanceDetails) {
-			throw new Error("Benchmark instance detail read repository not configured");
+      throw new Error(
+        "Benchmark instance detail read repository not configured",
+      );
 		}
 		return this.deps.benchmarkInstanceDetails;
 	}
 
 	private requireBenchmarkRunInstanceScores(): BenchmarkRunInstanceScoreReadRepository {
 		if (!this.deps.benchmarkRunInstanceScores) {
-			throw new Error("Benchmark run instance score read repository not configured");
+      throw new Error(
+        "Benchmark run instance score read repository not configured",
+      );
 		}
 		return this.deps.benchmarkRunInstanceScores;
 	}
 
 	private requireBenchmarkRunInstanceDetails(): BenchmarkRunInstanceDetailReadRepository {
 		if (!this.deps.benchmarkRunInstanceDetails) {
-			throw new Error("Benchmark run instance detail read repository not configured");
+      throw new Error(
+        "Benchmark run instance detail read repository not configured",
+      );
 		}
 		return this.deps.benchmarkRunInstanceDetails;
 	}
 
 	private requireBenchmarkRunInstanceAnnotations(): BenchmarkRunInstanceAnnotationRepository {
 		if (!this.deps.benchmarkRunInstanceAnnotations) {
-			throw new Error("Benchmark run instance annotation repository not configured");
+      throw new Error(
+        "Benchmark run instance annotation repository not configured",
+      );
 		}
 		return this.deps.benchmarkRunInstanceAnnotations;
 	}
 
 	private requireBenchmarkRunInstanceProgress(): BenchmarkRunInstanceProgressReadRepository {
 		if (!this.deps.benchmarkRunInstanceProgress) {
-			throw new Error("Benchmark run instance progress repository not configured");
+      throw new Error(
+        "Benchmark run instance progress repository not configured",
+      );
 		}
 		return this.deps.benchmarkRunInstanceProgress;
 	}
@@ -1214,7 +1277,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.benchmarkDatasetPromotions;
 	}
 
-	private isResourceVisibleToCaller<T extends { userId: string; projectId: string | null }>(
+  private isResourceVisibleToCaller<
+    T extends { userId: string; projectId: string | null },
+  >(
 		resource: T | null | undefined,
 		caller: { userId: string; projectId?: string | null },
 	): resource is T {
@@ -1248,7 +1313,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	private requireActivityRateTargets(): WorkflowActivityRateTargetRepository {
 		if (!this.deps.activityRateTargets) {
-			throw new Error("Workflow activity-rate target repository not configured");
+      throw new Error(
+        "Workflow activity-rate target repository not configured",
+      );
 		}
 		return this.deps.activityRateTargets;
 	}
@@ -1458,7 +1525,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 		sessionPlatformId?: string | null;
 	}): Promise<SettingsPageReadModel> {
-		const profile = await this.deps.settings.getSettingsUserProfile(input.userId);
+    const profile = await this.deps.settings.getSettingsUserProfile(
+      input.userId,
+    );
 		const platformId = profile?.platformId ?? input.sessionPlatformId ?? null;
 		const [oauthApps, oauthPieces] = await Promise.all([
 			platformId
@@ -1486,7 +1555,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				};
 			}),
 			...oauthApps
-				.filter((app) => !oauthPieceNames.has(normalizePieceName(app.pieceName)))
+        .filter(
+          (app) => !oauthPieceNames.has(normalizePieceName(app.pieceName)),
+        )
 				.map((app) => ({
 					id: app.id,
 					pieceName: app.pieceName,
@@ -1508,7 +1579,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async savePlatformOAuthApp(input: SavePlatformOAuthAppInput) {
 		const id = input.id?.trim() || null;
 		const clientSecret = input.clientSecret?.trim();
-		const encryptedClientSecret = clientSecret ? encryptString(clientSecret) : null;
+    const encryptedClientSecret = clientSecret
+      ? encryptString(clientSecret)
+      : null;
 		if (id) {
 			await this.deps.settings.savePlatformOAuthApp({
 				id,
@@ -1544,17 +1617,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId: string;
 		pieceName: string | null | undefined;
 		externalId: unknown;
-	}): Promise<{ ok: true; externalId: string | null } | { ok: false; message: string }> {
-		const externalId = typeof input.externalId === "string" ? input.externalId.trim() : "";
+  }): Promise<
+    { ok: true; externalId: string | null } | { ok: false; message: string }
+  > {
+    const externalId =
+      typeof input.externalId === "string" ? input.externalId.trim() : "";
 		if (!externalId) return { ok: true, externalId: null };
 		const pieceNameCandidates = mcpPieceCandidates(input.pieceName);
 		if (pieceNameCandidates.length === 0) {
 			return {
 				ok: false,
-				message: "connectionExternalId can only be set for a piece MCP connection",
+        message:
+          "connectionExternalId can only be set for a piece MCP connection",
 			};
 		}
-		const exists = await this.deps.mcpConnections.activeAppConnectionExistsForPiece({
+    const exists =
+      await this.deps.mcpConnections.activeAppConnectionExistsForPiece({
 			projectId: input.projectId,
 			externalId,
 			pieceNameCandidates,
@@ -1601,16 +1679,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				externalId: input.connectionExternalId,
 			});
 			if (!binding.ok) {
-				return { ok: false as const, status: 400 as const, message: binding.message };
+        return {
+          ok: false as const,
+          status: 400 as const,
+          message: binding.message,
+        };
 			}
 			const metadata = metadataFromMcpBody(input.metadata);
-			const existing = await this.deps.mcpConnections.findProjectNimblePieceConnection({
+      const existing =
+        await this.deps.mcpConnections.findProjectNimblePieceConnection({
 				projectId: input.projectId,
 				pieceName,
 			});
 
 			if (existing) {
-				const connection = await this.deps.mcpConnections.updateProjectConnection({
+        const connection =
+          await this.deps.mcpConnections.updateProjectConnection({
 					id: existing.id,
 					projectId: input.projectId,
 					connectionExternalId: binding.externalId,
@@ -1631,7 +1715,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				return { ok: true as const, status: 200 as const, connection };
 			}
 
-			const connection = await this.deps.mcpConnections.createProjectConnection({
+      const connection = await this.deps.mcpConnections.createProjectConnection(
+        {
 				id: generateId(),
 				projectId: input.projectId,
 				sourceType: "nimble_piece",
@@ -1645,13 +1730,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				metadata,
 				createdBy: input.userId,
 				updatedBy: input.userId,
-			});
+        },
+      );
 			return { ok: true as const, status: 201 as const, connection };
 		}
 
 		const displayName =
 			typeof input.displayName === "string" ? input.displayName.trim() : "";
-		const serverUrl = typeof input.serverUrl === "string" ? input.serverUrl.trim() : "";
+    const serverUrl =
+      typeof input.serverUrl === "string" ? input.serverUrl.trim() : "";
 		if (!displayName || !serverUrl) {
 			return {
 				ok: false as const,
@@ -1703,7 +1790,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			projectId: input.projectId,
 		});
 		if (!existing) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 
 		const updates: Parameters<
@@ -1720,7 +1811,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				return {
 					ok: false as const,
 					status: 400 as const,
-					message: "connectionExternalId can only be set for piece MCP connections",
+          message:
+            "connectionExternalId can only be set for piece MCP connections",
 				};
 			}
 			const binding = await this.validateMcpCredentialBinding({
@@ -1729,7 +1821,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				externalId: input.connectionExternalId,
 			});
 			if (!binding.ok) {
-				return { ok: false as const, status: 400 as const, message: binding.message };
+        return {
+          ok: false as const,
+          status: 400 as const,
+          message: binding.message,
+        };
 			}
 			updates.connectionExternalId = binding.externalId;
 		}
@@ -1744,7 +1840,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			}
 			const parsed = parseMcpToolSelection(input.toolSelection);
 			if (!parsed.ok) {
-				return { ok: false as const, status: 400 as const, message: parsed.message };
+        return {
+          ok: false as const,
+          status: 400 as const,
+          message: parsed.message,
+        };
 			}
 			const metadata = { ...(existing.metadata ?? {}) };
 			if (parsed.value === null) {
@@ -1755,17 +1855,27 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			updates.metadata = Object.keys(metadata).length > 0 ? metadata : null;
 		}
 
-		const connection = await this.deps.mcpConnections.updateProjectConnection(updates);
+    const connection =
+      await this.deps.mcpConnections.updateProjectConnection(updates);
 		if (!connection) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 		return { ok: true as const, status: 200 as const, connection };
 	}
 
 	async deleteProjectMcpConnection(input: { id: string; projectId: string }) {
-		const existing = await this.deps.mcpConnections.findProjectConnection(input);
+    const existing =
+      await this.deps.mcpConnections.findProjectConnection(input);
 		if (!existing) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 		if (existing.sourceType === "hosted_workflow") {
 			return {
@@ -1778,8 +1888,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return { ok: true as const };
 	}
 
-	async discoverProjectMcpConnectionTools(input: { id: string; projectId: string }) {
-		const connection = await this.deps.mcpConnections.findProjectConnection(input);
+  async discoverProjectMcpConnectionTools(input: {
+    id: string;
+    projectId: string;
+  }) {
+    const connection =
+      await this.deps.mcpConnections.findProjectConnection(input);
 		if (!connection) {
 			return {
 				ok: false as const,
@@ -1790,7 +1904,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 		const metadataTools = mcpToolsFromMetadata(connection.metadata);
 		if (metadataTools.length > 0) {
-			return { ok: true as const, toolNames: metadataTools, source: "metadata" as const };
+      return {
+        ok: true as const,
+        toolNames: metadataTools,
+        source: "metadata" as const,
+      };
 		}
 
 		if (!connection.serverUrl) {
@@ -1813,7 +1931,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				};
 			}
 			const payload = (await response.json()) as Record<string, unknown>;
-			const toolNames = normalizeMcpToolNames(payload.toolNames ?? payload.tools);
+      const toolNames = normalizeMcpToolNames(
+        payload.toolNames ?? payload.tools,
+      );
 			return { ok: true as const, toolNames, source: "health" as const };
 		} catch (err) {
 			return {
@@ -1827,13 +1947,21 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async getMcpCatalogPieceActions(pieceNameInput: string) {
 		const pieceName = normalizeMcpPieceName(pieceNameInput);
 		if (!pieceName) {
-			return { ok: false as const, status: 404 as const, message: "Integration not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Integration not found",
+      };
 		}
 		const piece = await this.deps.pieceCatalog.getLatestPieceMetadata(
 			mcpPieceCandidates(pieceName),
 		);
 		if (!piece) {
-			return { ok: false as const, status: 404 as const, message: "Integration not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Integration not found",
+      };
 		}
 
 		return {
@@ -1853,7 +1981,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const q = (input.query ?? "").trim().toLowerCase();
 		const [pieces, appConnectionRows, projectConnections] = await Promise.all([
 			this.deps.pieceCatalog.listMcpCatalogPieces(),
-			this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(input.projectId),
+      this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(
+        input.projectId,
+      ),
 			this.deps.mcpConnections.listProjectConnections(input.projectId),
 		]);
 
@@ -1861,7 +1991,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			new Set(
 				pieces.flatMap((piece) => {
 					const normalized = normalizeMcpPieceName(piece.name);
-					return [normalized, canonicalMcpPieceName(piece.name)].filter(Boolean);
+          return [normalized, canonicalMcpPieceName(piece.name)].filter(
+            Boolean,
+          );
 				}),
 			),
 		);
@@ -1934,7 +2066,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				const entry = {
 					pieceName: normalized,
 					canonicalPieceName: `@activepieces/piece-${normalized}`,
-					displayName: piece.displayName?.trim() || humanizeMcpPieceName(normalized),
+          displayName:
+            piece.displayName?.trim() || humanizeMcpPieceName(normalized),
 					description: piece.description ?? null,
 					logoUrl: piece.logoUrl || null,
 					categories: Array.isArray(piece.categories) ? piece.categories : [],
@@ -1971,11 +2104,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	 * mcp-resolution's URL qualification (short host → cluster-local FQDN).
 	 * Kill switch: WORKFLOW_MCP_SHARED_CONNECTION=false.
 	 */
-	private async ensureSharedWorkflowMcpConnection(projectId: string): Promise<void> {
-		const flag = (process.env.WORKFLOW_MCP_SHARED_CONNECTION ?? "").trim().toLowerCase();
+  private async ensureSharedWorkflowMcpConnection(
+    projectId: string,
+  ): Promise<void> {
+    const flag = (process.env.WORKFLOW_MCP_SHARED_CONNECTION ?? "")
+      .trim()
+      .toLowerCase();
 		if (flag === "false" || flag === "0" || flag === "off") return;
 		try {
-			const rows = await this.deps.mcpConnections.listProjectConnections(projectId);
+      const rows =
+        await this.deps.mcpConnections.listProjectConnections(projectId);
 			if (
 				rows.some(
 					(row) =>
@@ -2030,7 +2168,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		] = await Promise.all([
 			loadRegisteredPieceMcpCatalog(),
 			this.deps.pieceCatalog.listMcpCatalogPieces(),
-			this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(input.projectId),
+      this.deps.mcpConnections.listActiveAppConnectionCatalogSummaries(
+        input.projectId,
+      ),
 			this.deps.mcpConnections.listProjectConnections(input.projectId),
 		]);
 
@@ -2072,7 +2212,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	private async getOrCreateHostedMcpServer(
 		projectId: string,
 	): Promise<HostedMcpServerRecord> {
-		const existing = await this.deps.hostedMcpServers.getServerByProjectId(projectId);
+    const existing =
+      await this.deps.hostedMcpServers.getServerByProjectId(projectId);
 		if (existing) return existing;
 		return this.deps.hostedMcpServers.createServer({
 			id: generateId(),
@@ -2082,13 +2223,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		});
 	}
 
-	private async listHostedMcpWorkflows(projectId: string): Promise<HostedMcpWorkflow[]> {
-		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+  private async listHostedMcpWorkflows(
+    projectId: string,
+  ): Promise<HostedMcpWorkflow[]> {
+    const ownerId =
+      await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
 		if (!ownerId) return [];
-		const rows = await this.deps.hostedMcpServers.listWorkflowSourcesForProject({
+    const rows = await this.deps.hostedMcpServers.listWorkflowSourcesForProject(
+      {
 			projectId,
 			ownerId,
-		});
+      },
+    );
 
 		const flows: HostedMcpWorkflow[] = [];
 		for (const workflow of rows) {
@@ -2147,7 +2293,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 		requestUrl?: string | null;
 	}) {
-		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+    const membership =
+      await this.deps.workspaceProjects.getProjectMembershipDetail({
 			projectId: input.projectId,
 			userId: input.userId,
 		});
@@ -2176,7 +2323,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				message: "Project id is required",
 			};
 		}
-		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+    const ownerId =
+      await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
 		if (!ownerId) {
 			return {
 				ok: false as const,
@@ -2200,7 +2348,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 		const project =
-			await this.deps.hostedMcpServers.resolveProjectByIdOrExternalId(projectRef);
+      await this.deps.hostedMcpServers.resolveProjectByIdOrExternalId(
+        projectRef,
+      );
 		if (!project) {
 			return {
 				ok: false as const,
@@ -2220,7 +2370,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const hostedGatewayBaseUrl =
 			env.MCP_GATEWAY_INTERNAL_BASE_URL?.trim() ||
 			"http://mcp-gateway.workflow-builder.svc.cluster.local:8080";
-		const servers = (await this.deps.mcpConnections.listProjectConnections(project.id))
+    const servers = (
+      await this.deps.mcpConnections.listProjectConnections(project.id)
+    )
 			.filter((connection) => connection.status === "ENABLED")
 			.map((connection) =>
 				buildProjectMcpCatalogEntry(connection, {
@@ -2248,7 +2400,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		status?: unknown;
 		requestUrl?: string | null;
 	}) {
-		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+    const membership =
+      await this.deps.workspaceProjects.getProjectMembershipDetail({
 			projectId: input.projectId,
 			userId: input.userId,
 		});
@@ -2256,7 +2409,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { ok: false as const, status: 403 as const, message: "Forbidden" };
 		}
 		if (input.status !== "ENABLED" && input.status !== "DISABLED") {
-			return { ok: false as const, status: 400 as const, message: "Invalid status" };
+      return {
+        ok: false as const,
+        status: 400 as const,
+        message: "Invalid status",
+      };
 		}
 
 		const current = await this.getOrCreateHostedMcpServer(input.projectId);
@@ -2283,7 +2440,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 		requestUrl?: string | null;
 	}) {
-		const membership = await this.deps.workspaceProjects.getProjectMembershipDetail({
+    const membership =
+      await this.deps.workspaceProjects.getProjectMembershipDetail({
 			projectId: input.projectId,
 			userId: input.userId,
 		});
@@ -2352,7 +2510,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const ownerId = await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
+    const ownerId =
+      await this.deps.hostedMcpServers.getProjectOwnerId(projectId);
 		if (!ownerId) {
 			return { ok: false, status: 404, message: "Project not found" };
 		}
@@ -2391,12 +2550,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return {
 				ok: false,
 				status: 400,
-				message: "Workflow does not have a valid CNCF Serverless Workflow 1.0 spec",
+        message:
+          "Workflow does not have a valid CNCF Serverless Workflow 1.0 spec",
 			};
 		}
 
 		const toolName =
-			typeof input.toolName === "string" ? input.toolName : (trigger.toolName ?? workflow.name);
+      typeof input.toolName === "string"
+        ? input.toolName
+        : (trigger.toolName ?? workflow.name);
 		const runInput = hostedMcpToolInput(input.input);
 		const run = await this.deps.mcpRuns.createRun({
 			projectId,
@@ -2420,7 +2582,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
 		}
-		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+    const missingTriggerFields = getMissingRequiredTriggerFields(
+      spec,
+      triggerData,
+    );
 		if (missingTriggerFields.length > 0) {
 			return {
 				ok: false,
@@ -2555,17 +2720,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		type?: string | null;
 		scope?: string | null;
 	}): Promise<AppConnectionListItem[]> {
-		const [
-			connections,
-			pieces,
-		] = await Promise.all([
+    const [connections, pieces] = await Promise.all([
 			this.deps.appConnections.listProjectConnections(input.projectId),
 			this.deps.appConnections.listPieceInfo(),
 		]);
 
 		const pieceMap = new Map<
 			string,
-			{ name: string; displayName: string; logoUrl: string | null; categories: string[] }
+      {
+        name: string;
+        displayName: string;
+        logoUrl: string | null;
+        categories: string[];
+      }
 		>();
 		for (const piece of pieces) {
 			const info = {
@@ -2596,14 +2763,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 					pieceMap.get(connection.pieceName.toLowerCase()) ??
 					pieceMap.get(normalizedPieceName) ??
 					pieceMap.get(
-						appConnectionPieceCandidates(connection.pieceName)[0]?.toLowerCase() ||
-							"",
+            appConnectionPieceCandidates(
+              connection.pieceName,
+            )[0]?.toLowerCase() || "",
 					);
 				const { projectIds: _projectIds, ...publicConnection } = connection;
 				return {
 					...publicConnection,
-					providerId: piece?.name ? normalizeMcpPieceName(piece.name) : normalizedPieceName,
-					providerLabel: piece?.displayName || humanizeMcpPieceName(connection.pieceName),
+          providerId: piece?.name
+            ? normalizeMcpPieceName(piece.name)
+            : normalizedPieceName,
+          providerLabel:
+            piece?.displayName || humanizeMcpPieceName(connection.pieceName),
 					providerIconUrl: piece?.logoUrl || null,
 					category: piece?.categories?.[0] || null,
 				};
@@ -2648,7 +2819,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const normalizedType = String(input.type).toUpperCase() as AppConnectionType;
+    const normalizedType = String(
+      input.type,
+    ).toUpperCase() as AppConnectionType;
 		const supportedTypes = new Set<string>(Object.values(AppConnectionType));
 		if (!supportedTypes.has(normalizedType)) {
 			return {
@@ -2671,7 +2844,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			normalizedType === AppConnectionType.PLATFORM_OAUTH2 ||
 			normalizedType === AppConnectionType.CLOUD_OAUTH2;
 		const rawValue =
-			input.value && typeof input.value === "object" && !Array.isArray(input.value)
+      input.value &&
+      typeof input.value === "object" &&
+      !Array.isArray(input.value)
 				? (input.value as Record<string, unknown>)
 				: typeof input.value === "string"
 					? { secret_text: input.value }
@@ -2692,7 +2867,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			pieceName: String(input.pieceName),
 			displayName: String(input.displayName).trim(),
 			type: normalizedType,
-			status: isOAuth ? AppConnectionStatus.MISSING : AppConnectionStatus.ACTIVE,
+      status: isOAuth
+        ? AppConnectionStatus.MISSING
+        : AppConnectionStatus.ACTIVE,
 			value: encryptedValue,
 			pieceVersion: "0.0.0",
 			projectIds: [input.projectId],
@@ -2723,15 +2900,24 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			displayName,
 		});
 		if (!connection) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 		return { ok: true as const, connection };
 	}
 
 	async deleteProjectAppConnection(input: { id: string; projectId: string }) {
-		const deleted = await this.deps.appConnections.deleteProjectConnection(input);
+    const deleted =
+      await this.deps.appConnections.deleteProjectConnection(input);
 		if (!deleted) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 		return { ok: true as const };
 	}
@@ -2743,9 +2929,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		redirectUrl: string;
 		props?: unknown;
 	}) {
-		const pieceName = typeof input.pieceName === "string" ? input.pieceName.trim() : "";
+    const pieceName =
+      typeof input.pieceName === "string" ? input.pieceName.trim() : "";
 		if (!pieceName) {
-			return { ok: false as const, status: 400 as const, message: "pieceName is required" };
+      return {
+        ok: false as const,
+        status: 400 as const,
+        message: "pieceName is required",
+      };
 		}
 
 		const piece = await this.deps.appConnections.findOAuthPieceMetadata({
@@ -2754,7 +2945,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				typeof input.pieceVersion === "string" ? input.pieceVersion : null,
 		});
 		if (!piece) {
-			return { ok: false as const, status: 404 as const, message: "Piece not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Piece not found",
+      };
 		}
 
 		const oauthAuth = getOAuth2AuthConfig(piece);
@@ -2766,7 +2961,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		let clientId = typeof input.clientId === "string" ? input.clientId.trim() : "";
+    let clientId =
+      typeof input.clientId === "string" ? input.clientId.trim() : "";
 		if (!clientId) {
 			const oauthApp = await this.deps.appConnections.findPlatformOAuthApp({
 				pieceNameCandidates: appConnectionPieceCandidates(pieceName),
@@ -2783,7 +2979,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		}
 
 		const props =
-			input.props && typeof input.props === "object" && !Array.isArray(input.props)
+      input.props &&
+      typeof input.props === "object" &&
+      !Array.isArray(input.props)
 				? (input.props as Record<string, unknown>)
 				: undefined;
 		const verifier = generatePkceVerifier();
@@ -2840,7 +3038,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}) {
 		const connectionId =
 			typeof input.connectionId === "string" ? input.connectionId.trim() : "";
-		const pieceName = typeof input.pieceName === "string" ? input.pieceName.trim() : "";
+    const pieceName =
+      typeof input.pieceName === "string" ? input.pieceName.trim() : "";
 		const code = typeof input.code === "string" ? input.code.trim() : "";
 		if (!connectionId || !pieceName || !code) {
 			return {
@@ -2850,9 +3049,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const connection = await this.deps.appConnections.findConnectionById(connectionId);
-		if (!connection || !connectionBelongsToProject(connection.projectIds, input.projectId)) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+    const connection =
+      await this.deps.appConnections.findConnectionById(connectionId);
+    if (
+      !connection ||
+      !connectionBelongsToProject(connection.projectIds, input.projectId)
+    ) {
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 
 		const connectionValue = decryptObject<Record<string, unknown>>(
@@ -2869,7 +3076,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			pieceNameCandidates,
 		});
 		if (!piece) {
-			return { ok: false as const, status: 404 as const, message: "Piece not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Piece not found",
+      };
 		}
 
 		const oauthAuth = getOAuth2AuthConfig(piece);
@@ -2894,10 +3105,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const authorizationMethod =
-			(typeof connectionValue.authorization_method === "string"
+    const authorizationMethod = (
+      typeof connectionValue.authorization_method === "string"
 				? connectionValue.authorization_method
-				: oauthAuth.authorizationMethod) as OAuth2AuthorizationMethod | undefined;
+        : oauthAuth.authorizationMethod
+    ) as OAuth2AuthorizationMethod | undefined;
 		const redirectUrl =
 			typeof input.redirectUrl === "string" && input.redirectUrl.trim()
 				? input.redirectUrl.trim()
@@ -2925,7 +3137,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			value: encryptObject(tokenValue as unknown as Record<string, unknown>),
 			pieceName,
 			pieceVersion: piece.version,
-			projectIds: mergeConnectionProjectId(connection.projectIds, input.projectId),
+      projectIds: mergeConnectionProjectId(
+        connection.projectIds,
+        input.projectId,
+      ),
 		});
 		return { ok: true as const, connection: updated };
 	}
@@ -2934,7 +3149,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		token: Record<string, unknown>,
 		pieceName: string,
 	): Promise<Record<string, unknown> | null> {
-		const refreshToken = typeof token.refresh_token === "string" ? token.refresh_token : "";
+    const refreshToken =
+      typeof token.refresh_token === "string" ? token.refresh_token : "";
 		const tokenUrl = typeof token.token_url === "string" ? token.token_url : "";
 		if (!refreshToken || !tokenUrl) return null;
 
@@ -3000,11 +3216,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	async decryptAppConnectionValue(input: { externalId: string }) {
-		const connection = await this.deps.appConnections.findConnectionByExternalId(
+    const connection =
+      await this.deps.appConnections.findConnectionByExternalId(
 			input.externalId,
 		);
 		if (!connection) {
-			return { ok: false as const, status: 404 as const, message: "Connection not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Connection not found",
+      };
 		}
 
 		let decryptedValue = decryptObject<Record<string, unknown>>(
@@ -3015,14 +3236,22 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			connection.type === AppConnectionType.PLATFORM_OAUTH2 ||
 			connection.type === AppConnectionType.CLOUD_OAUTH2;
 
-		if (isOAuth2 && decryptedValue.secret_text && !decryptedValue.access_token) {
+    if (
+      isOAuth2 &&
+      decryptedValue.secret_text &&
+      !decryptedValue.access_token
+    ) {
 			const secretText = String(decryptedValue.secret_text);
 			try {
 				const parsed = JSON.parse(secretText) as Record<string, unknown>;
 				decryptedValue =
 					parsed && typeof parsed === "object" && parsed.access_token
 						? { ...parsed, type: parsed.type || connection.type }
-						: { ...decryptedValue, access_token: secretText, type: connection.type };
+            : {
+                ...decryptedValue,
+                access_token: secretText,
+                type: connection.type,
+              };
 			} catch {
 				decryptedValue = {
 					...decryptedValue,
@@ -3072,8 +3301,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			!decryptedValue.expiry_date
 		) {
 			const expiresIn =
-				typeof decryptedValue.expires_in === "number" ? decryptedValue.expires_in : 3600;
-			decryptedValue.expiry_date = (decryptedValue.claimed_at + expiresIn) * 1000;
+        typeof decryptedValue.expires_in === "number"
+          ? decryptedValue.expires_in
+          : 3600;
+      decryptedValue.expiry_date =
+        (decryptedValue.claimed_at + expiresIn) * 1000;
 		}
 
 		return {
@@ -3121,9 +3353,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return img?.status === "ready" && img.enabled === true;
 		};
 
-		const bundledPieces = bundled
-			.filter(hasAdminPieceName)
-			.map((piece) => ({
+    const bundledPieces = bundled.filter(hasAdminPieceName).map((piece) => ({
 				name: piece.name,
 				displayName: piece.displayName ?? piece.name,
 				logoUrl: piece.logoUrl ?? "",
@@ -3146,10 +3376,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				perPiece: true,
 			}));
 
-		const uniqueByName = <T extends { name: string }>(rows: T[]): T[] =>
-			[...new Map(rows.map((row) => [row.name, row])).values()];
-		const pieces = uniqueByName([...bundledPieces, ...perPieceEnabled]).sort((a, b) =>
-			a.displayName.localeCompare(b.displayName),
+    const uniqueByName = <T extends { name: string }>(rows: T[]): T[] => [
+      ...new Map(rows.map((row) => [row.name, row])).values(),
+    ];
+    const pieces = uniqueByName([...bundledPieces, ...perPieceEnabled]).sort(
+      (a, b) => a.displayName.localeCompare(b.displayName),
 		);
 
 		const available = uniqueByName(
@@ -3197,7 +3428,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}): Promise<AdminPieceRuntimeImageEnableResult> {
 		const pieceName = input.pieceName.trim();
 		assertValidAdminPieceSlug(pieceName);
-		const version = await this.deps.adminPieces.getLatestCatalogPieceVersion(pieceName);
+    const version =
+      await this.deps.adminPieces.getLatestCatalogPieceVersion(pieceName);
 		if (!version) {
 			throw new Error(`piece '${pieceName}' is not in the catalog`);
 		}
@@ -3208,7 +3440,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			throw new Error("Admin piece runtime image adapters are not configured");
 		}
 
-		const { exists, digest } = await registry.imageExists({ pieceName, version });
+    const { exists, digest } = await registry.imageExists({
+      pieceName,
+      version,
+    });
 		if (exists) {
 			const image = registry.imageRef({ pieceName, version });
 			await this.deps.adminPieces.markPieceImageReadyEnabled({
@@ -3288,7 +3523,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}): Promise<AdminPieceRuntimeImageReconcileResult> {
 		const registry = this.deps.adminPieceRuntimeImages;
 		if (!registry) {
-			throw new Error("Admin piece runtime image registry adapter is not configured");
+      throw new Error(
+        "Admin piece runtime image registry adapter is not configured",
+      );
 		}
 		const buildTimeoutMs = input?.buildTimeoutMs ?? 30 * 60 * 1000;
 		const rows = await this.deps.adminPieces.listBuildingPieceImages();
@@ -3326,7 +3563,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 						pieceName: row.pieceName,
 						version: row.version,
 						status: "failed",
-						errorMessage: "build did not produce a GHCR image within the timeout",
+            errorMessage:
+              "build did not produce a GHCR image within the timeout",
 					});
 					failed++;
 				}
@@ -3408,10 +3646,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 		platformId: string;
 	}): Promise<WorkspaceSummary> {
-		const externalId = (input.externalId || workspaceSlugify(input.displayName)).slice(
-			0,
-			60,
-		);
+    const externalId = (
+      input.externalId || workspaceSlugify(input.displayName)
+    ).slice(0, 60);
 		const row = await this.deps.workspaceProjects.createWorkspaceProject({
 			platformId: input.platformId,
 			ownerId: input.userId,
@@ -3448,6 +3685,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workspaceProjects.getProjectMembershipDetail(input);
 	}
 
+  hasActiveWorkspaceProjectMembership(input: {
+    projectId: string;
+    userId: string;
+  }) {
+    return this.deps.workspaceProjects.hasActiveProjectMembership(input);
+  }
+
 	private requireUsageReporting(): UsageReportingRepository {
 		if (!this.deps.usageReporting) {
 			throw new Error("Usage reporting repository not configured");
@@ -3478,8 +3722,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			projectId: input.projectId,
 			userId: input.userId,
 		});
-		if (!selfRole) return { ok: false as const, status: 403 as const, message: "Forbidden" };
-		const members = await this.deps.workspaceProjects.listProjectMembers(input.projectId);
+    if (!selfRole)
+      return { ok: false as const, status: 403 as const, message: "Forbidden" };
+    const members = await this.deps.workspaceProjects.listProjectMembers(
+      input.projectId,
+    );
 		return { ok: true as const, status: 200 as const, members, selfRole };
 	}
 
@@ -3513,14 +3760,20 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const target = await this.deps.workspaceProjects.findPlatformUserForProject({
+    const target = await this.deps.workspaceProjects.findPlatformUserForProject(
+      {
 			projectId: input.projectId,
 			userId: targetUserId,
 			email,
-		});
+      },
+    );
 		if (!target.ok) {
 			if (target.reason === "project_not_found") {
-				return { ok: false as const, status: 404 as const, message: "Project not found" };
+        return {
+          ok: false as const,
+          status: 404 as const,
+          message: "Project not found",
+        };
 			}
 			if (target.reason === "user_not_found") {
 				return {
@@ -3582,11 +3835,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			memberId: input.memberId,
 		});
 		if (!existing) {
-			return { ok: false as const, status: 404 as const, message: "Member not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Member not found",
+      };
 		}
 
 		if (existing.role === "ADMIN" && input.role !== "ADMIN") {
-			const admins = await this.deps.workspaceProjects.countProjectAdmins(input.projectId);
+      const admins = await this.deps.workspaceProjects.countProjectAdmins(
+        input.projectId,
+      );
 			if (admins <= 1) {
 				return {
 					ok: false as const,
@@ -3602,7 +3861,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			role: input.role,
 		});
 		if (!member) {
-			return { ok: false as const, status: 404 as const, message: "Member not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Member not found",
+      };
 		}
 		return { ok: true as const, status: 200 as const, member };
 	}
@@ -3623,11 +3886,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			memberId: input.memberId,
 		});
 		if (!existing) {
-			return { ok: false as const, status: 404 as const, message: "Member not found" };
+      return {
+        ok: false as const,
+        status: 404 as const,
+        message: "Member not found",
+      };
 		}
 
 		if (existing.role === "ADMIN") {
-			const admins = await this.deps.workspaceProjects.countProjectAdmins(input.projectId);
+      const admins = await this.deps.workspaceProjects.countProjectAdmins(
+        input.projectId,
+      );
 			if (admins <= 1) {
 				return {
 					ok: false as const,
@@ -3695,7 +3964,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		>();
 		const byModel = new Map<
 			string,
-			{ model: string; sessions: number; inputTokens: number; outputTokens: number; cost: number }
+      {
+        model: string;
+        sessions: number;
+        inputTokens: number;
+        outputTokens: number;
+        cost: number;
+      }
 		>();
 
 		for (const row of rows) {
@@ -3765,7 +4040,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	async listSandboxExecutions(sandboxName: string) {
-		const rows = await this.requireSandboxInventory().listRecentExecutionsForSandbox(sandboxName);
+    const rows =
+      await this.requireSandboxInventory().listRecentExecutionsForSandbox(
+        sandboxName,
+      );
 		return rows.map((row) => ({
 			executionId: row.executionId,
 			workflowId: row.workflowId,
@@ -3799,7 +4077,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 		const ages = sandboxRows
 			.map((sandbox) => {
-				const created = sandbox.createdAt ? new Date(String(sandbox.createdAt)).getTime() : 0;
+        const created = sandbox.createdAt
+          ? new Date(String(sandbox.createdAt)).getTime()
+          : 0;
 				return created > 0 ? (now.getTime() - created) / 60000 : 0;
 			})
 			.filter((age) => age > 0);
@@ -3816,10 +4096,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		};
 	}
 
-	async getWorkflowByRef(ref: WorkflowRef & { lookup?: "id" | "name" | "auto" }) {
+  async getWorkflowByRef(
+    ref: WorkflowRef & { lookup?: "id" | "name" | "auto" },
+  ) {
 		if (ref.lookup === "id") {
 			const workflowId = ref.workflowId?.trim();
-			return workflowId ? this.deps.workflowDefinitions.getById(workflowId) : null;
+      return workflowId
+        ? this.deps.workflowDefinitions.getById(workflowId)
+        : null;
 		}
 		if (ref.lookup === "name") {
 			const workflowName = ref.workflowName?.trim();
@@ -3843,7 +4127,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		userId: string;
 		projectId?: string | null;
 	}): Promise<WorkflowDefinition | null> {
-		const workflow = await this.deps.workflowDefinitions.getById(input.workflowId);
+    const workflow = await this.deps.workflowDefinitions.getById(
+      input.workflowId,
+    );
 		return this.isResourceVisibleToCaller(workflow, {
 			userId: input.userId,
 			projectId: input.projectId ?? null,
@@ -3851,6 +4137,26 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			? workflow
 			: null;
 	}
+
+  async getScopedWorkflowByName(input: {
+    workflowName: string;
+    userId: string;
+    projectId: string;
+  }): Promise<WorkflowDefinition | null> {
+    const workflowName = input.workflowName.trim();
+    if (!workflowName) return null;
+    const workflow =
+      await this.deps.workflowDefinitions.getLatestByNameInProject(
+        workflowName,
+        input.projectId,
+      );
+    return this.isResourceVisibleToCaller(workflow, {
+      userId: input.userId,
+      projectId: input.projectId,
+    })
+      ? workflow
+      : null;
+  }
 
 	listActiveWorkflowExecutionsForUser(userId: string) {
 		return this.deps.workflowExecutions.listActiveForUser(userId);
@@ -3908,7 +4214,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			const recentRuns = recentRunsByWorkflow.get(row.id) ?? [];
 			const latest = recentRuns[0] ?? null;
 			const updatedAt = row.updatedAt.toISOString();
-			const running = latest?.status === "running" || latest?.status === "pending";
+      const running =
+        latest?.status === "running" || latest?.status === "pending";
 			const lastActivityAt =
 				latest && latest.startedAt > updatedAt ? latest.startedAt : updatedAt;
 			return {
@@ -3948,9 +4255,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				projectId: input.projectId,
 			}),
 		]);
-		const workflowName = new Map(workflowRows.map((workflow) => [workflow.id, workflow.name]));
+    const workflowName = new Map(
+      workflowRows.map((workflow) => [workflow.id, workflow.name]),
+    );
 		const executions = executionRows.map((execution) => {
-			const when = execution.startedAt.toISOString().slice(5, 16).replace("T", " ");
+      const when = execution.startedAt
+        .toISOString()
+        .slice(5, 16)
+        .replace("T", " ");
 			const workflow =
 				execution.workflowId && workflowName.has(execution.workflowId)
 					? workflowName.get(execution.workflowId)
@@ -3979,7 +4291,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		workflowId: string;
 		namePrefix: string;
 	}) {
-		return this.deps.workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix(input);
+    return this.deps.workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix(
+      input,
+    );
 	}
 
 	async getPieceCatalogDetail(input: {
@@ -4060,9 +4374,11 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 		const codeFunctions =
 			input.userId && this.deps.codeFunctionCatalog
-				? (await this.deps.codeFunctionCatalog.listEnabledForCatalog(input.userId)).map(
-						toCodeCatalogFunction,
+        ? (
+            await this.deps.codeFunctionCatalog.listEnabledForCatalog(
+              input.userId,
 					)
+          ).map(toCodeCatalogFunction)
 				: [];
 		const functions = [...codeFunctions, ...apFunctions];
 		return {
@@ -4090,7 +4406,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			this.deps.benchmarkBrowser.listEnvironmentBuilds(),
 		]);
 
-		const staticEnvironmentMappings = loadSwebenchInferenceEnvironmentMappings();
+    const staticEnvironmentMappings =
+      loadSwebenchInferenceEnvironmentMappings();
 		const buildStatusByHash = new Map<
 			string,
 			{
@@ -4140,7 +4457,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				dynamicEnvironmentSpecHash ?? "",
 				{ mappings: staticEnvironmentMappings },
 			);
-			const exactStaticEnvironment = isExactValidatedSwebenchInferenceEnvironment(
+      const exactStaticEnvironment =
+        isExactValidatedSwebenchInferenceEnvironment(
 				{
 					suiteSlug: row.suiteSlug,
 					repo: row.repo,
@@ -4157,8 +4475,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				exactStaticEnvironment
 					? "validated"
 					: (buildStatus?.status ?? "not_built");
-			const environmentKey =
-				exactStaticEnvironment
+      const environmentKey = exactStaticEnvironment
 					? (staticEnvironment.environmentKey ?? null)
 					: (buildStatus?.environmentKey ?? null);
 			const hintsLen = row.hintsText ? row.hintsText.length : 0;
@@ -4197,11 +4514,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				instance.suiteSlug,
 				(suiteCounts.get(instance.suiteSlug) ?? 0) + 1,
 			);
-			const coverage =
-				suiteEnvironmentCoverage.get(instance.suiteSlug) ??
-				{ validated: 0, building: 0, failed: 0, notBuilt: 0 };
+      const coverage = suiteEnvironmentCoverage.get(instance.suiteSlug) ?? {
+        validated: 0,
+        building: 0,
+        failed: 0,
+        notBuilt: 0,
+      };
 			if (instance.environmentStatus === "validated") coverage.validated += 1;
-			else if (instance.environmentStatus === "building") coverage.building += 1;
+      else if (instance.environmentStatus === "building")
+        coverage.building += 1;
 			else if (instance.environmentStatus === "failed") coverage.failed += 1;
 			else coverage.notBuilt += 1;
 			suiteEnvironmentCoverage.set(instance.suiteSlug, coverage);
@@ -4393,7 +4714,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			if (!this.isResourceVisibleToCaller(row, caller)) return null;
 			execution = row;
 			if (row.workflowId) {
-				const definition = await this.deps.workflowDefinitions.getById(row.workflowId);
+        const definition = await this.deps.workflowDefinitions.getById(
+          row.workflowId,
+        );
 				if (this.isResourceVisibleToCaller(definition, caller)) {
 					workflow = {
 						id: definition.id,
@@ -4406,7 +4729,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 		const targetWorkflowId = input.workflowId?.trim() || workflow?.id || null;
 		if (!workflow && targetWorkflowId) {
-			const definition = await this.deps.workflowDefinitions.getById(targetWorkflowId);
+      const definition =
+        await this.deps.workflowDefinitions.getById(targetWorkflowId);
 			if (!this.isResourceVisibleToCaller(definition, caller)) return null;
 			workflow = {
 				id: definition.id,
@@ -4432,9 +4756,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}) {
 		const caller = { userId: input.userId, projectId: input.projectId ?? null };
 		if (input.executionId) {
-			const execution = await this.deps.workflowExecutions.getById(input.executionId);
+      const execution = await this.deps.workflowExecutions.getById(
+        input.executionId,
+      );
 			if (!this.isResourceVisibleToCaller(execution, caller)) return null;
-			return this.deps.workflowExecutions.listLogsByExecutionId(input.executionId);
+      return this.deps.workflowExecutions.listLogsByExecutionId(
+        input.executionId,
+      );
 		}
 
 		const workflowId = input.workflowId?.trim();
@@ -4453,7 +4781,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	resolveWorkflowActivityRateTarget(input: {
 		executionId: string;
 	}): Promise<WorkflowActivityRateTargetReadModel | null> {
-		return this.requireActivityRateTargets().resolveWorkflowActivityRateTarget(input);
+    return this.requireActivityRateTargets().resolveWorkflowActivityRateTarget(
+      input,
+    );
 	}
 
 	getObservabilityTraceScope(input: {
@@ -4478,10 +4808,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireWorkflowMonitorReads().listFallbackExecutions(input);
 	}
 
-	getPromptPresetUsages(input: {
-		presetId: string;
-		projectId: string;
-	}) {
+  getPromptPresetUsages(input: { presetId: string; projectId: string }) {
 		return this.requireResourceUsages().getPromptPresetUsages(input);
 	}
 
@@ -4528,7 +4855,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	getBenchmarkInstanceDetail(input: { suiteSlug: string; instanceId: string }) {
-		return this.requireBenchmarkInstanceDetails().getBenchmarkInstanceDetail(input);
+    return this.requireBenchmarkInstanceDetails().getBenchmarkInstanceDetail(
+      input,
+    );
 	}
 
 	listBenchmarkRunInstanceScores(input: {
@@ -4536,7 +4865,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		instanceId: string;
 		projectId: string;
 	}) {
-		return this.requireBenchmarkRunInstanceScores().listRunInstanceScores(input);
+    return this.requireBenchmarkRunInstanceScores().listRunInstanceScores(
+      input,
+    );
 	}
 
 	getBenchmarkRunInstanceDetail(input: {
@@ -4544,7 +4875,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		instanceId: string;
 		projectId: string;
 	}) {
-		return this.requireBenchmarkRunInstanceDetails().getRunInstanceDetail(input);
+    return this.requireBenchmarkRunInstanceDetails().getRunInstanceDetail(
+      input,
+    );
 	}
 
 	getBenchmarkRunInstanceAnnotations(input: {
@@ -4553,7 +4886,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId: string;
 		userId: string;
 	}) {
-		return this.requireBenchmarkRunInstanceAnnotations().getRunInstanceAnnotations(input);
+    return this.requireBenchmarkRunInstanceAnnotations().getRunInstanceAnnotations(
+      input,
+    );
 	}
 
 	upsertBenchmarkRunInstanceAnnotation(input: {
@@ -4577,15 +4912,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			});
 		}
 		const reasoning =
-			typeof input.reasoning === "string" ? input.reasoning.trim() || null : null;
-		return this.requireBenchmarkRunInstanceAnnotations().upsertRunInstanceAnnotation({
+      typeof input.reasoning === "string"
+        ? input.reasoning.trim() || null
+        : null;
+    return this.requireBenchmarkRunInstanceAnnotations().upsertRunInstanceAnnotation(
+      {
 			runId: input.runId,
 			instanceId: input.instanceId,
 			projectId: input.projectId,
 			userId: input.userId,
 			verdict: verdict as BenchmarkInstanceAnnotationVerdict,
 			reasoning,
-		});
+      },
+    );
 	}
 
 	deleteBenchmarkRunInstanceAnnotation(input: {
@@ -4594,7 +4933,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId: string;
 		userId: string;
 	}) {
-		return this.requireBenchmarkRunInstanceAnnotations().deleteRunInstanceAnnotation(input);
+    return this.requireBenchmarkRunInstanceAnnotations().deleteRunInstanceAnnotation(
+      input,
+    );
 	}
 
 	promoteBenchmarkRunInstanceToDataset(input: {
@@ -4613,13 +4954,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				message: "runId and instanceId are required",
 			});
 		}
-		return this.requireBenchmarkDatasetPromotions().promoteRunInstanceToDataset({
+    return this.requireBenchmarkDatasetPromotions().promoteRunInstanceToDataset(
+      {
 			projectId: input.projectId,
 			datasetId: input.datasetId,
 			runId,
 			instanceId,
 			now: input.now ?? new Date(),
-		});
+      },
+    );
 	}
 
 	getBenchmarkRunInstanceProgress(input: {
@@ -4778,7 +5121,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		sessionId: string;
 		projectId?: string | null;
 	}) {
-		const context = await this.requireSessions().getSessionProvisioningContext(input);
+    const context =
+      await this.requireSessions().getSessionProvisioningContext(input);
 		if (!context) return { status: "not_found" as const };
 		if (
 			context.status === "running" ||
@@ -4859,26 +5203,117 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.browserArtifacts.getBlobPayload(storageRef);
 	}
 
-	async validateApiKeyForUser(input: {
-		authorizationHeader: string | null;
-		userId: string;
-	}) {
-		const authHeader = input.authorizationHeader;
-		if (!authHeader) {
-			return { valid: false as const, error: "Missing Authorization header", statusCode: 401 };
+  private async lookupApiKey(
+    authorizationHeader: string | null,
+  ): Promise<
+    | { valid: true; apiKey: ApiKeyRecord }
+    | { valid: false; error: string; statusCode: number }
+  > {
+    if (!authorizationHeader) {
+      return {
+        valid: false,
+        error: "Missing Authorization header",
+        statusCode: 401,
+      };
 		}
 
-		const key = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-		if (!key?.startsWith("wfb_")) {
-			return { valid: false as const, error: "Invalid API key format", statusCode: 401 };
+    const bearerMatch = authorizationHeader.match(/^Bearer\s+(.+)$/i);
+    const key = (bearerMatch?.[1] ?? authorizationHeader).trim();
+    if (!key.startsWith("wfb_")) {
+      return { valid: false, error: "Invalid API key format", statusCode: 401 };
 		}
 
 		const keyHash = createHash("sha256").update(key).digest("hex");
 		const apiKey = await this.deps.apiKeys.getByKeyHash(keyHash);
 		if (!apiKey) {
-			return { valid: false as const, error: "Invalid API key", statusCode: 401 };
+      return { valid: false, error: "Invalid API key", statusCode: 401 };
+    }
+    return { valid: true, apiKey };
+  }
+
+  private async validateApiKeyMembership(
+    apiKey: ApiKeyRecord,
+  ): Promise<
+    { valid: true } | { valid: false; error: string; statusCode: number }
+  > {
+    if (!apiKey.projectId) return { valid: true };
+
+    const activeMember =
+      await this.deps.workspaceProjects.hasActiveProjectMembership({
+        projectId: apiKey.projectId,
+        userId: apiKey.userId,
+      });
+    if (!activeMember) {
+      return {
+        valid: false,
+        error: "API key owner is not an active member of its workspace",
+        statusCode: 403,
+      };
 		}
-		if (apiKey.userId !== input.userId) {
+
+    const requiresAuthoringRole = apiKey.scopes.some(
+      (scope) => scope !== "workflow:read",
+    );
+    if (requiresAuthoringRole) {
+      const role = await this.deps.workspaceProjects.getProjectMemberRole({
+        projectId: apiKey.projectId,
+        userId: apiKey.userId,
+      });
+      if (role !== "ADMIN" && role !== "EDITOR") {
+        return {
+          valid: false,
+          error:
+            "API key owner no longer has an authoring role in its workspace",
+          statusCode: 403,
+        };
+      }
+    }
+
+    return { valid: true };
+  }
+
+  async resolveApiKey(input: { authorizationHeader: string | null }) {
+    const lookup = await this.lookupApiKey(input.authorizationHeader);
+    if (!lookup.valid) return lookup;
+
+    const membership = await this.validateApiKeyMembership(lookup.apiKey);
+    if (!membership.valid) return membership;
+
+    void this.deps.apiKeys
+      .markUsed(lookup.apiKey.id, new Date())
+      .catch(() => {});
+    return {
+      valid: true as const,
+      apiKeyId: lookup.apiKey.id,
+      userId: lookup.apiKey.userId,
+      projectId: lookup.apiKey.projectId,
+      scopes: lookup.apiKey.scopes,
+    };
+  }
+
+  async validateApiKeyForUser(input: {
+    authorizationHeader: string | null;
+    userId: string;
+    projectId?: string | null;
+  }) {
+    const lookup = await this.lookupApiKey(input.authorizationHeader);
+    if (!lookup.valid) return lookup;
+    const apiKey = lookup.apiKey;
+
+    const membership = await this.validateApiKeyMembership(apiKey);
+    if (!membership.valid) return membership;
+
+    const legacyOwnerMismatch =
+      !apiKey.projectId && apiKey.userId !== input.userId;
+    const scopedProjectMismatch =
+      Boolean(apiKey.projectId) && apiKey.projectId !== input.projectId;
+    const scopedKeyCannotExecute =
+      Boolean(apiKey.projectId) && !apiKey.scopes.includes("workflow:execute");
+    if (
+      legacyOwnerMismatch ||
+      scopedProjectMismatch ||
+      scopedKeyCannotExecute
+    ) {
 			return {
 				valid: false as const,
 				error: "You do not have permission to run this workflow",
@@ -4890,15 +5325,28 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return { valid: true as const, apiKeyId: apiKey.id };
 	}
 
-	listUserApiKeys(userId: string) {
-		return this.deps.apiKeys.listByUserId(userId);
+  listUserApiKeys(input: { userId: string; projectId: string }) {
+    return this.deps.apiKeys.listVisibleInProject(input);
 	}
 
-	async createUserApiKey(input: { userId: string; name: string }) {
+  async createUserApiKey(input: {
+    userId: string;
+    projectId: string;
+    name: string;
+  }) {
+    const role = await this.deps.workspaceProjects.getProjectMemberRole({
+      projectId: input.projectId,
+      userId: input.userId,
+    });
+    if (role !== "ADMIN" && role !== "EDITOR") return null;
+
 		const secret = createPlaintextWorkflowBuilderApiKey();
-		const created = await this.deps.apiKeys.createUserApiKey({
+    const created = await this.deps.apiKeys.createProjectApiKey({
 			id: generateId(),
 			userId: input.userId,
+      projectId: input.projectId,
+      createdByUserId: input.userId,
+      scopes: [...WORKFLOW_MCP_AUTHORING_API_KEY_SCOPES],
 			name: input.name.trim(),
 			keyHash: secret.keyHash,
 			keyPrefix: secret.keyPrefix,
@@ -4907,23 +5355,42 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			id: created.id,
 			name: created.name,
 			keyPrefix: created.keyPrefix,
+      projectId: created.projectId,
+      createdByUserId: created.createdByUserId,
+      scopes: created.scopes,
 			createdAt: created.createdAt,
 			key: secret.plaintextKey,
 		};
 	}
 
-	deleteUserApiKey(input: { userId: string; keyId: string }) {
-		return this.deps.apiKeys.deleteForUser({
+  deleteUserApiKey(input: {
+    userId: string;
+    projectId: string;
+    keyId: string;
+  }) {
+    return this.deps.apiKeys.deleteForProject({
 			id: input.keyId,
 			userId: input.userId,
+      projectId: input.projectId,
 		});
 	}
 
-	async rotateUserApiKey(input: { userId: string; keyId: string }) {
+  async rotateUserApiKey(input: {
+    userId: string;
+    projectId: string;
+    keyId: string;
+  }) {
+    const role = await this.deps.workspaceProjects.getProjectMemberRole({
+      projectId: input.projectId,
+      userId: input.userId,
+    });
+    if (role !== "ADMIN" && role !== "EDITOR") return null;
+
 		const secret = createPlaintextWorkflowBuilderApiKey();
-		const rotated = await this.deps.apiKeys.updateSecretForUser({
+    const rotated = await this.deps.apiKeys.updateSecretForProject({
 			id: input.keyId,
 			userId: input.userId,
+      projectId: input.projectId,
 			keyHash: secret.keyHash,
 			keyPrefix: secret.keyPrefix,
 		});
@@ -4932,6 +5399,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 					id: rotated.id,
 					name: rotated.name,
 					keyPrefix: rotated.keyPrefix,
+          projectId: rotated.projectId,
+          createdByUserId: rotated.createdByUserId,
+          scopes: rotated.scopes,
 					createdAt: rotated.createdAt,
 					key: secret.plaintextKey,
 				}
@@ -4950,10 +5420,27 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.getById(id);
 	}
 
+  async getWorkflowExecutionOwner(executionId: string) {
+    const execution = await this.deps.workflowExecutions.getById(executionId);
+    if (!execution) return null;
+    const workflow = await this.deps.workflowDefinitions.getById(
+      execution.workflowId,
+    );
+    return workflow
+      ? {
+          id: execution.id,
+          userId: workflow.userId,
+          projectId: workflow.projectId,
+        }
+      : null;
+  }
+
 	async getScopedExecutionById(
 		input: WorkflowExecutionScopeInput,
 	): Promise<WorkflowExecutionRecord | null> {
-		const execution = await this.deps.workflowExecutions.getById(input.executionId);
+    const execution = await this.deps.workflowExecutions.getById(
+      input.executionId,
+    );
 		return isScopedExecutionInScope(execution, input) ? execution : null;
 	}
 
@@ -4977,10 +5464,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		executionId: string;
 		limit: number;
 	}): Promise<CliWorkspaceCommandCandidate[]> {
-		const rows = await this.requireSessions().listCliWorkspaceSessionCandidates(input);
+    const rows =
+      await this.requireSessions().listCliWorkspaceSessionCandidates(input);
 		const candidates: CliWorkspaceCommandCandidate[] = [];
 		for (const row of rows) {
-			if (getRuntimeDescriptor(row.agentRuntime)?.family !== "interactive-cli") continue;
+      if (getRuntimeDescriptor(row.agentRuntime)?.family !== "interactive-cli")
+        continue;
 			const runtimeAppId = row.runtimeAppId?.trim() || "";
 			const appId =
 				runtimeAppId ||
@@ -5001,12 +5490,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return candidates;
 	}
 
-	async hasInteractiveCliSessionForExecution(executionId: string): Promise<boolean> {
-		const rows = await this.requireSessions().listWorkflowExecutionSessionRuntimes({
+  async hasInteractiveCliSessionForExecution(
+    executionId: string,
+  ): Promise<boolean> {
+    const rows =
+      await this.requireSessions().listWorkflowExecutionSessionRuntimes({
 			workflowExecutionId: executionId,
 		});
 		return rows.some(
-			(row) => getRuntimeDescriptor(row.agentRuntime)?.family === "interactive-cli",
+      (row) =>
+        getRuntimeDescriptor(row.agentRuntime)?.family === "interactive-cli",
 		);
 	}
 
@@ -5018,19 +5511,26 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().createWorkflowEnsureSession(input);
 	}
 
-	updateWorkflowEnsureSessionRuntime(input: UpdateWorkflowEnsureSessionRuntimeInput) {
+  updateWorkflowEnsureSessionRuntime(
+    input: UpdateWorkflowEnsureSessionRuntimeInput,
+  ) {
 		return this.requireSessions().updateWorkflowEnsureSessionRuntime(input);
 	}
 
-	listReapableWorkflowSessionRuntimeHosts(input: { workflowExecutionId: string }) {
-		return this.requireSessions().listReapableWorkflowSessionRuntimeHosts(input);
+  listReapableWorkflowSessionRuntimeHosts(input: {
+    workflowExecutionId: string;
+  }) {
+    return this.requireSessions().listReapableWorkflowSessionRuntimeHosts(
+      input,
+    );
 	}
 
 	async checkBenchmarkSessionProvisioningGate(input: {
 		runId: string;
 		instanceId?: string | null;
 	}): Promise<BenchmarkSessionProvisioningGateResult> {
-		const row = await this.requireBenchmarkRuns().getSessionProvisioningGate(input);
+    const row =
+      await this.requireBenchmarkRuns().getSessionProvisioningGate(input);
 		if (!row) {
 			return { ok: false, status: 404, message: "Benchmark run not found" };
 		}
@@ -5084,16 +5584,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		let userId = "";
 		let projectId: string | null = null;
 		if (input.parentSessionId) {
-			const parentOwner = await sessions.getSessionFileOwner(input.parentSessionId);
+      const parentOwner = await sessions.getSessionFileOwner(
+        input.parentSessionId,
+      );
 			if (parentOwner) {
 				userId = parentOwner.userId;
 				projectId = parentOwner.projectId;
 			}
 		}
 		if (!userId) {
-			const peerOwner = await this
-				.requirePeerAgentResolver()
-				.resolvePeerAgentOwner(input.peerAgentId);
+      const peerOwner =
+        await this.requirePeerAgentResolver().resolvePeerAgentOwner(
+          input.peerAgentId,
+        );
 			if (!peerOwner) {
 				return {
 					ok: false,
@@ -5118,7 +5621,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			title: input.title ?? `Delegated: ${input.prompt.slice(0, 40)}`,
 			userId,
 			projectId,
-			parentExecutionId: input.parentInstanceId ?? input.parentSessionId ?? null,
+      parentExecutionId:
+        input.parentInstanceId ?? input.parentSessionId ?? null,
 		});
 		if (input.prompt.trim()) {
 			await this.requireSessionEvents().appendSessionEvent(session.id, {
@@ -5140,7 +5644,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		environmentId?: string | null;
 		environmentVersion?: number | null;
 	}): Promise<PeerAgentDispatchContext | null> {
-		return this.requirePeerAgentResolver().resolvePeerAgentDispatchContext(input);
+    return this.requirePeerAgentResolver().resolvePeerAgentDispatchContext(
+      input,
+    );
 	}
 
 	resolveSessionAgent(input: {
@@ -5170,7 +5676,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	getWorkflowAgentRuntimeIdentity(
 		agentId: string,
 	): Promise<WorkflowAgentRuntimeIdentity | null> {
-		return this.requireWorkflowAgentReads().getWorkflowAgentRuntimeIdentity(agentId);
+    return this.requireWorkflowAgentReads().getWorkflowAgentRuntimeIdentity(
+      agentId,
+    );
 	}
 
 	resolvePublishedWorkflowAgentForEnsure(input: {
@@ -5183,7 +5691,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		);
 	}
 
-	countActiveTriggeredWorkflowRuns(input: { statuses: WorkflowExecutionStatus[] }) {
+  countActiveTriggeredWorkflowRuns(input: {
+    statuses: WorkflowExecutionStatus[];
+  }) {
 		return this.deps.workflowExecutions.countActiveTriggeredRuns(input);
 	}
 
@@ -5225,7 +5735,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	listExecutionOutputFiles(executionId: string) {
-		return this.deps.workflowExecutions.listOutputFilesByExecutionId(executionId);
+    return this.deps.workflowExecutions.listOutputFilesByExecutionId(
+      executionId,
+    );
 	}
 
 	aggregateExecutionUsageMetrics(input: {
@@ -5233,11 +5745,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		projectId?: string | null;
 		includeAncestors?: boolean;
 	}) {
-		return this.deps.workflowExecutions.aggregateUsageMetricsForExecutionLineage({
+    return this.deps.workflowExecutions.aggregateUsageMetricsForExecutionLineage(
+      {
 			executionId: input.executionId,
 			projectId: input.projectId,
 			maxAncestors: input.includeAncestors === false ? 0 : 20,
-		});
+      },
+    );
 	}
 
 	createWorkflowExecution(input: CreateWorkflowExecutionInput) {
@@ -5248,8 +5762,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const execution = await this.deps.workflowExecutions.getById(executionId);
 		const instanceId = execution?.daprInstanceId?.trim();
 		if (!execution || !instanceId) return null;
-		const status = String(execution.status || "").trim().toLowerCase();
-		if (["completed", "failed", "success", "error", "cancelled", "terminated"].includes(status)) {
+    const status = String(execution.status || "")
+      .trim()
+      .toLowerCase();
+    if (
+      [
+        "completed",
+        "failed",
+        "success",
+        "error",
+        "cancelled",
+        "terminated",
+      ].includes(status)
+    ) {
 			return null;
 		}
 		return { instanceId, status };
@@ -5296,19 +5821,33 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	listExecutionSessionIds(executionId: string) {
-		return this.deps.workflowExecutions.listSessionIdsByExecutionId(executionId);
+    return this.deps.workflowExecutions.listSessionIdsByExecutionId(
+      executionId,
+    );
 	}
 
 	listExecutionAgentEvents(executionId: string) {
-		return this.deps.workflowExecutions.listAgentEventsByExecutionId(executionId);
+    return this.deps.workflowExecutions.listAgentEventsByExecutionId(
+      executionId,
+    );
 	}
 
-	listRecentExecutionAgentEvents(input: { executionId: string; limit: number }) {
-		return this.deps.workflowExecutions.listRecentAgentEventsByExecutionId(input);
+  listRecentExecutionAgentEvents(input: {
+    executionId: string;
+    limit: number;
+  }) {
+    return this.deps.workflowExecutions.listRecentAgentEventsByExecutionId(
+      input,
+    );
 	}
 
-	listExecutionAgentEventsAfter(input: { executionId: string; afterEventId: number }) {
-		return this.deps.workflowExecutions.listAgentEventsByExecutionIdAfter(input);
+  listExecutionAgentEventsAfter(input: {
+    executionId: string;
+    afterEventId: number;
+  }) {
+    return this.deps.workflowExecutions.listAgentEventsByExecutionIdAfter(
+      input,
+    );
 	}
 
 	async getSessionEventStreamSnapshot(input: {
@@ -5350,15 +5889,18 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				reason: "ambiguous" | "identity_mismatch" | "instructions_mismatch";
 		  }
 	> {
-		const executionOwner =
-			await this.getWorkflowExecutionSessionOwnerContext(input.executionId);
+    const executionOwner = await this.getWorkflowExecutionSessionOwnerContext(
+      input.executionId,
+    );
 		if (!executionOwner?.userId) {
 			return { status: "execution_not_found" };
 		}
 
 		const agentSlug = input.agentPolicy.slug.trim();
 		const agentId =
-			await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(agentSlug);
+      await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
+        agentSlug,
+      );
 		const agent = agentId
 			? await this.requireSessionAgents().resolveSessionAgent({ agentId })
 			: null;
@@ -5419,12 +5961,15 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			title,
 			agentPolicy: input.agentPolicy,
 		});
-		const kickoff = await this.requireSessionEvents().appendSessionEvent(session.id, {
+    const kickoff = await this.requireSessionEvents().appendSessionEvent(
+      session.id,
+      {
 			type: "user.message",
 			data: kickoffData,
 			processedAt: null,
 			sourceEventId: WORKFLOW_DEV_SESSION_KICKOFF_SOURCE,
-		});
+      },
+    );
 		if (
 			kickoff.type !== "user.message" ||
 			kickoff.sourceEventId !== WORKFLOW_DEV_SESSION_KICKOFF_SOURCE ||
@@ -5433,7 +5978,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { status: "session_conflict", reason: "instructions_mismatch" };
 		}
 
-		const finalSessionIds = await this.deps.workflowExecutions.listSessionIdsByExecutionId(
+    const finalSessionIds =
+      await this.deps.workflowExecutions.listSessionIdsByExecutionId(
 			input.executionId,
 		);
 		// GAN workflows already own sibling sessions created by agent() calls. The
@@ -5600,12 +6146,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const session = await this.getScopedSession(input);
 		if (!session) return null;
 		const refs =
-			await this.requireWorkflowAgentReads().resolveSessionControlSettingsReferences({
+      await this.requireWorkflowAgentReads().resolveSessionControlSettingsReferences(
+        {
 				agentId: session.agentId,
 				agentVersion: session.agentVersion ?? null,
 				environmentId: session.environmentId ?? null,
 				environmentVersion: session.environmentVersion ?? null,
-			});
+        },
+      );
 		return {
 			session,
 			agent: refs.agent,
@@ -5643,11 +6191,13 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		if (!session) {
 			return { ok: false, status: 404, error: "Session not found" };
 		}
-		return this.requireSessionAgentConfigCommands().raiseSessionAgentConfigPatch({
+    return this.requireSessionAgentConfigCommands().raiseSessionAgentConfigPatch(
+      {
 			sessionId: input.sessionId,
 			patch: input.patch,
 			session,
-		});
+      },
+    );
 	}
 
 	listSessionEvents(sessionId: string, input?: ListSessionEventsInput) {
@@ -5671,7 +6221,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	listenSessionEventNotifications(
 		onNotification: (notification: WorkflowSessionEventNotification) => void,
 	) {
-		return this.deps.sessionEventNotifications.listenSessionEvents(onNotification);
+    return this.deps.sessionEventNotifications.listenSessionEvents(
+      onNotification,
+    );
 	}
 
 	findSessionIdByDaprInstanceId(instanceId: string) {
@@ -5786,7 +6338,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				!isAgentConfigEquivalent(baseAgent.config, input.agentConfig)
 			) {
 				try {
-					const experiment = await experiments.findOrCreateSessionExperimentAgent({
+          const experiment =
+            await experiments.findOrCreateSessionExperimentAgent({
 						baseAgentId: baseAgent.id,
 						baseAgentSlug: baseAgent.slug,
 						baseAgentName: baseAgent.name,
@@ -5854,7 +6407,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().updateSessionStatusUnlessTerminated(input);
 	}
 
-	async ingestSessionEvent(input: IngestSessionEventInput): Promise<IngestSessionEventResult> {
+  async ingestSessionEvent(
+    input: IngestSessionEventInput,
+  ): Promise<IngestSessionEventResult> {
 		const sessions = this.requireSessions();
 		const eventLog = this.requireSessionEvents();
 		const envelope = await eventLog.appendSessionEvent(input.sessionId, {
@@ -5873,7 +6428,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		void sessions.bumpSessionLastEventAt(input.sessionId).catch(() => {});
 
 		let cleanupSessionSandbox = false;
-		if (input.type === "session.status_starting" || input.type === "session.status_running") {
+    if (
+      input.type === "session.status_starting" ||
+      input.type === "session.status_running"
+    ) {
 			await sessions.updateSessionStatusUnlessTerminated({
 				id: input.sessionId,
 				status: "running",
@@ -5938,26 +6496,36 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		// leaves the column alone; a value SETs, `null` CLEARs. Best-effort — a
 		// transient failure must never reject the ingest (events stay the source
 		// of truth), so it's awaited-with-catch to stay deterministic yet safe.
-		const pendingInputUpdate = computePendingInputUpdate(input.type, input.data, {
+    const pendingInputUpdate = computePendingInputUpdate(
+      input.type,
+      input.data,
+      {
 			id: input.sourceEventId ?? envelope.id,
 			createdAt: envelope.createdAt,
-		});
+      },
+    );
 		if (pendingInputUpdate !== undefined) {
 			await sessions
 				.setSessionPendingInput(input.sessionId, pendingInputUpdate)
 				.catch((err) => {
-					console.warn("[session-ingest] pending_input cache update failed:", err);
+          console.warn(
+            "[session-ingest] pending_input cache update failed:",
+            err,
+          );
 				});
 		}
 
 		if (isRecord(input.data) && isRecord(input.data.codeCheckpoint)) {
 			try {
-				const sessionContext = await sessions.getSessionWorkflowContext(input.sessionId);
+        const sessionContext = await sessions.getSessionWorkflowContext(
+          input.sessionId,
+        );
 				const workflowExecutionId = sessionContext?.workflowExecutionId ?? null;
 				if (workflowExecutionId) {
 					const eventId = input.sourceEventId ?? envelope.id;
 					const parentExecutionId = sessionContext?.parentExecutionId ?? null;
-					const daprInstanceId = sessionContext?.daprInstanceId ?? input.sessionId;
+          const daprInstanceId =
+            sessionContext?.daprInstanceId ?? input.sessionId;
 					await this.requireCodeCheckpoints().persistFromAgentEvent({
 						workflowExecutionId,
 						workflowAgentRunId: null,
@@ -5971,13 +6539,17 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 						nodeId: null,
 						payload: input.data.codeCheckpoint,
 					});
-					const checkpointWarning = checkpointRemoteWarning(input.data.codeCheckpoint);
+          const checkpointWarning = checkpointRemoteWarning(
+            input.data.codeCheckpoint,
+          );
 					if (checkpointWarning) {
-						await this.requireEvaluationArtifacts().recordCodeCheckpointWarning({
+            await this.requireEvaluationArtifacts().recordCodeCheckpointWarning(
+              {
 							workflowExecutionId,
 							sourceEventId: eventId,
 							checkpoint: checkpointWarning,
-						});
+              },
+            );
 					}
 				}
 			} catch (err) {
@@ -5993,14 +6565,21 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	listWorkflowArtifactsByExecutionId(executionId: string) {
-		return this.deps.artifactStore.listWorkflowArtifactsByExecutionId(executionId);
+    return this.deps.artifactStore.listWorkflowArtifactsByExecutionId(
+      executionId,
+    );
 	}
 
 	listSourceBundleArtifactsByWorkflowId(workflowId: string) {
-		return this.deps.artifactStore.listSourceBundleArtifactsByWorkflowId(workflowId);
+    return this.deps.artifactStore.listSourceBundleArtifactsByWorkflowId(
+      workflowId,
+    );
 	}
 
-	getWorkflowArtifactForExecution(input: { executionId: string; artifactId: string }) {
+  getWorkflowArtifactForExecution(input: {
+    executionId: string;
+    artifactId: string;
+  }) {
 		return this.deps.artifactStore.getWorkflowArtifactForExecution(input);
 	}
 
@@ -6030,9 +6609,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireWorkflowFiles().listFiles(filter);
 	}
 
-	listWorkflowFilesByScopePrefix(
-		filter: ListWorkflowFilesByScopePrefixFilter,
-	) {
+  listWorkflowFilesByScopePrefix(filter: ListWorkflowFilesByScopePrefixFilter) {
 		return this.requireWorkflowFiles().listFilesByScopePrefix(filter);
 	}
 
@@ -6057,7 +6634,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return persistRunDiff(input, {
 			createFile: workflowFiles.createFile.bind(workflowFiles),
 			getFileContent: workflowFiles.getFileContent.bind(workflowFiles),
-			upsertWorkflowArtifact: this.deps.artifactStore.upsertWorkflowArtifact.bind(
+      upsertWorkflowArtifact:
+        this.deps.artifactStore.upsertWorkflowArtifact.bind(
 				this.deps.artifactStore,
 			),
 		});
@@ -6067,7 +6645,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const workflowFiles = this.requireWorkflowFiles();
 		return persistSourceBundle(input, {
 			createFile: workflowFiles.createFile.bind(workflowFiles),
-			upsertWorkflowArtifact: this.deps.artifactStore.upsertWorkflowArtifact.bind(
+      upsertWorkflowArtifact:
+        this.deps.artifactStore.upsertWorkflowArtifact.bind(
 				this.deps.artifactStore,
 			),
 		});
@@ -6088,7 +6667,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	}
 
 	markWorkflowWorkspaceSessionCleaned(input: { workspaceRef: string }) {
-		return this.deps.workspaceSessions.markWorkflowWorkspaceSessionCleaned(input);
+    return this.deps.workspaceSessions.markWorkflowWorkspaceSessionCleaned(
+      input,
+    );
 	}
 
 	upsertScheduledAgentRun(input: UpsertWorkflowAgentRunScheduledInput) {
@@ -6148,9 +6729,9 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			? (input.requestedServers as McpServerProfileConfig[])
 			: [];
 		const rows = projectId
-			? (await this.deps.mcpConnections.listProjectConnections(projectId)).filter(
-					(row) => row.status === "ENABLED",
-				)
+      ? (
+          await this.deps.mcpConnections.listProjectConnections(projectId)
+        ).filter((row) => row.status === "ENABLED")
 			: [];
 		let hostedToken: string | null = null;
 		if (projectId && rows.some((row) => row.sourceType === "hosted_workflow")) {
