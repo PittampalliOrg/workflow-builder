@@ -4351,6 +4351,7 @@ def health_check():
         "status": "healthy",
         "service": "workflow-orchestrator",
         "previewLiveSync": "490e",
+        "previewDevelopment": "multi-service-ready",
     }
 
 

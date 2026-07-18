@@ -155,6 +155,41 @@
 		</Alert>
 	{/if}
 
+	<!-- Preview Development Status: unconditional compact section for the
+	     multi-service preview development run. Uses the real runs feed when
+	     available; otherwise renders a graceful empty state. -->
+	<section
+		data-preview-multiservice="proof-c-two"
+		class="rounded border p-3 flex items-center justify-between gap-3 flex-wrap"
+	>
+		<div class="flex items-center gap-2 min-w-0">
+			<Activity class="size-4 text-muted-foreground" />
+			<div class="min-w-0">
+				<div class="text-sm font-medium">Preview Development Status</div>
+				<div class="text-[11px] text-muted-foreground">
+					Live-sync preview environment for this workspace.
+				</div>
+			</div>
+		</div>
+		<div class="flex items-center gap-2">
+			{#if recentRuns.length === 0}
+				<Badge variant="outline" class="text-[10px] bg-muted text-muted-foreground">
+					No preview runs recorded yet
+				</Badge>
+			{:else}
+				<Badge variant="outline" class="text-[10px] bg-emerald-500/10 text-emerald-600">
+					{recentRuns.length} recent run{recentRuns.length === 1 ? '' : 's'}
+				</Badge>
+				<Badge variant="outline" class="text-[10px]">
+					latest {formatRelative(recentRuns[0].startedAt)}
+				</Badge>
+			{/if}
+			<Button variant="ghost" size="sm" onclick={() => goto(`/workspaces/${slug}/runs`)}>
+				View runs <ExternalLink class="size-3" />
+			</Button>
+		</div>
+	</section>
+
 	{#if loading}
 		<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
 			{#each Array(4) as _, i (i)}
