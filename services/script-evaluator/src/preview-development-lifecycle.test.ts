@@ -19,7 +19,10 @@ const target = {
 };
 const promotionReceiptId = `pspr_${"e".repeat(64)}`;
 
-function terminalOutput(overrides: Record<string, unknown> = {}) {
+function terminalOutput(
+	overrides: Record<string, unknown> = {},
+	services = ["workflow-builder"],
+) {
   return {
     controlOutcome: "submitted",
     pullRequestReceipt: {
@@ -28,7 +31,7 @@ function terminalOutput(overrides: Record<string, unknown> = {}) {
       previewName: target.previewName,
       requestId: target.environmentRequestId,
       executionId: "child-1",
-      services: ["workflow-builder"],
+      services,
       branch: "preview-feature-verified",
       commitSha: "e".repeat(40),
       prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
@@ -59,12 +62,16 @@ async function drive(
 		transientStatusFailures?: number;
 		transientStatusFailureMessage?: string;
 		promotionVerification?: Record<string, unknown>;
+		selectedServices?: string[];
+		promotedServices?: string[];
 	} = {},
 ) {
+	const selectedServices = options.selectedServices ?? ["workflow-builder"];
+	const promotedServices = options.promotedServices ?? ["workflow-builder"];
 	const args = {
 		intent: "Add a deployment health panel",
 		environmentName: "feature-one",
-		services: ["workflow-builder"],
+		services: selectedServices,
 		ttlHours: options.ttlHours ?? 8,
 		retainAfterCompletion: options.retainAfterCompletion === true,
 		...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
@@ -157,7 +164,9 @@ async function drive(
                     ok: true,
                     status: "completed",
                     terminal: true,
-                    output: options.terminalOutput ?? terminalOutput(),
+                    output:
+                      options.terminalOutput ??
+                      terminalOutput({}, promotedServices),
                   };
             break;
           }
@@ -177,7 +186,7 @@ async function drive(
                   requestId: target.environmentRequestId,
                   executionId: "child-1",
                   artifactId: "artifact-1",
-                  services: ["workflow-builder"],
+                  services: promotedServices,
                   branch: "preview-feature-verified",
                   commitSha: "e".repeat(40),
                   prUrl:
@@ -296,6 +305,36 @@ describe("host preview development lifecycle", () => {
       cleanup: { cleanup: { complete: true } },
     });
   });
+
+	it("verifies the affected service subset for a multi-service preview", async () => {
+		const { result, tasks } = await drive({
+			selectedServices: ["workflow-builder", "workflow-orchestrator"],
+			promotedServices: ["workflow-builder"],
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		const verification = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-verify-promotion",
+		);
+		expect(verification?.args).toMatchObject({
+			services: ["workflow-builder"],
+		});
+	});
+
+	it("rejects promoted services outside the selected preview set", async () => {
+		const { result, tasks } = await drive({
+			selectedServices: ["workflow-builder", "workflow-orchestrator"],
+			promotedServices: ["function-router"],
+		});
+		expect(result.status).toBe("script_error");
+		expect(result.error?.message).toContain(
+			"did not produce an authoritative draft pull request receipt",
+		);
+		expect(
+			tasks.some(
+				(task) => task.actionSlug === "preview/workflow-verify-promotion",
+			),
+		).toBe(false);
+	});
 
 	it("retries transient workflow status conflicts before teardown", async () => {
 		const { result, tasks } = await drive({
