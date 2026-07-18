@@ -847,7 +847,7 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
       target: input.target,
       ...input.workflow,
       status: "running",
-      phase: "awaiting-control",
+      phase: "Dev mode",
       progress: 75,
       currentNodeId: "await_control",
       controlReady: true,
@@ -911,6 +911,7 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
     const brokerStatus = await service.getWorkflowStatus(statusInput);
     expect(brokerStatus).toMatchObject({
       kind: "get-workflow-status",
+      phase: "Dev mode",
       sessionId: "session-1",
       controlReady: true,
       error: null,
@@ -918,6 +919,25 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
     });
     expect(JSON.stringify(brokerStatus)).not.toContain("must-not-cross");
     expect(JSON.stringify(brokerStatus)).not.toContain("candidate-controlled");
+
+    getWorkflowStatus.mockResolvedValueOnce({
+      ...(await getWorkflowStatus.mock.results[0]!.value),
+      operationId: statusInput.operationId,
+      phase: "Generate\nforged-log-line",
+    });
+    await expect(service.getWorkflowStatus(statusInput)).rejects.toMatchObject({
+      code: "contract-mismatch",
+    });
+
+    getWorkflowStatus.mockResolvedValueOnce({
+      ...(await getWorkflowStatus.mock.results[0]!.value),
+      operationId: statusInput.operationId,
+      currentNodeId: "node id with spaces",
+    });
+    await expect(service.getWorkflowStatus(statusInput)).rejects.toMatchObject({
+      code: "contract-mismatch",
+    });
+
     await expect(service.signalWorkflow(signalInput)).resolves.toMatchObject({
       kind: "signal-workflow",
       action: "submit_preview_pr",
@@ -930,7 +950,7 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
         parentExecutionId: "other-parent-execution",
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
-    expect(getWorkflowStatus).toHaveBeenCalledTimes(1);
+    expect(getWorkflowStatus).toHaveBeenCalledTimes(3);
 
     expect(authorizeRuntime).toHaveBeenCalledWith({
       previewName: target.previewName,
@@ -940,9 +960,9 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
       catalogDigest: target.catalogDigest,
       requiredServices: ["workflow-builder"],
     });
-    expect(authorizeRuntimeTuple).toHaveBeenCalledTimes(3);
-    expect(get).toHaveBeenCalledTimes(4);
-    expect(mintControl).toHaveBeenCalledTimes(3);
+    expect(authorizeRuntimeTuple).toHaveBeenCalledTimes(5);
+    expect(get).toHaveBeenCalledTimes(6);
+    expect(mintControl).toHaveBeenCalledTimes(5);
     expect(startWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({
         targetUrl: physicalPreview.url,
@@ -988,8 +1008,8 @@ describe("ApplicationPreviewTargetDevelopmentBrokerService", () => {
     await expect(service.getWorkflowStatus(statusInput)).rejects.toMatchObject({
       code: "unauthorized",
     });
-    expect(get).toHaveBeenCalledTimes(6);
-    expect(getWorkflowStatus).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(8);
+    expect(getWorkflowStatus).toHaveBeenCalledTimes(4);
   });
 
   it("reports only mismatch field names for preview-local start responses", async () => {

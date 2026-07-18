@@ -42,6 +42,7 @@ import { previewDevelopmentParentBindingPrefix } from "$lib/server/application/p
 import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SAFE_PROGRESS_LABEL = /^[\x20-\x7e]{1,64}$/;
 const SAFE_SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SPEC_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -754,16 +755,26 @@ function canonicalRemoteStartResult(
   });
 }
 
-function safeRemoteLabel(value: unknown): string | null {
+function safeRemoteProgressLabel(value: unknown): string | null {
   if (
     value === null ||
-    (typeof value === "string" && SAFE_ID.test(value) && value.length <= 64)
+    (typeof value === "string" && SAFE_PROGRESS_LABEL.test(value))
   ) {
     return value as string | null;
   }
   throw new PreviewTargetDevelopmentError(
     "contract-mismatch",
     "preview-local status returned an invalid progress label",
+  );
+}
+
+function safeRemoteNodeId(value: unknown): string | null {
+  if (value === null || (typeof value === "string" && SAFE_ID.test(value))) {
+    return value as string | null;
+  }
+  throw new PreviewTargetDevelopmentError(
+    "contract-mismatch",
+    "preview-local status returned an invalid current node id",
   );
 }
 
@@ -815,9 +826,9 @@ function canonicalRemoteStatusResult(
     target: input.target,
     ...input.workflow,
     status,
-    phase: safeRemoteLabel(value.phase),
+    phase: safeRemoteProgressLabel(value.phase),
     progress: progress as number | null,
-    currentNodeId: safeRemoteLabel(value.currentNodeId),
+    currentNodeId: safeRemoteNodeId(value.currentNodeId),
     controlReady: value.controlReady,
     sessionId: value.sessionId as string | null,
     sessionUrl: value.sessionUrl as string | null,
