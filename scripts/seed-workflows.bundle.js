@@ -1,7 +1,7 @@
 // scripts/seed-workflows.ts
 import crypto4 from "node:crypto";
-import fs2 from "node:fs";
-import path from "node:path";
+import fs3 from "node:fs";
+import path2 from "node:path";
 
 // node_modules/.pnpm/drizzle-orm@0.44.7_@electric-sql+pglite@0.5.4_@opentelemetry+api@1.9.1_@types+pg@8.15.6_postgres@3.4.8/node_modules/drizzle-orm/entity.js
 var entityKind = /* @__PURE__ */ Symbol.for("drizzle:entityKind");
@@ -1330,7 +1330,7 @@ var QueryPromise = class {
 function mapResultRow(columns, row, joinsNotNullableMap) {
   const nullifyMap = {};
   const result = columns.reduce(
-    (result2, { path: path2, field }, columnIndex) => {
+    (result2, { path: path3, field }, columnIndex) => {
       let decoder;
       if (is(field, Column)) {
         decoder = field;
@@ -1340,8 +1340,8 @@ function mapResultRow(columns, row, joinsNotNullableMap) {
         decoder = field.sql.decoder;
       }
       let node = result2;
-      for (const [pathChunkIndex, pathChunk] of path2.entries()) {
-        if (pathChunkIndex < path2.length - 1) {
+      for (const [pathChunkIndex, pathChunk] of path3.entries()) {
+        if (pathChunkIndex < path3.length - 1) {
           if (!(pathChunk in node)) {
             node[pathChunk] = {};
           }
@@ -1349,8 +1349,8 @@ function mapResultRow(columns, row, joinsNotNullableMap) {
         } else {
           const rawValue = row[columnIndex];
           const value = node[pathChunk] = rawValue === null ? null : decoder.mapFromDriverValue(rawValue);
-          if (joinsNotNullableMap && is(field, Column) && path2.length === 2) {
-            const objectName = path2[0];
+          if (joinsNotNullableMap && is(field, Column) && path3.length === 2) {
+            const objectName = path3[0];
             if (!(objectName in nullifyMap)) {
               nullifyMap[objectName] = value === null ? getTableName(field.table) : false;
             } else if (typeof nullifyMap[objectName] === "string" && nullifyMap[objectName] !== getTableName(field.table)) {
@@ -4832,13 +4832,13 @@ function Subscribe(postgres2, options) {
       }
     }
     function handle(a, b2) {
-      const path2 = b2.relation.schema + "." + b2.relation.table;
+      const path3 = b2.relation.schema + "." + b2.relation.table;
       call("*", a, b2);
-      call("*:" + path2, a, b2);
-      b2.relation.keys.length && call("*:" + path2 + "=" + b2.relation.keys.map((x2) => a[x2.name]), a, b2);
+      call("*:" + path3, a, b2);
+      b2.relation.keys.length && call("*:" + path3 + "=" + b2.relation.keys.map((x2) => a[x2.name]), a, b2);
       call(b2.command, a, b2);
-      call(b2.command + ":" + path2, a, b2);
-      b2.relation.keys.length && call(b2.command + ":" + path2 + "=" + b2.relation.keys.map((x2) => a[x2.name]), a, b2);
+      call(b2.command + ":" + path3, a, b2);
+      b2.relation.keys.length && call(b2.command + ":" + path3 + "=" + b2.relation.keys.map((x2) => a[x2.name]), a, b2);
     }
     function pong() {
       const x2 = Buffer.alloc(34);
@@ -4951,8 +4951,8 @@ function parseEvent(x) {
   const xs = x.match(/^(\*|insert|update|delete)?:?([^.]+?\.?[^=]+)?=?(.+)?/i) || [];
   if (!xs)
     throw new Error("Malformed subscribe pattern: " + x);
-  const [, command, path2, key] = xs;
-  return (command || "*") + (path2 ? ":" + (path2.indexOf(".") === -1 ? "public." + path2 : path2) : "") + (key ? "=" + key : "");
+  const [, command, path3, key] = xs;
+  return (command || "*") + (path3 ? ":" + (path3.indexOf(".") === -1 ? "public." + path3 : path3) : "") + (key ? "=" + key : "");
 }
 
 // node_modules/.pnpm/postgres@3.4.8/node_modules/postgres/src/large.js
@@ -5097,10 +5097,10 @@ function Postgres(a, b2) {
       });
       return query;
     }
-    function file(path2, args = [], options2 = {}) {
+    function file(path3, args = [], options2 = {}) {
       arguments.length === 2 && !Array.isArray(args) && (options2 = args, args = []);
       const query = new Query([], args, (query2) => {
-        fs.readFile(path2, "utf8", (err, string) => {
+        fs.readFile(path3, "utf8", (err, string) => {
           if (err)
             return query2.reject(err);
           query2.strings = [string];
@@ -12940,6 +12940,167 @@ function planProjectSystemWorkflowInstallations(input) {
   }));
 }
 
+// scripts/lib/preview-lifecycle-definitions.ts
+import fs2 from "node:fs";
+import path from "node:path";
+
+// services/script-evaluator/src/meta.ts
+import vm from "node:vm";
+function jsonSafe(value) {
+  if (value === void 0) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+function skipString(src, i, quote) {
+  i++;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (quote === "`" && c === "$" && src[i + 1] === "{") {
+      i += 2;
+      let depth = 1;
+      while (i < n && depth > 0) {
+        const cc = src[i];
+        if (cc === "{") depth++;
+        else if (cc === "}") depth--;
+        else if (cc === '"' || cc === "'" || cc === "`") {
+          i = skipString(src, i, cc);
+          continue;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === quote) return i + 1;
+    i++;
+  }
+  return n;
+}
+function scanBalanced(src, start) {
+  let depth = 0;
+  let i = start;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipString(src, i, c);
+      continue;
+    }
+    if (c === "/" && src[i + 1] === "/") {
+      const nl = src.indexOf("\n", i);
+      if (nl < 0) return -1;
+      i = nl + 1;
+      continue;
+    }
+    if (c === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      if (end < 0) return -1;
+      i = end + 2;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+    i++;
+  }
+  return -1;
+}
+function extractMeta(script) {
+  const marker = /export\s+const\s+meta\s*=/;
+  const m = marker.exec(script);
+  if (!m) return { meta: void 0, body: script, ok: false };
+  let i = m.index + m[0].length;
+  while (i < script.length && /\s/.test(script[i])) i++;
+  if (script[i] !== "{") {
+    return {
+      meta: void 0,
+      body: script,
+      ok: false,
+      error: "export const meta must be an object literal"
+    };
+  }
+  const end = scanBalanced(script, i);
+  if (end < 0) {
+    return {
+      meta: void 0,
+      body: script,
+      ok: false,
+      error: "unterminated meta object literal"
+    };
+  }
+  const literal = script.slice(i, end);
+  let after = end;
+  while (after < script.length && /[ \t]/.test(script[after])) after++;
+  if (script[after] === ";") after++;
+  const padding = script.slice(m.index, after).replace(/[^\n]/g, " ");
+  const body = script.slice(0, m.index) + padding + script.slice(after);
+  let meta;
+  try {
+    const raw = vm.runInNewContext(
+      "(" + literal + ")",
+      /* @__PURE__ */ Object.create(null),
+      { timeout: 1e3 }
+    );
+    meta = jsonSafe(raw);
+    if (meta === null) meta = void 0;
+  } catch {
+    meta = void 0;
+  }
+  return { meta, body, ok: meta !== void 0 };
+}
+
+// scripts/lib/preview-lifecycle-definitions.ts
+function loadDefinition(fixtureName, expectedName) {
+  const script = fs2.readFileSync(
+    path.resolve(
+      process.cwd(),
+      "scripts/fixtures/dynamic-scripts",
+      fixtureName
+    ),
+    "utf8"
+  );
+  const extracted = extractMeta(script);
+  if (!extracted.ok || !extracted.meta) {
+    throw new Error(
+      `Failed to extract metadata from ${fixtureName}: ${extracted.error ?? "invalid meta export"}`
+    );
+  }
+  if (extracted.meta.name !== expectedName) {
+    throw new Error(
+      `${fixtureName} must export meta.name=${JSON.stringify(expectedName)}`
+    );
+  }
+  if (typeof extracted.meta.description !== "string" || extracted.meta.description.length === 0) {
+    throw new Error(`${fixtureName} must export a non-empty meta.description`);
+  }
+  return {
+    script,
+    description: extracted.meta.description,
+    meta: extracted.meta
+  };
+}
+function hostPreviewLifecycleDefinition() {
+  return loadDefinition(
+    "preview-development-lifecycle.js",
+    "preview-development-lifecycle"
+  );
+}
+function previewUiDevelopmentGanDefinition() {
+  return loadDefinition(
+    "preview-ui-development-gan.js",
+    "preview-ui-development-gan"
+  );
+}
+
 // src/lib/server/agents/config-hash.ts
 import { createHash as createHash2 } from "node:crypto";
 function canonicalJson(value) {
@@ -16932,153 +17093,6 @@ async function upsertPreviewHmrGateCodeFunction(params) {
     `[seed-workflows] Reconciled code function ${PREVIEW_HMR_GATE_SLUG}@${PREVIEW_HMR_GATE_VERSION}`
   );
 }
-function hostPreviewLifecycleDefinition() {
-  const script = fs2.readFileSync(
-    path.resolve(
-      process.cwd(),
-      "scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js"
-    ),
-    "utf8"
-  );
-  const description = "Provision an isolated app-live preview from the physical dev cluster, start its pinned automated GAN-style UI development workflow with the submitted intent, verify its draft PR receipt, and complete guarded teardown.";
-  return {
-    script,
-    description,
-    meta: {
-      name: "preview-development-lifecycle",
-      description,
-      phases: [
-        { title: "Provision" },
-        { title: "Start development" },
-        { title: "Observe" },
-        { title: "Finalize" }
-      ],
-      launch: { surface: "dev-environment", target: "control-plane" },
-      input: {
-        type: "object",
-        required: ["intent", "environmentName"],
-        additionalProperties: false,
-        properties: {
-          intent: {
-            type: "string",
-            title: "Development task",
-            minLength: 1,
-            maxLength: 12e3,
-            description: "The initial task sent to the preview-local automated UI development workflow."
-          },
-          environmentName: {
-            type: "string",
-            title: "Preview environment name",
-            pattern: "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
-          },
-          services: {
-            type: "array",
-            title: "Microservices to develop",
-            minItems: 1,
-            uniqueItems: true,
-            items: { type: "string" },
-            default: ["workflow-builder"]
-          },
-          ttlHours: {
-            type: "integer",
-            title: "Preview lifetime in hours",
-            minimum: 2,
-            maximum: 24,
-            default: 8
-          },
-          retainAfterCompletion: {
-            type: "boolean",
-            title: "Retain environment after completion",
-            default: false
-          },
-          retainOnFailure: {
-            type: "boolean",
-            title: "Retain environment after failure",
-            default: false
-          }
-        }
-      }
-    }
-  };
-}
-function previewUiDevelopmentGanDefinition() {
-  const script = fs2.readFileSync(
-    path.resolve(
-      process.cwd(),
-      "scripts/fixtures/dynamic-scripts/preview-ui-development-gan.js"
-    ),
-    "utf8"
-  );
-  const description = "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the GLM JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.";
-  return {
-    script,
-    description,
-    meta: {
-      name: "preview-ui-development-gan",
-      description,
-      phases: [
-        { title: "Dev mode" },
-        { title: "Plan" },
-        { title: "Generate" },
-        { title: "Verify" },
-        { title: "Promote" }
-      ],
-      launch: { surface: "dev-environment" },
-      estimatedAgentCalls: 2,
-      input: {
-        type: "object",
-        required: ["intent"],
-        additionalProperties: false,
-        properties: {
-          intent: {
-            type: "string",
-            title: "Dashboard development task",
-            minLength: 1,
-            maxLength: 12e3
-          },
-          service: { type: "string", default: "workflow-builder" },
-          services: {
-            type: "array",
-            items: { type: "string" },
-            default: ["workflow-builder"]
-          },
-          targetRoutes: {
-            type: "array",
-            items: { type: "string" },
-            default: ["/dashboard"]
-          },
-          maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
-          agentSlug: {
-            type: "string",
-            default: "glm-juicefs-builder-agent"
-          },
-          keepPreview: {
-            anyOf: [
-              { type: "boolean" },
-              { type: "string", enum: ["true", "false"] }
-            ],
-            default: "true"
-          },
-          mode: {
-            type: "string",
-            enum: ["preview-native"]
-          },
-          previewOrigin: {
-            type: "string"
-          },
-          sourceRevision: {
-            type: "string",
-            pattern: "^[0-9a-f]{40}$"
-          },
-          __previewDevelopment: {
-            type: "object",
-            additionalProperties: true
-          }
-        }
-      }
-    }
-  };
-}
 async function seedHostPreviewLifecycleForAdminProjects(params) {
   const owners = await params.db.select({ projectId: projects.id, userId: users.id }).from(users).innerJoin(projects, eq(projects.ownerId, users.id)).where(and(eq(users.platformRole, "ADMIN"), eq(users.status, "ACTIVE")));
   const definition = hostPreviewLifecycleDefinition();
@@ -17456,7 +17470,7 @@ async function seedGeneratorCriticShowcases(params) {
     visibility: "public",
     engineType: "dynamic-script"
   });
-  const dir = path.resolve(process.cwd(), "scripts/fixtures/generator-critic");
+  const dir = path2.resolve(process.cwd(), "scripts/fixtures/generator-critic");
   for (const file of [
     // Same GAN harness re-authored for dapr-agent-py on the openshell-shared
     // backend: a workspace/profile provisions ONE shared /sandbox sandbox + a
@@ -17494,12 +17508,12 @@ async function seedGeneratorCriticShowcases(params) {
     // on PittampalliOrg/workflow-builder. Task is passed as `intent` at run time.
     "preview-gan-ui-feature.json"
   ]) {
-    const full = path.join(dir, file);
-    if (!fs2.existsSync(full)) {
+    const full = path2.join(dir, file);
+    if (!fs3.existsSync(full)) {
       console.warn(`[seed-workflows] generator-critic fixture missing: ${full}`);
       continue;
     }
-    const spec = JSON.parse(fs2.readFileSync(full, "utf8"));
+    const spec = JSON.parse(fs3.readFileSync(full, "utf8"));
     const doc = spec.document || {};
     const id = doc.name || file.replace(/\.json$/, "");
     const { nodes, edges } = buildGeneratorCriticGraph(spec);
@@ -17516,14 +17530,14 @@ async function seedGeneratorCriticShowcases(params) {
       visibility: "public"
     });
   }
-  const topDir = path.resolve(process.cwd(), "scripts/fixtures");
+  const topDir = path2.resolve(process.cwd(), "scripts/fixtures");
   for (const file of ["pr-heavy-review.workflow.json"]) {
-    const full = path.join(topDir, file);
-    if (!fs2.existsSync(full)) {
+    const full = path2.join(topDir, file);
+    if (!fs3.existsSync(full)) {
       console.warn(`[seed-workflows] workflow fixture missing: ${full}`);
       continue;
     }
-    const raw = JSON.parse(fs2.readFileSync(full, "utf8"));
+    const raw = JSON.parse(fs3.readFileSync(full, "utf8"));
     const spec = raw.spec || raw;
     const doc = spec.document || {};
     const id = doc.name || file.replace(/\.workflow\.json$/, "");
