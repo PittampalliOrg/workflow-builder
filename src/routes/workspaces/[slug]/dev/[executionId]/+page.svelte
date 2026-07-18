@@ -28,6 +28,8 @@
 	import DevPreviewStatusCard from '$lib/components/dev/dev-preview-status-card.svelte';
 	import DevServiceCard from '$lib/components/dev/dev-service-card.svelte';
 	import CodeVersionsPanel from '$lib/components/dev/code-versions-panel.svelte';
+	import SyncGenerationTimeline from '$lib/components/dev/sync-generation-timeline.svelte';
+	import type { SyncTimelineVersionInput } from '$lib/components/dev/sync-generation-timeline';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import SessionTranscript from '$lib/components/sessions/session-transcript.svelte';
@@ -72,6 +74,10 @@
 	let teardownReloadReturnUrl: string | null = null;
 	// Code versions this run produced that haven't been pushed to a GitHub PR yet.
 	let outstandingVersions = $state(0);
+	// Version artifacts mirrored from the checkpoints panel's load (single read)
+	// so the sync-generation timeline can render without a second poll.
+	let timelineVersions = $state<SyncTimelineVersionInput[]>([]);
+	let timelineLoaded = $state(false);
 	let canManageStrictCheckpoints = $state(false);
 	let serviceCheckpointStates = $state<
 		Record<string, 'unknown' | 'writable' | 'preparing' | 'frozen'>
@@ -465,7 +471,12 @@
 				sourceReadOnly={sourceReadOnly}
 				onoutstanding={(n) => (outstandingVersions = n)}
 				oncapability={(allowed) => (canManageStrictCheckpoints = allowed)}
+				onversions={(loaded) => {
+					timelineVersions = loaded;
+					timelineLoaded = true;
+				}}
 			/>
+			<SyncGenerationTimeline versions={timelineVersions} loading={!timelineLoaded} />
 		</aside>
 
 		<!-- Interactive session column -->

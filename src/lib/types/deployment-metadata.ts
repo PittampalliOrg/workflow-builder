@@ -209,3 +209,54 @@ export type RuntimeMetadataResponse = {
 	matrix: RuntimeMatrixRow[];
 	errors: string[];
 };
+
+/** Pin freshness for one service: when the release pin was last bumped. */
+export type FleetPinAge = {
+	service: string;
+	updatedAt: string | null;
+	/** now - updatedAt, in ms; null when updatedAt is unknown. */
+	ageMs: number | null;
+};
+
+/** Newest built artifact per service: latest pin-history tag + in-flight build. */
+export type FleetNewestBuilt = {
+	service: string;
+	newestTag: string | null;
+	newestPinCommittedAt: string | null;
+	/** PipelineRun name when the hub inventory reports an unfinished build. */
+	inFlightPipelineRun: string | null;
+};
+
+/**
+ * Broker-skew datum for the preview platform: stacks-main broker Deployment
+ * digest vs the release-pins workflow-builder digest, plus the LIVE rendered
+ * preview pins ConfigMap revision (`pins-hash`).
+ */
+export type FleetPreviewPlatformDrift = {
+	pinRevision: string | null;
+	brokerImageDigest: string | null;
+	releasePinsWorkflowBuilderDigest: string | null;
+	/** True only when BOTH digests are known and differ. */
+	skew: boolean;
+};
+
+/** Rollout convergence for one live Deployment in the BFF's own namespace. */
+export type FleetDeploymentGeneration = {
+	name: string;
+	generation: number | null;
+	observedGeneration: number | null;
+	/** observedGeneration >= generation when both known; null otherwise. */
+	converged: boolean | null;
+};
+
+/** Extra fleet-drift reads for the GitOps page (additive to the snapshot). */
+export type FleetDriftExtras = {
+	generatedAt: string;
+	workflowBuilderMainHead: GitCommitMetadata | null;
+	stacksMainHead: GitCommitMetadata | null;
+	pinAges: FleetPinAge[];
+	newestBuilt: FleetNewestBuilt[];
+	previewPlatform: FleetPreviewPlatformDrift;
+	/** observedGeneration alongside live deployment metadata (own namespace). */
+	liveDeployments: FleetDeploymentGeneration[];
+};

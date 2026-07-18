@@ -310,6 +310,106 @@ export interface SidecarLastRunView {
 }
 
 /**
+ * Per-service image drift classification for one Tier-2 preview service:
+ * - `in-sync`: the running image matches the dev release pin, and the pin is at
+ *   workflow-builder main HEAD (or main HEAD is unknown).
+ * - `behind-pin`: the running image differs from the current pin but is a KNOWN
+ *   historical pin (the preview simply has not rolled forward yet).
+ * - `pin-behind-main`: the running image matches the pin, but the pin's source
+ *   commit is not workflow-builder main HEAD (a newer build exists upstream).
+ * - `diverged`: the running image is neither the current pin nor any known
+ *   historical pin (e.g. an agent-built candidate image).
+ * - `unknown`: not enough data to classify (slept preview, unreadable runtime,
+ *   or no pin exists for the service).
+ */
+export type PreviewServiceDriftStatus =
+  | "in-sync"
+  | "behind-pin"
+  | "pin-behind-main"
+  | "diverged"
+  | "unknown";
+
+/**
+ * Derived lifecycle stage of a preview for the drift overview. Priority order
+ * (first match wins): failed → sleeping → provisioning → agent-editing →
+ * promoted → retained → ready.
+ */
+export type PreviewStage =
+  | "provisioning"
+  | "agent-editing"
+  | "promoted"
+  | "retained"
+  | "sleeping"
+  | "ready"
+  | "failed";
+
+/** One promotion receipt, as the drift overview lists it (newest first). */
+export type PreviewPromotionReceiptSummary = {
+  prNumber: number;
+  prUrl: string;
+  commitSha: string;
+  createdAt: string;
+};
+
+/** The observed running image for one preview service (null while slept/unreadable). */
+export type PreviewServiceRunningImage = {
+  image: string;
+  tag: string | null;
+  digest: string | null;
+  ready: boolean | null;
+};
+
+/** The dev release pin for one service (from stacks release-pins on main). */
+export type PreviewServicePin = {
+  tag: string | null;
+  digest: string | null;
+  commitSha: string | null;
+};
+
+/** One service row of a preview's drift entry. */
+export type PreviewServiceDrift = {
+  service: string;
+  running: PreviewServiceRunningImage | null;
+  /** Why `running` is null: "slept" | an observation error message; null when running. */
+  runningUnavailableReason: string | null;
+  pin: PreviewServicePin | null;
+  driftStatus: PreviewServiceDriftStatus;
+};
+
+/** One awake/slept preview joined with pins, receipts, and derived stage. */
+export type PreviewDriftEntry = {
+  name: string;
+  phase: string;
+  state: VclusterPreviewState | null;
+  lifecycle: VclusterPreviewLifecycle | null;
+  stage: PreviewStage;
+  /** Latest live-sync generation when the platform exposes it; usually null. */
+  syncGeneration: string | null;
+  services: PreviewServiceDrift[];
+  receipts: PreviewPromotionReceiptSummary[];
+};
+
+/** Batched drift read for the Dev hub: previews × (runtime, pins, receipts). */
+export type PreviewDriftOverview = {
+  generatedAt: string;
+  repoHeads: {
+    workflowBuilderMainSha: string | null;
+    stacksMainSha: string | null;
+  };
+  previews: PreviewDriftEntry[];
+};
+
+/**
+ * Typed result of the retained-preview commands (release dev lease / freeze
+ * sources). `unsupported` = the preview-side endpoint / routing / credential is
+ * not available yet (ships with feat/preview-retained-ux); `error` = the
+ * endpoint was reached but the operation failed.
+ */
+export type PreviewRetentionActionResult =
+  | { ok: true }
+  | { ok: false; reason: "unsupported" | "error"; message: string };
+
+/**
  * Sanitize a user-supplied preview name into a DNS-safe, short id. Pure + shared
  * so the remote command, the application service, and the legacy client all
  * agree on preview identity (the capacity "already this name" check compares

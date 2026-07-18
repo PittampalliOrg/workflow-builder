@@ -1,15 +1,35 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '$lib/components/ui/tooltip';
-	import { ExternalLink, GitPullRequest } from '@lucide/svelte';
+	import { ExternalLink, GitPullRequest, Layers } from '@lucide/svelte';
 	import StatusPill from '$lib/components/shared/status-pill.svelte';
 	import { relativeTime } from '$lib/components/dev/preview-lifecycle';
-	import type { PrPreviewListItem } from '$lib/types/dev-previews';
+	import { buildPrPreviewDedupeIndex, describeDedupeMatch } from '$lib/components/dev/preview-dedupe';
+	import type {
+		PreviewDriftEntry,
+		PrPreviewListItem,
+		VclusterPreviewSummary
+	} from '$lib/types/dev-previews';
 
 	// Fed by the hub page's getPrPreviews query. `enabled` reflects the
 	// PR_PREVIEWS_ENABLED flag; off → an explanatory placeholder (no data).
-	let { enabled = false, items = [] }: { enabled?: boolean; items?: PrPreviewListItem[] } =
-		$props();
+	// `driftEntries` (getPreviewDriftOverview) + `previews` power the dedupe
+	// badge: a PR whose code is already running in a retained/lifecycle preview
+	// (promotion receipt by PR number or head SHA) is flagged before a duplicate
+	// PR preview gets labeled up. Client-side join — no extra server reads.
+	let {
+		enabled = false,
+		items = [],
+		driftEntries = [],
+		previews = []
+	}: {
+		enabled?: boolean;
+		items?: PrPreviewListItem[];
+		driftEntries?: PreviewDriftEntry[];
+		previews?: VclusterPreviewSummary[];
+	} = $props();
+
+	const dedupeIndex = $derived(buildPrPreviewDedupeIndex(items, driftEntries, previews));
 
 	function verifyLabel(state: string): string {
 		if (state === 'completed') return 'verify passed';
@@ -74,6 +94,35 @@
 							{/if}
 							{#if pr.headSha}
 								<span class="font-mono text-[11px] text-muted-foreground">{pr.headSha.slice(0, 8)}</span>
+							{/if}
+							{#if dedupeIndex.get(pr.prNumber)}
+								{@const dedupe = dedupeIndex.get(pr.prNumber)!}
+								<TooltipProvider>
+									<Tooltip>
+										<TooltipTrigger>
+											{#if dedupe.previewUrl}
+												<a
+													href={dedupe.previewUrl}
+													target="_blank"
+													rel="noopener noreferrer"
+													class="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
+												>
+													<Layers class="size-3" aria-hidden="true" /> preview exists for this code
+													<ExternalLink class="size-2.5" aria-hidden="true" />
+												</a>
+											{:else}
+												<span
+													class="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300"
+												>
+													<Layers class="size-3" aria-hidden="true" /> preview exists for this code
+												</span>
+											{/if}
+										</TooltipTrigger>
+										<TooltipContent>
+											<p class="max-w-[280px] text-xs">{describeDedupeMatch(dedupe)}</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
 							{/if}
 						</div>
 						<div class="flex items-center gap-2 shrink-0">

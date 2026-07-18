@@ -28,11 +28,22 @@
 		buildServiceMatrix,
 		summarizeMatrix,
 	} from "$lib/gitops/service-matrix";
-	import { gitOpsDeploymentMetadataUrl } from "$lib/gitops/event-driven-refresh";
-	import type { DeploymentMetadataResponse } from "$lib/types/deployment-metadata";
+	import {
+		GITOPS_EVENT_REFRESH_DEBOUNCE_MS,
+		gitOpsDeploymentMetadataUrl,
+		shouldRefreshGitOpsMetadata,
+	} from "$lib/gitops/event-driven-refresh";
+	import type {
+		DeploymentMetadataResponse,
+		FleetDriftExtras,
+	} from "$lib/types/deployment-metadata";
+	import type { GitOpsActivityEvent } from "$lib/types/gitops-activity";
 	import { relativeTime } from "$lib/utils/gitops-display";
 
 	import type { PageData } from "./$types";
+	import { getFleetDriftExtras } from "./data.remote";
+	import PreviewPlatformPanel from "./PreviewPlatformPanel.svelte";
+	import PromotionPulse from "./PromotionPulse.svelte";
 	import ServicesTab from "./ServicesTab.svelte";
 	import type { PromotionStrategiesResponse } from "$lib/server/promoter/types";
 
@@ -61,9 +72,18 @@
 
 	let tab = $state<TabId>(initialTab);
 
+	// Fleet-drift extras (repo HEADs, pin ages, newest builds, preview-platform
+	// broker skew). Remote query: 15s server-side cache, degrades to nulls.
+	const fleetExtrasQuery = getFleetDriftExtras();
+	const fleetExtras = $derived<FleetDriftExtras | null>(fleetExtrasQuery.current ?? null);
+	const fleetExtrasLoading = $derived(fleetExtrasQuery.current === undefined);
+	const previewSkew = $derived(fleetExtras?.previewPlatform.skew === true);
+
 	// The consolidated overview tab owns the single live activity EventSource (it
 	// needs the events for the pipeline overlay); the promoter tabs stay fresh via
-	// the fetch fallback poll below, so this page never opens a second stream.
+	// the fetch fallback poll below. When the overview tab is NOT mounted, this
+	// page runs its own invalidation-only stream (see the effect below) — the two
+	// never coexist, so the surface still holds one EventSource at a time.
 	const overviewData = $derived<OverviewTabData>({
 		initial: metadata,
 		promotions,
@@ -129,6 +149,9 @@
 
 	async function refresh(options: { fresh?: boolean } = {}) {
 		loading = true;
+		// Refresh the fleet-drift extras alongside (never blocks the page refresh;
+		// the server read degrades to stale-on-error and does not throw).
+		void fleetExtrasQuery.refresh().catch(() => undefined);
 		try {
 			const [metaRes, promoRes] = await Promise.all([
 				fetch(gitOpsDeploymentMetadataUrl(options)),
@@ -170,6 +193,48 @@
 	function stopFallbackPolling() {
 		if (timer) clearInterval(timer);
 		timer = null;
+	}
+
+	// Cache-invalidation refresh from the existing GitOps SSE stream. Only runs
+	// while the overview tab is NOT mounted (OverviewTab owns the stream there),
+	// so the page never holds two streams. Relevant events (Tekton, promoter,
+	// ArgoCD, inventory ConfigMap) debounce into one metadata + extras refresh.
+	$effect(() => {
+		if (!browser) return;
+		if (tab === "overview") return;
+		const es = new EventSource("/api/v1/gitops/events/stream");
+		let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+		es.addEventListener("gitops.event", (event) => {
+			try {
+				const parsed = JSON.parse(
+					(event as MessageEvent<string>).data,
+				) as GitOpsActivityEvent;
+				if (!shouldRefreshGitOpsMetadata(parsed)) return;
+				if (debounceTimer) clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(() => {
+					debounceTimer = null;
+					void refresh();
+				}, GITOPS_EVENT_REFRESH_DEBOUNCE_MS);
+			} catch {
+				// Malformed event payloads are ignored; polling still covers us.
+			}
+		});
+		return () => {
+			es.close();
+			if (debounceTimer) clearTimeout(debounceTimer);
+		};
+	});
+
+	function openStrategy(name: string) {
+		const url = new URL(page.url);
+		url.searchParams.set("strategy", name);
+		url.searchParams.set("tab", "promotions");
+		void goto(url.pathname + url.search, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
+		setTab("promotions");
 	}
 
 	const envLabel = $derived(metadata.environment.name ?? "unknown");
@@ -272,6 +337,21 @@
 						<AlertTriangle class="size-3" />
 						{attention.text}
 					</Badge>
+				{/if}
+				{#if previewSkew}
+					<button
+						type="button"
+						onclick={() => setTab("overview")}
+						title="Preview-control broker digest differs from release-pins — open the overview for detail"
+					>
+						<Badge
+							variant="outline"
+							class="h-5 gap-1 border-amber-300 bg-amber-50 px-1.5 text-[0.65rem] text-amber-800 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200"
+						>
+							<AlertTriangle class="size-3" />
+							Preview platform skew
+						</Badge>
+					</button>
 				{/if}
 				{#if promotions.source === "fixture"}
 					<Badge variant="outline" class="h-5 px-1.5 text-[0.6rem] uppercase tracking-wide">
@@ -432,6 +512,16 @@
 		class={tab === "overview" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
 	>
 		{#if tab === "overview"}
+			<!-- Platform pulse strip: preview-platform broker skew + compact
+			     promotion/env-branch state from the hub inventory. -->
+			<div class="flex flex-col gap-2 border-b bg-background px-5 py-2.5">
+				<PreviewPlatformPanel
+					extras={fleetExtras}
+					loading={fleetExtrasLoading}
+					{links}
+				/>
+				<PromotionPulse {promotions} {links} onOpenStrategy={openStrategy} />
+			</div>
 			<OverviewTab data={overviewData} />
 		{/if}
 	</div>
@@ -510,7 +600,14 @@
 		class={tab === "services" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
 	>
 		{#if tab === "services"}
-			<ServicesTab {metadata} {tektonBase} {links} {now} />
+			<ServicesTab
+				{metadata}
+				{tektonBase}
+				{links}
+				{now}
+				extras={fleetExtras}
+				extrasLoading={fleetExtrasLoading}
+			/>
 		{/if}
 	</div>
 </div>

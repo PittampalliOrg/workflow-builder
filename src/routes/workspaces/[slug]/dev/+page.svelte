@@ -42,6 +42,7 @@
 	} from '$lib/dev-environment-teardown';
 	import {
 		getDevEnvironmentGroups,
+		getPreviewDriftOverview,
 		getPrPreviews,
 		getVclusterPreview,
 		getVclusterPreviews
@@ -61,19 +62,33 @@
 		? getVclusterPreview(previewEnvironmentId)
 		: getVclusterPreviews();
 	const prPreviewsQuery = controlPlane ? getPrPreviews() : null;
+	// Receipts + drift join for the PR-preview dedupe badge (server caches keep
+	// the 5s tick cheap; a failed drift refresh only stales the badge).
+	const driftQuery = controlPlane ? getPreviewDriftOverview() : null;
 
 	const groups = $derived(groupsQuery.current ?? []);
 	const firstLoad = $derived(groupsQuery.current === undefined);
 	const vcluster = $derived(vclusterQuery.current);
 	const prPreviews = $derived(prPreviewsQuery?.current);
+	const drift = $derived(driftQuery?.current ?? null);
+	const driftLoading = $derived(driftQuery !== null && driftQuery.current === undefined);
 	const visiblePreviews = $derived(
 		(vcluster?.previews ?? []).filter(
 			(preview) => controlPlane || preview.name === previewEnvironmentId
 		)
 	);
 	const visibleCounts = $derived(controlPlane ? (vcluster?.counts ?? null) : null);
+	// Live agent-session deep links: one entry per dev-environment group so
+	// preview cards can join owner/provenance execution ids to session URLs.
+	const sessionLinks = $derived(
+		groups.map((group) => ({
+			executionId: group.executionId,
+			sessionUrl: group.sessionUrl ?? group.primary.sessionUrl ?? null
+		}))
+	);
 
 	let launchOpen = $state(false);
+	let launchPrefillName = $state<string | null>(null);
 	let activeTab = $state<'environments' | 'activity' | 'pull-requests'>('environments');
 	let toTeardown = $state<DevEnvironmentSummary | null>(null);
 	let busyId = $state<string | null>(null);
@@ -82,6 +97,8 @@
 
 	$effect(() => {
 		if (!page.url.searchParams.has('launch')) return;
+		const requested = page.url.searchParams.get('launch');
+		if (requested) launchPrefillName = requested;
 		launchOpen = true;
 		if (typeof window !== 'undefined') {
 			const next = new URL(window.location.href);
@@ -89,6 +106,17 @@
 			window.history.replaceState(window.history.state, '', next.pathname + next.search);
 		}
 	});
+
+	// Clear the prefill once the dialog closes so re-launching the same preview
+	// re-applies it (the dialog only consumes non-null transitions).
+	$effect(() => {
+		if (!launchOpen) launchPrefillName = null;
+	});
+
+	function launchAgentRun(previewName: string) {
+		launchPrefillName = previewName;
+		launchOpen = true;
+	}
 	let errorMessage = $state<string | null>(null);
 	let operationNotice = $state<string | null>(null);
 	let refreshErrorMessage = $state<string | null>(null);
@@ -102,6 +130,7 @@
 		try {
 			const refreshes: Promise<unknown>[] = [groupsQuery.refresh(), vclusterQuery.refresh()];
 			if (prPreviewsQuery) refreshes.push(prPreviewsQuery.refresh());
+			if (driftQuery) refreshes.push(driftQuery.refresh().catch(() => undefined));
 			await Promise.all(refreshes);
 			lastRefreshedAt = Date.now();
 			refreshErrorMessage = null;
@@ -233,6 +262,8 @@
 		counts={visibleCounts}
 		previewEnvironment={data.previewEnvironment}
 		previewRunFeedEnabled={controlPlane && data.previewRunFeedEnabled}
+		{drift}
+		{driftLoading}
 		{slug}
 		{lastRefreshedAt}
 		{refreshing}
@@ -297,7 +328,11 @@
 					readProxyEnabled={data.previewReadProxyEnabled}
 					{controlPlane}
 					{slug}
+					{drift}
+					{driftLoading}
+					{sessionLinks}
 					onchanged={() => void tick()}
+					onlaunchagent={launchAgentRun}
 				/>
 
 				<section class="space-y-3" aria-labelledby="live-sessions-heading">
@@ -372,7 +407,12 @@
 
 			<TabsContent value="pull-requests" class="mt-0 min-h-0 flex-1 overflow-y-auto">
 				<div class="mx-auto w-full max-w-[1400px] px-5 py-5 pb-10 lg:px-6">
-					<PrPreviewsPanel enabled={prPreviews?.enabled ?? false} items={prPreviews?.items ?? []} />
+					<PrPreviewsPanel
+						enabled={prPreviews?.enabled ?? false}
+						items={prPreviews?.items ?? []}
+						driftEntries={driftQuery?.current?.previews ?? []}
+						previews={visiblePreviews}
+					/>
 				</div>
 			</TabsContent>
 		{/if}
@@ -388,6 +428,7 @@
 	devWorkflowName={data.devWorkflowName}
 	lifecycleWorkflowId={data.lifecycleWorkflowId}
 	lifecycleWorkflowName={data.lifecycleWorkflowName}
+	prefillEnvironmentName={launchPrefillName}
 	onlaunched={onLaunched}
 />
 

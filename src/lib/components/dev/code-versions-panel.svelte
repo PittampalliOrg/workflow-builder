@@ -109,7 +109,8 @@
 		live = false,
 		sourceReadOnly = false,
 		onoutstanding,
-		oncapability
+		oncapability,
+		onversions
 	}: {
 		executionId: string;
 		/** Complete service set for one coherent strict capture. */
@@ -119,6 +120,8 @@
 		/** Current strict-snapshot debt plus independent legacy version debt. */
 		onoutstanding?: (count: number) => void;
 		oncapability?: (allowed: boolean) => void;
+		/** Every loaded version record (sync-generation timeline reuses this read). */
+		onversions?: (versions: Version[]) => void;
 	} = $props();
 
 	let versions = $state<Version[]>([]);
@@ -249,6 +252,7 @@
 			canManageStrictCheckpoints = body.canManageStrictCheckpoints === true;
 			oncapability?.(canManageStrictCheckpoints);
 			onoutstanding?.(outstandingCount);
+			onversions?.(body.versions);
 			loadError = null;
 		} catch (error) {
 			loadError = error instanceof Error ? error.message : 'Checkpoint history is unavailable';

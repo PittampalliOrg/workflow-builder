@@ -22,17 +22,24 @@
 		Boxes,
 		ChevronDown,
 		ChevronRight,
+		Database,
 		ExternalLink,
 		GitBranch,
 		GitPullRequest,
+		Link2,
 		Loader2,
+		MessagesSquare,
 		Moon,
 		MoreHorizontal,
 		PanelRightOpen,
 		Plus,
+		Rocket,
 		ShieldCheck,
+		Snowflake,
 		TimerReset,
 		Trash2,
+		TriangleAlert,
+		Unplug,
 		X,
 		Zap
 	} from '@lucide/svelte';
@@ -40,6 +47,16 @@
 	import PoolCapacityMeter from '$lib/components/dev/pool-capacity-meter.svelte';
 	import PreviewEnvironmentInspector from '$lib/components/dev/preview-environment-inspector.svelte';
 	import PreviewRunsPanel from '$lib/components/dev/preview-runs-panel.svelte';
+	import PreviewServiceDriftList from '$lib/components/dev/preview-service-drift-list.svelte';
+	import PreviewStageBadge from '$lib/components/dev/preview-stage-badge.svelte';
+	import {
+		agentSessionLink,
+		assessRevertRisk,
+		driftEntryFor,
+		latestReceipt,
+		reattachHref,
+		type AgentSessionLinkSource
+	} from '$lib/components/dev/preview-drift-view';
 	import { teardownConfirmMessage } from '$lib/components/dev/vcluster-preview-teardown-confirm';
 	import {
 		effectivePreviewStatus,
@@ -58,13 +75,16 @@
 		previewProfileLabel
 	} from '$lib/dev/dev-operations-view';
 	import type {
+		PreviewDriftOverview,
 		VclusterPreviewCleanupSnapshot,
 		VclusterPreviewCounts,
 		VclusterPreviewSummary,
 		VclusterPreviewTeardownTicket
 	} from '$lib/types/dev-previews';
 	import {
+		freezePreviewSources,
 		launchPreview,
+		releaseDevLease,
 		sleepPreview,
 		teardownPreview,
 		wakePreview
@@ -79,7 +99,11 @@
 		readProxyEnabled = false,
 		controlPlane = true,
 		slug,
-		onchanged
+		drift = null,
+		driftLoading = false,
+		sessionLinks = [],
+		onchanged,
+		onlaunchagent
 	}: {
 		previews?: VclusterPreviewSummary[];
 		counts?: VclusterPreviewCounts | null;
@@ -87,7 +111,15 @@
 		readProxyEnabled?: boolean;
 		controlPlane?: boolean;
 		slug: string;
+		/** Batched drift overview from the page's shared poll (control plane). */
+		drift?: PreviewDriftOverview | null;
+		/** True while the drift overview is still on its first load. */
+		driftLoading?: boolean;
+		/** Live dev-environment groups (executionId → session URL) for deep links. */
+		sessionLinks?: readonly AgentSessionLinkSource[];
 		onchanged?: () => void;
+		/** Open the launch dialog prefilled for this preview (agent run / re-attach). */
+		onlaunchagent?: (previewName: string) => void;
 	} = $props();
 
 	let name = $state('');
@@ -456,6 +488,66 @@
 		}
 	}
 
+	// Sticky per-preview refusals from the Phase-1 retained-lifecycle endpoints:
+	// once a command comes back `reason: "unsupported"` the action renders
+	// disabled with the refusal as its tooltip until the page reloads.
+	let retentionUnsupported = $state<Record<string, { release?: string; freeze?: string }>>({});
+
+	function markRetentionUnsupported(name: string, action: 'release' | 'freeze', message: string) {
+		retentionUnsupported = {
+			...retentionUnsupported,
+			[name]: { ...retentionUnsupported[name], [action]: message }
+		};
+	}
+
+	async function doReleaseLease(p: VclusterPreviewSummary) {
+		setBusy(p.name, 'release');
+		try {
+			const result = await releaseDevLease({ previewName: p.name });
+			if (result.ok) {
+				toast.success(`Released the dev lease on ${p.name}`, {
+					description: 'Adopted production Deployments are being restored; the environment stays up.'
+				});
+				onchanged?.();
+			} else if (result.reason === 'unsupported') {
+				markRetentionUnsupported(p.name, 'release', result.message);
+				toast.warning(`Release is unavailable for ${p.name}`, { description: result.message });
+			} else {
+				toast.error('Release dev lease failed', { description: result.message });
+			}
+		} catch (e) {
+			toast.error('Release dev lease failed', {
+				description: e instanceof Error ? e.message : String(e)
+			});
+		} finally {
+			clearBusy(p.name);
+		}
+	}
+
+	async function doFreezeSources(p: VclusterPreviewSummary) {
+		setBusy(p.name, 'freeze');
+		try {
+			const result = await freezePreviewSources({ previewName: p.name });
+			if (result.ok) {
+				toast.success(`Froze live-sync sources on ${p.name}`, {
+					description: 'Source receivers are frozen; the running state is now immutable.'
+				});
+				onchanged?.();
+			} else if (result.reason === 'unsupported') {
+				markRetentionUnsupported(p.name, 'freeze', result.message);
+				toast.warning(`Freeze is unavailable for ${p.name}`, { description: result.message });
+			} else {
+				toast.error('Freeze sources failed', { description: result.message });
+			}
+		} catch (e) {
+			toast.error('Freeze sources failed', {
+				description: e instanceof Error ? e.message : String(e)
+			});
+		} finally {
+			clearBusy(p.name);
+		}
+	}
+
 	async function confirmTeardown() {
 		const p = toTeardown;
 		if (!p) return;
@@ -687,6 +779,20 @@
 				{@const cleanupStatusError = acceptedTeardown?.statusError ?? null}
 				{@const cleanupStatusLost = acceptedTeardown?.terminalStatusError === true}
 				{@const isTerminating = teardownAccepted(p) || /terminat|delet/i.test(p.phase)}
+				{@const driftEntry = driftEntryFor(drift, p.name)}
+				{@const receipt = latestReceipt(driftEntry)}
+				{@const risk = driftEntry
+					? assessRevertRisk({
+							state: p.state,
+							mode: p.mode,
+							lastActive: p.lastActive,
+							receipts: driftEntry.receipts
+						})
+					: null}
+				{@const session = agentSessionLink(p, sessionLinks, slug)}
+				{@const unsupported = retentionUnsupported[p.name] ?? null}
+				{@const retainedIdle =
+					controlPlane && p.lifecycle === 'retained' && !isTerminating && session === null}
 				<li class="space-y-2 px-3 py-3">
 					<div class="flex items-center justify-between gap-3">
 						<div class="flex items-center gap-2 min-w-0 flex-wrap">
@@ -721,6 +827,9 @@
 								<StatusPill status={effectivePreviewStatus(p)} />
 							{/if}
 							{#if p.state === 'slept'}<Moon class="size-3.5 text-amber-500" />{/if}
+							{#if driftEntry && !isTerminating}
+								<PreviewStageBadge stage={driftEntry.stage} />
+							{/if}
 							<Badge variant="outline" class="h-5 text-[10px]">{previewProfileLabel(p.profile)}</Badge>
 
 							{#if p.protected}
@@ -755,6 +864,28 @@
 						</div>
 
 						<div class="flex items-center gap-1 shrink-0">
+							{#if session}
+								<a
+									href={session.sessionUrl ?? session.environmentHref}
+									class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+									aria-label={`Open the agent session for ${p.name}`}
+									title="Open agent session"
+								>
+									<MessagesSquare class="size-4" />
+								</a>
+							{/if}
+							{#if receipt}
+								<a
+									href={receipt.prUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+									aria-label={`Open draft PR #${receipt.prNumber} for ${p.name}`}
+									title={`Draft PR #${receipt.prNumber}`}
+								>
+									<GitPullRequest class="size-4" />
+								</a>
+							{/if}
 							{#if gitOpsHref}
 								<a
 									href={gitOpsHref}
@@ -764,6 +895,17 @@
 								>
 									<GitBranch class="size-4" />
 								</a>
+							{/if}
+							{#if controlPlane && onlaunchagent && !isTerminating && p.state !== 'slept'}
+								<Button
+									size="sm"
+									variant="outline"
+									class="h-8"
+									onclick={() => onlaunchagent?.(p.name)}
+									title={`Launch an agent run attached to ${p.name}`}
+								>
+									<Rocket class="size-3.5" /> Agent run
+								</Button>
 							{/if}
 							{#if p.ready && p.url && !isTerminating}
 								<a
@@ -815,6 +957,36 @@
 										>
 											<ChevronDown class="size-4" /> Recent runs
 										</DropdownMenu.Item>
+									{/if}
+									{#if controlPlane}
+										<DropdownMenu.Separator />
+										<DropdownMenu.Item
+											disabled={!!unsupported?.freeze || p.state === 'slept'}
+											title={unsupported?.freeze ??
+												(p.state === 'slept' ? 'Wake the preview before freezing its sources' : undefined)}
+											onclick={() => !unsupported?.freeze && p.state !== 'slept' && doFreezeSources(p)}
+										>
+											<Snowflake class="size-4" /> Freeze sources
+										</DropdownMenu.Item>
+										{#if unsupported?.freeze}
+											<p class="max-w-[220px] px-2 pb-1 text-[10px] text-muted-foreground">{unsupported.freeze}</p>
+										{/if}
+										<DropdownMenu.Item
+											disabled={!!unsupported?.release || p.state === 'slept'}
+											title={unsupported?.release ??
+												(p.state === 'slept' ? 'Wake the preview before releasing its dev lease' : undefined)}
+											onclick={() => !unsupported?.release && p.state !== 'slept' && doReleaseLease(p)}
+										>
+											<Unplug class="size-4" /> Release dev lease
+										</DropdownMenu.Item>
+										{#if unsupported?.release}
+											<p class="max-w-[220px] px-2 pb-1 text-[10px] text-muted-foreground">{unsupported.release}</p>
+										{/if}
+										{#if onlaunchagent}
+											<DropdownMenu.Item onclick={() => onlaunchagent?.(p.name)}>
+												<Rocket class="size-4" /> Launch agent run
+											</DropdownMenu.Item>
+										{/if}
 									{/if}
 									{#if controlPlane}
 										<DropdownMenu.Separator />
@@ -890,12 +1062,82 @@
 						</div>
 					{/if}
 
+					{#if risk?.uncapturedSleep && !isTerminating}
+						<div class="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] text-amber-700 dark:text-amber-300" role="status">
+							<TriangleAlert class="mt-px size-3.5 shrink-0" aria-hidden="true" />
+							<span>
+								Slept with possibly uncaptured live-sync changes — the latest activity was never
+								captured into a draft PR. Wake and promote (or tear down with capture) before
+								relying on a revert.
+							</span>
+						</div>
+					{/if}
+					{#if risk?.migrationDrift && !isTerminating}
+						<div class="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] text-amber-700 dark:text-amber-300" role="note">
+							<Database class="mt-px size-3.5 shrink-0" aria-hidden="true" />
+							<span>
+								A promoted change includes <code class="font-mono">drizzle/</code> migrations —
+								reverting this environment will not revert database migrations it already applied.
+							</span>
+						</div>
+					{/if}
+
+					{#if !isTerminating && (driftEntry || (driftLoading && controlPlane))}
+						<PreviewServiceDriftList
+							entry={driftEntry}
+							loading={driftLoading}
+							mainHeadSha={drift?.repoHeads.workflowBuilderMainSha ?? null}
+						/>
+					{/if}
+
 					<div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-muted-foreground pl-0.5">
 						{#if lastActive}<span>active {lastActive}</span>{/if}
 						{#if expiry}
-							<span class={expiry.urgent ? 'text-amber-600 dark:text-amber-400' : ''}>{expiry.label}</span>
+							{#if expiry.urgent}
+								<span
+									class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-px font-medium text-amber-700 dark:text-amber-300"
+									title={p.lifecycle === 'retained'
+										? 'Retained environment nearing expiry — the TTL reaper tears it down past this point.'
+										: 'Nearing TTL expiry — the reaper tears this preview down past this point.'}
+								>
+									<TimerReset class="size-3" aria-hidden="true" /> {expiry.label}
+								</span>
+							{:else}
+								<span>{expiry.label}</span>
+							{/if}
 						{/if}
 						<span>{p.targetCluster}</span>
+						{#if driftEntry && driftEntry.receipts.length > 0}
+							<span class="inline-flex flex-wrap items-center gap-1.5">
+								{#each driftEntry.receipts.slice(0, 3) as r (`${r.prNumber}:${r.commitSha}:${r.createdAt}`)}
+									<a
+										href={r.prUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-muted-foreground hover:text-foreground"
+										title={`Promoted ${r.commitSha.slice(0, 12)} · ${new Date(r.createdAt).toLocaleString()}`}
+									>
+										<GitPullRequest class="size-3" aria-hidden="true" /> PR #{r.prNumber}
+									</a>
+								{/each}
+								{#if driftEntry.receipts.length > 3}
+									<span>+{driftEntry.receipts.length - 3} more</span>
+								{/if}
+							</span>
+						{/if}
+						{#if retainedIdle && onlaunchagent}
+							<a
+								href={reattachHref(slug, p.name)}
+								class="inline-flex items-center gap-1 text-primary hover:underline"
+								title="Reopen the launch dialog prefilled with this environment to re-attach an agent session"
+								onclick={(event) => {
+									event.preventDefault();
+									onlaunchagent?.(p.name);
+								}}
+							>
+								<Link2 class="size-3" aria-hidden="true" /> Re-attach a session
+							</a>
+						{/if}
 					</div>
 
 					<div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 pl-0.5 text-[11px] text-muted-foreground">
