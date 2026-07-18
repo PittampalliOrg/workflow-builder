@@ -1303,6 +1303,46 @@ test('bridge run failures propagate the real exit code (no sidecar fallback)', a
 	assert.match(out.output, /bridge-boom/);
 });
 
+test('sequential bridge runs wait for a long command on a reused socket', async (t) => {
+	const s = await startSidecar({
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({
+			quick: 'echo quick-finished',
+			slow: `node -e "setTimeout(() => console.log('slow-finished'), 2500)"`
+		})
+	});
+	t.after(() => s.stop());
+	const b = await startBridge(s.execPort, {
+		DEV_SYNC_COMMANDS_JSON: JSON.stringify({
+			quick: 'echo quick-finished',
+			slow: `node -e "setTimeout(() => console.log('slow-finished'), 2500)"`
+		})
+	});
+	t.after(() => b.stop());
+
+	const quick = await fetch(`${s.base}/__run?cmd=quick`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	assert.equal(quick.status, 200);
+	assert.equal((await quick.json()).exitCode, 0);
+
+	const startedAt = Date.now();
+	const slow = await fetch(`${s.base}/__run?cmd=slow`, {
+		method: 'POST',
+		headers: { 'x-sync-token': TOKEN }
+	});
+	const durationMs = Date.now() - startedAt;
+	assert.equal(slow.status, 200);
+	const result = await slow.json();
+	assert.equal(result.executedIn, 'app');
+	assert.equal(result.exitCode, 0);
+	assert.match(result.output, /slow-finished/);
+	assert.ok(
+		durationMs >= 2200,
+		`sidecar returned before the bridge command finished (${durationMs}ms)`
+	);
+});
+
 test('POST /__run fails closed when no bridge is listening', async (t) => {
 	const s = await startSidecar({
 		DEV_SYNC_COMMANDS_JSON: JSON.stringify({ deps: 'echo installing-deps' })

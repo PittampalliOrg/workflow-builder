@@ -353,12 +353,16 @@ function probeCommand(requestedServices) {
     body += `    . /sandbox/work/.syncenv.d/${svc}\n`;
     body += "    _base=${SYNCURL%/__sync}\n";
     if (lanes && lanes.length) {
+      body += "    _lane_failed=0\n";
       for (const lane of lanes) {
+        body += '    if [ "$_lane_failed" -eq 0 ]; then\n';
         body += `    _out=$(curl -sS -X POST -H "x-sync-token: $SYNC_TOKEN" --max-time 600 "$_base/__run?cmd=${lane}" 2>/dev/null)\n`;
         body +=
           "    _exit=$(printf '%s' \"$_out\" | sed -n 's/.*\"exitCode\":[[:space:]]*\\([0-9-][0-9]*\\).*/\\1/p' | head -1)\n";
         body += '    [ -n "$_exit" ] || _exit=1\n';
         body += `    echo "PROBE kind=lane service=${svc} lane=${lane} exit=$_exit"\n`;
+        body += '    [ "$_exit" -eq 0 ] || _lane_failed=1\n';
+        body += "    fi\n";
       }
     } else {
       body +=

@@ -691,6 +691,8 @@ describe("preview UI development GAN child fixture", () => {
     expect(probe).toContain("__run?cmd=check");
     expect(probe).toContain("__run?cmd=test-unit");
     expect(probe).toContain("PROBE kind=lane service=workflow-builder lane=check");
+    expect(probe).toContain("_lane_failed=0");
+    expect(probe).toContain('[ "$_exit" -eq 0 ] || _lane_failed=1');
     // ...but function-router has NO testCommands, so it is health-poll only —
     // never a /__run lane that would 404.
     expect(probe).toContain("PROBE kind=health service=function-router");
