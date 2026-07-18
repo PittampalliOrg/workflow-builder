@@ -6,6 +6,15 @@ type ChatMessage = {
 	content: string;
 };
 
+type ChatCompletionRequest = {
+	model: string;
+	messages: ChatMessage[];
+	response_format?: { type: 'json_object' };
+	max_tokens?: number;
+	max_completion_tokens?: number;
+	reasoning_effort?: 'max';
+};
+
 function normalizeBaseUrl(value: string | undefined | null): string | null {
 	const trimmed = (value ?? '').trim().replace(/\/+$/, '');
 	return trimmed || null;
@@ -22,6 +31,11 @@ function normalizeModel(model: string | undefined | null, fallback = 'gpt-5.5'):
 // that pass a small max_tokens (e.g. greenfield's 800) don't get empty results
 // when the default model is a reasoning model.
 const REASONING_MIN_OUTPUT_TOKENS = Number(env.REASONING_MIN_OUTPUT_TOKENS) || 8000;
+const KIMI_K3_MAX_COMPLETION_TOKENS = Number(env.KIMI_MAX_COMPLETION_TOKENS) || 131072;
+
+export function isKimiK3Model(model: string): boolean {
+	return /(^|\/)kimi-k3$/i.test(model.trim());
+}
 
 function isReasoningModel(model: string): boolean {
 	const lower = model.toLowerCase();
@@ -29,6 +43,9 @@ function isReasoningModel(model: string): boolean {
 }
 
 function effectiveMaxTokens(model: string, maxTokens: number): number {
+	if (isKimiK3Model(model)) {
+		return Math.max(maxTokens, KIMI_K3_MAX_COMPLETION_TOKENS);
+	}
 	return isReasoningModel(model)
 		? Math.max(maxTokens, REASONING_MIN_OUTPUT_TOKENS)
 		: maxTokens;
@@ -37,10 +54,45 @@ function effectiveMaxTokens(model: string, maxTokens: number): number {
 function completionTokenLimit(model: string, maxTokens: number) {
 	const lower = model.toLowerCase();
 	const cap = effectiveMaxTokens(model, maxTokens);
-	if (lower.startsWith('gpt-5') || /^o\d/.test(lower)) {
+	if (isKimiK3Model(model) || lower.startsWith('gpt-5') || /^o\d/.test(lower)) {
 		return { max_completion_tokens: cap };
 	}
 	return { max_tokens: cap };
+}
+
+export function buildOpenAICompatibleChatRequest(params: {
+	model: string;
+	maxTokens: number;
+	responseFormat?: { type: 'json_object' };
+	messages: ChatMessage[];
+}): ChatCompletionRequest {
+	return {
+		model: params.model,
+		...completionTokenLimit(params.model, params.maxTokens),
+		...(isKimiK3Model(params.model) ? { reasoning_effort: 'max' as const } : {}),
+		...(params.responseFormat ? { response_format: params.responseFormat } : {}),
+		messages: params.messages
+	};
+}
+
+export function enforceKimiK3ChatRequestBody(body: string): string {
+	try {
+		const payload = JSON.parse(body) as Record<string, unknown>;
+		const requested = Number(payload.max_completion_tokens ?? payload.max_tokens) || 0;
+		payload.reasoning_effort = 'max';
+		payload.max_completion_tokens = Math.max(requested, KIMI_K3_MAX_COMPLETION_TOKENS);
+		delete payload.max_tokens;
+		return JSON.stringify(payload);
+	} catch {
+		return body;
+	}
+}
+
+function kimiK3Fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+	const body = typeof init?.body === 'string'
+		? enforceKimiK3ChatRequestBody(init.body)
+		: init?.body;
+	return fetch(input, { ...init, body });
 }
 
 export function openAICompatibleGatewayBaseUrl(): string | null {
@@ -55,11 +107,13 @@ export function workflowOpenAIModel(model: string | undefined | null) {
 	const normalizedModel = normalizeModel(model);
 	const gatewayBaseUrl = openAICompatibleGatewayBaseUrl();
 	if (!gatewayBaseUrl) return openai(normalizedModel);
-	return createOpenAI({
+	const provider = createOpenAI({
 		baseURL: gatewayBaseUrl,
 		apiKey: env.LLM_GATEWAY_API_KEY || env.AI_GATEWAY_API_KEY || env.OPENAI_API_KEY || 'unused',
-		name: 'llm-gateway'
-	})(normalizedModel);
+		name: 'llm-gateway',
+		...(isKimiK3Model(normalizedModel) ? { fetch: kimiK3Fetch } : {})
+	});
+	return provider.chat(normalizedModel);
 }
 
 export async function callOpenAICompatibleChatCompletion(params: {
@@ -75,12 +129,12 @@ export async function callOpenAICompatibleChatCompletion(params: {
 		: env.OPENAI_API_KEY;
 	if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
 	const model = normalizeModel(params.model);
-	const body = JSON.stringify({
+	const body = JSON.stringify(buildOpenAICompatibleChatRequest({
 		model,
-		...completionTokenLimit(model, params.maxTokens),
-		...(params.responseFormat ? { response_format: params.responseFormat } : {}),
+		maxTokens: params.maxTokens,
+		responseFormat: params.responseFormat,
 		messages: params.messages
-	});
+	}));
 
 	// DeepSeek's JSON-mode docs warn the API "may occasionally return empty
 	// content" (https://api-docs.deepseek.com/guides/json_mode). DeepSeek V4 (and
