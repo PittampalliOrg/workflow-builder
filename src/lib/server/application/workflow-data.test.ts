@@ -4127,7 +4127,10 @@ describe("ApplicationWorkflowDataService", () => {
 		const sessionAgentSlugs = fakeSessionAgentSlugs();
 		const workflowExecutions = {
 			...fakeWorkflowExecutions(),
-			listSessionIdsByExecutionId: vi.fn(async () => [sessionId]),
+			listSessionIdsByExecutionId: vi.fn(async () => [
+				"generator-agent-call-session",
+				sessionId,
+			]),
 		} satisfies WorkflowExecutionRepository;
 		const { service } = makeService({
 			sessions,
@@ -4353,12 +4356,34 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 	});
 
-	it("fails closed before creation when an execution already has another session", async () => {
-		const sessions = fakeSessions();
+	it("allows workflow agent-call sessions to coexist with the deterministic handoff", async () => {
+		const executionId = "exec-with-agent-call";
+		const sessionId = expectedWorkflowDevSessionId(executionId);
+		const sessions = {
+			...fakeSessions(),
+			ensureSession: vi.fn(async (input) => ({
+				session: {
+					...sampleSessionDetail(),
+					id: input.id,
+					title: input.title ?? null,
+					agentId: input.agentId,
+					agentVersion: input.agentVersion ?? null,
+					projectId: input.projectId ?? null,
+					workflowExecutionId: input.workflowExecutionId ?? null,
+				} as SessionDetail,
+				created: true,
+			})),
+			getSessionFileOwner: vi.fn(async (id) =>
+				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+			),
+		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
 		const workflowExecutions = {
 			...fakeWorkflowExecutions(),
-			listSessionIdsByExecutionId: vi.fn(async () => ["legacy-session"]),
+			listSessionIdsByExecutionId: vi.fn(async () => [
+				"generator-agent-call-session",
+				sessionId,
+			]),
 		} satisfies WorkflowExecutionRepository;
 		const { service } = makeService({
 			sessions,
@@ -4370,7 +4395,59 @@ describe("ApplicationWorkflowDataService", () => {
 
 		await expect(
 			service.createWorkflowDevSession({
-				executionId: "exec-ambiguous",
+				executionId,
+				agentPolicy: {
+					slug: "dapr-juicefs-dev-agent",
+					runtime: "dapr-agent-py-juicefs",
+					modelSpec: "deepseek-v4-pro",
+				},
+				instructions: "open repo",
+			}),
+		).resolves.toEqual({
+			status: "created",
+			sessionId,
+			agentSlug: "dapr-juicefs-dev-agent",
+		});
+		expect(sessions.ensureSession).toHaveBeenCalledTimes(1);
+		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledTimes(1);
+	});
+
+	it("fails closed when the handoff session is not linked to the execution", async () => {
+		const sessionId = expectedWorkflowDevSessionId("exec-unlinked");
+		const sessions = {
+			...fakeSessions(),
+			ensureSession: vi.fn(async (input) => ({
+				session: {
+					...sampleSessionDetail(),
+					id: input.id,
+					title: input.title ?? null,
+					agentId: input.agentId,
+					agentVersion: input.agentVersion ?? null,
+					projectId: input.projectId ?? null,
+					workflowExecutionId: input.workflowExecutionId ?? null,
+				} as SessionDetail,
+				created: true,
+			})),
+			getSessionFileOwner: vi.fn(async (id) =>
+				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+			),
+		} satisfies SessionRepository;
+		const { service } = makeService({
+			sessions,
+			sessionEvents: fakeSessionEvents(),
+			sessionAgents: fakePreviewDevSessionAgentResolver(),
+			sessionAgentSlugs: fakeSessionAgentSlugs(),
+			workflowExecutions: {
+				...fakeWorkflowExecutions(),
+				listSessionIdsByExecutionId: vi.fn(async () => [
+					"generator-agent-call-session",
+				]),
+			} satisfies WorkflowExecutionRepository,
+		});
+
+		await expect(
+			service.createWorkflowDevSession({
+				executionId: "exec-unlinked",
 				agentPolicy: {
 					slug: "dapr-juicefs-dev-agent",
 					runtime: "dapr-agent-py-juicefs",
@@ -4382,8 +4459,6 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "session_conflict",
 			reason: "ambiguous",
 		});
-		expect(sessions.ensureSession).not.toHaveBeenCalled();
-		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
 	it("resolves session agents through the configured session-agent port", async () => {
