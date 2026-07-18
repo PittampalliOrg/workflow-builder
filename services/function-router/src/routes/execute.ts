@@ -770,6 +770,8 @@ const SIGNATURE = /^[0-9a-f]{64}$/;
 const SAFE_EXECUTION_ID = /^[A-Za-z0-9._:-]{1,256}$/;
 const SAFE_AGENT_SLUG = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const PROMOTION_RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
+const MAX_DIFF_SCOPE_PREFIXES = 128;
+const MAX_DIFF_SCOPE_PREFIX_CHARS = 512;
 
 function exactObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key));
@@ -951,6 +953,9 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 					"ttlHours",
 					"retainAfterCompletion",
 					"interactiveHandoff",
+					"impactReview",
+					"diffScope",
+					"maxIterations",
 				]) ||
 				typeof actionInput.intent !== "string" ||
 				actionInput.intent.trim().length < 1 ||
@@ -965,7 +970,23 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 				(actionInput.retainAfterCompletion !== undefined &&
 					typeof actionInput.retainAfterCompletion !== "boolean") ||
 				(actionInput.interactiveHandoff !== undefined &&
-					typeof actionInput.interactiveHandoff !== "boolean")
+					typeof actionInput.interactiveHandoff !== "boolean") ||
+				(actionInput.impactReview !== undefined &&
+					typeof actionInput.impactReview !== "boolean") ||
+				(actionInput.diffScope !== undefined &&
+					(!Array.isArray(actionInput.diffScope) ||
+						actionInput.diffScope.length > MAX_DIFF_SCOPE_PREFIXES ||
+						actionInput.diffScope.some(
+							(prefix) =>
+								typeof prefix !== "string" ||
+								prefix.trim().length < 1 ||
+								prefix.length > MAX_DIFF_SCOPE_PREFIX_CHARS ||
+								/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(prefix),
+						))) ||
+				(actionInput.maxIterations !== undefined &&
+					(!Number.isInteger(actionInput.maxIterations) ||
+						(actionInput.maxIterations as number) < 1 ||
+						(actionInput.maxIterations as number) > 3))
 			) {
 				return {
 					ok: false,
@@ -988,8 +1009,8 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 						? { agentSlug: actionInput.agentSlug }
 						: {}),
 					keepPreview: "true",
-					// Retention opt-ins forward verbatim and ONLY when present so the
-					// default start payload stays byte-identical.
+					// Optional child controls forward only when present so the default
+					// start payload stays byte-identical.
 					...(actionInput.ttlHours !== undefined
 						? { ttlHours: actionInput.ttlHours }
 						: {}),
@@ -998,6 +1019,15 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 						: {}),
 					...(actionInput.interactiveHandoff !== undefined
 						? { interactiveHandoff: actionInput.interactiveHandoff }
+						: {}),
+					...(actionInput.impactReview !== undefined
+						? { impactReview: actionInput.impactReview }
+						: {}),
+					...(actionInput.diffScope !== undefined
+						? { diffScope: actionInput.diffScope }
+						: {}),
+					...(actionInput.maxIterations !== undefined
+						? { maxIterations: actionInput.maxIterations }
 						: {}),
 				},
 			};

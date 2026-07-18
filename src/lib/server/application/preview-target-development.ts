@@ -51,6 +51,8 @@ const OPERATION_ID =
   /^pdt-(start-workflow|get-workflow-status|signal-workflow|verify-promotion)-[0-9a-f]{64}$/;
 const MAX_INTENT_CHARS = 12_000;
 const MAX_SERVICES = 16;
+const MAX_DIFF_SCOPE_PREFIXES = 128;
+const MAX_DIFF_SCOPE_PREFIX_CHARS = 512;
 // Services that can never be driven by a preview development run because they
 // are not preview-native adoptable (catalog previewNative is null). Rejecting
 // them here yields a precise error instead of a dead-end deeper in the runner.
@@ -358,6 +360,7 @@ function normalizeWorkflowInput(
   for (const [key, value] of [
     ["retainAfterCompletion", input.retainAfterCompletion],
     ["interactiveHandoff", input.interactiveHandoff],
+    ["impactReview", input.impactReview],
   ] as const) {
     if (
       value !== undefined &&
@@ -367,6 +370,28 @@ function normalizeWorkflowInput(
     ) {
       return invalid(`${key} must be a boolean`);
     }
+  }
+  if (
+    input.diffScope !== undefined &&
+    (!Array.isArray(input.diffScope) ||
+      input.diffScope.length > MAX_DIFF_SCOPE_PREFIXES ||
+      input.diffScope.some(
+        (prefix) =>
+          typeof prefix !== "string" ||
+          prefix.trim().length < 1 ||
+          prefix.length > MAX_DIFF_SCOPE_PREFIX_CHARS ||
+          /[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(prefix),
+      ))
+  ) {
+    return invalid("diffScope must contain valid path prefixes");
+  }
+  if (
+    input.maxIterations !== undefined &&
+    (!Number.isInteger(input.maxIterations) ||
+      input.maxIterations < 1 ||
+      input.maxIterations > 3)
+  ) {
+    return invalid("maxIterations must be an integer between 1 and 3");
   }
   return Object.freeze({
     intent: input.intent,
@@ -380,15 +405,23 @@ function normalizeWorkflowInput(
               : "false",
         }
       : {}),
-    // Retention opt-ins pass through VERBATIM (no defaulting, no coercion):
-    // the parent only sends them on an explicit opt-in, and the child fixture
-    // interprets both boolean and "true"/"false" string forms itself.
+    // Optional child controls pass through verbatim. The child fixture owns
+    // their behavior; absent fields preserve the established start payload.
     ...(input.ttlHours !== undefined ? { ttlHours: input.ttlHours } : {}),
     ...(input.retainAfterCompletion !== undefined
       ? { retainAfterCompletion: input.retainAfterCompletion }
       : {}),
     ...(input.interactiveHandoff !== undefined
       ? { interactiveHandoff: input.interactiveHandoff }
+      : {}),
+    ...(input.impactReview !== undefined
+      ? { impactReview: input.impactReview }
+      : {}),
+    ...(input.diffScope !== undefined
+      ? { diffScope: Object.freeze([...input.diffScope]) }
+      : {}),
+    ...(input.maxIterations !== undefined
+      ? { maxIterations: input.maxIterations }
       : {}),
   });
 }

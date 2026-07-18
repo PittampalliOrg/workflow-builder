@@ -39,13 +39,16 @@ describe("preview development command boundary", () => {
     });
   });
 
-  it("passes the retention opt-in keys through both boundaries verbatim", () => {
+  it("passes optional child controls through both boundaries verbatim", () => {
     const input = {
       intent: "Update the dashboard",
       services: ["workflow-builder"],
       ttlHours: 12,
       retainAfterCompletion: true,
       interactiveHandoff: "false",
+      impactReview: true,
+      diffScope: ["src/routes/dashboard"],
+      maxIterations: 2,
     };
     expect(
       parsePreviewDevelopmentHostRequest({
@@ -74,7 +77,7 @@ describe("preview development command boundary", () => {
     ).toMatchObject({ kind: "start-workflow", workflowInput: input });
   });
 
-  it("keeps the default start input free of retention keys and rejects unknown ones", () => {
+  it("keeps the default start input free of optional controls and rejects unknown ones", () => {
     const parsed = parsePreviewDevelopmentHostRequest({
       parentExecutionId: "parent-1",
       command: {
@@ -93,6 +96,9 @@ describe("preview development command boundary", () => {
     expect(parsed.command.input).not.toHaveProperty("ttlHours");
     expect(parsed.command.input).not.toHaveProperty("retainAfterCompletion");
     expect(parsed.command.input).not.toHaveProperty("interactiveHandoff");
+    expect(parsed.command.input).not.toHaveProperty("impactReview");
+    expect(parsed.command.input).not.toHaveProperty("diffScope");
+    expect(parsed.command.input).not.toHaveProperty("maxIterations");
     expect(() =>
       parsePreviewDevelopmentHostRequest({
         parentExecutionId: "parent-1",

@@ -201,7 +201,7 @@ describe("preview development action binding", () => {
     );
   });
 
-  it("forwards the retention opt-ins verbatim and only when the caller sent them", () => {
+  it("forwards optional child controls verbatim and only when the caller sent them", () => {
     const retained = buildPreviewDevelopmentProxyRequest({
       actionSlug: "preview/workflow-start",
       actionInput: {
@@ -211,6 +211,9 @@ describe("preview development action binding", () => {
         ttlHours: 12,
         retainAfterCompletion: true,
         interactiveHandoff: false,
+        impactReview: true,
+        diffScope: ["src/routes/dashboard"],
+        maxIterations: 2,
       },
       dbExecutionId: "parent-1",
       idempotencyKey: "workflow:parent-1:start",
@@ -228,6 +231,9 @@ describe("preview development action binding", () => {
               ttlHours: 12,
               retainAfterCompletion: true,
               interactiveHandoff: false,
+              impactReview: true,
+              diffScope: ["src/routes/dashboard"],
+              maxIterations: 2,
             },
           },
         },
@@ -249,6 +255,9 @@ describe("preview development action binding", () => {
     expect(input).not.toHaveProperty("ttlHours");
     expect(input).not.toHaveProperty("retainAfterCompletion");
     expect(input).not.toHaveProperty("interactiveHandoff");
+    expect(input).not.toHaveProperty("impactReview");
+    expect(input).not.toHaveProperty("diffScope");
+    expect(input).not.toHaveProperty("maxIterations");
 
     for (const actionInput of [
       { ttlHours: 1 },
@@ -256,6 +265,12 @@ describe("preview development action binding", () => {
       { ttlHours: "12" },
       { retainAfterCompletion: "true" },
       { interactiveHandoff: 1 },
+      { impactReview: "true" },
+      { diffScope: "src/routes/dashboard" },
+      { diffScope: [""] },
+      { maxIterations: 0 },
+      { maxIterations: 4 },
+      { maxIterations: "2" },
     ]) {
       expect(
         buildPreviewDevelopmentProxyRequest({

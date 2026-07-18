@@ -96,6 +96,9 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         intent: "Implement the dashboard change",
         services: ["workflow-builder"],
         keepPreview: true,
+        impactReview: true,
+        diffScope: ["src/routes/dashboard"],
+        maxIterations: 2,
       },
     });
 
@@ -117,6 +120,9 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
           intent: "Implement the dashboard change",
           services: ["workflow-builder"],
           keepPreview: "true",
+          impactReview: true,
+          diffScope: ["src/routes/dashboard"],
+          maxIterations: 2,
         },
       }),
     );
@@ -334,6 +340,9 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         intent: "Change the dashboard",
         services: ["workflow-builder"],
         keepPreview: true,
+        impactReview: true,
+        diffScope: ["src/routes/dashboard"],
+        maxIterations: 2,
       },
     });
 
@@ -360,6 +369,9 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
       intent: "Change the dashboard",
       services: ["workflow-builder"],
       keepPreview: "true",
+      impactReview: true,
+      diffScope: ["src/routes/dashboard"],
+      maxIterations: 2,
       __previewDevelopment: {
         version: 2,
         remoteActorUserId: "admin-1",
