@@ -2985,6 +2985,8 @@ def _handle_call_task(
                 # 180s HTTP default doesn't cap a multi-minute build.
                 "timeoutMs": final_config.get("timeoutMs"),
                 "persistBrowserVideo": gate_persist_video if isinstance(gate_persist_video, str) else None,
+                "helperPod": final_config.get("helperPod"),
+                "helperTimeoutMinutes": final_config.get("helperTimeoutMinutes"),
                 # nodeId/workflowId let the BFF key the video browser-artifact to
                 # this run + node (task_name IS the node id).
                 "nodeId": task_name,

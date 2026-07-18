@@ -313,15 +313,15 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	// carries GITHUB_TOKEN so git push / PR-open authenticate. Adopted (not
 	// recreated) on repeat calls so gate/read_verdict/pr reuse one pod.
 	if (!baseUrl) {
-		// The shared JuiceFS subtree is keyed by the CANONICAL orchestrator
-		// instance id (`sw-<name>-exec-<id>`) —
-		// the SAME key durable/run agents (workspaceRef `${ .runtime.executionId }`)
-		// and the Files-tab webdav reader use. Keying the helper by the bare
-		// executionId would land it on a DIFFERENT subtree than the agents
-		// (clone/gate/read_contract couldn't see agent files; the Files tab would be
-		// empty). Fall back to the bare id only if the instance id isn't stamped.
+		// SW runs key the shared JuiceFS subtree by the canonical orchestrator
+		// instance id. Dynamic scripts use the server-substituted `workspace`
+		// sentinel key (`ws_script_<db execution id>`) instead. The helper must use
+		// the same engine-specific key or pre-agent seed commands and later agent
+		// turns land on different filesystems.
 		const execRow = await loadExecution();
-		const sharedWorkspaceKey = execRow?.daprInstanceId ?? executionId;
+		const sharedWorkspaceKey = execRow?.executionIrVersion?.startsWith("dynamic-script")
+			? `ws_script_${executionId}`
+			: (execRow?.daprInstanceId ?? executionId);
 		const helperSessionId = `${executionId}__cliws`;
 		const helperAppId = sessionHostAppId(helperSessionId);
 		// Fast path: check once for an already-ready helper. A missing helper must

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
 		projectId: "project-1",
 		status: "running",
 		daprInstanceId: "sw-example-exec-exec-1" as string | null,
+		executionIrVersion: null as string | null,
 	};
 	const candidate = {
 		sessionId: "session-1",
@@ -128,6 +129,7 @@ describe("CLI workspace command route", () => {
 		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
 		mocks.workflowData.createWorkflowFile.mockResolvedValue({ file: { id: "file-1" } });
 		mocks.workflowData.saveWorkflowBrowserArtifact.mockResolvedValue({ id: "bwf_1" });
+		mocks.execution.executionIrVersion = null;
 	});
 
 	afterEach(async () => {
@@ -230,6 +232,30 @@ describe("CLI workspace command route", () => {
 		);
 		expect(mocks.maybeProvisionAgentWorkflowHost.mock.invocationCallOrder[0]).toBeLessThan(
 			mocks.waitForAgentWorkflowHostAppReady.mock.invocationCallOrder[0],
+		);
+	});
+
+	it("uses the dynamic-script shared workspace key for helper pods", async () => {
+		const baseUrl = await startCommandServer(() => ({
+			exit_code: 0,
+			stdout_tail: "seeded",
+			stderr_tail: "",
+		}));
+		mocks.execution.executionIrVersion = "dynamic-script-2";
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValue(null);
+		mocks.waitForAgentWorkflowHostAppReady.mockResolvedValue({ baseUrl });
+
+		const response = (await POST(
+			event({ command: "seed repo", helperPod: true }) as never,
+		)) as Response;
+
+		expect(response.status).toBe(200);
+		expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: "exec-1__cliws",
+				workflowExecutionId: "exec-1",
+				sharedWorkspaceKey: "ws_script_exec-1",
+			}),
 		);
 	});
 

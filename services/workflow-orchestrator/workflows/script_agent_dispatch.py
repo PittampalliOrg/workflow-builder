@@ -30,6 +30,7 @@ import dapr.ext.workflow as wf
 from workflows.session_host_wait import spawn_session_with_host_wait
 from workflows.action_runner_workflow import action_runner_workflow
 from workflows.wait_event_workflow import wait_event_workflow
+from activities.cli_workspace_command import cli_workspace_command
 from activities.execute_action import PRIVILEGED_PREVIEW_ACTION_SLUGS, execute_action
 from activities.resolve_script_workflow import resolve_script_workflow
 from activities.team_ops import execute_team_op
@@ -37,6 +38,7 @@ from activities.team_ops import execute_team_op
 # Reuse the ground-truth helpers so dispatch identity + child-workflow plumbing
 # stay byte-compatible with the SW interpreter (avoids churn / drift).
 from workflows.sw_workflow import (
+    _as_bool,
     _call_child_workflow_with_history_propagation,
     _expects_durable_dev_preview_activation,
     _is_ap_piece_action,
@@ -652,10 +654,14 @@ def start_action_call(
     throws the message into the script, catchable).
 
     Slug classes (SW-parity via ``_is_ap_piece_action``):
-      * non-AP single-shot slugs (workspace/command, code/*, system/*, web/*
-        sync, ...) dispatch here as plain activities — same call shape as the
-        SW interpreter's non-AP path (no retry policy; transport failures come
-        back as ``success:false``).
+      * ``workspace/command`` with ``cliWorkspace: true`` dispatches directly
+        to the execution's CLI workspace helper. This mirrors the SW
+        interpreter and keeps it out of function-router, which intentionally
+        has no ``workspace/command`` Knative registration.
+      * other non-AP single-shot slugs (workspace/command, code/*, system/*,
+        web/* sync, ...) dispatch here as plain activities — same call shape as
+        the SW interpreter's non-AP path (no retry policy; transport failures
+        come back as ``success:false``).
       * AP piece slugs dispatch as an ``action_runner_workflow_v1`` CHILD that
         carries the full SW AP durability contract (_AP_RETRY_POLICY +
         raiseOnRetryable + DELAY/WEBHOOK pause rounds) and gives the WEBHOOK
@@ -679,6 +685,42 @@ def start_action_call(
     # The run's shared workspace (same key agent(isolation:'shared') binds), so
     # workspace/* actions and agents operate on ONE filesystem.
     raw_input = _substitute_workspace(spec.get("args"), f"ws_script_{exec_id}")
+
+    if (
+        slug == "workspace/command"
+        and isinstance(raw_input, dict)
+        and _as_bool(raw_input.get("cliWorkspace"), False)
+    ):
+        body = raw_input.get("body") if isinstance(raw_input.get("body"), dict) else {}
+        command = raw_input.get("command")
+        if not isinstance(command, str):
+            command = body.get("command")
+
+        def optional_text(name: str) -> str | None:
+            value = raw_input.get(name)
+            if not isinstance(value, str):
+                value = body.get(name)
+            return value if isinstance(value, str) and value.strip() else None
+
+        return ctx.call_activity(
+            cli_workspace_command,
+            input=_freeze(
+                {
+                    "executionId": exec_id,
+                    "command": command,
+                    "cwd": raw_input.get("cwd") or body.get("cwd") or "/sandbox/work",
+                    "readFile": optional_text("readFile"),
+                    "timeoutMs": raw_input.get("timeoutMs") or body.get("timeoutMs"),
+                    "persistBrowserVideo": optional_text("persistBrowserVideo"),
+                    "nodeId": call_id,
+                    "workflowId": workflow_id or "",
+                    "helperPod": _as_bool(raw_input.get("helperPod"), False),
+                    "helperTimeoutMinutes": raw_input.get("helperTimeoutMinutes"),
+                    "_otel": otel,
+                }
+            ),
+        )
+
     config: dict[str, Any] = {"actionType": slug}
     if raw_input is not None:
         config["input"] = raw_input
