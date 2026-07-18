@@ -194,15 +194,44 @@ function sleepSeconds(tasks: Array<Record<string, unknown>>): number[] {
 }
 
 describe("host preview development lifecycle poll backoff", () => {
-  it("rejects a multi-service request before any environment is provisioned", async () => {
+  it("rejects a request exceeding MAX_SERVICES before any environment is provisioned", async () => {
     const { result, tasks } = await drive({
-      services: ["workflow-builder", "function-router"],
+      services: Array.from({ length: 17 }, (_, index) => `svc-${index}`),
     });
     expect(result.status).toBe("script_error");
     expect(result.error?.message).toContain(
-      "multi-service preview development is not yet supported: only 1 service may be requested (got 2)",
+      "too many services requested: at most 16 may be developed at once (got 17)",
     );
     expect(tasks).toHaveLength(0);
+  });
+
+  it("no longer fail-fasts a within-bounds multi-service request; it provisions and scales the child window with the service count", async () => {
+    const services = ["workflow-builder", "function-router"];
+    // Mirrors the fixture: per-iteration timeout and poll cap both scale with
+    // the service count, so the poll COUNT stays flat while the window grows.
+    const childBudgetSeconds = (3 * 35 * services.length + 15) * 60;
+    const capSeconds = 60 * services.length;
+    const expectedAttempts = attemptsForBudget(childBudgetSeconds, capSeconds);
+    const { result, tasks } = await drive({
+      services,
+      runningPolls: Number.MAX_SAFE_INTEGER,
+    });
+    // Provisioning happened — the >1-service fail-fast is gone from the fixture.
+    expect(
+      tasks.some((task) => task.actionSlug === "preview/environment-launch"),
+    ).toBe(true);
+    expect(result.status).toBe("script_error");
+    expect(result.error?.message).toContain(
+      `preview/workflow-status timed out after ${expectedAttempts} observations`,
+    );
+    expect(
+      tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
+    ).toHaveLength(expectedAttempts);
+    const childSleeps = sleepSeconds(tasks);
+    expect(Math.max(...childSleeps)).toBeLessThanOrEqual(capSeconds);
+    // Poll-count stays flat, so even at higher service counts the whole
+    // worst-case run stays inside the engine's hard 500-action-call budget.
+    expect(tasks.length).toBeLessThan(500);
   });
 
   it("polls the child with deterministic exponential backoff capped at 60s", async () => {
