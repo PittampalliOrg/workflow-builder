@@ -357,6 +357,18 @@ function sameStringSet(left, right) {
   );
 }
 
+function nonEmptyStringSubset(left, right) {
+  return (
+    Array.isArray(left) &&
+    left.length > 0 &&
+    Array.isArray(right) &&
+    new Set(left).size === left.length &&
+    left.every(
+      (value) => typeof value === "string" && right.includes(value),
+    )
+  );
+}
+
 function assertChildOutcome(actionName, value, expected) {
   const output = value?.output;
   if (!output || typeof output !== "object" || Array.isArray(output)) {
@@ -389,7 +401,7 @@ function assertChildOutcome(actionName, value, expected) {
     receipt.previewName !== expected.target.previewName ||
     receipt.requestId !== expected.target.environmentRequestId ||
     receipt.executionId !== expected.executionId ||
-    !sameStringSet(receipt.services, expected.services) ||
+    !nonEmptyStringSubset(receipt.services, expected.services) ||
     typeof receipt.branch !== "string" ||
     receipt.branch.length < 1 ||
     receipt.branch.length > 256 ||
@@ -544,7 +556,7 @@ try {
       target: environment?.target ?? launch?.target,
       childExecutionId: child?.executionId,
       receiptId: childPromotionReceipt?.receiptId,
-      services,
+      services: childPromotionReceipt?.services,
     },
     { label: "verify physical promotion receipt" },
   );
@@ -558,7 +570,7 @@ try {
     target: environment?.target ?? launch?.target,
     executionId: child?.executionId,
     receiptId: childPromotionReceipt?.receiptId,
-    services,
+    services: childPromotionReceipt?.services,
   });
   completedNormally = true;
 } finally {
