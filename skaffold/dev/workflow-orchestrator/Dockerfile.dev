@@ -32,6 +32,11 @@ COPY services/workflow-orchestrator/ ./
 COPY services/shared/workflow-data-contract /app/.contract-fixtures
 ENV WORKFLOW_DATA_CONTRACT_FIXTURE_DIR=/app/.contract-fixtures/fixtures
 
+# Baseline capture-only build inputs in the same hidden paths used by sync.sh.
+# Receiver diff receipts can then distinguish unchanged transport files from edits.
+COPY services/workflow-orchestrator/Dockerfile /app/.preview-capture/production.Dockerfile
+COPY skaffold/dev/workflow-orchestrator/Dockerfile.dev /app/.preview-capture/development.Dockerfile
+
 # #40 exec bridge: /__run commands execute HERE (python/pytest live in this
 # container; the node-only dev-sync-sidecar exits 127 on them). Lives OUTSIDE
 # /app so the shared emptyDir workdir mount can never mask it. Background child

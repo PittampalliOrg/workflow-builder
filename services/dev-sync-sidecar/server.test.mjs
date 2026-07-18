@@ -296,19 +296,38 @@ test('source receipts track final baseline-relative changes across replacement a
 	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
 	fs.mkdirSync(path.join(dest, 'src/routes/dashboard'), { recursive: true });
 	fs.mkdirSync(path.join(dest, 'src/lib'), { recursive: true });
+	fs.mkdirSync(path.join(dest, '.preview-capture'), { recursive: true });
 	fs.writeFileSync(path.join(dest, 'src/routes/dashboard/+page.svelte'), '<h1>before</h1>');
 	fs.writeFileSync(path.join(dest, 'src/lib/keep.ts'), 'export const keep = true;');
-	let s = await startSidecar({}, dest);
+	fs.writeFileSync(
+		path.join(dest, '.preview-capture/production.Dockerfile'),
+		'FROM node:22-alpine\n'
+	);
+	fs.writeFileSync(
+		path.join(dest, '.preview-capture/development.Dockerfile'),
+		'FROM node:22-alpine AS development\n'
+	);
+	const roots = [
+		'.preview-capture/development.Dockerfile',
+		'.preview-capture/production.Dockerfile',
+		'src'
+	];
+	const captureFiles = {
+		'.preview-capture/production.Dockerfile': 'FROM node:22-alpine\n',
+		'.preview-capture/development.Dockerfile': 'FROM node:22-alpine AS development\n'
+	};
+	let s = await startSidecar({ DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots) }, dest);
 	t.after(() => s.stop());
 
 	const generationOne = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
-		headers: { ...syncHeaders('scope-generation-1'), 'x-sync-mode': 'replace' },
+		headers: { ...syncHeaders('scope-generation-1', SERVICE, roots), 'x-sync-mode': 'replace' },
 		body: makeTarGz({
+			...captureFiles,
 			'src/routes/dashboard/+page.svelte': '<h1>after</h1>',
 			'src/lib/keep.ts': 'export const keep = true;',
 			'src/routes/proof-d-out-of-scope.ts': 'export const leaked = true;'
-		})
+		}, {}, roots)
 	});
 	assert.equal(generationOne.status, 200);
 	const firstReceipt = await generationOne.json();
@@ -321,11 +340,12 @@ test('source receipts track final baseline-relative changes across replacement a
 
 	const generationTwo = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
-		headers: { ...syncHeaders('scope-generation-2'), 'x-sync-mode': 'replace' },
+		headers: { ...syncHeaders('scope-generation-2', SERVICE, roots), 'x-sync-mode': 'replace' },
 		body: makeTarGz({
+			...captureFiles,
 			'src/routes/dashboard/+page.svelte': '<h1>after</h1>',
 			'src/lib/keep.ts': 'export const keep = true;'
-		})
+		}, {}, roots)
 	});
 	assert.equal(generationTwo.status, 200);
 	const repairedReceipt = await generationTwo.json();
@@ -338,7 +358,7 @@ test('source receipts track final baseline-relative changes across replacement a
 	const stopped = new Promise((resolve) => s.proc.once('exit', resolve));
 	s.stop({ preserveDest: true });
 	await stopped;
-	s = await startSidecar({}, dest);
+	s = await startSidecar({ DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots) }, dest);
 	const status = await (
 		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
 	).json();
@@ -347,6 +367,28 @@ test('source receipts track final baseline-relative changes across replacement a
 	assert.deepEqual(status.sourceChangedPaths, ['src/routes/dashboard/+page.svelte']);
 	assert.equal(status.sourceChangedPathCount, 1);
 	assert.equal(status.sourceChangedPathsTruncated, false);
+
+	const buildInputEdit = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { ...syncHeaders('scope-generation-3', SERVICE, roots), 'x-sync-mode': 'replace' },
+		body: makeTarGz(
+			{
+				...captureFiles,
+				'.preview-capture/production.Dockerfile': 'FROM node:23-alpine\n',
+				'src/routes/dashboard/+page.svelte': '<h1>after</h1>',
+				'src/lib/keep.ts': 'export const keep = true;'
+			},
+			{},
+			roots
+		)
+	});
+	assert.equal(buildInputEdit.status, 200);
+	const buildInputReceipt = await buildInputEdit.json();
+	assert.deepEqual(buildInputReceipt.sourceChangedPaths, [
+		'.preview-capture/production.Dockerfile',
+		'src/routes/dashboard/+page.svelte'
+	]);
+	assert.equal(buildInputReceipt.sourceChangedPathCount, 2);
 });
 
 test('source receipts fail closed when the baseline-relative path set is truncated', async (t) => {
