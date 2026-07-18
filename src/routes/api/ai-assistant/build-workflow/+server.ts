@@ -70,9 +70,9 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		return new Response('No AI API key configured', { status: 503 });
 	}
 
-	const model = anthropicKey
-		? anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8')
-		: workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5');
+	const model = openaiAvailable
+		? workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5')
+		: anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8');
 
 	const userId = locals.session?.userId ?? null;
 	const encoder = new TextEncoder();
