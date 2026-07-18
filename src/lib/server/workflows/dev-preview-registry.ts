@@ -370,13 +370,17 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     // `migrate` applies hot-synced Drizzle migrations against this preview's DB;
     // the runtime script serializes callers with a Postgres advisory lock and
     // Drizzle's ledger makes repeats idempotent. The remaining commands expose
-    // the same gates run in CI to an in-preview generator/critic via /__run.
+    // focused gates to an in-preview generator/critic via /__run. The reduced
+    // dev image deliberately omits root build contexts, so the Phase-3 check
+    // and test-unit lanes must not invoke catalog validation or the full suite.
     testCommands: {
       migrate: "node scripts/db-migrate-runtime.mjs",
       contract:
         "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
-      check: "pnpm check",
-      "test-unit": "pnpm test:unit",
+      check:
+        "node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
+      "test-unit":
+        "node_modules/.bin/vitest run src/routes/api/v1/dashboard/dashboard-route.test.ts src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts src/lib/dev-preview-checkpoint-promotion.test.ts",
       boundaries: "pnpm check:boundaries",
     },
     // Functional preview: the BFF actually runs against its own preview DB +

@@ -930,7 +930,11 @@ function tryBridgeRun(name, cb) {
 		preq.destroy();
 	}, 2000);
 	preq.on('socket', (socket) => {
-		socket.once('connect', () => clearTimeout(connectTimer));
+		// Node's keep-alive agent may hand us a socket that connected during a
+		// previous request. Its connect event will not fire again, so clear the
+		// timer immediately instead of abandoning a command that is still running.
+		if (socket.connecting) socket.once('connect', () => clearTimeout(connectTimer));
+		else clearTimeout(connectTimer);
 	});
 	preq.on('error', (e) => {
 		clearTimeout(connectTimer);
