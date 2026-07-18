@@ -52,6 +52,11 @@ export const meta = {
         title: "Retain environment after failure",
         default: false,
       },
+      interactiveHandoff: {
+        type: "boolean",
+        title: "Hand off an interactive session after completion",
+        default: false,
+      },
     },
   },
 };
@@ -70,6 +75,7 @@ function asBoolean(value) {
 }
 const retainAfterCompletion = asBoolean(t.retainAfterCompletion);
 const retainOnFailure = asBoolean(t.retainOnFailure);
+const interactiveHandoff = asBoolean(t.interactiveHandoff);
 
 if (!intent) throw new Error("intent is required");
 if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(environmentName)) {
@@ -186,6 +192,17 @@ function transientPreviewWorkflowError(slug, error) {
   )
     return false;
   const message = errorMessage(error);
+  // Seed race: the preview's db-seed PostSync hook may not have upserted the
+  // pinned child workflow yet when the parent first calls workflow-start, so a
+  // 404 THERE (and only there) is retryable. startPreviewWorkflow's fixed
+  // attempt budget (25 x 5s ≈ 2min) bounds the wait, so a genuinely-missing
+  // workflow still fails; status/signal 404s stay fast contract failures.
+  if (
+    slug === "preview/workflow-start" &&
+    message.includes("preview development endpoint returned HTTP 404")
+  ) {
+    return true;
+  }
   return (
     message.includes("preview development endpoint returned HTTP 409") ||
     message.includes("preview development endpoint returned HTTP 425") ||
@@ -479,6 +496,12 @@ try {
     target: environment?.target ?? launch?.target,
     intent,
     services,
+    // Additive retention context, opt-in only: omitted entirely in the
+    // default flow so the proven workflow-start payload stays byte-identical.
+    // When present, the preview-side child owns freeze/handoff behavior.
+    ...(retainAfterCompletion || interactiveHandoff
+      ? { ttlHours, retainAfterCompletion, interactiveHandoff }
+      : {}),
   });
   phase("Observe");
   outcome = await waitForStatus(
