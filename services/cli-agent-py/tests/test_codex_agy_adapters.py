@@ -1362,7 +1362,11 @@ def test_agy_transcript_maps_gemini_usage_metadata_cache_usage():
     ]
 
 
-def test_agy_transcript_estimates_usage_when_native_usage_absent():
+def test_agy_transcript_emits_no_usage_event_when_native_usage_absent():
+    """Antigravity never surfaced token counts, so we used to synthesize an
+    estimated agent.llm_usage event (4-chars/token heuristic). That machinery
+    was removed with the antigravity runtime: no native usage -> no usage
+    event, never an estimate."""
     adapter = get_adapter("antigravity")
     adapter.map_transcript_entry(
         {
@@ -1384,18 +1388,7 @@ def test_agy_transcript_estimates_usage_when_native_usage_absent():
     events = adapter.map_transcript_entry(entry)
 
     assert events is not None
-    assert [event["type"] for event in events] == ["agent.message", "agent.llm_usage"]
-    usage = events[1]["data"]
-    assert usage["input_tokens"] > 0
-    assert usage["output_tokens"] > 0
-    assert usage["cache_read_input_tokens"] == 0
-    assert usage["cache_creation_input_tokens"] == 0
-    assert usage["context_source"] == "transcript_estimate"
-    assert usage["context_count_method"] == "estimated"
-    assert usage["context_count_scope"] == "last_agy_turn"
-    assert usage["usage_estimated"] is True
-    assert usage["usage_source"] == "agy_transcript_estimate"
-    assert events[1]["sourceEventId"] == "agy-transcript:2:usage"
+    assert [event["type"] for event in events] == ["agent.message"]
 
 
 def test_agy_transcript_ignores_managed_run_command_denial_artifact():
