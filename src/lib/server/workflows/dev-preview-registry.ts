@@ -373,12 +373,14 @@ export const DEV_PREVIEW_SERVICES: Record<string, DevPreviewDescriptor> = {
     // focused gates to an in-preview generator/critic via /__run. The reduced
     // dev image deliberately omits root build contexts, so the Phase-3 check
     // and test-unit lanes must not invoke catalog validation or the full suite.
+    // svelte-check exceeds Node's default ~2 GiB old-space ceiling against the
+    // current source tree; keep it below the dev pod's 4 GiB memory limit.
     testCommands: {
       migrate: "node scripts/db-migrate-runtime.mjs",
       contract:
         "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
       check:
-        "node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
+        "export NODE_OPTIONS=--max-old-space-size=3072; node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
       "test-unit":
         "node_modules/.bin/vitest run src/routes/api/v1/dashboard/dashboard-route.test.ts src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts src/lib/dev-preview-checkpoint-promotion.test.ts",
       boundaries: "pnpm check:boundaries",
