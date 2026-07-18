@@ -5378,13 +5378,6 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 		const sessions = this.requireSessions();
 		const sessionId = workflowDevSessionId(input.executionId);
-		const existingSessionIds = await this.deps.workflowExecutions.listSessionIdsByExecutionId(
-			input.executionId,
-		);
-		if (existingSessionIds.some((id) => id !== sessionId)) {
-			return { status: "session_conflict", reason: "ambiguous" };
-		}
-
 		const title = input.title ?? `Dev session (${input.executionId})`;
 		const ensured = await sessions.ensureSession({
 			id: sessionId,
@@ -5443,7 +5436,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		const finalSessionIds = await this.deps.workflowExecutions.listSessionIdsByExecutionId(
 			input.executionId,
 		);
-		if (finalSessionIds.length !== 1 || finalSessionIds[0] !== session.id) {
+		// GAN workflows already own sibling sessions created by agent() calls. The
+		// deterministic handoff id plus the identity and kickoff checks above are
+		// the durable replay contract; sibling agent-call sessions are not an
+		// ambiguity. Still fail closed if the repository did not link this exact
+		// handoff session back to the workflow execution.
+		if (!finalSessionIds.includes(session.id)) {
 			return { status: "session_conflict", reason: "ambiguous" };
 		}
 
