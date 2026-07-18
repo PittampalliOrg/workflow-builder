@@ -125,6 +125,9 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
       "ttlHours",
       "retainAfterCompletion",
       "interactiveHandoff",
+      "impactReview",
+      "diffScope",
+      "maxIterations",
     ],
     "workflowInput",
   );
@@ -143,8 +146,8 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   ) {
     throw new Error("workflowInput.keepPreview must be a boolean");
   }
-  // Retention opt-ins are additive pass-through fields: shape-checked here,
-  // range/enum-validated by normalizeWorkflowInput, forwarded verbatim.
+  // Additive child controls are shape-checked here, then range/enum-validated
+  // by normalizeWorkflowInput before they cross an application boundary.
   const ttlHours = raw.ttlHours;
   if (ttlHours !== undefined && typeof ttlHours !== "number") {
     throw new Error("workflowInput.ttlHours must be a number");
@@ -165,6 +168,22 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   ) {
     throw new Error("workflowInput.interactiveHandoff must be a boolean");
   }
+  const impactReview = raw.impactReview;
+  if (
+    impactReview !== undefined &&
+    typeof impactReview !== "boolean" &&
+    typeof impactReview !== "string"
+  ) {
+    throw new Error("workflowInput.impactReview must be a boolean");
+  }
+  const diffScope = raw.diffScope;
+  if (diffScope !== undefined && !Array.isArray(diffScope)) {
+    throw new Error("workflowInput.diffScope must be an array");
+  }
+  const maxIterations = raw.maxIterations;
+  if (maxIterations !== undefined && typeof maxIterations !== "number") {
+    throw new Error("workflowInput.maxIterations must be a number");
+  }
   return {
     intent: string(raw.intent, "workflowInput.intent"),
     services: raw.services.map((service, index) =>
@@ -175,6 +194,15 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
     ...(ttlHours !== undefined ? { ttlHours } : {}),
     ...(retainAfterCompletion !== undefined ? { retainAfterCompletion } : {}),
     ...(interactiveHandoff !== undefined ? { interactiveHandoff } : {}),
+    ...(impactReview !== undefined ? { impactReview } : {}),
+    ...(diffScope !== undefined
+      ? {
+          diffScope: diffScope.map((prefix, index) =>
+            string(prefix, `workflowInput.diffScope[${index}]`),
+          ),
+        }
+      : {}),
+    ...(maxIterations !== undefined ? { maxIterations } : {}),
   };
 }
 

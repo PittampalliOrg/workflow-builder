@@ -23,13 +23,13 @@ export type PreviewDevelopmentWorkflowInput = Readonly<{
   services: readonly string[];
   agentSlug?: string;
   keepPreview?: boolean | string;
-  /**
-   * Retention opt-ins (additive): forwarded verbatim to the preview-local
-   * child's trigger data when present, absent (never defaulted) otherwise.
-   */
+  /** Additive child controls: forwarded when present, never defaulted here. */
   ttlHours?: number;
   retainAfterCompletion?: boolean | string;
   interactiveHandoff?: boolean | string;
+  impactReview?: boolean | string;
+  diffScope?: readonly string[];
+  maxIterations?: number;
 }>;
 
 export type PreviewDevelopmentWorkflowReceipt = Readonly<{

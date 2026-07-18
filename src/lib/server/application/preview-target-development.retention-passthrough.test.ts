@@ -123,8 +123,8 @@ async function startLocalChild(
   >;
 }
 
-describe("preview development retention opt-in pass-through", () => {
-  it("passes ttlHours, retainAfterCompletion, and interactiveHandoff through verbatim", () => {
+describe("preview development optional child control pass-through", () => {
+  it("passes retention and verifier controls through verbatim", () => {
     expect(
       normalizeWorkflowInput({
         intent: "x",
@@ -132,6 +132,9 @@ describe("preview development retention opt-in pass-through", () => {
         ttlHours: 12,
         retainAfterCompletion: true,
         interactiveHandoff: false,
+        impactReview: true,
+        diffScope: ["src/routes/dashboard"],
+        maxIterations: 2,
       }),
     ).toEqual({
       intent: "x",
@@ -139,6 +142,9 @@ describe("preview development retention opt-in pass-through", () => {
       ttlHours: 12,
       retainAfterCompletion: true,
       interactiveHandoff: false,
+      impactReview: true,
+      diffScope: ["src/routes/dashboard"],
+      maxIterations: 2,
     });
   });
 
@@ -149,14 +155,16 @@ describe("preview development retention opt-in pass-through", () => {
         services: ["workflow-builder"],
         retainAfterCompletion: "true",
         interactiveHandoff: "false",
+        impactReview: "true",
       }),
     ).toMatchObject({
       retainAfterCompletion: "true",
       interactiveHandoff: "false",
+      impactReview: "true",
     });
   });
 
-  it("keeps the default payload free of retention keys (no defaulting)", () => {
+  it("keeps the default payload free of optional controls", () => {
     const normalized = normalizeWorkflowInput({
       intent: "x",
       services: ["workflow-builder"],
@@ -168,6 +176,9 @@ describe("preview development retention opt-in pass-through", () => {
     expect(normalized).not.toHaveProperty("ttlHours");
     expect(normalized).not.toHaveProperty("retainAfterCompletion");
     expect(normalized).not.toHaveProperty("interactiveHandoff");
+    expect(normalized).not.toHaveProperty("impactReview");
+    expect(normalized).not.toHaveProperty("diffScope");
+    expect(normalized).not.toHaveProperty("maxIterations");
   });
 
   it("rejects out-of-range or non-integer ttlHours", () => {
@@ -182,7 +193,7 @@ describe("preview development retention opt-in pass-through", () => {
     }
   });
 
-  it("rejects non-boolean retention flags", () => {
+  it("rejects non-boolean opt-in flags", () => {
     expect(() =>
       normalizeWorkflowInput({
         intent: "x",
@@ -197,6 +208,34 @@ describe("preview development retention opt-in pass-through", () => {
         interactiveHandoff: 1 as never,
       }),
     ).toThrow("interactiveHandoff must be a boolean");
+    expect(() =>
+      normalizeWorkflowInput({
+        intent: "x",
+        services: ["workflow-builder"],
+        impactReview: "yes" as never,
+      }),
+    ).toThrow("impactReview must be a boolean");
+  });
+
+  it("rejects invalid verifier bounds", () => {
+    for (const diffScope of [[""], ["src\u0000routes"]]) {
+      expect(() =>
+        normalizeWorkflowInput({
+          intent: "x",
+          services: ["workflow-builder"],
+          diffScope,
+        }),
+      ).toThrow("diffScope must contain valid path prefixes");
+    }
+    for (const maxIterations of [0, 4, 1.5]) {
+      expect(() =>
+        normalizeWorkflowInput({
+          intent: "x",
+          services: ["workflow-builder"],
+          maxIterations,
+        }),
+      ).toThrow("maxIterations must be an integer between 1 and 3");
+    }
   });
 
   it("forwards opt-in keys into the preview-local child triggerData", async () => {
@@ -206,6 +245,9 @@ describe("preview development retention opt-in pass-through", () => {
       ttlHours: 12,
       retainAfterCompletion: true,
       interactiveHandoff: true,
+      impactReview: true,
+      diffScope: ["src/routes/dashboard"],
+      maxIterations: 2,
     });
     expect(trigger).toMatchObject({
       intent: "Change the dashboard",
@@ -213,10 +255,13 @@ describe("preview development retention opt-in pass-through", () => {
       ttlHours: 12,
       retainAfterCompletion: true,
       interactiveHandoff: true,
+      impactReview: true,
+      diffScope: ["src/routes/dashboard"],
+      maxIterations: 2,
     });
   });
 
-  it("keeps the default child triggerData byte-identical (no retention keys)", async () => {
+  it("keeps the default child triggerData byte-identical", async () => {
     const trigger = await startLocalChild({
       intent: "Change the dashboard",
       services: ["workflow-builder"],
@@ -224,5 +269,8 @@ describe("preview development retention opt-in pass-through", () => {
     expect(trigger).not.toHaveProperty("ttlHours");
     expect(trigger).not.toHaveProperty("retainAfterCompletion");
     expect(trigger).not.toHaveProperty("interactiveHandoff");
+    expect(trigger).not.toHaveProperty("impactReview");
+    expect(trigger).not.toHaveProperty("diffScope");
+    expect(trigger).not.toHaveProperty("maxIterations");
   });
 });
