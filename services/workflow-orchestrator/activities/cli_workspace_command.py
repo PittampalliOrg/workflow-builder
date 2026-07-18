@@ -8,11 +8,11 @@ in the execution's live CLI pod via cli-agent-py `/internal/workspace/command`
 (cli-direct). The command is spec-fixed (not LLM-decided), so the gate stays
 deterministic and independent of the generator agent.
 
-Returns the same envelope the workspace runtime would
-(`{success, result: {exitCode, stdout, stderr}}`) so the loop's
-`${ .loop.last.gate.result.stdout }` refs resolve unchanged. Non-zero exit is
-DATA (an OBJECTIVE FAIL), not a transport error — the gate node uses
-`allowFailure: true`.
+Wraps the workspace runtime envelope (`{success, result: {exitCode, stdout,
+stderr}}`) in the action-dispatch contract (`{success, data}`). This outer
+envelope is what the dynamic-script journal consumes; the inner envelope is
+what the script receives. Non-zero exit is DATA (an OBJECTIVE FAIL), not a
+transport error — the gate node uses `allowFailure: true`.
 """
 
 from __future__ import annotations
@@ -26,6 +26,14 @@ import requests
 from tracing import set_current_span_attrs, start_activity_span
 
 logger = logging.getLogger("activities.cli_workspace_command")
+
+
+def _transport_failure(message: str) -> dict[str, Any]:
+    data = {
+        "success": False,
+        "result": {"exitCode": -1, "stdout": "", "stderr": message},
+    }
+    return {"success": False, "error": message, "data": data}
 
 
 def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -62,9 +70,9 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     http_read_timeout = max(180.0, min(budget_seconds + 90.0, 1890.0))
 
     if not execution_id:
-        return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": "cli_workspace_command: executionId is required"}}
+        return _transport_failure("cli_workspace_command: executionId is required")
     if not isinstance(command, str) or not command.strip():
-        return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": "cli_workspace_command: command is required"}}
+        return _transport_failure("cli_workspace_command: command is required")
 
     otel = input_data.get("_otel") if isinstance(input_data.get("_otel"), dict) else None
     with start_activity_span("activity.cli_workspace_command", otel, {"workflow.execution.id": execution_id}):
@@ -105,11 +113,13 @@ def cli_workspace_command(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     response.status_code, detail, execution_id,
                 )
                 # Surface as DATA so the gate reports a failure (allowFailure node).
-                return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": f"gate dispatch error {response.status_code}: {detail}"}}
+                return _transport_failure(
+                    f"gate dispatch error {response.status_code}: {detail}"
+                )
             data = response.json()
             if not isinstance(data, dict):
-                return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": "gate returned non-object"}}
-            return data
+                return _transport_failure("gate returned non-object")
+            return {"success": True, "data": data}
         except Exception as exc:
             logger.warning("cli_workspace_command transport error: %s exec=%s", exc, execution_id)
-            return {"success": False, "result": {"exitCode": -1, "stdout": "", "stderr": f"gate transport error: {exc}"}}
+            return _transport_failure(f"gate transport error: {exc}")

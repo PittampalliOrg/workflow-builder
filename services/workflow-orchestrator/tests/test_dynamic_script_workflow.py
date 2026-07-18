@@ -340,7 +340,10 @@ class FakeCtx:
             self.cli_workspace_inputs.append(inp)
             return {
                 "success": True,
-                "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+                "data": {
+                    "success": True,
+                    "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+                },
             }
         if name == "persist_workspace_session":
             self.persist_workspace_inputs.append(inp)
@@ -1680,7 +1683,10 @@ def test_cli_workspace_action_bypasses_function_router_and_uses_helper_activity(
     assert raws == [
         {
             "success": True,
-            "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+            "data": {
+                "success": True,
+                "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+            },
         }
     ]
 
