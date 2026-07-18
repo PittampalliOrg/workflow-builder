@@ -91,6 +91,9 @@ try {
 const RESTART_SIGNAL_FILE = '.dev-sync-restart-request.json';
 const ROUTES_PREFIX = 'src/routes/';
 const SYNC_STATE_FILE = '.dev-sync-state.json';
+const SOURCE_BASELINE_FILE = '.dev-sync-source-baseline.json';
+const SOURCE_BASELINE_VERSION = 1;
+const MAX_SOURCE_BASELINE_FILES = 100_000;
 const MAX_REPORTED_CHANGED_PATHS = 50;
 const GENERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const FREEZE_OPERATION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -143,9 +146,212 @@ function acceptedSyncToken(presented) {
 	);
 }
 
+function sourcePathIsAllowed(relativePath) {
+	return ALLOWED_ROOTS.some((root) => relativePath === root || relativePath.startsWith(`${root}/`));
+}
+
+function validSourcePath(value) {
+	return (
+		typeof value === 'string' &&
+		value.length > 0 &&
+		!value.startsWith('/') &&
+		!value.includes('\\') &&
+		value.split('/').every((segment) => segment && segment !== '.' && segment !== '..') &&
+		sourcePathIsAllowed(value)
+	);
+}
+
+function hashFile(target) {
+	const digest = createHash('sha256');
+	const buffer = Buffer.allocUnsafe(64 * 1024);
+	const fd = fs.openSync(target, 'r');
+	try {
+		let bytes;
+		do {
+			bytes = fs.readSync(fd, buffer, 0, buffer.length, null);
+			if (bytes > 0) digest.update(buffer.subarray(0, bytes));
+		} while (bytes > 0);
+	} finally {
+		fs.closeSync(fd);
+	}
+	return digest.digest('hex');
+}
+
+function snapshotSourceFiles() {
+	const files = [];
+	let entries = 0;
+	const visit = (relativePath) => {
+		entries += 1;
+		if (entries > MAX_SOURCE_BASELINE_FILES) {
+			throw new Error('source baseline has too many entries');
+		}
+		const target = path.join(DEST, ...relativePath.split('/'));
+		let stat;
+		try {
+			stat = fs.lstatSync(target);
+		} catch (error) {
+			if (error.code === 'ENOENT') return;
+			throw error;
+		}
+		if (stat.isSymbolicLink()) {
+			throw new Error(`source baseline contains a symbolic link: ${relativePath}`);
+		}
+		if (stat.isDirectory()) {
+			for (const name of fs.readdirSync(target).sort()) visit(`${relativePath}/${name}`);
+			return;
+		}
+		if (!stat.isFile()) {
+			throw new Error(`source baseline contains an unsupported entry: ${relativePath}`);
+		}
+		files.push({
+			path: relativePath,
+			sha256: hashFile(target),
+			executable: Boolean(stat.mode & 0o111)
+		});
+	};
+	for (const root of ALLOWED_ROOTS) visit(root);
+	return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function normalizeSourceBaseline(value) {
+	if (
+		!value ||
+		typeof value !== 'object' ||
+		value.version !== SOURCE_BASELINE_VERSION ||
+		JSON.stringify(value.allowedRoots) !== JSON.stringify(ALLOWED_ROOTS) ||
+		!Array.isArray(value.files) ||
+		value.files.length > MAX_SOURCE_BASELINE_FILES
+	) {
+		throw new Error('source baseline contract is invalid');
+	}
+	const seen = new Set();
+	const files = value.files.map((entry) => {
+		if (
+			!entry ||
+			typeof entry !== 'object' ||
+			!validSourcePath(entry.path) ||
+			typeof entry.sha256 !== 'string' ||
+			!/^[0-9a-f]{64}$/.test(entry.sha256) ||
+			typeof entry.executable !== 'boolean' ||
+			seen.has(entry.path)
+		) {
+			throw new Error('source baseline file contract is invalid');
+		}
+		seen.add(entry.path);
+		return {
+			path: entry.path,
+			sha256: entry.sha256,
+			executable: entry.executable
+		};
+	});
+	files.sort((left, right) => left.path.localeCompare(right.path));
+	return {
+		version: SOURCE_BASELINE_VERSION,
+		allowedRoots: [...ALLOWED_ROOTS],
+		files
+	};
+}
+
+function persistSourceBaseline(value) {
+	const target = path.join(DEST, SOURCE_BASELINE_FILE);
+	const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+		fs.renameSync(tmp, target);
+	} catch (error) {
+		fs.rmSync(tmp, { force: true });
+		throw error;
+	}
+}
+
+let sourceBaseline = null;
+
+function ensureSourceBaseline() {
+	if (sourceBaseline) return sourceBaseline;
+	const target = path.join(DEST, SOURCE_BASELINE_FILE);
+	let normalized;
+	if (fs.existsSync(target)) {
+		normalized = normalizeSourceBaseline(JSON.parse(fs.readFileSync(target, 'utf8')));
+	} else {
+		if (currentGeneration) {
+			throw new Error('source baseline is missing for a committed generation');
+		}
+		normalized = normalizeSourceBaseline({
+			version: SOURCE_BASELINE_VERSION,
+			allowedRoots: [...ALLOWED_ROOTS],
+			files: snapshotSourceFiles()
+		});
+		persistSourceBaseline(normalized);
+	}
+	const canonical = JSON.stringify(normalized);
+	sourceBaseline = {
+		files: new Map(normalized.files.map((entry) => [entry.path, entry])),
+		sha256: `sha256:${createHash('sha256').update(canonical).digest('hex')}`
+	};
+	if (currentSourceBaselineSha256 && currentSourceBaselineSha256 !== sourceBaseline.sha256) {
+		throw new Error('source baseline digest does not match committed generation state');
+	}
+	return sourceBaseline;
+}
+
+function sourceChangesFromBaseline() {
+	const baseline = ensureSourceBaseline();
+	const current = new Map(snapshotSourceFiles().map((entry) => [entry.path, entry]));
+	const changed = [...new Set([...baseline.files.keys(), ...current.keys()])]
+		.sort()
+		.filter((relativePath) => {
+			const before = baseline.files.get(relativePath);
+			const after = current.get(relativePath);
+			return (
+				!before ||
+				!after ||
+				before.sha256 !== after.sha256 ||
+				before.executable !== after.executable
+			);
+		});
+	return {
+		sourceBaselineSha256: baseline.sha256,
+		sourceChangedPathCount: changed.length,
+		sourceChangedPaths: changed.slice(0, MAX_REPORTED_CHANGED_PATHS),
+		sourceChangedPathsTruncated: changed.length > MAX_REPORTED_CHANGED_PATHS
+	};
+}
+
+function sourceReceiptFromState(value) {
+	const paths = Array.isArray(value.sourceChangedPaths) ? value.sourceChangedPaths : null;
+	const count = value.sourceChangedPathCount;
+	const truncated = value.sourceChangedPathsTruncated;
+	const baselineSha256 = value.sourceBaselineSha256;
+	const valid =
+		typeof baselineSha256 === 'string' &&
+		/^sha256:[0-9a-f]{64}$/.test(baselineSha256) &&
+		Number.isSafeInteger(count) &&
+		count >= 0 &&
+		paths !== null &&
+		paths.length <= MAX_REPORTED_CHANGED_PATHS &&
+		paths.every(validSourcePath) &&
+		new Set(paths).size === paths.length &&
+		typeof truncated === 'boolean' &&
+		(truncated ? count > paths.length : count === paths.length);
+	return valid
+		? {
+				sourceBaselineSha256: baselineSha256,
+				sourceChangedPathCount: count,
+				sourceChangedPaths: [...paths],
+				sourceChangedPathsTruncated: truncated
+			}
+		: {
+				sourceBaselineSha256: null,
+				sourceChangedPathCount: null,
+				sourceChangedPaths: null,
+				sourceChangedPathsTruncated: true
+			};
+}
+
 function loadSyncState() {
 	try {
 		const value = JSON.parse(fs.readFileSync(path.join(DEST, SYNC_STATE_FILE), 'utf8'));
+		const sourceReceipt = sourceReceiptFromState(value);
 		return {
 			generation:
 				typeof value.generation === 'string' && GENERATION_PATTERN.test(value.generation)
@@ -175,7 +381,8 @@ function loadSyncState() {
 				typeof value.frozenOperationId === 'string' &&
 				FREEZE_OPERATION_PATTERN.test(value.frozenOperationId)
 					? value.frozenOperationId
-					: null
+					: null,
+			...sourceReceipt
 		};
 	} catch {
 		return {
@@ -187,7 +394,11 @@ function loadSyncState() {
 			frozen: false,
 			preparedOperationId: null,
 			preparedAt: null,
-			frozenOperationId: null
+			frozenOperationId: null,
+			sourceBaselineSha256: null,
+			sourceChangedPathCount: null,
+			sourceChangedPaths: null,
+			sourceChangedPathsTruncated: true
 		};
 	}
 }
@@ -224,6 +435,10 @@ let frozen = initialSyncState.frozen;
 let preparedOperationId = frozen ? null : initialSyncState.preparedOperationId;
 let preparedAt = frozen ? null : initialSyncState.preparedAt;
 let frozenOperationId = frozen ? initialSyncState.frozenOperationId : null;
+let currentSourceBaselineSha256 = initialSyncState.sourceBaselineSha256;
+let currentSourceChangedPathCount = initialSyncState.sourceChangedPathCount;
+let currentSourceChangedPaths = initialSyncState.sourceChangedPaths;
+let currentSourceChangedPathsTruncated = initialSyncState.sourceChangedPathsTruncated;
 let lastSyncTimingsMs = null;
 let lastExportSha256 = null;
 let lastRun = null; // { name, exitCode, startedAt, finishedAt, durationMs, executedIn }
@@ -298,6 +513,10 @@ function receiverState(overrides = {}) {
 		preparedOperationId,
 		preparedAt,
 		frozenOperationId,
+		sourceBaselineSha256: currentSourceBaselineSha256,
+		sourceChangedPathCount: currentSourceChangedPathCount,
+		sourceChangedPaths: currentSourceChangedPaths,
+		sourceChangedPathsTruncated: currentSourceChangedPathsTruncated,
 		...overrides
 	};
 }
@@ -475,6 +694,16 @@ function handleSync(req, res) {
 			error: `source ${sourceOperation} in progress`
 		});
 	}
+	try {
+		ensureSourceBaseline();
+	} catch (error) {
+		req.resume();
+		endSourceOperation('sync');
+		return reply(res, 500, {
+			ok: false,
+			error: `source baseline: ${error.message}`
+		});
+	}
 	let bodyComplete = false;
 	let released = false;
 	const release = () => {
@@ -545,7 +774,11 @@ function handleSync(req, res) {
 					generation,
 					service: syncService,
 					syncMode,
-					contentSha256
+					contentSha256,
+					sourceBaselineSha256: currentSourceBaselineSha256,
+					sourceChangedPathCount: currentSourceChangedPathCount,
+					sourceChangedPaths: currentSourceChangedPaths,
+					sourceChangedPathsTruncated: currentSourceChangedPathsTruncated
 				});
 			}
 			return reply(res, 409, {
@@ -567,6 +800,7 @@ function handleSync(req, res) {
 			frozenOperationId: null
 		};
 		let addedRoutes = [];
+		let committedSourceReceipt = null;
 		void applyAtomicDevSync({
 			root: DEST,
 			archivePath: tmp,
@@ -574,6 +808,10 @@ function handleSync(req, res) {
 			nextState,
 			stateFile: SYNC_STATE_FILE,
 			persistState: persistSyncState,
+			prepareState: (state) => {
+				committedSourceReceipt = sourceChangesFromBaseline();
+				return { ...state, ...committedSourceReceipt };
+			},
 			pruneMissing: syncMode === 'replace',
 			beforeCommit: (entries) => {
 				addedRoutes = detectAddedRouteFiles(entries);
@@ -587,6 +825,10 @@ function handleSync(req, res) {
 				lastSyncBytes = buf.length;
 				currentContentSha256 = contentSha256;
 				lastSyncTimingsMs = timingsMs;
+				currentSourceBaselineSha256 = committedSourceReceipt.sourceBaselineSha256;
+				currentSourceChangedPathCount = committedSourceReceipt.sourceChangedPathCount;
+				currentSourceChangedPaths = committedSourceReceipt.sourceChangedPaths;
+				currentSourceChangedPathsTruncated = committedSourceReceipt.sourceChangedPathsTruncated;
 				let restartSignaled = false;
 				if (addedRoutes.length) {
 					try {
@@ -618,6 +860,7 @@ function handleSync(req, res) {
 					changedPathCount: changedPaths.length,
 					changedPaths: changedPaths.slice(0, MAX_REPORTED_CHANGED_PATHS),
 					changedPathsTruncated: changedPaths.length > MAX_REPORTED_CHANGED_PATHS,
+					...committedSourceReceipt,
 					timingsMs,
 					...(addedRoutes.length ? { routesAdded: addedRoutes.slice(0, 50), restartSignaled } : {})
 				});
@@ -630,6 +873,10 @@ function handleSync(req, res) {
 				lastSyncAt = restored.lastSyncAt;
 				lastSyncBytes = restored.lastSyncBytes;
 				currentContentSha256 = restored.contentSha256;
+				currentSourceBaselineSha256 = restored.sourceBaselineSha256;
+				currentSourceChangedPathCount = restored.sourceChangedPathCount;
+				currentSourceChangedPaths = restored.sourceChangedPaths;
+				currentSourceChangedPathsTruncated = restored.sourceChangedPathsTruncated;
 				frozen = restored.frozen;
 				preparedOperationId = restored.preparedOperationId;
 				preparedAt = restored.preparedAt;
@@ -770,6 +1017,10 @@ function handleStatus(req, res) {
 		allowedRootsError: ALLOWED_ROOTS_ERROR,
 		generation: currentGeneration,
 		syncService: currentSyncService,
+		sourceBaselineSha256: currentSourceBaselineSha256,
+		sourceChangedPathCount: currentSourceChangedPathCount,
+		sourceChangedPaths: currentSourceChangedPaths,
+		sourceChangedPathsTruncated: currentSourceChangedPathsTruncated,
 		lastExportSha256,
 		lastRun,
 		commands: Object.keys(COMMANDS).sort()

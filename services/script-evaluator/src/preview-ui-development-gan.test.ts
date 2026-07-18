@@ -33,6 +33,7 @@ async function drive(
   options: {
     freezeResult?: Record<string, unknown>;
     commandResponder?: (command: string) => unknown;
+    snapshotResult?: Record<string, unknown>;
   } = {},
 ) {
   const args = {
@@ -85,7 +86,21 @@ async function drive(
                   syncUrl,
                   syncCapability,
                   repoSubdir: svc === "workflow-builder" ? "." : `services/${svc}`,
-                  syncPaths: ["src"],
+                  syncPaths:
+                    svc === "workflow-builder"
+                      ? ["src", "scripts", "drizzle"]
+                      : svc === "workflow-orchestrator"
+                        ? ["core"]
+                        : ["src"],
+                  captureOnly:
+                    svc === "workflow-builder"
+                      ? [
+                          {
+                            from: "Dockerfile",
+                            to: ".preview-capture/production.Dockerfile",
+                          },
+                        ]
+                      : [],
                   healthPath: "/api/health",
                 },
               })),
@@ -102,7 +117,11 @@ async function drive(
             break;
           }
           case "dev/preview-snapshot":
-            value = { ok: true, artifactId: "artifact-1" };
+            value = options.snapshotResult ?? {
+              ok: true,
+              artifactId: "artifact-1",
+              generation: "g1",
+            };
             break;
           case "dev/preview-promote":
             value = promotionReceipt;
@@ -167,6 +186,30 @@ function gateResult(stdout: string, exitCode = 0) {
   return { success: true, result: { exitCode, stdout, stderr: "" } };
 }
 
+function diffScopeReceiptOutput(
+  services: string[],
+  changedByService: Record<string, string[]> = {},
+  generation = "g1",
+) {
+  return services
+    .map((service) => {
+      const sourceChangedPaths = changedByService[service] ?? [];
+      return (
+        `DIFFSCOPE-RECEIPT service=${service} http=200 body=` +
+        JSON.stringify({
+          ok: true,
+          generation,
+          syncService: service,
+          sourceBaselineSha256: `sha256:${"c".repeat(64)}`,
+          sourceChangedPathCount: sourceChangedPaths.length,
+          sourceChangedPaths,
+          sourceChangedPathsTruncated: false,
+        })
+      );
+    })
+    .join("\n");
+}
+
 const TEST_PROBE_LANES: Record<string, string[]> = {
   "workflow-builder": ["check", "test-unit"],
   "workflow-orchestrator": ["contract"],
@@ -214,7 +257,7 @@ function makeResponder(
           : [`PROBE kind=health service=${s} http=200`],
       )
       .join("\n");
-  const diffscope = overrides.diffscope ?? "";
+  const diffscope = overrides.diffscope ?? diffScopeReceiptOutput(services);
   return (command: string): unknown => {
     if (command.includes("impact-review-convergence")) return gateResult(convergence);
     if (command.includes("impact-review-smoke")) return gateResult(smoke);
@@ -566,7 +609,10 @@ describe("preview UI development GAN child fixture", () => {
     expect(findCommand(tasks, "impact-review-convergence")).toBeTruthy();
     expect(findCommand(tasks, "impact-review-smoke")).toBeTruthy();
     expect(findCommand(tasks, "impact-review-probe")).toBeTruthy();
-    expect(findCommand(tasks, "impact-review-diffscope")).toBeTruthy();
+    const diffScopeCommand = findCommand(tasks, "impact-review-diffscope") ?? "";
+    expect(diffScopeCommand).toContain("/__status");
+    expect(diffScopeCommand).toContain("DIFFSCOPE-RECEIPT");
+    expect(diffScopeCommand).not.toContain("git -C /sandbox/work/repo status");
     for (const task of tasks.filter(
       (candidate) => candidate.actionSlug === "workspace/command",
     )) {
@@ -702,18 +748,28 @@ describe("preview UI development GAN child fixture", () => {
 
   it("rejects out-of-scope changes with skip reason out_of_scope_changes", async () => {
     const { result, tasks } = await drive(
-      { services: MULTI, sourceRevision: REV, impactReview: true, maxIterations: 1 },
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        maxIterations: 1,
+      },
       {
         commandResponder: makeResponder(MULTI, ["/dashboard"], {
-          // README.md is outside every service's synced src root (the derived scope).
-          diffscope:
-            " M src/routes/dashboard/+page.svelte\n M README.md",
+          // A capture-only receiver path maps back to Dockerfile, outside the
+          // default allowlist derived from each service's direct sync roots.
+          diffscope: diffScopeReceiptOutput(MULTI, {
+            "workflow-builder": [
+              "src/routes/dashboard/+page.svelte",
+              ".preview-capture/production.Dockerfile",
+            ],
+          }),
         }),
       },
     );
     expect(result.status).toBe("script_error");
     expect(String(result.error?.message)).toContain("out_of_scope_changes");
-    expect(String(result.error?.message)).toContain("README.md");
+    expect(String(result.error?.message)).toContain("Dockerfile");
     expect(findCommand(tasks, "impact-review-diffscope")).toBeTruthy();
     expect(
       tasks.some((task) => task.actionSlug === "dev/preview-snapshot"),
@@ -732,7 +788,9 @@ describe("preview UI development GAN child fixture", () => {
       {
         commandResponder: makeResponder(MULTI, ["/dashboard"], {
           // In "src" but outside the tighter explicit allowlist.
-          diffscope: " M src/lib/server/foo.ts",
+          diffscope: diffScopeReceiptOutput(MULTI, {
+            "workflow-builder": ["src/lib/server/foo.ts"],
+          }),
         }),
       },
     );
@@ -746,11 +804,13 @@ describe("preview UI development GAN child fixture", () => {
       { services: MULTI, sourceRevision: REV, impactReview: true },
       {
         commandResponder: makeResponder(MULTI, ["/dashboard"], {
-          diffscope:
-            " M src/routes/dashboard/+page.svelte\n" +
-            " M scripts/seed-workflows.bundle.js\n" +
-            " M services/shared/dev-preview-service-catalog.json\n" +
-            " M drizzle/meta/_journal.json",
+          diffscope: diffScopeReceiptOutput(MULTI, {
+            "workflow-builder": [
+              "src/routes/dashboard/+page.svelte",
+              "scripts/seed-workflows.bundle.js",
+              "drizzle/meta/_journal.json",
+            ],
+          }),
         }),
       },
     );
@@ -759,12 +819,214 @@ describe("preview UI development GAN child fixture", () => {
     expect(output).toMatchObject({ accepted: true, impactReview: true });
     const review = output.diffScopeReview as Record<string, string[]>;
     expect(review.excluded).toEqual([
-      "scripts/seed-workflows.bundle.js",
-      "services/shared/dev-preview-service-catalog.json",
       "drizzle/meta/_journal.json",
+      "scripts/seed-workflows.bundle.js",
     ]);
     expect(review.outOfScope).toEqual([]);
     expect(review.inScope).toEqual(["src/routes/dashboard/+page.svelte"]);
+  });
+
+  it("maps receiver-local paths through each service repoSubdir", async () => {
+    const { result } = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        diffScope: [
+          "src/routes/dashboard",
+          "services/workflow-orchestrator/core",
+        ],
+      },
+      {
+        commandResponder: makeResponder(MULTI, ["/dashboard"], {
+          diffscope: diffScopeReceiptOutput(MULTI, {
+            "workflow-builder": ["src/routes/dashboard/+page.svelte"],
+            "workflow-orchestrator": ["core/feature.py"],
+          }),
+        }),
+      },
+    );
+    expect(result.status, result.error?.message).toBe("done");
+    const review = (result.returnValue as Record<string, unknown>)
+      .diffScopeReview as Record<string, unknown>;
+    expect(review.changed).toEqual([
+      "services/workflow-orchestrator/core/feature.py",
+      "src/routes/dashboard/+page.svelte",
+    ]);
+  });
+
+  it("fails closed when a receiver receipt is truncated or generation-mismatched", async () => {
+    const truncated = diffScopeReceiptOutput(
+      MULTI,
+      { "workflow-builder": ["src/routes/dashboard/+page.svelte"] },
+      "g1",
+    ).replace(
+      '"sourceChangedPathsTruncated":false',
+      '"sourceChangedPathsTruncated":true',
+    );
+    const truncatedRun = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        maxIterations: 1,
+      },
+      {
+        commandResponder: makeResponder(MULTI, ["/dashboard"], {
+          diffscope: truncated,
+        }),
+      },
+    );
+    expect(truncatedRun.result.status).toBe("script_error");
+    expect(String(truncatedRun.result.error?.message)).toContain(
+      "diff_scope_receipt_invalid",
+    );
+    expect(String(truncatedRun.result.error?.message)).toContain("truncated");
+
+    const mismatched = [
+      diffScopeReceiptOutput(["workflow-builder"], {}, "g1"),
+      diffScopeReceiptOutput(["workflow-orchestrator"], {}, "g2"),
+    ].join("\n");
+    const mismatchRun = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        maxIterations: 1,
+      },
+      {
+        commandResponder: makeResponder(MULTI, ["/dashboard"], {
+          diffscope: mismatched,
+        }),
+      },
+    );
+    expect(mismatchRun.result.status).toBe("script_error");
+    expect(String(mismatchRun.result.error?.message)).toContain(
+      "diffScope receiver generations do not converge",
+    );
+
+    const staleRun = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        maxIterations: 1,
+      },
+      {
+        commandResponder: makeResponder(MULTI, ["/dashboard"], {
+          diffscope: diffScopeReceiptOutput(MULTI, {}, "g2"),
+        }),
+      },
+    );
+    expect(staleRun.result.status).toBe("script_error");
+    expect(String(staleRun.result.error?.message)).toContain(
+      "diffScope generation g2 does not match g1",
+    );
+  });
+
+  it("accepts generation two after it removes generation one's out-of-scope addition", async () => {
+    let convergenceCalls = 0;
+    let diffScopeCalls = 0;
+    const commandResponder = (command: string): unknown => {
+      if (command.includes("PY_PREVIEW_METADATA")) return { ok: true };
+      if (command.includes("impact-review-convergence")) {
+        convergenceCalls += 1;
+        const generation = `g${convergenceCalls}`;
+        return gateResult(
+          [
+            ...MULTI.map(
+              (service) =>
+                `APPLIED source -> HTTP 200 in 1s (service=${service} generation=${generation} attempt=1)`,
+            ),
+            `SYNCED generation=${generation} services=2 convergence=healthy`,
+          ].join("\n"),
+        );
+      }
+      if (command.includes("impact-review-smoke")) {
+        return gateResult(
+          "SMOKE kind=health service=workflow-builder http=200\n" +
+            "SMOKE kind=health service=workflow-orchestrator http=200\n" +
+            "SMOKE kind=route route=/dashboard http=200 marker=none",
+        );
+      }
+      if (command.includes("impact-review-probe")) {
+        return gateResult(
+          "PROBE kind=lane service=workflow-builder lane=check exit=0\n" +
+            "PROBE kind=lane service=workflow-builder lane=test-unit exit=0\n" +
+            "PROBE kind=lane service=workflow-orchestrator lane=contract exit=0",
+        );
+      }
+      if (command.includes("impact-review-diffscope")) {
+        diffScopeCalls += 1;
+        return gateResult(
+          diffScopeReceiptOutput(
+            MULTI,
+            {
+              "workflow-builder":
+                diffScopeCalls === 1
+                  ? [
+                      "src/routes/dashboard/+page.svelte",
+                      "src/routes/proof-d-out-of-scope.ts",
+                    ]
+                  : ["src/routes/dashboard/+page.svelte"],
+            },
+            `g${diffScopeCalls}`,
+          ),
+        );
+      }
+      return { ok: true };
+    };
+    const { result, tasks } = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        diffScope: ["src/routes/dashboard"],
+        maxIterations: 2,
+      },
+      {
+        commandResponder,
+        snapshotResult: {
+          ok: true,
+          artifactId: "artifact-g2",
+          generation: "g2",
+        },
+      },
+    );
+    expect(result.status, result.error?.message).toBe("done");
+    expect((result.returnValue as Record<string, unknown>).iterations).toBe(2);
+    expect(
+      commandStrings(tasks).filter((command) =>
+        command.includes("impact-review-diffscope"),
+      ),
+    ).toHaveLength(2);
+    const review = (result.returnValue as Record<string, unknown>)
+      .diffScopeReview as Record<string, unknown>;
+    expect(review.changed).toEqual(["src/routes/dashboard/+page.svelte"]);
+    expect(review.outOfScope).toEqual([]);
+  });
+
+  it("rejects a snapshot from a different generation than the scope receipts", async () => {
+    const { result } = await drive(
+      {
+        services: MULTI,
+        sourceRevision: REV,
+        impactReview: true,
+        maxIterations: 1,
+      },
+      {
+        commandResponder: makeResponder(MULTI, ["/dashboard"]),
+        snapshotResult: {
+          ok: true,
+          artifactId: "artifact-g2",
+          generation: "g2",
+        },
+      },
+    );
+    expect(result.status).toBe("script_error");
+    expect(String(result.error?.message)).toContain(
+      "snapshot_generation_mismatch",
+    );
   });
 
   it("does not enforce diffScope or gates on the single-service default path", async () => {

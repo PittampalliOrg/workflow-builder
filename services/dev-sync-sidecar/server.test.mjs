@@ -226,6 +226,10 @@ test('POST /__sync requires the token and untars into the dest', async (t) => {
 	assert.deepEqual(body.changedPaths, ['src']);
 	assert.equal(body.changedPathCount, 1);
 	assert.equal(body.changedPathsTruncated, false);
+	assert.match(body.sourceBaselineSha256, /^sha256:[0-9a-f]{64}$/);
+	assert.deepEqual(body.sourceChangedPaths, ['src/a.txt', 'src/nested/b.txt']);
+	assert.equal(body.sourceChangedPathCount, 2);
+	assert.equal(body.sourceChangedPathsTruncated, false);
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/a.txt'), 'utf8'), 'hello-sync');
 	assert.equal(fs.readFileSync(path.join(s.dest, 'src/nested/b.txt'), 'utf8'), 'nested');
 });
@@ -286,6 +290,98 @@ test('POST /__sync supports explicit replace mode for full root snapshots', asyn
 		fs.readFileSync(path.join(s.dest, 'src/routes/dashboard/+page.svelte'), 'utf8'),
 		'<h1>after</h1>'
 	);
+});
+
+test('source receipts track final baseline-relative changes across replacement and restart', async (t) => {
+	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
+	fs.mkdirSync(path.join(dest, 'src/routes/dashboard'), { recursive: true });
+	fs.mkdirSync(path.join(dest, 'src/lib'), { recursive: true });
+	fs.writeFileSync(path.join(dest, 'src/routes/dashboard/+page.svelte'), '<h1>before</h1>');
+	fs.writeFileSync(path.join(dest, 'src/lib/keep.ts'), 'export const keep = true;');
+	let s = await startSidecar({}, dest);
+	t.after(() => s.stop());
+
+	const generationOne = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { ...syncHeaders('scope-generation-1'), 'x-sync-mode': 'replace' },
+		body: makeTarGz({
+			'src/routes/dashboard/+page.svelte': '<h1>after</h1>',
+			'src/lib/keep.ts': 'export const keep = true;',
+			'src/routes/proof-d-out-of-scope.ts': 'export const leaked = true;'
+		})
+	});
+	assert.equal(generationOne.status, 200);
+	const firstReceipt = await generationOne.json();
+	assert.deepEqual(firstReceipt.sourceChangedPaths, [
+		'src/routes/dashboard/+page.svelte',
+		'src/routes/proof-d-out-of-scope.ts'
+	]);
+	assert.equal(firstReceipt.sourceChangedPathCount, 2);
+	assert.equal(firstReceipt.sourceChangedPathsTruncated, false);
+
+	const generationTwo = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: { ...syncHeaders('scope-generation-2'), 'x-sync-mode': 'replace' },
+		body: makeTarGz({
+			'src/routes/dashboard/+page.svelte': '<h1>after</h1>',
+			'src/lib/keep.ts': 'export const keep = true;'
+		})
+	});
+	assert.equal(generationTwo.status, 200);
+	const repairedReceipt = await generationTwo.json();
+	assert.equal(repairedReceipt.sourceBaselineSha256, firstReceipt.sourceBaselineSha256);
+	assert.deepEqual(repairedReceipt.sourceChangedPaths, ['src/routes/dashboard/+page.svelte']);
+	assert.equal(repairedReceipt.sourceChangedPathCount, 1);
+	assert.equal(repairedReceipt.sourceChangedPathsTruncated, false);
+	assert.ok(!fs.existsSync(path.join(dest, 'src/routes/proof-d-out-of-scope.ts')));
+
+	const stopped = new Promise((resolve) => s.proc.once('exit', resolve));
+	s.stop({ preserveDest: true });
+	await stopped;
+	s = await startSidecar({}, dest);
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.generation, 'scope-generation-2');
+	assert.equal(status.sourceBaselineSha256, firstReceipt.sourceBaselineSha256);
+	assert.deepEqual(status.sourceChangedPaths, ['src/routes/dashboard/+page.svelte']);
+	assert.equal(status.sourceChangedPathCount, 1);
+	assert.equal(status.sourceChangedPathsTruncated, false);
+});
+
+test('source receipts fail closed when the baseline-relative path set is truncated', async (t) => {
+	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
+	fs.mkdirSync(path.join(dest, 'src'), { recursive: true });
+	const baseline = {};
+	const changed = {};
+	for (let index = 0; index < 51; index += 1) {
+		const relativePath = `src/file-${String(index).padStart(2, '0')}.txt`;
+		baseline[relativePath] = `before-${index}`;
+		changed[relativePath] = `after-${index}`;
+		fs.writeFileSync(path.join(dest, relativePath), baseline[relativePath]);
+	}
+	const s = await startSidecar({}, dest);
+	t.after(() => s.stop());
+
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('scope-truncated-1'),
+		body: makeTarGz(changed)
+	});
+	assert.equal(response.status, 200);
+	const receipt = await response.json();
+	assert.equal(receipt.sourceChangedPathCount, 51);
+	assert.equal(receipt.sourceChangedPaths.length, 50);
+	assert.equal(receipt.sourceChangedPathsTruncated, true);
+	assert.equal(receipt.sourceChangedPaths[0], 'src/file-00.txt');
+	assert.equal(receipt.sourceChangedPaths.at(-1), 'src/file-49.txt');
+
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.sourceChangedPathCount, 51);
+	assert.deepEqual(status.sourceChangedPaths, receipt.sourceChangedPaths);
+	assert.equal(status.sourceChangedPathsTruncated, true);
 });
 
 test('POST /__sync accepts the preview-scoped agent capability without exposing the root token', async (t) => {
@@ -923,20 +1019,17 @@ test('state-write failure rolls roots back and withholds the failed generation f
 		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
 	});
 	t.after(() => s.stop());
-	assert.equal(
-		(
-			await fetch(`${s.base}/__sync`, {
-				method: 'POST',
-				headers: syncHeaders('rollback-1', SERVICE, roots),
-				body: makeTarGz({
-					'src/current.txt': 'old',
-					'src/stays.txt': 'yes',
-					'tsconfig.json': '{}'
-				})
-			})
-		).status,
-		200
-	);
+	const committedResponse = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('rollback-1', SERVICE, roots),
+		body: makeTarGz({
+			'src/current.txt': 'old',
+			'src/stays.txt': 'yes',
+			'tsconfig.json': '{}'
+		})
+	});
+	assert.equal(committedResponse.status, 200);
+	const committedReceipt = await committedResponse.json();
 	const configInode = fs.statSync(path.join(s.dest, 'tsconfig.json')).ino;
 	const failed = await fetch(`${s.base}/__sync`, {
 		method: 'POST',
@@ -959,6 +1052,14 @@ test('state-write failure rolls roots back and withholds the failed generation f
 	});
 	assert.equal(listed.status, 0);
 	assert.equal(listed.stdout.toString(), 'old');
+	const status = await (
+		await fetch(`${s.base}/__status`, { headers: { 'x-sync-token': TOKEN } })
+	).json();
+	assert.equal(status.generation, 'rollback-1');
+	assert.equal(status.sourceBaselineSha256, committedReceipt.sourceBaselineSha256);
+	assert.deepEqual(status.sourceChangedPaths, committedReceipt.sourceChangedPaths);
+	assert.equal(status.sourceChangedPathCount, committedReceipt.sourceChangedPathCount);
+	assert.equal(status.sourceChangedPathsTruncated, false);
 });
 
 test('same generation is idempotent only for the same archive digest', async (t) => {
@@ -1149,6 +1250,10 @@ test('GET /__status reflects the last sync + last run and lists commands', async
 	).json();
 	assert.equal(status.lastSyncAt, null);
 	assert.equal(status.lastSyncTimingsMs, null);
+	assert.equal(status.sourceBaselineSha256, null);
+	assert.equal(status.sourceChangedPathCount, null);
+	assert.equal(status.sourceChangedPaths, null);
+	assert.equal(status.sourceChangedPathsTruncated, true);
 	assert.deepEqual(status.commands, ['contract', 'deps']);
 
 	await fetch(`${s.base}/__sync`, {
@@ -1163,6 +1268,10 @@ test('GET /__status reflects the last sync + last run and lists commands', async
 	assert.ok(status.lastSyncTimingsMs.planning >= 0);
 	assert.equal(status.generation, GENERATION);
 	assert.equal(status.syncService, SERVICE);
+	assert.match(status.sourceBaselineSha256, /^sha256:[0-9a-f]{64}$/);
+	assert.equal(status.sourceChangedPathCount, 1);
+	assert.deepEqual(status.sourceChangedPaths, ['src/a.txt']);
+	assert.equal(status.sourceChangedPathsTruncated, false);
 
 	// Missing token → 401.
 	assert.equal((await fetch(`${s.base}/__status`)).status, 401);

@@ -81,7 +81,7 @@ export const meta = {
         items: { type: "string" },
         title: "Captured-path allowlist",
         description:
-          "Optional path-prefix allowlist enforced at the snapshot step (multi-service only). Captured files outside these prefixes fail the iteration with skip reason out_of_scope_changes. Generated build artifacts are always excluded. When omitted (with impactReview on) it defaults to each service's synced source roots.",
+          "Optional path-prefix allowlist enforced against each receiver's final adopted-source diff before snapshot (multi-service only). Source files outside these prefixes fail the iteration with skip reason out_of_scope_changes. Generated build artifacts are always excluded. When omitted (with impactReview on) it defaults to each service's synced source roots.",
       },
       mode: {
         type: "string",
@@ -258,20 +258,230 @@ function parseProbe(stdout) {
   return { ok: lines.length > 0 && failures.length === 0, failures, checked: lines.length };
 }
 
-// Parse `git status --porcelain` output into changed paths (handles renames).
-function parseChangedPaths(porcelain) {
-  const paths = [];
-  for (const raw of String(porcelain).split("\n")) {
-    const line = raw.replace(/\r$/, "");
-    if (!line.trim()) continue;
-    let rest = line.length > 3 ? line.slice(3) : line.trim();
-    const arrow = rest.indexOf(" -> ");
-    if (arrow >= 0) rest = rest.slice(arrow + 4);
-    let path = rest.trim();
-    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
-    if (path) paths.push(path);
+function normalizeReceiverPath(value) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new Error("invalid receiver source path");
   }
-  return paths;
+  const parts = value.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error("invalid receiver source path");
+  }
+  return parts.join("/");
+}
+
+function normalizeRepositoryPath(base, relative) {
+  if (
+    typeof base !== "string" ||
+    typeof relative !== "string" ||
+    base.startsWith("/") ||
+    relative.startsWith("/") ||
+    base.includes("\\") ||
+    relative.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(base + relative)
+  ) {
+    throw new Error("invalid repository source path");
+  }
+  const parts = [];
+  for (const part of `${base}/${relative}`.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0)
+        throw new Error("repository source path escapes root");
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  if (parts.length === 0) throw new Error("repository source path is empty");
+  return parts.join("/");
+}
+
+function diffScopeReceivers(preview, requestedServices) {
+  return requestedServices.map((service) => {
+    if (!isSafeServiceName(service))
+      throw new Error("invalid diffScope service");
+    const info = serviceInfo(preview, service);
+    const syncUrl = String(info.syncUrl ?? "").trim();
+    const syncCapability = String(info.syncCapability ?? "").trim();
+    const statusUrl = syncUrl.replace(/\/__sync\/?$/, "/__status");
+    if (
+      !/^http:\/\/[^\s]+\/__sync\/?$/.test(syncUrl) ||
+      statusUrl === syncUrl ||
+      !/^[a-f0-9]{64}$/.test(syncCapability)
+    ) {
+      throw new Error(
+        `diffScope receiver metadata is incomplete for ${service}`,
+      );
+    }
+    const repoSubdir =
+      typeof info.repoSubdir === "string" && info.repoSubdir
+        ? info.repoSubdir
+        : ".";
+    const mappings = [];
+    const addMapping = (from, to) => {
+      const receiverRoot = normalizeReceiverPath(from);
+      const repositoryRoot = normalizeRepositoryPath(repoSubdir, to);
+      const existing = mappings.find(
+        (mapping) => mapping.receiverRoot === receiverRoot,
+      );
+      if (existing && existing.repositoryRoot !== repositoryRoot) {
+        throw new Error(
+          `conflicting diffScope mapping for ${service}:${receiverRoot}`,
+        );
+      }
+      if (!existing) mappings.push({ receiverRoot, repositoryRoot });
+    };
+    const syncPaths =
+      Array.isArray(info.syncPaths) && info.syncPaths.length
+        ? info.syncPaths
+        : ["src"];
+    for (const syncPath of syncPaths) addMapping(syncPath, syncPath);
+    for (const mapping of [
+      ...(Array.isArray(info.extraSync) ? info.extraSync : []),
+      ...(Array.isArray(info.captureOnly) ? info.captureOnly : []),
+    ]) {
+      if (!mapping || typeof mapping !== "object") {
+        throw new Error(`invalid diffScope mapping for ${service}`);
+      }
+      addMapping(mapping.to, mapping.from);
+    }
+    mappings.sort(
+      (left, right) =>
+        right.receiverRoot.length - left.receiverRoot.length ||
+        left.receiverRoot.localeCompare(right.receiverRoot),
+    );
+    return { service, statusUrl, syncCapability, mappings };
+  });
+}
+
+function mapReceiverSourcePath(receiver, value) {
+  const sourcePath = normalizeReceiverPath(value);
+  const mapping = receiver.mappings.find(
+    (candidate) =>
+      sourcePath === candidate.receiverRoot ||
+      sourcePath.startsWith(candidate.receiverRoot + "/"),
+  );
+  if (!mapping)
+    throw new Error(
+      `unmapped receiver source path ${receiver.service}:${sourcePath}`,
+    );
+  const suffix = sourcePath
+    .slice(mapping.receiverRoot.length)
+    .replace(/^\/+/, "");
+  return suffix
+    ? normalizeRepositoryPath(mapping.repositoryRoot, suffix)
+    : mapping.repositoryRoot;
+}
+
+function parseDiffScopeReceipts(stdout, receivers, expectedGeneration) {
+  const errors = [];
+  const receipts = new Map();
+  for (const raw of String(stdout).split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.startsWith("DIFFSCOPE-RECEIPT ")) continue;
+    const match = line.match(
+      /^DIFFSCOPE-RECEIPT service=(\S+) http=(\S+) body=(.*)$/,
+    );
+    if (!match) {
+      errors.push("malformed diffScope receiver receipt");
+      continue;
+    }
+    const [, service, http, bodyText] = match;
+    const receiver = receivers.find(
+      (candidate) => candidate.service === service,
+    );
+    if (!receiver || receipts.has(service)) {
+      errors.push(`unexpected or duplicate diffScope receipt for ${service}`);
+      continue;
+    }
+    if (http !== "200") {
+      errors.push(`${service} diffScope status HTTP ${http}`);
+      continue;
+    }
+    let body;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      errors.push(`${service} diffScope status was not JSON`);
+      continue;
+    }
+    const generation = String(body?.generation ?? "");
+    const paths = body?.sourceChangedPaths;
+    const count = body?.sourceChangedPathCount;
+    if (
+      body?.ok !== true ||
+      body?.syncService !== service ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(generation) ||
+      typeof body?.sourceBaselineSha256 !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(body.sourceBaselineSha256) ||
+      !Array.isArray(paths) ||
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      body?.sourceChangedPathsTruncated !== false ||
+      count !== paths.length ||
+      new Set(paths).size !== paths.length
+    ) {
+      errors.push(
+        `${service} diffScope status contract is invalid or truncated`,
+      );
+      continue;
+    }
+    const repositoryPaths = [];
+    try {
+      for (const sourcePath of paths) {
+        repositoryPaths.push(mapReceiverSourcePath(receiver, sourcePath));
+      }
+    } catch (error) {
+      errors.push(String(error?.message ?? error));
+      continue;
+    }
+    receipts.set(service, {
+      service,
+      generation,
+      sourceBaselineSha256: body.sourceBaselineSha256,
+      sourceChangedPathCount: count,
+      repositoryPaths,
+    });
+  }
+  for (const receiver of receivers) {
+    if (!receipts.has(receiver.service)) {
+      errors.push(`missing diffScope receiver receipt for ${receiver.service}`);
+    }
+  }
+  const generations = new Set(
+    [...receipts.values()].map((receipt) => receipt.generation),
+  );
+  const generation = generations.size === 1 ? [...generations][0] : null;
+  if (generations.size > 1)
+    errors.push("diffScope receiver generations do not converge");
+  if (expectedGeneration && generation !== expectedGeneration) {
+    errors.push(
+      `diffScope generation ${generation ?? "none"} does not match ${expectedGeneration}`,
+    );
+  }
+  const changed = [
+    ...new Set(
+      [...receipts.values()].flatMap((receipt) => receipt.repositoryPaths),
+    ),
+  ].sort();
+  return {
+    ok: errors.length === 0,
+    errors,
+    generation,
+    changed,
+    receipts: [...receipts.values()].map((receipt) => ({
+      service: receipt.service,
+      generation: receipt.generation,
+      sourceBaselineSha256: receipt.sourceBaselineSha256,
+      sourceChangedPathCount: receipt.sourceChangedPathCount,
+    })),
+  };
 }
 
 function inAllowlist(path, allow) {
@@ -374,15 +584,23 @@ function probeCommand(requestedServices) {
   return body;
 }
 
-function diffScopeCommand() {
-  return (
-    "# impact-review-diffscope\n" +
-    "if [ -d /sandbox/work/repo/.git ] || [ -L /sandbox/work/repo ]; then\n" +
-    "  git -C /sandbox/work/repo status --porcelain --untracked-files=all 2>/dev/null || true\n" +
-    "else\n" +
-    "  echo 'DIFFSCOPE-NO-REPO'\n" +
-    "fi\n"
-  );
+function diffScopeCommand(receivers) {
+  let body = "# impact-review-diffscope\nset +e\n";
+  for (const receiver of receivers) {
+    body += "_diffscope_body=$(mktemp)\n";
+    body += 'if [ -n "$_diffscope_body" ]; then\n';
+    body += `  _diffscope_http=$(curl -sS -o "$_diffscope_body" -w "%{http_code}" --max-time 30 -H ${shq(`x-sync-token: ${receiver.syncCapability}`)} ${shq(receiver.statusUrl)} 2>/dev/null)\n`;
+    body += "  _diffscope_curl=$?\n";
+    body += '  [ "$_diffscope_curl" -eq 0 ] || _diffscope_http=000\n';
+    body += `  printf 'DIFFSCOPE-RECEIPT service=${receiver.service} http=%s body=' "$_diffscope_http"\n`;
+    body += "  tr -d '\\r\\n' < \"$_diffscope_body\"\n";
+    body += "  printf '\\n'\n";
+    body += '  rm -f "$_diffscope_body"\n';
+    body += "else\n";
+    body += `  echo 'DIFFSCOPE-RECEIPT service=${receiver.service} http=000 body={}'\n`;
+    body += "fi\n";
+  }
+  return body;
 }
 
 function dataOf(value) {
@@ -589,6 +807,11 @@ if (!multiService) {
   if (seedFailure) throw new Error(`workspace/command (seed): ${seedFailure}`);
 }
 
+// Scope authority comes from each selected receiver's authenticated, durable
+// status receipt. Never inspect /sandbox/work/repo here: helper pods activate a
+// separate pod-local checkout and therefore cannot see the generator pod's tree.
+const scopeReceivers = enforceDiffScope ? diffScopeReceivers(preview, services) : [];
+
 // diffScope allowlist. Explicit input wins; otherwise derive the default from
 // each service's synced source roots (repoSubdir + syncPaths) — the machine-
 // enforceable form of the contract's target paths. Generated build artifacts are
@@ -667,6 +890,7 @@ let lastGateSummary = null;
 let lastDiffScope = null;
 
 while (!accepted && iterations < maxIterations) {
+  let iterationGeneration = null;
   const feedback = lastVerdict
     ? `\nPrevious verifier feedback to address:\n${JSON.stringify(lastVerdict)}\n`
     : "";
@@ -784,6 +1008,7 @@ ${feedback}`;
       iterations += 1;
       continue;
     }
+    iterationGeneration = convergence.generation;
 
     // 2. Route-smoke: per-service health + the frontend targetRoutes; non-500 and
     //    no ReferenceError / each_key_duplicate in the served HTML.
@@ -853,9 +1078,11 @@ ${feedback}`;
     };
   }
 
-  // diffScope enforcement at the snapshot step: diff the seeded checkout's changed
-  // paths against the allowlist (generated artifacts always excluded). Out-of-scope
-  // churn fails the iteration with skip reason out_of_scope_changes.
+  // diffScope enforcement before snapshot: read every receiver's final source diff
+  // relative to its immutable adopted baseline. The receipts are bound to one shared
+  // sync generation, so a helper pod's clean pod-local checkout cannot hide changes
+  // and a later generation can prove that an earlier addition was removed. Snapshot
+  // below must then capture this exact generation.
   if (enforceDiffScope) {
     const diffOut = unwrapCommand(
       await action(
@@ -863,7 +1090,7 @@ ${feedback}`;
         {
           cliWorkspace: true,
           workspaceRef: workspace,
-          command: diffScopeCommand(),
+          command: diffScopeCommand(scopeReceivers),
           cwd: "/sandbox/work",
           timeoutMs: 120000,
           helperPod: true,
@@ -872,26 +1099,54 @@ ${feedback}`;
         { label: `diffScope gate #${iterations + 1}`, allowFailure: true },
       ),
     );
-    if (!diffOut.stdout.includes("DIFFSCOPE-NO-REPO")) {
-      const changed = parseChangedPaths(diffOut.stdout);
-      const scope = classifyDiffScope(changed, diffScopeAllow);
+    const receiptReview = parseDiffScopeReceipts(
+      diffOut.stdout,
+      scopeReceivers,
+      iterationGeneration,
+    );
+    if (!receiptReview.ok) {
       lastDiffScope = {
         allow: diffScopeAllow,
-        changed,
-        inScope: scope.inScope,
-        excluded: scope.excluded,
-        outOfScope: scope.outOfScope,
+        changed: [],
+        inScope: [],
+        excluded: [],
+        outOfScope: [],
+        generation: receiptReview.generation,
+        receipts: receiptReview.receipts,
+        errors: receiptReview.errors,
       };
-      if (scope.outOfScope.length > 0) {
-        lastVerdict = {
-          accepted: false,
-          summary: "capture contains out-of-scope changes",
-          skipped: "out_of_scope_changes",
-          failing: [`out_of_scope_changes: ${scope.outOfScope.slice(0, 12).join(", ")}`],
-        };
-        iterations += 1;
-        continue;
-      }
+      lastVerdict = {
+        accepted: false,
+        summary: "diffScope receiver receipt gate failed",
+        skipped: "diff_scope_receipt_invalid",
+        failing: receiptReview.errors.slice(0, 12),
+      };
+      iterations += 1;
+      continue;
+    }
+    iterationGeneration = receiptReview.generation;
+    const scope = classifyDiffScope(receiptReview.changed, diffScopeAllow);
+    lastDiffScope = {
+      allow: diffScopeAllow,
+      changed: receiptReview.changed,
+      inScope: scope.inScope,
+      excluded: scope.excluded,
+      outOfScope: scope.outOfScope,
+      generation: receiptReview.generation,
+      receipts: receiptReview.receipts,
+      errors: [],
+    };
+    if (scope.outOfScope.length > 0) {
+      lastVerdict = {
+        accepted: false,
+        summary: "capture contains out-of-scope changes",
+        skipped: "out_of_scope_changes",
+        failing: [
+          `out_of_scope_changes: ${scope.outOfScope.slice(0, 12).join(", ")}`,
+        ],
+      };
+      iterations += 1;
+      continue;
     }
   }
 
@@ -915,6 +1170,22 @@ ${feedback}`;
             capture.error ??
             "source capture failed",
         ).slice(0, 1000),
+      ],
+    };
+    iterations += 1;
+    continue;
+  }
+  if (
+    enforceDiffScope &&
+    iterationGeneration &&
+    capture.generation !== iterationGeneration
+  ) {
+    lastVerdict = {
+      accepted: false,
+      summary: "source-capture generation did not match diffScope receipts",
+      skipped: "snapshot_generation_mismatch",
+      failing: [
+        `snapshot generation ${String(capture.generation ?? "none")} did not match ${iterationGeneration}`,
       ],
     };
     iterations += 1;

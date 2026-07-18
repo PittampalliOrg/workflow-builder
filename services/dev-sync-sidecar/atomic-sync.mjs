@@ -529,7 +529,14 @@ export async function applyAtomicDevSync(options) {
 			fs.chmodSync(path.join(options.root, transition.relativePath), transition.finalMode);
 			touchedModes.add(transition.relativePath);
 		}
-		options.persistState(options.nextState);
+		const nextState = options.prepareState
+			? options.prepareState(options.nextState, {
+					entries: [...entries],
+					changedRoots: [...changedRoots],
+					changedPaths: plan.map(({ relativePath }) => relativePath)
+				})
+			: options.nextState;
+		options.persistState(nextState);
 	} catch (error) {
 		if (committedPaths.length > 0 || touchedModes.size > 0) {
 			for (const transition of modeTransitions) {
