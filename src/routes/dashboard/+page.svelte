@@ -149,6 +149,17 @@
 		</div>
 	</header>
 
+	<div
+		data-testid="proof-d-scope-p3"
+		class="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+	>
+		<Activity class="size-3.5 shrink-0" />
+		<span>
+			Preview Development Status: live sync pushes each source generation to the preview
+			services, and this dashboard hot-reloads as changes land.
+		</span>
+	</div>
+
 	{#if errorMessage}
 		<Alert variant="destructive">
 			<AlertDescription>{errorMessage}</AlertDescription>
