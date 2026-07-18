@@ -40,6 +40,12 @@ describe("preview development action binding", () => {
       previewActionRequestAuthorized("dev/preview-promote", "token", "token"),
     ).toBe(true);
     expect(
+      previewActionRequestAuthorized("dev/preview-freeze", undefined, "token"),
+    ).toBe(false);
+    expect(
+      previewActionRequestAuthorized("dev/preview-freeze", "token", "token"),
+    ).toBe(true);
+    expect(
       previewActionRequestAuthorized("workspace/command", undefined, "token"),
     ).toBe(true);
   });
@@ -193,6 +199,81 @@ describe("preview development action binding", () => {
     expect(verification.ok && verification.request.operationId).toMatch(
       /^pdt-verify-promotion-[0-9a-f]{64}$/,
     );
+  });
+
+  it("forwards the retention opt-ins verbatim and only when the caller sent them", () => {
+    const retained = buildPreviewDevelopmentProxyRequest({
+      actionSlug: "preview/workflow-start",
+      actionInput: {
+        target,
+        intent: "Add a deployment health panel",
+        services: ["workflow-builder"],
+        ttlHours: 12,
+        retainAfterCompletion: true,
+        interactiveHandoff: false,
+      },
+      dbExecutionId: "parent-1",
+      idempotencyKey: "workflow:parent-1:start",
+    });
+    expect(retained).toMatchObject({
+      ok: true,
+      request: {
+        body: {
+          command: {
+            kind: "start-workflow",
+            input: {
+              intent: "Add a deployment health panel",
+              services: ["workflow-builder"],
+              keepPreview: "true",
+              ttlHours: 12,
+              retainAfterCompletion: true,
+              interactiveHandoff: false,
+            },
+          },
+        },
+      },
+    });
+
+    const defaulted = buildPreviewDevelopmentProxyRequest({
+      actionSlug: "preview/workflow-start",
+      actionInput: {
+        target,
+        intent: "Add a deployment health panel",
+        services: ["workflow-builder"],
+      },
+      dbExecutionId: "parent-1",
+      idempotencyKey: "workflow:parent-1:start",
+    });
+    if (!defaulted.ok) throw new Error(defaulted.error);
+    const input = (defaulted.request.body.command as { input: object }).input;
+    expect(input).not.toHaveProperty("ttlHours");
+    expect(input).not.toHaveProperty("retainAfterCompletion");
+    expect(input).not.toHaveProperty("interactiveHandoff");
+
+    for (const actionInput of [
+      { ttlHours: 1 },
+      { ttlHours: 25 },
+      { ttlHours: "12" },
+      { retainAfterCompletion: "true" },
+      { interactiveHandoff: 1 },
+    ]) {
+      expect(
+        buildPreviewDevelopmentProxyRequest({
+          actionSlug: "preview/workflow-start",
+          actionInput: {
+            target,
+            intent: "Add a deployment health panel",
+            services: ["workflow-builder"],
+            ...actionInput,
+          },
+          dbExecutionId: "parent-1",
+          idempotencyKey: "workflow:parent-1:start",
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: "preview/workflow-start: invalid workflow input",
+      });
+    }
   });
 
   it("binds every lifecycle observation and teardown action to the exact tuple", () => {

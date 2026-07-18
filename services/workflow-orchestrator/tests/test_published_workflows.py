@@ -1271,7 +1271,7 @@ def test_execute_action_includes_otel_body_fallback(monkeypatch):
 
 @pytest.mark.parametrize(
     "action_type",
-    ["preview/environment-launch", "dev/preview-promote"],
+    ["preview/environment-launch", "dev/preview-promote", "dev/preview-freeze"],
 )
 def test_execute_action_authenticates_only_privileged_preview_actions(
     monkeypatch, action_type
@@ -1304,7 +1304,7 @@ def test_execute_action_authenticates_only_privileged_preview_actions(
 
 @pytest.mark.parametrize(
     "action_type",
-    ["preview/environment-launch", "dev/preview-promote"],
+    ["preview/environment-launch", "dev/preview-promote", "dev/preview-freeze"],
 )
 def test_execute_action_fails_closed_when_preview_action_token_is_missing(
     monkeypatch, action_type

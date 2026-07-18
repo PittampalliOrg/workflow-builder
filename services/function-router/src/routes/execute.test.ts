@@ -279,6 +279,56 @@ describe("durable dev preview activation envelope", () => {
   });
 });
 
+describe("dev preview freeze proxy envelope", () => {
+  it("passes a committed freeze receipt through as success", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "freeze",
+        requestInput: { services: ["workflow-builder"] },
+        executionId: "db-exec-1",
+        status: 200,
+        parsed: {
+          ok: true,
+          executionId: "db-exec-1",
+          services: [
+            {
+              service: "workflow-builder",
+              status: "frozen",
+              message: "source receiver is frozen",
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({ success: true, responseStatus: 200 });
+  });
+
+  it("keeps a partial freeze failure retryable (freeze is idempotent per service)", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "freeze",
+        requestInput: { services: ["workflow-builder"] },
+        executionId: "db-exec-1",
+        status: 502,
+        parsed: {
+          ok: false,
+          executionId: "db-exec-1",
+          services: [
+            {
+              service: "workflow-builder",
+              status: "failed",
+              message: "dev-preview receiver is unavailable for workflow-builder",
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      errorClass: "retryable",
+      responseStatus: 502,
+    });
+  });
+});
+
 describe("workspace command routing", () => {
   it("forwards cwd to the workspace runtime", () => {
     const payload = buildWorkspaceCommandPayload({

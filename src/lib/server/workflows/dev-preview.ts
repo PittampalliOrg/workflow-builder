@@ -3,13 +3,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import type {
   DevPreviewInfo,
+  DevPreviewReleaseOutcome,
   DevPreviewSourceFreezeResult,
+  DevPreviewSourcesFreezeOutcome,
+  DevPreviewServiceFreezeOutcome,
   DevPreviewServiceResult,
   DevPreviewsResult,
   FreezeDevPreviewSourcesParams,
   ProvisionDevPreviewParams,
   ProvisionDevPreviewsParams,
   PreviewDatabaseProvisioner,
+  ReleaseDevPreviewSandboxesResult,
   ReplaceDevPreviewImagesParams,
   ReplaceDevPreviewImagesResult,
   TeardownDevPreviewParams,
@@ -1949,6 +1953,19 @@ function sha256(bytes: Buffer): string {
 }
 
 /**
+ * One deterministic freeze operation id per execution, shared by the atomic
+ * teardown freeze and the retain-time `dev/preview-freeze` action so either
+ * order observes an idempotent committed freeze instead of a cross-operation
+ * receiver conflict.
+ */
+function devPreviewFreezeOperationId(executionId: string): string {
+  return `teardown-${createHash("sha256")
+    .update(executionId)
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
+/**
  * Establish the physical teardown fence, then use a reversible prepare barrier
  * before committing the one-way receiver freeze. No receiver is made terminal
  * until the complete service set proves one coherent generation.
@@ -1976,10 +1993,7 @@ export async function freezeDevPreviewSourcesForTeardown(
     token: internalToken(),
   });
 
-  const operationId = `teardown-${createHash("sha256")
-    .update(params.executionId)
-    .digest("hex")
-    .slice(0, 40)}`;
+  const operationId = devPreviewFreezeOperationId(params.executionId);
   const receivers = await Promise.all(
     services.map(async (service): Promise<DevPreviewFreezeReceiver> => {
       const details = await resolveDevPreviewDetails(
@@ -2158,6 +2172,295 @@ async function abortReceiverFreezePreparation(
       requestReceiverFreezePhase(receiver, "abort", operationId, 4),
     ),
   );
+}
+
+export type {
+  DevPreviewServiceFreezeOutcome,
+  DevPreviewSourcesFreezeOutcome,
+} from "$lib/server/application/ports";
+
+/**
+ * Freeze the live-sync source receivers for a RETAINED dev preview without
+ * tearing anything down (`dev/preview-freeze`). Unlike the atomic teardown
+ * freeze above, there is no teardown intent and no cross-service generation
+ * proof: each service freezes independently and reports its own outcome, so a
+ * retained environment keeps serving while its sources become immutable.
+ * Idempotent — an already-frozen receiver (including one frozen by a teardown
+ * checkpoint) reports `frozen`.
+ */
+export async function freezeDevPreviewSources(
+  params: { executionId: string; services?: readonly string[] | null },
+  persistence?: DevPreviewPersistence,
+  credentialOptions?: DevSyncCredentialResolverOptions,
+): Promise<DevPreviewSourcesFreezeOutcome> {
+  if (!persistence) {
+    throw new Error("dev-preview source freeze is unavailable");
+  }
+  const requested = [
+    ...new Set((params.services ?? []).map((service) => service.trim())),
+  ].filter(Boolean);
+  for (const service of requested) resolveDevPreviewDescriptor(service);
+  const services =
+    requested.length > 0
+      ? [...requested].sort()
+      : [
+          ...new Set(
+            (
+              await listDevPreviewSandboxTargets(params.executionId, persistence)
+            ).map(({ service }) => service),
+          ),
+        ].sort();
+  const operationId = devPreviewFreezeOperationId(params.executionId);
+  const outcomes = await Promise.all(
+    services.map(async (service): Promise<DevPreviewServiceFreezeOutcome> => {
+      let receiver: DevPreviewFreezeReceiver;
+      try {
+        const details = await resolveDevPreviewDetails(
+          params.executionId,
+          persistence,
+          service,
+        );
+        if (!details?.podIP || !details.syncPort || details.service !== service) {
+          throw new Error(`dev-preview receiver is unavailable for ${service}`);
+        }
+        const { receiverToken } = await resolveDevSyncCredentials(
+          { executionId: params.executionId, service },
+          credentialOptions,
+        );
+        receiver = {
+          service,
+          endpoint: `http://${details.podIP}:${details.syncPort}/__freeze`,
+          receiverToken,
+        };
+      } catch (cause) {
+        return { service, status: "failed", message: message(cause) };
+      }
+      try {
+        const prepared = await requestReceiverFreezePhase(
+          receiver,
+          "prepare",
+          operationId,
+          2,
+        );
+        if (prepared.frozen) {
+          return {
+            service,
+            status: "frozen",
+            message: "source receiver was already frozen",
+          };
+        }
+      } catch (cause) {
+        const detail = message(cause);
+        // A receiver frozen under a different operation id is still terminally
+        // frozen — the goal state of this action. Report it as such.
+        if (detail.includes("frozen by another operation")) {
+          return {
+            service,
+            status: "frozen",
+            message: "source receiver was already frozen",
+          };
+        }
+        return { service, status: "failed", message: detail };
+      }
+      try {
+        const committed = await requestReceiverFreezePhase(
+          receiver,
+          "commit",
+          operationId,
+          10,
+        );
+        if (!committed.frozen) {
+          throw new Error(
+            `dev-preview receiver freeze commit was not proven for ${service}`,
+          );
+        }
+      } catch (cause) {
+        // Revert the reversible preparation so live sync keeps working when the
+        // one-way commit could not be proven.
+        await abortReceiverFreezePreparation([receiver], operationId);
+        return { service, status: "failed", message: message(cause) };
+      }
+      return { service, status: "frozen", message: "source receiver is frozen" };
+    }),
+  );
+  return Object.freeze({
+    ok: outcomes.every(({ status }) => status === "frozen"),
+    executionId: params.executionId,
+    services: Object.freeze(outcomes),
+  });
+}
+
+export type {
+  DevPreviewReleaseOutcome,
+  ReleaseDevPreviewSandboxesResult,
+} from "$lib/server/application/ports";
+
+/**
+ * Release a retained execution's dev-preview Sandboxes on demand (outside any
+ * running workflow): per Sandbox, SEA DELETE `/internal/dev-preview/<name>`
+ * restores the adopted prod Deployment from its stashed original-replicas
+ * annotation and releases the adoption Lease. Unlike `teardownDevPreview`, this
+ * captures no source checkpoint and never drops the shared preview database —
+ * the retained environment stays up; only the dev adoption is undone.
+ * `service` narrows the release to one service and leaves the rest of the batch
+ * live (no execution-wide fence).
+ */
+export async function releaseDevPreviewSandboxes(
+  params: { executionId: string; service?: string | null },
+  persistence?: DevPreviewPersistence,
+): Promise<ReleaseDevPreviewSandboxesResult> {
+  const baseUrl = sandboxExecutionApiUrl();
+  if (!baseUrl || !persistence) {
+    throw new Error("dev-preview release is unavailable");
+  }
+  const token = internalToken();
+  const service = params.service?.trim() || null;
+  if (service) resolveDevPreviewDescriptor(service);
+
+  const discoverTargets = async (): Promise<{
+    targets: DevPreviewSandboxTarget[];
+    persistedNames: Set<string>;
+  }> => {
+    const persistedTargets = await listDevPreviewSandboxTargets(
+      params.executionId,
+      persistence,
+    );
+    let targets: DevPreviewSandboxTarget[];
+    try {
+      const inventory = await listProvisionedPreviewBatch({
+        baseUrl,
+        executionId: params.executionId,
+        token,
+      });
+      targets = unionDevPreviewSandboxTargets(persistedTargets, inventory);
+    } catch (cause) {
+      // The union exists to catch Sandboxes the persistence rows missed; when
+      // SEA cannot prove its inventory, release what persistence knows about.
+      console.warn("[dev-preview] release inventory failed:", message(cause));
+      targets = [...persistedTargets];
+    }
+    if (service) {
+      targets = targets.filter((target) => target.service === service);
+    }
+    return {
+      targets,
+      persistedNames: new Set(persistedTargets.map(({ name }) => name)),
+    };
+  };
+
+  // Probe before fencing: releasing a nonexistent batch must not plant a
+  // teardown-intent fence that would block future provisioning for the id.
+  let { targets, persistedNames } = await discoverTargets();
+  if (targets.length === 0) {
+    return {
+      ok: true,
+      complete: false,
+      pending: false,
+      found: false,
+      executionId: params.executionId,
+      sandboxes: [],
+    };
+  }
+  if (!service) {
+    // Fence new execution-wide provisioning, then rediscover so a provision
+    // that raced in ahead of the fence is still released.
+    await requestDevPreviewTeardownIntent({
+      baseUrl,
+      executionId: params.executionId,
+      token,
+    });
+    ({ targets, persistedNames } = await discoverTargets());
+  }
+
+  const sandboxes = await Promise.all(
+    targets.map(
+      async ({ name, service: targetService }): Promise<DevPreviewReleaseOutcome> => {
+        try {
+          const disposition = await requestDevPreviewTeardown({
+            baseUrl,
+            token,
+            name,
+            executionId: params.executionId,
+            service: targetService,
+          });
+          if (disposition === "deferred") {
+            return {
+              sandboxName: name,
+              service: targetService,
+              status: "deferred",
+              message: "prod restore is deferred to the response path",
+            };
+          }
+          let detail: string | null = null;
+          if (persistedNames.has(name)) {
+            const cleaned = await persistence
+              .markWorkflowWorkspaceSessionCleaned({ workspaceRef: name })
+              .catch(() => false);
+            if (!cleaned) detail = "workspace cleanup state was not persisted";
+          }
+          return {
+            sandboxName: name,
+            service: targetService,
+            status: "released",
+            message: detail,
+          };
+        } catch (cause) {
+          return {
+            sandboxName: name,
+            service: targetService,
+            status: "failed",
+            message: message(cause),
+          };
+        }
+      },
+    ),
+  );
+  const ok = sandboxes.every(({ status }) => status !== "failed");
+  const pending = sandboxes.some(({ status }) => status === "deferred");
+  // B5 parity: sweep Deployments orphaned at 0 replicas with no Sandbox CR left
+  // to name them. Best-effort — an incomplete sweep must not fail a release
+  // whose per-Sandbox restores all succeeded.
+  if (!service && ok && !pending) {
+    try {
+      const response = await fetch(
+        `${baseUrl}/internal/dev-preview/restore-orphans`,
+        {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
+      const body = (await response.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      if (
+        !response.ok ||
+        !body ||
+        body.skipped !== undefined ||
+        !Array.isArray(body.restored) ||
+        !Array.isArray(body.releasedLeases)
+      ) {
+        throw new Error(
+          typeof body?.skipped === "string"
+            ? `restore-orphans was skipped: ${body.skipped}`
+            : `restore-orphans failed (HTTP ${response.status})`,
+        );
+      }
+    } catch (cause) {
+      console.warn(
+        "[dev-preview] release restore-orphans sweep failed:",
+        message(cause),
+      );
+    }
+  }
+  return {
+    ok,
+    complete: ok && !pending,
+    pending,
+    found: true,
+    executionId: params.executionId,
+    sandboxes,
+  };
 }
 
 async function fetchDevPreviewExport(

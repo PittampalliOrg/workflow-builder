@@ -546,6 +546,12 @@ function buildPreviewDevelopmentActionDetails(): ActionCatalogDetail[] {
 					target: targetSchema,
 					intent: { type: "string", minLength: 1, maxLength: 12000 },
 					services: servicesSchema,
+					// Retention opt-ins (additive, never defaulted): only present when
+					// the parent explicitly retains, so the default payload stays
+					// byte-identical and the child receives them verbatim.
+					ttlHours: { type: "integer", minimum: 2, maximum: 24 },
+					retainAfterCompletion: { type: "boolean" },
+					interactiveHandoff: { type: "boolean" },
 				},
 			},
 		},
@@ -683,6 +689,79 @@ function buildPreviewDevelopmentActionDetails(): ActionCatalogDetail[] {
 			raw: null,
 		} satisfies ActionCatalogDetail;
 	});
+}
+
+// dev/preview-freeze dispatch is wired in-source (services/function-router/
+// src/routes/execute.ts: PRIVILEGED_PREVIEW_ACTION_SLUGS + the dev/* proxy
+// branch that POSTs the BFF /api/internal/workflows/executions/<id>/
+// dev-preview/freeze route, plus the orchestrator token allowlist in
+// services/workflow-orchestrator/activities/execute_action.py). The catalog
+// stays flag-gated until the DEPLOYED router + orchestrator images include
+// that dispatch, so the action is never visible-but-unroutable on a stale
+// rollout.
+function devPreviewFreezeActionRoutable(): boolean {
+	const value = process.env.DEV_PREVIEW_FREEZE_ACTION_ENABLED ?? "";
+	return value.trim().toLowerCase() === "true";
+}
+
+function buildDevPreviewFreezeActionDetail(): ActionCatalogDetail {
+	const slug = "dev/preview-freeze";
+	const taskConfig = { call: slug, with: {} };
+	return {
+		id: buildActionId("builtin", slug),
+		slug,
+		name: slug,
+		displayName: "Freeze Dev Preview Sources",
+		description:
+			"Freeze the live-sync source receivers of this run's dev previews without tearing them down, so a retained preview keeps serving immutable sources. Idempotent per service.",
+		providerId: "dev-preview",
+		providerLabel: "Dev Preview",
+		providerIconUrl: null,
+		category: "preview",
+		serviceId: "function-router",
+		kind: "dapr-activity",
+		visibility: "public-callable",
+		compatibility: "compatible",
+		group: "Dev Preview",
+		version: "1.0.0",
+		language: "typescript",
+		entrypoint: slug,
+		sourceKind: "activity",
+		insertable: true,
+		auth: null,
+		fields: null,
+		tags: ["preview", "dev-preview", "live-sync", "retain", "durable"],
+		doc: "The function router binds this action to the trusted workflow execution and proxies it to the preview-local BFF dev-preview freeze route, which POSTs each service sidecar's /__freeze and returns per-service {service, frozen|failed, message} outcomes.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				services: {
+					type: "array",
+					minItems: 1,
+					maxItems: 16,
+					uniqueItems: true,
+					items: {
+						type: "string",
+						pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+					},
+				},
+			},
+		},
+		outputSchema: { type: "object" },
+		semanticModel: null,
+		sourceCode: null,
+		sourceHtml: null,
+		sw: {
+			functionName: slug,
+			definition: taskConfig,
+			taskConfig,
+			warnings: [],
+		},
+		runtime: buildRuntimeStatus(true, ["dev-preview"]),
+		rendered: null,
+		raw: null,
+	} satisfies ActionCatalogDetail;
 }
 
 function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
@@ -1567,6 +1646,9 @@ async function loadRemoteActionCache(
     buildDaprAgentPyDetail(),
     buildCliAgentOneShotDetail(),
     ...buildPreviewDevelopmentActionDetails(),
+    ...(devPreviewFreezeActionRoutable()
+      ? [buildDevPreviewFreezeActionDetail()]
+      : []),
     ...buildBrowserPreviewDetails(),
   ];
   const services: ActionCatalogServiceSnapshot[] = [];
