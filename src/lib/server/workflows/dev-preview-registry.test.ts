@@ -72,7 +72,7 @@ describe("dev-preview registry", () => {
       contract:
         "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
       check:
-        "node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
+        "export NODE_OPTIONS=--max-old-space-size=3072; node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
       "test-unit":
         "node_modules/.bin/vitest run src/routes/api/v1/dashboard/dashboard-route.test.ts src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts src/lib/dev-preview-checkpoint-promotion.test.ts",
       boundaries: "pnpm check:boundaries",

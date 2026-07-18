@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:43d341930368cbda7ee82b39160b0b9ec432b48781c590602e63c9fa454229c1",
+  "catalogDigest": "sha256:7c092c51706e53d1de568a3f72ab6576c467a63dc5d05866087db7708d507cff",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -520,7 +520,7 @@
         "syncPort": 8001,
         "testCommands": {
           "boundaries": "pnpm check:boundaries",
-          "check": "node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
+          "check": "export NODE_OPTIONS=--max-old-space-size=3072; node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
           "contract": "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
           "migrate": "node scripts/db-migrate-runtime.mjs",
           "test-unit": "node_modules/.bin/vitest run src/routes/api/v1/dashboard/dashboard-route.test.ts src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts src/lib/dev-preview-checkpoint-promotion.test.ts"
