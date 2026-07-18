@@ -14,8 +14,13 @@
 		TimerReset,
 		TriangleAlert,
 	} from "@lucide/svelte";
+	import PreviewDriftSummaryChips from "$lib/components/dev/preview-drift-summary-chips.svelte";
 	import { summarizeDevOperations, type DevSessionGroupLike } from "$lib/dev/dev-operations-view";
-	import type { VclusterPreviewCounts, VclusterPreviewSummary } from "$lib/types/dev-previews";
+	import type {
+		PreviewDriftOverview,
+		VclusterPreviewCounts,
+		VclusterPreviewSummary,
+	} from "$lib/types/dev-previews";
 
 	let {
 		previews = [],
@@ -23,6 +28,8 @@
 		counts = null,
 		previewEnvironment = null,
 		previewRunFeedEnabled = false,
+		drift = null,
+		driftLoading = false,
 		slug,
 		lastRefreshedAt,
 		refreshing = false,
@@ -40,6 +47,9 @@
 			origin: string | null;
 		} | null;
 		previewRunFeedEnabled?: boolean;
+		/** Fleet drift overview (control plane only) for the summary chips. */
+		drift?: PreviewDriftOverview | null;
+		driftLoading?: boolean;
 		slug: string;
 		lastRefreshedAt: number | null;
 		refreshing?: boolean;
@@ -82,6 +92,9 @@
 					<span>Refreshing lifecycle data</span>
 				{/if}
 			</div>
+			{#if drift || driftLoading}
+				<PreviewDriftSummaryChips overview={drift} loading={driftLoading} class="mt-2" />
+			{/if}
 		</div>
 
 		<div class="flex flex-wrap items-center gap-2">
@@ -144,6 +157,11 @@
 			<div class="mt-1 text-xl font-semibold tabular-nums">
 				{previewEnvironment ? "Isolated" : summary.previewCapacity}
 			</div>
+			{#if !previewEnvironment && counts}
+				<div class="mt-0.5 truncate text-[10px] tabular-nums text-muted-foreground">
+					awake · total {counts.total}/{counts.totalMax > 0 ? counts.totalMax : "∞"}{counts.slept > 0 ? ` · ${counts.slept} slept` : ""}
+				</div>
+			{/if}
 		</div>
 	</div>
 </section>

@@ -17,6 +17,8 @@ import {
 import type { PreviewArchiveResult, PrPreviewStatus } from '$lib/server/application/ports';
 import { safePreviewName, type VclusterPreviewTeardownTicket } from '$lib/types/dev-previews';
 import type {
+	PreviewDriftOverview,
+	PreviewRetentionActionResult,
 	PreviewSleepResult,
 	PreviewWakeResult,
 	PreviewEnvironmentLaunchRequest,
@@ -26,6 +28,11 @@ import type {
 	VclusterPreviewSummary
 } from '$lib/types/dev-previews';
 import type { DevEnvironmentGroupReadModel } from '$lib/server/application/ports';
+import { loadPreviewDriftOverview } from '$lib/server/dev-hub/preview-drift';
+import {
+	freezeRetainedPreviewSources,
+	releaseRetainedDevLease
+} from '$lib/server/dev-hub/preview-retention';
 import { requirePlatformAdmin } from '$lib/server/platform-admin';
 
 /** Auth guard for the Dev-hub reads/mutations (mirrors the REST routes' 401). */
@@ -146,6 +153,56 @@ export const getPrPreviews = query(
 			enabled: true,
 			items: statuses.map((s) => toPrPreviewListItem(s, config.prPreviewRepo))
 		};
+	}
+);
+
+/**
+ * Batched drift read for the Dev hub: per awake/slept preview, the running
+ * container images joined against the dev release pins + repo main HEADs, a
+ * per-service drift status, the derived lifecycle stage, and promotion
+ * receipts. Cluster reads are cached 15s server-side, so the 5s page tick is
+ * cheap; raw GitHub reads are cached 60s (pin history 10min).
+ */
+export const getPreviewDriftOverview = query(async (): Promise<PreviewDriftOverview> => {
+	requireControlPlaneDeployment();
+	const session = await requireAdminSession();
+	return loadPreviewDriftOverview({
+		actorUserId: session.userId,
+		projectId: session.projectId ?? null
+	});
+});
+
+/**
+ * Release a RETAINED preview's dev-preview Sandboxes (restore the adopted prod
+ * Deployments; the environment stays up). Calls the Phase-1 preview-side
+ * release endpoint via the existing host->preview internal routing; while that
+ * endpoint/credential is not reachable the refusal comes back AS DATA with
+ * `reason: "unsupported"`.
+ */
+export const releaseDevLease = command(
+	'unchecked',
+	async (input: { previewName: string }): Promise<PreviewRetentionActionResult> => {
+		requireControlPlaneDeployment();
+		await requireAdminSession();
+		const name = safePreviewName(input?.previewName ?? '');
+		if (!name || name === 'preview') error(400, 'A preview name is required');
+		return releaseRetainedDevLease({ previewName: name });
+	}
+);
+
+/**
+ * Freeze a RETAINED preview's live-sync source receivers (`dev/preview-freeze`
+ * surface) without tearing anything down. Same typed-refusal contract as
+ * `releaseDevLease`.
+ */
+export const freezePreviewSources = command(
+	'unchecked',
+	async (input: { previewName: string }): Promise<PreviewRetentionActionResult> => {
+		requireControlPlaneDeployment();
+		await requireAdminSession();
+		const name = safePreviewName(input?.previewName ?? '');
+		if (!name || name === 'preview') error(400, 'A preview name is required');
+		return freezeRetainedPreviewSources({ previewName: name });
 	}
 );
 

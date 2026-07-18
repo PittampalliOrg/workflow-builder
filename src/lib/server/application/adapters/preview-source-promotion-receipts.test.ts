@@ -151,4 +151,136 @@ describe("PostgresPreviewSourcePromotionReceiptStore", () => {
       store.put(input({ services: ["workflow-orchestrator"] })),
     ).rejects.toThrow("does not match its imported artifact");
   });
+
+  describe("listRecentByPreview", () => {
+    /** Seed one artifact + receipt pair directly (listing needs several previews/timestamps). */
+    async function seedReceipt(seed: {
+      id: string;
+      previewName: string;
+      executionId: string;
+      pullRequestNumber: number;
+      createdAt: string;
+    }): Promise<void> {
+      await client.query(
+        `INSERT INTO preview_control_artifacts (
+          id, preview_name, environment_request_id, execution_id,
+          platform_revision, source_revision, catalog_digest, services
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [
+          `artifact-${seed.id}`,
+          seed.previewName,
+          "request-1",
+          seed.executionId,
+          PLATFORM,
+          SOURCE,
+          CATALOG,
+          JSON.stringify(["workflow-builder"]),
+        ],
+      );
+      await client.query(
+        `INSERT INTO preview_source_promotion_receipts (
+          receipt_id, artifact_id, preview_name, environment_request_id,
+          execution_id, platform_revision, source_revision, catalog_digest,
+          repository, base_branch, base_sha, branch, commit_sha, pr_url,
+          pull_request_number, draft, services, changed_paths, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+          $15, true, $16::jsonb, $17::jsonb, $18
+        )`,
+        [
+          `receipt-${seed.id}`,
+          `artifact-${seed.id}`,
+          seed.previewName,
+          "request-1",
+          seed.executionId,
+          PLATFORM,
+          SOURCE,
+          CATALOG,
+          "PittampalliOrg/workflow-builder",
+          "main",
+          SOURCE,
+          `preview-feature-${seed.id}`,
+          HEAD,
+          `https://github.com/PittampalliOrg/workflow-builder/pull/${seed.pullRequestNumber}`,
+          seed.pullRequestNumber,
+          JSON.stringify(["workflow-builder"]),
+          JSON.stringify(["src/routes/feature.ts"]),
+          seed.createdAt,
+        ],
+      );
+    }
+
+    it("returns newest-first ISO rows scoped to the requested previews", async () => {
+      await seedReceipt({
+        id: "1",
+        previewName: "preview-one",
+        executionId: "execution-1",
+        pullRequestNumber: 41,
+        createdAt: "2026-07-15T10:00:00Z",
+      });
+      await seedReceipt({
+        id: "2",
+        previewName: "preview-one",
+        executionId: "execution-2",
+        pullRequestNumber: 42,
+        createdAt: "2026-07-16T10:00:00Z",
+      });
+      await seedReceipt({
+        id: "3",
+        previewName: "preview-other",
+        executionId: "execution-3",
+        pullRequestNumber: 43,
+        createdAt: "2026-07-17T10:00:00Z",
+      });
+
+      const rows = await store.listRecentByPreview({
+        previewNames: ["preview-one", "preview-one", ""],
+        limitPerPreview: 10,
+      });
+
+      expect(rows.map((row) => row.pullRequestNumber)).toEqual([42, 41]);
+      expect(rows[0]).toMatchObject({
+        previewName: "preview-one",
+        executionId: "execution-2",
+        pullRequestNumber: 42,
+        prUrl: "https://github.com/PittampalliOrg/workflow-builder/pull/42",
+        commitSha: HEAD,
+      });
+      // ISO-8601 strings, newest first (exact instant is timezone-dependent
+      // because the column is a naive `timestamp`).
+      for (const row of rows) {
+        expect(row.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+      }
+      expect(Date.parse(rows[0].createdAt)).toBeGreaterThan(
+        Date.parse(rows[1].createdAt),
+      );
+    });
+
+    it("bounds the read and answers an empty name set without a query", async () => {
+      await seedReceipt({
+        id: "1",
+        previewName: "preview-one",
+        executionId: "execution-1",
+        pullRequestNumber: 41,
+        createdAt: "2026-07-15T10:00:00Z",
+      });
+      await seedReceipt({
+        id: "2",
+        previewName: "preview-one",
+        executionId: "execution-2",
+        pullRequestNumber: 42,
+        createdAt: "2026-07-16T10:00:00Z",
+      });
+
+      await expect(
+        store.listRecentByPreview({
+          previewNames: ["preview-one"],
+          limitPerPreview: 1,
+        }),
+      ).resolves.toHaveLength(1);
+      await expect(
+        store.listRecentByPreview({ previewNames: [""], limitPerPreview: 10 }),
+      ).resolves.toEqual([]);
+    });
+  });
 });

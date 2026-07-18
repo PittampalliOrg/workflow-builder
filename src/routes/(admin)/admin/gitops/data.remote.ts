@@ -12,6 +12,8 @@ import { getRequestEvent, query } from "$app/server";
 import { mapPrPreviewStatuses } from "$lib/gitops/pr-preview-summary";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getApplicationAdapterConfig } from "$lib/server/application/config";
+import { loadFleetDriftExtras } from "$lib/server/gitops/fleet-drift";
+import type { FleetDriftExtras } from "$lib/types/deployment-metadata";
 
 async function requireAdmin(): Promise<void> {
 	const event = getRequestEvent();
@@ -56,4 +58,15 @@ export const getPrPreviewStatuses = query(async () => {
 export const getStrategyDetail = query("unchecked", async (name: string) => {
 	await requireAdmin();
 	return await getApplicationAdapters().gitOpsPromotions.getStrategy(name);
+});
+
+/**
+ * Fleet-drift extras (additive to the snapshot): repo main HEADs, per-service
+ * pin ages, newest built artifacts (+ in-flight PipelineRuns), the
+ * preview-platform broker-skew datum, and live Deployment observedGeneration
+ * convergence. Cached 15s server-side; degrades to nulls, never throws.
+ */
+export const getFleetDriftExtras = query(async (): Promise<FleetDriftExtras> => {
+	await requireAdmin();
+	return loadFleetDriftExtras();
 });

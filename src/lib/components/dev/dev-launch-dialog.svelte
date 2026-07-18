@@ -36,6 +36,7 @@
 		devWorkflowName,
 		lifecycleWorkflowId = null,
 		lifecycleWorkflowName = 'preview-development-lifecycle',
+		prefillEnvironmentName = null,
 		onlaunched
 	}: {
 		open?: boolean;
@@ -52,6 +53,9 @@
 		devWorkflowName: string;
 		lifecycleWorkflowId?: string | null;
 		lifecycleWorkflowName?: string;
+		/** Re-attach path: pre-fill the environment name (an existing retained
+		 * preview) so the lifecycle run attaches to it instead of naming a new one. */
+		prefillEnvironmentName?: string | null;
 		onlaunched: (executionId: string, lifecycle: boolean) => void;
 	} = $props();
 
@@ -90,6 +94,13 @@
 			}
 		}
 		if (changed) selectedServices = next;
+	});
+
+	// Consume non-null prefill transitions (re-attach / "Launch agent run"): the
+	// caller resets the prop to null on close, so relaunching the same preview
+	// re-applies its name.
+	$effect(() => {
+		if (prefillEnvironmentName !== null) environmentName = prefillEnvironmentName;
 	});
 
 	async function launch() {

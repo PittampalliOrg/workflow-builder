@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type {
   ImmutableGitSha,
   PreviewSourcePromotionReceipt,
   PreviewSourcePromotionReceiptInput,
+  PreviewSourcePromotionReceiptListItem,
+  PreviewSourcePromotionReceiptListingPort,
   PreviewSourcePromotionReceiptScope,
   PreviewSourcePromotionReceiptStorePort,
 } from "$lib/server/application/ports";
@@ -17,9 +19,46 @@ type Database = typeof defaultDb;
 
 /** Physical-only append-only proof of a verified source promotion. */
 export class PostgresPreviewSourcePromotionReceiptStore
-  implements PreviewSourcePromotionReceiptStorePort
+  implements
+    PreviewSourcePromotionReceiptStorePort,
+    PreviewSourcePromotionReceiptListingPort
 {
   constructor(private readonly database: Database = defaultDb) {}
+
+  /** Newest-first receipts across `previewNames` (Dev-hub drift overview). */
+  async listRecentByPreview(
+    input: Readonly<{
+      previewNames: readonly string[];
+      limitPerPreview: number;
+    }>,
+  ): Promise<readonly PreviewSourcePromotionReceiptListItem[]> {
+    const names = [...new Set(input.previewNames)].filter(Boolean);
+    if (names.length === 0) return [];
+    const rows = await this.database
+      .select({
+        previewName: previewSourcePromotionReceipts.previewName,
+        executionId: previewSourcePromotionReceipts.executionId,
+        pullRequestNumber: previewSourcePromotionReceipts.pullRequestNumber,
+        prUrl: previewSourcePromotionReceipts.prUrl,
+        commitSha: previewSourcePromotionReceipts.commitSha,
+        createdAt: previewSourcePromotionReceipts.createdAt,
+      })
+      .from(previewSourcePromotionReceipts)
+      .where(inArray(previewSourcePromotionReceipts.previewName, names))
+      .orderBy(desc(previewSourcePromotionReceipts.createdAt))
+      .limit(names.length * input.limitPerPreview);
+    return rows.map((row) => ({
+      previewName: row.previewName,
+      executionId: row.executionId,
+      pullRequestNumber: row.pullRequestNumber,
+      prUrl: row.prUrl,
+      commitSha: row.commitSha,
+      createdAt:
+        row.createdAt instanceof Date
+          ? row.createdAt.toISOString()
+          : new Date(row.createdAt).toISOString(),
+    }));
+  }
 
   async put(
     input: PreviewSourcePromotionReceiptInput,

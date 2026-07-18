@@ -90,6 +90,36 @@ export interface PreviewSourcePromotionReceiptStorePort {
   ): Promise<PreviewSourcePromotionReceipt | null>;
 }
 
+/** One receipt row in the per-preview recency listing (Dev-hub drift overview). */
+export type PreviewSourcePromotionReceiptListItem = Readonly<{
+  previewName: string;
+  executionId: string;
+  pullRequestNumber: number;
+  prUrl: string;
+  commitSha: string;
+  /** ISO-8601 creation time; listings are returned newest first. */
+  createdAt: string;
+}>;
+
+/**
+ * Read-only recency listing over the durable receipts table, keyed by preview
+ * name (Dev-hub drift overview). Kept separate from the append-only store port
+ * so existing store fakes stay source-compatible (additive, #690-style).
+ */
+export interface PreviewSourcePromotionReceiptListingPort {
+  /**
+   * Newest-first receipts across `previewNames`, bounded at
+   * `previewNames.length * limitPerPreview` rows overall; the caller applies
+   * the exact per-preview cap.
+   */
+  listRecentByPreview(
+    input: Readonly<{
+      previewNames: readonly string[];
+      limitPerPreview: number;
+    }>,
+  ): Promise<readonly PreviewSourcePromotionReceiptListItem[]>;
+}
+
 /** The promotion scope is already being materialized by another broker request. */
 export class PreviewSourcePromotionExclusivityBusyError extends Error {
   constructor() {

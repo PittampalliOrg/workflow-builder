@@ -16,10 +16,16 @@ describe("admin gitops data remote", () => {
 		expect(source).toContain("getActivityEventsPage");
 		expect(source).toContain("getPrPreviewStatuses");
 		expect(source).toContain("gitOpsPromotions.getStrategy");
+		// The fleet-drift extras query (shared data contract).
+		expect(source).toContain("getFleetDriftExtras");
 		// State is reached through the application layer, not the domain modules or
-		// Drizzle directly.
+		// Drizzle directly. The one sanctioned server module is the fleet-drift
+		// read model (cached loaders over public raw fetches + the kube client).
 		expect(source).not.toContain("$lib/server/promoter");
-		expect(source).not.toContain("$lib/server/gitops/");
+		const serverGitopsImports = source.match(/\$lib\/server\/gitops\/[\w./-]*/g) ?? [];
+		expect(new Set(serverGitopsImports)).toEqual(
+			new Set(["$lib/server/gitops/fleet-drift"]),
+		);
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

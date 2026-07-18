@@ -1,4 +1,5 @@
 import type {
+  PreviewPromotionReceiptSummary,
   PreviewSleepResult,
   PreviewWakeResult,
   VclusterLaunchResult,
@@ -19,9 +20,14 @@ import type {
   PreviewDeploymentScopePort,
   PreviewEnvironmentObservationReaderPort,
   PreviewEnvironmentTeardownStatusPort,
+  PreviewRunTarget,
+  PreviewSourcePromotionReceiptListItem,
+  PreviewSourcePromotionReceiptListingPort,
   VclusterPreviewGatewayPort,
 } from "$lib/server/application/ports";
 import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
+import { previewApiBaseUrl } from "$lib/server/application/adapters/preview-read-proxy";
+import { PostgresPreviewSourcePromotionReceiptStore } from "$lib/server/application/adapters/preview-source-promotion-receipts";
 
 export { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
 
@@ -90,7 +96,23 @@ export type VclusterPreviewServiceDeps = {
   /** Awake-preview cap fallback when the SEA omits `counts.max` (config
    * `vclusterPreviewMax`). SEA's own count wins when present. */
   maxPreviews: number;
+  /**
+   * Promotion-receipt recency listing (Dev-hub drift overview). Optional so the
+   * long-lived `getApplicationAdapters()` composition stays unchanged; defaults
+   * to the Postgres receipts adapter on first use.
+   */
+  receipts?: PreviewSourcePromotionReceiptListingPort;
 };
+
+/** Per-preview promotion-receipt listing for the Dev-hub drift overview. */
+export type PreviewReceiptListing = {
+  /** Newest-first receipt summaries per preview name. */
+  receiptsByPreview: Map<string, PreviewPromotionReceiptSummary[]>;
+  /** Execution ids that produced receipts, per preview name. */
+  executionIdsByPreview: Map<string, string[]>;
+};
+
+const MAX_RECEIPTS_PER_PREVIEW = 10;
 
 /**
  * Application service for Tier-2 (vcluster full-isolation) previews. Owns the
@@ -102,6 +124,9 @@ export type VclusterPreviewServiceDeps = {
  * calls all go through the injected gateway port.
  */
 export class ApplicationVclusterPreviewService {
+  /** Lazily-defaulted receipts listing (see `VclusterPreviewServiceDeps.receipts`). */
+  private receiptListing?: PreviewSourcePromotionReceiptListingPort;
+
   constructor(private readonly deps: VclusterPreviewServiceDeps) {}
 
   /** Decorate a cluster record into the UI summary (adds `prUrl`). */
@@ -189,6 +214,67 @@ export class ApplicationVclusterPreviewService {
   async get(name: string): Promise<VclusterPreviewSummary> {
     this.requirePreviewName(name);
     return this.decorate(await this.deps.gateway.get(name));
+  }
+
+  /**
+   * Host->preview BFF base URL for a preview record: synced in-cluster Service
+   * first, tailnet fallback (null when no host->preview route exists yet).
+   */
+  apiBaseUrl(
+    target: Pick<PreviewRunTarget, "name" | "url" | "pool">,
+  ): string | null {
+    return previewApiBaseUrl(target);
+  }
+
+  /**
+   * List promotion receipts for a set of preview names (Dev-hub drift
+   * overview), newest first, capped at {@link MAX_RECEIPTS_PER_PREVIEW} each.
+   * Degrades to empty maps when the database is unavailable (the drift
+   * overview stays renderable).
+   */
+  async listPromotionReceipts(
+    previewNames: readonly string[],
+  ): Promise<PreviewReceiptListing> {
+    const receiptsByPreview = new Map<
+      string,
+      PreviewPromotionReceiptSummary[]
+    >();
+    const executionIdsByPreview = new Map<string, string[]>();
+    const names = [...new Set(previewNames)].filter(Boolean);
+    if (names.length === 0) {
+      return { receiptsByPreview, executionIdsByPreview };
+    }
+
+    let rows: readonly PreviewSourcePromotionReceiptListItem[];
+    try {
+      const listing = (this.receiptListing ??=
+        this.deps.receipts ?? new PostgresPreviewSourcePromotionReceiptStore());
+      rows = await listing.listRecentByPreview({
+        previewNames: names,
+        limitPerPreview: MAX_RECEIPTS_PER_PREVIEW,
+      });
+    } catch {
+      return { receiptsByPreview, executionIdsByPreview };
+    }
+
+    for (const row of rows) {
+      const receipts = receiptsByPreview.get(row.previewName) ?? [];
+      if (receipts.length < MAX_RECEIPTS_PER_PREVIEW) {
+        receipts.push({
+          prNumber: row.pullRequestNumber,
+          prUrl: row.prUrl,
+          commitSha: row.commitSha,
+          createdAt: row.createdAt,
+        });
+        receiptsByPreview.set(row.previewName, receipts);
+      }
+      const executions = executionIdsByPreview.get(row.previewName) ?? [];
+      if (!executions.includes(row.executionId)) {
+        executions.push(row.executionId);
+        executionIdsByPreview.set(row.previewName, executions);
+      }
+    }
+    return { receiptsByPreview, executionIdsByPreview };
   }
 
   /**
