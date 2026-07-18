@@ -389,6 +389,8 @@ describe("preview UI development GAN child fixture", () => {
       cwd: "/sandbox/work",
       cliWorkspace: true,
       workspaceRef: "@workspace",
+      helperPod: true,
+      helperTimeoutMinutes: 120,
     });
     const command = String(
       (seed?.args as Record<string, unknown>).command ?? "",
@@ -565,6 +567,14 @@ describe("preview UI development GAN child fixture", () => {
     expect(findCommand(tasks, "impact-review-smoke")).toBeTruthy();
     expect(findCommand(tasks, "impact-review-probe")).toBeTruthy();
     expect(findCommand(tasks, "impact-review-diffscope")).toBeTruthy();
+    for (const task of tasks.filter(
+      (candidate) => candidate.actionSlug === "workspace/command",
+    )) {
+      expect(task.args).toMatchObject({
+        helperPod: true,
+        helperTimeoutMinutes: 120,
+      });
+    }
     const output = result.returnValue as Record<string, unknown>;
     expect(output).toMatchObject({
       accepted: true,

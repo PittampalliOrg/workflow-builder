@@ -262,6 +262,7 @@ class FakeCtx:
         self.prepare_inputs: list[dict] = []
         self.stop_inputs: list[dict] = []
         self.execute_action_inputs: list[dict] = []
+        self.cli_workspace_inputs: list[dict] = []
         self.persist_workspace_inputs: list[dict] = []
         # Sequenced results: pop from the front while >1 remain (last repeats) —
         # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
@@ -335,6 +336,12 @@ class FakeCtx:
             if len(self.execute_action_results) > 1:
                 return self.execute_action_results.pop(0)
             return self.execute_action_results[0]
+        if name == "cli_workspace_command":
+            self.cli_workspace_inputs.append(inp)
+            return {
+                "success": True,
+                "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+            }
         if name == "persist_workspace_session":
             self.persist_workspace_inputs.append(inp)
             return {"success": True}
@@ -1630,6 +1637,52 @@ def test_action_non_ap_dispatches_execute_action_with_idempotency_key():
     # The activity envelope reached the journal verbatim.
     raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
     assert raws == [{"success": True, "data": {"ok": 1}}]
+
+
+def test_cli_workspace_action_bypasses_function_router_and_uses_helper_activity():
+    cid = "b3" * 20 + "_0"
+    task = action_task(
+        cid,
+        "workspace/command",
+        {
+            "cliWorkspace": True,
+            "workspaceRef": "@workspace",
+            "command": "git status --short",
+            "cwd": "/sandbox/work",
+            "timeoutMs": 1_500_000,
+            "helperPod": True,
+            "helperTimeoutMinutes": 120,
+        },
+        label="seed workspace",
+    )
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+
+    result = drive(dynamic_script_workflow(ctx, base_input(**FEAT_INPUT)), ctx, [])
+
+    assert result["success"] is True
+    assert ctx.execute_action_inputs == []
+    assert len(ctx.cli_workspace_inputs) == 1
+    payload = ctx.cli_workspace_inputs[0]
+    assert payload == {
+        "executionId": "e1",
+        "command": "git status --short",
+        "cwd": "/sandbox/work",
+        "readFile": None,
+        "timeoutMs": 1_500_000,
+        "persistBrowserVideo": None,
+        "nodeId": cid,
+        "workflowId": "wf1",
+        "helperPod": True,
+        "helperTimeoutMinutes": 120,
+        "_otel": {},
+    }
+    raws = [i["raw"] for i in ctx.record_inputs if i["callId"] == cid]
+    assert raws == [
+        {
+            "success": True,
+            "result": {"exitCode": 0, "stdout": "seeded", "stderr": ""},
+        }
+    ]
 
 
 def test_action_ap_slug_dispatches_runner_child_with_pause_contract():
