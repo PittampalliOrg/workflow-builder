@@ -237,6 +237,10 @@ from src.kimi_adapter import (
     coerce_kimi_reasoning_message,
     install_kimi_reasoning_state_schema,
 )
+from src.kimi_formulas import (
+    execute_formula_tool,
+    formula_uri_for_tool,
+)
 
 install_kimi_reasoning_state_schema()
 
@@ -4038,6 +4042,28 @@ class OpenShellDurableAgent(DurableAgent):
                       # recover the image while every human-facing surface keeps
                       # the concise linked text result.
                       result["content"] = mcp_serialization.durable_content
+                elif formula_uri_for_tool(tool_name):
+                  # Kimi native Formula tool (declarations injected adapter-side
+                  # by _call_kimi_chat; execution POSTs to /formulas/{uri}/fibers).
+                  # Runs inside this journaled run_tool activity, so the fiber
+                  # result is journaled like any local tool result and workflow
+                  # replays never re-hit the non-idempotent fibers endpoint.
+                  # execute_formula_tool never raises — failures come back as
+                  # "Error: ..." content for the model (WebFetch convention).
+                  # MCP is checked first so a per-session MCP tool with the same
+                  # name keeps precedence (its declaration shadows the formula's
+                  # adapter-side, so the model saw the MCP tool).
+                  _formula_msg = ToolMessage(
+                      content=execute_formula_tool(tool_name, tool_args),
+                      role="tool",
+                      name=tool_name,
+                      tool_call_id=tool_call["id"],
+                  )
+                  try:
+                      self.text_formatter.print_message(_formula_msg)
+                  except Exception:
+                      pass
+                  result = _formula_msg.model_dump()
                 else:
                     result = super().run_tool(ctx, payload)
               _exec_error = _tool_result_error(result)

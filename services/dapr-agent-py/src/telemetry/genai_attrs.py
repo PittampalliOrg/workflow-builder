@@ -165,6 +165,11 @@ def normalize_usage(usage: Any) -> dict[str, int]:
 
     cache_r = _int_or_none(usage.get("cache_read_input_tokens"))
     cache_c = _int_or_none(usage.get("cache_creation_input_tokens"))
+    # Kimi/DeepSeek-style flat cache fields (Kimi: cached_tokens)
+    if cache_r is None:
+        cache_r = _int_or_none(usage.get("cached_tokens")) or _int_or_none(
+            usage.get("prompt_cache_hit_tokens")
+        )
     # OpenAI-style nested cache fields
     if cache_r is None:
         ptd = usage.get("prompt_tokens_details") or {}

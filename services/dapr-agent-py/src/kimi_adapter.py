@@ -485,6 +485,37 @@ def _with_structured_output_tool(
     return tools
 
 
+def _with_formula_tools(
+    converted_tools: list[dict[str, Any]] | None,
+    formula_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge Kimi Formula (native tool) declarations into the request tools.
+
+    Local tools win name collisions: if a local/MCP tool already provides the
+    name, the model saw that tool's declaration, so the formula declaration is
+    dropped and run_tool dispatches to the local/MCP implementation.
+    """
+    tools = list(converted_tools or [])
+    existing = {
+        str((tool.get("function") or {}).get("name") or "") for tool in tools
+    }
+    for declaration in formula_tools:
+        function = declaration.get("function") if isinstance(declaration, dict) else None
+        name = str((function or {}).get("name") or "").strip()
+        if not name:
+            continue
+        if name in existing:
+            logger.warning(
+                "[kimi-chat] formula tool %s shadowed by a local tool; skipping",
+                name,
+            )
+            continue
+        tools.append({"type": "function", "function": {**function, "strict": False}})
+        existing.add(name)
+    tools.sort(key=lambda item: item["function"].get("name") or "")
+    return tools
+
+
 def _extract_kimi_response(
     response: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]], str | None, str]:
@@ -981,6 +1012,15 @@ def _rate_limit_max_retries() -> int:
     return max(0, int(os.environ.get("KIMI_RATE_LIMIT_MAX_RETRIES", "3")))
 
 
+def _cache_read_tokens(usage: dict[str, Any] | None) -> int:
+    """Kimi reports prompt-cache hits as top-level `cached_tokens` in usage
+    (per the chat API schema); tolerate the DeepSeek-style alias too."""
+    usage = usage or {}
+    return int(
+        usage.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
+    )
+
+
 def _publish_llm_usage(
     *,
     model: str,
@@ -1001,9 +1041,7 @@ def _publish_llm_usage(
         if not sid:
             return
         usage = usage or {}
-        prompt_cache_hit = int(
-            usage.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
-        )
+        prompt_cache_hit = _cache_read_tokens(usage)
         prompt_cache_miss = int(usage.get("prompt_cache_miss_tokens") or 0)
         prompt_tokens = int(
             usage.get("prompt_tokens") or usage.get("input_tokens") or 0
@@ -1099,6 +1137,20 @@ def _call_kimi_chat(
 ) -> dict[str, Any]:
     model = _get_kimi_model(component)
     converted_tools = _convert_tools_for_kimi_chat(tools)
+    # Cutover: Kimi native Formula tools are a first-class part of the kimi-k3
+    # path — every request carries the fetched declarations in the top-level
+    # tools field (Kimi's mid-conversation dynamic tool loading would be
+    # destroyed by history conformance). Execution is dispatched to the
+    # /formulas fibers endpoint inside the journaled run_tool activity. A
+    # formula-loading failure must never break the chat call.
+    try:
+        from src.kimi_formulas import ensure_formula_tools
+
+        formula_tools = ensure_formula_tools()
+        if formula_tools:
+            converted_tools = _with_formula_tools(converted_tools, formula_tools)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[kimi-chat] formula tools unavailable (continuing without): %s", exc)
     from src.structured_output import schema_supports_structured_tool
 
     tool_mode = (
@@ -1156,6 +1208,9 @@ def _call_kimi_chat(
         ),
         "max_completion_tokens": output_cap,
         "stream": True,
+        # Kimi only guarantees a usage chunk on streams when explicitly asked
+        # (usage carries the top-level cached_tokens prompt-cache metric).
+        "stream_options": {"include_usage": True},
     }
     if converted_tools:
         request_body["tools"] = converted_tools
@@ -1268,10 +1323,12 @@ def _call_kimi_chat(
             output_tokens = int(
                 usage.get("completion_tokens") or usage.get("output_tokens") or 0
             )
+            cache_read_tokens = _cache_read_tokens(usage)
             end_llm_request_span(
                 llm_span,
                 input_tokens=input_tokens or None,
                 output_tokens=output_tokens or None,
+                cache_read_tokens=cache_read_tokens or None,
                 success=True,
                 has_tool_call=bool(tool_calls),
                 ttft_ms=effective_ttft_ms,
@@ -1280,6 +1337,7 @@ def _call_kimi_chat(
             )
             record_tokens(type_="input", count=input_tokens, model=model)
             record_tokens(type_="output", count=output_tokens, model=model)
+            record_tokens(type_="cacheRead", count=cache_read_tokens, model=model)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[telemetry] llm_request (kimi) end failed: %s", exc)
 

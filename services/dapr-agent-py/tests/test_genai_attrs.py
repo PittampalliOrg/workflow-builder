@@ -8,7 +8,11 @@ root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
     sys.path.insert(0, root)
 
-from src.telemetry.genai_attrs import set_activity_attrs, set_genai_response_attrs  # noqa: E402
+from src.telemetry.genai_attrs import (  # noqa: E402
+    normalize_usage,
+    set_activity_attrs,
+    set_genai_response_attrs,
+)
 
 
 class FakeSpan:
@@ -67,3 +71,43 @@ def test_set_genai_response_attrs_stamps_context_percentages() -> None:
     assert span.attrs["llm.context.input_tokens"] == 100_000
     assert span.attrs["llm.context.used_percentage"] == 50
     assert span.attrs["llm.context.remaining_percentage"] == 50
+
+
+def test_normalize_usage_maps_kimi_cached_tokens() -> None:
+    """Kimi reports prompt-cache hits as top-level `cached_tokens` in usage."""
+    normalized = normalize_usage(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cached_tokens": 40,
+        }
+    )
+
+    assert normalized["input_tokens"] == 100
+    assert normalized["output_tokens"] == 5
+    assert normalized["cache_read_input_tokens"] == 40
+
+
+def test_normalize_usage_maps_deepseek_style_cache_hit() -> None:
+    normalized = normalize_usage(
+        {"prompt_tokens": 100, "completion_tokens": 5, "prompt_cache_hit_tokens": 30}
+    )
+
+    assert normalized["cache_read_input_tokens"] == 30
+
+
+def test_set_genai_response_attrs_stamps_kimi_cache_read() -> None:
+    span = FakeSpan()
+
+    set_genai_response_attrs(
+        span,
+        response_model="kimi-k3",
+        usage={
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "cached_tokens": 40,
+        },
+    )
+
+    assert span.attrs["gen_ai.usage.cache_read_input_tokens"] == 40
