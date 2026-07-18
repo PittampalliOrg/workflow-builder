@@ -122,6 +122,8 @@ function dependencies() {
       })),
       rollback: null,
     })),
+    freezeSources: vi.fn(),
+    releaseSandboxes: vi.fn(),
     teardown: vi.fn(),
   };
   const supported = [

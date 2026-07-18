@@ -329,6 +329,27 @@ function normalizeWorkflowInput(
   ) {
     return invalid("keepPreview must be a boolean");
   }
+  if (
+    input.ttlHours !== undefined &&
+    (!Number.isInteger(input.ttlHours) ||
+      input.ttlHours < 2 ||
+      input.ttlHours > 24)
+  ) {
+    return invalid("ttlHours must be an integer between 2 and 24");
+  }
+  for (const [key, value] of [
+    ["retainAfterCompletion", input.retainAfterCompletion],
+    ["interactiveHandoff", input.interactiveHandoff],
+  ] as const) {
+    if (
+      value !== undefined &&
+      typeof value !== "boolean" &&
+      value !== "true" &&
+      value !== "false"
+    ) {
+      return invalid(`${key} must be a boolean`);
+    }
+  }
   return Object.freeze({
     intent: input.intent,
     services: Object.freeze([...input.services]),
@@ -340,6 +361,16 @@ function normalizeWorkflowInput(
               ? "true"
               : "false",
         }
+      : {}),
+    // Retention opt-ins pass through VERBATIM (no defaulting, no coercion):
+    // the parent only sends them on an explicit opt-in, and the child fixture
+    // interprets both boolean and "true"/"false" string forms itself.
+    ...(input.ttlHours !== undefined ? { ttlHours: input.ttlHours } : {}),
+    ...(input.retainAfterCompletion !== undefined
+      ? { retainAfterCompletion: input.retainAfterCompletion }
+      : {}),
+    ...(input.interactiveHandoff !== undefined
+      ? { interactiveHandoff: input.interactiveHandoff }
       : {}),
   });
 }

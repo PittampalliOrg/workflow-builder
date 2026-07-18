@@ -46,6 +46,29 @@ export const meta = {
         anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
         default: "true",
       },
+      ttlHours: {
+        type: "integer",
+        title: "Retained sandbox lifetime in hours",
+        minimum: 2,
+        maximum: 24,
+        default: 24,
+        description:
+          "Only used when retainAfterCompletion is true: the preview sandbox self-delete backstop becomes ttlHours * 3600 seconds (clamped to the platform sandbox ceiling).",
+      },
+      retainAfterCompletion: {
+        anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
+        default: false,
+        title: "Retain preview after completion",
+        description:
+          "When true, size the sandbox lifetime from ttlHours and freeze live-sync after promotion (unless interactiveHandoff keeps it open).",
+      },
+      interactiveHandoff: {
+        anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
+        default: false,
+        title: "Hand off to an interactive session",
+        description:
+          "When true, skip the post-promotion freeze and spawn a persistent interactive agent session against the retained preview.",
+      },
       mode: {
         type: "string",
         enum: ["preview-native"],
@@ -153,6 +176,21 @@ const agentSlug =
     ? t.agentSlug
     : DEFAULT_AGENT;
 
+function asBoolean(value) {
+  return value === true || String(value).trim().toLowerCase() === "true";
+}
+const retainAfterCompletion = asBoolean(t.retainAfterCompletion);
+const interactiveHandoff = asBoolean(t.interactiveHandoff);
+// Platform sandbox lifetime ceiling: sandbox-execution-api DevPreviewRequest
+// validates timeoutSeconds with le=86400 (services/sandbox-execution-api/src/app.py),
+// so one provision can never outlive 24h. Clamp (never throw) so a bad ttlHours
+// cannot fail a run that today's inputs would have started.
+const MAX_SANDBOX_TIMEOUT_SECONDS = 86400;
+const ttlHours = Number.isInteger(t.ttlHours) ? t.ttlHours : 24;
+const sandboxTimeoutSeconds = retainAfterCompletion
+  ? Math.max(3600, Math.min(ttlHours * 3600, MAX_SANDBOX_TIMEOUT_SECONDS))
+  : 86400;
+
 phase("Dev mode");
 const preview = await action(
   "dev/preview",
@@ -161,7 +199,7 @@ const preview = await action(
     services,
     mode: "preview-native",
     adopt: true,
-    timeoutSeconds: 86400,
+    timeoutSeconds: sandboxTimeoutSeconds,
     waitReadySeconds: 240,
     activationTimeoutSeconds: 300,
     activationPollSeconds: 2,
@@ -351,6 +389,60 @@ const promote = await action(
 );
 const promotionReceipt = strictReceipt(promote);
 
+// Freeze-on-retain: a retained preview stops accepting live-sync generations so
+// the promoted PR stays the authoritative capture. Skipped for an interactive
+// handoff (the user keeps editing). Freeze failure never fails the run — the
+// draft PR already exists; the outcome is recorded instead.
+let freezeOutcome = null;
+if (retainAfterCompletion) {
+  if (interactiveHandoff) {
+    freezeOutcome = { attempted: false, frozen: false, skipped: "interactive-handoff" };
+  } else {
+    const freeze = dataOf(
+      await action(
+        "dev/preview-freeze",
+        { services },
+        { label: "freeze retained preview live-sync", allowFailure: true },
+      ),
+    );
+    freezeOutcome =
+      freeze.ok === true
+        ? { attempted: true, frozen: true, receipt: freeze }
+        : {
+            attempted: true,
+            frozen: false,
+            error: String(
+              freeze.error ?? freeze.message ?? freeze.skipped ?? "dev/preview-freeze failed",
+            ).slice(0, 1000),
+          };
+  }
+}
+
+// Interactive handoff: keep a persistent agent session alive against the still
+// live-sync-open preview (mirrors microservice-dev-session's session/spawn
+// pattern — direct sessions default to interactive/autoTerminate=false).
+let handoffSession = null;
+if (interactiveHandoff) {
+  handoffSession = dataOf(
+    await action(
+      "session/spawn",
+      {
+        agentSlug,
+        instructions:
+          `You are the interactive developer continuing work on the retained workflow-builder preview for these services: **${services.join(", ")}**.\n` +
+          `A draft PR was already opened from the automated run; further edits are yours to iterate on.\n` +
+          `- Live preview: ${previewUrl} (routes: ${routes.join(", ")}).\n` +
+          `- Pull source from the dev-sync sidecar export endpoint ${exportUrl} and push atomic generations to ${syncUrl} with header x-sync-token: ${syncCapability}.\n` +
+          "- Do not commit or push from the session. Receiver-owned `dev/preview-snapshot` and `dev/preview-promote` actions are the only source-capture and GitHub-write authorities.\n" +
+          "- Never touch auth/sign-in code.\n\n" +
+          "Original user task for context:\n" +
+          intent,
+      },
+      { label: "interactive handoff session" },
+    ),
+  );
+}
+
 return {
   controlAction: "submit_preview_pr",
   controlOutcome: "submitted",
@@ -372,4 +464,16 @@ return {
   promotionReceipt,
   pullRequestReceipt: promotionReceipt,
   pullRequest: promotionReceipt.pullRequest ?? null,
+  // Opt-in only: with the flags absent/false the output shape above is unchanged.
+  ...(retainAfterCompletion
+    ? { retainAfterCompletion: true, ttlHours, sandboxTimeoutSeconds, freezeOutcome }
+    : {}),
+  ...(interactiveHandoff
+    ? {
+        handoff: true,
+        interactiveHandoff: true,
+        sessionId: handoffSession?.sessionId ?? null,
+        sessionUrl: String(handoffSession?.url ?? handoffSession?.sessionUrl ?? ""),
+      }
+    : {}),
 };

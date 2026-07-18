@@ -39,6 +39,77 @@ describe("preview development command boundary", () => {
     });
   });
 
+  it("passes the retention opt-in keys through both boundaries verbatim", () => {
+    const input = {
+      intent: "Update the dashboard",
+      services: ["workflow-builder"],
+      ttlHours: 12,
+      retainAfterCompletion: true,
+      interactiveHandoff: "false",
+    };
+    expect(
+      parsePreviewDevelopmentHostRequest({
+        parentExecutionId: "parent-1",
+        command: {
+          kind: "start-workflow",
+          operationId: operationId("start-workflow"),
+          target,
+          input,
+        },
+      }),
+    ).toMatchObject({ command: { kind: "start-workflow", input } });
+    expect(
+      parsePreviewDevelopmentWireRequest({
+        parentExecutionId: "parent-1",
+        command: {
+          kind: "start-workflow",
+          actorUserId: "admin-1",
+          operationId: operationId("start-workflow"),
+          target,
+          executionId: "child-1",
+          workflowSpecDigest: `sha256:${"c".repeat(64)}`,
+          input,
+        },
+      }),
+    ).toMatchObject({ kind: "start-workflow", workflowInput: input });
+  });
+
+  it("keeps the default start input free of retention keys and rejects unknown ones", () => {
+    const parsed = parsePreviewDevelopmentHostRequest({
+      parentExecutionId: "parent-1",
+      command: {
+        kind: "start-workflow",
+        operationId: operationId("start-workflow"),
+        target,
+        input: {
+          intent: "Update the dashboard",
+          services: ["workflow-builder"],
+        },
+      },
+    });
+    if (parsed.command.kind !== "start-workflow") {
+      throw new Error("expected a start-workflow command");
+    }
+    expect(parsed.command.input).not.toHaveProperty("ttlHours");
+    expect(parsed.command.input).not.toHaveProperty("retainAfterCompletion");
+    expect(parsed.command.input).not.toHaveProperty("interactiveHandoff");
+    expect(() =>
+      parsePreviewDevelopmentHostRequest({
+        parentExecutionId: "parent-1",
+        command: {
+          kind: "start-workflow",
+          operationId: operationId("start-workflow"),
+          target,
+          input: {
+            intent: "Update the dashboard",
+            services: ["workflow-builder"],
+            retainForever: true,
+          },
+        },
+      }),
+    ).toThrow("workflowInput has unsupported fields: retainForever");
+  });
+
   it.each(["actorUserId", "targetUrl", "capability", "workflowName"])(
     "rejects caller authority field %s",
     (field) => {

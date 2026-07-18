@@ -43,6 +43,7 @@ PRIVILEGED_PREVIEW_ACTION_SLUGS = frozenset(
         "dev/preview-promote",
         "dev/preview-acceptance",
         "dev/preview-build",
+        "dev/preview-freeze",
     }
 )
 

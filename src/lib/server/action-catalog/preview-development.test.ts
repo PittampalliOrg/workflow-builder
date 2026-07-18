@@ -41,6 +41,32 @@ describe("preview development action catalog", () => {
     );
   });
 
+  it("accepts the additive retention opt-ins on workflow-start without requiring them", async () => {
+    const snapshot = await loadActionCatalogSnapshot(null);
+    const start = snapshot.items.find(
+      (item) => item.actionName === "preview/workflow-start",
+    );
+    const schema = start?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, Record<string, unknown>>;
+    };
+    // Additive only: the default payload (target/intent/services) stays valid.
+    expect(schema?.required).toEqual(["target", "intent", "services"]);
+    expect(schema?.properties?.ttlHours).toEqual({
+      type: "integer",
+      minimum: 2,
+      maximum: 24,
+    });
+    expect(schema?.properties?.retainAfterCompletion).toEqual({
+      type: "boolean",
+    });
+    expect(schema?.properties?.interactiveHandoff).toEqual({
+      type: "boolean",
+    });
+    // Opt-ins are never defaulted — absent must stay absent.
+    expect(JSON.stringify(schema)).not.toContain('"default"');
+  });
+
   it("does not expose actor, origin, revision authority, URL, or credentials on launch", async () => {
     const snapshot = await loadActionCatalogSnapshot(null);
     const launch = snapshot.items.find(

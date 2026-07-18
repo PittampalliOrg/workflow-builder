@@ -50,10 +50,14 @@ async function drive(
 		terminalOutput?: Record<string, unknown>;
 		ttlHours?: number;
 		runningPolls?: number;
+		retainAfterCompletion?: boolean;
 		retainOnFailure?: boolean;
+		interactiveHandoff?: boolean;
 		startFailureMessage?: string;
 		transientStartFailures?: number;
+		transientStartFailureMessage?: string;
 		transientStatusFailures?: number;
+		transientStatusFailureMessage?: string;
 		promotionVerification?: Record<string, unknown>;
 	} = {},
 ) {
@@ -62,8 +66,9 @@ async function drive(
 		environmentName: "feature-one",
 		services: ["workflow-builder"],
 		ttlHours: options.ttlHours ?? 8,
-		retainAfterCompletion: false,
+		retainAfterCompletion: options.retainAfterCompletion === true,
 		...(options.retainOnFailure === true ? { retainOnFailure: true } : {}),
+		...(options.interactiveHandoff === true ? { interactiveHandoff: true } : {}),
 	};
   const completedResults: Record<
     string,
@@ -117,7 +122,9 @@ async function drive(
 						status = "error";
 						errorCode = "action_error";
 						value = {
-							message: "preview development endpoint returned HTTP 502",
+							message:
+								options.transientStartFailureMessage ??
+								"preview development endpoint returned HTTP 502",
 						};
 						break;
 					}
@@ -134,7 +141,9 @@ async function drive(
               status = "error";
               errorCode = "action_error";
               value = {
-                message: "preview development endpoint returned HTTP 409",
+                message:
+                  options.transientStatusFailureMessage ??
+                  "preview development endpoint returned HTTP 409",
               };
               break;
             }
@@ -237,6 +246,13 @@ describe("host preview development lifecycle", () => {
       name: "preview-development-lifecycle",
       input: { required: ["intent", "environmentName"] },
     });
+    expect(result.meta).toMatchObject({
+      input: {
+        properties: {
+          interactiveHandoff: { type: "boolean", default: false },
+        },
+      },
+    });
   });
 
   it("starts the automated child, verifies its draft PR receipt, and tears down", async () => {
@@ -308,6 +324,112 @@ describe("host preview development lifecycle", () => {
 		expect(
 			tasks.some((task) => task.actionSlug === "preview/workflow-status"),
 		).toBe(true);
+	});
+
+	it("retries the workflow-start seed race (HTTP 404) until the child workflow is installed", async () => {
+		const { result, tasks } = await drive({
+			transientStartFailures: 3,
+			transientStartFailureMessage:
+				"preview development endpoint returned HTTP 404",
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		expect(
+			tasks.filter((task) => task.actionSlug === "preview/workflow-start"),
+		).toHaveLength(4);
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/workflow-status"),
+		).toBe(true);
+	});
+
+	it("still fails a genuinely-missing child workflow once the bounded 404 budget is exhausted", async () => {
+		const { result, tasks } = await drive({
+			startFailureMessage: "preview development endpoint returned HTTP 404",
+		});
+		expect(result.status).toBe("script_error");
+		expect(result.error?.message).toContain(
+			"preview development endpoint returned HTTP 404",
+		);
+		// The seed-race gate is bounded by the existing 25 x 5s attempt budget.
+		expect(
+			tasks.filter((task) => task.actionSlug === "preview/workflow-start"),
+		).toHaveLength(25);
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
+		).toBe(true);
+	});
+
+	it("keeps workflow-status 404s as fast contract failures (seed race is start-only)", async () => {
+		const { result, tasks } = await drive({
+			transientStatusFailures: 1,
+			transientStatusFailureMessage:
+				"preview development endpoint returned HTTP 404",
+		});
+		expect(result.status).toBe("script_error");
+		expect(result.error?.message).toContain(
+			"preview development endpoint returned HTTP 404",
+		);
+		expect(
+			tasks.filter((task) => task.actionSlug === "preview/workflow-status"),
+		).toHaveLength(1);
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
+		).toBe(true);
+	});
+
+	it("keeps the default child start payload free of retention keys", async () => {
+		const { result, tasks } = await drive();
+		expect(result.status, result.error?.message).toBe("done");
+		const start = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-start",
+		);
+		expect(
+			Object.keys(start?.args as Record<string, unknown>).sort(),
+		).toEqual(["intent", "services", "target"]);
+	});
+
+	it("passes ttlHours, retainAfterCompletion, and interactiveHandoff to the child when retaining", async () => {
+		const { result, tasks } = await drive({
+			ttlHours: 12,
+			retainAfterCompletion: true,
+			interactiveHandoff: true,
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		const start = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-start",
+		);
+		expect(start?.args).toMatchObject({
+			target,
+			intent: "Add a deployment health panel",
+			services: ["workflow-builder"],
+			ttlHours: 12,
+			retainAfterCompletion: true,
+			interactiveHandoff: true,
+		});
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
+		).toBe(false);
+		expect(result.returnValue).toMatchObject({
+			retained: true,
+			retainedReason: "completed",
+		});
+	});
+
+	it("forwards the handoff flag to the child even without retention", async () => {
+		const { result, tasks } = await drive({ interactiveHandoff: true });
+		expect(result.status, result.error?.message).toBe("done");
+		const start = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-start",
+		);
+		expect(start?.args).toMatchObject({
+			ttlHours: 8,
+			retainAfterCompletion: false,
+			interactiveHandoff: true,
+		});
+		// Without retention the parent still owns teardown.
+		expect(
+			tasks.some((task) => task.actionSlug === "preview/environment-teardown"),
+		).toBe(true);
+		expect(result.returnValue).toMatchObject({ retained: false });
 	});
 
 	it("can retain the preview for debugging after a non-transient start failure", async () => {

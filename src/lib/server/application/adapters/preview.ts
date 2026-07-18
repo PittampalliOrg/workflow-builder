@@ -1,6 +1,7 @@
 import type {
   DevPreviewInfo,
   DevPreviewSourceFreezeResult,
+  DevPreviewSourcesFreezeOutcome,
   DevPreviewsResult,
   FreezeDevPreviewSourcesParams,
   ProvisionDevPreviewParams,
@@ -8,8 +9,11 @@ import type {
   PreviewDevSyncCredentialBrokerPort,
   PreviewDatabaseProvisioner,
   PreviewEnvironmentProvisioner,
+  ReleaseDevPreviewSandboxesParams,
+  ReleaseDevPreviewSandboxesResult,
   ReplaceDevPreviewImagesParams,
   ReplaceDevPreviewImagesResult,
+  RetainedFreezeDevPreviewSourcesParams,
   TeardownDevPreviewParams,
   TeardownDevPreviewResult,
 } from "$lib/server/application/ports";
@@ -17,7 +21,9 @@ import { HttpPreviewDevSyncCredentialBrokerAdapter } from "$lib/server/applicati
 import {
   provisionDevPreview,
   provisionDevPreviews,
+  freezeDevPreviewSources,
   freezeDevPreviewSourcesForTeardown,
+  releaseDevPreviewSandboxes,
   replaceDevPreviewImages,
   type DevPreviewPersistence,
   teardownDevPreview,
@@ -75,6 +81,22 @@ export class SandboxExecutionPreviewEnvironmentProvisioner implements PreviewEnv
     );
   }
 
+  freezeSources(
+    input: RetainedFreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourcesFreezeOutcome> {
+    return freezeDevPreviewSources(
+      input,
+      this.persistence?.(),
+      { broker: this.credentialBroker },
+    );
+  }
+
+  releaseSandboxes(
+    input: ReleaseDevPreviewSandboxesParams,
+  ): Promise<ReleaseDevPreviewSandboxesResult> {
+    return releaseDevPreviewSandboxes(input, this.persistence?.());
+  }
+
   teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult> {
     return teardownDevPreview(
       input,
@@ -115,6 +137,22 @@ export class KroPreviewEnvironmentProvisioner implements PreviewEnvironmentProvi
   ): Promise<DevPreviewSourceFreezeResult> {
     throw new Error(
       "PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but source freeze is not wired in the BFF yet",
+    );
+  }
+
+  async freezeSources(
+    _input: RetainedFreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourcesFreezeOutcome> {
+    throw new Error(
+      "PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but retained-source freeze is not wired in the BFF yet",
+    );
+  }
+
+  async releaseSandboxes(
+    _input: ReleaseDevPreviewSandboxesParams,
+  ): Promise<ReleaseDevPreviewSandboxesResult> {
+    throw new Error(
+      "PREVIEW_PROVISIONER_ADAPTER=kro is available for packaging pilots, but retained-sandbox release is not wired in the BFF yet",
     );
   }
 

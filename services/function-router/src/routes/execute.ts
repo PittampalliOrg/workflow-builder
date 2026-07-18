@@ -723,6 +723,7 @@ export const PRIVILEGED_PREVIEW_ACTION_SLUGS = [
 	"dev/preview-promote",
 	"dev/preview-acceptance",
 	"dev/preview-build",
+	"dev/preview-freeze",
 ] as const;
 
 export type PreviewDevelopmentActionSlug = (typeof PREVIEW_DEVELOPMENT_ACTION_SLUGS)[number];
@@ -947,13 +948,24 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 					"intent",
 					"services",
 					"agentSlug",
+					"ttlHours",
+					"retainAfterCompletion",
+					"interactiveHandoff",
 				]) ||
 				typeof actionInput.intent !== "string" ||
 				actionInput.intent.trim().length < 1 ||
 				actionInput.intent.length > 12_000 ||
 				(actionInput.agentSlug !== undefined &&
 					(typeof actionInput.agentSlug !== "string" ||
-						!SAFE_AGENT_SLUG.test(actionInput.agentSlug)))
+						!SAFE_AGENT_SLUG.test(actionInput.agentSlug))) ||
+				(actionInput.ttlHours !== undefined &&
+					(!Number.isInteger(actionInput.ttlHours) ||
+						(actionInput.ttlHours as number) < 2 ||
+						(actionInput.ttlHours as number) > 24)) ||
+				(actionInput.retainAfterCompletion !== undefined &&
+					typeof actionInput.retainAfterCompletion !== "boolean") ||
+				(actionInput.interactiveHandoff !== undefined &&
+					typeof actionInput.interactiveHandoff !== "boolean")
 			) {
 				return {
 					ok: false,
@@ -976,6 +988,17 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 						? { agentSlug: actionInput.agentSlug }
 						: {}),
 					keepPreview: "true",
+					// Retention opt-ins forward verbatim and ONLY when present so the
+					// default start payload stays byte-identical.
+					...(actionInput.ttlHours !== undefined
+						? { ttlHours: actionInput.ttlHours }
+						: {}),
+					...(actionInput.retainAfterCompletion !== undefined
+						? { retainAfterCompletion: actionInput.retainAfterCompletion }
+						: {}),
+					...(actionInput.interactiveHandoff !== undefined
+						? { interactiveHandoff: actionInput.interactiveHandoff }
+						: {}),
 				},
 			};
 		} else if (
@@ -1225,9 +1248,18 @@ export function bindDevPreviewExecutionId(
 
 const TRANSIENT_DEV_PREVIEW_STATUSES = new Set([408, 425, 429, 502, 503, 504]);
 
+type DevPreviewProxyMode =
+  | "ensure"
+  | "teardown"
+  | "snapshot"
+  | "promote"
+  | "acceptance"
+  | "build"
+  | "freeze";
+
 function expectsDurableDevPreviewActivation(
   input: Record<string, unknown>,
-  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build",
+  mode: DevPreviewProxyMode,
 ): boolean {
   return (
     mode === "ensure" &&
@@ -1292,7 +1324,7 @@ function hasExactReadyDevPreviewServices(input: {
 }
 
 export function classifyDevPreviewProxyResponse(input: {
-  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build";
+  mode: DevPreviewProxyMode;
   requestInput: Record<string, unknown>;
   executionId: string;
   status: number;
@@ -1380,7 +1412,7 @@ export function classifyDevPreviewProxyResponse(input: {
 
 async function executeDevPreview(
   input: Record<string, unknown>,
-  mode: "ensure" | "teardown" | "snapshot" | "promote" | "acceptance" | "build",
+  mode: DevPreviewProxyMode,
   dbExecutionId: string | null | undefined,
 ): Promise<ExecuteResponse> {
   const started = Date.now();
@@ -1503,6 +1535,21 @@ async function executeDevPreview(
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
         body: JSON.stringify(buildDevPreviewBuildPayload(input)),
+      });
+    } else if (mode === "freeze") {
+      // Retained-preview live-sync freeze: make this run's dev-preview sources
+      // immutable WITHOUT tearing anything down. Idempotent per service; the
+      // BFF route reports per-service {service, frozen|failed} outcomes.
+      const freeze: Record<string, unknown> = {};
+      if (Array.isArray(input.services)) freeze.services = input.services;
+      res = await fetch(`${url}/freeze`, {
+        method: "POST",
+				signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+        },
+        body: JSON.stringify(freeze),
       });
     } else {
       const payload: Record<string, unknown> = {};
@@ -2320,7 +2367,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       functionSlug === "dev/preview-snapshot" ||
       functionSlug === "dev/preview-promote" ||
       functionSlug === "dev/preview-acceptance" ||
-      functionSlug === "dev/preview-build"
+      functionSlug === "dev/preview-build" ||
+      functionSlug === "dev/preview-freeze"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
@@ -2334,7 +2382,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 ? "acceptance"
                 : functionSlug === "dev/preview-build"
                   ? "build"
-                  : "ensure",
+                  : functionSlug === "dev/preview-freeze"
+                    ? "freeze"
+                    : "ensure",
         body.db_execution_id,
       );
       // A staged dev/preview activation carries retryability and the target HTTP

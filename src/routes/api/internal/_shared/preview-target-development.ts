@@ -117,7 +117,15 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   const raw = object(value, "workflowInput");
   assertKeys(
     raw,
-    ["intent", "services", "agentSlug", "keepPreview"],
+    [
+      "intent",
+      "services",
+      "agentSlug",
+      "keepPreview",
+      "ttlHours",
+      "retainAfterCompletion",
+      "interactiveHandoff",
+    ],
     "workflowInput",
   );
   if (!Array.isArray(raw.services)) {
@@ -135,6 +143,28 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   ) {
     throw new Error("workflowInput.keepPreview must be a boolean");
   }
+  // Retention opt-ins are additive pass-through fields: shape-checked here,
+  // range/enum-validated by normalizeWorkflowInput, forwarded verbatim.
+  const ttlHours = raw.ttlHours;
+  if (ttlHours !== undefined && typeof ttlHours !== "number") {
+    throw new Error("workflowInput.ttlHours must be a number");
+  }
+  const retainAfterCompletion = raw.retainAfterCompletion;
+  if (
+    retainAfterCompletion !== undefined &&
+    typeof retainAfterCompletion !== "boolean" &&
+    typeof retainAfterCompletion !== "string"
+  ) {
+    throw new Error("workflowInput.retainAfterCompletion must be a boolean");
+  }
+  const interactiveHandoff = raw.interactiveHandoff;
+  if (
+    interactiveHandoff !== undefined &&
+    typeof interactiveHandoff !== "boolean" &&
+    typeof interactiveHandoff !== "string"
+  ) {
+    throw new Error("workflowInput.interactiveHandoff must be a boolean");
+  }
   return {
     intent: string(raw.intent, "workflowInput.intent"),
     services: raw.services.map((service, index) =>
@@ -142,6 +172,9 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
     ),
     ...(agentSlug !== undefined ? { agentSlug } : {}),
     ...(keepPreview !== undefined ? { keepPreview } : {}),
+    ...(ttlHours !== undefined ? { ttlHours } : {}),
+    ...(retainAfterCompletion !== undefined ? { retainAfterCompletion } : {}),
+    ...(interactiveHandoff !== undefined ? { interactiveHandoff } : {}),
   };
 }
 

@@ -146,6 +146,44 @@ export type FreezeDevPreviewSourcesParams = Readonly<{
   services: readonly string[];
 }>;
 
+export type RetainedFreezeDevPreviewSourcesParams = Readonly<{
+  executionId: string;
+  services?: readonly string[] | null;
+}>;
+
+export type DevPreviewServiceFreezeOutcome = Readonly<{
+  service: string;
+  status: "frozen" | "failed";
+  message: string;
+}>;
+
+export type DevPreviewSourcesFreezeOutcome = Readonly<{
+  ok: boolean;
+  executionId: string;
+  services: readonly DevPreviewServiceFreezeOutcome[];
+}>;
+
+export type ReleaseDevPreviewSandboxesParams = Readonly<{
+  executionId: string;
+  service?: string | null;
+}>;
+
+export type DevPreviewReleaseOutcome = Readonly<{
+  sandboxName: string;
+  service: string;
+  status: "released" | "deferred" | "failed";
+  message: string | null;
+}>;
+
+export type ReleaseDevPreviewSandboxesResult = Readonly<{
+  ok: boolean;
+  complete: boolean;
+  pending: boolean;
+  found: boolean;
+  executionId: string;
+  sandboxes: readonly DevPreviewReleaseOutcome[];
+}>;
+
 export interface TeardownDevPreviewParams {
   executionId: string;
   sandboxName?: string | null;
@@ -198,5 +236,20 @@ export interface PreviewEnvironmentProvisioner {
   freezeSourcesForTeardown(
     input: FreezeDevPreviewSourcesParams,
   ): Promise<DevPreviewSourceFreezeResult>;
+  /**
+   * Freezes a RETAINED execution's live-sync receivers in place
+   * (`dev/preview-freeze`): no teardown intent, per-service outcomes,
+   * idempotent — already-frozen receivers report `frozen`.
+   */
+  freezeSources(
+    input: RetainedFreezeDevPreviewSourcesParams,
+  ): Promise<DevPreviewSourcesFreezeOutcome>;
+  /**
+   * Releases a retained execution's adopted dev Sandboxes on demand; the
+   * preview environment itself stays up and no source checkpoint is captured.
+   */
+  releaseSandboxes(
+    input: ReleaseDevPreviewSandboxesParams,
+  ): Promise<ReleaseDevPreviewSandboxesResult>;
   teardown(input: TeardownDevPreviewParams): Promise<TeardownDevPreviewResult>;
 }
