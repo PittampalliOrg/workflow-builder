@@ -50,6 +50,9 @@ test-results
 # services/function-router paths. Same for workflow-orchestrator (Skaffold dev).
 !services/
 !services/function-router/**
+!services/script-evaluator/
+!services/script-evaluator/src/
+!services/script-evaluator/src/meta.ts
 !services/workflow-orchestrator/**
 
 # Exclude python venv + caches from services/ (devspace leftovers; bloats

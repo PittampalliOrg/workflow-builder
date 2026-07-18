@@ -14,6 +14,7 @@ FROM deps AS builder
 COPY components.json drizzle.config.ts server-prod.js svelte.config.js tsconfig.json vite.config.ts ./
 COPY drizzle ./drizzle
 COPY lib ./lib
+COPY services/script-evaluator/src/meta.ts ./services/script-evaluator/src/meta.ts
 COPY scripts ./scripts
 COPY src ./src
 COPY static ./static
