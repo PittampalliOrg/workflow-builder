@@ -221,6 +221,7 @@ async function main() {
 		return payload;
 	});
 
+	// Health endpoint; marker: preview-proof-c-five-service-rerun (no behavior change).
 	app.get("/health", async () => ({ status: "healthy" }));
 
 	app.post<{
