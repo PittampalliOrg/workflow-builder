@@ -17265,6 +17265,7 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
     ...opts.modelSpec ? { modelSpec: opts.modelSpec } : {},
     ...opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {},
     ...opts.contextWindowTokens ? { contextWindowTokens: opts.contextWindowTokens } : {},
+    ...opts.runtimeIsolation ? { runtimeIsolation: opts.runtimeIsolation } : {},
     ...opts.effort ? { effort: opts.effort } : {},
     ...opts.instructions ? { instructions: opts.instructions } : {},
     maxTurns: 50,
@@ -17353,7 +17354,8 @@ async function seedGeneratorCriticShowcases(params) {
     description: "Kimi K3 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
     modelSpec: "kimi/kimi-k3",
     reasoningEffort: "max",
-    contextWindowTokens: 1048576
+    contextWindowTokens: 1048576,
+    runtimeIsolation: "dedicated"
   });
   const PLAYWRIGHT_CRITIC_MCP = [
     {
