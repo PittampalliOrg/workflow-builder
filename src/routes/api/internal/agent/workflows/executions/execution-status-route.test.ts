@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
     getScopedExecutionById: vi.fn(),
 		getWorkflowByRef: vi.fn(),
     getScopedWorkflowById: vi.fn(),
-		updateExecutionReadModel: vi.fn(),
+		compareAndSetExecutionReadModel: vi.fn(),
 	},
 	daprFetch: vi.fn(),
 	getOrchestratorUrl: vi.fn(),
@@ -68,7 +68,9 @@ describe("internal agent workflow execution status route", () => {
 		mocks.validateInternalOrPreviewControlRead.mockReturnValue(true);
     mocks.validateInternalToken.mockReturnValue(false);
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
-		mocks.workflowData.updateExecutionReadModel.mockResolvedValue(undefined);
+		mocks.workflowData.compareAndSetExecutionReadModel.mockImplementation(
+			async (input: { patch: Record<string, unknown> }) => makeExecution(input.patch),
+		);
 		mocks.getOrchestratorUrl.mockReturnValue("http://orchestrator");
 	});
 
@@ -98,14 +100,14 @@ describe("internal agent workflow execution status route", () => {
 		const body = await response.json();
 
 		expect(response.status).toBe(200);
-		expect(mocks.workflowData.updateExecutionReadModel).not.toHaveBeenCalled();
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).not.toHaveBeenCalled();
 		expect(body.execution.output).toEqual({ result: "final" });
 		expect(body.execution.progress).toBe(100);
 	});
 
 	it("skips the DB sync for every terminal status", async () => {
 		for (const status of ["success", "error", "cancelled"]) {
-			mocks.workflowData.updateExecutionReadModel.mockClear();
+			mocks.workflowData.compareAndSetExecutionReadModel.mockClear();
 			mocks.workflowData.getExecutionById.mockResolvedValue(
 				makeExecution({ status, phase: "completed", progress: 100 }),
 			);
@@ -122,7 +124,7 @@ describe("internal agent workflow execution status route", () => {
 
 			expect(response.status).toBe(200);
       expect(
-        mocks.workflowData.updateExecutionReadModel,
+        mocks.workflowData.compareAndSetExecutionReadModel,
       ).not.toHaveBeenCalled();
 		}
 	});
@@ -141,17 +143,18 @@ describe("internal agent workflow execution status route", () => {
 		const response = await callGet();
 
 		expect(response.status).toBe(200);
-    expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledTimes(
+    expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledTimes(
       1,
     );
-		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith(
-			"exec-1",
-			expect.objectContaining({
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: expect.objectContaining({
 				status: "running",
 				phase: "Finalize",
 				progress: 90,
 			}),
-		);
+		});
 	});
 
 	it("never lets runtime outputs replace an existing persisted output on a running row", async () => {
@@ -170,10 +173,11 @@ describe("internal agent workflow execution status route", () => {
 
 		await callGet();
 
-		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith(
-			"exec-1",
-			expect.objectContaining({ output: { result: "persisted" } }),
-		);
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: expect.objectContaining({ output: { result: "persisted" } }),
+		});
 	});
 
 	it("fills a null output from runtime outputs on a running row", async () => {
@@ -192,9 +196,10 @@ describe("internal agent workflow execution status route", () => {
 
 		await callGet();
 
-		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith(
-			"exec-1",
-			expect.objectContaining({ output: { result: "from-runtime" } }),
-		);
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: expect.objectContaining({ output: { result: "from-runtime" } }),
+		});
 	});
 });
