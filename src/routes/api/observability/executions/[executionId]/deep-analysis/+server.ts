@@ -7,8 +7,9 @@ import { ensureTraceAnalysisWorkflow } from '$lib/server/observability/trace-ana
  * POST /api/observability/executions/[executionId]/deep-analysis
  *
  * Launch the multi-agent `trace-deep-analysis` dynamic-script workflow
- * against this execution (the platform analyzing itself): four parallel lens
- * reviewers with the trace_* MCP tools, then a schema'd synthesis returning a
+ * against this execution (the platform analyzing itself): bounded transcript,
+ * reliability, and optional vision reviewers with adversarial verification,
+ * then a schema'd synthesis returning a
  * TraceAnalysisReport. The target workflow's script + name ride in as args so
  * improvements can propose complete revised scripts for one-click apply.
  *

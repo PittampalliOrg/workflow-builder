@@ -1,24 +1,24 @@
 import { json } from '@sveltejs/kit';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { getApplicationAdapters } from '$lib/server/application';
+import { resolveInternalWorkflowPrincipal } from '../../../workflow-mcp-principal';
 
 /**
  * Shared guard for the internal observability routes behind the trace-analyst
- * MCP tools: INTERNAL_API_TOKEN + X-Wfb-Session-Id whose project matches the
- * execution's project — an analyst session can only read runs in its own
- * workspace.
+ * MCP tools. The service token authenticates the MCP server, while the signed
+ * workflow principal authorizes the caller's workspace and workflow:read scope.
  */
-type GuardContext = NonNullable<
+type GuardExecution = NonNullable<
 	Awaited<
 		ReturnType<
-			ReturnType<typeof getApplicationAdapters>['workflowData']['getObservabilityServiceGraphContext']
+			ReturnType<typeof getApplicationAdapters>['workflowData']['getScopedExecutionById']
 		>
 	>
 >;
 
 type GuardResult =
 	| { ok: false; res: Response }
-	| { ok: true; execution: NonNullable<GuardContext['execution']> };
+	| { ok: true; execution: GuardExecution };
 
 export async function guardAnalystAccess(
 	request: Request,
@@ -27,26 +27,25 @@ export async function guardAnalystAccess(
 	if (!validateInternalToken(request)) {
 		return { ok: false, res: json({ error: 'unauthorized' }, { status: 401 }) };
 	}
-	const sessionId = request.headers.get('x-wfb-session-id') ?? '';
-	if (!sessionId) {
+
+	const app = getApplicationAdapters();
+	const principalResult = await resolveInternalWorkflowPrincipal(
+		request,
+		app.internalWorkflowPrincipal,
+		{ requiredScope: 'workflow:read' }
+	);
+	if (!principalResult.ok) {
 		return {
 			ok: false,
-			res: json({ error: 'X-Wfb-Session-Id header is required' }, { status: 400 })
+			res: json({ error: principalResult.error }, { status: principalResult.status })
 		};
 	}
-	const app = getApplicationAdapters();
-	const owner = await app.workflowData.getSessionFileOwner(sessionId).catch(() => null);
-	if (!owner) {
-		return { ok: false, res: json({ error: `Session ${sessionId} not found` }, { status: 404 }) };
-	}
-	const execution = await app.workflowData
-		.getObservabilityServiceGraphContext({
-			userId: owner.userId,
-			projectId: owner.projectId ?? null,
-			executionId
-		})
-		.then((ctx) => ctx?.execution ?? null)
-		.catch(() => null);
+
+	const execution = await app.workflowData.getScopedExecutionById({
+		executionId,
+		userId: principalResult.principal.userId,
+		projectId: principalResult.principal.projectId
+	});
 	if (!execution) {
 		return {
 			ok: false,

@@ -1845,7 +1845,7 @@
 	}
 
 	function browserBlobUrl(storageRef: string): string {
-		return `/api/workflows/browser-artifacts/blob?storageRef=${encodeURIComponent(storageRef)}`;
+		return `/api/workflows/browser-artifacts/blob?executionId=${encodeURIComponent(executionId)}&storageRef=${encodeURIComponent(storageRef)}`;
 	}
 
 	function assetForStep(artifact: BrowserArtifact, stepId: string): BrowserAsset | undefined {

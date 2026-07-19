@@ -4230,16 +4230,14 @@ export class PostgresWorkflowBrowserArtifactStore implements WorkflowBrowserArti
 		const manifestAssets = manifest.assets as Array<Record<string, unknown>>;
 		for (const [index, asset] of allAssets.entries()) {
 			const contentType = browserArtifactContentType(asset);
-			const storageRef =
-				asset.storageRef ||
-				browserArtifactStorageRef({
-					workflowExecutionId: input.workflowExecutionId,
-					artifactId,
-					kind: asset.kind,
-					index,
-					contentType,
-					fileName: asset.fileName,
-				});
+			const storageRef = browserArtifactStorageRef({
+				workflowExecutionId: input.workflowExecutionId,
+				artifactId,
+				kind: asset.kind,
+				index,
+				contentType,
+				fileName: asset.fileName,
+			});
 			await this.database
 				.insert(workflowBrowserArtifactBlobPayloads)
 				.values({
@@ -5790,16 +5788,13 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		input: ListProjectWorkflowRunsInput,
 	): Promise<ProjectWorkflowRunSummary[]> {
 		const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
-    const conditions: SQL[] = [
-      eq(workflowExecutions.projectId, input.projectId),
-    ];
+		const offset = Math.max(input.offset ?? 0, 0);
+		const conditions: SQL[] = [eq(workflowExecutions.projectId, input.projectId)];
 		if (input.workflowId) {
 			conditions.push(eq(workflowExecutions.workflowId, input.workflowId));
 		}
-    if (input.status)
-      conditions.push(eq(workflowExecutions.status, input.status));
-    if (input.since)
-      conditions.push(gte(workflowExecutions.startedAt, input.since));
+		if (input.status) conditions.push(eq(workflowExecutions.status, input.status));
+		if (input.since) conditions.push(gte(workflowExecutions.startedAt, input.since));
 		if (input.q && input.q.trim().length >= 2) {
 			const needle = `%${input.q.trim()}%`;
 			const textCondition = or(
@@ -5822,8 +5817,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.from(workflowExecutions)
 			.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
 			.where(and(...conditions))
-			.orderBy(desc(workflowExecutions.startedAt))
-			.limit(limit);
+			.orderBy(desc(workflowExecutions.startedAt), desc(workflowExecutions.id))
+			.limit(limit)
+			.offset(offset);
 
 		if (execRows.length === 0) return [];
 

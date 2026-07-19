@@ -283,16 +283,14 @@ export class DaprPostgresWorkflowBrowserArtifactStore implements WorkflowBrowser
 		const manifestAssets = manifest.assets as Array<Record<string, unknown>>;
 		for (const [index, asset] of allAssets.entries()) {
 			const contentType = browserArtifactContentType(asset);
-			const storageRef =
-				asset.storageRef ||
-				browserArtifactStorageRef({
-					workflowExecutionId: input.workflowExecutionId,
-					artifactId,
-					kind: asset.kind,
-					index,
-					contentType,
-					fileName: asset.fileName,
-				});
+			const storageRef = browserArtifactStorageRef({
+				workflowExecutionId: input.workflowExecutionId,
+				artifactId,
+				kind: asset.kind,
+				index,
+				contentType,
+				fileName: asset.fileName,
+			});
 			await this.blobPayloads.upsertBlobPayload({
 				storageRef,
 				payloadBase64: asset.payloadBase64,

@@ -8,9 +8,10 @@ import { setSpanOutput } from "./observability/content.js";
 import type { RegisteredTool } from "./workflow-tools.js";
 
 export const WORKFLOW_MCP_INSTRUCTIONS = [
-  "Call get_workflow_context before workflow writes to confirm the authenticated workspace and capabilities.",
+  "Call get_workflow_context before workflow writes or run debugging to confirm the authenticated workspace and capabilities.",
   "Workflow definition operations use the authenticated Workflow Builder workspace and do not take a sessionId tool argument.",
-  "A validated session attachment enables goal and trace lineage; team capabilities additionally require a signed platform team role.",
+  "Workflow trace debugging is workspace-scoped: workflow:read enables run discovery, execution inspection, and trace reads without a session attachment.",
+  "A validated session attachment enables goal and explicit session lineage operations; team capabilities additionally require a signed platform team role.",
   "Do not use an MCP transport session ID, an AI-client thread ID, or a raw Workflow Builder session ID as authentication.",
 ].join(" ");
 
@@ -33,6 +34,7 @@ export function workflowContextDocument(
       scopes: [],
       capabilities: {
         workflowRead: false,
+        workflowDebug: false,
         workflowWrite: false,
         workflowExecute: false,
         agentWrite: false,
@@ -45,7 +47,7 @@ export function workflowContextDocument(
       setup: {
         header: "Authorization: Bearer <workspace API key>",
         message:
-          "Create the key in the selected workspace's Settings > API Keys screen, then configure it on the MCP connection. Do not supply a sessionId to workflow authoring tools.",
+          "Create the key in the selected workspace's Settings > API Keys screen, then configure it on the MCP connection. Do not supply a sessionId to workflow authoring or trace-debugging tools.",
       },
     };
   }
@@ -61,6 +63,7 @@ export function workflowContextDocument(
     scopes: principal.scopes,
     capabilities: {
       workflowRead: hasWorkflowMcpScope(principal, "workflow:read"),
+      workflowDebug: hasWorkflowMcpScope(principal, "workflow:read"),
       workflowWrite: hasWorkflowMcpScope(principal, "workflow:write"),
       workflowExecute: hasWorkflowMcpScope(principal, "workflow:execute"),
       agentWrite: hasWorkflowMcpScope(principal, "agent:write"),
@@ -78,7 +81,7 @@ export function registerWorkflowContextTool(
     {
       title: "Get Workflow Context",
       description:
-        "Show the authenticated Workflow Builder workspace, optional attached platform session, granted scopes, and setup guidance. Call this first when workflow operations are unavailable or their ownership is unclear.",
+        "Show the authenticated Workflow Builder workspace, optional attached platform session, granted scopes, workflow-debug capability, and setup guidance. Call this first when workflow operations or trace tools are unavailable, or when their ownership is unclear.",
       inputSchema: {},
     },
     async () => textResult(workflowContextDocument(context)),

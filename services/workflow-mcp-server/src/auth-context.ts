@@ -9,6 +9,8 @@ export const WORKFLOW_MCP_SCOPES = [
   "agent:write",
   "session:goal",
   "session:team",
+  // Legacy platform claim retained for mixed-version rollouts. Trace tools
+  // authorize with workflow:read and do not depend on this scope.
   "session:trace",
 ] as const;
 
@@ -362,12 +364,11 @@ export function hasWorkflowMcpScope(
 
 export function workflowMcpSessionToolAccess(
   principal: WorkflowMcpPrincipal | null | undefined,
-): { goal: boolean; team: boolean; trace: boolean } {
+): { goal: boolean; team: boolean } {
   const hasSession = Boolean(principal?.sessionId);
   return {
     goal: hasSession && hasWorkflowMcpScope(principal, "session:goal"),
     team: hasSession && hasWorkflowMcpScope(principal, "session:team"),
-    trace: hasSession && hasWorkflowMcpScope(principal, "session:trace"),
   };
 }
 

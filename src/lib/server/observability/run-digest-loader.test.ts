@@ -7,7 +7,7 @@ import type {
 const mocks = vi.hoisted(() => ({
 	getApplicationAdapters: vi.fn(),
 	getMultiTraceSpanSummaries: vi.fn(),
-	getMultiTraceLlmSpans: vi.fn(),
+	getMultiTraceDigestLlmSpans: vi.fn(),
 	isClickHouseConfigured: vi.fn(),
 	resolveExecutionTraceIds: vi.fn(),
 	buildStepGraphDynamicScript: vi.fn()
@@ -19,7 +19,7 @@ vi.mock('$lib/server/application', () => ({
 
 vi.mock('$lib/server/otel/clickhouse', () => ({
 	getMultiTraceSpanSummaries: mocks.getMultiTraceSpanSummaries,
-	getMultiTraceLlmSpans: mocks.getMultiTraceLlmSpans,
+	getMultiTraceDigestLlmSpans: mocks.getMultiTraceDigestLlmSpans,
 	isClickHouseConfigured: mocks.isClickHouseConfigured
 }));
 
@@ -124,7 +124,11 @@ describe('run digest trace bundle degradation', () => {
 		mocks.getMultiTraceSpanSummaries.mockRejectedValue(
 			new Error('summary timeout')
 		);
-		mocks.getMultiTraceLlmSpans.mockResolvedValue([llm]);
+		mocks.getMultiTraceDigestLlmSpans.mockResolvedValue({
+			spans: [llm],
+			truncated: false,
+			limit: 20_000
+		});
 
 		const row = execution('exec-summary-fails');
 		const bundle = await loadExecutionTraceBundle(row);
@@ -153,7 +157,7 @@ describe('run digest trace bundle degradation', () => {
 			truncated: false,
 			limit: 20_000
 		});
-		mocks.getMultiTraceLlmSpans.mockRejectedValue(
+		mocks.getMultiTraceDigestLlmSpans.mockRejectedValue(
 			new Error('LLM view unavailable')
 		);
 

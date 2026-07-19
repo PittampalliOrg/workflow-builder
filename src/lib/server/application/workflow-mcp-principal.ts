@@ -13,6 +13,8 @@ import { workflowMcpSessionIsTerminal } from "./workflow-mcp-session-policy";
 const PLATFORM_SESSION_BASE_SCOPES = [
   "session:goal",
   "session:team",
+  // Retained while older workflow-mcp-server pods still gate trace tools on
+  // this claim. Current trace reads authorize with workflow:read.
   "session:trace",
 ];
 

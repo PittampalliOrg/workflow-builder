@@ -10,8 +10,8 @@ import { getApplicationAdapters } from '$lib/server/application';
 // LLM-turn/log reads) instead of receiving a trace dump, and cites evidence
 // with [call:<callId>] / [session:<sessionId>] / [span:<spanId>] tokens the
 // run-view renders as clickable chips. Mirrors the author-session pattern
-// (per-project agent, experiment-config persona pinning, X-Wfb-Session-Id
-// scoping of the MCP tools).
+// (per-project agent and experiment-config persona pinning). Trace tools are
+// authorized by the workspace principal's workflow:read scope.
 // ---------------------------------------------------------------------------
 
 const ANALYST_SLUG = 'trace-analyst';
@@ -25,12 +25,16 @@ function analystSystemPrompt(executionId: string, workflowName: string | null): 
 		`happened in workflow execution "${executionId}"${workflowName ? ` (workflow "${workflowName}")` : ''} using its OpenTelemetry trace.`,
 		'',
 		'Method — investigate, never guess:',
-		`1. ALWAYS start with trace_get_digest(executionId: "${executionId}") — status, phases,`,
-		'   durations, tokens/cost, cache hit, critical path, budget, and the issues list.',
-		'2. Drill only where the question needs it: trace_search_spans (errorsOnly for',
+		`1. ALWAYS start with debug_workflow_execution(executionId: "${executionId}") to`,
+		'   inventory persisted state, failure evidence, and browser screenshot refs.',
+		`2. Call trace_get_digest(executionId: "${executionId}") for phases, durations,`,
+		'   tokens/cost, cache hit, critical path, budget, and the issues list.',
+		'3. Drill only where the question needs it: trace_search_spans (errorsOnly for',
 		'   failures), trace_get_llm_turn (what an agent was asked / replied — by spanId or',
-		'   the call\'s child sessionId from the digest), trace_get_logs.',
-		`3. Only analyze THIS execution ("${executionId}"). Refuse other execution ids.`,
+		'   the call\'s child sessionId from the digest), trace_get_span, and trace_get_logs.',
+		'4. For browser/UI claims, call trace_get_browser_screenshot with a screenshot',
+		'   storageRef from debug_workflow_execution and inspect the returned pixels.',
+		`5. Only analyze THIS execution ("${executionId}"). Refuse other execution ids.`,
 		'',
 		'Answer style: lead with the answer in 1-3 sentences, then the evidence.',
 		'',
@@ -123,7 +127,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 			agentId,
 			agentConfig: analystConfig(params.executionId, workflowName),
 			title: `Analyst · ${params.executionId.slice(0, 8)}`,
-			initialMessage: `Analyze workflow execution "${params.executionId}". Start with trace_get_digest, then give me a crisp summary of what happened (phases, timing, cost) and flag anything unusual — with citations.`
+			initialMessage: `Analyze workflow execution "${params.executionId}". Start with debug_workflow_execution, then trace_get_digest; summarize what happened and inspect captured pixels for any browser/UI claims — with citations.`
 		}
 	});
 

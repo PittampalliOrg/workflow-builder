@@ -118,6 +118,7 @@ import {
   ClickHouseTraceOwnerResolver,
   ClickHouseTraceSpanDetailReader,
 } from "$lib/server/application/adapters/observability-trace-access";
+import { ClickHouseWorkflowDiagnosticsReadAdapter } from "$lib/server/application/adapters/workflow-diagnostics";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
 import { PostgresResourceMetricsRepository } from "$lib/server/application/adapters/aggregate-metrics";
@@ -291,6 +292,7 @@ import { ApplicationAgentProfileService } from "$lib/server/application/agent-pr
 import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/agent-registry-browser";
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
 import { ApplicationObservabilityTraceAccessService } from "$lib/server/application/observability-trace-access";
+import { ApplicationWorkflowDiagnosticsQueryService } from "$lib/server/application/workflow-diagnostics";
 import { ApplicationCapabilityBundleService } from "$lib/server/application/capability-bundles";
 import { ApplicationAgentSkillService } from "$lib/server/application/agent-skills";
 import { ApplicationResourceMetricsService } from "$lib/server/application/resource-metrics";
@@ -675,6 +677,9 @@ export function getApplicationAdapters(
   let observabilityTraces: PostgresObservabilityTraceRepository | undefined;
   let observabilityTraceAccess:
     | ApplicationObservabilityTraceAccessService
+    | undefined;
+  let workflowDiagnostics:
+    | ApplicationWorkflowDiagnosticsQueryService
     | undefined;
   let capabilityBundles: ApplicationCapabilityBundleService | undefined;
   let agentSkills: ApplicationAgentSkillService | undefined;
@@ -1123,6 +1128,24 @@ export function getApplicationAdapters(
         access: getObservabilityTraces(),
         spanDetails: new ClickHouseTraceSpanDetailReader(),
       }));
+  const getWorkflowDiagnostics = () =>
+    (workflowDiagnostics ??=
+      new ApplicationWorkflowDiagnosticsQueryService(
+        new ClickHouseWorkflowDiagnosticsReadAdapter({
+          listScriptCalls: async (executionId) =>
+            (await getScriptCalls().listInternal(executionId)).map((call) => ({
+              callId: call.callId,
+              seq: call.seq,
+              kind: call.kind,
+              label: call.label,
+              phase: call.phase,
+              status: call.status ?? "null",
+              sessionId: call.sessionId,
+              retries: call.retries ?? 0,
+              errorCode: call.errorCode,
+            })),
+        }),
+      ));
   const getCapabilityBundles = () =>
     (capabilityBundles ??= new ApplicationCapabilityBundleService(
       new PostgresCapabilityBundleRepository(getDatabase),
@@ -2909,6 +2932,9 @@ export function getApplicationAdapters(
     },
     get observabilityTraceAccess() {
       return getObservabilityTraceAccess();
+    },
+    get workflowDiagnostics() {
+      return getWorkflowDiagnostics();
     },
     get capabilityBundles() {
       return getCapabilityBundles();

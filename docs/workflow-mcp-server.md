@@ -2,8 +2,8 @@
 
 `workflow-mcp-server` is the MCP authoring and execution surface for Workflow
 Builder. External clients authenticate as a workspace principal. A Workflow
-Builder session is optional context for session-specific tools; it is not the
-owner or credential for workflow operations.
+Builder session is optional context for goal and explicit session-lineage tools;
+it is not the owner or credential for workflow operations or run debugging.
 
 ## Connect an MCP client
 
@@ -48,9 +48,13 @@ that client's secret/environment interpolation mechanism.
 
 ## Verify the selected workspace
 
-Call `get_workflow_context` before authoring or executing workflows. It reports
-the authenticated workspace, granted scopes and capabilities, and any attached
-Workflow Builder session without returning the credential.
+Call `get_workflow_context` before authoring, executing, or debugging workflows.
+It reports the authenticated workspace, granted scopes and capabilities, and
+any attached Workflow Builder session without returning the credential.
+
+`capabilities.workflowDebug` is true when the principal has `workflow:read`.
+That capability covers workspace-scoped run discovery, execution inspection,
+and trace reads. It does not require an attached Workflow Builder session.
 
 Workflow definition operations use that authenticated workspace:
 
@@ -65,6 +69,40 @@ They do not require a session ID. Saved workflows are owned by the workspace
 resolved from the bearer credential, and workflow lookups are restricted to
 that workspace.
 
+## Debug a workflow run
+
+Use a focused, progressive debugging sequence instead of loading an entire
+trace into the client's context:
+
+1. Call `list_workflow_executions` to discover recent runs in the authenticated
+   workspace. Filter by workflow or status when possible, then select the exact
+   workflow execution ID you intend to inspect. Do not assume the newest run is
+   the relevant one when runs may overlap.
+2. Call `debug_workflow_execution` with that execution ID. It provides the
+   current execution state and a compact debugging view suitable for both
+   running and terminal runs.
+3. Call `trace_get_digest` first for the deterministic trace summary, including
+   phases, timing, usage, critical path, and correlated issues.
+4. Drill into only the evidence the digest identifies. Use
+   `trace_search_spans` to find failures or services, `trace_get_span` for one
+   exact tool/MCP/runtime span, `trace_get_llm_turn` to inspect a selected model
+   turn, and `trace_get_logs` for correlated log lines. Browser runs also expose
+   execution-bound screenshot references; pass one to
+   `trace_get_browser_screenshot` to receive native MCP image content for vision
+   analysis.
+
+All eight tools above are authorized by the workspace principal's
+`workflow:read` scope. They work on a normal API-key connection with no
+`WFB_MCP_SESSION_ID`. An unknown execution and an execution outside the
+authenticated workspace are both reported as not found so the tools do not
+leak cross-workspace run identifiers.
+
+Trace telemetry is eventually consistent while a run is active. Treat the
+execution status as authoritative, honor any partial-data or refresh guidance
+returned by the tools, and repeat the compact inspection before requesting more
+span or log pages. A lack of matching spans is not by itself proof that a
+running workflow is stuck.
+
 ## Optional session attachment
 
 Set `WFB_MCP_SESSION_ID` only when intentionally attaching an existing Workflow
@@ -76,9 +114,10 @@ export WFB_MCP_SESSION_ID='<workflow-builder-session-id>'
 
 The shared wrapper sends it as `X-Wfb-Session-Id`. The server verifies that the
 session belongs to the same user and workspace as the API key. API-key session
-context is used by goal, trace, and explicit lineage operations; it does not
-grant team capabilities or change workflow ownership. Team capabilities are
-available only to platform-spawned agents with a signed team role.
+context is used by goal and explicit session-lineage operations; it does not
+grant trace access, team capabilities, or change workflow ownership. Trace
+access comes from `workflow:read`. Team capabilities are available only to
+platform-spawned agents with a signed team role.
 
 Platform-spawned agents receive a signed, session-bound bootstrap credential
 automatically. Users and external MCP clients do not create or supply it. The
@@ -113,6 +152,9 @@ directly to the intended preview MCP endpoint with a key created in that target.
 
 | Identifier                                                                      | Meaning                                                    | Use for workflow ownership? |
 | ------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------- |
+| Workflow definition (`workflows.id`)                                            | Saved workflow selected for authoring or execution         | No; workspace is the owner  |
+| Workflow execution (`workflow_executions.id`)                                   | One run used by execution-debugging and trace tools        | No; workspace is the owner  |
+| Trace/span IDs                                                                  | Correlated telemetry selected by targeted trace tools      | No                          |
 | MCP transport session (`Mcp-Session-Id`)                                        | Protocol state used to resume a Streamable HTTP connection | No                          |
 | Workflow Builder session (`sessions.id`)                                        | A running or retained agent session in Workflow Builder    | No; optional context only   |
 | AI client thread (`CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, and equivalents) | A local conversation owned by the AI client                | No                          |
@@ -133,6 +175,13 @@ identity from another.
   owned by the same user and workspace as the key.
 - **Wrong workspace**: use a key created from the intended workspace and confirm
   it with `get_workflow_context` before saving.
+- **Trace tools are unavailable**: call `get_workflow_context` and confirm that
+  `capabilities.workflowDebug` is true. Trace debugging requires
+  `workflow:read`, not `WFB_MCP_SESSION_ID`.
+- **No trace rows yet**: call `debug_workflow_execution` and
+  `trace_get_digest` first. For an active run, follow the returned refresh or
+  partial-data guidance before concluding telemetry is missing.
 - **Session-only tool has no context**: set an actual Workflow Builder session
-  ID explicitly. Workflow CRUD and script execution should continue to work
+  ID explicitly for goal or explicit lineage work. Workflow CRUD, execution
+  inspection, script execution, and trace debugging should continue to work
   without one.

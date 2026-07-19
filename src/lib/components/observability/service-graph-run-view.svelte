@@ -208,7 +208,7 @@
 			analysisStatus = 'running';
 			localStorage.setItem(analysisKey, JSON.stringify(body));
 			toast.success('Deep analysis started', {
-				description: '4 reviewer agents + a synthesizer are investigating this run.'
+				description: 'Bounded transcript, reliability, and vision reviewers are investigating this run.'
 			});
 		} catch (err) {
 			analysisStatus = 'failed';

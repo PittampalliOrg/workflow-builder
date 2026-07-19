@@ -1,8 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { searchTraceSpans } from '$lib/server/otel/clickhouse';
-import { resolveTraceIdsForExecution } from '$lib/server/observability/run-digest-loader';
+import { getApplicationAdapters } from '$lib/server/application';
 import { guardAnalystAccess } from '../guard';
+import { decodePageCursor, encodePageCursor, pageCursorScope } from '../pagination';
 
 /**
  * GET ?query=&errorsOnly=&limit= — search the run's connected spans by
@@ -14,23 +14,22 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 	if (!guard.ok) return guard.res;
 	const query = (url.searchParams.get('query') ?? '').toLowerCase();
 	const errorsOnly = url.searchParams.get('errorsOnly') === 'true';
-	const limit = Math.min(100, Number(url.searchParams.get('limit')) || 40);
-
-	const traceIds = await resolveTraceIdsForExecution(guard.execution);
-	const spans = traceIds.length
-		? await searchTraceSpans(traceIds, { query, errorsOnly, limit })
-		: [];
-	const rows = spans.map((s) => ({
-			spanId: s.spanId,
-			parentSpanId: s.parentSpanId,
-			traceId: s.traceId,
-			name: s.operationName,
-			service: s.serviceName,
-			startTime: s.startTime,
-			durationMs: s.duration,
-			status: s.statusCode ?? s.status,
-			statusMessage: s.statusMessage ?? null,
-			sessionId: s.attributes?.['session.id'] ?? null
-		}));
-	return json({ spans: rows, total: rows.length, limited: rows.length >= limit });
+	const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 40));
+	const cursorScope = pageCursorScope('spans', {
+		executionId: guard.execution.id,
+		query,
+		errorsOnly,
+		limit
+	});
+	const offset = decodePageCursor(url.searchParams.get('cursor'), cursorScope);
+	if (offset == null) return json({ error: 'Invalid span cursor' }, { status: 400 });
+	const result = await getApplicationAdapters().workflowDiagnostics.searchSpans({
+		execution: guard.execution,
+		query,
+		errorsOnly,
+		limit,
+		offset,
+		encodeCursor: (nextOffset) => encodePageCursor(nextOffset, cursorScope)
+	});
+	return json(result.body, { status: result.httpStatus ?? 200 });
 };

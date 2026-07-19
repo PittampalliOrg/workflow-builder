@@ -14,6 +14,8 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { PostgresWorkflowPersistenceAdapter } from "./adapters/postgres-workflow-persistence.js";
+import { HttpWorkflowDiagnosticsAdapter } from "./adapters/http-workflow-diagnostics.js";
+import { ApplicationWorkflowDiagnosticsService } from "./application/workflow-diagnostics.js";
 import {
   hasWorkflowMcpScope,
   resolveWorkflowMcpContext,
@@ -46,7 +48,12 @@ import {
 import { runWithGoalContext } from "./goal-context.js";
 import { runWithTeamContext } from "./team-context.js";
 import { registerTeamTools } from "./team-tools.js";
-import { setSpanInput, setSpanOutput } from "./observability/content.js";
+import {
+	diagnosticMcpRequestTrace,
+	diagnosticMcpResponseTrace,
+	setSpanInput,
+	setSpanOutput,
+} from "./observability/content.js";
 import type { WorkflowPersistencePort } from "./ports/workflow-persistence.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
@@ -125,17 +132,23 @@ function sendJson(
 	res.end(JSON.stringify(data));
 }
 
-function installResponseCapture(res: http.ServerResponse): void {
+type ResponseCaptureControl = {
+	setDiagnosticTool(tool: string): void;
+};
+
+function installResponseCapture(res: http.ServerResponse): ResponseCaptureControl {
 	const originalWrite = res.write.bind(res) as (...args: any[]) => boolean;
 	const originalEnd = res.end.bind(res) as (
 		...args: any[]
 	) => http.ServerResponse;
 	const chunks: Buffer[] = [];
 	let capturedBytes = 0;
+	let observedBytes = 0;
 	let finished = false;
+	let diagnosticTool: string | null = null;
 
 	const capture = (chunk: unknown, encoding?: BufferEncoding): void => {
-		if (chunk == null || capturedBytes >= RESPONSE_CAPTURE_MAX_BYTES) return;
+		if (chunk == null) return;
 		const buffer = Buffer.isBuffer(chunk)
 			? chunk
 			: ArrayBuffer.isView(chunk)
@@ -143,6 +156,8 @@ function installResponseCapture(res: http.ServerResponse): void {
 				: chunk instanceof ArrayBuffer
 					? Buffer.from(chunk)
 					: Buffer.from(String(chunk), encoding);
+		observedBytes += buffer.byteLength;
+		if (capturedBytes >= RESPONSE_CAPTURE_MAX_BYTES) return;
 		const remaining = RESPONSE_CAPTURE_MAX_BYTES - capturedBytes;
 		const selected =
 			buffer.byteLength > remaining ? buffer.subarray(0, remaining) : buffer;
@@ -180,12 +195,27 @@ function installResponseCapture(res: http.ServerResponse): void {
 			typeof encodingOrCallback === "string" ? encodingOrCallback : undefined,
 		);
 		if (chunks.length > 0) {
-			setSpanOutput(Buffer.concat(chunks).toString("utf-8"));
+			const raw = Buffer.concat(chunks).toString("utf-8");
+			setSpanOutput(
+				diagnosticTool
+					? {
+							...diagnosticMcpResponseTrace(raw, diagnosticTool),
+							responseBytes: observedBytes,
+							captureTruncated: observedBytes > capturedBytes,
+						}
+					: raw,
+			);
 		}
 		return typeof encodingOrCallback === "function"
 			? originalEnd(chunk, encodingOrCallback)
 			: originalEnd(chunk, encodingOrCallback, callback);
 	}) as typeof res.end;
+
+	return {
+		setDiagnosticTool(tool: string) {
+			diagnosticTool = tool;
+		},
+	};
 }
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
@@ -241,8 +271,13 @@ function createMcpServer(
   if (sessionTools.goal) {
 	registerGoalTools(mcpServer);
   }
-  if (sessionTools.trace) {
-	registerTraceTools(mcpServer);
+  if (hasWorkflowMcpScope(principal, "workflow:read")) {
+    registerTraceTools(mcpServer, {
+      principal,
+      diagnostics: new ApplicationWorkflowDiagnosticsService(
+        new HttpWorkflowDiagnosticsAdapter({ principal }),
+      ),
+    });
   }
 
 	// Dynamic workflow script tool — also UI-independent. Suppressed inside
@@ -269,7 +304,7 @@ async function handleRequest(
   persistence: WorkflowPersistencePort,
 ): Promise<void> {
   setCorsHeaders(req, res);
-	installResponseCapture(res);
+	const responseCapture = installResponseCapture(res);
 
 	const url = req.url ?? "/";
 	const method = req.method ?? "GET";
@@ -307,7 +342,7 @@ async function handleRequest(
 
 	if (url === "/mcp") {
 		if (method === "POST") {
-      await handleMcpPost(req, res, persistence);
+			await handleMcpPost(req, res, persistence, responseCapture);
 		} else if (method === "GET") {
 			await handleMcpGet(req, res);
 		} else if (method === "DELETE") {
@@ -327,9 +362,16 @@ async function handleMcpPost(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
   persistence: WorkflowPersistencePort,
+	responseCapture: ResponseCaptureControl,
 ): Promise<void> {
 	const body = await parseBody(req);
-	setSpanInput({ body });
+	const diagnosticRequest = diagnosticMcpRequestTrace(body);
+	if (diagnosticRequest) {
+		responseCapture.setDiagnosticTool(diagnosticRequest.tool);
+		setSpanInput(diagnosticRequest);
+	} else {
+		setSpanInput({ body });
+	}
 
   const context = await resolveWorkflowMcpContext(req.headers);
   // Recursion and team privileges come only from BFF-signed session claims.
@@ -440,8 +482,8 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
 	}
-	// Count trace tools, which are session-scoped but part of the normal MCP
-	// surface. They fail closed at call time if no X-Wfb-Session-Id is present.
+	// Count workspace-scoped trace tools. Runtime registration still requires
+	// workflow:read from the authenticated principal.
 	{
 		const dryTraceServer = new McpServer(
 			{ name: "dry-run-trace", version: "0.0.0" },
@@ -449,7 +491,14 @@ async function main(): Promise<void> {
 		);
 		registeredTools = [
 			...registeredTools,
-			...registerTraceTools(dryTraceServer),
+			...registerTraceTools(dryTraceServer, {
+				principal: TOOL_CATALOG_PRINCIPAL,
+				diagnostics: new ApplicationWorkflowDiagnosticsService(
+					new HttpWorkflowDiagnosticsAdapter({
+						principal: TOOL_CATALOG_PRINCIPAL,
+					}),
+				),
+			}),
 		];
 	}
 	// Count the dynamic workflow script tool (suppressed only inside

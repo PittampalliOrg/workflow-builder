@@ -47,7 +47,6 @@ export type WorkflowBrowserArtifactAssetInput = {
 	contentType?: string;
 	fileName?: string;
 	stepId?: string;
-	storageRef?: string;
 };
 
 export type SaveWorkflowBrowserArtifactInput = {
