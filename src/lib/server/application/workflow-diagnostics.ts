@@ -184,7 +184,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				}
 			};
 		}
-		const matches = await this.reads.searchSpans(traceIds, {
+		const matches = await this.reads.searchSpans(execution, traceIds, {
 			query: input.query,
 			errorsOnly: input.errorsOnly,
 			limit: limit + 1,
@@ -234,7 +234,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				}
 			};
 		}
-		const span = await this.reads.getSpan(traceIds, input.spanId);
+		const span = await this.reads.getSpan(input.execution, traceIds, input.spanId);
 		if (!span) {
 			return response({ error: 'Span not found in this execution' }, 404);
 		}
@@ -293,7 +293,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				}
 			};
 		}
-		const matches = await this.reads.searchLlmSpans(traceIds, {
+		const matches = await this.reads.searchLlmSpans(execution, traceIds, {
 			workflowExecutionId: execution.id,
 			spanId: input.spanId,
 			sessionId: input.sessionId,
@@ -381,7 +381,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				}
 			};
 		}
-		const matches = await this.reads.searchLogs(traceIds, {
+		const matches = await this.reads.searchLogs(execution, traceIds, {
 			spanId: input.spanId,
 			query: input.query,
 			errorsOnly: input.errorsOnly,

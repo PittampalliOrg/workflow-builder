@@ -10,7 +10,7 @@ import type {
 } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 
-const RANGES = new Set(["15m", "1h", "6h", "24h"]);
+const RANGES = new Set(["15m", "1h", "6h", "24h", "7d"]);
 const STATUSES = new Set(["all", "ok", "error"]);
 const QUERY_KEYS = new Set(["range", "status", "service", "search", "limit"]);
 

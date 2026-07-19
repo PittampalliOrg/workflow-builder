@@ -119,6 +119,9 @@ import {
   ClickHouseTraceSpanDetailReader,
 } from "$lib/server/application/adapters/observability-trace-access";
 import { ClickHouseWorkflowDiagnosticsReadAdapter } from "$lib/server/application/adapters/workflow-diagnostics";
+import { HttpPreviewWorkflowDiagnosticsReadAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-http";
+import { ClickHousePreviewWorkflowDiagnosticsQueryAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-clickhouse";
+import { HmacPreviewWorkflowDiagnosticsAuthorizationAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-authorization";
 import { PostgresCapabilityBundleRepository } from "$lib/server/application/adapters/capability-bundles";
 import { LegacyAgentSkillRepository } from "$lib/server/application/adapters/agent-skills";
 import { PostgresResourceMetricsRepository } from "$lib/server/application/adapters/aggregate-metrics";
@@ -217,6 +220,7 @@ import {
   PostgresCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
 import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
+import { EnvironmentDeploymentCapabilityPolicyAdapter } from "$lib/server/application/adapters/deployment-capabilities";
 import { LocalSettingsCliRuntimeCatalogReader } from "$lib/server/application/adapters/settings-cli-tokens";
 import {
   PostgresPromptPresetRepository,
@@ -293,6 +297,7 @@ import { ApplicationAgentRegistryBrowserService } from "$lib/server/application/
 import { DaprAgentRegistryStateReaderAdapter } from "$lib/server/application/adapters/agent-registry-browser";
 import { ApplicationObservabilityTraceAccessService } from "$lib/server/application/observability-trace-access";
 import { ApplicationWorkflowDiagnosticsQueryService } from "$lib/server/application/workflow-diagnostics";
+import { ApplicationPreviewWorkflowDiagnosticsBrokerService } from "$lib/server/application/preview-workflow-diagnostics";
 import { ApplicationCapabilityBundleService } from "$lib/server/application/capability-bundles";
 import { ApplicationAgentSkillService } from "$lib/server/application/agent-skills";
 import { ApplicationResourceMetricsService } from "$lib/server/application/resource-metrics";
@@ -326,6 +331,7 @@ import {
 import { ApplicationCatalogFunctionDefinitionService } from "$lib/server/application/catalog-function-definition";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
+import { ApplicationDeploymentCapabilitiesService } from "$lib/server/application/deployment-capabilities";
 import {
   ApplicationActionCatalogTestService,
   DateActionCatalogTestExecutionIdGenerator,
@@ -625,6 +631,25 @@ export function getApplicationAdapters(
     new HmacWorkflowMcpPrincipalAssertionAdapter();
   const legacyWorkflowRuntimePolicy =
     new EnvironmentLegacyWorkflowRuntimeCompatibilityPolicy();
+  const deploymentCapabilities = new ApplicationDeploymentCapabilitiesService(
+    new EnvironmentDeploymentCapabilityPolicyAdapter({
+      previewDeployment: config.previewDeployment,
+      previewFunctionRegistryJson:
+        env.PREVIEW_FUNCTION_REGISTRY_JSON?.trim() || null,
+      previewNativeActionSlugsJson:
+        env.PREVIEW_NATIVE_ACTION_SLUGS_JSON?.trim() || null,
+      socialAuth: {
+        github: {
+          clientId: env.GITHUB_CLIENT_ID?.trim() || null,
+          clientSecret: env.GITHUB_CLIENT_SECRET?.trim() || null,
+        },
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID?.trim() || null,
+          clientSecret: env.GOOGLE_CLIENT_SECRET?.trim() || null,
+        },
+      },
+    }),
+  );
 
   let database: ReturnType<typeof requirePostgresDb> | undefined;
   let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
@@ -680,6 +705,9 @@ export function getApplicationAdapters(
     | undefined;
   let workflowDiagnostics:
     | ApplicationWorkflowDiagnosticsQueryService
+    | undefined;
+  let previewWorkflowDiagnosticsBroker:
+    | ApplicationPreviewWorkflowDiagnosticsBrokerService
     | undefined;
   let capabilityBundles: ApplicationCapabilityBundleService | undefined;
   let agentSkills: ApplicationAgentSkillService | undefined;
@@ -1128,24 +1156,30 @@ export function getApplicationAdapters(
         access: getObservabilityTraces(),
         spanDetails: new ClickHouseTraceSpanDetailReader(),
       }));
-  const getWorkflowDiagnostics = () =>
-    (workflowDiagnostics ??=
-      new ApplicationWorkflowDiagnosticsQueryService(
-        new ClickHouseWorkflowDiagnosticsReadAdapter({
-          listScriptCalls: async (executionId) =>
-            (await getScriptCalls().listInternal(executionId)).map((call) => ({
-              callId: call.callId,
-              seq: call.seq,
-              kind: call.kind,
-              label: call.label,
-              phase: call.phase,
-              status: call.status ?? "null",
-              sessionId: call.sessionId,
-              retries: call.retries ?? 0,
-              errorCode: call.errorCode,
-            })),
-        }),
-      ));
+  const listDiagnosticScriptCalls = async (executionId: string) =>
+    (await getScriptCalls().listInternal(executionId)).map((call) => ({
+      callId: call.callId,
+      seq: call.seq,
+      kind: call.kind,
+      label: call.label,
+      phase: call.phase,
+      status: call.status ?? "null",
+      sessionId: call.sessionId,
+      retries: call.retries ?? 0,
+      errorCode: call.errorCode,
+    }));
+  const getWorkflowDiagnostics = () => {
+    if (workflowDiagnostics) return workflowDiagnostics;
+    const reads = config.previewDeployment
+      ? new HttpPreviewWorkflowDiagnosticsReadAdapter({
+          listScriptCalls: listDiagnosticScriptCalls,
+        })
+      : new ClickHouseWorkflowDiagnosticsReadAdapter({
+          listScriptCalls: listDiagnosticScriptCalls,
+        });
+    return (workflowDiagnostics =
+      new ApplicationWorkflowDiagnosticsQueryService(reads));
+  };
   const getCapabilityBundles = () =>
     (capabilityBundles ??= new ApplicationCapabilityBundleService(
       new PostgresCapabilityBundleRepository(getDatabase),
@@ -1317,6 +1351,7 @@ export function getApplicationAdapters(
   const getBenchmarkRunLaunch = () =>
     (benchmarkRunLaunch ??= new ApplicationBenchmarkRunLaunchService(
       new LegacyBenchmarkRunLaunchAdapter(),
+      deploymentCapabilities,
     ));
   const getBenchmarkRouteOperations = () =>
     (benchmarkRouteOperations ??=
@@ -1337,6 +1372,7 @@ export function getApplicationAdapters(
   const getEvaluationRunLaunch = () =>
     (evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
       new LegacyEvaluationRunLaunchAdapter(),
+      deploymentCapabilities,
     ));
   const getEvaluationDefinitions = () =>
     (evaluationDefinitions ??= new ApplicationEvaluationDefinitionService(
@@ -1431,6 +1467,7 @@ export function getApplicationAdapters(
   const getActionCatalog = () =>
     (actionCatalog ??= new ApplicationActionCatalogService(
       new LegacyActionCatalogReader(getCodeFunctionStore()),
+      deploymentCapabilities,
     ));
   const getWorkflowTriggerKindCatalog = () =>
     (workflowTriggerKindCatalog ??=
@@ -1456,6 +1493,7 @@ export function getApplicationAdapters(
       functionRouter: new DaprFunctionRouterExecutionPort(),
       http: new DaprActionCatalogHttpTestClient(),
       ids: new DateActionCatalogTestExecutionIdGenerator(),
+      capabilities: deploymentCapabilities,
     }));
   const getCodeFunctionManagement = () =>
     (codeFunctionManagement ??= new ApplicationCodeFunctionManagementService(
@@ -1849,6 +1887,7 @@ export function getApplicationAdapters(
   });
   const workflowLaunchPolicy = new ApplicationWorkflowLaunchPolicyService(
     previewDeploymentScope,
+    deploymentCapabilities,
   );
   const getPreviewAccess = () =>
     (previewAccess ??= new ApplicationPreviewAccessService({
@@ -2104,6 +2143,31 @@ export function getApplicationAdapters(
       authority: getPreviewControlSourceAuthority(),
       traces: new ClickHousePreviewTraceQueryAdapter(),
     }));
+  };
+  const getPreviewWorkflowDiagnosticsBroker = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error(
+        "physical preview workflow diagnostics are available only in broker mode",
+      );
+    }
+    return (previewWorkflowDiagnosticsBroker ??=
+      new ApplicationPreviewWorkflowDiagnosticsBrokerService({
+        authority: getPreviewControlSourceAuthority(),
+        authorization:
+          new HmacPreviewWorkflowDiagnosticsAuthorizationAdapter(),
+        workspaces: {
+          hasMembership: async ({ userId, projectId }) =>
+            Boolean(
+              (
+                await getWorkspaceProjects().getProjectMembershipDetail({
+                  userId,
+                  projectId,
+                })
+              )?.selfRole,
+            ),
+        },
+        queries: new ClickHousePreviewWorkflowDiagnosticsQueryAdapter(),
+      }));
   };
   const getPreviewDevSyncCredentialMint = () => {
     if (!isPreviewControlBroker()) {
@@ -2921,6 +2985,9 @@ export function getApplicationAdapters(
     get actionCatalog() {
       return getActionCatalog();
     },
+    get deploymentCapabilities() {
+      return deploymentCapabilities;
+    },
     get workflowTriggerKindCatalog() {
       return getWorkflowTriggerKindCatalog();
     },
@@ -3098,6 +3165,9 @@ export function getApplicationAdapters(
     },
     get previewTraceBroker() {
       return getPreviewTraceBroker();
+    },
+    get previewWorkflowDiagnosticsBroker() {
+      return getPreviewWorkflowDiagnosticsBroker();
     },
     get previewArchive() {
       return getPreviewArchive();

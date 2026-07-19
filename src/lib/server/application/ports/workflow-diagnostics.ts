@@ -9,6 +9,8 @@ import type { RunDigest } from '$lib/types/run-digest';
 export type WorkflowDiagnosticsExecution = Pick<
 	WorkflowExecutionRecord,
 	| 'id'
+	| 'userId'
+	| 'projectId'
 	| 'status'
 	| 'startedAt'
 	| 'completedAt'
@@ -55,11 +57,17 @@ export interface WorkflowDiagnosticsReadPort {
 		execution: WorkflowDiagnosticsExecution
 	): Promise<WorkflowDiagnosticsTraceResolution>;
 	searchSpans(
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: { query?: string; errorsOnly?: boolean; limit: number; offset: number }
 	): Promise<ObservabilityTraceSpan[]>;
-	getSpan(traceIds: string[], spanId: string): Promise<ObservabilityTraceSpan | null>;
+	getSpan(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		spanId: string
+	): Promise<ObservabilityTraceSpan | null>;
 	searchLlmSpans(
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: {
 			workflowExecutionId: string;
@@ -70,6 +78,7 @@ export interface WorkflowDiagnosticsReadPort {
 		}
 	): Promise<ObservabilityLlmSpan[]>;
 	searchLogs(
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: {
 			spanId?: string;

@@ -1,14 +1,24 @@
-import { redirect } from '@sveltejs/kit';
+import { json, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { getAppUrl } from '$lib/server/app-url';
 import { shouldUseSecureCookies } from '$lib/server/auth-cookies';
+import { getApplicationAdapters } from '$lib/server/application';
 
 export const GET: RequestHandler = async ({ params, url, request, cookies }) => {
 	const { provider } = params;
-
-	if (provider !== 'github' && provider !== 'google') {
-		return new Response(`Unknown provider: ${provider}`, { status: 400 });
+	const availability = getApplicationAdapters().deploymentCapabilities.socialAuthAvailability(
+		provider
+	);
+	if (!availability.available) {
+		return json(
+			{
+				error: availability.code,
+				provider,
+				message: availability.message
+			},
+			{ status: availability.code === 'not_configured' ? 503 : 400 }
+		);
 	}
 
 	const appUrl = await getAppUrl(url, request);
@@ -26,10 +36,7 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 	let authorizationUrl: string;
 
 	if (provider === 'github') {
-		const clientId = env.GITHUB_CLIENT_ID;
-		if (!clientId) {
-			return new Response('GITHUB_CLIENT_ID not configured', { status: 500 });
-		}
+		const clientId = env.GITHUB_CLIENT_ID!;
 		authorizationUrl =
 			`https://github.com/login/oauth/authorize` +
 			`?client_id=${clientId}` +
@@ -37,10 +44,7 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 			`&scope=read:user,user:email` +
 			`&state=${state}`;
 	} else {
-		const clientId = env.GOOGLE_CLIENT_ID;
-		if (!clientId) {
-			return new Response('GOOGLE_CLIENT_ID not configured', { status: 500 });
-		}
+		const clientId = env.GOOGLE_CLIENT_ID!;
 		authorizationUrl =
 			`https://accounts.google.com/o/oauth2/v2/auth` +
 			`?client_id=${clientId}` +

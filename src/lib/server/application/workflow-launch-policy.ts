@@ -8,6 +8,7 @@ import {
   previewNameFromOrigin,
 } from "$lib/server/application/preview-development-build";
 import { getWorkflowLaunchSurface, getWorkflowLaunchTarget } from "$lib/utils/workflow-launch";
+import { parseScriptStructure } from "$lib/utils/script-graph-adapter";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -55,11 +56,29 @@ function policyError(
 
 /** Bind environment-aware launches to the current immutable preview scope. */
 export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPolicyPort {
-  constructor(private readonly scope: PreviewDeploymentScopePort) {}
+	constructor(
+		private readonly scope: PreviewDeploymentScopePort,
+		private readonly capabilities?: {
+			actionAvailability(slug: string): {
+				available: boolean;
+				code: string;
+				message: string | null;
+			};
+		},
+	) {}
 
   prepare(
     input: Parameters<WorkflowLaunchPolicyPort["prepare"]>[0],
   ): WorkflowLaunchPolicyResult {
+		for (const slug of declaredActionSlugs(input.workflow.spec)) {
+			const availability = this.capabilities?.actionAvailability(slug);
+			if (availability && !availability.available) {
+				return policyError(
+					409,
+					`${availability.code}: ${availability.message ?? `${slug} is unavailable`}`,
+				);
+			}
+		}
     const requiredSurface = getWorkflowLaunchSurface(input.workflow.spec);
     if (requiredSurface === "generic") {
       return { ok: true, triggerData: input.triggerData };
@@ -137,4 +156,39 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
       },
     };
   }
+}
+
+function declaredActionSlugs(spec: unknown): string[] {
+	const slugs = new Set<string>();
+	const specRecord = asRecord(spec);
+	if (specRecord.engine === "dynamic-script") {
+		const script = typeof specRecord.script === "string" ? specRecord.script : "";
+		if (script) {
+			for (const call of parseScriptStructure(script, specRecord.meta).calls) {
+				if (call.kind === "action" && call.actionSlug) {
+					slugs.add(call.actionSlug);
+				}
+			}
+		}
+		return [...slugs];
+	}
+
+	const seen = new Set<object>();
+	const visit = (value: unknown): void => {
+		if (!value || typeof value !== "object") return;
+		if (seen.has(value)) return;
+		seen.add(value);
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
+		}
+		for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+			if (key === "call" && typeof child === "string" && child.includes("/")) {
+				slugs.add(child.trim());
+			}
+			visit(child);
+		}
+	};
+	visit(spec);
+	return [...slugs];
 }

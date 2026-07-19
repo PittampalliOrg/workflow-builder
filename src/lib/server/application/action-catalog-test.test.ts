@@ -47,6 +47,13 @@ function service(
 		functionRouter?: Partial<FunctionRouterExecutionPort>;
 		http?: Partial<ActionCatalogHttpTestClient>;
 		ids?: Partial<ActionCatalogTestExecutionIdGenerator>;
+		capabilities?: {
+			actionAvailability: (slug: string) => {
+				available: boolean;
+				code: string;
+				message: string | null;
+			};
+		};
 	} = {},
 ) {
 	const actions: ActionCatalogTestReader = {
@@ -77,6 +84,13 @@ function service(
 		nextExecutionId: vi.fn(() => "action-test-123"),
 		...overrides.ids,
 	};
+	const capabilities = overrides.capabilities ?? {
+		actionAvailability: () => ({
+			available: true,
+			code: "available",
+			message: null,
+		}),
+	};
 
 	return {
 		actions,
@@ -84,12 +98,14 @@ function service(
 		functionRouter,
 		http,
 		ids,
+		capabilities,
 		sut: new ApplicationActionCatalogTestService({
 			actions,
 			codeFunctions,
 			functionRouter,
 			http,
 			ids,
+			capabilities,
 		}),
 	};
 }
@@ -252,5 +268,39 @@ describe("ApplicationActionCatalogTestService", () => {
 			status: 400,
 			message: "Direct test execution for grpc actions is not implemented",
 		});
+	});
+
+	it("rejects deployment-unsupported actions before function-router dispatch", async () => {
+		const previewAction: ActionCatalogTestAction = {
+			id: "builtin.browser/start-preview",
+			displayName: "Start preview",
+			sw: {
+				taskConfig: { call: "browser/start-preview", with: {} },
+				definition: null,
+			},
+		};
+		const { sut, functionRouter } = service({
+			actions: { getActionDetail: vi.fn(async () => previewAction) },
+			capabilities: {
+				actionAvailability: () => ({
+					available: false,
+					code: "unsupported_in_preview",
+					message: "OpenShell is unavailable in preview deployments",
+				}),
+			},
+		});
+
+		await expect(
+			sut.execute({
+				actionId: previewAction.id,
+				userId: "user-1",
+				body: {},
+			}),
+		).rejects.toMatchObject({
+			status: 409,
+			message:
+				"unsupported_in_preview: OpenShell is unavailable in preview deployments",
+		});
+		expect(functionRouter.execute).not.toHaveBeenCalled();
 	});
 });
