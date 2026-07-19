@@ -6,7 +6,8 @@
  * Powers the digest card + issues rail on the run's Graph view, and the
  * `trace_get_digest` MCP tool the trace-analyst chat uses as its ground truth.
  */
-import type { ObservabilityLlmSpan, ObservabilityTraceSpan } from '$lib/types/observability';
+import type { ObservabilityTraceSpan } from '$lib/types/observability';
+import type { GraphLlmSpan } from '$lib/server/otel/clickhouse';
 import {
 	buildStepGraphDynamicScript,
 	type ServiceGraphScriptCallRow
@@ -31,7 +32,7 @@ export type BuildRunDigestInput = {
 	};
 	calls: ServiceGraphScriptCallRow[];
 	spans: ObservabilityTraceSpan[];
-	llmSpans: ObservabilityLlmSpan[];
+	llmSpans: GraphLlmSpan[];
 };
 
 const MAX_SPAN_ISSUES = 5;

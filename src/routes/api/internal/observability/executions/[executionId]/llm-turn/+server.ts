@@ -1,37 +1,35 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { loadExecutionTraceBundle } from '$lib/server/observability/run-digest-loader';
+import { getApplicationAdapters } from '$lib/server/application';
 import { guardAnalystAccess } from '../guard';
+import { decodePageCursor, encodePageCursor, pageCursorScope } from '../pagination';
 
-/**
- * GET ?spanId= | ?sessionId= — full LLM turn content (input/output messages,
- * model, tokens) for one span, or the turn list for a session. This is the
- * analyst's "what did the agent actually see/say" tool.
- */
+/** Exact, bounded LLM transcript evidence for one span or child session. */
 export const GET: RequestHandler = async ({ params, request, url }) => {
 	const guard = await guardAnalystAccess(request, params.executionId);
 	if (!guard.ok) return guard.res;
-	const spanId = url.searchParams.get('spanId');
-	const sessionId = url.searchParams.get('sessionId');
-	if (!spanId && !sessionId) {
-		return json({ error: 'spanId or sessionId is required' }, { status: 400 });
+	const spanId = url.searchParams.get('spanId')?.trim() || undefined;
+	const sessionId = url.searchParams.get('sessionId')?.trim() || undefined;
+	if (Boolean(spanId) === Boolean(sessionId)) {
+		return json({ error: 'Provide exactly one of spanId or sessionId' }, { status: 400 });
 	}
-	const { llmSpans } = await loadExecutionTraceBundle(guard.execution);
-	const matches = llmSpans.filter((s) =>
-		spanId ? s.spanId === spanId : s.sessionId === sessionId
-	);
-	return json({
-		turns: matches.map((s) => ({
-			spanId: s.spanId,
-			traceId: s.traceId,
-			sessionId: s.sessionId,
-			model: s.modelName ?? null,
-			promptTokens: s.promptTokens ?? null,
-			completionTokens: s.completionTokens ?? null,
-			cacheReadInputTokens: s.cacheReadInputTokens ?? null,
-			finishReason: s.finishReason ?? null,
-			inputMessages: s.inputMessages,
-			outputMessages: s.outputMessages
-		}))
+	const requestedLimit = Math.min(3, Math.max(1, Number(url.searchParams.get('limit')) || 3));
+	const limit = spanId ? 1 : requestedLimit;
+	const cursorScope = pageCursorScope('llm-turns', {
+		executionId: guard.execution.id,
+		spanId: spanId ?? null,
+		sessionId: sessionId ?? null,
+		limit
 	});
+	const offset = decodePageCursor(url.searchParams.get('cursor'), cursorScope);
+	if (offset == null) return json({ error: 'Invalid LLM-turn cursor' }, { status: 400 });
+	const result = await getApplicationAdapters().workflowDiagnostics.getLlmTurns({
+		execution: guard.execution,
+		spanId,
+		sessionId,
+		limit,
+		offset,
+		encodeCursor: (nextOffset) => encodePageCursor(nextOffset, cursorScope)
+	});
+	return json(result.body, { status: result.httpStatus ?? 200 });
 };

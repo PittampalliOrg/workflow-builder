@@ -49,7 +49,13 @@ describe("internal browser artifacts route", () => {
 				nodeId: "browser",
 				baseUrl: "https://example.test",
 				steps: [{ id: "step-1", label: "Open", url: "https://example.test" }],
-				screenshots: [{ payloadBase64: "aGVsbG8=", label: "Shot" }],
+				screenshots: [
+					{
+						payloadBase64: "aGVsbG8=",
+						label: "Shot",
+						storageRef: "workflow-browser-artifacts/foreign/ref.png",
+					},
+				],
 			}),
 		});
 
@@ -61,13 +67,16 @@ describe("internal browser artifacts route", () => {
 			artifact: { id: "bwf_1" },
 		});
 		expect(mocks.workflowData.saveWorkflowBrowserArtifact).toHaveBeenCalledWith(
-			expect.objectContaining({
-				workflowExecutionId: "exec-1",
-				workflowId: "wf-1",
-				nodeId: "browser",
-				status: "completed",
-			}),
-		);
+				expect.objectContaining({
+					workflowExecutionId: "exec-1",
+					workflowId: "wf-1",
+					nodeId: "browser",
+					status: "completed",
+					screenshots: [
+						expect.not.objectContaining({ storageRef: expect.anything() }),
+					],
+				}),
+			);
 	});
 
 	it("rejects requests without the internal token", async () => {

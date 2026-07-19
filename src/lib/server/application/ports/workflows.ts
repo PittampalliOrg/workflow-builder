@@ -441,6 +441,7 @@ export type ListProjectWorkflowRunsInput = {
 	since?: Date;
 	q?: string;
 	limit?: number;
+	offset?: number;
 };
 
 export type WorkflowFileRecord = {

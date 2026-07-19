@@ -11,9 +11,13 @@ vi.mock('$env/dynamic/private', () => ({
 }));
 
 import {
+	getMultiTraceDigestLlmSpans,
 	getMultiTraceGraphLlmSpans,
 	getMultiTraceSpanSummaries,
-	getTraceSpanDetail
+	getTraceSpanDetail,
+	searchTraceLlmSpans,
+	searchTraceLogs,
+	searchTraceSpans
 } from './clickhouse';
 
 const TRACE_ID = 'c4235a0ea97132eba9adfa3bfbc3ff23';
@@ -173,5 +177,105 @@ describe('compact ClickHouse trace span loading', () => {
 				cacheCreationInputTokens: 50
 			}
 		]);
+	});
+
+	it('bounds targeted LLM evidence in SQL and maps all token counters', async () => {
+		fetchMock.mockResolvedValueOnce(
+			jsonEachRow([
+				{
+					Timestamp: '2026-07-09 15:27:14.250000000',
+					TraceId: TRACE_ID,
+					SpanId: '0000000000000001',
+					ParentSpanId: '',
+					ServiceName: 'agent-runtime',
+					SessionId: 'session-1',
+					WorkflowExecutionId: 'exec-1',
+					AgentRunId: 'run-1',
+					ModelName: 'kimi/kimi-k3',
+					Provider: 'kimi',
+					InputMessages: '[]',
+					OutputMessages: '[]',
+					InvocationParameters: '{}',
+					FinishReason: 'stop',
+					PromptTokens: 100,
+					CompletionTokens: 20,
+					TotalTokens: 120,
+					CacheReadInputTokens: 60,
+					CacheCreationInputTokens: 15,
+					ReasoningTokens: 10,
+					StatusCode: 'Ok',
+					InputMessagesTruncated: 0,
+					OutputMessagesTruncated: 0,
+					InvocationParametersTruncated: 0
+				}
+			])
+		);
+
+		const turns = await searchTraceLlmSpans([TRACE_ID], {
+			workflowExecutionId: 'exec-1',
+			sessionId: 'session-1',
+			limit: 11,
+			offset: 20
+		});
+
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql).toContain("SessionId = 'session-1'");
+		expect(sql).toContain("WorkflowExecutionId = 'exec-1'");
+		expect(sql).toContain('CacheReadInputTokens');
+		expect(sql).toContain('CacheCreationInputTokens');
+		expect(sql).toContain('ReasoningTokens');
+		expect(sql).toContain('LIMIT 11');
+		expect(sql).toContain('OFFSET 20');
+		expect(turns[0]).toMatchObject({
+			cacheReadInputTokens: 60,
+			cacheCreationInputTokens: 15,
+			reasoningTokens: 10
+		});
+	});
+
+	it('loads run-digest LLM totals without transcript columns and reports truncation', async () => {
+		fetchMock.mockResolvedValueOnce(
+			jsonEachRow([
+				{ TraceId: TRACE_ID, SpanId: '1', SessionId: 'session-1' },
+				{ TraceId: TRACE_ID, SpanId: '2', SessionId: 'session-1' }
+			])
+		);
+
+		const batch = await getMultiTraceDigestLlmSpans([TRACE_ID], {}, 1);
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql).not.toContain('InputMessages');
+		expect(sql).not.toContain('OutputMessages');
+		expect(sql).not.toContain('InvocationParameters');
+		expect(sql).toContain('LIMIT 2');
+		expect(batch).toMatchObject({ truncated: true, limit: 1 });
+		expect(batch.spans).toHaveLength(1);
+	});
+
+	it('pushes span and log filters plus page offsets into ClickHouse', async () => {
+		fetchMock
+			.mockResolvedValueOnce(jsonEachRow([]))
+			.mockResolvedValueOnce(jsonEachRow([]));
+
+		await searchTraceSpans([TRACE_ID], {
+			query: 'run_tool',
+			errorsOnly: true,
+			limit: 21,
+			offset: 40
+		});
+		await searchTraceLogs([TRACE_ID], {
+			query: 'timeout',
+			errorsOnly: true,
+			limit: 41,
+			offset: 80
+		});
+
+		const spanSql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		const logSql = String(fetchMock.mock.calls[1]?.[1]?.body ?? '');
+		expect(spanSql).toContain("StatusCode = 'Error'");
+		expect(spanSql).toContain('LIMIT 21');
+		expect(spanSql).toContain('OFFSET 40');
+		expect(logSql).toContain("positionCaseInsensitive(Body, 'timeout')");
+		expect(logSql).toContain('LIMIT 41');
+		expect(logSql).toContain('OFFSET 80');
 	});
 });

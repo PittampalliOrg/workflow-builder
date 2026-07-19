@@ -94,7 +94,52 @@ describe('service graph runtime loading', () => {
 		expect(String(clickhouseMocks.queryClickHouse.mock.calls[0]?.[0])).toContain("'exec-1'");
 	});
 
-	it('keeps the journal graph when trace discovery throws', async () => {
+	it('can disable low-confidence time-window fallback for forensic reads', async () => {
+		await expect(
+			resolveExecutionTraceIds(
+				execution({ primaryTraceId: null, output: null }),
+				{ includeTimeWindowFallback: false }
+			)
+		).resolves.toEqual([]);
+
+		expect(clickhouseMocks.queryClickHouse).toHaveBeenCalledOnce();
+		expect(String(clickhouseMocks.queryClickHouse.mock.calls[0]?.[0])).toContain(
+			"SpanAttributes['workflow.execution.id']"
+		);
+	});
+
+	it('never trusts trace ids embedded in user-controlled workflow output', async () => {
+		const foreignTraceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+		await expect(
+			resolveExecutionTraceIds(
+				execution({
+					primaryTraceId: null,
+					output: {
+						traceId: foreignTraceId,
+						result: { agentProgress: { traceId: foreignTraceId } }
+					}
+				}),
+				{ includeTimeWindowFallback: false }
+			)
+		).resolves.toEqual([]);
+	});
+
+	it('reports attribute-correlation degradation while retaining the primary trace', async () => {
+		clickhouseMocks.queryClickHouse.mockRejectedValueOnce(new Error('correlation timeout'));
+		const onWarning = vi.fn();
+
+		await expect(
+			resolveExecutionTraceIds(execution(), {
+				includeTimeWindowFallback: false,
+				onWarning
+			})
+		).resolves.toEqual([TRACE_ID]);
+		expect(onWarning).toHaveBeenCalledWith(
+			expect.stringContaining('correlation timeout')
+		);
+	});
+
+	it('keeps the journal graph without inspecting hostile workflow output', async () => {
 		const brokenOutput = new Proxy<Record<string, unknown>>(
 			{},
 			{
@@ -118,7 +163,7 @@ describe('service graph runtime loading', () => {
 			degraded: true,
 			spanCount: 0,
 			traceCount: 0,
-			warnings: ['Trace discovery unavailable; showing journal topology only']
+			warnings: ['No traces found; showing journal topology only']
 		});
 	});
 

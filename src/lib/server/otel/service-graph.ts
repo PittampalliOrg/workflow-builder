@@ -21,7 +21,6 @@ import type { ObservabilityTraceSpan } from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
 	escapeClickHouseString,
-	extractExecutionTraceIds,
 	findCorrelatedTraceIds,
 	getMultiTraceGraphLlmSpans,
 	getMultiTraceSpanSummaries,
@@ -271,10 +270,15 @@ async function traceIdsByExecutionAttr(
 	return sanitizeTraceIds(rows.map((r) => String(r.TraceId ?? '')));
 }
 
-export async function resolveExecutionTraceIds(execution: ExecutionRow): Promise<string[]> {
+export async function resolveExecutionTraceIds(
+	execution: ExecutionRow,
+	options: {
+		includeTimeWindowFallback?: boolean;
+		onWarning?: (warning: string) => void;
+	} = {}
+): Promise<string[]> {
 	const ids = new Set<string>();
 	if (execution.primaryTraceId) ids.add(execution.primaryTraceId.trim());
-	for (const id of extractExecutionTraceIds(execution.output)) ids.add(id);
 	try {
 		const correlationIds = new Set(
 			[execution.id, execution.workflowSessionId]
@@ -285,14 +289,16 @@ export async function resolveExecutionTraceIds(execution: ExecutionRow): Promise
 			for (const id of await traceIdsByExecutionAttr(correlationId, execution)) ids.add(id);
 		}
 	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
 		console.warn('[service-graph] Trace id attribute lookup failed', {
 			executionId: execution.id,
-			message: err instanceof Error ? err.message : String(err)
+			message
 		});
+		options.onWarning?.(`Execution attribute trace correlation unavailable: ${message}`);
 	}
 
 	let resolved = sanitizeTraceIds([...ids]);
-	if (resolved.length === 0) {
+	if (resolved.length === 0 && options.includeTimeWindowFallback !== false) {
 		// Last resort: services that don't propagate context across Dapr boundaries.
 		const correlated = await findCorrelatedTraceIds(
 			execution.startedAt,

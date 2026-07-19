@@ -176,7 +176,7 @@
 			<div class="max-w-xs space-y-1">
 				<h3 class="text-sm font-semibold">Ask the trace</h3>
 				<p class="text-xs text-muted-foreground">
-					A GLM&nbsp;5.2 analyst investigates this run's trace with tools (digest, spans, LLM
+					A Kimi&nbsp;K3 analyst investigates this run's trace with tools (digest, spans, LLM
 					turns, logs) and answers with clickable evidence.
 				</p>
 			</div>

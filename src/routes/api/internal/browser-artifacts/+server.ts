@@ -18,7 +18,6 @@ type ArtifactBody = {
 		contentType?: string;
 		stepId?: string;
 		label?: string;
-		storageRef?: string;
 	}>;
 	assets?: Array<{
 		kind: 'trace' | 'video' | 'video-annotated' | 'caption' | 'screenshot';
@@ -27,7 +26,6 @@ type ArtifactBody = {
 		fileName?: string;
 		label?: string;
 		stepId?: string;
-		storageRef?: string;
 	}>;
 };
 
@@ -77,8 +75,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				label: entry.label ?? `Screenshot ${index + 1}`,
 				payloadBase64: entry.payloadBase64,
 				contentType: entry.contentType,
-				stepId: entry.stepId,
-				storageRef: entry.storageRef
+				stepId: entry.stepId
 			})),
 			assets: (body.assets ?? []).map((entry, index) => ({
 				kind: entry.kind,
@@ -86,8 +83,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				payloadBase64: entry.payloadBase64,
 				contentType: entry.contentType,
 				fileName: entry.fileName,
-				stepId: entry.stepId,
-				storageRef: entry.storageRef
+				stepId: entry.stepId
 			}))
 		});
 		return json({ success: true, artifact });

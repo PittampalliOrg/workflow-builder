@@ -6,7 +6,7 @@
  */
 import { getApplicationAdapters } from '$lib/server/application';
 import {
-	getMultiTraceLlmSpans,
+	getMultiTraceDigestLlmSpans,
 	getMultiTraceSpanSummaries,
 	isClickHouseConfigured
 } from '$lib/server/otel/clickhouse';
@@ -38,7 +38,9 @@ type TraceBundle = {
 	}[];
 	traceIds: string[];
 	spans: Awaited<ReturnType<typeof getMultiTraceSpanSummaries>>['spans'];
-	llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>>;
+	llmSpans: Awaited<ReturnType<typeof getMultiTraceDigestLlmSpans>>['spans'];
+	llmSpansTruncated: boolean;
+	llmSpanLimit: number;
 };
 
 // Short-TTL bundle cache: the run page polls the digest (6s) + graph (5s)
@@ -89,20 +91,25 @@ async function loadExecutionTraceBundleUncached(
 
 	let traceIds: string[] = [];
 	let spans: Awaited<ReturnType<typeof getMultiTraceSpanSummaries>>['spans'] = [];
-	let llmSpans: Awaited<ReturnType<typeof getMultiTraceLlmSpans>> = [];
+	let llmSpans: Awaited<ReturnType<typeof getMultiTraceDigestLlmSpans>>['spans'] = [];
+	let llmSpansTruncated = false;
+	let llmSpanLimit = 0;
 	if (isClickHouseConfigured()) {
 		// Degrade, never throw: a slow/terminated ClickHouse egress must yield a
 		// journal-only digest (matching the traces-route 503-degradation
 		// convention), not a 500 on the run page's digest poll.
 		try {
-			traceIds = await resolveExecutionTraceIds({
-				id: execution.id,
-				output: execution.output,
-				primaryTraceId: execution.primaryTraceId,
-				workflowSessionId: execution.workflowSessionId ?? null,
-				startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
-				completedAt: execution.completedAt ? new Date(execution.completedAt) : null
-			});
+			traceIds = await resolveExecutionTraceIds(
+				{
+					id: execution.id,
+					output: execution.output,
+					primaryTraceId: execution.primaryTraceId,
+					workflowSessionId: execution.workflowSessionId ?? null,
+					startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
+					completedAt: execution.completedAt ? new Date(execution.completedAt) : null
+				},
+				{ includeTimeWindowFallback: false }
+			);
 		} catch (err) {
 			console.warn(
 				`[trace-bundle] Trace resolution degraded for ${execution.id}:`,
@@ -116,7 +123,7 @@ async function loadExecutionTraceBundleUncached(
 			};
 			const [spanResult, llmResult] = await Promise.allSettled([
 				getMultiTraceSpanSummaries(traceIds, window),
-				getMultiTraceLlmSpans(traceIds, undefined, window)
+				getMultiTraceDigestLlmSpans(traceIds, window)
 			]);
 			if (spanResult.status === 'fulfilled') {
 				spans = spanResult.value.spans;
@@ -132,7 +139,14 @@ async function loadExecutionTraceBundleUncached(
 				);
 			}
 			if (llmResult.status === 'fulfilled') {
-				llmSpans = llmResult.value;
+				llmSpans = llmResult.value.spans;
+				llmSpansTruncated = llmResult.value.truncated;
+				llmSpanLimit = llmResult.value.limit;
+				if (llmSpansTruncated) {
+					console.warn(
+						`[trace-bundle] LLM metadata limited to ${llmSpanLimit} rows for ${execution.id}`
+					);
+				}
 			} else {
 				console.warn(
 					`[trace-bundle] LLM span load degraded for ${execution.id}:`,
@@ -141,7 +155,7 @@ async function loadExecutionTraceBundleUncached(
 			}
 		}
 	}
-	return { calls, traceIds, spans, llmSpans };
+	return { calls, traceIds, spans, llmSpans, llmSpansTruncated, llmSpanLimit };
 }
 
 /** Trace ids only — for SQL-side span search (no bundle fetch). */
@@ -150,14 +164,17 @@ export async function resolveTraceIdsForExecution(
 ): Promise<string[]> {
 	if (!isClickHouseConfigured()) return [];
 	try {
-		return await resolveExecutionTraceIds({
-			id: execution.id,
-			output: execution.output,
-			primaryTraceId: execution.primaryTraceId,
-			workflowSessionId: execution.workflowSessionId ?? null,
-			startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
-			completedAt: execution.completedAt ? new Date(execution.completedAt) : null
-		});
+		return await resolveExecutionTraceIds(
+			{
+				id: execution.id,
+				output: execution.output,
+				primaryTraceId: execution.primaryTraceId,
+				workflowSessionId: execution.workflowSessionId ?? null,
+				startedAt: execution.startedAt ? new Date(execution.startedAt) : new Date(0),
+				completedAt: execution.completedAt ? new Date(execution.completedAt) : null
+			},
+			{ includeTimeWindowFallback: false }
+		);
 	} catch {
 		return [];
 	}
