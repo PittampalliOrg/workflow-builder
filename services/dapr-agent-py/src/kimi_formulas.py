@@ -173,9 +173,21 @@ def execute_formula_tool(name: str, arguments: Any = None) -> str:
     must round-trip byte-for-byte into the next chat request). Never raises: all
     failures return an ``"Error: ..."`` string (WebFetch convention).
     """
+    content, _encrypted = execute_formula_tool_result(name, arguments)
+    return content
+
+
+def execute_formula_tool_result(name: str, arguments: Any = None) -> tuple[str, bool]:
+    """Execute a formula tool, also reporting whether the result is encrypted.
+
+    Same contract as ``execute_formula_tool``; the second tuple element is True
+    only when the returned content is a verbatim ``context.encrypted_output``
+    blob. Persistence layers use the flag to exempt the blob from lossy
+    truncation — it must round-trip byte-for-byte into the next chat request.
+    """
     entry = _index_entry(name)
     if entry is None:
-        return f"Error: '{name}' is not a configured Kimi formula tool."
+        return f"Error: '{name}' is not a configured Kimi formula tool.", False
     uri, declared_name = entry
     url = f"{_base_url()}/formulas/{uri}/fibers"
     body = {
@@ -193,35 +205,42 @@ def execute_formula_tool(name: str, arguments: Any = None) -> str:
         return (
             f"Error: formula '{declared_name}' ({uri}) HTTP {exc.code}: "
             f"{snippet or exc.reason}"
-        )
+        ), False
     except Exception as exc:  # noqa: BLE001 — network/timeout/JSON failures
-        return f"Error: formula '{declared_name}' ({uri}) request failed: {exc}"
+        return f"Error: formula '{declared_name}' ({uri}) request failed: {exc}", False
     if not isinstance(payload, dict):
-        return f"Error: formula '{declared_name}' ({uri}) returned a non-object response."
+        return (
+            f"Error: formula '{declared_name}' ({uri}) returned a non-object response.",
+            False,
+        )
     context = payload.get("context")
     context = context if isinstance(context, dict) else {}
     status = str(payload.get("status") or "")
     if status == "succeeded":
+        encrypted = False
         output = context.get("output")
         if output is None:
             output = context.get("encrypted_output")
+            encrypted = output is not None
         if output is None:
             return (
                 f"Error: formula '{declared_name}' ({uri}) succeeded but "
                 "returned no output."
-            )
-        return output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+            ), False
+        return (
+            output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+        ), encrypted
     # Failure shapes are undocumented; mirror the official client's fallback chain.
     detail = payload.get("error") or context.get("error") or context.get("output")
     if detail:
         return (
             f"Error: formula '{declared_name}' ({uri}) failed "
             f"(status={status or 'unknown'}): {detail}"
-        )
+        ), False
     return (
         f"Error: formula '{declared_name}' ({uri}) failed with an unknown error "
         f"(status={status or 'unknown'})."
-    )
+    ), False
 
 
 def _index_entry(name: str) -> tuple[str, str] | None:

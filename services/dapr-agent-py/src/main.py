@@ -238,7 +238,7 @@ from src.kimi_adapter import (
     install_kimi_reasoning_state_schema,
 )
 from src.kimi_formulas import (
-    execute_formula_tool,
+    execute_formula_tool_result,
     formula_uri_for_tool,
 )
 from src.workflow_mcp_credentials import (
@@ -4053,19 +4053,27 @@ class OpenShellDurableAgent(DurableAgent):
                       # recover the image while every human-facing surface keeps
                       # the concise linked text result.
                       result["content"] = mcp_serialization.durable_content
-                elif formula_uri_for_tool(tool_name):
+                elif (
+                    self.tool_executor.get_tool(tool_name) is None
+                    and formula_uri_for_tool(tool_name)
+                ):
                   # Kimi native Formula tool (declarations injected adapter-side
                   # by _call_kimi_chat; execution POSTs to /formulas/{uri}/fibers).
                   # Runs inside this journaled run_tool activity, so the fiber
                   # result is journaled like any local tool result and workflow
                   # replays never re-hit the non-idempotent fibers endpoint.
-                  # execute_formula_tool never raises — failures come back as
-                  # "Error: ..." content for the model (WebFetch convention).
-                  # MCP is checked first so a per-session MCP tool with the same
-                  # name keeps precedence (its declaration shadows the formula's
-                  # adapter-side, so the model saw the MCP tool).
+                  # execute_formula_tool_result never raises — failures come back
+                  # as "Error: ..." content for the model (WebFetch convention).
+                  # Precedence: MCP and locally registered tools are checked
+                  # first so a same-name tool keeps precedence (its declaration
+                  # shadows the formula's adapter-side, so the model saw the
+                  # local/MCP tool). Formula names never resolve on the local
+                  # executor, so the guard is transparent for real formula calls.
+                  _formula_content, _formula_encrypted = execute_formula_tool_result(
+                      tool_name, tool_args
+                  )
                   _formula_msg = ToolMessage(
-                      content=execute_formula_tool(tool_name, tool_args),
+                      content=_formula_content,
                       role="tool",
                       name=tool_name,
                       tool_call_id=tool_call["id"],
@@ -4075,6 +4083,13 @@ class OpenShellDurableAgent(DurableAgent):
                   except Exception:
                       pass
                   result = _formula_msg.model_dump()
+                  if _formula_encrypted:
+                      # encrypted_output is an opaque server-side-decrypted blob
+                      # that must round-trip byte-for-byte into the next chat
+                      # request. Mark it so compact_save_tool_results_payload
+                      # exempts it from the generic 12 KiB text clamp; the
+                      # marker is popped there, before persistence.
+                      result["_kimi_encrypted_formula"] = True
                 else:
                     result = super().run_tool(ctx, payload)
               _exec_error = _tool_result_error(result)
