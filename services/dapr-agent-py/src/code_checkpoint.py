@@ -151,7 +151,7 @@ def _checkpoint_remote_config() -> dict[str, Any]:
         or config.get("WORKFLOW_CHECKPOINT_GIT_OWNER")
         or os.environ.get("GITEA_REPO_OWNER")
         or config.get("GITEA_REPO_OWNER")
-        or "giteaadmin"
+        or ""  # Gitea was removed from the cluster: no implicit default target
     ).strip()
     repo = (
         os.environ.get("WORKFLOW_CHECKPOINT_GIT_REPO")
@@ -163,7 +163,8 @@ def _checkpoint_remote_config() -> dict[str, Any]:
         or config.get("WORKFLOW_CHECKPOINT_GIT_CLONE_BASE_URL")
         or os.environ.get("GITEA_INTERNAL_CLONE_BASE_URL")
         or config.get("GITEA_INTERNAL_CLONE_BASE_URL")
-        or "http://gitea-http.gitea.svc.cluster.local:3000"
+        or ""  # no default: a stale gitea URL here made events point at a
+        # removed service. Configure WORKFLOW_CHECKPOINT_GIT_* explicitly.
     ).strip().rstrip("/")
     api_url = (
         os.environ.get("WORKFLOW_CHECKPOINT_GIT_API_URL")
@@ -177,7 +178,7 @@ def _checkpoint_remote_config() -> dict[str, Any]:
         or config.get("WORKFLOW_CHECKPOINT_GIT_USERNAME")
         or os.environ.get("GITEA_USERNAME")
         or config.get("GITEA_USERNAME")
-        or "giteaadmin"
+        or ""
     ).strip()
     token = (
         os.environ.get("WORKFLOW_CHECKPOINT_GIT_TOKEN")
