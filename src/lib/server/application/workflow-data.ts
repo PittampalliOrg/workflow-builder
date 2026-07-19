@@ -6459,7 +6459,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			});
 			cleanupSessionSandbox = true;
 		} else if (input.type === "session.status_rescheduled") {
-			await sessions.updateSessionStatusUnlessTerminated({
+			// Routed through the running-guarded variant: rescheduled races with
+			// status_running at session entry and must not clobber an already-
+			// running row (ingestion can deliver the two out of order).
+			await sessions.updateSessionStatusRescheduled({
 				id: input.sessionId,
 				status: "rescheduling",
 			});

@@ -1299,6 +1299,42 @@ export class CurrentSessionRepository implements SessionRepository {
 			);
 	}
 
+	async updateSessionStatusRescheduled(
+		input: UpdateSessionStatusUnlessTerminatedInput,
+	): Promise<void> {
+		const database = requireDb(this.database);
+		const patch: Partial<Session> & { updatedAt: Date } = {
+			status: input.status,
+			updatedAt: new Date(),
+		};
+		if (input.stopReason !== undefined) {
+			patch.stopReason = input.stopReason as Record<string, unknown> | null;
+		}
+		if (input.usage !== undefined) {
+			patch.usage = input.usage as Record<string, unknown>;
+		}
+		if (input.errorMessage !== undefined) {
+			patch.errorMessage = input.errorMessage ?? null;
+		}
+		await database
+			.update(sessions)
+			.set(patch)
+			// Sticky-terminal guards (same as updateSessionStatusUnlessTerminated)
+			// PLUS a running guard: the runtime emits session.status_rescheduled at
+			// session entry just before session.status_running, and ingestion can
+			// deliver them out of order. A rescheduled event arriving after running
+			// must not flip the row back — otherwise the session wedges at
+			// rescheduling for its whole lifetime.
+			.where(
+				and(
+					eq(sessions.id, input.id),
+					sql`${sessions.status} <> 'terminated'`,
+					sql`${sessions.status} <> 'running'`,
+					sql`NOT (${sessions.status} = 'failed' AND ${sessions.completedAt} IS NOT NULL)`,
+				),
+			);
+	}
+
 	async bumpSessionLastEventAt(sessionId: string): Promise<void> {
 		// Skip the round-trip when this pod already bumped inside the window.
 		if (shouldSkipLastEventBump(sessionId, Date.now())) return;
