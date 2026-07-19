@@ -30,6 +30,7 @@ from .file_write.tool import WriteArgs, file_write
 from .glob_tool.tool import GlobArgs, glob_search
 from .grep_tool.tool import GrepArgs, grep_search
 from .notebook_edit.tool import notebook_edit
+from .read_media_file.tool import ReadMediaFileArgs, read_media_file
 from .read_session_events.tool import read_session_events
 from .send_message.tool import send_message
 from .skill_tool.tool import run_skill
@@ -57,6 +58,8 @@ all_tools: list[AgentTool] = [
     _tool(file_write, "Write", WriteArgs),
     _tool(file_edit, "Edit", EditArgs),
     _tool(notebook_edit, "NotebookEdit"),
+    # Media (kimi-code ReadMediaFile; images ride the multimodal marker into K3 vision)
+    _tool(read_media_file, "ReadMediaFile", ReadMediaFileArgs),
     # Search
     _tool(glob_search, "Glob", GlobArgs),
     _tool(grep_search, "Grep", GrepArgs),

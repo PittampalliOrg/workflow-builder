@@ -30,6 +30,7 @@ def test_registration_uses_kimi_code_names_and_args_models() -> None:
         '_tool(glob_search, "Glob", GlobArgs)',
         '_tool(grep_search, "Grep", GrepArgs)',
         '_tool(bash_run, "Bash", BashArgs)',
+        '_tool(read_media_file, "ReadMediaFile", ReadMediaFileArgs)',
     ):
         assert registration in source
 
