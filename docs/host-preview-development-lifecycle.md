@@ -1,97 +1,58 @@
 # Host-Orchestrated Preview Development Lifecycle
 
-## Status
+`preview-development-lifecycle` is the supported agentic path from a task
+submitted on physical dev to an isolated preview, live source changes, a draft
+pull request, and either retention or proved teardown.
 
-Implementation is proved on the dev cluster. The current accepted proof is
-`app-live-gan-proof26`: a physical dev workflow provisioned a fresh `app-live`
-preview, started the preview-local GAN UI-development workflow, used GLM 5.2 to
-edit the Workflow Builder dashboard through HMR/live sync, captured the exact
-source, opened a draft PR, and completed generation-fenced teardown. The
-pointer-only stacks change that advances the `dev-preview-platform` Application
-to a revision containing the down-job TTL admission compatibility fix has also
-merged and reconciled on dev.
+## Ownership Boundary
 
-### Checkpoints
+One logical lifecycle uses two durable executions:
 
-- [x] Confirm the live host and preview-local boundaries.
-- [x] Freeze the parent/child command contract.
-- [x] Implement the preview-local child control and promotion path.
-- [x] Implement the exact-tuple host-to-preview command adapter.
-- [x] Implement the host lifecycle workflow and launch UI.
-- [x] Require a physical durable promotion receipt before successful completion.
-- [x] Replace the manual interactive-session handoff with the automated
-      preview UI development GAN workflow.
-- [x] Pass repository and rendered-manifest validation.
-- [x] Deploy the helper-cleanup checkpoint through GitHub, GHCR, and GitOps to
-      dev.
-- [x] Re-prove prompt to HMR to draft PR to teardown on a fresh preview after
-      the helper-cleanup checkpoint is live.
-- [x] Advance the dev `dev-preview-platform` Application pointer to the stacks
-      revision containing the down-job TTL admission compatibility fix and
-      verify ArgoCD converges on dev.
+1. The physical-dev parent provisions the `PreviewEnvironment`, binds the
+   immutable target, starts and observes the child, verifies the physical
+   promotion receipt, and owns teardown.
+2. The preview-local child adopts the selected services, runs the development
+   loop, applies shared live-sync generations, evaluates gates, captures exact
+   source, and requests draft-PR promotion.
 
-## Objective
+This is not a Dapr child-workflow relationship. Physical dev and each vCluster
+have separate workflow state stores and task hubs. The product application
+layer treats the preview execution as a remote durable resource and exposes
+only bounded start, status, signal, and verification operations.
 
-A user submits one task from the physical dev Workflow Builder. One durable host
-workflow provisions an isolated `app-live` PreviewEnvironment, starts the pinned
-`preview-ui-development-gan` workflow inside it, and waits for that child to
-finish. The child runs `kimi/kimi-k3` through `dapr-agent-py-juicefs`, receives
-the submitted task as its first work item, plans a dashboard change, applies it
-through the existing HMR receiver, verifies the live preview, captures the strict
-source generation, and opens an idempotent draft pull request. The happy path
-does not pause for manual approval. Discard/cancel remains available as an
-operator control, but approval is no longer required to create the proof PR. The
-host run then verifies the physical promotion receipt and performs
-generation-fenced teardown unless the launch requested retention.
+Preview application code is mutable and is not promotion authority. The parent
+accepts success only after the physical broker reconstructs and verifies the
+append-only promotion receipt for the exact target and service set.
 
-## Orchestration Boundary
+## Input Contract
 
-This is one logical lifecycle implemented by two durable executions:
+The parent accepts this closed schema:
 
-1. `preview-development-lifecycle` is stored and run on the physical dev cluster.
-   It owns provisioning, correlation, approval, receipt reconciliation, and
-   whole-environment teardown.
-2. `preview-ui-development-gan` is stored and run inside the target vCluster. It
-   owns service adoption, the shared HMR workspace, the Kimi K3 plan/generate/verify
-   loop, strict source capture, and PR promotion.
+| Field                   | Required | Default                | Constraint                                      |
+| ----------------------- | -------- | ---------------------- | ----------------------------------------------- |
+| `intent`                | yes      | -                      | non-empty string, at most 12,000 characters     |
+| `environmentName`       | yes      | -                      | lowercase DNS-style name, at most 40 characters |
+| `services`              | no       | `['workflow-builder']` | unique catalog service IDs, 1-16 items          |
+| `ttlHours`              | no       | `8`                    | integer from 2 through 24                       |
+| `retainAfterCompletion` | no       | `false`                | retain a successful environment                 |
+| `retainOnFailure`       | no       | `false`                | retain a failed environment for diagnosis       |
+| `interactiveHandoff`    | no       | `false`                | create a persistent session on retained success |
+| `impactReview`          | no       | `false`                | enable multi-service impact gates               |
+| `diffScope`             | no       | service roots          | non-empty path-prefix allowlist                 |
+| `maxIterations`         | no       | `2`                    | integer from 1 through 3                        |
 
-The executions are not related with Dapr `call_child_workflow`. The physical dev
-cluster and every vCluster have separate workflow state stores and task hubs. A
-narrow application port treats the preview-local execution as a remote durable
-resource and exposes only start, status, and typed signal commands.
+More than one service is admitted only when
+`PREVIEW_DEV_MULTISERVICE=true`. The server-side gate is authoritative even
+though the fixture always permits the schema's upper bound.
 
-The child is not the trust authority for promotion. After the child reports a
-submission receipt ID, the parent invokes a physical-only verification command.
-The physical broker reauthorizes the exact generation and owner, reads the
-durable promotion receipt by its complete scope, and requires the receipt's
-service set to equal the original host submission. Only that canonical proof can
-move the parent to normal completion.
+The user does not provide actor, project, repository, source or platform SHA,
+catalog digest, workflow digest, origin, execution ID, URLs, or credentials.
+Those values are derived and revalidated by the application layer. `intent` is
+passed as task data and is never interpolated into infrastructure commands.
 
-## User Input
+## Exact Target
 
-The initial host submission accepts:
-
-- `intent`: required task text for the agent.
-- `services`: non-empty subset of the server-owned preview service catalog.
-- `environmentName`: a validated preview name.
-- `ttlHours`: bounded PreviewEnvironment lifetime.
-- `retainAfterCompletion`: whether successful completion skips automatic
-  teardown.
-
-The submitted intent is persisted in the host execution input, copied into the
-preview-local execution input, and recorded as the initial interactive-session
-event. It is appended as delimited task data after the fixed activation, HMR,
-testing, and credential-safety instructions. It is never interpolated into a
-shell command.
-
-The submission does not accept user IDs, project IDs, execution IDs, origins,
-source or platform revisions, workflow digests, arbitrary URLs, repository write
-credentials, Kubernetes credentials, or broker credentials. Those values are
-derived and checked by application services.
-
-## Exact Target Tuple
-
-Every command after launch is bound to:
+Every remote operation remains bound to the original authority:
 
 ```text
 parentExecutionId
@@ -104,42 +65,110 @@ childWorkflowDigest
 requestedServices
 ```
 
-The host derives the actor and project from `parentExecutionId`, repeats the
-platform-admin check, and resolves the expected published child workflow digest.
-The physical broker checks the immutable PreviewEnvironment identity before
-minting a target-scoped command. The preview-local adapter checks its own
-deployment identity and published workflow digest before starting or signaling
-the child. No caller-supplied URL participates in routing.
+The physical broker verifies the actor and project from the parent execution,
+the immutable `PreviewEnvironment` identity, the published child digest, and
+the requested service set. The preview-local adapter verifies its deployment
+identity before starting or signaling the child. A caller-supplied URL never
+participates in routing.
 
-## Typed Control
+## Parent Phases
 
-The primary proof path is automatic. The preview-local child captures and
-promotes the accepted HMR generation itself, then returns only a bounded receipt
-summary to the host. Manual control is still retained for interruption and
-cleanup. If a child run reaches an explicit control point, it waits durably on
-the fixed event `preview.development.control`. The only accepted payloads are:
+### Provision
 
-```json
-{ "action": "submit_preview_pr" }
-{ "action": "discard" }
-```
+The parent calls `preview/environment-launch` with the name, service set, TTL,
+and retention intent, then polls `preview/environment-status`. Readiness means
+the exact requested generation is reconciled and its selected development
+surface is available; a similarly named or stale environment is not accepted.
 
-The host parent exposes this through its normal durable control surface:
+### Start Development
 
-- Approve sends `submit_preview_pr` only for runs that intentionally reached a
-  manual control point.
-- Deny sends `discard`.
-- Cancellation leaves an auditable result and invokes guarded cleanup according
-  to the archive policy.
+The parent calls `preview/workflow-start` for the pinned child. It forwards only
+the development request and optional retention/gate controls. A short 404 while
+the preview-local seed hook publishes the child is retryable. Bounded 409 and
+502 responses are treated as transient; contract and authorization failures
+remain permanent.
 
-On automatic or manual submission the child runs `dev/preview-snapshot` for the
-exact selected service set, then `dev/preview-promote`. Both actions bind their
-execution ID from trusted activity context. Promotion remains draft-only and the
-GitHub App credential remains in the physical broker.
+### Observe And Verify
 
-## Action Contract
+The parent polls `preview/workflow-status` with deterministic exponential
+backoff. Its time budget scales with service count while keeping action-call
+count bounded. The child must return a draft-PR receipt whose preview,
+generation, execution, service set, branch, commit, base SHA, and repository are
+internally consistent.
 
-The host workflow uses first-class actions rather than public browser routes:
+The parent then calls `preview/workflow-verify-promotion`. Only a physically
+verified receipt for `PittampalliOrg/workflow-builder`, the exact child
+execution, and the exact requested service set permits normal completion.
+
+### Finalize
+
+The parent retains only when one of these conditions is true:
+
+- normal completion and `retainAfterCompletion=true`;
+- abnormal completion and `retainOnFailure=true`.
+
+Otherwise it calls `preview/environment-teardown` and, when needed, polls
+`preview/environment-teardown-status` with the signed teardown ticket. A
+teardown response without either complete cleanup or a ticket is a lifecycle
+failure.
+
+The `finally` path owns this decision, so provisioning or child failures do not
+silently skip cleanup.
+
+## Preview-Local Development
+
+The child obtains tuple-bound service metadata from `dev/preview`. On the
+single-service path it preserves the proven receiver export/sync behavior. On
+the multi-service path it:
+
+1. obtains metadata for every requested service in one batch;
+2. builds one sparse checkout in the shared workspace;
+3. materializes one private sync configuration per service;
+4. runs the agent against that checkout;
+5. executes `/sandbox/work/sync.sh` once per logical generation;
+6. requires one `APPLIED` receipt per service and one shared healthy
+   convergence receipt.
+
+The child does not commit or push. After verification it calls
+`dev/preview-snapshot` for the accepted receiver-owned generation and
+`dev/preview-promote` for the exact service set. GitHub credentials remain in
+the physical broker.
+
+## Impact Gates
+
+`impactReview=true` changes only the multi-service path. After each generation
+and before snapshot, the child checks:
+
+- all requested services report one shared generation;
+- configured routes remain smoke-testable;
+- each service is healthy and catalog-defined probes pass;
+- receiver-owned changed paths remain within `diffScope`.
+
+A failed gate is iteration feedback, not an immediate promotion. The next
+iteration may correct the source until `maxIterations` is exhausted. Scope is
+computed from each receiver's `/__status` receipt for the current generation;
+the helper checkout is not diff authority. Out-of-scope files produce
+`out_of_scope_changes`. Generated capture-only files are excluded before the
+scope decision.
+
+## Retention And Sessions
+
+On retained success without interactive handoff, the child calls
+`dev/preview-freeze` after promotion. The environment remains reachable, but
+new `/__sync` generations are rejected.
+
+With `interactiveHandoff=true`, the child deliberately skips freeze and starts
+a persistent interactive agent session against the retained workspace. Child
+and host status include its session URL. Once the original session lease is
+released, the continuation endpoint may create a second session bound to the
+same retained preview and source authority.
+
+Retention never removes TTL or cleanup ownership. Explicit teardown and the
+bounded lifecycle reaper still use the exact request/source generation.
+
+## Action Boundary
+
+The parent uses these first-class actions:
 
 ```text
 preview/environment-launch
@@ -152,206 +181,35 @@ preview/environment-teardown
 preview/environment-teardown-status
 ```
 
-Each mutating action has a deterministic operation ID derived from the parent
-execution and logical call. Replays return the original receipt. Status actions
-are read-only. Teardown requires the accepted generation identity and converges
-through the existing signed teardown ticket and cleanup proof.
+Mutating operations use deterministic operation IDs. The function-router and
+BFF routes require the purpose-specific `PREVIEW_ACTION_INTERNAL_TOKEN`; agent
+sandboxes receive neither that token nor platform, Kubernetes, GitHub, or
+provider credentials. Responses crossing from mutable preview code are
+allowlisted and size-bounded.
 
-All eight host lifecycle actions and the six existing `dev/preview*` HMR,
-capture, promotion, build, acceptance, and teardown actions require the
-purpose-specific `PREVIEW_ACTION_INTERNAL_TOKEN` on function-router ingress.
-The workflow orchestrator adds that header only for this fixed slug set, and the
-router forwards the same purpose header to the corresponding BFF routes. Those
-routes do not accept the broader `INTERNAL_API_TOKEN`. Physical dev and each
-preview receive different secrets, and agent sandboxes receive neither action
-token.
+## Success Contract
 
-Transient router or BFF failures remain typed retryable results and execute
-inside the existing durable action-runner retry policy. Contract, authorization,
-and generation conflicts are permanent results and are not retried. Both proxy
-hops have fixed deadlines.
-
-When the child exposes a Kimi K3 session, status must resolve at most one session
-linked to the child execution. The result includes the preview-local,
-workspace-scoped session URL so the host run detail can take the operator
-directly to the active Kimi K3 session. Duplicate or ambiguous links fail the
-contract instead of presenting controls. Normal automated runs may complete
-without a manual handoff session URL if all proof artifacts and the physical
-promotion receipt are present.
-
-Preview application code is mutable and therefore not a trust authority. The
-physical broker reconstructs start, status, signal, session-link, and terminal
-receipt responses from an allowlist; unknown fields and raw child output never
-cross into the host execution. Leaf HTTP bodies are streamed under a 256 KiB
-limit. Candidate-controlled error bodies are discarded and mapped from HTTP
-status to fixed messages before crossing the physical boundary.
-
-## Hexagonal Ownership
-
-- Presentation adapters parse browser or function-router envelopes only.
-- The application layer validates identity, authorization, state transitions,
-  and exact tuple consistency.
-- Existing PreviewEnvironment launch, observation, archive, promotion, and
-  teardown ports remain authoritative.
-- A new preview-target development port owns only remote workflow start, status,
-  typed signal, and physical promotion verification.
-- HTTP, Dapr, database, Kubernetes, and GitHub details remain outbound adapters.
-- Agent pods receive only task text and scoped HMR capabilities.
-
-## Browser And Raystation Access
-
-Browser authority follows the same port-and-adapter boundary as HMR and source
-promotion. Workflows ask for a browser inspection of a preview route; they do not
-receive a raw Raystation endpoint, host browser credential, kubeconfig, or
-Tailscale authority. The application layer resolves the request against the
-exact PreviewEnvironment tuple and returns only a scoped browser session handle,
-allowed origins, and artifact references.
-
-For the first development version, the default browser path remains the existing
-preview-local Playwright/browser action surface plus screenshot or video
-artifacts. When a browser agent session must use Raystation on the host, model it
-as an outbound browser adapter behind the physical broker:
-
-- the host adapter owns the Raystation connection and any host-only credential;
-- the adapter only opens tuple-bound preview URLs or approved external test URLs;
-- the workflow receives observations, screenshots, recordings, and a session
-  handle, not the host browser control channel;
-- the same run/preview/session correlation is persisted so the Dev page can show
-  browser state alongside provisioning, HMR, workflow progress, source capture,
-  and PR receipt.
-
-This keeps Raystation useful for high-fidelity browser-agent sessions without
-turning the host browser into preview input or weakening the preview isolation
-contract.
-
-## Delivery Topology
-
-The repository change rebuilds `workflow-builder`, `function-router`,
-`workflow-orchestrator`, and `script-evaluator` through the normal GitHub to hub
-Tekton to GHCR release-pin path. Physical dev consumes those release pins through
-Source Hydrator and GitOps Promoter.
-
-The physical preview-control broker is deployed by the separately pinned
-`dev-preview-platform` Application. After all four release pins converge on the
-same Workflow Builder source SHA, its exact stacks revision must be advanced in a
-pointer-only change. This prevents a fresh preview from pairing a new host BFF
-with an older broker contract. A proof preview is created only after the physical
-dev workloads and that broker revision are both healthy.
-
-## Proof Contract
-
-Completion requires a fresh dev-cluster run that records one correlated chain:
+A non-retained success records one correlated chain:
 
 ```text
-host execution -> PreviewEnvironment generation -> preview child execution
--> Kimi K3 session -> HMR generation -> source artifact -> draft PR receipt
--> teardown ticket -> cleanup proof
+host execution -> PreviewEnvironment generation -> child execution
+-> live-sync generation -> source artifact -> verified draft PR receipt
+-> teardown ticket -> 12-check cleanup proof
 ```
 
-The proof must show the submitted intent in the child/session provenance, a
-visible Workflow Builder UI change served through HMR without replacing the
-adopted service pod, the intended source diff in the draft PR, and no remaining
-test preview, session, sandbox, or stale ownership resources after cleanup.
+A retained success records the same chain through promotion, plus retention,
+freeze or interactive-handoff evidence. Teardown proof requires the twelve
+checks listed in [Preview environments](preview-environments.md#teardown-contract).
 
-## Current Dev Proof
+## Source Of Truth
 
-The accepted proof run was submitted from the physical dev Workflow Builder and
-used a fresh `app-live` preview named `app-live-gan-proof26`.
+- Parent fixture: `scripts/fixtures/dynamic-scripts/preview-development-lifecycle.js`
+- Child fixture: `scripts/fixtures/dynamic-scripts/preview-ui-development-gan.js`
+- Target application service: `src/lib/server/application/preview-target-development.ts`
+- Route adapters: `src/routes/api/dev-environments/`
+- Fixture tests: `services/script-evaluator/src/preview-development-lifecycle.test.ts`
+  and `services/script-evaluator/src/preview-ui-development-gan.test.ts`
+- Seed contract: `scripts/seed-workflows.preview-lifecycle.test.ts`
 
-```text
-hostExecutionId: iXqP79VryvXlDXQtsTpqR
-parentWorkflow: preview-development-lifecycle-eb45df2ffdba3cb2dcef
-previewName: app-live-gan-proof26
-environmentRequestId: 017b3825-1c2e-495e-b628-d91ddd147287
-platformRevision: 7b33ab3a0126da5a859a16baf4af07a215fb3404
-sourceRevision: bd4dce2e39b69765a28520329cacebb70fecb335
-catalogDigest: sha256:22877c5349ccf8ffce018c1df99954cfbbb472ab17bb6fd18434c6e8d78e619d
-childExecutionId: pdc_7a6f18e119b02deaa3d82daa40a7326cc68bae19f2b112d34ebdd7b89ec8
-childInstanceId: dsw-preview-ui-development-gan-exec-pdc_7a6f18e119b02deaa3d82daa40a7326cc68bae19f2b112d34ebdd7b89ec8
-childWorkflowDigest: sha256:35d0108a74a1f45c3ce94e963daffb00e9ad3c526cf368248ba330c7d469c464
-agent: glm-juicefs-builder-agent
-executionClass: dapr-agent-py-juicefs
-model: zai/glm-5.2
-```
-
-The host run reached `status=success`, `phase=completed`, `success=true`, and
-`promotionVerification.verified=true`. The workflow started immediately from
-the host-submitted dashboard-enhancement prompt; it did not wait for manual
-instructions or a manual submit approval. The preview-local runtime log
-confirmed the requested model path:
-
-```text
-[gateway-adapter] llm-glm-5.2 -> model=glm-5.2
-```
-
-The HMR proof used one adopted `workflow-builder` development pod in the host
-namespace `vcluster-app-live-gan-proof26`:
-
-```text
-pod: wfb-dev-preview-workflow-builder-pdc-7a6f18e119b02de-b5449834d6
-sync: drizzle,lib,scripts,services/shared/workflow-data-contract,src,static
-syncSize: 7119655B
-syncApplyElapsed: 1522ms
-changedPaths: src/routes/dashboard/+page.svelte
-```
-
-The adopted service pod stayed in place while the HMR receiver applied the
-source update. The generated dashboard change added a `Preview Development
-Status` panel with quadrants for preview environment, workflow progress, source
-capture, and draft PR handoff, using existing dashboard data and no new API
-routes. A live smoke test returned `/api/health` 200 and loaded `/dashboard`
-through the expected unauthenticated redirect path without Svelte or server
-errors.
-
-Source promotion created a durable source artifact and draft PR:
-
-```text
-sourceArtifactId: pca_86f566bacb093997fa1bbb27b7c5d5649581f001046e54e8f6b8f3981cec7afc
-receiptId: pspr_9047f7a75463f8516508c3a1a6e5db309a3ae6d54e66e1067e33980ab38ff52e
-branch: preview-feature-0c81000a3320f709e0a7ea58047bb28f
-commitSha: b7f3856ab1d97729212ace7521d6e650921ce469
-baseSha: bd4dce2e39b69765a28520329cacebb70fecb335
-pullRequest: https://github.com/PittampalliOrg/workflow-builder/pull/677
-pullRequestState: open draft
-changedPaths: src/routes/dashboard/+page.svelte
-```
-
-The physical broker verified the append-only promotion receipt before the parent
-completed. A transient GLM 5.2 minute-token-limit error was retried by the
-runtime and did not require manual intervention.
-
-The parent performed generation-fenced teardown after promotion verification.
-The signed cleanup proof for `app-live-gan-proof26` reached completion; all
-preview-environment cleanup checks were true:
-
-```text
-runnerSucceeded
-previewEnvironmentAbsent
-applicationAbsent
-agentRegistrationAbsent
-agentNamespacesAbsent
-databaseAbsent
-natsStreamAbsent
-headlampRegistrationAbsent
-tailnetEgressAbsent
-hostNamespaceAbsent
-storageScopeAbsent
-runnerIdentityAbsent
-```
-
-The `PreviewEnvironment`, hub certificate resources, and dev namespace for
-`app-live-gan-proof26` were absent after teardown. The source-promotion Sandbox
-uses `shutdownPolicy: Delete`; its pod was gone after completion and its
-transcript/workspace PVCs remained only until the scheduled Sandbox
-`shutdownTime`, at which point the Sandbox controller is expected to reap the
-owner-referenced storage.
-
-One durable platform issue was found during proof teardown. The dev
-`dev-preview-platform` ArgoCD Application was still pinned to
-`35f8a10ae3846cfce2d535ccf04a70e3deaff2fe`, so the live admission policy lacked
-the merged down-job `ttlSecondsAfterFinished == 1800` compatibility. A manual
-application of the current policy allowed the proof26 down job to complete. The
-durable fix advanced the dev overlay pointer to
-`7b33ab3a0126da5a859a16baf4af07a215fb3404`; ArgoCD converged to `Synced
-Healthy`, and the live admission policy now accepts either an absent down-job
-TTL or `ttlSecondsAfterFinished == 1800`.
+Current live evidence is maintained only in
+[Preview environments](preview-environments.md#current-dev-evidence).
