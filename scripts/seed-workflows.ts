@@ -3935,6 +3935,7 @@ async function ensureCliShowcaseAgentFor(
 		modelSpec?: string;
 		reasoningEffort?: string;
 		contextWindowTokens?: number;
+		runtimeIsolation?: "auto" | "shared" | "dedicated";
 		// Unified reasoning-effort selector for interactive-cli agents (mapped to
 		// each CLI's native control by the cli-agent-py adapters). Only set for
 		// agents that want a non-default effort (e.g. claude-code-cli "ultracode").
@@ -3952,6 +3953,9 @@ async function ensureCliShowcaseAgentFor(
 		...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
 		...(opts.contextWindowTokens
 			? { contextWindowTokens: opts.contextWindowTokens }
+			: {}),
+		...(opts.runtimeIsolation
+			? { runtimeIsolation: opts.runtimeIsolation }
 			: {}),
 		...(opts.effort ? { effort: opts.effort } : {}),
 		...(opts.instructions ? { instructions: opts.instructions } : {}),
@@ -4084,6 +4088,7 @@ async function seedGeneratorCriticShowcases(params: {
 		modelSpec: "kimi/kimi-k3",
 		reasoningEffort: "max",
 		contextWindowTokens: 1_048_576,
+		runtimeIsolation: "dedicated",
 	});
 	// Shared Playwright MCP config for every CLI critic (same sandbox image →
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the

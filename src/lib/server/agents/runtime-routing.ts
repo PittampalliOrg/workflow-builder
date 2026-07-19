@@ -250,8 +250,9 @@ export function resolveAgentRuntimeRoute(params: {
 	const explicitRuntimeAppId = cleanString(params.runtimeAppId);
 	const runtimeDescriptor = getRuntimeDescriptor(params.config?.runtime);
 	const ignoreExplicitRuntimeAppId =
-		runtimeDescriptor?.capabilities.interactiveTerminal === true &&
-		explicitRuntimeAppId?.startsWith(DEFAULT_POOL_PREFIX) === true;
+		explicitRuntimeAppId?.startsWith(DEFAULT_POOL_PREFIX) === true &&
+		(isolation === "dedicated" ||
+			runtimeDescriptor?.capabilities.interactiveTerminal === true);
 	const dedicatedAppId =
 		explicitRuntimeAppId &&
 		!ignoreExplicitRuntimeAppId &&

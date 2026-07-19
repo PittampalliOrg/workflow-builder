@@ -74,6 +74,31 @@ describe("resolveAgentRuntimeRoute", () => {
 		});
 	});
 
+	it("keeps the seeded Kimi K3 JuiceFS builder on its per-agent runtime when shared pools are enabled", () => {
+		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
+		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({
+			coding: "agent-runtime-pool-coding",
+		});
+
+		const route = resolveAgentRuntimeRoute({
+			agentSlug: "glm-juicefs-builder-agent",
+			runtimeAppId: "agent-runtime-pool-coding",
+			config: config({
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: "kimi/kimi-k3",
+				runtimeIsolation: "dedicated",
+			}),
+		});
+
+		expect(route).toEqual({
+			appId: "agent-runtime-glm-juicefs-builder-agent",
+			slug: "glm-juicefs-builder-agent",
+			runtimeClass: "coding",
+			isolation: "dedicated",
+			reason: "agent requested dedicated runtime isolation",
+		});
+	});
+
 	it("routes non-browser dapr-agent-py agents to a shared class pool when enabled", () => {
 		process.env.AGENT_RUNTIME_SHARED_POOLS_ENABLED = "true";
 		process.env.AGENT_RUNTIME_POOL_APP_IDS_JSON = JSON.stringify({

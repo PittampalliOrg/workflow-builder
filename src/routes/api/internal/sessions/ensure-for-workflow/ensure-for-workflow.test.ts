@@ -876,8 +876,11 @@ describe("dynamic-script spawn MCP wiring", () => {
 		});
 		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
 			config: {
-				runtime: "dapr-agent-py",
-				modelSpec: "zai/glm-5.2",
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: "kimi/kimi-k3",
+				reasoningEffort: "max",
+				contextWindowTokens: 1_048_576,
+				runtimeIsolation: "dedicated",
 				skills: [],
 				mcpServers: [],
 				runtimeOverridePolicy: RUNTIME_POLICY,
@@ -888,7 +891,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 		} as never);
 		const payload = await callEnsureForWorkflow({
 			runtime: "dapr-agent-py",
-			modelSpec: "zai/glm-5.2",
+			modelSpec: "kimi/kimi-k3",
 			provider: "openai",
 			token: "unused",
 			body: { resolveAgentSlug: "glm-juicefs-builder-agent" },
@@ -905,6 +908,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 		const childInput = payload.childInput as Record<string, unknown>;
 		const config = childInput.agentConfig as Record<string, unknown>;
 		expect(config.runtime).toBe("dapr-agent-py-juicefs");
+		expect(config.modelSpec).toBe("kimi/kimi-k3");
+		expect(config.reasoningEffort).toBe("max");
+		expect(config.contextWindowTokens).toBe(1_048_576);
+		expect(config.runtimeIsolation).toBe("dedicated");
 		expect(config.agentAppId).toBe("agent-runtime-glm-juicefs-builder-agent");
 		expect(childInput.sandboxName).toBe("dapr-agent-py-juicefs");
 	});
