@@ -37,6 +37,23 @@ def test_ignores_non_compactable_tools():
     assert saved == 0
 
 
+def test_kimi_formula_results_are_never_microcompacted():
+    # Kimi formula tools (fetch, quickjs, excel, ...) can return encrypted
+    # blobs that must round-trip byte-for-byte into the next chat request.
+    # Their names stay outside _COMPACTABLE_TOOLS, so microcompaction must
+    # never clear them — pin that invariant.
+    msgs = [
+        _tool("fetch", "x" * 5000),
+        _tool("Bash", "y" * 5000),
+        _tool("quickjs", "z" * 5000),
+    ]
+    out, saved = microcompact_messages(msgs, threshold_chars=2000, keep_last_n=0)
+    assert out[0]["content"] == "x" * 5000
+    assert out[2]["content"] == "z" * 5000
+    assert _MICROCOMPACT_MARKER in out[1]["content"]
+    assert saved > 0
+
+
 def test_idempotent_on_already_trimmed():
     msgs = [_tool("Bash", "x" * 5000)]
     once, _ = microcompact_messages(msgs, threshold_chars=2000, keep_last_n=0)

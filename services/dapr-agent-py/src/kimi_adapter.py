@@ -493,25 +493,32 @@ def _with_formula_tools(
 
     Local tools win name collisions: if a local/MCP tool already provides the
     name, the model saw that tool's declaration, so the formula declaration is
-    dropped and run_tool dispatches to the local/MCP implementation.
+    dropped and run_tool dispatches to the local/MCP implementation. Matching
+    uses the same normalization as the executor and the run_tool dispatch
+    guard (case-insensitive, spaces/underscores ignored) so both sides of the
+    shadowing contract agree.
     """
+    from src.kimi_formulas import _normalize_lookup
+
     tools = list(converted_tools or [])
     existing = {
-        str((tool.get("function") or {}).get("name") or "") for tool in tools
+        _normalize_lookup(str((tool.get("function") or {}).get("name") or ""))
+        for tool in tools
     }
     for declaration in formula_tools:
         function = declaration.get("function") if isinstance(declaration, dict) else None
         name = str((function or {}).get("name") or "").strip()
         if not name:
             continue
-        if name in existing:
+        key = _normalize_lookup(name)
+        if key in existing:
             logger.warning(
                 "[kimi-chat] formula tool %s shadowed by a local tool; skipping",
                 name,
             )
             continue
         tools.append({"type": "function", "function": {**function, "strict": False}})
-        existing.add(name)
+        existing.add(key)
     tools.sort(key=lambda item: item["function"].get("name") or "")
     return tools
 
