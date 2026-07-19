@@ -129,6 +129,25 @@ def test_configured_formula_uris_default_excludes_web_search(monkeypatch) -> Non
     assert all("web-search" not in uri for uri in uris)
 
 
+def test_default_formula_uris_use_renamed_code_runner() -> None:
+    # Upstream renamed code_runner -> code-runner; the underscore URI 404s.
+    assert "moonshot/code-runner:latest" in formulas.DEFAULT_FORMULA_URIS
+    assert not any("code_runner" in uri for uri in formulas.DEFAULT_FORMULA_URIS)
+
+
+def test_normalize_formula_uri_rewrites_legacy_code_runner() -> None:
+    assert formulas.normalize_formula_uri("code_runner") == "moonshot/code-runner:latest"
+    assert (
+        formulas.normalize_formula_uri("moonshot/code_runner:beta")
+        == "moonshot/code-runner:beta"
+    )
+    # The current spelling is untouched.
+    assert (
+        formulas.normalize_formula_uri("moonshot/code-runner:latest")
+        == "moonshot/code-runner:latest"
+    )
+
+
 def test_configured_formula_uris_empty_disables(monkeypatch) -> None:
     monkeypatch.setenv("KIMI_FORMULAS", "")
     assert formulas.configured_formula_uris() == []
@@ -187,7 +206,7 @@ def test_ensure_formula_tools_fetches_caches_and_indexes(monkeypatch) -> None:
     second = formulas.ensure_formula_tools()
 
     assert first is second  # cached object, no refetch
-    assert len(fetched) == 2  # one GET per URI total
+    assert len(fetched) == 3  # one catalog GET + one tools GET per URI total
     assert [t["function"]["name"] for t in first] == ["fetch", "date"]
     assert formulas.formula_uri_for_tool("fetch") == "moonshot/fetch:latest"
     assert formulas.formula_uri_for_tool("date") == "moonshot/date:latest"
@@ -224,7 +243,7 @@ def test_total_load_failure_is_retried_after_cooldown(monkeypatch) -> None:
     assert formulas.ensure_formula_tools() == []
     # Inside the cooldown the empty set is served from cache — no refetch storm.
     assert formulas.ensure_formula_tools() == []
-    assert len(fetches) == 1
+    assert len(fetches) == 2  # one catalog GET + one tools GET
 
     # Cooldown over + network back: the next call reloads successfully instead
     # of disabling formulas for the process lifetime.
@@ -272,6 +291,167 @@ def test_ensure_formula_tools_skips_duplicate_function_names(monkeypatch, caplog
     assert len(declarations) == 1
     assert declarations[0]["function"]["description"] == "first"
     assert any("duplicate" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Upstream drift guards: catalog check + plugin-manifest flattening
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_guard_skips_upstream_missing_formulas(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest,moonshot/ghost:latest")
+    fetched: list[str] = []
+
+    def urlopen(req, timeout: float = 0):
+        url = req.full_url
+        if url.endswith("/formulas"):
+            return _JsonResponse(
+                {
+                    "object": "list",
+                    "data": [
+                        {"namespace": "moonshot", "name": "fetch"},
+                        {"namespace": "moonshot", "name": "date"},
+                    ],
+                }
+            )
+        if url.endswith("/formulas/moonshot/fetch:latest/tools"):
+            fetched.append(url)
+            return _JsonResponse(_tools_payload("fetch"))
+        raise URLError(f"unexpected url {url}")
+
+    monkeypatch.setattr(formulas.urllib.request, "urlopen", urlopen)
+    with caplog.at_level("WARNING"):
+        declarations = formulas.ensure_formula_tools()
+
+    assert [t["function"]["name"] for t in declarations] == ["fetch"]
+    # The ghost URI is skipped before any per-URI tools fetch happens.
+    assert len(fetched) == 1
+    assert any(
+        "not found in the Kimi formula catalog" in record.message
+        and "ghost" in record.message
+        for record in caplog.records
+    )
+
+
+def test_catalog_failure_falls_back_to_per_uri_fetch(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    fetched: list[str] = []
+
+    def urlopen(req, timeout: float = 0):
+        url = req.full_url
+        if url.endswith("/formulas"):
+            raise URLError("catalog down")
+        if url.endswith("/formulas/moonshot/fetch:latest/tools"):
+            fetched.append(url)
+            return _JsonResponse(_tools_payload("fetch"))
+        raise URLError(f"unexpected url {url}")
+
+    monkeypatch.setattr(formulas.urllib.request, "urlopen", urlopen)
+    with caplog.at_level("WARNING"):
+        declarations = formulas.ensure_formula_tools()
+
+    assert [t["function"]["name"] for t in declarations] == ["fetch"]
+    assert len(fetched) == 1
+    assert any("catalog fetch failed" in record.message for record in caplog.records)
+
+
+def test_fetch_formula_tools_flattens_plugin_manifests(monkeypatch) -> None:
+    plugin_payload = {
+        "object": "list",
+        "tools": [
+            {
+                "_plugin": {
+                    "name": "excel",
+                    "description": "Excel analysis tool",
+                    "functions": [
+                        {
+                            "name": "read_file",
+                            "description": "inspect a file",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                        {"name": "groupby"},
+                    ],
+                }
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        formulas.urllib.request,
+        "urlopen",
+        lambda req, timeout=0: _JsonResponse(plugin_payload),
+    )
+
+    declarations = formulas._fetch_formula_tools("moonshot/excel:latest")
+
+    # Declared as <plugin>_<function> (dots are invalid in chat tool names),
+    # executed as <plugin>.<function> (the fibers lambda name).
+    assert [(d["function"]["name"], fiber) for d, fiber in declarations] == [
+        ("excel_read_file", "excel.read_file"),
+        ("excel_groupby", "excel.groupby"),
+    ]
+    assert all(d["type"] == "function" for d, _ in declarations)
+    # The plugin description backfills missing function descriptions, and a
+    # missing parameters object gets a valid empty JSON-schema envelope.
+    assert declarations[1][0]["function"]["description"] == "Excel analysis tool"
+    assert declarations[1][0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+    }
+
+
+def test_plugin_manifest_tools_route_to_dotted_fiber_name(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/excel:latest")
+    plugin_payload = {
+        "object": "list",
+        "tools": [
+            {
+                "_plugin": {
+                    "name": "excel",
+                    "description": "Excel analysis tool",
+                    "functions": [{"name": "read_file", "description": "inspect"}],
+                }
+            }
+        ],
+    }
+    calls: list[dict] = []
+
+    def urlopen(req, timeout: float = 0):
+        url = req.full_url
+        if url.endswith("/formulas"):
+            raise URLError("no catalog in this test")
+        if url.endswith("/tools"):
+            return _JsonResponse(plugin_payload)
+        if url.endswith("/fibers"):
+            calls.append({"url": url, "body": json.loads(req.data.decode())})
+            return _JsonResponse(
+                {"status": "succeeded", "context": {"output": "3 rows"}}
+            )
+        raise URLError(f"unexpected url {url}")
+
+    monkeypatch.setattr(formulas.urllib.request, "urlopen", urlopen)
+
+    assert formulas.formula_uri_for_tool("excel_read_file") == "moonshot/excel:latest"
+    content, encrypted = formulas.execute_formula_tool_result(
+        "excel_read_file", {"file_path": "/tmp/x.csv"}
+    )
+
+    assert content == "3 rows"
+    assert encrypted is False
+    assert calls[0]["url"].endswith("/formulas/moonshot/excel:latest/fibers")
+    assert calls[0]["body"]["name"] == "excel.read_file"
+
+
+def test_execute_formula_tool_no_output_guides_explicit_print(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/quickjs:latest")
+    calls: list[dict] = []
+    _install_formula_urlopen(monkeypatch, {"status": "succeeded", "context": {}}, calls)
+
+    content, encrypted = formulas.execute_formula_tool_result("fetch", {})
+
+    assert content.startswith("Error:")
+    assert "no output" in content
+    assert "console.log" in content
+    assert encrypted is False
 
 
 # ---------------------------------------------------------------------------
