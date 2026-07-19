@@ -170,19 +170,56 @@ describe("ApplicationPreviewEnvironmentDeletionReconcilerService", () => {
     expect(budgets.close).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses stale or non-exact SEA receipts", async () => {
+  it("replaces a retained receipt from an older same-name generation", async () => {
     const store = outbox();
     const stale = cleanup(true);
     stale.teardownProof = {
       ...stale.teardownProof!,
-      environmentUid: "different",
+      environmentUid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    };
+    const gateway = {
+      cleanup: vi
+        .fn()
+        .mockResolvedValueOnce(stale)
+        .mockResolvedValueOnce(cleanup(true)),
+      teardown: vi.fn(async () => ({ name: intent.name })),
     };
     const service = new ApplicationPreviewEnvironmentDeletionReconcilerService({
       outbox: store,
-      gateway: {
-        cleanup: vi.fn(async () => stale),
-        teardown: vi.fn(),
-      } as never,
+      gateway: gateway as never,
+      runtimeBudgets: runtimeBudgets(),
+      runtimeBudgetRetentionHours: 192,
+      runtimeBudgetPruneLimit: 100,
+    });
+
+    await expect(service.reconcile()).resolves.toMatchObject({
+      failed: 0,
+      acknowledged: 1,
+    });
+    expect(gateway.teardown).toHaveBeenCalledWith(intent.name, {
+      mode: "owned",
+      requestId: intent.requestId,
+      sourceRevision: intent.sourceRevision,
+      archiveConfirmed: true,
+      deletionIntent: intent,
+    });
+    expect(store.acknowledge).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a non-exact SEA receipt that remains stale after replacement", async () => {
+    const store = outbox();
+    const stale = cleanup(true);
+    stale.teardownProof = {
+      ...stale.teardownProof!,
+      environmentUid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    };
+    const gateway = {
+      cleanup: vi.fn(async () => stale),
+      teardown: vi.fn(async () => ({ name: intent.name })),
+    };
+    const service = new ApplicationPreviewEnvironmentDeletionReconcilerService({
+      outbox: store,
+      gateway: gateway as never,
       runtimeBudgets: runtimeBudgets(),
       runtimeBudgetRetentionHours: 192,
       runtimeBudgetPruneLimit: 100,
@@ -192,6 +229,7 @@ describe("ApplicationPreviewEnvironmentDeletionReconcilerService", () => {
       failed: 1,
       acknowledged: 0,
     });
+    expect(gateway.teardown).toHaveBeenCalledOnce();
     expect(store.acknowledge).not.toHaveBeenCalled();
   });
 

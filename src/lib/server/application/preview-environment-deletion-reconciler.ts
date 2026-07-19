@@ -109,7 +109,7 @@ export class ApplicationPreviewEnvironmentDeletionReconcilerService {
     intent: PreviewEnvironmentDeletionIntent,
   ): Promise<"acknowledged" | "pending"> {
     let cleanup = await this.options.gateway.cleanup(intent.name);
-    if (!cleanup.complete) {
+    if (!this.cleanupProofMatchesIntent(intent, cleanup)) {
       await this.options.gateway.teardown(intent.name, {
         mode: "owned",
         requestId: intent.requestId,
@@ -136,6 +136,28 @@ export class ApplicationPreviewEnvironmentDeletionReconcilerService {
     });
     await this.options.outbox.acknowledge(intent, acknowledgement);
     return "acknowledged";
+  }
+
+  private cleanupProofMatchesIntent(
+    intent: PreviewEnvironmentDeletionIntent,
+    cleanup: VclusterPreviewCleanupSnapshot,
+  ): boolean {
+    const proof = cleanup.teardownProof;
+    return Boolean(
+      cleanup.complete &&
+        cleanup.resourceName === intent.name &&
+        proof &&
+        proof.intentId === intent.id &&
+        proof.environmentUid === intent.environmentUid &&
+        proof.requestId === intent.requestId &&
+        proof.sourceRevision === intent.sourceRevision &&
+        proof.jobName === `vcpreview-down-${intent.name}` &&
+        /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(proof.jobUid) &&
+        /^op:[0-9a-f]{32}$/.test(proof.runnerGeneration) &&
+        PREVIEW_ENVIRONMENT_PHYSICAL_CLEANUP_CHECKS.every(
+          (name) => cleanup.checks[name] === true,
+        ),
+    );
   }
 
   private acknowledgement(
