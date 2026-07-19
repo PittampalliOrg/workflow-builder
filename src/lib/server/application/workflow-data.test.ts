@@ -458,6 +458,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		markStartFailed: vi.fn(async () => undefined),
 		listStaleRunningExecutions: vi.fn(async () => []),
 		updateReadModel: vi.fn(async () => undefined),
+		compareAndSetReadModel: vi.fn(async () => null),
 		appendLog: vi.fn(async () => executionLog),
     updateLog: vi.fn(async () => ({
       ...executionLog,
@@ -10134,8 +10135,9 @@ describe("ApplicationWorkflowDataService", () => {
 			create: vi.fn(async () => ({ id: "exec-1" })),
 			attachSchedulerInstance: vi.fn(async () => undefined),
 			markStartFailed: vi.fn(async () => undefined),
-			listStaleRunningExecutions: vi.fn(async () => []),
-			updateReadModel: vi.fn(async () => undefined),
+				listStaleRunningExecutions: vi.fn(async () => []),
+				updateReadModel: vi.fn(async () => undefined),
+				compareAndSetReadModel: vi.fn(async () => null),
 			appendLog: vi.fn(async () => executionLog),
       updateLog: vi.fn(async () => ({
         ...executionLog,
@@ -10198,7 +10200,12 @@ describe("ApplicationWorkflowDataService", () => {
 			traceLineage: {} as TraceLineageStore,
 		});
 
-		await service.updateExecutionReadModel("exec-1", { phase: "running" });
+			await service.updateExecutionReadModel("exec-1", { phase: "running" });
+			await service.compareAndSetExecutionReadModel({
+				executionId: "exec-1",
+				expectedStatus: "running",
+				patch: { status: "success" },
+			});
 		await service.assertExecutionReadModelReady();
 		await service.listEnabledModelIds();
 		await service.createWorkflowExecution({
@@ -10352,9 +10359,14 @@ describe("ApplicationWorkflowDataService", () => {
 			workspaceRef: "workspace-1",
 		});
 
-		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
-			phase: "running",
-		});
+			expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
+				phase: "running",
+			});
+			expect(workflowExecutions.compareAndSetReadModel).toHaveBeenCalledWith({
+				executionId: "exec-1",
+				expectedStatus: "running",
+				patch: { status: "success" },
+			});
 		expect(workflowExecutions.assertReadModelReady).toHaveBeenCalledTimes(1);
 		expect(modelCatalog.listEnabledModelIds).toHaveBeenCalledTimes(1);
 		expect(workflowExecutions.create).toHaveBeenCalledWith(

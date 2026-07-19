@@ -104,6 +104,7 @@ import type {
 	BenchmarkRunLifecyclePort,
 	BenchmarkRunRepository,
 	BenchmarkSessionProvisioningGateResult,
+	CompareAndSetWorkflowExecutionReadModelInput,
 	CreateProjectMcpConnectionInput,
 	DevEnvironmentReadRepository,
 	CreateWorkflowEnsureSessionInput,
@@ -5802,6 +5803,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		patch: WorkflowExecutionReadModelPatch,
 	) {
 		return this.deps.workflowExecutions.updateReadModel(executionId, patch);
+	}
+
+	compareAndSetExecutionReadModel(
+		input: CompareAndSetWorkflowExecutionReadModelInput,
+	) {
+		return this.deps.workflowExecutions.compareAndSetReadModel(input);
 	}
 
 	appendExecutionLog(input: AppendWorkflowExecutionLogInput) {

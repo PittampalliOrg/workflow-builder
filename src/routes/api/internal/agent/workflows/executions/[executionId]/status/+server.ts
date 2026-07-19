@@ -5,8 +5,31 @@ import {
   validateInternalToken,
 } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
+import {
+	resolveExecutionStatusSnapshot,
+	workflowExecutionStatusSnapshotFromRecord,
+	type WorkflowRuntimeExecutionStatusSnapshot,
+} from "$lib/server/application/workflow-execution-read-model";
 import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
 import { resolveInternalWorkflowPrincipal } from "../../../../../workflow-mcp-principal";
+
+function normalizeRuntimeStatus(
+  runtime: Record<string, unknown>,
+): WorkflowRuntimeExecutionStatusSnapshot {
+  return {
+    runtimeStatus:
+      typeof runtime.runtimeStatus === "string" ? runtime.runtimeStatus : null,
+    phase: typeof runtime.phase === "string" ? runtime.phase : null,
+    progress:
+      typeof runtime.progress === "number" && Number.isFinite(runtime.progress)
+        ? runtime.progress
+        : null,
+    outputs: runtime.outputs ?? null,
+    error: typeof runtime.error === "string" ? runtime.error : null,
+    completedAt:
+      typeof runtime.completedAt === "string" ? runtime.completedAt : null,
+  };
+}
 
 /**
  * GET /api/internal/agent/workflows/executions/[executionId]/status
@@ -93,53 +116,20 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		}
 	}
 
-	// Map runtime status to local status
-	let effectiveStatus = execution.status;
-	let effectiveError = execution.error;
-
-	if (runtime) {
-    const runtimeStatus = (runtime.runtimeStatus as string) || "";
-		effectiveStatus = mapRuntimeStatus(runtimeStatus, execution.status);
-		if (runtime.error) {
-			effectiveError = String(runtime.error);
-		}
-
-		// Sync DB if status diverged
-		const shouldComplete =
-      effectiveStatus === "success" ||
-      effectiveStatus === "error" ||
-      effectiveStatus === "cancelled";
-
-		// Never rewrite a terminal row: the dynamic-script engine leaves Dapr custom
-		// status at a stale phase/progress after completion, so post-terminal polls
-		// must not clobber the persisted final state (mirrors the running/pending-only
-		// refresh in workflow-execution-read-model).
-		const rowIsTerminal =
-      execution.status === "success" ||
-      execution.status === "error" ||
-      execution.status === "cancelled";
-
-		if (
-			!rowIsTerminal &&
-			(effectiveStatus !== execution.status ||
-				(runtime.phase as string | null) !== execution.phase ||
-				(runtime.progress as number | null) !== execution.progress)
-		) {
-			await workflowData.updateExecutionReadModel(execution.id, {
-				status: effectiveStatus,
-				phase: (runtime.phase as string) ?? execution.phase,
-				progress: (runtime.progress as number) ?? execution.progress,
-				// Runtime outputs only fill a missing output; never replace a persisted one.
-        output:
-          execution.output ??
-          (runtime.outputs as Record<string, unknown>) ??
-          null,
-				error: effectiveError,
-        ...(shouldComplete && !execution.completedAt
-          ? { completedAt: new Date() }
-          : {}),
-			});
-		}
+	const resolved = resolveExecutionStatusSnapshot({
+		persisted: execution,
+		runtime: runtime ? normalizeRuntimeStatus(runtime) : null,
+		observedAt: new Date(),
+	});
+	let snapshot = resolved.snapshot;
+	if (resolved.patch) {
+		const winner = await workflowData.compareAndSetExecutionReadModel({
+			executionId: execution.id,
+			expectedStatus: execution.status,
+			patch: resolved.patch,
+		});
+		if (!winner) return error(404, "Execution not found");
+		snapshot = workflowExecutionStatusSnapshotFromRecord(winner);
 	}
 
 	return json({
@@ -148,15 +138,15 @@ export const GET: RequestHandler = async ({ request, params }) => {
 			id: execution.id,
 			workflowId: execution.workflowId,
 			userId: execution.userId,
-			status: effectiveStatus,
-			phase: execution.phase,
-			progress: execution.progress,
-			error: effectiveError,
+			status: snapshot.status,
+			phase: snapshot.phase,
+			progress: snapshot.progress,
+			error: snapshot.error,
 			input: execution.input,
-			output: execution.output,
+			output: snapshot.output,
 			daprInstanceId: execution.daprInstanceId,
 			startedAt: execution.startedAt?.toISOString() ?? null,
-			completedAt: execution.completedAt?.toISOString() ?? null,
+			completedAt: snapshot.completedAt?.toISOString() ?? null,
 			workflow: workflow
 				? {
 						id: workflow.id,
@@ -167,36 +157,7 @@ export const GET: RequestHandler = async ({ request, params }) => {
         : null,
 		},
 		runtime,
-		status: effectiveStatus,
-    error: effectiveError,
+		status: snapshot.status,
+		error: snapshot.error,
 	});
 };
-
-function mapRuntimeStatus(
-	runtimeStatus: string,
-  fallback: string,
-): "pending" | "running" | "success" | "error" | "cancelled" {
-	switch (runtimeStatus.toUpperCase()) {
-    case "COMPLETED":
-      return "success";
-    case "FAILED":
-      return "error";
-    case "TERMINATED":
-    case "CANCELED":
-      return "cancelled";
-    case "PENDING":
-      return "pending";
-    case "RUNNING":
-    case "SUSPENDED":
-      return "running";
-		default:
-      return (
-        (fallback as
-          | "pending"
-          | "running"
-          | "success"
-          | "error"
-          | "cancelled") || "running"
-      );
-	}
-}

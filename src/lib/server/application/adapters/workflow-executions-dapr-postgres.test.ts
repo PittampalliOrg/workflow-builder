@@ -35,44 +35,53 @@ function repo(client: FakeBindingClient) {
 	);
 }
 
+function executionRow(overrides: {
+	status?: string;
+	phase?: string | null;
+	progress?: number | null;
+	output?: unknown;
+	error?: string | null;
+	completedAt?: string | null;
+} = {}): unknown[] {
+	return [
+		"exec-1",
+		"wf-1",
+		"user-1",
+		"project-1",
+		overrides.status ?? "running",
+		'{"topic":"x"}',
+		JSON.stringify(overrides.output ?? { ok: true }),
+		"sw1",
+		'{"nodes":[]}',
+		overrides.error ?? null,
+		"inst-1",
+		overrides.phase ?? "running",
+		overrides.progress ?? 10,
+		"node-1",
+		"Node 1",
+		"trace-1",
+		"session-1",
+		null,
+		null,
+		'{"summary":true}',
+		null,
+		null,
+		null,
+		null,
+		"manual",
+		null,
+		"2026-07-09T12:00:00.000Z",
+		overrides.completedAt ?? null,
+		null,
+		null,
+		null,
+	];
+}
+
 describe("DaprPostgresWorkflowExecutionRepository", () => {
 	it("maps workflow execution rows from the binding", async () => {
 		const client = new FakeBindingClient();
-		client.queryRows.set("workflow_executions.select_by_id", [
-			[
-				"exec-1",
-				"wf-1",
-				"user-1",
-				"project-1",
-				"running",
-				'{"topic":"x"}',
-				'{"ok":true}',
-				"sw1",
-				'{"nodes":[]}',
-				null,
-				"inst-1",
-				"running",
-				10,
-				"node-1",
-				"Node 1",
-				"trace-1",
-				"session-1",
-				null,
-				null,
-				'{"summary":true}',
-				null,
-				null,
-				null,
-				null,
-				"manual",
-				null,
-				"2026-07-09T12:00:00.000Z",
-				null,
-				null,
-				null,
-				null,
-			],
-		]);
+		client.queryRows.set("workflow_executions.select_by_id", [executionRow()]);
 
 		const record = await repo(client).getById("exec-1");
 
@@ -131,6 +140,95 @@ describe("DaprPostgresWorkflowExecutionRepository", () => {
 		});
 		expect(client.calls[0]?.sql).toContain("output = CAST($3 AS jsonb)");
 		expect(client.calls[0]?.sql).toContain("summary_output = CAST($4 AS jsonb)");
+	});
+
+	it("atomically reconciles an active status and returns the updated row", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({
+				status: "success",
+				phase: "completed",
+				progress: 100,
+				output: { result: "ok" },
+				completedAt: "2026-07-09T12:00:30.000Z",
+			}),
+		]);
+
+		const record = await repo(client).compareAndSetReadModel({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: {
+				status: "success",
+				phase: "completed",
+				progress: 100,
+				output: { result: "ok" },
+			},
+		});
+
+		expect(record).toMatchObject({
+			id: "exec-1",
+			status: "success",
+			phase: "completed",
+			output: { result: "ok" },
+		});
+		expect(client.calls[0]).toMatchObject({
+			operation: "exec",
+			summary: "workflow_executions.compare_and_set_read_model",
+			paramNames: ["id", "expected_status", "status", "phase", "progress", "output"],
+			params: ["exec-1", "running", "success", "completed", 100, '{"result":"ok"}'],
+		});
+		expect(client.calls[0]?.sql).toContain("WHERE id = $1 AND status = $2");
+		expect(client.calls[0]?.sql).not.toContain("RETURNING");
+		expect(client.calls.map((call) => call.summary)).toEqual([
+			"workflow_executions.compare_and_set_read_model",
+			"workflow_executions.select_by_id",
+		]);
+	});
+
+	it("allows an expected terminal status to be corrected", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({ status: "error", phase: "failed", error: "runtime failed" }),
+		]);
+
+		const record = await repo(client).compareAndSetReadModel({
+			executionId: "exec-1",
+			expectedStatus: "success",
+			patch: { status: "error", phase: "failed", error: "runtime failed" },
+		});
+
+		expect(record?.status).toBe("error");
+		expect(client.calls[0]?.params?.slice(0, 2)).toEqual(["exec-1", "success"]);
+	});
+
+	it("returns the current winner row when the status comparison loses", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({
+				status: "error",
+				phase: "failed",
+				progress: 100,
+				output: { success: false },
+				error: "agent budget exhausted",
+			}),
+		]);
+
+		const record = await repo(client).compareAndSetReadModel({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: { status: "success" },
+		});
+
+		expect(record).toMatchObject({
+			status: "error",
+			phase: "failed",
+			output: { success: false },
+			error: "agent budget exhausted",
+		});
+		expect(client.calls.map((call) => call.summary)).toEqual([
+			"workflow_executions.compare_and_set_read_model",
+			"workflow_executions.select_by_id",
+		]);
 	});
 
 	it("appends and reloads execution logs through the binding", async () => {

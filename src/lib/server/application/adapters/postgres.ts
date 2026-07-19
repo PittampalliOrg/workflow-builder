@@ -98,6 +98,7 @@ import {
 } from "$lib/server/db/schema";
 import type {
 	AppendWorkflowExecutionLogInput,
+	CompareAndSetWorkflowExecutionReadModelInput,
 	AdminPieceRepository,
 	AgentRuntimeAgentRecord,
 	AgentRuntimeRepository,
@@ -6256,6 +6257,25 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 			.update(workflowExecutions)
 			.set(patch)
 			.where(eq(workflowExecutions.id, executionId));
+	}
+
+	async compareAndSetReadModel(
+		input: CompareAndSetWorkflowExecutionReadModelInput,
+	): Promise<WorkflowExecutionRecord | null> {
+		if (Object.keys(input.patch).length === 0) {
+			return this.getById(input.executionId);
+		}
+		const [row] = await this.database
+			.update(workflowExecutions)
+			.set(input.patch)
+			.where(
+				and(
+					eq(workflowExecutions.id, input.executionId),
+					eq(workflowExecutions.status, input.expectedStatus),
+				),
+			)
+			.returning();
+		return row ? mapExecution(row) : this.getById(input.executionId);
 	}
 
   async appendLog(

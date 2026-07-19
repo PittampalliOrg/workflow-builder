@@ -51,6 +51,7 @@ import type {
 import type {
 	ActiveWorkflowExecutionReadModel,
 	AppendWorkflowExecutionLogInput,
+	CompareAndSetWorkflowExecutionReadModelInput,
 	CreateWorkflowExecutionInput,
 	ExecutionCliPreviewResolveResult,
 	ExecutionPreviewBackend,
@@ -1458,6 +1459,9 @@ export interface WorkflowDataService {
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
 	): Promise<void>;
+	compareAndSetExecutionReadModel(
+		input: CompareAndSetWorkflowExecutionReadModelInput,
+	): Promise<WorkflowExecutionRecord | null>;
 	appendExecutionLog(
 		input: AppendWorkflowExecutionLogInput,
 	): Promise<WorkflowExecutionLogRecord>;

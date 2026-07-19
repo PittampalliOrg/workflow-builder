@@ -14,6 +14,7 @@ import {
 import { PostgresWorkflowExecutionRepository } from "$lib/server/application/adapters/postgres";
 import type {
 	AppendWorkflowExecutionLogInput,
+	CompareAndSetWorkflowExecutionReadModelInput,
 	CreateWorkflowExecutionInput,
 	WorkflowExecutionListItem,
 	WorkflowExecutionLogPatch,
@@ -460,6 +461,46 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 			spanParams: [executionId, ...entries.map(([, value]) => value ?? null)],
 			paramNames: ["id", ...entries.map(([key]) => READ_MODEL_PATCH_COLUMNS[key])],
 		});
+	}
+
+	async compareAndSetReadModel(
+		input: CompareAndSetWorkflowExecutionReadModelInput,
+	): Promise<WorkflowExecutionRecord | null> {
+		const entries = Object.entries(input.patch).filter(
+			([key]) => key in READ_MODEL_PATCH_COLUMNS,
+		) as Array<[keyof WorkflowExecutionReadModelPatch, unknown]>;
+		if (entries.length === 0) return this.getById(input.executionId);
+		const assignments = entries.map(([key], index) =>
+			assignmentFor(READ_MODEL_PATCH_COLUMNS[key], index + 3),
+		);
+		await this.client.exec({
+			summary: "workflow_executions.compare_and_set_read_model",
+			collection: "workflow_executions",
+			sql: `
+				UPDATE workflow_executions
+				SET ${assignments.join(", ")}
+				WHERE id = $1 AND status = $2
+			`,
+			params: [
+				input.executionId,
+				input.expectedStatus,
+				...entries.map(([key, value]) =>
+					valueForColumn(READ_MODEL_PATCH_COLUMNS[key], value),
+				),
+			],
+			spanParams: [
+				input.executionId,
+				input.expectedStatus,
+				...entries.map(([, value]) => value ?? null),
+			],
+			paramNames: [
+				"id",
+				"expected_status",
+				...entries.map(([key]) => READ_MODEL_PATCH_COLUMNS[key]),
+			],
+		});
+		// The guarded write is atomic; the reload returns either our update or the row that won.
+		return this.getById(input.executionId);
 	}
 
 	async appendLog(input: AppendWorkflowExecutionLogInput): Promise<WorkflowExecutionLogRecord> {

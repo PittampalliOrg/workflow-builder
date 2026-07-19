@@ -125,6 +125,136 @@ describe('buildRunDigest', () => {
 		expect(spanIssue.chain?.map((c) => c.name)).toEqual(['execute', 'dispatch', 'llm_request']);
 	});
 
+	it('suppresses expected Kubernetes absence spans without hiding real HTTP failures', () => {
+		const expectedAbsence = [
+			span({
+				spanId: 'warm-pool-delete',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				statusCode: 'Error',
+				attributes: {
+					'http.method': 'DELETE',
+					'http.status_code': '404',
+					'http.target':
+						'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+				}
+			}),
+			span({
+				spanId: 'template-delete',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				attributes: {
+					'http.request.method': 'DELETE',
+					'http.response.status_code': 404,
+					'url.path':
+						'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxtemplates/agent-runtime-pool-coding'
+				}
+			}),
+			span({
+				spanId: 'service-delete',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				attributes: {
+					'http.method': 'DELETE',
+					'http.status_code': '404',
+					'http.url':
+						'https://10.96.0.1/api/v1/namespaces/workflow-builder/services/agent-runtime-pool-coding-mcp'
+				}
+			}),
+			span({
+				spanId: 'warm-pool-probe',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				attributes: {
+					'http.request.method': 'GET',
+					'http.response.status_code': '404',
+					'url.full':
+						'https://10.96.0.1/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+				}
+			}),
+			span({
+				spanId: 'warm-pool-delete-repeat',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				attributes: {
+					'http.method': 'DELETE',
+					'http.status_code': '404',
+					'http.target':
+						'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+				}
+			})
+		];
+		const unexpectedProducer = span({
+			spanId: 'unexpected-producer',
+			serviceName: 'workflow-orchestrator',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'DELETE',
+				'http.status_code': '404',
+				'http.target':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+			}
+		});
+		const unexpectedMethod = span({
+			spanId: 'unexpected-method',
+			serviceName: 'workflow-builder',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'POST',
+				'http.status_code': '404',
+				'http.target':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+			}
+		});
+		const unexpectedPath = span({
+			spanId: 'unexpected-path',
+			serviceName: 'workflow-builder',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'DELETE',
+				'http.status_code': '404',
+				'http.target': '/api/v1/namespaces/workflow-builder/services/workflow-builder'
+			}
+		});
+		const actualFailure = span({
+			spanId: 'actual-failure',
+			status: 'error',
+			statusCode: 'Error',
+			statusMessage: 'forbidden',
+			attributes: {
+				'http.request.method': 'DELETE',
+				'http.response.status_code': 403,
+				'url.path':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+			}
+		});
+
+		const digest = buildRunDigest({
+			execution: EXEC,
+			calls: [],
+			spans: [
+				...expectedAbsence,
+				unexpectedProducer,
+				unexpectedMethod,
+				unexpectedPath,
+				actualFailure
+			],
+			llmSpans: []
+		});
+
+		expect(
+			digest.issues.filter((issue) => issue.kind === 'span_error').map((issue) => issue.spanId)
+		).toEqual([
+			'unexpected-producer',
+			'unexpected-method',
+			'unexpected-path',
+			'actual-failure'
+		]);
+	});
+
 	it('handles empty journal (SW runs) without throwing', () => {
 		const digest = buildRunDigest({
 			execution: EXEC,
