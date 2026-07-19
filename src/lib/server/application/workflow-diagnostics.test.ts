@@ -9,6 +9,8 @@ import { ApplicationWorkflowDiagnosticsQueryService } from '$lib/server/applicat
 
 const execution: WorkflowDiagnosticsExecution = {
 	id: 'execution-1',
+	userId: 'user-1',
+	projectId: 'project-1',
 	status: 'error',
 	startedAt: new Date('2026-07-19T12:00:00.000Z'),
 	completedAt: new Date('2026-07-19T12:01:00.000Z'),
@@ -220,7 +222,7 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 			encodeCursor: (offset) => `cursor-${offset}`
 		});
 
-		expect(reads.searchSpans).toHaveBeenCalledWith(['a'.repeat(32)], {
+		expect(reads.searchSpans).toHaveBeenCalledWith(execution, ['a'.repeat(32)], {
 			query: 'operation',
 			errorsOnly: true,
 			limit: 2,
@@ -281,7 +283,7 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 			encodeCursor: String
 		});
 
-		expect(reads.searchLlmSpans).toHaveBeenCalledWith(['a'.repeat(32)], {
+		expect(reads.searchLlmSpans).toHaveBeenCalledWith(execution, ['a'.repeat(32)], {
 			workflowExecutionId: execution.id,
 			spanId: undefined,
 			sessionId: 'session-1',

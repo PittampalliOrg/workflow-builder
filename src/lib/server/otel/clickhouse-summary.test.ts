@@ -15,6 +15,7 @@ import {
 	getMultiTraceGraphLlmSpans,
 	getMultiTraceSpanSummaries,
 	getTraceSpanDetail,
+	getTraceSpanDetailForTraces,
 	searchTraceLlmSpans,
 	searchTraceLogs,
 	searchTraceSpans
@@ -277,5 +278,44 @@ describe('compact ClickHouse trace span loading', () => {
 		expect(logSql).toContain("positionCaseInsensitive(Body, 'timeout')");
 		expect(logSql).toContain('LIMIT 41');
 		expect(logSql).toContain('OFFSET 80');
+	});
+
+	it('applies every immutable preview tuple field to span, log, and LLM reads', async () => {
+		const resourceScope = {
+			'deployment.environment': 'dev-preview',
+			'preview.name': 'feature-one',
+			'preview.request_id': 'request-1',
+			'preview.platform_revision': 'a'.repeat(40),
+			'preview.source_revision': 'b'.repeat(40),
+			'preview.catalog_digest': `sha256:${'c'.repeat(64)}`
+		};
+		fetchMock.mockImplementation(async () => jsonEachRow([]));
+
+		await getMultiTraceSpanSummaries([TRACE_ID], { resourceScope, limit: 10 });
+		await getTraceSpanDetailForTraces([TRACE_ID], '0000000000000001', { resourceScope });
+		await searchTraceSpans([TRACE_ID], { resourceScope, limit: 10 });
+		await searchTraceLogs([TRACE_ID], { resourceScope, limit: 10 });
+		await searchTraceLlmSpans([TRACE_ID], {
+			workflowExecutionId: 'execution-1',
+			spanId: '0000000000000001',
+			limit: 1,
+			traceResourceScope: resourceScope
+		});
+		await getMultiTraceDigestLlmSpans([TRACE_ID], {}, 10, resourceScope);
+
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		for (const call of fetchMock.mock.calls) {
+			const sql = String(call[1]?.body ?? '');
+			for (const [key, value] of Object.entries(resourceScope)) {
+				expect(sql).toContain(
+					`ResourceAttributes['${key}'] = '${value}'`
+				);
+			}
+		}
+		for (const index of [4, 5]) {
+			const sql = String(fetchMock.mock.calls[index]?.[1]?.body ?? '');
+			expect(sql).toContain('(TraceId, SpanId) IN');
+			expect(sql).toContain('FROM otel.otel_traces');
+		}
 	});
 });

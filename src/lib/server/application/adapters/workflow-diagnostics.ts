@@ -137,26 +137,33 @@ export class ClickHouseWorkflowDiagnosticsReadAdapter implements WorkflowDiagnos
 	}
 
 	searchSpans(
+		_execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
-		query: Parameters<WorkflowDiagnosticsReadPort['searchSpans']>[1]
+		query: Parameters<WorkflowDiagnosticsReadPort['searchSpans']>[2]
 	) {
 		return searchTraceSpans(traceIds, query);
 	}
 
-	getSpan(traceIds: string[], spanId: string) {
+	getSpan(
+		_execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		spanId: string
+	) {
 		return getTraceSpanDetailForTraces(traceIds, spanId);
 	}
 
 	searchLlmSpans(
+		_execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
-		query: Parameters<WorkflowDiagnosticsReadPort['searchLlmSpans']>[1]
+		query: Parameters<WorkflowDiagnosticsReadPort['searchLlmSpans']>[2]
 	) {
 		return searchTraceLlmSpans(traceIds, query);
 	}
 
 	searchLogs(
+		_execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
-		query: Parameters<WorkflowDiagnosticsReadPort['searchLogs']>[1]
+		query: Parameters<WorkflowDiagnosticsReadPort['searchLogs']>[2]
 	) {
 		return searchTraceLogs(traceIds, query);
 	}

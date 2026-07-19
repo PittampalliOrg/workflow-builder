@@ -128,6 +128,16 @@ preview credentials.
 | `PREVIEW_TTL_ARCHIVE_GRACE_MINUTES`   | `60`    | Retry window before an expired mutable preview is quarantined and forcibly torn down.                 |
 | `PREVIEW_TTL_FAIRNESS_WINDOW_SECONDS` | `60`    | Stable rotation window for bounded expiry work.                                                       |
 
+Preview-local Workflow MCP diagnostics keep execution discovery, overview,
+journal reads, and workspace authorization in the preview BFF. Deep trace
+evidence is read through the physical preview-control broker: the BFF presents
+its five-field immutable tuple leaf plus a short-lived proof bound to the
+authorized user, workspace, execution, time window, primary trace, and session.
+The broker revalidates physical preview ownership and dev workspace membership,
+then applies the complete tuple to every span and log query. LLM rows must join
+back to a tuple-stamped trace/span pair. ClickHouse endpoints and credentials,
+workspace API keys, and Kubernetes credentials never enter the vCluster.
+
 Archive files are stored on the host under
 `preview-archive:<preview-name>`. Promoted source is already durable in GitHub
 and is not copied again. Active or incomplete generations remain visible as

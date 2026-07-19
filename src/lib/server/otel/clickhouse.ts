@@ -39,9 +39,13 @@ export type TraceTimeWindow = {
 	completedAt?: string | Date | null;
 };
 
+/** Trusted resource-attribute fence applied by tuple-bound physical adapters. */
+export type TraceResourceScope = Readonly<Record<string, string>>;
+
 export type TraceSpanSummaryOptions = TraceTimeWindow & {
 	serviceNames?: string[];
 	limit?: number;
+	resourceScope?: TraceResourceScope;
 };
 
 export type TraceSpanSummaryBatch = {
@@ -105,6 +109,31 @@ export async function queryClickHouse(
 
 export function escapeClickHouseString(value: string): string {
 	return value.replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+function traceResourceScopeClauses(
+	scope: TraceResourceScope | undefined,
+	column = 'ResourceAttributes'
+): string[] {
+	return Object.entries(scope ?? {}).map(
+		([key, value]) =>
+			`${column}['${escapeClickHouseString(key)}'] = '${escapeClickHouseString(value)}'`
+	);
+}
+
+function traceResourceScopeSuffix(scope: TraceResourceScope | undefined): string {
+	const clauses = traceResourceScopeClauses(scope);
+	return clauses.length > 0 ? `AND ${clauses.join(' AND ')}` : '';
+}
+
+function llmTraceResourceScopeSuffix(scope: TraceResourceScope | undefined): string {
+	const clauses = traceResourceScopeClauses(scope);
+	if (clauses.length === 0) return '';
+	return `AND (TraceId, SpanId) IN (
+		SELECT TraceId, SpanId
+		FROM ${CLICKHOUSE_DB}.otel_traces
+		WHERE ${clauses.join(' AND ')}
+	)`;
 }
 
 export function sanitizeTraceIds(traceIds: string[]): string[] {
@@ -579,6 +608,7 @@ async function queryTraceSpanSummaries(
 		${whereClause}
 		${traceTimeWindowClause(options)}
 		${serviceNameClause(options.serviceNames)}
+		${traceResourceScopeSuffix(options.resourceScope)}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit + 1}
 	`,
@@ -654,7 +684,8 @@ export async function getTraceSpanDetail(
 
 export async function getTraceSpanDetailForTraces(
 	traceIds: string[],
-	spanId: string
+	spanId: string,
+	options: { resourceScope?: TraceResourceScope } = {}
 ): Promise<ObservabilityTraceSpan | null> {
 	const sanitizedTraceIds = sanitizeTraceIds(traceIds);
 	const normalizedSpanId = spanId.trim();
@@ -679,6 +710,7 @@ export async function getTraceSpanDetailForTraces(
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE TraceId IN (${inClause})
 		  AND SpanId = '${escapeClickHouseString(normalizedSpanId)}'
+		  ${traceResourceScopeSuffix(options.resourceScope)}
 		ORDER BY Timestamp ASC, TraceId ASC
 		LIMIT 1
 	`);
@@ -718,12 +750,14 @@ export async function searchTraceLogs(
 		errorsOnly?: boolean;
 		limit?: number;
 		offset?: number;
+		resourceScope?: TraceResourceScope;
 	} = {}
 ): Promise<ObservabilityLogEntry[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const clauses = [`TraceId IN (${inClause})`];
+	clauses.push(...traceResourceScopeClauses(opts.resourceScope));
 	if (opts.spanId?.trim()) {
 		clauses.push(`SpanId = '${escapeClickHouseString(opts.spanId.trim())}'`);
 	}
@@ -803,12 +837,19 @@ export async function getMultiTraceSpans(
  */
 export async function searchTraceSpans(
 	traceIds: string[],
-	opts: { query?: string; errorsOnly?: boolean; limit?: number; offset?: number } = {}
+	opts: {
+		query?: string;
+		errorsOnly?: boolean;
+		limit?: number;
+		offset?: number;
+		resourceScope?: TraceResourceScope;
+	} = {}
 ): Promise<ObservabilityTraceSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
 	if (sanitized.length === 0) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const clauses = [`TraceId IN (${inClause})`];
+	clauses.push(...traceResourceScopeClauses(opts.resourceScope));
 	if (opts.errorsOnly) clauses.push(`StatusCode = 'Error'`);
 	if (opts.query?.trim()) {
 		const q = escapeClickHouseString(opts.query.trim());
@@ -853,6 +894,7 @@ export async function searchTraceLlmSpans(
 		sessionId?: string;
 		limit?: number;
 		offset?: number;
+		traceResourceScope?: TraceResourceScope;
 	}
 ): Promise<ObservabilityLlmSpan[]> {
 	const sanitized = sanitizeTraceIds(traceIds);
@@ -864,6 +906,7 @@ export async function searchTraceLlmSpans(
 	clauses.push(
 		`WorkflowExecutionId = '${escapeClickHouseString(workflowExecutionId)}'`
 	);
+	const traceScope = llmTraceResourceScopeSuffix(opts.traceResourceScope);
 	if (opts.spanId?.trim()) {
 		clauses.push(`SpanId = '${escapeClickHouseString(opts.spanId.trim())}'`);
 	}
@@ -900,6 +943,7 @@ export async function searchTraceLlmSpans(
 			InvocationParametersTruncated
 		FROM ${CLICKHOUSE_OBS_DB}.llm_spans
 		WHERE ${clauses.join(' AND ')}
+		${traceScope}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit}
 		OFFSET ${offset}
@@ -955,14 +999,15 @@ export type DigestLlmSpanBatch = {
 export async function getMultiTraceDigestLlmSpans(
 	traceIds: string[],
 	window: TraceTimeWindow = {},
-	requestedLimit = Number(process.env.TRACE_DIGEST_LLM_LIMIT) || 20_000
+	requestedLimit = Number(process.env.TRACE_DIGEST_LLM_LIMIT) || 20_000,
+	traceResourceScope?: TraceResourceScope
 ): Promise<DigestLlmSpanBatch> {
 	const sanitized = [...new Set(sanitizeTraceIds(traceIds))];
 	const limit = Math.min(50_000, Math.max(1, Math.floor(requestedLimit)));
 	if (sanitized.length === 0) return { spans: [], truncated: false, limit };
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const rows = await queryGraphLlmSpans(
-		`WHERE TraceId IN (${inClause}) ${traceTimeWindowClause(window)}`,
+		`WHERE TraceId IN (${inClause}) ${traceTimeWindowClause(window)} ${llmTraceResourceScopeSuffix(traceResourceScope)}`,
 		{ limit: limit + 1 }
 	);
 	return { spans: rows.slice(0, limit), truncated: rows.length > limit, limit };

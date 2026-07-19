@@ -179,6 +179,13 @@ forwarding remain deliberately disabled. A preview-local MCP endpoint is a
 separate audience and must not receive the dev workspace key through these
 tools.
 
+On that direct preview connection, execution overview and authorization remain
+preview-local. Digest, span, LLM-turn, and correlated-log reads use the
+tuple-bound physical diagnostics adapter, so the normal trace tools work
+without copying ClickHouse credentials into the preview. A physical read must
+match the preview owner, dev workspace membership, exact execution proof, and
+all five immutable preview identity fields.
+
 ## IDs that are not interchangeable
 
 | Identifier                                                                      | Meaning                                                    | Use for workflow ownership? |
