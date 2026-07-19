@@ -1,6 +1,10 @@
-"""Prompt and constants for the BashRun tool.
+"""Prompt and constants for the Bash tool.
 
-Ported from claude-code-src/main/tools/BashTool/prompt.ts (getSimplePrompt)
+Originally ported from claude-code-src/main/tools/BashTool/prompt.ts; the
+model-facing description is now aligned to Moonshot's kimi-code v2 Bash tool
+(packages/agent-core-v2/src/os/backends/node-local/tools/bash.md), adapted for
+our journaled Dapr runtime: no background execution, no cwd parameter, and a
+timeout in seconds (default 60s, max 300s).
 """
 
 from ..file_read.prompt import FILE_READ_TOOL_NAME
@@ -9,29 +13,48 @@ from ..file_edit.prompt import FILE_EDIT_TOOL_NAME
 
 BASH_TOOL_NAME = "Bash"
 
-_DEFAULT_TIMEOUT_MS = 120_000
-_MAX_TIMEOUT_MS = 600_000
+_DEFAULT_TIMEOUT_SECONDS = 60
+_MAX_TIMEOUT_SECONDS = 300
 
 
 def get_bash_tool_description() -> str:
-    return f"""Executes a given bash command and returns its output.
+    return f"""Execute a `bash` command. Use this for shell semantics — pipes, env, processes, git, package managers, build/test runners, anything genuinely interactive or multi-step.
 
-The working directory persists between commands, but shell state does not.
+**Translate these to a dedicated tool instead:**
+- `cat` / `head` / `tail` (known path) → `{FILE_READ_TOOL_NAME}`
+- `sed` / `awk` (in-place edit) → `{FILE_EDIT_TOOL_NAME}`
+- `echo > file` / `cat <<EOF` → `{FILE_WRITE_TOOL_NAME}`
+- `find` / recursive `ls` to locate files by name pattern → `Glob` (plain `ls <known-directory>` is fine for listing a directory)
+- `grep` / `rg` (search file contents) → `Grep`
+- `echo` / `printf` (talk to the user) → just output text directly
 
-IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
+The dedicated tools render in the per-tool permission UI and keep raw stdout out of the conversation; that is why they are worth reaching for whenever one fits.
 
- - File search: Use Glob (NOT find or ls)
- - Content search: Use Grep (NOT grep or rg)
- - Read files: Use {FILE_READ_TOOL_NAME} (NOT cat/head/tail)
- - Edit files: Use {FILE_EDIT_TOOL_NAME} (NOT sed/awk)
- - Write files: Use {FILE_WRITE_TOOL_NAME} (NOT echo >/cat <<EOF)
+**Output:**
+The command's stdout and stderr are captured and returned as text, together with the exit code when it is non-zero. The output may be truncated if it is too long. If the command times out or fails to start, an error message is returned instead.
 
-# Instructions
- - If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.
- - Try to maintain your current working directory throughout the session by using relative paths and avoiding usage of `cd`.
- - You may specify an optional timeout in milliseconds (up to {_MAX_TIMEOUT_MS}ms / {_MAX_TIMEOUT_MS // 60_000} minutes). By default, your command will timeout after {_DEFAULT_TIMEOUT_MS}ms ({_DEFAULT_TIMEOUT_MS // 60_000} minutes).
- - When issuing multiple commands:
-   - If the commands are independent, make separate {BASH_TOOL_NAME} calls.
-   - If the commands depend on each other and must run sequentially, use a single {BASH_TOOL_NAME} call with '&&' to chain them together.
-   - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
-   - DO NOT use newlines to separate commands (newlines are ok in quoted strings)."""
+**Guidelines for safety and security:**
+- Each shell tool call is executed in a fresh shell environment. Shell variables, working directory changes, and shell history are not preserved between calls. To run a command in a particular directory, use absolute paths (or chain with `&&`) rather than relying on a `cd` from an earlier call.
+- The tool call will return after the command is finished. You shall not use this tool to execute an interactive command or a command that may run forever. For possibly long-running commands, set the `timeout` argument in seconds. The default is {_DEFAULT_TIMEOUT_SECONDS}s and the maximum is {_MAX_TIMEOUT_SECONDS}s; a command that hits its timeout is killed.
+- Avoid using `..` to access files or directories outside of the working directory.
+- Avoid modifying files outside of the working directory unless explicitly instructed to do so.
+- Never run commands that require superuser privileges unless explicitly instructed to do so.
+
+**Guidelines for efficiency:**
+- Use `&&` to chain commands that genuinely depend on each other, e.g. `npm install && npm test`. Independent read-only commands (separate `git show`, `ls`, or status checks) should be issued as separate parallel {BASH_TOOL_NAME} calls in one response, not chained into a single call — chaining serializes their execution and mixes their output. Do not stitch outputs together with `echo` separators.
+- Use `;` to run commands sequentially regardless of success/failure
+- Use `||` for conditional execution (run second command only if first fails)
+- Use pipe operations (`|`) and redirections (`>`, `>>`) to chain input and output between commands
+- Always quote file paths containing spaces with double quotes (e.g., cd "/path with spaces/")
+- Compose multi-step logic in a single call with `if` / `case` / `for` / `while` control flows.
+
+**Commands available:**
+The following common command categories are usually available. Availability still depends on the host, so when in doubt run `which <command>` first to confirm a command exists before relying on it.
+- Navigation and inspection: `ls`, `pwd`, `cd`, `stat`, `file`, `du`, `df`, `tree`
+- File and directory management: `cp`, `mv`, `rm`, `mkdir`, `touch`, `ln`, `chmod`, `chown`
+- Text and data processing: `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `xargs`
+- Archives and compression: `tar`, `gzip`, `gunzip`, `zip`, `unzip`
+- Networking and transfer: `curl`, `wget`, `ping`, `ssh`, `scp`
+- Version control: `git`; for GitHub-hosted work (PRs, issues, CI runs, API queries) prefer the `gh` CLI when installed — it carries the user's GitHub auth and can return structured JSON
+- Process and system: `ps`, `kill`, `top`, `env`, `date`, `uname`, `whoami`
+- Language and package toolchains: `node`, `npm`, `pnpm`, `yarn`, `python`, `pip` (use whichever the project actually relies on)"""

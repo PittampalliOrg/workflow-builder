@@ -9,7 +9,7 @@ AGENT_TOOL_NAME = "agent_spawn"
 def get_agent_tool_description() -> str:
     return """Launch a sub-agent to handle a complex, multi-step task autonomously.
 
-The agent_spawn tool launches a specialized agent that can work on a task independently.
+The Agent tool launches a specialized agent that can work on a task independently.
 
 ## When to use
 - Complex tasks requiring multiple tool calls

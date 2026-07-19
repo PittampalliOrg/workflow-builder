@@ -1,9 +1,12 @@
 """FileEdit tool -- exact string replacement editing with quote normalization.
 
-Ported from claude-code-src/main/tools/FileEditTool/FileEditTool.ts
+Ported from claude-code-src/main/tools/FileEditTool/FileEditTool.ts;
+model-facing surface aligned with kimi-code v2's Edit tool.
 """
 
 from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.openshell_runtime import get_runtime
 from .._security import expand_path
@@ -11,22 +14,43 @@ from .prompt import get_edit_tool_description
 from .utils import find_actual_string
 
 
-def file_edit(
-    file_path: str,
-    old_string: str | None = None,
-    new_string: str | None = None,
-    replace_all: bool = False,
-    old_str: str | None = None,
-    new_str: str | None = None,
-) -> str:
-    if old_string is None:
-        old_string = old_str
-    if new_string is None:
-        new_string = new_str
-    if old_string is None or new_string is None:
-        return "Error: old_string and new_string are required."
+class EditArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    resolved = expand_path(file_path)
+    path: str = Field(
+        description=(
+            "Path of the file to edit. Relative paths resolve against the working "
+            "directory. Read the file with Read before editing it."
+        )
+    )
+    old_string: str = Field(
+        min_length=1,
+        description=(
+            "The exact text to replace, taken from the Read output view (drop the "
+            "line-number prefix and tab; match only file content). Must be unique "
+            "in the file unless replace_all is set."
+        ),
+    )
+    new_string: str = Field(
+        description="The replacement text. Must differ from old_string."
+    )
+    replace_all: bool = Field(
+        default=False,
+        description=(
+            "Replace every occurrence of old_string (default false). Use only when "
+            "every occurrence should change — for example, renaming a symbol "
+            "throughout the file."
+        ),
+    )
+
+
+def file_edit(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    resolved = expand_path(path)
     runtime = get_runtime()
 
     if old_string == new_string:

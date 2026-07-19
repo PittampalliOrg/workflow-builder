@@ -19,4 +19,4 @@ Usage notes:
   - The prompt should describe what information you want to extract from the page
   - This tool is read-only and does not modify any files
   - Results may be summarized if the content is very large
-  - For GitHub URLs, prefer using the gh CLI via bash_run instead (e.g., gh pr view, gh issue view, gh api)."""
+  - For GitHub URLs, prefer using the gh CLI via the Bash tool instead (e.g., gh pr view, gh issue view, gh api)."""
