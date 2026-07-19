@@ -10,7 +10,13 @@ that API inside dapr-agent-py:
   indexes ``function.name -> (formula URI, declared name)`` so the durable
   loop can route model tool calls back to the right formula. A total load
   failure is retried after a short cooldown rather than disabling formulas
-  for the process lifetime.
+  for the process lifetime. Two upstream-drift guards: a best-effort
+  ``GET /formulas`` catalog check turns removed/renamed formulas (e.g. the
+  ``code_runner`` -> ``code-runner`` rename) into explicit warnings instead
+  of silent 404 skips, and plugin-style manifests (``_plugin.functions[]``,
+  e.g. ``moonshot/excel``) are flattened into standard declarations — named
+  ``<plugin>_<function>`` on the wire (dots are invalid in chat tool names)
+  and executed as ``<plugin>.<function>`` at the fibers endpoint.
 - ``kimi_adapter._call_kimi_chat`` merges the declarations into every kimi-k3
   request's top-level ``tools`` field. Kimi's dynamic system-message tool
   loading is deliberately not used: this runtime's history-conformance layer
@@ -44,6 +50,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
+import re
 import threading
 import time
 from urllib.error import HTTPError
@@ -53,9 +60,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # All documented official formulas except web-search (vendor-deprecated).
+# Note: code_runner was renamed upstream to code-runner (the underscore URI
+# now 404s); normalize_formula_uri rewrites the legacy spelling for custom
+# KIMI_FORMULAS values.
 DEFAULT_FORMULA_URIS: tuple[str, ...] = (
     "moonshot/fetch:latest",
-    "moonshot/code_runner:latest",
+    "moonshot/code-runner:latest",
     "moonshot/quickjs:latest",
     "moonshot/excel:latest",
     "moonshot/date:latest",
@@ -95,6 +105,10 @@ def normalize_formula_uri(uri: str) -> str:
         uri = f"moonshot/{uri}"
     if ":" not in uri:
         uri = f"{uri}:latest"
+    # Upstream rename: code_runner -> code-runner. Rewrite the legacy spelling
+    # so stale custom KIMI_FORMULAS values keep working (the underscore URI 404s).
+    if uri.startswith("moonshot/code_runner:"):
+        uri = f"moonshot/code-runner:{uri.rsplit(':', 1)[1]}"
     return uri
 
 
@@ -152,6 +166,21 @@ def ensure_formula_tools() -> list[dict[str, Any]]:
         declarations: list[dict[str, Any]] = []
         _index.clear()
         uris = configured_formula_uris()
+        # Upstream drift guard: one best-effort catalog fetch turns a silently
+        # skipped 404 (formula removed/renamed upstream — e.g. the code_runner
+        # -> code-runner rename) into an explicit, actionable warning. A catalog
+        # fetch failure falls back to per-URI fetches: a transient catalog error
+        # must not break loading.
+        catalog = _fetch_formula_catalog() if uris else None
+        if catalog is not None:
+            missing = [uri for uri in uris if uri.rsplit(":", 1)[0] not in catalog]
+            for uri in missing:
+                logger.warning(
+                    "[kimi-formulas] %s: not found in the Kimi formula catalog "
+                    "(removed or renamed upstream?); skipping",
+                    uri,
+                )
+            uris = [uri for uri in uris if uri.rsplit(":", 1)[0] in catalog]
         # Concurrent fetch so a cold start (or retry) costs ~one timeout
         # instead of N sequential ones while callers wait on the lock.
         # executor.map preserves URI order, keeping declarations deterministic.
@@ -161,7 +190,7 @@ def ensure_formula_tools() -> list[dict[str, Any]]:
         else:
             fetched = []
         for uri, uri_tools in zip(uris, fetched):
-            for tool in uri_tools:
+            for tool, fiber_name in uri_tools:
                 function = tool.get("function") if isinstance(tool, dict) else None
                 name = str((function or {}).get("name") or "").strip()
                 if not name:
@@ -177,8 +206,10 @@ def ensure_formula_tools() -> list[dict[str, Any]]:
                         _index[key][0],
                     )
                     continue
-                _index[name] = (uri, name)
-                _index[key] = (uri, name)
+                # fiber_name differs from the declared name for plugin-manifest
+                # formulas (declared excel_read_file, executed excel.read_file).
+                _index[name] = (uri, fiber_name or name)
+                _index[key] = (uri, fiber_name or name)
                 declarations.append(tool)
         _formula_cache = declarations
         if declarations:
@@ -266,7 +297,9 @@ def execute_formula_tool_result(name: str, arguments: Any = None) -> tuple[str, 
         if output is None:
             return (
                 f"Error: formula '{declared_name}' ({uri}) succeeded but "
-                "returned no output."
+                "returned no output. If this is a code-execution formula, "
+                "print the result explicitly (e.g. console.log in quickjs, "
+                "print in code_runner) and retry the call."
             ), False
         return (
             output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
@@ -312,7 +345,35 @@ def _execute_timeout_seconds() -> float:
         return 45.0
 
 
-def _fetch_formula_tools(uri: str) -> list[dict[str, Any]]:
+def _fetch_formula_catalog() -> set[str] | None:
+    """Best-effort GET /formulas -> set of 'namespace/name' keys, or None.
+
+    Powers the upstream-drift guard in ensure_formula_tools: a configured URI
+    absent from the catalog is skipped with an explicit warning instead of
+    being silently swallowed by a per-URI 404.
+    """
+    url = f"{_base_url()}/formulas"
+    try:
+        payload = _http_json("GET", url, None, _FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — catalog failure must not break loading
+        logger.warning("[kimi-formulas] catalog fetch failed (continuing without): %s", exc)
+        return None
+    items = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        logger.warning("[kimi-formulas] unexpected catalog response shape; continuing without")
+        return None
+    catalog: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        namespace = str(item.get("namespace") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if namespace and name:
+            catalog.add(f"{namespace}/{name}")
+    return catalog
+
+
+def _fetch_formula_tools(uri: str) -> list[tuple[dict[str, Any], str | None]]:
     url = f"{_base_url()}/formulas/{uri}/tools"
     try:
         payload = _http_json("GET", url, None, _FETCH_TIMEOUT_SECONDS)
@@ -325,7 +386,55 @@ def _fetch_formula_tools(uri: str) -> list[dict[str, Any]]:
             "[kimi-formulas] %s: unexpected tools response shape; skipping", uri
         )
         return []
-    return [tool for tool in tools if isinstance(tool, dict)]
+    # Each entry is (declaration, fiber_name) — fiber_name None means "execute
+    # under the declared name" (the standard shape).
+    declarations: list[tuple[dict[str, Any], str | None]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if isinstance(tool.get("function"), dict):
+            declarations.append((tool, None))
+            continue
+        plugin = tool.get("_plugin")
+        if isinstance(plugin, dict):
+            # Some formulas (e.g. moonshot/excel) return a plugin-style
+            # manifest instead of OpenAI function declarations, despite the
+            # docs' API-compatibility guarantee. Their functions are fiber-
+            # executable as "<plugin>.<function>", but dots are not valid in
+            # chat-completion tool names — so declare them as
+            # "<plugin>_<function>" and record the dotted fiber name for
+            # execution.
+            plugin_name = str(plugin.get("name") or "").strip()
+            plugin_description = str(plugin.get("description") or "")
+            for fn in plugin.get("functions") or []:
+                if not isinstance(fn, dict):
+                    continue
+                fn_name = str(fn.get("name") or "").strip()
+                if not plugin_name or not fn_name:
+                    continue
+                declared_name = _sanitize_declared_name(f"{plugin_name}_{fn_name}")
+                function = dict(fn)
+                function["name"] = declared_name
+                if not function.get("description"):
+                    function["description"] = plugin_description
+                if not isinstance(function.get("parameters"), dict):
+                    function["parameters"] = {"type": "object", "properties": {}}
+                declarations.append(
+                    (
+                        {"type": "function", "function": function},
+                        f"{plugin_name}.{fn_name}",
+                    )
+                )
+            continue
+        logger.warning(
+            "[kimi-formulas] %s: skipping tool with an unrecognized shape", uri
+        )
+    return declarations
+
+
+def _sanitize_declared_name(name: str) -> str:
+    """Reduce a name to the chat-completion tool charset [A-Za-z0-9_-]."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name)
 
 
 def _http_json(
