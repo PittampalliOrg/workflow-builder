@@ -1,214 +1,106 @@
-# Preview governance gate
+# Preview Governance Gate
 
-> **Post-POC hardening:** this is the target governance design, not a completion
-> gate for the first development POC. The POC is admin-only, uses fixed
-> PittampalliOrg repositories and exact SHAs, and proves one immutable replay
-> without installing strict branch protection or the complete App-bound status
-> system. Activate the design below before accepting untrusted contributors or
-> treating preview evidence as a general merge policy.
+`preview/gate` is the aggregate preview status intended for branch protection.
+It classifies every pull-request head from trusted base code and reconciles the
+applicable preview evidence. Subordinate contexts are evidence inputs, not
+independent required checks.
 
-Until `PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY` is installed, the trusted
-workflow records a successful POC no-op and emits no `preview/gate` status.
-Once the key is present, that same base-owned workflow automatically performs
-the strict tuple classification and status publication described below.
+## Trust Model
 
-In the post-POC target, `preview/gate` is the only preview status that branch
-protection should require. It is emitted for every pull request head, including changes for which preview
-evidence is not applicable. Subordinate contexts are evidence inputs, not
-separate merge requirements.
+The `pull_request_target` workflow checks out only the exact base SHA. It never
+checks out, imports, or executes PR-head code. A scoped GitHub App installation
+token permits repository reads and status writes; the workflow's built-in token
+does not publish the gate.
 
-## Trust model
+The initializer re-reads the canonical open, same-repository `main` PR, its
+exact head SHA, and complete changed-file list. It classifies those paths with
+the service catalog from the trusted base checkout:
 
-The always-on `pull_request_target` workflow checks out only the exact base SHA.
-It never checks out, imports, or executes PR-head code. It obtains a short-lived
-installation token for GitHub App `2970091`, restricted to the
-`workflow-builder` repository and `contents:read`, `pull_requests:read`, and
-`statuses:write`. The workflow's built-in token has no status-write permission.
+| Classification                                          | `preview/gate`                    | Evidence                                     |
+| ------------------------------------------------------- | --------------------------------- | -------------------------------------------- |
+| No catalog-backed runtime change                        | `success`                         | none required                                |
+| Fully mapped runtime change                             | `pending` until evidence resolves | applicable contexts start pending            |
+| Unsupported path, invalid catalog, fork, or stale tuple | `failure` or `error`              | cannot be overridden by subordinate evidence |
 
-The initializer re-reads the open, same-repository `main` PR and its complete
-changed-file list. It then reads the schema-v3 service catalog from the trusted
-base checkout and publishes one of these states on the exact head:
+The catalog owns ignored documentation/metadata prefixes, unsupported
+governance prefixes, runtime subjects, and the fail-closed default. A mixed PR
+cannot use valid runtime evidence to authorize a trust-root change.
 
-| Classification                           | Aggregate            | Subordinate evidence              |
-| ---------------------------------------- | -------------------- | --------------------------------- |
-| No catalog-backed runtime change         | `success`            | none                              |
-| Fully mapped runtime change              | `pending`            | required contexts start `pending` |
-| Unmapped runtime path or invalid catalog | `failure` or `error` | none can bypass it                |
+## Evidence Contexts
 
-Fork PRs fail closed. This lane runs trusted development dependencies and does
-not provide an untrusted-source sandbox.
+- `preview/immutable-acceptance` proves exact-head service images were replayed
+  in an immutable throwaway preview, verified, and fully cleaned up.
+- `preview/activation-images` proves required host activation artifacts were
+  built by the purpose-specific hub profile from the exact head and returned
+  expected immutable image references.
 
-The catalog also owns the changed-path policy used by both the initializer and
-physical reconciler. It lists narrow documentation/repository metadata prefixes
-that are ignored, privileged governance prefixes that are unsupported, and an
-`unsupported` default for every unmatched path. The same exact-base policy is
-therefore applied before and after subordinate evidence; a mixed runtime and
-governance PR cannot turn an initializer failure into aggregate success.
+Before terminal publication, the physical broker re-reads repository, PR,
+base, head, changed paths, catalog digest, and applicable service subjects.
+Terminal evidence binds that tuple, state, description, and durable receipt in
+a broker-attested target. Force-pushed or catalog-skewed evidence cannot satisfy
+the new head.
 
-## Evidence contexts
+Activation requests contain only request ID, catalog digest, and canonical PR
+tuple. The physical broker derives paths, subjects, build profile, image names,
+and status context. Production dispatch uses the purpose-specific
+`PREVIEW_GOVERNANCE_DISPATCH_TOKEN`; broad internal, preview-action, and broker
+credentials are rejected at that ingress.
 
-- `preview/immutable-acceptance` proves that catalog-derived services were
-  built from the exact PR head, replayed in a throwaway vCluster, verified as a
-  functioning system, and cleaned up with proof.
-- `preview/activation-images` proves that catalog-derived host activation
-  artifacts were built by the purpose-specific hub Tekton profile from the
-  exact PR head and returned the expected `:git-<full-sha>` image plus digest.
+## Protected Trust Root
 
-The physical broker re-reads the PR tuple immediately before every terminal
-publication. Terminal subordinate statuses carry an HMAC attestation in their
-target URL binding repository, PR number, base SHA, head SHA, context, state,
-description, exact-base catalog digest, canonical subject set, and durable
-evidence receipt. The receipt itself has a purpose-derived broker HMAC, so a
-database writer cannot manufacture provenance. New and resumed receipts are
-verified before a terminal status is signed; aggregate reconciliation and
-post-merge image reuse verify the HMAC again. The reconciler ignores legacy v1
-or otherwise unbound terminal evidence, fetches and recomputes the schema-v3
-catalog digest at the exact PR base SHA, and refuses evidence unless that digest
-equals the deployed catalog. It derives the complete context and subject union
-again from current PR paths and succeeds only when every applicable subordinate
-succeeds. A force-push or catalog version skew leaves old evidence unusable.
+Changes to these areas are deliberately unsupported on their own PR-head
+authority:
 
-The activation command is available only on the physical broker at
-`POST /api/internal/preview-control/activation-images`. Its body contains only
-`requestId`, `catalogDigest`, and the exact PR tuple. Artifacts, changed paths,
-build profile, image name, and status context are server-derived.
+- Actions workflows and reusable actions;
+- gate classifier and GitHub adapter;
+- service catalog and path policy;
+- attestation, receipt, and status publication code;
+- CODEOWNERS and branch-protection bootstrap;
+- physical preview-control broker wiring.
 
-Production invocation is an always-on hub Tekton trigger for `opened`,
-`synchronize`, and `reopened` workflow-builder PR events; it is independent of
-the optional preview-environment label. The Task verifies the open base/head
-tuple, waits for the App-authored `preview/gate` status on that exact head, and
-calls the normal BFF with only the PR tuple under the purpose-specific
-`PREVIEW_GOVERNANCE_DISPATCH_TOKEN`. The broad internal, preview-action, and
-broker credentials are rejected on this route. The normal application service
-derives the request ID and deployed catalog digest, then its broker adapter adds
-`PREVIEW_CONTROL_BROKER_TOKEN`. The physical broker
-re-inspects changed paths and either returns `required:false`, reuses an existing
-attested receipt, or runs the catalog-derived activation build.
+Keep a trust-root change isolated, run the base-owned tests, record the exact
+head and reason, and use the documented administrator bypass only when the
+repository's approval policy makes normal review impossible. Immediately rerun
+the documentation-only and mapped-runtime canaries plus the governance audit.
+Never expose the GitHub App private key to PR-head code or relax the trusted-base
+checkout to make a feature mergeable.
 
-## Branch protection bootstrap
+## Branch Protection
 
-Do not add a required check before the workflow exists on the default branch.
+Do not require `preview/gate` until the trusted workflow is present on default
+branches and can publish a successful documentation-only canary in both
+repositories.
 
-### Current deployment blockers
+The idempotent audit, secret installation, canary creation, and protection
+commands are owned by the
+[stacks governance runbook](https://github.com/PittampalliOrg/stacks/blob/main/docs/preview-governance-gate.md).
+That adapter preserves existing required checks and App bindings, adds only the
+App-bound aggregate gate, and verifies the resulting state. It also keeps the
+subordinate contexts out of branch protection.
 
-The repository settings are not yet the architecture described here. Live
-inspection on 2026-07-10 found `checks` and `orchestrator-tests` required on
-`main`, strict up-to-date enforcement disabled, and no repository ruleset. The
-`PREVIEW_CONTROL_GITHUB_APP_PRIVATE_KEY` Actions secret returned 404 and is
-absent; expected App source binding and required code-owner review are also not
-configured. `@vpittamp` does resolve to a repository admin and is eligible for
-CODEOWNERS. Until the missing controls are installed and proven, the governance
-gate is implemented code, not an operational merge guarantee.
+GitHub cannot update two repositories transactionally. After any partial
+failure, repair the cause and rerun the same idempotent stacks command, then
+require its final audit to report ready.
 
-Bootstrap is deliberately ordered so no secret or branch-setting mutation occurs
-until both repositories have their trusted workflow, CODEOWNERS, gate code, and
-tests on remote `main`. Merge one isolated bootstrap PR per repository under the
-rules already present, update a stacks checkout, and use its idempotent GitHub
-adapter:
+## Delivery Boundary
 
-```bash
-cd /home/vpittamp/repos/PittampalliOrg/stacks/main
-git fetch origin main
+The mutable preview loop owns source experimentation and evidence; it does not
+write shared deployment state. A pull request plus immutable acceptance is the
+handoff into the existing outer loop.
 
-# Read-only. Exit 2 is expected until secrets and protection are installed.
-node scripts/gitops/preview-governance-bootstrap.mjs audit --json \
-  | tee /tmp/preview-governance-preflight.json
+The broker may persist an attested, content-addressed image receipt before
+merge. The outer loop may reuse that digest only when the merged tree,
+catalog-derived subjects, tag, and immutable GHCR reference still match.
+Otherwise it rebuilds. Release pins, Source Hydrator, GitOps Promoter, and
+ArgoCD remain the only shared delivery authority.
 
-KEY_FILE=/run/user/$UID/preview-control-github-app.pem
-KEY_MODE="$(stat -c '%a' "$KEY_FILE")"
-(( (8#$KEY_MODE & 8#077) == 0 ))
-node scripts/gitops/preview-governance-bootstrap.mjs install-secrets \
-  --private-key-file "$KEY_FILE" --json
-node scripts/gitops/preview-governance-bootstrap.mjs install-secrets \
-  --private-key-file "$KEY_FILE" --apply --json
-shred -u "$KEY_FILE"
-```
-
-Use the idempotent `create_preview_governance_canary` helper in the stacks
-`docs/preview-governance-gate.md` to open one same-repository documentation-only
-PR from the current `main` in each repository. After App `2970091` emits the
-exact N/A success on both exact heads, use the returned numbers to install
-protection:
-
-```bash
-WFB_CANARY_PR=<workflow-builder-docs-pr>
-STACKS_CANARY_PR=<stacks-docs-pr>
-
-node scripts/gitops/preview-governance-bootstrap.mjs protect \
-  --workflow-builder-canary-pr "$WFB_CANARY_PR" \
-  --stacks-canary-pr "$STACKS_CANARY_PR" --json
-node scripts/gitops/preview-governance-bootstrap.mjs protect \
-  --workflow-builder-canary-pr "$WFB_CANARY_PR" \
-  --stacks-canary-pr "$STACKS_CANARY_PR" --apply --json
-node scripts/gitops/preview-governance-bootstrap.mjs audit --json
-```
-
-The adapter retains `checks`, `orchestrator-tests`, and every other required
-context with its current App binding; adds only `preview/gate` bound to App
-`2970091`; enables strict up-to-date checks; requires one approval plus
-code-owner review; dismisses stale reviews; and requires approval after the last
-push. Subordinate preview contexts remain evidence, not direct requirements.
-GitHub documents code-owner review as independently requiring an owner approval
-even when the general approval count is zero, so zero would still deadlock an
-owner-authored CODEOWNERS change. `enforce_admins` is deliberately disabled as
-the solo-maintainer escape; the audit fails unless `vpittamp` remains the only
-repository administrator. A merge queue is unsupported because the workflow has
-no `merge_group` trigger.
-
-The GitHub API cannot update two repositories transactionally. If one write
-succeeds before a transport failure, fix the error and rerun the same idempotent
-command. The adapter re-reads both remote `main` SHAs, trusted artifacts,
-administrators, secrets, canaries, and existing checks before mutation and
-verifies both repositories afterward. Do not merge the broader architecture PR
-until the final audit reports ready.
-
-### Governance changes after bootstrap
-
-The base classifier intentionally reports changes to any Actions workflow or
-reusable action, the gate classifier, catalog, HMAC receipt/status code,
-CODEOWNERS, and physical broker wiring as unsupported. A PR head cannot
-authorize a change to its own trust root or add a workflow that reads the
-repository-level App key.
-
-For an administrator-authored PR that cannot obtain an independent approval,
-the administrator is the explicit human trust root. Keep the change isolated,
-run the base-owned tests, and record the exact head and reason before using the
-GitHub administrator bypass:
-
-```bash
-REPOSITORY=PittampalliOrg/workflow-builder
-PR=<pull-request-number>
-HEAD_SHA="$(gh pr view "$PR" --repo "$REPOSITORY" --json headRefOid --jq .headRefOid)"
-gh pr comment "$PR" --repo "$REPOSITORY" --body \
-  "PREVIEW-GOVERNANCE-ADMIN-BYPASS head=${HEAD_SHA} reason=<reason>"
-gh pr merge "$PR" --repo "$REPOSITORY" --admin --merge
-```
-
-The comment, immutable head, merge actor, and PR timeline are the bypass audit
-record. Immediately rerun the documentation-only and mapped-runtime canaries and
-the stacks bootstrap audit. Never expose the App private key to PR-head code,
-relax the trusted-base checkout, or remove the App-bound gate to merge a feature.
-
-## Delivery boundary
-
-The mutable inner loop uses isolated workspaces and authenticated live sync; it
-does not own deployment state. A pull request and immutable acceptance are the
-handoff into shared GitOps. Before terminal subordinate success, the physical
-broker persists a content-addressed, purpose-HMAC-attested image receipt. After
-merge, the existing outer loop may reuse that exact digest only when the merged
-tree and catalog-derived path subjects remain identical and GHCR still resolves
-the recorded tag and immutable ref. Otherwise it rebuilds. In both cases the
-release-pin, Source Hydrator, GitOps Promoter, and ArgoCD path remains
-authoritative for dev and staging. `preview/gate` is evidence for merging, not
-another Promoter stage.
-
-A Gitea instance per vCluster is therefore unnecessary and undesirable. It
-would duplicate source authority, require credential and backup lifecycle in
-every ephemeral environment, and make tested commits difficult to relate to the
-GitHub PR and Promoter history. Mutable source belongs in the agent workspace;
-reconciled candidate state belongs at an immutable GitHub PR SHA.
+`preview/gate` is merge evidence, not another promotion stage. Per-preview Git
+servers are intentionally absent; mutable source stays in the scoped workspace
+and durable source stays in GitHub.
 
 ## Validation
+
+Run the repository-owned classifier and boundary checks:
 
 ```bash
 node --test scripts/governance/preview-gate.node-test.mjs
@@ -216,6 +108,17 @@ pnpm check:boundaries:ratchet
 pnpm check
 ```
 
-The ratchet compares exact dependency-cruiser violation identities with the
-committed `main` baseline. New or changed violations fail CI; removed legacy
-debt is reported and passes. `pnpm check:boundaries` remains the raw debt audit.
+For a live canary, prove:
+
+1. a documentation-only same-repository PR receives aggregate success with no
+   subordinate requirements;
+2. a mapped runtime PR remains pending until all applicable attested evidence
+   succeeds;
+3. an unsupported trust-root path fails before PR-head code executes;
+4. a force-push invalidates evidence from the previous head;
+5. branch protection requires only the aggregate App-bound context in addition
+   to the repository's existing checks.
+
+The executable domain constants are in
+`scripts/governance/preview-gate-domain.mjs`; the trusted workflow is
+`.github/workflows/preview-governance-gate.yml`.
