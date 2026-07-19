@@ -336,6 +336,19 @@ export interface SessionRepository {
 		input: UpdateSessionStatusUnlessTerminatedInput,
 	): Promise<void>;
 	/**
+	 * Set status='rescheduling' with the same sticky-terminal guards as
+	 * updateSessionStatusUnlessTerminated PLUS a running guard: a
+	 * session.status_rescheduled event must never flip a row that is already
+	 * `running` back to rescheduling. The runtime emits status_rescheduled at
+	 * session entry ~250ms before status_running, and NATS ingestion can
+	 * deliver them out of order — without this guard the row wedges at
+	 * rescheduling for the whole session (the UI shows "Waiting for
+	 * admission" forever even though the agent is working).
+	 */
+	updateSessionStatusRescheduled(
+		input: UpdateSessionStatusUnlessTerminatedInput,
+	): Promise<void>;
+	/**
 	 * Throttled liveness stamp: set `last_event_at = now()` at most once per 5s
 	 * window. Fired on EVERY ingested event (including turn heartbeats) so the
 	 * silence/liveness reconciler can distinguish a live-but-quiet session from

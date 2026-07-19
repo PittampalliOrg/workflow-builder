@@ -828,6 +828,7 @@ function fakeSessions(): SessionRepository {
 		getSessionWorkflowContext: vi.fn(async () => null),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		updateSessionStatusRescheduled: vi.fn(async () => undefined),
 		bumpSessionLastEventAt: vi.fn(async () => undefined),
 		setSessionPendingInput: vi.fn(async () => undefined),
 	};

@@ -720,6 +720,7 @@ function fakeSessions(): SessionRepository {
 		})),
 		updateSessionStatus: vi.fn(async () => undefined),
 		updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		updateSessionStatusRescheduled: vi.fn(async () => undefined),
 		bumpSessionLastEventAt: vi.fn(async () => undefined),
 		setSessionPendingInput: vi.fn(async () => undefined),
 	};
@@ -2522,6 +2523,44 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessions.updateSessionStatus).not.toHaveBeenCalled();
 	});
 
+	it("routes session.status_rescheduled through the running-guarded updater", async () => {
+		// The runtime emits status_rescheduled at session entry ~250ms before
+		// status_running, and NATS ingestion can deliver them out of order. The
+		// rescheduled projection must use updateSessionStatusRescheduled (which
+		// adds status <> 'running' to the WHERE clause) so a late rescheduled
+		// event can never flip an already-running row back to rescheduling and
+		// wedge the UI at "Waiting for admission" for the session's lifetime.
+		const sessions = fakeSessions();
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
+
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_running",
+			data: {},
+		});
+		await service.ingestSessionEvent({
+			sessionId: "session-1",
+			type: "session.status_rescheduled",
+			data: {},
+		});
+
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "running",
+		});
+		expect(sessions.updateSessionStatusRescheduled).toHaveBeenCalledWith({
+			id: "session-1",
+			status: "rescheduling",
+		});
+		// The plain updater is not used for the rescheduled path.
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledTimes(
+			1,
+		);
+	});
+
 	it("bumps last_event_at for every ingested event, including heartbeats", async () => {
 		const sessions = fakeSessions();
     const { service } = makeService({
@@ -3684,6 +3723,7 @@ describe("ApplicationWorkflowDataService", () => {
 			...fakeSessions(),
 			updateSessionStatus: vi.fn(async () => undefined),
 			updateSessionStatusUnlessTerminated: vi.fn(async () => undefined),
+		updateSessionStatusRescheduled: vi.fn(async () => undefined),
 		} satisfies SessionRepository;
 		const { service } = makeService({ sessions });
 		const pauseRequestedAt = new Date("2026-01-01T00:00:00Z");
