@@ -17,6 +17,7 @@ export class PreviewEnvironmentsHttpError extends Error {
     readonly code: string,
     readonly retryable: boolean,
     readonly retryAfterMs?: number,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "PreviewEnvironmentsHttpError";
@@ -62,6 +63,9 @@ function responseError(
     Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
       ? retryAfterSeconds * 1000
       : undefined,
+    root?.teardown === undefined
+      ? undefined
+      : { teardown: root.teardown, ticket: root.ticket },
   );
 }
 

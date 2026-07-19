@@ -52,6 +52,39 @@ export const POST: RequestHandler = async ({ request, params }) => {
   };
   try {
     const teardown = await guard.app.vclusterPreviews.teardownStatus(ticket);
+    const phase: string = teardown.phase;
+    if (phase === "failed") {
+      const failedChecks = Object.entries(teardown.checks)
+        .filter(([, complete]) => complete !== true)
+        .map(([name]) => name);
+      const message =
+        teardown.message ||
+        `Preview teardown failed; incomplete checks: ${failedChecks.join(", ") || "unknown"}`;
+      return json(
+        {
+          teardown,
+          ticket,
+          error: {
+            code: "preview_teardown_failed",
+            message,
+          },
+        },
+        { status: 409, headers: { "cache-control": "no-store" } },
+      );
+    }
+    if (phase !== "pending" && phase !== "complete") {
+      return json(
+        {
+          teardown,
+          ticket,
+          error: {
+            code: "preview_teardown_contract_mismatch",
+            message: `Preview teardown returned unknown cleanup phase '${phase}'`,
+          },
+        },
+        { status: 409, headers: { "cache-control": "no-store" } },
+      );
+    }
     return json(
       { teardown, ticket },
       teardown.phase === "pending"

@@ -634,6 +634,10 @@ export function getApplicationAdapters(
   const deploymentCapabilities = new ApplicationDeploymentCapabilitiesService(
     new EnvironmentDeploymentCapabilityPolicyAdapter({
       previewDeployment: config.previewDeployment,
+      previewFunctionRegistryJson:
+        env.PREVIEW_FUNCTION_REGISTRY_JSON?.trim() || null,
+      previewNativeActionSlugsJson:
+        env.PREVIEW_NATIVE_ACTION_SLUGS_JSON?.trim() || null,
       socialAuth: {
         github: {
           clientId: env.GITHUB_CLIENT_ID?.trim() || null,

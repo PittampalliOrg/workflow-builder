@@ -179,4 +179,42 @@ describe("internal Workflow MCP preview routes", () => {
       previewName: "preview-one",
     });
   });
+
+  it("returns failed cleanup checks as a terminal non-success response", async () => {
+    mocks.app.vclusterPreviews.teardownStatus.mockResolvedValueOnce({
+      phase: "failed",
+      checks: {
+        "runner-succeeded": false,
+        "preview-environment-absent": true,
+      },
+      message: "runner failed",
+    } as never);
+    const params = { name: "preview-one" };
+    const response = await CLEANUP(
+      bodyEvent(
+        "POST",
+        "/preview-one/teardown/status",
+        {
+          name: "preview-one",
+          environmentUid: "uid-1",
+          requestId: "request-1",
+          sourceRevision: "b".repeat(40),
+          signature: "e".repeat(64),
+        },
+        params,
+      ) as never,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      teardown: {
+        phase: "failed",
+        checks: { "runner-succeeded": false },
+      },
+      error: {
+        code: "preview_teardown_failed",
+        message: "runner failed",
+      },
+    });
+  });
 });

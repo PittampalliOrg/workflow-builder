@@ -10,14 +10,39 @@ const previewDeployment = {
 	origin: null,
 };
 
+const PREVIEW_FUNCTION_REGISTRY = JSON.stringify({
+	"system/*": { appId: "fn-system", type: "knative" },
+	"workflow-orchestrator/*": {
+		appId: "workflow-orchestrator",
+		type: "knative",
+	},
+	code: { appId: "code-runtime", type: "knative" },
+	"code/*": { appId: "code-runtime", type: "knative" },
+	"web/*": { appId: "crawl4ai-adapter", type: "knative" },
+});
+const PREVIEW_NATIVE_ACTION_SLUGS = JSON.stringify([
+	"durable/run",
+	"goal/plan",
+]);
+
 function service(input: {
 	preview?: boolean;
+	previewFunctionRegistryJson?: string | null;
+	previewNativeActionSlugsJson?: string | null;
 	github?: { clientId: string | null; clientSecret: string | null };
 	google?: { clientId: string | null; clientSecret: string | null };
 } = {}) {
 	return new ApplicationDeploymentCapabilitiesService(
 		new EnvironmentDeploymentCapabilityPolicyAdapter({
 			previewDeployment: input.preview ? previewDeployment : null,
+			previewFunctionRegistryJson:
+				input.previewFunctionRegistryJson === undefined
+					? PREVIEW_FUNCTION_REGISTRY
+					: input.previewFunctionRegistryJson,
+			previewNativeActionSlugsJson:
+				input.previewNativeActionSlugsJson === undefined
+					? PREVIEW_NATIVE_ACTION_SLUGS
+					: input.previewNativeActionSlugsJson,
 			socialAuth: {
 				github: input.github ?? { clientId: "github-id", clientSecret: "github-secret" },
 				google: input.google ?? { clientId: "google-id", clientSecret: "google-secret" },
@@ -27,25 +52,82 @@ function service(input: {
 }
 
 describe("deployment capability policy", () => {
-	it("excludes OpenShell preview actions and coordinator work from preview deployments", () => {
+	it("mirrors the strict preview function registry and excludes coordinator work", () => {
 		const capabilities = service({ preview: true });
 
-		expect(capabilities.actionAvailability("browser/start-preview")).toMatchObject({
-			available: false,
-			code: "unsupported_in_preview",
-		});
-		expect(capabilities.actionAvailability("browser/stop-preview")).toMatchObject({
-			available: false,
-			code: "unsupported_in_preview",
-		});
-		expect(capabilities.actionAvailability("github/create_issue")).toEqual({
+		for (const slug of [
+			"durable/run",
+			"goal/plan",
+			"system/dapr-converse",
+			"code/run",
+			"web/fetch",
+		]) {
+			expect(capabilities.actionAvailability(slug)).toEqual({
+				available: true,
+				code: "available",
+				message: null,
+			});
+		}
+		for (const slug of [
+			"browser/start-preview",
+			"browser/validate",
+			"openshell/exec",
+			"workspace/profile",
+			"github/create_issue",
+		]) {
+			expect(capabilities.actionAvailability(slug)).toMatchObject({
+				available: false,
+				code: "unsupported_in_preview",
+			});
+		}
+		expect(
+			capabilities.coordinatedWorkloadAvailability("benchmark"),
+		).toMatchObject({ available: false, code: "unsupported_in_preview" });
+	});
+
+	it("fails closed for malformed or undeclared preview-native actions", () => {
+		for (const previewNativeActionSlugsJson of [
+			null,
+			"{bad json",
+			JSON.stringify([" durable/run "]),
+		] as const) {
+			const capabilities = service({ preview: true, previewNativeActionSlugsJson });
+			expect(capabilities.actionAvailability("durable/run")).toMatchObject({
+				available: false,
+				code: "unsupported_in_preview",
+			});
+			expect(capabilities.actionAvailability("system/dapr-converse")).toEqual({
+				available: true,
+				code: "available",
+				message: null,
+			});
+		}
+	});
+
+	it("fails closed when a preview registry is missing or malformed", () => {
+		for (const previewFunctionRegistryJson of [
+			null,
+			"{bad json",
+			"{}",
+			JSON.stringify({ " system/* ": { appId: "fn-system" } }),
+		] as const) {
+			expect(
+				service({ preview: true, previewFunctionRegistryJson }).actionAvailability(
+					"system/dapr-converse",
+				),
+			).toMatchObject({
+				available: false,
+				code: "unsupported_in_preview",
+			});
+		}
+	});
+
+	it("does not apply the preview registry outside a preview deployment", () => {
+		expect(service().actionAvailability("github/create_issue")).toEqual({
 			available: true,
 			code: "available",
 			message: null,
 		});
-		expect(
-			capabilities.coordinatedWorkloadAvailability("benchmark"),
-		).toMatchObject({ available: false, code: "unsupported_in_preview" });
 	});
 
 	it("derives social provider availability from complete server configuration", () => {

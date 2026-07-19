@@ -6,11 +6,6 @@ import type {
 	SocialAuthProvider,
 } from "$lib/server/application/ports";
 
-const BROWSER_PREVIEW_ACTIONS = new Set([
-	"browser/start-preview",
-	"browser/stop-preview",
-]);
-
 const AVAILABLE: DeploymentCapabilityAvailability = Object.freeze({
 	available: true,
 	code: "available",
@@ -22,15 +17,91 @@ type SocialAuthConfiguration = Record<
 	Readonly<{ clientId: string | null; clientSecret: string | null }>
 >;
 
+type PreviewFunctionRegistry = ReadonlySet<string>;
+
+function parsePreviewNativeActionSlugs(
+	value: string | null | undefined,
+): ReadonlySet<string> {
+	if (!value?.trim()) return new Set();
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (
+			!Array.isArray(parsed) ||
+			parsed.some(
+				(slug) =>
+					typeof slug !== "string" ||
+					!slug ||
+					slug !== slug.trim() ||
+					!slug.includes("/"),
+			)
+		) {
+			return new Set();
+		}
+		return new Set(parsed);
+	} catch {
+		return new Set();
+	}
+}
+
+function parsePreviewFunctionRegistry(
+	value: string | null | undefined,
+): PreviewFunctionRegistry | null {
+	if (!value?.trim()) return null;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return null;
+		}
+		const entries = Object.entries(parsed as Record<string, unknown>);
+		if (
+			entries.length === 0 ||
+			entries.some(
+				([route, target]) =>
+					!route ||
+					route !== route.trim() ||
+					!target ||
+					typeof target !== "object" ||
+					Array.isArray(target),
+			)
+		) {
+			return null;
+		}
+		return new Set(entries.map(([route]) => route));
+	} catch {
+		return null;
+	}
+}
+
+function registryAllows(registry: PreviewFunctionRegistry, slug: string): boolean {
+	const plugin = slug.split("/", 1)[0];
+	return (
+		registry.has(slug) ||
+		(Boolean(plugin) && registry.has(`${plugin}/*`)) ||
+		registry.has("_default")
+	);
+}
+
 export class EnvironmentDeploymentCapabilityPolicyAdapter
 	implements DeploymentCapabilityPolicyPort
 {
+	private readonly previewFunctionRegistry: PreviewFunctionRegistry | null;
+	private readonly previewNativeActionSlugs: ReadonlySet<string>;
+
 	constructor(
 		private readonly config: Readonly<{
 			previewDeployment: PreviewDeploymentDescriptor | null;
+			previewFunctionRegistryJson?: string | null;
+			previewNativeActionSlugsJson?: string | null;
 			socialAuth: SocialAuthConfiguration;
 		}>,
-	) {}
+	) {
+		this.previewFunctionRegistry = parsePreviewFunctionRegistry(
+			config.previewFunctionRegistryJson,
+		);
+		this.previewNativeActionSlugs = parsePreviewNativeActionSlugs(
+			config.previewNativeActionSlugsJson,
+		);
+	}
 
 	availability(
 		query: DeploymentCapabilityQuery,
@@ -38,11 +109,24 @@ export class EnvironmentDeploymentCapabilityPolicyAdapter
 		if (query.kind === "action") {
 			if (
 				this.config.previewDeployment &&
-				BROWSER_PREVIEW_ACTIONS.has(query.slug)
+				this.previewNativeActionSlugs.has(query.slug)
+			) {
+				return AVAILABLE;
+			}
+			if (this.config.previewDeployment && !this.previewFunctionRegistry) {
+				return unavailable(
+					"unsupported_in_preview",
+					`${query.slug} is unavailable because this preview has no valid strict function registry`,
+				);
+			}
+			if (
+				this.config.previewDeployment &&
+				this.previewFunctionRegistry &&
+				!registryAllows(this.previewFunctionRegistry, query.slug)
 			) {
 				return unavailable(
 					"unsupported_in_preview",
-					`${query.slug} is unavailable in preview deployments because the OpenShell workspace runtime is not part of the preview service surface`,
+					`${query.slug} is unavailable because it is absent from this preview's strict function registry`,
 				);
 			}
 			return AVAILABLE;

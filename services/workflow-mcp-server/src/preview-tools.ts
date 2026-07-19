@@ -150,9 +150,10 @@ function failure(tool: string, cause: unknown) {
       telemetry: {
         state: "unavailable",
         isFinal: !error.retryable,
-        warnings: [],
+        warnings: [error.message],
         ...(error.retryAfterMs ? { refreshAfterMs: error.retryAfterMs } : {}),
       },
+      ...(error.details === undefined ? {} : { data: error.details }),
       error: {
         code: error.code,
         message: error.message,
@@ -483,7 +484,18 @@ export function registerPreviewEnvironmentTools(
     }) => {
       try {
         const data = await context.previews.getTeardownStatus(ticket);
-        const pending = teardownPhase(data) === "pending";
+        const phase = teardownPhase(data);
+        if (phase !== "pending" && phase !== "complete") {
+          throw new PreviewEnvironmentsHttpError(
+            `Preview teardown returned unsupported phase '${phase}'`,
+            409,
+            "preview_teardown_contract_mismatch",
+            false,
+            undefined,
+            data,
+          );
+        }
+        const pending = phase === "pending";
         return success("get_preview_teardown_status", data, {
           telemetry: {
             state: pending ? "pending" : "complete",

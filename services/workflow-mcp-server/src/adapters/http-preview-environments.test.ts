@@ -130,4 +130,41 @@ describe("HttpPreviewEnvironmentsAdapter", () => {
       retryAfterMs: 5_000,
     } satisfies Partial<PreviewEnvironmentsHttpError>);
   });
+
+  it("preserves terminal teardown evidence from a failed cleanup response", async () => {
+    const teardown = {
+      phase: "failed",
+      checks: { "runner-succeeded": false },
+      message: "runner failed",
+    };
+    const ticket = {
+      name: "preview-one",
+      environmentUid: "uid-1",
+      requestId: "request-1",
+      sourceRevision: "b".repeat(40),
+      signature: "e".repeat(64),
+    };
+    const adapter = new HttpPreviewEnvironmentsAdapter({
+      principal,
+      fetchImpl: vi.fn(async () =>
+        response(409, {
+          teardown,
+          ticket,
+          error: {
+            code: "preview_teardown_failed",
+            message: "runner failed",
+          },
+        }),
+      ) as any,
+      workflowBuilderUrl: "http://bff",
+      internalApiToken: "internal-token",
+    });
+
+    await expect(adapter.getTeardownStatus(ticket)).rejects.toMatchObject({
+      status: 409,
+      code: "preview_teardown_failed",
+      retryable: false,
+      details: { teardown, ticket },
+    } satisfies Partial<PreviewEnvironmentsHttpError>);
+  });
 });

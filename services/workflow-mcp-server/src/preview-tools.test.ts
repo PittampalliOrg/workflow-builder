@@ -220,4 +220,44 @@ describe("preview environment tools", () => {
       limit: 100,
     });
   });
+
+  it("fails closed when teardown polling returns a non-success terminal phase", async () => {
+    const previews = useCases({
+      getTeardownStatus: vi.fn(async (ticket) => ({
+        teardown: {
+          phase: "failed",
+          checks: { "runner-succeeded": false },
+          message: "runner failed",
+        },
+        ticket,
+      })),
+    });
+    const { server, captured } = fakeServer();
+    registerPreviewEnvironmentTools(server as any, {
+      principal: principal(["workflow:read"]),
+      previews,
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "get_preview_teardown_status",
+    );
+
+    const result = await tool?.handler({
+      name: "preview-one",
+      environmentUid: "uid-1",
+      requestId: "request-1",
+      sourceRevision: "b".repeat(40),
+      signature: "e".repeat(64),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      telemetry: { state: "unavailable", isFinal: true },
+      data: { teardown: { phase: "failed" } },
+      error: {
+        code: "preview_teardown_contract_mismatch",
+        retryable: false,
+      },
+    });
+  });
 });
