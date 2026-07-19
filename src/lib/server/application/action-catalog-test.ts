@@ -49,6 +49,14 @@ export type ActionCatalogTestExecutionIdGenerator = {
 	nextExecutionId(): string;
 };
 
+export type ActionCatalogTestCapabilityReader = {
+	actionAvailability(slug: string): {
+		available: boolean;
+		code: string;
+		message: string | null;
+	};
+};
+
 export class ApplicationActionCatalogTestService {
 	constructor(
 		private readonly deps: {
@@ -57,6 +65,7 @@ export class ApplicationActionCatalogTestService {
 			functionRouter: FunctionRouterExecutionPort;
 			http: ActionCatalogHttpTestClient;
 			ids: ActionCatalogTestExecutionIdGenerator;
+			capabilities?: ActionCatalogTestCapabilityReader;
 		},
 	) {}
 
@@ -189,6 +198,15 @@ export class ApplicationActionCatalogTestService {
 		input: Record<string, unknown>;
 		connectionExternalId?: string | null;
 	}): Promise<FunctionRouterExecutionPayload> {
+		const availability = this.deps.capabilities?.actionAvailability(
+			input.functionSlug,
+		);
+		if (availability && !availability.available) {
+			throw new ApplicationActionCatalogTestError(
+				409,
+				`${availability.code}: ${availability.message ?? `${input.functionSlug} is unavailable`}`,
+			);
+		}
 		const response = await this.deps.functionRouter.execute({
 			functionSlug: input.functionSlug,
 			executionId: this.deps.ids.nextExecutionId(),

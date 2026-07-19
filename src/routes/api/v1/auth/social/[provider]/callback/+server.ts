@@ -1,4 +1,4 @@
-import { redirect } from '@sveltejs/kit';
+import { json, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { getApplicationAdapters } from '$lib/server/application';
@@ -13,6 +13,19 @@ import { getAppUrl } from '$lib/server/app-url';
  */
 export const GET: RequestHandler = async ({ params, url, request, cookies }) => {
 	const { provider } = params;
+	const availability = getApplicationAdapters().deploymentCapabilities.socialAuthAvailability(
+		provider
+	);
+	if (!availability.available) {
+		return json(
+			{
+				error: availability.code,
+				provider,
+				message: availability.message
+			},
+			{ status: availability.code === 'not_configured' ? 503 : 400 }
+		);
+	}
 	const code = url.searchParams.get('code');
 	const state = url.searchParams.get('state');
 	const storedState = cookies.get('oauth_state');

@@ -9,6 +9,7 @@ export * from "./ports/dev-environment-teardown";
 export * from "./ports/dev-preview-provisioner";
 export * from "./ports/dev-preview-source-capture";
 export * from "./ports/dev-previews";
+export * from "./ports/deployment-capabilities";
 export * from "./ports/evaluations";
 export * from "./ports/executions";
 export * from "./ports/gitops";

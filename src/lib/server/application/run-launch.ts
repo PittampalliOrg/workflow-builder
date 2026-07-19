@@ -103,6 +103,14 @@ export type EvaluationRunLaunchPort = {
 	): Promise<unknown>;
 };
 
+export type CoordinatedRunCapabilityReader = {
+	coordinatedWorkloadAvailability(workload: "benchmark" | "evaluation"): {
+		available: boolean;
+		code: string;
+		message: string | null;
+	};
+};
+
 const EVALUATION_SUBJECT_TYPES = new Set<EvaluationSubjectTypeInput>([
 	"agent",
 	"workflow",
@@ -111,7 +119,10 @@ const EVALUATION_SUBJECT_TYPES = new Set<EvaluationSubjectTypeInput>([
 ]);
 
 export class ApplicationBenchmarkRunLaunchService {
-	constructor(private readonly runs: BenchmarkRunLaunchPort) {}
+	constructor(
+		private readonly runs: BenchmarkRunLaunchPort,
+		private readonly capabilities?: CoordinatedRunCapabilityReader,
+	) {}
 
 	async listRuns(input: {
 		projectId?: string | null;
@@ -135,6 +146,12 @@ export class ApplicationBenchmarkRunLaunchService {
 				httpStatus: 400,
 				message: "No active workspace — cannot create benchmark run",
 			};
+		}
+		const availability = this.capabilities?.coordinatedWorkloadAvailability(
+			"benchmark",
+		);
+		if (availability && !availability.available) {
+			return unavailableRunResult(availability);
 		}
 		const body = asRecord(input.body);
 		if (typeof body.requirePrevalidatedEnvironments !== "boolean") {
@@ -211,7 +228,10 @@ export class ApplicationBenchmarkRunLaunchService {
 }
 
 export class ApplicationEvaluationRunLaunchService {
-	constructor(private readonly runs: EvaluationRunLaunchPort) {}
+	constructor(
+		private readonly runs: EvaluationRunLaunchPort,
+		private readonly capabilities?: CoordinatedRunCapabilityReader,
+	) {}
 
 	async listRuns(input: {
 		projectId?: string | null;
@@ -231,6 +251,14 @@ export class ApplicationEvaluationRunLaunchService {
 		}
 		const body = asRecord(input.body);
 		const subjectType = parseEvaluationSubjectType(body.subjectType);
+		if (subjectType !== "imported_outputs") {
+			const availability = this.capabilities?.coordinatedWorkloadAvailability(
+				"evaluation",
+			);
+			if (availability && !availability.available) {
+				return unavailableRunResult(availability);
+			}
+		}
 		const run = await this.runs.createRun({
 			projectId: input.projectId,
 			userId: input.userId,
@@ -275,6 +303,20 @@ export class ApplicationEvaluationRunLaunchService {
 			body: { run, coordinatorStartError },
 		};
 	}
+}
+
+function unavailableRunResult(availability: {
+	code: string;
+	message: string | null;
+}): RunLaunchResult {
+	return {
+		status: "error",
+		httpStatus: 409,
+		body: {
+			code: availability.code,
+			message: availability.message ?? "Run type is unavailable in this deployment",
+		},
+	};
 }
 
 function parseEvaluationSubjectType(value: unknown): EvaluationSubjectTypeInput {

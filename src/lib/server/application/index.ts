@@ -217,6 +217,7 @@ import {
   PostgresCodeFunctionExecutionRepository,
 } from "$lib/server/application/adapters/code-function-execution";
 import { LegacyActionCatalogReader } from "$lib/server/application/adapters/action-catalog";
+import { EnvironmentDeploymentCapabilityPolicyAdapter } from "$lib/server/application/adapters/deployment-capabilities";
 import { LocalSettingsCliRuntimeCatalogReader } from "$lib/server/application/adapters/settings-cli-tokens";
 import {
   PostgresPromptPresetRepository,
@@ -326,6 +327,7 @@ import {
 import { ApplicationCatalogFunctionDefinitionService } from "$lib/server/application/catalog-function-definition";
 import { ApplicationActionOptionsService } from "$lib/server/application/action-options";
 import { ApplicationActionCatalogService } from "$lib/server/application/action-catalog";
+import { ApplicationDeploymentCapabilitiesService } from "$lib/server/application/deployment-capabilities";
 import {
   ApplicationActionCatalogTestService,
   DateActionCatalogTestExecutionIdGenerator,
@@ -625,6 +627,21 @@ export function getApplicationAdapters(
     new HmacWorkflowMcpPrincipalAssertionAdapter();
   const legacyWorkflowRuntimePolicy =
     new EnvironmentLegacyWorkflowRuntimeCompatibilityPolicy();
+  const deploymentCapabilities = new ApplicationDeploymentCapabilitiesService(
+    new EnvironmentDeploymentCapabilityPolicyAdapter({
+      previewDeployment: config.previewDeployment,
+      socialAuth: {
+        github: {
+          clientId: env.GITHUB_CLIENT_ID?.trim() || null,
+          clientSecret: env.GITHUB_CLIENT_SECRET?.trim() || null,
+        },
+        google: {
+          clientId: env.GOOGLE_CLIENT_ID?.trim() || null,
+          clientSecret: env.GOOGLE_CLIENT_SECRET?.trim() || null,
+        },
+      },
+    }),
+  );
 
   let database: ReturnType<typeof requirePostgresDb> | undefined;
   let agentRuntimes: PostgresAgentRuntimeRepository | undefined;
@@ -1317,6 +1334,7 @@ export function getApplicationAdapters(
   const getBenchmarkRunLaunch = () =>
     (benchmarkRunLaunch ??= new ApplicationBenchmarkRunLaunchService(
       new LegacyBenchmarkRunLaunchAdapter(),
+      deploymentCapabilities,
     ));
   const getBenchmarkRouteOperations = () =>
     (benchmarkRouteOperations ??=
@@ -1337,6 +1355,7 @@ export function getApplicationAdapters(
   const getEvaluationRunLaunch = () =>
     (evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
       new LegacyEvaluationRunLaunchAdapter(),
+      deploymentCapabilities,
     ));
   const getEvaluationDefinitions = () =>
     (evaluationDefinitions ??= new ApplicationEvaluationDefinitionService(
@@ -1431,6 +1450,7 @@ export function getApplicationAdapters(
   const getActionCatalog = () =>
     (actionCatalog ??= new ApplicationActionCatalogService(
       new LegacyActionCatalogReader(getCodeFunctionStore()),
+      deploymentCapabilities,
     ));
   const getWorkflowTriggerKindCatalog = () =>
     (workflowTriggerKindCatalog ??=
@@ -1456,6 +1476,7 @@ export function getApplicationAdapters(
       functionRouter: new DaprFunctionRouterExecutionPort(),
       http: new DaprActionCatalogHttpTestClient(),
       ids: new DateActionCatalogTestExecutionIdGenerator(),
+      capabilities: deploymentCapabilities,
     }));
   const getCodeFunctionManagement = () =>
     (codeFunctionManagement ??= new ApplicationCodeFunctionManagementService(
@@ -1849,6 +1870,7 @@ export function getApplicationAdapters(
   });
   const workflowLaunchPolicy = new ApplicationWorkflowLaunchPolicyService(
     previewDeploymentScope,
+    deploymentCapabilities,
   );
   const getPreviewAccess = () =>
     (previewAccess ??= new ApplicationPreviewAccessService({
@@ -2920,6 +2942,9 @@ export function getApplicationAdapters(
     },
     get actionCatalog() {
       return getActionCatalog();
+    },
+    get deploymentCapabilities() {
+      return deploymentCapabilities;
     },
     get workflowTriggerKindCatalog() {
       return getWorkflowTriggerKindCatalog();

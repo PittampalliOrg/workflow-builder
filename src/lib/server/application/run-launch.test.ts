@@ -118,6 +118,32 @@ describe("ApplicationBenchmarkRunLaunchService", () => {
 			body: { message: "invalid agent" },
 		});
 	});
+
+	it("rejects benchmark coordination when deployment policy excludes it", async () => {
+		service = new ApplicationBenchmarkRunLaunchService(runs, {
+			coordinatedWorkloadAvailability: () => ({
+				available: false,
+				code: "unsupported_in_preview",
+				message: "benchmark coordinators are unavailable in preview deployments",
+			}),
+		});
+
+		await expect(
+			service.startRun({
+				projectId: "project-1",
+				userId: "user-1",
+				body: { requirePrevalidatedEnvironments: true },
+			}),
+		).resolves.toEqual({
+			status: "error",
+			httpStatus: 409,
+			body: {
+				code: "unsupported_in_preview",
+				message: "benchmark coordinators are unavailable in preview deployments",
+			},
+		});
+		expect(runs.createRun).not.toHaveBeenCalled();
+	});
 });
 
 describe("ApplicationEvaluationRunLaunchService", () => {
@@ -200,5 +226,37 @@ describe("ApplicationEvaluationRunLaunchService", () => {
 		expect(runs.markStatus).toHaveBeenCalledWith("eval-1", "failed", {
 			error: "down",
 		});
+	});
+
+	it("rejects coordinator-backed evaluations while preserving imported-output runs", async () => {
+		service = new ApplicationEvaluationRunLaunchService(runs, {
+			coordinatedWorkloadAvailability: () => ({
+				available: false,
+				code: "unsupported_in_preview",
+				message: "evaluation coordinators are unavailable in preview deployments",
+			}),
+		});
+
+		await expect(
+			service.startRun({
+				projectId: "project-1",
+				userId: "user-1",
+				body: { subjectType: "agent" },
+			}),
+		).resolves.toMatchObject({
+			status: "error",
+			httpStatus: 409,
+			body: { code: "unsupported_in_preview" },
+		});
+		expect(runs.createRun).not.toHaveBeenCalled();
+
+		await expect(
+			service.startRun({
+				projectId: "project-1",
+				userId: "user-1",
+				body: { subjectType: "imported_outputs" },
+			}),
+		).resolves.toMatchObject({ status: "ok" });
+		expect(runs.createRun).toHaveBeenCalledTimes(1);
 	});
 });

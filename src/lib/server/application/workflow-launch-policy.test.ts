@@ -26,6 +26,55 @@ function scope(
 }
 
 describe("ApplicationWorkflowLaunchPolicyService", () => {
+	it("rejects unsupported preview actions in SW and dynamic-script specs before launch", () => {
+		const deployment = scope({
+			kind: "preview",
+			preview: {
+				name: "feature-one",
+				profile: "app-live",
+				platformRevision: null,
+				sourceRevision: revision,
+				origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+			},
+		});
+		const capabilities = {
+			actionAvailability: (slug: string) => ({
+				available: slug !== "browser/start-preview",
+				code: slug === "browser/start-preview" ? "unsupported_in_preview" : "available",
+				message:
+					slug === "browser/start-preview"
+						? "browser/start-preview is unavailable in preview deployments"
+						: null,
+			}),
+		};
+		const service = new ApplicationWorkflowLaunchPolicyService(
+			deployment,
+			capabilities,
+		);
+
+		for (const unsupportedSpec of [
+			{ do: [{ preview: { call: "browser/start-preview", with: {} } }] },
+			{
+				engine: "dynamic-script",
+				meta: { name: "preview" },
+				script:
+					"export const meta = { name: 'preview' }; export default async function run() { return action('browser/start-preview', {}); }",
+			},
+		]) {
+			expect(
+				service.prepare({
+					workflow: { name: "preview", spec: unsupportedSpec },
+					triggerData: {},
+				}),
+			).toEqual({
+				ok: false,
+				status: 409,
+				error:
+					"unsupported_in_preview: browser/start-preview is unavailable in preview deployments",
+			});
+		}
+	});
+
   it("rejects context-launched workflows submitted through generic Execute", () => {
     const service = new ApplicationWorkflowLaunchPolicyService(
       scope({ kind: "control-plane" }),
