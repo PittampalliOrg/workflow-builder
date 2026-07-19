@@ -2,11 +2,10 @@ FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 
 USER root
 
-# Overlay the OpenShell sandbox policy with our customizations. Adds
-# `gitea_internal_git` so workflow-checkpoint git pushes to
-# gitea-ryzen.tail286401.ts.net don't get 403'd at the OpenShell gateway
-# proxy. policy.yaml is a superset of the NVIDIA upstream policy with the
-# extra gitea CONNECT-passthrough rule appended. See policy.yaml for details.
+# Overlay the OpenShell sandbox policy with our customizations, including
+# end-to-end TLS for package registries and the internal Git CONNECT policy.
+# The cluster runtime supplies its own global policy, while this baked copy is
+# the fail-safe for standalone and local OpenShell use.
 COPY policy.yaml /etc/openshell/policy.yaml
 
 # Install Playwright system dependencies
