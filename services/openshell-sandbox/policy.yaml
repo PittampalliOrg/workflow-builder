@@ -145,6 +145,36 @@ network_policies:
       # Managed Python installations from uv python install
       - { path: "/sandbox/.uv/python/**" }
 
+  # npm's request fan-out exposed an OpenShell 0.0.42 relay bug: after an
+  # inspected upstream response closed its HTTP/1.1 connection, the relay
+  # marked the tunnel reusable and reset npm's next write.
+  # Package registries need host/binary enforcement, not credential injection,
+  # so keep their TLS end to end after the CONNECT policy check.
+  npm:
+    name: npm
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        tls: skip
+        access: full
+      - host: registry.yarnpkg.com
+        port: 443
+        tls: skip
+        access: full
+    binaries:
+      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/npm }
+      - { path: /usr/local/bin/npm }
+      - { path: /usr/bin/npx }
+      - { path: /usr/local/bin/npx }
+      - { path: /usr/local/bin/yarn }
+      - { path: /usr/local/bin/pnpm }
+      - { path: /usr/bin/curl }
+      - { path: "/sandbox/.nvm/versions/node/**" }
+      - { path: "/sandbox/.volta/tools/image/node/**" }
+      - { path: /sandbox/node_modules/.bin/npm }
+
   vscode:
     name: vscode
     endpoints:
@@ -179,6 +209,8 @@ network_policies:
     endpoints:
     - host: registry.npmjs.org
       port: 443
+      tls: skip
+      access: full
     - host: opencode.ai
       port: 443
     - host: integrate.api.nvidia.com
