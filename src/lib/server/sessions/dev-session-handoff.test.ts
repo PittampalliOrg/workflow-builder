@@ -26,7 +26,7 @@ describe("spawnDevSession", () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValue({
 			status: "created",
 			sessionId: "session-1",
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 		});
 		spawnSessionWorkflowMock.mockResolvedValue({
 			instanceId: "session-1",
@@ -59,15 +59,18 @@ describe("spawnDevSession", () => {
 			status: "created",
 			sessionId: "session-1",
 			url: "/sessions/session-1",
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 		});
 
 		expect(workflowDataMock.createWorkflowDevSession).toHaveBeenCalledWith({
 			executionId: "exec-1",
 				agentPolicy: {
-					slug: "glm-juicefs-builder-agent",
+					slug: "kimi-k3-juicefs-builder-agent",
 					runtime: "dapr-agent-py-juicefs",
 					modelSpec: "kimi/kimi-k3",
+					reasoningEffort: "max",
+					contextWindowTokens: 1_048_576,
+					runtimeIsolation: "dedicated",
 				},
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
@@ -82,7 +85,7 @@ describe("spawnDevSession", () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
 			status: "reused",
 			sessionId: "session-1",
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 		});
 
 		await expect(
@@ -136,14 +139,14 @@ describe("spawnDevSession", () => {
 				executionId: "exec-1",
 				instructions: "start",
 			}),
-		).rejects.toThrow('dev-session agent "glm-juicefs-builder-agent" not found');
+		).rejects.toThrow('dev-session agent "kimi-k3-juicefs-builder-agent" not found');
 		expect(spawnSessionWorkflowMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects a seeded agent that drifts from the preview runtime policy", async () => {
 		workflowDataMock.createWorkflowDevSession.mockResolvedValueOnce({
 			status: "agent_policy_mismatch",
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 		});
 
 		await expect(

@@ -38,7 +38,7 @@ export const meta = {
       maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
       agentSlug: {
         type: "string",
-        default: "glm-juicefs-builder-agent",
+        default: "kimi-k3-juicefs-builder-agent",
         description:
           "Server-selected agent slug. The host lifecycle supplies this; it is not preview authority.",
       },
@@ -110,7 +110,7 @@ export const meta = {
   },
 };
 
-const DEFAULT_AGENT = "glm-juicefs-builder-agent";
+const DEFAULT_AGENT = "kimi-k3-juicefs-builder-agent";
 const REQUIRED_MODEL = "kimi/kimi-k3";
 const DEFAULT_SERVICE = "workflow-builder";
 const DEFAULT_ROUTES = ["/dashboard"];

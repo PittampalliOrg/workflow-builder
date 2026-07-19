@@ -17348,10 +17348,10 @@ async function seedGeneratorCriticShowcases(params) {
     modelSpec: "deepseek-v4-pro"
   });
   await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
-    slug: "glm-juicefs-builder-agent",
+    slug: "kimi-k3-juicefs-builder-agent",
     runtime: "dapr-agent-py-juicefs",
-    name: "Kimi K3 (JuiceFS) Builder Agent",
-    description: "Kimi K3 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+    name: "Kimi K3 JuiceFS Builder Agent",
+    description: "Canonical preview-native Kimi K3 builder on the JuiceFS workspace backend; plans, edits, and validates the selected services in the per-execution /sandbox/work mount.",
     modelSpec: "kimi/kimi-k3",
     reasoningEffort: "max",
     contextWindowTokens: 1048576,

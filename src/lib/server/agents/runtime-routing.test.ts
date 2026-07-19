@@ -81,7 +81,7 @@ describe("resolveAgentRuntimeRoute", () => {
 		});
 
 		const route = resolveAgentRuntimeRoute({
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 			runtimeAppId: "agent-runtime-pool-coding",
 			config: config({
 				runtime: "dapr-agent-py-juicefs",
@@ -91,8 +91,8 @@ describe("resolveAgentRuntimeRoute", () => {
 		});
 
 		expect(route).toEqual({
-			appId: "agent-runtime-glm-juicefs-builder-agent",
-			slug: "glm-juicefs-builder-agent",
+			appId: "agent-runtime-kimi-k3-juicefs-builder-agent",
+			slug: "kimi-k3-juicefs-builder-agent",
 			runtimeClass: "coding",
 			isolation: "dedicated",
 			reason: "agent requested dedicated runtime isolation",

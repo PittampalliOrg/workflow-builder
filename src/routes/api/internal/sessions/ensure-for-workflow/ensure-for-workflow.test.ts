@@ -887,14 +887,14 @@ describe("dynamic-script spawn MCP wiring", () => {
 			},
 			projectId: "project-1",
 			runtime: "dapr-agent-py-juicefs",
-			runtimeAppId: "agent-runtime-glm-juicefs-builder-agent",
+			runtimeAppId: "agent-runtime-kimi-k3-juicefs-builder-agent",
 		} as never);
 		const payload = await callEnsureForWorkflow({
 			runtime: "dapr-agent-py",
 			modelSpec: "kimi/kimi-k3",
 			provider: "openai",
 			token: "unused",
-			body: { resolveAgentSlug: "glm-juicefs-builder-agent" },
+			body: { resolveAgentSlug: "kimi-k3-juicefs-builder-agent" },
 		});
 
 		expect(payload.agentAppId).toBe("agent-session-test");
@@ -903,7 +903,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 		};
 		expect(hostCall.agentConfig?.runtime).toBe("dapr-agent-py-juicefs");
 		expect(hostCall.agentConfig?.agentAppId).toBe(
-			"agent-runtime-glm-juicefs-builder-agent",
+			"agent-runtime-kimi-k3-juicefs-builder-agent",
 		);
 		const childInput = payload.childInput as Record<string, unknown>;
 		const config = childInput.agentConfig as Record<string, unknown>;
@@ -912,7 +912,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(config.reasoningEffort).toBe("max");
 		expect(config.contextWindowTokens).toBe(1_048_576);
 		expect(config.runtimeIsolation).toBe("dedicated");
-		expect(config.agentAppId).toBe("agent-runtime-glm-juicefs-builder-agent");
+		expect(config.agentAppId).toBe("agent-runtime-kimi-k3-juicefs-builder-agent");
 		expect(childInput.sandboxName).toBe("dapr-agent-py-juicefs");
 	});
 

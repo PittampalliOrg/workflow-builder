@@ -379,7 +379,7 @@ describe("preview UI development GAN child fixture", () => {
     ]);
     const spawn = tasks.find((task) => task.actionSlug === "session/spawn");
     expect(spawn?.args).toMatchObject({
-      agentSlug: "glm-juicefs-builder-agent",
+      agentSlug: "kimi-k3-juicefs-builder-agent",
     });
     expect(result.returnValue).toMatchObject({
       handoff: true,

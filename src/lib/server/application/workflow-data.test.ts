@@ -1001,7 +1001,10 @@ function fakePreviewDevSessionAgentResolver(
 	overrides: {
 		slug?: string;
 		rowRuntime?: string;
-		config?: Partial<Pick<AgentConfig, "runtime" | "modelSpec">>;
+		config?: Partial<AgentConfig> & {
+			reasoningEffort?: string;
+			contextWindowTokens?: number;
+		};
 	} = {},
 ): SessionAgentResolver {
 	const base = fakeSessionAgentResolver();
@@ -1009,15 +1012,20 @@ function fakePreviewDevSessionAgentResolver(
 		resolveSessionAgent: vi.fn(async (input) => {
 			const agent = await base.resolveSessionAgent(input);
 			if (!agent) return null;
+			const config = {
+				...agent.config,
+				runtime: "dapr-agent-py-juicefs",
+				modelSpec: overrides.config?.modelSpec ?? "deepseek-v4-pro",
+				...overrides.config,
+			} as AgentConfig & {
+				reasoningEffort?: string;
+				contextWindowTokens?: number;
+			};
 			return {
 				...agent,
 				slug: overrides.slug ?? "dapr-juicefs-dev-agent",
 				runtime: overrides.rowRuntime ?? "dapr-agent-py-juicefs",
-				config: {
-					...agent.config,
-          runtime: overrides.config?.runtime ?? "dapr-agent-py-juicefs",
-					modelSpec: overrides.config?.modelSpec ?? "deepseek-v4-pro",
-				},
+				config,
 			};
 		}),
 	};
@@ -4338,7 +4346,15 @@ describe("ApplicationWorkflowDataService", () => {
 			})),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
-		const sessionAgents = fakePreviewDevSessionAgentResolver();
+		const sessionAgents = fakePreviewDevSessionAgentResolver({
+			slug: "kimi-k3-juicefs-builder-agent",
+			config: {
+				modelSpec: "kimi/kimi-k3",
+				reasoningEffort: "max",
+				contextWindowTokens: 1_048_576,
+				runtimeIsolation: "dedicated",
+			},
+		});
 		const sessionAgentSlugs = fakeSessionAgentSlugs();
 		const workflowExecutions = {
 			...fakeWorkflowExecutions(),
@@ -4359,9 +4375,12 @@ describe("ApplicationWorkflowDataService", () => {
 			service.createWorkflowDevSession({
 				executionId: "exec-1",
 				agentPolicy: {
-					slug: "dapr-juicefs-dev-agent",
+					slug: "kimi-k3-juicefs-builder-agent",
 					runtime: "dapr-agent-py-juicefs",
-					modelSpec: "deepseek-v4-pro",
+					modelSpec: "kimi/kimi-k3",
+					reasoningEffort: "max",
+					contextWindowTokens: 1_048_576,
+					runtimeIsolation: "dedicated",
 				},
 				instructions: "open repo",
 				title: "Dev handoff",
@@ -4369,13 +4388,13 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toEqual({
 			status: "created",
 			sessionId,
-			agentSlug: "dapr-juicefs-dev-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 		});
 		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith(
 			"exec-1",
 		);
 		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).toHaveBeenCalledWith(
-			"dapr-juicefs-dev-agent",
+			"kimi-k3-juicefs-builder-agent",
 		);
 		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
 			agentId: "agent-1",
@@ -4402,9 +4421,12 @@ describe("ApplicationWorkflowDataService", () => {
 						.update("open repo", "utf8")
 						.digest("hex"),
 					title: "Dev handoff",
-					agentSlug: "dapr-juicefs-dev-agent",
+					agentSlug: "kimi-k3-juicefs-builder-agent",
 					agentRuntime: "dapr-agent-py-juicefs",
-					modelSpec: "deepseek-v4-pro",
+					modelSpec: "kimi/kimi-k3",
+					reasoningEffort: "max",
+					contextWindowTokens: 1_048_576,
+					runtimeIsolation: "dedicated",
 				},
 			},
 			processedAt: null,
@@ -4479,7 +4501,7 @@ describe("ApplicationWorkflowDataService", () => {
 			executionId,
 			agentPolicy: {
 				slug: "dapr-juicefs-dev-agent",
-				runtime: "dapr-agent-py-juicefs",
+				runtime: "dapr-agent-py-juicefs" as const,
 				modelSpec: "deepseek-v4-pro",
 			},
 			instructions: "open repo",
@@ -4838,6 +4860,53 @@ describe("ApplicationWorkflowDataService", () => {
 			).resolves.toEqual({
 				status: "agent_policy_mismatch",
 				agentSlug: "dapr-juicefs-dev-agent",
+			});
+			expect(sessions.ensureSession).not.toHaveBeenCalled();
+			expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		["reasoning effort", { reasoningEffort: "high" }],
+		["context window", { contextWindowTokens: 262_144 }],
+		["runtime isolation", { runtimeIsolation: "shared" as const }],
+	])(
+		"rejects Kimi K3 workflow dev agents with mismatched %s before side effects",
+		async (_field, configOverride) => {
+			const sessions = fakeSessions();
+			const sessionEvents = fakeSessionEvents();
+			const { service } = makeService({
+				sessions,
+				sessionEvents,
+				sessionAgents: fakePreviewDevSessionAgentResolver({
+					slug: "kimi-k3-juicefs-builder-agent",
+					config: {
+						modelSpec: "kimi/kimi-k3",
+						reasoningEffort: "max",
+						contextWindowTokens: 1_048_576,
+						runtimeIsolation: "dedicated",
+						...configOverride,
+					},
+				}),
+				workflowExecutions: fakeWorkflowExecutions(),
+			});
+
+			await expect(
+				service.createWorkflowDevSession({
+					executionId: "exec-1",
+					agentPolicy: {
+						slug: "kimi-k3-juicefs-builder-agent",
+						runtime: "dapr-agent-py-juicefs",
+						modelSpec: "kimi/kimi-k3",
+						reasoningEffort: "max",
+						contextWindowTokens: 1_048_576,
+						runtimeIsolation: "dedicated",
+					},
+					instructions: "open repo",
+				}),
+			).resolves.toEqual({
+				status: "agent_policy_mismatch",
+				agentSlug: "kimi-k3-juicefs-builder-agent",
 			});
 			expect(sessions.ensureSession).not.toHaveBeenCalled();
 			expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
