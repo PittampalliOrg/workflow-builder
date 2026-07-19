@@ -36,13 +36,12 @@ The JS script cannot run inside the Python generator orchestrator, so
 
 Dapr replay = crash resume. **callId** (frozen by
 `services/shared/contracts/script-evaluator-evaluate.contract.json`):
-`sha256(prompt + NUL + canonicalJSON({schema,model,effort,isolation,agentType,label}))[:40]
-+ "_" + occurrence`.
+`sha256(prompt + NUL + canonicalJSON({schema,model,effort,isolation,agentType,label}))[:40] + "_" + occurrence`.
 
 ## Where things live
 
 - Engine: `services/workflow-orchestrator/workflows/{dynamic_script_workflow,script_agent_dispatch}.py`
-  + activities `evaluate_script`, `script_call_journal`, `aggregate_script_usage`,
+  - activities `evaluate_script`, `script_call_journal`, `aggregate_script_usage`,
   `append_script_logs`; route `POST /api/v2/script-workflows`
 - Evaluator: `services/script-evaluator/` (`/evaluate`, `/validate`, `/healthz`; port 3300,
   Service 8080→3300; `--experimental-vm-modules`; zero secret deps)
@@ -50,16 +49,18 @@ Dapr replay = crash resume. **callId** (frozen by
   `src/lib/server/workflows/dynamic-script-validation.ts`; start branch in `start-run.ts`;
   journal table `workflow_script_calls` (drizzle 0097) + internal routes
   `…/executions/[id]/script-calls[…]` + `…/llm-usage`; run UI `script-run-panel.svelte`
-- MCP (workflow-mcp-server, `services/workflow-mcp-server/src/script-tools.ts`): three tools —
+- MCP (workflow-mcp-server, `services/workflow-mcp-server/src/script-tools.ts`): four tools —
   `run_workflow_script` (saved `workflowName` or inline `script` via
-  `POST /api/internal/agent/workflows/execute-script`; X-Wfb-Session-Id REQUIRED for owner
-  attribution), `validate_workflow_script` (author-time syntactic check via
+  `POST /api/internal/agent/workflows/execute-script`; ownership comes from the authenticated
+  workspace, while `X-Wfb-Session-Id` is optional lineage), `validate_workflow_script`
+  (author-time syntactic check via
   `POST /api/internal/agent/workflows/validate-script` → `validateWithEvaluator` → evaluator
-  `/validate`; returns `{ok, meta, estimatedAgentCalls}` or `{ok:false, error}`), and
+  `/validate`; returns `{ok, meta, estimatedAgentCalls}` or `{ok:false, error}`),
+  `save_workflow_script` (creates or updates a workspace-scoped saved script), and
   `get_workflow_script_spec` (returns the embedded platform-dialect guide, kept in sync with
-  `docs/dynamic-script-authoring-guide.md`). Recursion guard: `ensure-for-workflow` stamps
-  `X-Wfb-Script-Depth: 1` on workflow-mcp-server MCP entries of script-spawned sessions → all
-  three tools are suppressed there.
+  `docs/dynamic-script-authoring-guide.md`). Recursion guard: the BFF signs `scriptDepth: 1`
+  into the session capability for script-spawned sessions; the MCP server ignores caller-controlled
+  depth headers and suppresses all four tools when the verified depth is positive.
 - **Agent-native `Workflow` tool** (dapr-agent-py, `src/tools/workflow_script/`): the Claude Code
   Workflow-tool mirror — any dapr-agent-py agent (interactive/goal/SW-node) can author + run a
   dynamic-script workflow and digest its returnValue as the tool result, in one durable turn.

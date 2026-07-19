@@ -95,9 +95,7 @@ function stampAgentBrowserRunHeaders(
 					([name]) => name.toLowerCase() !== "x-wfb-target-auth",
 				),
 			),
-			...(ctx.executionId
-				? { "X-Wfb-Execution-Id": ctx.executionId }
-				: {}),
+      ...(ctx.executionId ? { "X-Wfb-Execution-Id": ctx.executionId } : {}),
 			...(ctx.workflowId ? { "X-Wfb-Workflow-Id": ctx.workflowId } : {}),
 			...(ctx.nodeId ? { "X-Wfb-Node-Id": ctx.nodeId } : {}),
 			...(typeof targetHost === "string" && targetAccessToken
@@ -137,6 +135,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		sessionCommands,
 		promptStackCompiler,
 		workflowTargetAuth,
+    workflowMcpSessionTokenSigner,
 	} = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
@@ -400,7 +399,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		// opts.agent accepts a project agent SLUG or an agent ID (evals pin ids;
 		// authors write slugs). Slug first, then id — both fail closed.
-		const resolvedBySlug = await getApplicationAdapters().teamStore.resolveAgentIdBySlug(
+    const resolvedBySlug =
+      await getApplicationAdapters().teamStore.resolveAgentIdBySlug(
 			projectId,
 			resolveAgentSlugRaw,
 		);
@@ -449,7 +449,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				version: effectiveAgentVersion ?? undefined,
 			});
 			if (dbAgent?.config) {
-				const flattened = await getApplicationAdapters().capabilityBundles.flattenBundles(
+        const flattened =
+          await getApplicationAdapters().capabilityBundles.flattenBundles(
 					dbAgent.config,
 					dbAgent.projectId ?? projectId,
 				);
@@ -541,8 +542,30 @@ export const POST: RequestHandler = async ({ request }) => {
 	const spawningWorkflow = await getApplicationAdapters()
 		.workflowData.getWorkflowByRef({ workflowId, lookup: "id" })
 		.catch(() => null);
-	const isDynamicScriptSpawn = spawningWorkflow?.engineType === "dynamic-script";
+  const isDynamicScriptSpawn =
+    spawningWorkflow?.engineType === "dynamic-script";
 	const isCliRuntime = swapTarget?.capabilities?.interactiveTerminal === true;
+  const workflowMcpSessionToken = (() => {
+    if (!projectId) return null;
+    try {
+      return workflowMcpSessionTokenSigner.sign({
+        userId,
+        projectId,
+        sessionId,
+        capabilities: {
+          scriptDepth: isDynamicScriptSpawn ? 1 : 0,
+          teamId: null,
+          teamRole: "none",
+        },
+      });
+    } catch (err) {
+      console.warn(
+        `[ensure-for-workflow] workflow MCP session token unavailable for ${sessionId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    }
+  })();
 	// Auto-wire the platform goal MCP server (+ session header) only for non-CLI:
 	//   - evaluator-mode goal sessions (update_goal self-completion), and
 	//   - DYNAMIC-SCRIPT-spawned non-CLI sessions that rely on platform tools.
@@ -551,21 +574,22 @@ export const POST: RequestHandler = async ({ request }) => {
 	// tools such as StructuredOutput. Single-shot SW-1.0 runs also stay untouched.
 	const shouldAutoWireGoalMcp =
 		(evaluatorGoal || isDynamicScriptSpawn) && !isCliRuntime;
-	let dispatchAgentConfig: AgentConfig =
-		shouldAutoWireGoalMcp
-			? ({
+  const configuredMcpServers =
+    (baseDispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [];
+  let dispatchAgentConfig: AgentConfig = {
 					...baseDispatchAgentConfig,
 					mcpServers: stampGoalMcpSessionHeader(
-						ensureGoalMcpServer(
-							(baseDispatchAgentConfig as { mcpServers?: unknown[] })
-								.mcpServers ?? [],
+      shouldAutoWireGoalMcp
+        ? ensureGoalMcpServer(
+            configuredMcpServers,
 							swapTarget?.capabilities?.supportsMcp ?? false,
 							isCliRuntime,
-						),
+          )
+        : configuredMcpServers,
 						sessionId,
+      workflowMcpSessionToken,
 					),
-				} as AgentConfig)
-			: baseDispatchAgentConfig;
+  } as AgentConfig;
 	// Recursion guard: when the SPAWNING workflow is a dynamic-script, stamp the
 	// script-depth header on any explicitly configured workflow-mcp-server entries
 	// so the MCP server suppresses `run_workflow_script` — a script-spawned agent
@@ -742,8 +766,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			// .daprInstanceId) use. Both interactive-cli AND juicefs-shared
 			// (dapr-agent-py-juicefs) key on it so agents, the deterministic
 			// cliWorkspace spine, and the Files tab all land on one subtree.
-			sharedWorkspaceKey:
-				runtimeUsesSharedWorkspace(swapTarget?.capabilities)
+      sharedWorkspaceKey: runtimeUsesSharedWorkspace(swapTarget?.capabilities)
 					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
 			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
@@ -796,6 +819,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentHostStatus: reuseHost?.status ?? null,
 			childInput: buildChildInput({
 				sessionId: existing.id,
+        workflowMcpSessionToken,
 				agentConfig: executionDispatchAgentConfig,
 				instructionBundle,
 				environmentConfig,
@@ -929,8 +953,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		// cli_workspace_command helper use). Both interactive-cli and
 		// juicefs-shared resolve their workspaceRef to it — see the spawn site
 		// above for the full rationale.
-		sharedWorkspaceKey:
-			runtimeUsesSharedWorkspace(swapTarget?.capabilities)
+    sharedWorkspaceKey: runtimeUsesSharedWorkspace(swapTarget?.capabilities)
 				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
 		seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
@@ -1035,6 +1058,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentHostStatus: sessionHost?.status ?? null,
 		childInput: buildChildInput({
 			sessionId,
+      workflowMcpSessionToken,
 			agentConfig: executionDispatchAgentConfig,
 			instructionBundle,
 			environmentConfig,
@@ -1087,6 +1111,7 @@ function stampCliAdapterForDispatch(
  * user's connection; a per-user filter is a multi-tenant follow-up.) */
 function buildChildInput(params: {
 	sessionId: string;
+  workflowMcpSessionToken: string | null;
 	agentConfig: AgentConfig;
 	instructionBundle?: Record<string, unknown> | null;
 	environmentConfig: Record<string, unknown> | null;
@@ -1119,6 +1144,7 @@ function buildChildInput(params: {
 }): Record<string, unknown> {
 	return {
 		sessionId: params.sessionId,
+    workflowMcpSessionToken: params.workflowMcpSessionToken,
 		agentId: params.agentId ?? null,
 		agentVersion: params.agentVersion ?? null,
 		agentConfig: params.agentConfig,

@@ -722,6 +722,13 @@
       "when": 1784232180000,
       "tag": "0108_preview_source_promotion_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1784408400000,
+      "tag": "0109_api_key_workspace_scope",
+      "breakpoints": true
     }
   ]
 }

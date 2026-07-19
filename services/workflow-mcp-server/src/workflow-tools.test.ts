@@ -1,20 +1,58 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { WorkflowMcpPrincipal } from "./auth-context.js";
+import type { WorkflowPersistencePort } from "./ports/workflow-persistence.js";
 import { registerWorkflowTools } from "./workflow-tools.js";
 
+const principal: WorkflowMcpPrincipal = {
+  authMode: "workspace_api_key",
+  userId: "user-1",
+  projectId: "project-1",
+  scopes: [
+    "workflow:read",
+    "workflow:write",
+    "workflow:execute",
+    "agent:write",
+  ],
+  principalAssertion: "signed-principal-assertion",
+  capabilities: { scriptDepth: 0, teamId: null, teamRole: "none" },
+};
+
 function fakeServer() {
-	const captured: Array<{ name: string }> = [];
+  const captured: Array<{
+    name: string;
+    handler: (args?: unknown) => Promise<{
+      content: Array<{ type: "text"; text: string }>;
+      isError?: boolean;
+    }>;
+  }> = [];
 	const server = {
-		registerTool(name: string) {
-			captured.push({ name });
+    registerTool(name: string, _config: unknown, handler: never) {
+      captured.push({ name, handler });
 		},
 	};
 	return { server, captured };
 }
 
+function fakePersistence(
+  overrides: Partial<WorkflowPersistencePort> = {},
+): WorkflowPersistencePort {
+  return {
+    listWorkflows: vi.fn(async () => []),
+    findWorkflow: vi.fn(async () => null),
+    listAvailableActions: vi.fn(async () => []),
+    findExecution: vi.fn(async () => null),
+    listExecutionLogs: vi.fn(async () => []),
+    ...overrides,
+  };
+}
+
 describe("workflow tools registration", () => {
 	it("exposes only current workflow operational tools", () => {
 		const { server, captured } = fakeServer();
-		const tools = registerWorkflowTools(server as any);
+    const tools = registerWorkflowTools(server as any, {
+      persistence: fakePersistence(),
+      principal,
+    });
 		const names = tools.map((tool) => tool.name);
 
 		expect(captured.map((tool) => tool.name)).toEqual(names);
@@ -33,4 +71,74 @@ describe("workflow tools registration", () => {
 		expect(names).not.toContain("approve_workflow");
 		expect(names).not.toContain("get_workflow_observability");
 	});
+
+  it("registers only tools granted by the connection scopes", () => {
+    const { server, captured } = fakeServer();
+    registerWorkflowTools(server as any, {
+      persistence: fakePersistence(),
+      principal: { ...principal, scopes: ["workflow:read"] },
+    });
+
+    expect(captured.map((tool) => tool.name)).toEqual([
+      "list_workflows",
+      "get_workflow",
+      "list_available_actions",
+      "get_execution_status",
+      "get_execution_results",
+    ]);
+  });
+
+  it("registers no workflow data tools without a principal", () => {
+    const { server, captured } = fakeServer();
+    registerWorkflowTools(server as any, { persistence: fakePersistence() });
+    expect(captured).toEqual([]);
+  });
+
+  it("suppresses saved workflow execution for script-spawned sessions", () => {
+    const { server, captured } = fakeServer();
+    registerWorkflowTools(server as any, {
+      persistence: fakePersistence(),
+      principal: {
+        ...principal,
+        capabilities: {
+          ...principal.capabilities,
+          scriptDepth: 1,
+        },
+      },
+    });
+
+    expect(captured.map((tool) => tool.name)).not.toContain("execute_workflow");
+  });
+
+  it("queries workflows through the port with the authenticated project", async () => {
+    const listWorkflows = vi.fn(async () => [
+      {
+        id: "wf-1",
+        name: "Demo",
+        description: null,
+        visibility: "private",
+        engineType: "dynamic-script",
+        specVersion: "1.0",
+        created_at: "2026-07-18T00:00:00.000Z",
+        updated_at: "2026-07-18T00:00:00.000Z",
+        node_count: 0,
+        edge_count: 0,
+      },
+    ]);
+    const { server, captured } = fakeServer();
+    registerWorkflowTools(server as any, {
+      persistence: fakePersistence({ listWorkflows }),
+      principal,
+    });
+
+    const tool = captured.find(
+      (candidate) => candidate.name === "list_workflows",
+    );
+    const result = await tool?.handler({ limit: 7, summary: false });
+
+    expect(listWorkflows).toHaveBeenCalledWith("project-1", 7);
+    expect(JSON.parse(result?.content[0].text ?? "null")).toEqual([
+      expect.objectContaining({ id: "wf-1", name: "Demo" }),
+    ]);
+  });
 });

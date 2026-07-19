@@ -28,6 +28,7 @@ class CallableAgentsContext:
     registry_team: str | None = None
     parent_instance_id: str | None = None
     parent_session_id: str | None = None
+    workflow_mcp_session_token: str | None = None
 
 
 _contexts: dict[int, CallableAgentsContext] = {}
@@ -39,12 +40,14 @@ def set_callable_agents_context(
     registry_team: str | None,
     parent_instance_id: str | None,
     parent_session_id: str | None,
+    workflow_mcp_session_token: str | None = None,
 ) -> None:
     ctx = CallableAgentsContext(
         callable_agents=list(callable_agents or []),
         registry_team=registry_team,
         parent_instance_id=parent_instance_id,
         parent_session_id=parent_session_id,
+        workflow_mcp_session_token=workflow_mcp_session_token,
     )
     with _lock:
         _contexts[threading.get_ident()] = ctx

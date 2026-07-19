@@ -150,12 +150,12 @@ export const POST: RequestHandler = async ({ request }) => {
   try {
     let responseText: string;
 
-    if (anthropicKey) {
-      const model = env.ANTHROPIC_MODEL || "claude-opus-4-8";
-      responseText = await callAnthropic(enrichedPrompt, model, anthropicKey);
-    } else {
+    if (openaiAvailable) {
       const model = env.OPENAI_MODEL || "gpt-5.5";
       responseText = await callOpenAI(enrichedPrompt, model);
+    } else {
+      const model = env.ANTHROPIC_MODEL || "claude-opus-4-8";
+      responseText = await callAnthropic(enrichedPrompt, model, anthropicKey!);
     }
 
     const result = extractJson(responseText);

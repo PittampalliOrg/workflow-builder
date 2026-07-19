@@ -1,9 +1,12 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import { getTeamBudget } from "$lib/server/teams/team-budget";
 import { linkSessionToTeamRun } from "$lib/server/teams/team-run";
+import {
+  authorizeTeamActionRequest,
+  publicPeerSpawnProjection,
+} from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/revive
@@ -19,22 +22,28 @@ import { linkSessionToTeamRun } from "$lib/server/teams/team-run";
  * Only the team's lead may revive. Budget-gated like spawn.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		requestedBySessionId?: string;
 		name?: string;
 		prompt?: string;
 	};
-	if (!body.requestedBySessionId || !body.name) {
-		return error(400, "requestedBySessionId and name are required");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.requestedBySessionId,
+      requiredRole: "lead",
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  if (!body.name) {
+    return error(400, "name is required");
 	}
 	const store = getApplicationAdapters().teamStore;
 
 	const team = await store.getTeam(params.teamId);
 	if (!team) return error(404, "no such team");
-	if (team.lead_session_id !== body.requestedBySessionId) {
-		return error(403, "only the team lead can revive a teammate");
-	}
 
 	const member = await store.getMemberByName(params.teamId, body.name);
 	if (!member) return error(404, `no teammate '${body.name}' in this team`);
@@ -54,12 +63,19 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 
 	if (!member.agent_slug) {
-		return error(400, `teammate '${body.name}' has no recorded agent slug to respawn from`);
+    return error(
+      400,
+      `teammate '${body.name}' has no recorded agent slug to respawn from`,
+    );
 	}
 	const projectId = await store.getSessionProjectId(team.lead_session_id);
 	if (!projectId) return error(400, "lead session not found or has no project");
 	const agent = await store.resolveAgentIdBySlug(projectId, member.agent_slug);
-	if (!agent) return error(404, `agent '${member.agent_slug}' no longer exists in this project`);
+  if (!agent)
+    return error(
+      404,
+      `agent '${member.agent_slug}' no longer exists in this project`,
+    );
 
 	const priorSessionId = member.session_id;
 	// Generation suffix keeps the id deterministic-ish, unique, and ≤64 chars.
@@ -75,14 +91,19 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		.filter(Boolean)
 		.join("\n");
 
-	const spawn = await getApplicationAdapters().peerSessionSpawn.spawnPeerSession({
+  const spawn =
+    await getApplicationAdapters().peerSessionSpawn.spawnPeerSession(
+      {
 		sessionId: newSessionId,
 		peerAgentId: agent.id,
 		prompt: revivalPrompt,
-		parentSessionId: team.lead_session_id,
+        parentSessionId: authorization.principal.sessionId,
 		title: `teammate:${body.name}`,
 		provisionSandbox: true,
-	});
+      },
+      authorization.principal,
+      { kind: "team", teamId: params.teamId },
+    );
 	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
 
 	// Re-point the member identity at the fresh session, roll it up under the
@@ -92,7 +113,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		sessionId: newSessionId,
 		status: "working",
 	});
-	const execId = await store.getTeamExecutionId(params.teamId).catch(() => null);
+  const execId = await store
+    .getTeamExecutionId(params.teamId)
+    .catch(() => null);
 	if (execId) await linkSessionToTeamRun(newSessionId, execId).catch(() => {});
 
 	return json({
@@ -100,6 +123,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		name: body.name,
 		sessionId: newSessionId,
 		previousSessionId: priorSessionId,
-		spawn: spawn.body,
+    spawn: publicPeerSpawnProjection(spawn.body),
 	});
 };

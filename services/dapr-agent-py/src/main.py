@@ -241,6 +241,10 @@ from src.kimi_formulas import (
     execute_formula_tool,
     formula_uri_for_tool,
 )
+from src.workflow_mcp_credentials import (
+    WorkflowMcpCredentialCache,
+    workflow_mcp_token_refresh_due,
+)
 
 install_kimi_reasoning_state_schema()
 
@@ -1150,6 +1154,7 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
         "sandboxName",
         "cwd",
         "sessionId",
+        "workflowMcpSessionToken",
         "mlflowSessionId",
         "mlflowExperimentId",
         "mlflowTraceExperimentId",
@@ -1702,6 +1707,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._execution_id_by_instance: dict[str, str] = {}
         self._openshell_context_by_instance: dict[str, dict[str, Any]] = {}
         self._agent_context_by_instance: dict[str, dict[str, Any]] = {}
+        self._workflow_mcp_credentials = WorkflowMcpCredentialCache()
         self._agent_context_lock = threading.RLock()
         self._runtime_config_by_instance: dict[str, dict[str, Any]] = {}
         self._runtime_config_by_session: dict[str, dict[str, Any]] = {}
@@ -2242,6 +2248,11 @@ class OpenShellDurableAgent(DurableAgent):
         if not instance_id:
             return {}
         clean = _clean_runtime_context(context)
+        if "workflowMcpSessionToken" in context:
+            self._workflow_mcp_credentials.remember(
+                instance_id,
+                clean.get("workflowMcpSessionToken"),
+            )
         sandbox_context = {
             "sandboxName": clean.get("sandboxName"),
             "cwd": clean.get("cwd") or DEFAULT_CWD,
@@ -4778,6 +4789,10 @@ class OpenShellDurableAgent(DurableAgent):
                 registry_team=registry_team,
                 parent_instance_id=instance_id,
                 parent_session_id=session_id_raw or None,
+                workflow_mcp_session_token=str(
+                    message.get("workflowMcpSessionToken") or ""
+                ).strip()
+                or None,
             )
             if callable_agents and not ctx.is_replaying:
                 logger.info(
@@ -4990,6 +5005,7 @@ class OpenShellDurableAgent(DurableAgent):
             "sandboxName": sandbox_name or None,
             "cwd": effective_cwd,
             "sessionId": session_id_raw or None,
+            "workflowMcpSessionToken": message.get("workflowMcpSessionToken"),
             "workspaceRef": workspace_ref or None,
             "llmComponent": llm_component,
             "modelSpec": effective_fields.get("modelSpec"),
@@ -5523,6 +5539,9 @@ class OpenShellDurableAgent(DurableAgent):
             "session_workflow",
             input={
                 "sessionId": session_id,
+                "workflowMcpSessionToken": row.get(
+                    "workflowMcpSessionToken"
+                ),
                 "agentId": row.get("agentId") or message.get("peerAgentId"),
                 "agentVersion": row.get("agentVersion"),
                 "agentSlug": message.get("peerSlug"),
@@ -5582,6 +5601,16 @@ class OpenShellDurableAgent(DurableAgent):
             raise RuntimeError(
                 "INTERNAL_API_TOKEN not configured on dapr-agent-py"
             )
+        parent_instance = str(payload.get("parentInstanceId") or "").strip()
+        parent_session_id = (
+            str(payload.get("parentSessionId") or "").strip()
+            or self._workflow_tool_session_id(parent_instance)
+        )
+        session_token = self._workflow_tool_session_token(parent_instance)
+        if not parent_session_id:
+            raise RuntimeError(
+                "create_peer_session_row requires Workflow Builder session lineage"
+            )
         app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
         dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
         url = (
@@ -5592,18 +5621,22 @@ class OpenShellDurableAgent(DurableAgent):
             "sessionId": session_id,
             "peerAgentId": peer_agent_id,
             "prompt": payload.get("prompt") or "",
-            "parentSessionId": payload.get("parentSessionId"),
+            "parentSessionId": parent_session_id,
             "parentInstanceId": payload.get("parentInstanceId"),
             "title": payload.get("title"),
             "skipSpawn": True,
         }
+        headers = {
+            "Content-Type": "application/json",
+            "X-Internal-Token": token,
+            "X-Wfb-Session-Id": parent_session_id,
+        }
+        if session_token:
+            headers["X-Wfb-Session-Token"] = session_token
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Internal-Token": token,
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -5684,7 +5717,10 @@ class OpenShellDurableAgent(DurableAgent):
             try:
                 poll = yield ctx.call_activity(
                     self._activity_name(self.poll_script_execution),
-                    input={"executionId": execution_id},
+                    input={
+                        "executionId": execution_id,
+                        "parentInstanceId": message.get("parentInstanceId"),
+                    },
                     retry_policy=self._retry_policy,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -5727,6 +5763,148 @@ class OpenShellDurableAgent(DurableAgent):
                 }
             yield ctx.create_timer(timedelta(seconds=poll_seconds))
 
+    def _workflow_tool_session_id(self, parent_instance: str) -> str:
+        """Resolve the Workflow Builder session that owns a Workflow tool call."""
+        context = self._runtime_context_for_instance(parent_instance)
+        session_id = (
+            str(context.get("sessionId") or "").strip()
+            or self._session_id_by_instance.get(parent_instance)
+            or ""
+        )
+        if not session_id and parent_instance:
+            # Interactive sessions: instance id IS the session id (turn
+            # suffixes stripped by the candidate-id helper).
+            candidates = _runtime_context_candidate_ids(parent_instance)
+            session_id = candidates[0] if candidates else parent_instance
+        return session_id
+
+    def _workflow_tool_session_token(self, parent_instance: str) -> str:
+        """Read the BFF-signed platform credential from the persisted MCP config.
+
+        The dedicated runtime context field is the primary cross-replica source.
+        Persisted MCP configs remain a compatibility fallback for sessions minted
+        during the staged credential rollout.
+        """
+        candidate_ids = _runtime_context_candidate_ids(parent_instance)
+        if parent_instance and parent_instance not in candidate_ids:
+            candidate_ids.insert(0, parent_instance)
+        runtime_token = self._workflow_mcp_credentials.lookup(candidate_ids)
+        if runtime_token:
+            return self._refresh_workflow_tool_session_token(
+                parent_instance, runtime_token
+            )
+        # A pod can have a stale, non-secret in-memory audit context while a newer
+        # replica has already persisted the signed credential. Read the private
+        # runtime-context state directly on a credential-cache miss instead of
+        # letting _runtime_context_for_instance short-circuit on that stale cache.
+        for candidate_id in candidate_ids:
+            state_value = _read_agent_state_key(
+                _runtime_context_state_key(candidate_id)
+            )
+            if isinstance(state_value, dict) and state_value.get(
+                "workflowMcpSessionToken"
+            ):
+                self._remember_runtime_context(candidate_id, state_value)
+                if candidate_id != parent_instance:
+                    self._remember_runtime_context(parent_instance, state_value)
+                break
+        runtime_token = self._workflow_mcp_credentials.lookup(candidate_ids)
+        if runtime_token:
+            return self._refresh_workflow_tool_session_token(
+                parent_instance, runtime_token
+            )
+        for candidate_id in candidate_ids:
+            configs = self._mcp_configs_by_instance.get(candidate_id) or {}
+            if not configs:
+                self._load_mcp_configs_for_instance(candidate_id)
+                configs = self._mcp_configs_by_instance.get(candidate_id) or {}
+            for config in configs.values():
+                if not isinstance(config, dict):
+                    continue
+                headers = config.get("headers")
+                if not isinstance(headers, dict):
+                    continue
+                for key, value in headers.items():
+                    if str(key).lower() == "x-wfb-session-token":
+                        return self._refresh_workflow_tool_session_token(
+                            parent_instance, str(value or "").strip()
+                        )
+        return ""
+
+    def _refresh_workflow_tool_session_token(
+        self,
+        parent_instance: str,
+        token: str,
+    ) -> str:
+        """Renew a near-expiry token through the BFF and persist it privately."""
+        if not token or not workflow_mcp_token_refresh_due(token):
+            return token
+        session_id = self._workflow_tool_session_id(parent_instance)
+        internal_token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+        if not session_id or not internal_token:
+            return token
+
+        import urllib.request
+
+        base_url = os.environ.get(
+            "WORKFLOW_BUILDER_URL",
+            "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+        ).rstrip("/")
+        request = urllib.request.Request(
+            f"{base_url}/api/internal/auth/workflow-mcp-session/refresh",
+            headers={
+                "X-Internal-Token": internal_token,
+                "X-Wfb-Session-Id": session_id,
+                "X-Wfb-Session-Token": token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = json.loads(
+                    response.read().decode("utf-8", errors="replace")
+                )
+            refreshed = str(body.get("workflowMcpSessionToken") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[workflow-mcp-auth] session token refresh failed for %s: %s",
+                session_id,
+                exc,
+            )
+            return token
+        if not refreshed:
+            return token
+
+        candidates = _runtime_context_candidate_ids(parent_instance)
+        if parent_instance and parent_instance not in candidates:
+            candidates.insert(0, parent_instance)
+        for candidate_id in candidates:
+            self._workflow_mcp_credentials.remember(candidate_id, refreshed)
+            state_value = _read_agent_state_key(
+                _runtime_context_state_key(candidate_id)
+            )
+            context = dict(state_value) if isinstance(state_value, dict) else {}
+            context["workflowMcpSessionToken"] = refreshed
+            clean = self._remember_runtime_context(candidate_id, context)
+            try:
+                _save_agent_state_key(_runtime_context_state_key(candidate_id), clean)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[workflow-mcp-auth] failed to persist refreshed token for %s: %s",
+                    candidate_id,
+                    exc,
+                )
+            for config in (self._mcp_configs_by_instance.get(candidate_id) or {}).values():
+                if not isinstance(config, dict):
+                    continue
+                headers = config.get("headers")
+                if not isinstance(headers, dict):
+                    continue
+                for key in list(headers):
+                    if str(key).lower() == "x-wfb-session-token":
+                        headers[key] = refreshed
+        return refreshed
+
     def start_script_execution(self, ctx, payload: dict) -> dict:
         """Activity: start the dynamic-script execution through the BFF's
         internal route, idempotent by the caller-supplied executionId (a
@@ -5750,17 +5928,12 @@ class OpenShellDurableAgent(DurableAgent):
         # resolves the owner from X-Wfb-Session-Id. The session id comes from
         # the parent agent instance's runtime context (state-store backed).
         parent_instance = str(payload.get("parentInstanceId") or "")
-        context = self._runtime_context_for_instance(parent_instance)
-        session_id = (
-            str(context.get("sessionId") or "").strip()
-            or self._session_id_by_instance.get(parent_instance)
-            or ""
-        )
-        if not session_id and parent_instance:
-            # Interactive sessions: instance id IS the session id (turn
-            # suffixes stripped by the candidate-id helper).
-            candidates = _runtime_context_candidate_ids(parent_instance)
-            session_id = candidates[0] if candidates else parent_instance
+        session_id = self._workflow_tool_session_id(parent_instance)
+        session_token = self._workflow_tool_session_token(parent_instance)
+        if not session_id:
+            raise RuntimeError(
+                "start_script_execution requires Workflow Builder session lineage"
+            )
 
         # Direct cluster-DNS HTTP to the BFF — the transport every sandbox pod
         # already exercises each turn (event_publisher session-ingest). Dapr
@@ -5776,8 +5949,12 @@ class OpenShellDurableAgent(DurableAgent):
             "Content-Type": "application/json",
             "X-Internal-Token": token,
         }
-        if session_id:
-            headers["X-Wfb-Session-Id"] = session_id
+        headers["X-Wfb-Session-Id"] = session_id
+        # A token is mandatory at workflow-mcp-server. This direct BFF call may
+        # temporarily omit it only while the BFF's bounded legacy-resource
+        # compatibility policy is enabled during the rollout.
+        if session_token:
+            headers["X-Wfb-Session-Token"] = session_token
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -5827,6 +6004,9 @@ class OpenShellDurableAgent(DurableAgent):
         token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
         if not token:
             raise RuntimeError("INTERNAL_API_TOKEN not configured on dapr-agent-py")
+        parent_instance = str(payload.get("parentInstanceId") or "")
+        session_id = self._workflow_tool_session_id(parent_instance)
+        session_token = self._workflow_tool_session_token(parent_instance)
         # Direct HTTP (see start_script_execution — sandbox→BFF service-invoke
         # is not reliable; the session-ingest transport is).
         base_url = os.environ.get(
@@ -5837,9 +6017,14 @@ class OpenShellDurableAgent(DurableAgent):
             f"{base_url}/api/internal/agent/workflows/executions/"
             f"{execution_id}/status"
         )
+        headers = {"X-Internal-Token": token}
+        if session_id:
+            headers["X-Wfb-Session-Id"] = session_id
+        if session_token:
+            headers["X-Wfb-Session-Token"] = session_token
         req = urllib.request.Request(
             url,
-            headers={"X-Internal-Token": token},
+            headers=headers,
             method="GET",
         )
         try:
@@ -6429,6 +6614,9 @@ class OpenShellDurableAgent(DurableAgent):
                 "sandboxName": child_input.get("sandboxName") or None,
                 "cwd": child_input.get("cwd") or DEFAULT_CWD,
                 "sessionId": session_id,
+                "workflowMcpSessionToken": child_input.get(
+                    "workflowMcpSessionToken"
+                ),
                 "mlflowSessionId": child_mlflow_session_id or session_id,
                 "mlflowExperimentId": child_mlflow_context.get("experimentId"),
                 "mlflowTraceExperimentId": child_mlflow_context.get(
@@ -6792,6 +6980,7 @@ def _freeze_session_child_input(
         "task": task,
         "prompt": task,
         "sessionId": session_id,
+        "workflowMcpSessionToken": raw_message.get("workflowMcpSessionToken"),
         "mlflowSessionId": mlflow_session_id or session_id,
         "turnId": turn_id or child_instance_id,
         "workflowInstanceId": child_instance_id,

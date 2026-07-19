@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  ApiKeyRecord,
 	ApiKeyStore,
 	AdminPieceRepository,
 	AppConnectionRepository,
@@ -79,7 +80,9 @@ import type { RuntimeConfigCloudEvent } from "$lib/server/sessions/runtime-confi
 import { createDefaultAgentConfig, type AgentConfig } from "$lib/types/agents";
 import type { SessionDetail } from "$lib/types/sessions";
 
-const dynamicPrivateEnv = vi.hoisted(() => ({} as Record<string, string | undefined>));
+const dynamicPrivateEnv = vi.hoisted(
+  () => ({}) as Record<string, string | undefined>,
+);
 
 vi.mock("$lib/server/security/encryption", () => ({
 	encryptString: (plaintext: string) => ({
@@ -91,10 +94,14 @@ vi.mock("$lib/server/security/encryption", () => ({
 		data: `encrypted:${JSON.stringify(value)}`,
 	}),
 	decryptString: (value: { data: string }) =>
-		value.data.startsWith("encrypted:") ? value.data.slice("encrypted:".length) : value.data,
+    value.data.startsWith("encrypted:")
+      ? value.data.slice("encrypted:".length)
+      : value.data,
 	decryptObject: (value: { data: string }) =>
 		JSON.parse(
-			value.data.startsWith("encrypted:") ? value.data.slice("encrypted:".length) : value.data,
+      value.data.startsWith("encrypted:")
+        ? value.data.slice("encrypted:".length)
+        : value.data,
 	),
 }));
 
@@ -196,16 +203,19 @@ function fakeApiKeys(): ApiKeyStore {
 	return {
 		getByKeyHash: vi.fn(async () => null),
 		markUsed: vi.fn(async () => undefined),
-		listByUserId: vi.fn(async () => []),
-		createUserApiKey: vi.fn(async (input) => ({
+    listVisibleInProject: vi.fn(async () => []),
+    createProjectApiKey: vi.fn(async (input) => ({
 			id: input.id,
 			name: input.name,
 			keyPrefix: input.keyPrefix,
+      projectId: input.projectId,
+      createdByUserId: input.createdByUserId,
+      scopes: input.scopes,
 			createdAt: new Date("2026-01-01T00:00:00.000Z"),
 			lastUsedAt: null,
 		})),
-		deleteForUser: vi.fn(async () => false),
-		updateSecretForUser: vi.fn(async () => null),
+    deleteForProject: vi.fn(async () => false),
+    updateSecretForProject: vi.fn(async () => null),
 	};
 }
 
@@ -227,7 +237,9 @@ function fakeSettings(): SettingsRepository {
 		getSettingsUserProfile: vi.fn(async () => null),
 		listPlatformOAuthApps: vi.fn(async () => []),
 		listOAuthPieces: vi.fn(async () => []),
-		resolvePlatformId: vi.fn(async (sessionPlatformId) => sessionPlatformId ?? "platform-1"),
+    resolvePlatformId: vi.fn(
+      async (sessionPlatformId) => sessionPlatformId ?? "platform-1",
+    ),
 		savePlatformOAuthApp: vi.fn(async (input) => ({
 			id: input.id ?? "oauth-app-1",
 			platformId: input.platformId ?? "platform-1",
@@ -240,7 +252,9 @@ function fakeSettings(): SettingsRepository {
 	};
 }
 
-function mcpConnection(overrides: Partial<McpConnectionRecord> = {}): McpConnectionRecord {
+function mcpConnection(
+  overrides: Partial<McpConnectionRecord> = {},
+): McpConnectionRecord {
 	return {
 		id: "mcp-1",
 		projectId: "project-1",
@@ -445,7 +459,10 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		listStaleRunningExecutions: vi.fn(async () => []),
 		updateReadModel: vi.fn(async () => undefined),
 		appendLog: vi.fn(async () => executionLog),
-		updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
+    updateLog: vi.fn(async () => ({
+      ...executionLog,
+      status: "success" as const,
+    })),
 		listLogsByExecutionId: vi.fn(async () => [executionLog]),
 		listLogsByWorkflowSince: vi.fn(async () => [executionLog]),
 		listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
@@ -509,7 +526,10 @@ function fakeWorkflowFiles(): WorkflowFileStore {
 		listFiles: vi.fn(async () => [file]),
 		listFilesByScopePrefix: vi.fn(async () => [file]),
 		getFile: vi.fn(async () => file),
-		getFileContent: vi.fn(async () => ({ summary: file, bytes: Buffer.from("payload") })),
+    getFileContent: vi.fn(async () => ({
+      summary: file,
+      bytes: Buffer.from("payload"),
+    })),
 		archiveFile: vi.fn(async () => true),
 		deleteFile: vi.fn(async () => true),
 	};
@@ -684,6 +704,7 @@ function fakeSessions(): SessionRepository {
 			vaultIds: ["vault-1"],
 			daprInstanceId: null,
 			natsSubject: null,
+      parentExecutionId: input.parentExecutionId,
 		})),
 		findSessionIdByDaprInstanceId: vi.fn(async () => "session-1"),
 		resolveSessionIdForProvisioningEvent: vi.fn(async () => "session-1"),
@@ -992,8 +1013,7 @@ function fakePreviewDevSessionAgentResolver(
 				runtime: overrides.rowRuntime ?? "dapr-agent-py-juicefs",
 				config: {
 					...agent.config,
-					runtime:
-						overrides.config?.runtime ?? "dapr-agent-py-juicefs",
+          runtime: overrides.config?.runtime ?? "dapr-agent-py-juicefs",
 					modelSpec: overrides.config?.modelSpec ?? "deepseek-v4-pro",
 				},
 			};
@@ -1106,6 +1126,7 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const createdAt = new Date("2026-01-01T00:00:00.000Z");
 	const updatedAt = new Date("2026-01-01T00:00:00.000Z");
 	return {
+    hasActiveProjectMembership: vi.fn(async () => true),
 		getMemberProjectId: vi.fn(async () => "project-1"),
 		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
 		listWorkspaceMemberships: vi.fn(async () => [
@@ -1140,7 +1161,10 @@ function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 				createdAt,
 			},
 		]),
-		findPlatformUserForProject: vi.fn(async () => ({ ok: true as const, userId: "user-2" })),
+    findPlatformUserForProject: vi.fn(async () => ({
+      ok: true as const,
+      userId: "user-2",
+    })),
 		getProjectMember: vi.fn(async () => ({
 			id: "member-1",
 			projectId: "project-1",
@@ -1400,7 +1424,9 @@ function fakeBenchmarkRunReads(): BenchmarkRunReadRepository {
 					updatedAt: "2026-07-02T01:05:00.000Z",
 				},
 			];
-			return input.tag ? runs.filter((run) => run.tags.includes(input.tag!)) : runs;
+      return input.tag
+        ? runs.filter((run) => run.tags.includes(input.tag!))
+        : runs;
 		}),
 		loadCompareData: vi.fn<BenchmarkRunReadRepository["loadCompareData"]>(
 			async (input) => ({
@@ -1442,7 +1468,10 @@ function fakeBenchmarkRunReads(): BenchmarkRunReadRepository {
 				maxTurns: { differs: false, values: [null, null] },
 				concurrency: { differs: false, values: [1, 1] },
 				evaluationConcurrency: { differs: false, values: [1, 1] },
-				evaluatorResourceClass: { differs: false, values: ["standard", "standard"] },
+          evaluatorResourceClass: {
+            differs: false,
+            values: ["standard", "standard"],
+          },
 			},
 			grid: {
 				[input.runIds[0] ?? "run-1"]: {
@@ -1599,6 +1628,7 @@ function makeService(options: {
 	const workflowDefinitions = {
 		getById: vi.fn(async () => options.byId ?? null),
 		getLatestByName: vi.fn(async () => options.byName ?? null),
+    getLatestByNameInProject: vi.fn(async () => options.byName ?? null),
 		getByRef: vi.fn(async () => null),
 		list: vi.fn(async () => []),
 		listForWorkspace: vi.fn(async () => []),
@@ -1611,7 +1641,8 @@ function makeService(options: {
 		delete: vi.fn(async () => undefined),
 	} satisfies WorkflowDefinitionRepository;
 	const workflowTriggers = fakeWorkflowTriggers();
-	const workflowExecutions = (options.workflowExecutions ?? {}) as WorkflowExecutionRepository;
+  const workflowExecutions = (options.workflowExecutions ??
+    {}) as WorkflowExecutionRepository;
 
 	const service = new ApplicationWorkflowDataService({
 		workflowDefinitions,
@@ -1777,7 +1808,9 @@ function makeServiceWithHostedMcp(
 	});
 }
 
-function makeServiceWithWorkspaceProjects(workspaceProjects: WorkspaceProjectRepository) {
+function makeServiceWithWorkspaceProjects(
+  workspaceProjects: WorkspaceProjectRepository,
+) {
 	return new ApplicationWorkflowDataService({
 		workflowDefinitions: makeService({}).workflowDefinitions,
 		workflowTriggers: fakeWorkflowTriggers(),
@@ -1802,7 +1835,9 @@ function makeServiceWithWorkspaceProjects(workspaceProjects: WorkspaceProjectRep
 	});
 }
 
-function makeServiceWithUsageReporting(usageReporting: UsageReportingRepository) {
+function makeServiceWithUsageReporting(
+  usageReporting: UsageReportingRepository,
+) {
 	return new ApplicationWorkflowDataService({
 		workflowDefinitions: makeService({}).workflowDefinitions,
 		workflowTriggers: fakeWorkflowTriggers(),
@@ -2017,7 +2052,9 @@ describe("ApplicationWorkflowDataService", () => {
 	});
 
 	it("loads a workflow only when it is visible in the caller's active project", async () => {
-		const { service, workflowDefinitions } = makeService({ byId: baseWorkflow });
+    const { service, workflowDefinitions } = makeService({
+      byId: baseWorkflow,
+    });
 
 		await expect(
 			service.getScopedWorkflowById({
@@ -2040,6 +2077,24 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBeNull();
 	});
+
+  it("resolves same-name workflows inside the caller's active project", async () => {
+    const { service, workflowDefinitions } = makeService({
+      byName: baseWorkflow,
+    });
+
+    await expect(
+      service.getScopedWorkflowByName({
+        workflowName: " example ",
+        userId: "user-1",
+        projectId: "project-1",
+      }),
+    ).resolves.toEqual(baseWorkflow);
+    expect(workflowDefinitions.getLatestByNameInProject).toHaveBeenCalledWith(
+      "example",
+      "project-1",
+    );
+  });
 
 	it("delegates workflow definition commands to the workflow definition port", async () => {
 		const { service, workflowDefinitions } = makeService({
@@ -2072,7 +2127,9 @@ describe("ApplicationWorkflowDataService", () => {
 			limit: 50,
 			projectId: "project-1",
 		});
-		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenCalledWith({
+    expect(
+      workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
+    ).toHaveBeenCalledWith({
 			projectId: "project-1",
 			workflowId: "preview-ui-development-gan",
 			namePrefix: "Preview UI development GAN%",
@@ -2085,7 +2142,9 @@ describe("ApplicationWorkflowDataService", () => {
 			nodes: [],
 			edges: [],
 		});
-		expect(workflowDefinitions.hasActiveExecutions).toHaveBeenCalledWith("wf-id");
+    expect(workflowDefinitions.hasActiveExecutions).toHaveBeenCalledWith(
+      "wf-id",
+    );
 		expect(workflowDefinitions.delete).toHaveBeenCalledWith("wf-id");
 	});
 
@@ -2109,7 +2168,9 @@ describe("ApplicationWorkflowDataService", () => {
 		};
 		vi.mocked(workflowTriggers.getById).mockResolvedValueOnce(trigger);
 
-		await expect(service.getWorkflowTriggerById("trigger-1")).resolves.toEqual(trigger);
+    await expect(service.getWorkflowTriggerById("trigger-1")).resolves.toEqual(
+      trigger,
+    );
 		const firedAt = new Date("2026-02-01T00:00:00.000Z");
 		await service.markWorkflowTriggerFired({ triggerId: "trigger-1", firedAt });
 
@@ -2127,7 +2188,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const { service } = makeService({ workflowExecutions });
 
 		await expect(
-			service.countActiveTriggeredWorkflowRuns({ statuses: ["pending", "running"] }),
+      service.countActiveTriggeredWorkflowRuns({
+        statuses: ["pending", "running"],
+      }),
 		).resolves.toBe(7);
 		expect(workflowExecutions.countActiveTriggeredRuns).toHaveBeenCalledWith({
 			statuses: ["pending", "running"],
@@ -2219,10 +2282,12 @@ describe("ApplicationWorkflowDataService", () => {
 		} satisfies PieceExecutionRepository;
 		const { service } = makeService({ byId: baseWorkflow, pieceExecutions });
 
-		await expect(service.getPieceExecutionByIdempotencyKey("wf:exec:task")).resolves.toEqual(
-			pieceExecution,
+    await expect(
+      service.getPieceExecutionByIdempotencyKey("wf:exec:task"),
+    ).resolves.toEqual(pieceExecution);
+    expect(pieceExecutions.getByIdempotencyKey).toHaveBeenCalledWith(
+      "wf:exec:task",
 		);
-		expect(pieceExecutions.getByIdempotencyKey).toHaveBeenCalledWith("wf:exec:task");
 	});
 
 	it("ingests session events through session and checkpoint ports", async () => {
@@ -2274,11 +2339,15 @@ describe("ApplicationWorkflowDataService", () => {
 			stopReason: { type: "terminated", event_ids: ["event-a"] },
 			markCompleted: true,
 		});
-		expect(sessionTraceLifecycle.patchInteractiveSessionTraces).toHaveBeenCalledWith({
+    expect(
+      sessionTraceLifecycle.patchInteractiveSessionTraces,
+    ).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			status: "OK",
 		});
-		expect(sessions.getSessionWorkflowContext).toHaveBeenCalledWith("session-1");
+    expect(sessions.getSessionWorkflowContext).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(codeCheckpoints.persistFromAgentEvent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				workflowExecutionId: "exec-1",
@@ -2289,7 +2358,9 @@ describe("ApplicationWorkflowDataService", () => {
 				payload: expect.objectContaining({ remoteError: "push failed" }),
 			}),
 		);
-		expect(evaluationArtifacts.recordCodeCheckpointWarning).toHaveBeenCalledWith({
+    expect(
+      evaluationArtifacts.recordCodeCheckpointWarning,
+    ).toHaveBeenCalledWith({
 			workflowExecutionId: "exec-1",
 			sourceEventId: "agent-event-1",
 			checkpoint: {
@@ -2306,7 +2377,11 @@ describe("ApplicationWorkflowDataService", () => {
 		const sessions = fakeSessions();
 		const sessionEvents = fakeSessionEvents();
 		const sessionTraceLifecycle = fakeSessionTraceLifecycle();
-		const { service } = makeService({ sessions, sessionEvents, sessionTraceLifecycle });
+    const { service } = makeService({
+      sessions,
+      sessionEvents,
+      sessionTraceLifecycle,
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2332,13 +2407,13 @@ describe("ApplicationWorkflowDataService", () => {
 		// `error` is on the whitelist → PRESERVED (not coerced to end_turn), so the
 		// failed row's stopReason stays distinct and no consumer of the normalized
 		// value (e.g. the goal loop) mistakes a failed turn for a normal end_turn.
-		expect(
-			sessions.updateSessionStatusUnlessTerminated,
-		).toHaveBeenCalledWith(
+    expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
 			expect.objectContaining({ stopReason: { type: "error" } }),
 		);
 		// Interactive traces flip to ERROR (mirrors the terminated branch's OK patch).
-		expect(sessionTraceLifecycle.patchInteractiveSessionTraces).toHaveBeenCalledWith({
+    expect(
+      sessionTraceLifecycle.patchInteractiveSessionTraces,
+    ).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			status: "ERROR",
 		});
@@ -2346,7 +2421,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("falls back to data.reason then data.message for the errored errorMessage", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2354,7 +2432,10 @@ describe("ApplicationWorkflowDataService", () => {
 			data: { reason: "sync_timeout" },
 		});
 		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
-			expect.objectContaining({ status: "failed", errorMessage: "sync_timeout" }),
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: "sync_timeout",
+      }),
 		);
 
 		await service.ingestSessionEvent({
@@ -2362,7 +2443,9 @@ describe("ApplicationWorkflowDataService", () => {
 			type: "session.status_errored",
 			data: { message: "no stop_reason or reason" },
 		});
-		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenLastCalledWith(
+    expect(
+      sessions.updateSessionStatusUnlessTerminated,
+    ).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				status: "failed",
 				errorMessage: "no stop_reason or reason",
@@ -2372,7 +2455,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("preserves a crashed stop reason through normalization (whitelist)", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2418,7 +2504,10 @@ describe("ApplicationWorkflowDataService", () => {
 		// it back to running (only `terminated` sticks). The service routes both
 		// through updateSessionStatusUnlessTerminated so the DB guard allows it.
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2435,7 +2524,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("bumps last_event_at for every ingested event, including heartbeats", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		// A heartbeat carries no status transition, but must still refresh the
 		// liveness stamp so the reconciler can tell quiet-but-alive from dead.
@@ -2459,7 +2551,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("SETs pending_input on a blocked idle with the kind derived from the reason", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2497,7 +2592,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("SETs pending_input on a permission request (hook.decision ask) + ADK confirmation", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2516,7 +2614,9 @@ describe("ApplicationWorkflowDataService", () => {
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
 			type: "adk.tool_confirmation_request",
-			data: { requested_tool_confirmations: { "call-42": { toolName: "delete" } } },
+      data: {
+        requested_tool_confirmations: { "call-42": { toolName: "delete" } },
+      },
 		});
 		expect(sessions.setSessionPendingInput).toHaveBeenLastCalledWith(
 			"session-1",
@@ -2526,7 +2626,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("does NOT set pending_input on a non-'ask' hook.decision", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2541,21 +2644,36 @@ describe("ApplicationWorkflowDataService", () => {
 			{ type: "session.status_running", data: {} },
 			{ type: "session.status_terminated", data: {} },
 			{ type: "session.status_errored", data: {} },
-			{ type: "user.message", data: { content: [{ type: "text", text: "yes" }] } },
-			{ type: "user.tool_confirmation", data: { tool_use_id: "t1", result: "allow" } },
+      {
+        type: "user.message",
+        data: { content: [{ type: "text", text: "yes" }] },
+      },
+      {
+        type: "user.tool_confirmation",
+        data: { tool_use_id: "t1", result: "allow" },
+      },
 			{ type: "user.custom_tool_result", data: { tool_use_id: "t1" } },
 			{ type: "user.interrupt", data: {} },
 		]) {
 			const sessions = fakeSessions();
-			const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+      const { service } = makeService({
+        sessions,
+        sessionEvents: fakeSessionEvents(),
+      });
 			await service.ingestSessionEvent({ sessionId: "session-1", ...event });
-			expect(sessions.setSessionPendingInput).toHaveBeenCalledWith("session-1", null);
+      expect(sessions.setSessionPendingInput).toHaveBeenCalledWith(
+        "session-1",
+        null,
+      );
 		}
 	});
 
 	it("CLEARs pending_input on a normal end_turn idle and does NOT set it", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2564,7 +2682,10 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		// A normal turn-completion idle isn't a block → the cache is CLEARed (null),
 		// never SET to a PendingInput value.
-		expect(sessions.setSessionPendingInput).toHaveBeenCalledWith("session-1", null);
+    expect(sessions.setSessionPendingInput).toHaveBeenCalledWith(
+      "session-1",
+      null,
+    );
 		expect(sessions.setSessionPendingInput).not.toHaveBeenCalledWith(
 			"session-1",
 			expect.objectContaining({ kind: expect.anything() }),
@@ -2573,7 +2694,10 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("leaves pending_input untouched for irrelevant events (heartbeat, tool_use)", async () => {
 		const sessions = fakeSessions();
-		const { service } = makeService({ sessions, sessionEvents: fakeSessionEvents() });
+    const { service } = makeService({
+      sessions,
+      sessionEvents: fakeSessionEvents(),
+    });
 
 		await service.ingestSessionEvent({
 			sessionId: "session-1",
@@ -2612,7 +2736,10 @@ describe("ApplicationWorkflowDataService", () => {
 		const { service } = makeService({ sessions });
 
 		await expect(
-			service.listCliWorkspaceCommandCandidates({ executionId: "exec-1", limit: 8 }),
+      service.listCliWorkspaceCommandCandidates({
+        executionId: "exec-1",
+        limit: 8,
+      }),
 		).resolves.toEqual([
 			{
 				sessionId: "session-codex",
@@ -2649,7 +2776,9 @@ describe("ApplicationWorkflowDataService", () => {
 			workflowExecutionId: "exec-1",
 		});
 
-		vi.mocked(sessions.listWorkflowExecutionSessionRuntimes).mockResolvedValueOnce([
+    vi.mocked(
+      sessions.listWorkflowExecutionSessionRuntimes,
+    ).mockResolvedValueOnce([
 			{ sessionId: "session-durable", agentRuntime: "dapr-agent-py" },
 		]);
 		await expect(
@@ -2717,7 +2846,9 @@ describe("ApplicationWorkflowDataService", () => {
 		).resolves.toEqual([
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]);
-		expect(sessions.listReapableWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+    expect(
+      sessions.listReapableWorkflowSessionRuntimeHosts,
+    ).toHaveBeenCalledWith({
 			workflowExecutionId: "exec-1",
 		});
 	});
@@ -2747,7 +2878,9 @@ describe("ApplicationWorkflowDataService", () => {
 			getSessionProvisioningGate: vi.fn(async () => null),
 		} satisfies BenchmarkRunRepository;
 		await expect(
-			makeService({ benchmarkRuns: missingRuns }).service.checkBenchmarkSessionProvisioningGate({
+      makeService({
+        benchmarkRuns: missingRuns,
+      }).service.checkBenchmarkSessionProvisioningGate({
 				runId: "bench-missing",
 				instanceId: "inst-1",
 			}),
@@ -2833,9 +2966,9 @@ describe("ApplicationWorkflowDataService", () => {
 			runtimeAppId: "agent-runtime-test-agent",
 			appId: "agent-runtime-test-agent",
 		});
-		expect(workflowAgentReads.getWorkflowAgentRuntimeIdentity).toHaveBeenCalledWith(
-			"agent-1",
-		);
+    expect(
+      workflowAgentReads.getWorkflowAgentRuntimeIdentity,
+    ).toHaveBeenCalledWith("agent-1");
 	});
 
 	it("resolves published workflow agents through the agent read port", async () => {
@@ -2900,9 +3033,12 @@ describe("ApplicationWorkflowDataService", () => {
 				vaultIds: ["vault-1"],
 				daprInstanceId: null,
 				natsSubject: null,
+        parentExecutionId: "parent-instance-1",
 			},
 		});
-		expect(sessions.getSessionFileOwner).toHaveBeenCalledWith("parent-session-1");
+    expect(sessions.getSessionFileOwner).toHaveBeenCalledWith(
+      "parent-session-1",
+    );
 		expect(peerAgentResolver.resolvePeerAgentOwner).not.toHaveBeenCalled();
 		expect(sessions.createPeerSession).toHaveBeenCalledWith({
 			id: "ca-session-1",
@@ -2912,14 +3048,17 @@ describe("ApplicationWorkflowDataService", () => {
 			projectId: "project-1",
 			parentExecutionId: "parent-instance-1",
 		});
-		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("ca-session-1", {
+    expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith(
+      "ca-session-1",
+      {
 			type: "user.message",
 			data: {
 				type: "user.message",
 				content: [{ type: "text", text: "Review this change" }],
 			},
 			processedAt: null,
-		});
+      },
+    );
 	});
 
 	it("returns reused peer sessions without appending another prompt", async () => {
@@ -2932,6 +3071,7 @@ describe("ApplicationWorkflowDataService", () => {
 			vaultIds: [],
 			daprInstanceId: "ca-existing",
 			natsSubject: "session.events.ca-existing",
+      parentExecutionId: null,
 		};
 		const sessions = {
 			...fakeSessions(),
@@ -2975,7 +3115,9 @@ describe("ApplicationWorkflowDataService", () => {
 			parentSessionId: "missing-parent",
 		});
 
-		expect(peerAgentResolver.resolvePeerAgentOwner).toHaveBeenCalledWith("agent-peer");
+    expect(peerAgentResolver.resolvePeerAgentOwner).toHaveBeenCalledWith(
+      "agent-peer",
+    );
 		expect(sessions.createPeerSession).toHaveBeenCalledWith(
 			expect.objectContaining({
 				userId: "peer-owner-1",
@@ -3010,7 +3152,9 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 			registryTeam: "project-1",
 		});
-		expect(peerAgentResolver.resolvePeerAgentDispatchContext).toHaveBeenCalledWith({
+    expect(
+      peerAgentResolver.resolvePeerAgentDispatchContext,
+    ).toHaveBeenCalledWith({
 			agentId: "agent-peer",
 			agentVersion: 3,
 			environmentId: "env-1",
@@ -3054,7 +3198,9 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 		};
 
-		await expect(service.saveWorkflowBrowserArtifact(input)).resolves.toEqual(saved);
+    await expect(service.saveWorkflowBrowserArtifact(input)).resolves.toEqual(
+      saved,
+    );
 		expect(browserArtifacts.save).toHaveBeenCalledWith(input);
 	});
 
@@ -3223,10 +3369,13 @@ describe("ApplicationWorkflowDataService", () => {
 		};
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 			getSessionRuntimeTarget: vi.fn(async () => target),
 		} satisfies SessionRepository;
 		const { service } = makeService({ sessions });
@@ -3262,10 +3411,13 @@ describe("ApplicationWorkflowDataService", () => {
 		};
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 			getSessionRuntimeDebugTarget: vi.fn(async () => target),
 		} satisfies SessionRepository;
 		const { service } = makeService({ sessions });
@@ -3405,7 +3557,9 @@ describe("ApplicationWorkflowDataService", () => {
 				projectId: "other-project",
 			}),
 		).resolves.toBeNull();
-		expect(sessionRuntimeStatus.getSessionRuntimeFlags).toHaveBeenCalledTimes(1);
+    expect(sessionRuntimeStatus.getSessionRuntimeFlags).toHaveBeenCalledTimes(
+      1,
+    );
 	});
 
 	it("loads session control settings through scoped agent read ports", async () => {
@@ -3714,10 +3868,13 @@ describe("ApplicationWorkflowDataService", () => {
 		} as Awaited<ReturnType<SessionRepository["getSession"]>>;
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 			updateSessionTitle: vi.fn(async () => updatedSession),
 		} satisfies SessionRepository;
 		const { service } = makeService({ sessions });
@@ -3747,10 +3904,13 @@ describe("ApplicationWorkflowDataService", () => {
 	it("archives and deletes sessions through scoped repository commands", async () => {
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 			archiveSession: vi.fn(async () => true),
 			deleteSession: vi.fn(async () => true),
 		} satisfies SessionRepository;
@@ -3790,10 +3950,13 @@ describe("ApplicationWorkflowDataService", () => {
 	it("loads a full session event through scoped event-log ports", async () => {
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
 		const { service } = makeService({ sessions, sessionEvents });
@@ -3829,10 +3992,13 @@ describe("ApplicationWorkflowDataService", () => {
 	it("loads session runtime config through a scoped runtime-config reader", async () => {
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 		} satisfies SessionRepository;
 		const sessionRuntimeConfigs = fakeSessionRuntimeConfigs();
 		const { service } = makeService({ sessions, sessionRuntimeConfigs });
@@ -3859,16 +4025,21 @@ describe("ApplicationWorkflowDataService", () => {
 				projectId: "other-project",
 			}),
 		).resolves.toBeNull();
-		expect(sessionRuntimeConfigs.getSessionRuntimeConfig).toHaveBeenCalledTimes(1);
+    expect(sessionRuntimeConfigs.getSessionRuntimeConfig).toHaveBeenCalledTimes(
+      1,
+    );
 	});
 
 	it("raises session agent config patches through scoped command ports", async () => {
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 		} satisfies SessionRepository;
 		const sessionAgentConfigCommands = fakeSessionAgentConfigCommands();
 		const { service } = makeService({ sessions, sessionAgentConfigCommands });
@@ -4075,10 +4246,13 @@ describe("ApplicationWorkflowDataService", () => {
 	it("does not append user events for sessions outside scope", async () => {
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				id: "session-1",
 				projectId: "project-1",
-			}) as Awaited<ReturnType<SessionRepository["getSession"]>>),
+          }) as Awaited<ReturnType<SessionRepository["getSession"]>>,
+      ),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
 		const sessionRuntimeEvents = fakeSessionRuntimeEvents();
@@ -4201,8 +4375,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const executionId = "exec-concurrent";
 		const sessionId = expectedWorkflowDevSessionId(executionId);
 		let durableSession: SessionDetail | null = null;
-		let durableKickoff: Awaited<ReturnType<SessionEventLog["appendSessionEvent"]>> | null =
-			null;
+    let durableKickoff: Awaited<
+      ReturnType<SessionEventLog["appendSessionEvent"]>
+    > | null = null;
 		let durableKickoffWrites = 0;
 		const sessions = {
 			...fakeSessions(),
@@ -4220,7 +4395,9 @@ describe("ApplicationWorkflowDataService", () => {
 				return { session: durableSession, created: true };
 			}),
 			getSessionFileOwner: vi.fn(async (id) =>
-				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+        id === sessionId
+          ? { id, userId: "user-1", projectId: "project-1" }
+          : null,
 			),
 		} satisfies SessionRepository;
 		const sessionEvents = {
@@ -4374,7 +4551,9 @@ describe("ApplicationWorkflowDataService", () => {
 				created: true,
 			})),
 			getSessionFileOwner: vi.fn(async (id) =>
-				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+        id === sessionId
+          ? { id, userId: "user-1", projectId: "project-1" }
+          : null,
 			),
 		} satisfies SessionRepository;
 		const sessionEvents = fakeSessionEvents();
@@ -4429,7 +4608,9 @@ describe("ApplicationWorkflowDataService", () => {
 				created: true,
 			})),
 			getSessionFileOwner: vi.fn(async (id) =>
-				id === sessionId ? { id, userId: "user-1", projectId: "project-1" } : null,
+        id === sessionId
+          ? { id, userId: "user-1", projectId: "project-1" }
+          : null,
 			),
 		} satisfies SessionRepository;
 		const { service } = makeService({
@@ -4499,7 +4680,9 @@ describe("ApplicationWorkflowDataService", () => {
 			agentId: "agent-1",
 			agentVersion: 5,
 		});
-		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+    expect(
+      sessionAgentSlugs.resolveSessionAgentIdBySlug,
+    ).not.toHaveBeenCalled();
 	});
 
 	it("resolves session agents by slug ref through configured slug and agent ports", async () => {
@@ -4660,7 +4843,9 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "created",
 			sessionId: "fork-session-1",
 		});
-		expect(sessionExperimentAgents.resolveSessionForkBaseAgent).toHaveBeenCalledWith({
+    expect(
+      sessionExperimentAgents.resolveSessionForkBaseAgent,
+    ).toHaveBeenCalledWith({
 			agentId: "agent-1",
 			agentVersion: 2,
 		});
@@ -4710,7 +4895,9 @@ describe("ApplicationWorkflowDataService", () => {
 			service.listWorkflowBrowserArtifactsByExecutionId("exec-1"),
 		).resolves.toEqual([saved]);
 		await expect(
-			service.getWorkflowBrowserBlobPayload("workflow-browser-artifacts/exec-1/bwf_1/shot.png"),
+      service.getWorkflowBrowserBlobPayload(
+        "workflow-browser-artifacts/exec-1/bwf_1/shot.png",
+      ),
 		).resolves.toEqual({
 			payloadBase64: "aGVsbG8=",
 			contentType: "image/png",
@@ -4805,7 +4992,9 @@ describe("ApplicationWorkflowDataService", () => {
 				},
 				{ name: "slack", displayName: "Slack", logoUrl: null },
 			]),
-			resolvePlatformId: vi.fn(async (sessionPlatformId) => sessionPlatformId ?? "platform-1"),
+      resolvePlatformId: vi.fn(
+        async (sessionPlatformId) => sessionPlatformId ?? "platform-1",
+      ),
 			savePlatformOAuthApp: vi.fn(async () => null),
 			deletePlatformOAuthApp: vi.fn(async () => undefined),
 		} satisfies SettingsRepository;
@@ -4864,14 +5053,18 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 		});
 		expect(settings.getSettingsUserProfile).toHaveBeenCalledWith("user-1");
-		expect(settings.listPlatformOAuthApps).toHaveBeenCalledWith("platform-session");
+    expect(settings.listPlatformOAuthApps).toHaveBeenCalledWith(
+      "platform-session",
+    );
 		expect(settings.listOAuthPieces).toHaveBeenCalled();
 	});
 
 	it("saves and deletes platform OAuth apps through settings ports", async () => {
 		const settings = {
 			...fakeSettings(),
-			resolvePlatformId: vi.fn(async (sessionPlatformId) => sessionPlatformId ?? "platform-1"),
+      resolvePlatformId: vi.fn(
+        async (sessionPlatformId) => sessionPlatformId ?? "platform-1",
+      ),
 			savePlatformOAuthApp: vi.fn(async (input) => ({
 				id: input.id ?? "oauth-app-1",
 				platformId: input.platformId ?? "platform-1",
@@ -4976,7 +5169,9 @@ describe("ApplicationWorkflowDataService", () => {
 			},
 		});
 
-		expect(mcpConnections.activeAppConnectionExistsForPiece).toHaveBeenCalledWith({
+    expect(
+      mcpConnections.activeAppConnectionExistsForPiece,
+    ).toHaveBeenCalledWith({
 			projectId: "project-1",
 			externalId: "app-conn-1",
 			pieceNameCandidates: ["github", "@activepieces/piece-github"],
@@ -5119,14 +5314,20 @@ describe("ApplicationWorkflowDataService", () => {
 		const service = makeServiceWithMcp(mcpConnections);
 
 		await expect(
-			service.deleteProjectMcpConnection({ id: "hosted-1", projectId: "project-1" }),
+      service.deleteProjectMcpConnection({
+        id: "hosted-1",
+        projectId: "project-1",
+      }),
 		).resolves.toEqual({
 			ok: false,
 			status: 400,
 			message: "Cannot delete hosted workflow connections",
 		});
 		await expect(
-			service.deleteProjectMcpConnection({ id: "custom-1", projectId: "project-1" }),
+      service.deleteProjectMcpConnection({
+        id: "custom-1",
+        projectId: "project-1",
+      }),
 		).resolves.toEqual({ ok: true });
 		expect(mcpConnections.deleteProjectConnection).toHaveBeenCalledWith({
 			id: "custom-1",
@@ -5142,7 +5343,11 @@ describe("ApplicationWorkflowDataService", () => {
 			findProjectConnection: vi.fn(async () =>
 				mcpConnection({
 					metadata: {
-						toolNames: ["create_issue", { name: "list_issues" }, "create_issue"],
+            toolNames: [
+              "create_issue",
+              { name: "list_issues" },
+              "create_issue",
+            ],
 					},
 				}),
 			),
@@ -5167,7 +5372,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const pieceCatalog = fakePieceCatalog();
 		const service = makeServiceWithPieceCatalog(pieceCatalog);
 
-		await expect(service.listConnectablePieces({ authOnly: true })).resolves.toEqual([
+    await expect(
+      service.listConnectablePieces({ authOnly: true }),
+    ).resolves.toEqual([
 			{
 				name: "@activepieces/piece-github",
 				displayName: "GitHub",
@@ -5175,7 +5382,9 @@ describe("ApplicationWorkflowDataService", () => {
 				authType: "OAUTH2",
 			},
 		]);
-		expect(pieceCatalog.listConnectablePieces).toHaveBeenCalledWith({ authOnly: true });
+    expect(pieceCatalog.listConnectablePieces).toHaveBeenCalledWith({
+      authOnly: true,
+    });
 	});
 
 	it("composes catalog functions with code functions before ActivePieces functions", async () => {
@@ -5188,7 +5397,9 @@ describe("ApplicationWorkflowDataService", () => {
 			codeFunctionCatalog,
 		);
 
-		await expect(service.listCatalogFunctions({ userId: "user-1" })).resolves.toEqual({
+    await expect(
+      service.listCatalogFunctions({ userId: "user-1" }),
+    ).resolves.toEqual({
 			functions: [
 				{
 					name: "summarize",
@@ -5218,7 +5429,9 @@ describe("ApplicationWorkflowDataService", () => {
 			count: 2,
 			error: null,
 		});
-		expect(codeFunctionCatalog.listEnabledForCatalog).toHaveBeenCalledWith("user-1");
+    expect(codeFunctionCatalog.listEnabledForCatalog).toHaveBeenCalledWith(
+      "user-1",
+    );
 		expect(pieceCatalog.listPieceCatalogFunctions).toHaveBeenCalled();
 	});
 
@@ -5237,7 +5450,9 @@ describe("ApplicationWorkflowDataService", () => {
 			codeFunctionCatalog,
 		);
 
-		await expect(service.listCatalogFunctions({ userId: null })).resolves.toEqual({
+    await expect(
+      service.listCatalogFunctions({ userId: null }),
+    ).resolves.toEqual({
 			functions: [],
 			count: 0,
 			error: "Error: catalog unavailable",
@@ -5580,10 +5795,12 @@ describe("ApplicationWorkflowDataService", () => {
 			],
 		});
 		expect(pieceCatalog.listMcpCatalogPieces).toHaveBeenCalled();
-		expect(mcpConnections.listProjectConnections).toHaveBeenCalledWith("project-1");
-		expect(mcpConnections.listActiveAppConnectionCatalogSummaries).toHaveBeenCalledWith(
+    expect(mcpConnections.listProjectConnections).toHaveBeenCalledWith(
 			"project-1",
 		);
+    expect(
+      mcpConnections.listActiveAppConnectionCatalogSummaries,
+    ).toHaveBeenCalledWith("project-1");
 		expect(mcpConnections.listPlatformOAuthAppPieceNames).toHaveBeenCalledWith({
 			pieceNames: ["github", "@activepieces/piece-github"],
 			platformId: "platform-1",
@@ -5638,7 +5855,10 @@ describe("ApplicationWorkflowDataService", () => {
 				selfRole: "VIEWER" as const,
 			})),
 		} satisfies WorkspaceProjectRepository;
-		const service = makeServiceWithHostedMcp(hostedMcpServers, workspaceProjects);
+    const service = makeServiceWithHostedMcp(
+      hostedMcpServers,
+      workspaceProjects,
+    );
 
 		const result = await service.getProjectHostedMcpServer({
 			projectId: "project-1",
@@ -5674,11 +5894,15 @@ describe("ApplicationWorkflowDataService", () => {
 			projectId: "project-1",
 			userId: "user-1",
 		});
-		expect(hostedMcpServers.listWorkflowSourcesForProject).toHaveBeenCalledWith({
+    expect(hostedMcpServers.listWorkflowSourcesForProject).toHaveBeenCalledWith(
+      {
 			projectId: "project-1",
 			ownerId: "owner-1",
-		});
-		expect(hostedMcpServers.upsertHostedWorkflowConnection).toHaveBeenCalledWith(
+      },
+    );
+    expect(
+      hostedMcpServers.upsertHostedWorkflowConnection,
+    ).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "project-1",
 				status: "DISABLED",
@@ -5706,7 +5930,9 @@ describe("ApplicationWorkflowDataService", () => {
 			message: "Invalid status",
 		});
 		expect(hostedMcpServers.updateServerStatus).not.toHaveBeenCalled();
-		expect(hostedMcpServers.upsertHostedWorkflowConnection).not.toHaveBeenCalled();
+    expect(
+      hostedMcpServers.upsertHostedWorkflowConnection,
+    ).not.toHaveBeenCalled();
 	});
 
 	it("rotates hosted MCP tokens for project writers and syncs the hosted connection", async () => {
@@ -5720,7 +5946,8 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 
 		expect(result.ok).toBe(true);
-		if (!result.ok) throw new Error("expected hosted MCP token rotation to succeed");
+    if (!result.ok)
+      throw new Error("expected hosted MCP token rotation to succeed");
 		expect(result.server.token).toMatch(/^[0-9a-z]{72}$/);
 		expect(hostedMcpServers.updateServerToken).toHaveBeenCalledWith({
 			id: "mcp-server-1",
@@ -5729,7 +5956,9 @@ describe("ApplicationWorkflowDataService", () => {
 				data: expect.stringMatching(/^encrypted:[0-9a-z]{72}$/),
 			},
 		});
-		expect(hostedMcpServers.upsertHostedWorkflowConnection).toHaveBeenCalledWith(
+    expect(
+      hostedMcpServers.upsertHostedWorkflowConnection,
+    ).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "project-1",
 				status: "DISABLED",
@@ -5756,7 +5985,9 @@ describe("ApplicationWorkflowDataService", () => {
 				flows: [],
 			},
 		});
-		expect(hostedMcpServers.getProjectOwnerId).toHaveBeenCalledWith("project-1");
+    expect(hostedMcpServers.getProjectOwnerId).toHaveBeenCalledWith(
+      "project-1",
+    );
 	});
 
 	it("composes internal MCP gateway catalog through workflow-data ports", async () => {
@@ -5837,16 +6068,20 @@ describe("ApplicationWorkflowDataService", () => {
 				],
 			},
 		});
-		expect(hostedMcpServers.resolveProjectByIdOrExternalId).toHaveBeenCalledWith(
-			"workspace-1",
-		);
-		expect(hostedMcpServers.upsertHostedWorkflowConnection).toHaveBeenCalledWith(
+    expect(
+      hostedMcpServers.resolveProjectByIdOrExternalId,
+    ).toHaveBeenCalledWith("workspace-1");
+    expect(
+      hostedMcpServers.upsertHostedWorkflowConnection,
+    ).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectId: "project-1",
 				status: "ENABLED",
 			}),
 		);
-		expect(mcpConnections.listProjectConnections).toHaveBeenCalledWith("project-1");
+    expect(mcpConnections.listProjectConnections).toHaveBeenCalledWith(
+      "project-1",
+    );
 	});
 
 	it("reads MCP runs through the MCP run repository", async () => {
@@ -6302,7 +6537,9 @@ describe("ApplicationWorkflowDataService", () => {
 				category: "developer-tools",
 			},
 		]);
-		expect(appConnections.listProjectConnections).toHaveBeenCalledWith("project-1");
+    expect(appConnections.listProjectConnections).toHaveBeenCalledWith(
+      "project-1",
+    );
 		expect(appConnections.listPieceInfo).toHaveBeenCalledTimes(1);
 	});
 
@@ -6535,7 +6772,8 @@ describe("ApplicationWorkflowDataService", () => {
 	});
 
 	it("completes app-connection OAuth and stores platform token values through ports", async () => {
-		const fetchSpy = vi.fn(async () =>
+    const fetchSpy = vi.fn(
+      async () =>
 			new Response(
 				JSON.stringify({
 					access_token: "access-1",
@@ -6609,7 +6847,8 @@ describe("ApplicationWorkflowDataService", () => {
 				connectionId: "conn-row-1",
 				pieceName: "github",
 				code: "code-1",
-				defaultRedirectUrl: "https://app.example/api/app-connections/oauth2/callback",
+        defaultRedirectUrl:
+          "https://app.example/api/app-connections/oauth2/callback",
 			}),
 		).resolves.toMatchObject({
 			ok: true,
@@ -6639,7 +6878,8 @@ describe("ApplicationWorkflowDataService", () => {
 	});
 
 	it("decrypts and refreshes app connection values through app-connection ports", async () => {
-		const fetchSpy = vi.fn(async () =>
+    const fetchSpy = vi.fn(
+      async () =>
 			new Response(
 				JSON.stringify({
 					access_token: "new-access",
@@ -6667,8 +6907,7 @@ describe("ApplicationWorkflowDataService", () => {
 				pieceVersion: "1.2.3",
 				value: {
 					iv: "test-iv",
-					data:
-						'encrypted:{"type":"PLATFORM_OAUTH2","access_token":"old-access","refresh_token":"refresh-1","token_url":"https://github.example/token","client_id":"client-1","claimed_at":1,"expires_in":1}',
+          data: 'encrypted:{"type":"PLATFORM_OAUTH2","access_token":"old-access","refresh_token":"refresh-1","token_url":"https://github.example/token","client_id":"client-1","claimed_at":1,"expires_in":1}',
 				},
 				createdAt: new Date("2026-01-01T00:00:00.000Z"),
 				updatedAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -6703,7 +6942,8 @@ describe("ApplicationWorkflowDataService", () => {
 				},
 			},
 		});
-		if (result.ok) expect(result.connection.value.expiry_date).toEqual(expect.any(Number));
+    if (result.ok)
+      expect(result.connection.value.expiry_date).toEqual(expect.any(Number));
 		expect(appConnections.updateEncryptedValue).toHaveBeenCalledWith({
 			id: "conn-row-1",
 			value: expect.objectContaining({
@@ -6869,7 +7109,8 @@ describe("ApplicationWorkflowDataService", () => {
 		await expect(
 			service.enableAdminPieceRuntimeImage({
 				pieceName: "slack",
-				callbackUrl: "https://workflow-builder-dev.example.test/api/internal/pieces/slack/image-registration",
+        callbackUrl:
+          "https://workflow-builder-dev.example.test/api/internal/pieces/slack/image-registration",
 			}),
 		).resolves.toEqual({
 			pieceName: "slack",
@@ -6898,7 +7139,10 @@ describe("ApplicationWorkflowDataService", () => {
 			imageRef: vi.fn(() => "ghcr.io/example/ap-piece-custom-tool:3.0.0"),
 		};
 		const builds = {
-			triggerBuild: vi.fn(async () => ({ triggered: false, reason: "not configured" })),
+      triggerBuild: vi.fn(async () => ({
+        triggered: false,
+        reason: "not configured",
+      })),
 		};
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
@@ -6928,7 +7172,8 @@ describe("ApplicationWorkflowDataService", () => {
 		await expect(
 			service.enableAdminPieceRuntimeImage({
 				pieceName: "custom-tool",
-				callbackUrl: "https://workflow-builder-dev.example.test/api/internal/pieces/custom-tool/image-registration",
+        callbackUrl:
+          "https://workflow-builder-dev.example.test/api/internal/pieces/custom-tool/image-registration",
 			}),
 		).resolves.toEqual({
 			pieceName: "custom-tool",
@@ -7127,7 +7372,9 @@ describe("ApplicationWorkflowDataService", () => {
 	it("resolves workspace project membership through the workspace project port", async () => {
 		const workspaceProjects = {
 			...fakeWorkspaceProjects(),
-			getMemberProjectId: vi.fn(async (): Promise<string | null> => "project-current"),
+      getMemberProjectId: vi.fn(
+        async (): Promise<string | null> => "project-current",
+      ),
 			getFallbackMemberProjectId: vi.fn(async () => "project-fallback"),
 			getMemberProjectIdBySlug: vi.fn(async () => "project-slug"),
 			getProjectExternalId: vi.fn(async () => "workspace-slug"),
@@ -7175,9 +7422,9 @@ describe("ApplicationWorkflowDataService", () => {
 				currentProjectId: "project-1",
 			}),
 		).resolves.toBe("project-slug");
-		await expect(service.getWorkspaceProjectExternalId("project-1")).resolves.toBe(
-			"workspace-slug",
-		);
+    await expect(
+      service.getWorkspaceProjectExternalId("project-1"),
+    ).resolves.toBe("workspace-slug");
 		await expect(
 			service.getWorkspaceProjectMembershipDetail({
 				projectId: "project-1",
@@ -7204,7 +7451,9 @@ describe("ApplicationWorkflowDataService", () => {
 			slug: "workspace-slug",
 			userId: "user-1",
 		});
-		expect(workspaceProjects.getProjectExternalId).toHaveBeenCalledWith("project-1");
+    expect(workspaceProjects.getProjectExternalId).toHaveBeenCalledWith(
+      "project-1",
+    );
 		expect(workspaceProjects.getProjectMembershipDetail).toHaveBeenCalledWith({
 			projectId: "project-1",
 			userId: "user-1",
@@ -7217,7 +7466,9 @@ describe("ApplicationWorkflowDataService", () => {
 				currentProjectId: "stale-project",
 			}),
 		).resolves.toBe("project-fallback");
-		expect(workspaceProjects.getFallbackMemberProjectId).toHaveBeenCalledWith("user-1");
+    expect(workspaceProjects.getFallbackMemberProjectId).toHaveBeenCalledWith(
+      "user-1",
+    );
 	});
 
 	it("lists and creates workspaces through workspace project ports", async () => {
@@ -7346,11 +7597,13 @@ describe("ApplicationWorkflowDataService", () => {
 		const workflowExecutions = fakeWorkflowExecutions();
 		const { service } = makeService({ workflowExecutions });
 
-		await expect(service.getExecutionWorkspaceRoute("exec-1")).resolves.toEqual({
+    await expect(service.getExecutionWorkspaceRoute("exec-1")).resolves.toEqual(
+      {
 			projectId: "project-1",
 			userId: "user-1",
 			workspaceSlug: "workspace-1",
-		});
+      },
+    );
 		expect(workflowExecutions.getExecutionWorkspaceRoute).toHaveBeenCalledWith(
 			"exec-1",
 		);
@@ -7381,7 +7634,9 @@ describe("ApplicationWorkflowDataService", () => {
 			projectId: "project-1",
 			userId: "user-1",
 		});
-		expect(workspaceProjects.listProjectMembers).toHaveBeenCalledWith("project-1");
+    expect(workspaceProjects.listProjectMembers).toHaveBeenCalledWith(
+      "project-1",
+    );
 	});
 
 	it("adds existing platform users to a project and defaults role to viewer", async () => {
@@ -7421,7 +7676,8 @@ describe("ApplicationWorkflowDataService", () => {
 			...fakeWorkspaceProjects(),
 			projectMemberExists: vi.fn(async () => true),
 		} satisfies WorkspaceProjectRepository;
-		const duplicateService = makeServiceWithWorkspaceProjects(duplicateProjects);
+    const duplicateService =
+      makeServiceWithWorkspaceProjects(duplicateProjects);
 		await expect(
 			duplicateService.addProjectMember({
 				projectId: "project-1",
@@ -7442,7 +7698,9 @@ describe("ApplicationWorkflowDataService", () => {
 				reason: "different_platform" as const,
 			})),
 		} satisfies WorkspaceProjectRepository;
-		const crossPlatformService = makeServiceWithWorkspaceProjects(crossPlatformProjects);
+    const crossPlatformService = makeServiceWithWorkspaceProjects(
+      crossPlatformProjects,
+    );
 		await expect(
 			crossPlatformService.addProjectMember({
 				projectId: "project-1",
@@ -7625,7 +7883,9 @@ describe("ApplicationWorkflowDataService", () => {
 				cost: 9,
 			},
 		]);
-		expect(result.priceBook.some((row) => row.model === "claude-opus-4-8")).toBe(true);
+    expect(
+      result.priceBook.some((row) => row.model === "claude-opus-4-8"),
+    ).toBe(true);
 		expect(usageReporting.listCostUsageRows).toHaveBeenCalledWith({
 			scope: { userId: "user-1", projectId: undefined },
 			start: new Date(start),
@@ -7668,7 +7928,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const sandboxInventory = fakeSandboxInventory();
 		const service = makeServiceWithSandboxInventory(sandboxInventory);
 
-		await expect(service.listSandboxExecutions("dapr-agent-py")).resolves.toEqual([
+    await expect(
+      service.listSandboxExecutions("dapr-agent-py"),
+    ).resolves.toEqual([
 			{
 				executionId: "exec-1",
 				workflowId: "wf-1",
@@ -7678,9 +7940,9 @@ describe("ApplicationWorkflowDataService", () => {
 				completedAt: null,
 			},
 		]);
-		expect(sandboxInventory.listRecentExecutionsForSandbox).toHaveBeenCalledWith(
-			"dapr-agent-py",
-		);
+    expect(
+      sandboxInventory.listRecentExecutionsForSandbox,
+    ).toHaveBeenCalledWith("dapr-agent-py");
 	});
 
 	it("lists sandbox session owners through session ports", async () => {
@@ -7827,10 +8089,12 @@ describe("ApplicationWorkflowDataService", () => {
 			"wf-idle",
 			"wf-running",
 		]);
-		expect(workflowExecutions.listRecentRunsByWorkflowIds).toHaveBeenCalledWith({
+    expect(workflowExecutions.listRecentRunsByWorkflowIds).toHaveBeenCalledWith(
+      {
 			workflowIds: ["wf-idle", "wf-running"],
 			limitPerWorkflow: 3,
-		});
+      },
+    );
 	});
 
 	it("composes service-graph picker options through application ports", async () => {
@@ -7903,7 +8167,9 @@ describe("ApplicationWorkflowDataService", () => {
 			userId: "user-1",
 			projectId: "project-1",
 		});
-		expect(workflowExecutions.listRecentExecutionPickerRecords).toHaveBeenCalledWith({
+    expect(
+      workflowExecutions.listRecentExecutionPickerRecords,
+    ).toHaveBeenCalledWith({
 			limit: 50,
 			userId: "user-1",
 			projectId: "project-1",
@@ -8009,12 +8275,16 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toBe(logs);
 		expect(workflowExecutions.getById).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.listLogsByExecutionId).toHaveBeenCalledWith("exec-1");
+    expect(workflowExecutions.listLogsByExecutionId).toHaveBeenCalledWith(
+      "exec-1",
+    );
 	});
 
 	it("hides service-graph step logs for out-of-scope executions", async () => {
 		const workflowExecutions = {
-			getById: vi.fn(async () => workflowExecutionRecord({ projectId: "project-2" })),
+      getById: vi.fn(async () =>
+        workflowExecutionRecord({ projectId: "project-2" }),
+      ),
 			listLogsByExecutionId: vi.fn(async () => [executionLogRecord()]),
 		};
 		const { service } = makeService({ workflowExecutions });
@@ -8541,7 +8811,9 @@ describe("ApplicationWorkflowDataService", () => {
 				instanceId: "sympy__sympy-20590",
 			}),
 		).resolves.toEqual(detail);
-		expect(benchmarkInstanceDetails.getBenchmarkInstanceDetail).toHaveBeenCalledWith({
+    expect(
+      benchmarkInstanceDetails.getBenchmarkInstanceDetail,
+    ).toHaveBeenCalledWith({
 			suiteSlug: "SWE-bench_Lite",
 			instanceId: "sympy__sympy-20590",
 		});
@@ -8549,7 +8821,8 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("loads benchmark run-instance scores through the workflow-data port", async () => {
 		const createdAt = new Date("2026-07-03T12:00:00.000Z");
-		const benchmarkRunInstanceScores: BenchmarkRunInstanceScoreReadRepository = {
+    const benchmarkRunInstanceScores: BenchmarkRunInstanceScoreReadRepository =
+      {
 			listRunInstanceScores: vi.fn(async () => ({
 				status: "ok" as const,
 				scores: [
@@ -8587,7 +8860,9 @@ describe("ApplicationWorkflowDataService", () => {
 				},
 			],
 		});
-		expect(benchmarkRunInstanceScores.listRunInstanceScores).toHaveBeenCalledWith({
+    expect(
+      benchmarkRunInstanceScores.listRunInstanceScores,
+    ).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",
@@ -8596,7 +8871,8 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("loads benchmark run-instance detail through the workflow-data port", async () => {
 		const evaluatedAt = new Date("2026-07-03T12:00:00.000Z");
-		const benchmarkRunInstanceDetails: BenchmarkRunInstanceDetailReadRepository = {
+    const benchmarkRunInstanceDetails: BenchmarkRunInstanceDetailReadRepository =
+      {
 			getRunInstanceDetail: vi.fn(async () => ({
 				status: "ok" as const,
 				mlflowExperimentId: "exp-1",
@@ -8643,7 +8919,9 @@ describe("ApplicationWorkflowDataService", () => {
 				baseCommit: "abc123",
 			},
 		});
-		expect(benchmarkRunInstanceDetails.getRunInstanceDetail).toHaveBeenCalledWith({
+    expect(
+      benchmarkRunInstanceDetails.getRunInstanceDetail,
+    ).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",
@@ -8652,7 +8930,8 @@ describe("ApplicationWorkflowDataService", () => {
 
 	it("manages benchmark run-instance annotations through workflow-data ports", async () => {
 		const updatedAt = new Date("2026-07-03T12:00:00.000Z");
-		const benchmarkRunInstanceAnnotations: BenchmarkRunInstanceAnnotationRepository = {
+    const benchmarkRunInstanceAnnotations: BenchmarkRunInstanceAnnotationRepository =
+      {
 			getRunInstanceAnnotations: vi.fn(async () => ({
 				status: "ok" as const,
 				mine: {
@@ -8667,8 +8946,12 @@ describe("ApplicationWorkflowDataService", () => {
 					unsure: 0,
 				},
 			})),
-			upsertRunInstanceAnnotation: vi.fn(async () => ({ status: "ok" as const })),
-			deleteRunInstanceAnnotation: vi.fn(async () => ({ status: "ok" as const })),
+        upsertRunInstanceAnnotation: vi.fn(async () => ({
+          status: "ok" as const,
+        })),
+        deleteRunInstanceAnnotation: vi.fn(async () => ({
+          status: "ok" as const,
+        })),
 		};
 		const { service } = makeService({ benchmarkRunInstanceAnnotations });
 
@@ -8694,7 +8977,9 @@ describe("ApplicationWorkflowDataService", () => {
 				reasoning: " Needs another look ",
 			}),
 		).resolves.toEqual({ status: "ok" });
-		expect(benchmarkRunInstanceAnnotations.upsertRunInstanceAnnotation).toHaveBeenCalledWith({
+    expect(
+      benchmarkRunInstanceAnnotations.upsertRunInstanceAnnotation,
+    ).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			projectId: "project-1",
@@ -8767,7 +9052,9 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "ok",
 			rows: [{ id: "dataset-row-1", originRunInstanceId: "run-instance-1" }],
 		});
-		expect(benchmarkDatasetPromotions.promoteRunInstanceToDataset).toHaveBeenCalledWith({
+    expect(
+      benchmarkDatasetPromotions.promoteRunInstanceToDataset,
+    ).toHaveBeenCalledWith({
 			projectId: "project-1",
 			datasetId: "dataset-1",
 			runId: "run-1",
@@ -8791,7 +9078,8 @@ describe("ApplicationWorkflowDataService", () => {
 	it("loads benchmark run-instance progress through workflow-data ports", async () => {
 		const now = new Date("2026-07-03T14:00:00.000Z");
 		const latestActivityAt = new Date("2026-07-03T13:59:30.000Z");
-		const benchmarkRunInstanceProgress: BenchmarkRunInstanceProgressReadRepository = {
+    const benchmarkRunInstanceProgress: BenchmarkRunInstanceProgressReadRepository =
+      {
 			getRunInstanceProgress: vi.fn(async () => ({
 				status: "ok" as const,
 				runInstanceStatus: "running",
@@ -8818,7 +9106,9 @@ describe("ApplicationWorkflowDataService", () => {
 			sessionId: "session-1",
 			activityAgeSeconds: 30,
 		});
-		expect(benchmarkRunInstanceProgress.getRunInstanceProgress).toHaveBeenCalledWith({
+    expect(
+      benchmarkRunInstanceProgress.getRunInstanceProgress,
+    ).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceId: "sympy__sympy-20590",
 			now,
@@ -8902,7 +9192,9 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "ok",
 			summary: { resolved: 1 },
 		});
-		expect(benchmarkEvaluationResults.batchUpdateEvaluationResults).toHaveBeenCalledWith(
+    expect(
+      benchmarkEvaluationResults.batchUpdateEvaluationResults,
+    ).toHaveBeenCalledWith(
 			expect.objectContaining({
 				runId: "run-1",
 				updates: [
@@ -8914,11 +9206,15 @@ describe("ApplicationWorkflowDataService", () => {
 				],
 			}),
 		);
-		expect(benchmarkEvaluationTelemetry.syncEvaluationResults).toHaveBeenCalledWith({
+    expect(
+      benchmarkEvaluationTelemetry.syncEvaluationResults,
+    ).toHaveBeenCalledWith({
 			runId: "run-1",
 			instanceIds: ["inst-1"],
 		});
-		expect(benchmarkEvaluationEvents.notifyEvaluationEvent).toHaveBeenCalledWith(
+    expect(
+      benchmarkEvaluationEvents.notifyEvaluationEvent,
+    ).toHaveBeenCalledWith(
 			expect.objectContaining({
 				runId: "run-1",
 				eventType: "results",
@@ -8934,7 +9230,9 @@ describe("ApplicationWorkflowDataService", () => {
 		};
 		const { service } = makeService({ benchmarkRuns });
 
-		await expect(service.getBenchmarkRunProjectId("run-1")).resolves.toBe("project-1");
+    await expect(service.getBenchmarkRunProjectId("run-1")).resolves.toBe(
+      "project-1",
+    );
 		expect(benchmarkRuns.getProjectId).toHaveBeenCalledWith("run-1");
 	});
 
@@ -9024,22 +9322,20 @@ describe("ApplicationWorkflowDataService", () => {
 			lifecycleWorkflowName: "preview-development-lifecycle",
 		});
 		expect(devEnvironments.listServices).toHaveBeenCalledOnce();
-		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenNthCalledWith(
-			1,
-			{
+    expect(
+      workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
+    ).toHaveBeenNthCalledWith(1, {
 				projectId: "project-1",
 				workflowId: "preview-ui-development-gan",
 				namePrefix: "Preview UI development GAN%",
-			},
-		);
-		expect(workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix).toHaveBeenNthCalledWith(
-			2,
-			{
+    });
+    expect(
+      workflowDefinitions.findProjectWorkflowIdByIdOrNamePrefix,
+    ).toHaveBeenNthCalledWith(2, {
 				projectId: "project-1",
 				workflowId: "preview-development-lifecycle",
 				namePrefix: "Preview development lifecycle%",
-			},
-		);
+    });
 	});
 
 	it("loads dev environment list and detail through dev environment ports", async () => {
@@ -9085,7 +9381,9 @@ describe("ApplicationWorkflowDataService", () => {
 				runStatus: "cancelled",
 			}),
 		);
-		expect(devEnvironments.getDevEnvironmentTeardownTarget).toHaveBeenCalledWith({
+    expect(
+      devEnvironments.getDevEnvironmentTeardownTarget,
+    ).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			projectId: "project-1",
 		});
@@ -9260,7 +9558,9 @@ describe("ApplicationWorkflowDataService", () => {
 					hintsLen: 20,
 				},
 			],
-			repoFacets: [{ value: "django/django", label: "django/django", count: 1 }],
+      repoFacets: [
+        { value: "django/django", label: "django/django", count: 1 },
+      ],
 			suiteFacets: [
 				{
 					slug: "swebench-lite",
@@ -9285,9 +9585,19 @@ describe("ApplicationWorkflowDataService", () => {
 	it("validates webhook API keys through the API-key port", async () => {
 		const apiKeys = {
 			...fakeApiKeys(),
-			getByKeyHash: vi.fn(async () => ({ id: "key-1", userId: "user-1" })),
+      getByKeyHash: vi.fn(
+        async () =>
+          ({
+            id: "key-1",
+            userId: "user-1",
+            projectId: null,
+            createdByUserId: "user-1",
+            scopes: [],
+          }) as ApiKeyRecord,
+      ),
 			markUsed: vi.fn(async () => undefined),
 		} satisfies ApiKeyStore;
+    const workspaceProjects = fakeWorkspaceProjects();
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
 			workflowTriggers: fakeWorkflowTriggers(),
@@ -9299,7 +9609,7 @@ describe("ApplicationWorkflowDataService", () => {
 		appConnections: fakeAppConnections(),
 			adminPieces: fakeAdminPieces(),
 			apiKeys,
-			workspaceProjects: fakeWorkspaceProjects(),
+      workspaceProjects,
 			pieceCatalog: fakePieceCatalog(),
 			benchmarkBrowser: fakeBenchmarkBrowser(),
 			workflowExecutions: {} as WorkflowExecutionRepository,
@@ -9326,36 +9636,140 @@ describe("ApplicationWorkflowDataService", () => {
 				userId: "other-user",
 			}),
 		).resolves.toMatchObject({ valid: false, statusCode: 403 });
+
+    apiKeys.getByKeyHash.mockResolvedValue({
+      id: "key-2",
+      userId: "user-1",
+      projectId: "project-1",
+      createdByUserId: "user-1",
+      scopes: ["workflow:read", "workflow:write", "workflow:execute"],
+    });
+    await expect(
+      service.validateApiKeyForUser({
+        authorizationHeader: "Bearer wfb_test_secret",
+        userId: "different-workflow-owner",
+        projectId: "project-1",
+      }),
+    ).resolves.toEqual({ valid: true, apiKeyId: "key-2" });
+    expect(workspaceProjects.hasActiveProjectMembership).toHaveBeenCalledWith({
+      projectId: "project-1",
+      userId: "user-1",
+    });
+
+    await expect(
+      service.validateApiKeyForUser({
+        authorizationHeader: "Bearer wfb_test_secret",
+        userId: "user-1",
+        projectId: "project-2",
+      }),
+    ).resolves.toMatchObject({ valid: false, statusCode: 403 });
+
+    apiKeys.getByKeyHash.mockResolvedValue({
+      id: "key-3",
+      userId: "user-1",
+      projectId: "project-1",
+      createdByUserId: "user-1",
+      scopes: ["workflow:read"],
+    });
+    await expect(
+      service.validateApiKeyForUser({
+        authorizationHeader: "Bearer wfb_test_secret",
+        userId: "user-1",
+        projectId: "project-1",
+      }),
+    ).resolves.toMatchObject({ valid: false, statusCode: 403 });
+
+    vi.mocked(
+      workspaceProjects.hasActiveProjectMembership,
+    ).mockResolvedValueOnce(false);
+    await expect(
+      service.resolveApiKey({ authorizationHeader: "Bearer wfb_test_secret" }),
+    ).resolves.toMatchObject({
+      valid: false,
+      statusCode: 403,
+      error: expect.stringContaining("active member"),
+    });
+
+    vi.mocked(
+      workspaceProjects.hasActiveProjectMembership,
+    ).mockResolvedValueOnce(true);
+    apiKeys.getByKeyHash.mockResolvedValue({
+      id: "key-4",
+      userId: "user-1",
+      projectId: "project-1",
+      createdByUserId: "user-1",
+      scopes: ["workflow:read", "workflow:write"],
+    });
+    await expect(
+      service.resolveApiKey({ authorizationHeader: "bearer wfb_test_secret" }),
+    ).resolves.toEqual({
+      valid: true,
+      apiKeyId: "key-4",
+      userId: "user-1",
+      projectId: "project-1",
+      scopes: ["workflow:read", "workflow:write"],
+    });
+
+    vi.mocked(workspaceProjects.getProjectMemberRole).mockResolvedValueOnce(
+      "VIEWER",
+    );
+    await expect(
+      service.resolveApiKey({ authorizationHeader: "Bearer wfb_test_secret" }),
+    ).resolves.toMatchObject({
+      valid: false,
+      statusCode: 403,
+      error: expect.stringContaining("authoring role"),
+    });
 	});
 
 	it("manages user API keys through the API-key port", async () => {
 		const apiKeys = {
 			...fakeApiKeys(),
-			listByUserId: vi.fn(async () => [
+      listVisibleInProject: vi.fn(async () => [
 				{
 					id: "key-1",
 					name: "Webhook",
 					keyPrefix: "wfb_abc...",
+          projectId: "project-1",
+          createdByUserId: "user-1",
+          scopes: [
+            "workflow:read",
+            "workflow:write",
+            "workflow:execute",
+            "agent:write",
+          ],
 					createdAt: new Date("2026-01-01T00:00:00.000Z"),
 					lastUsedAt: null,
 				},
 			]),
-			createUserApiKey: vi.fn(async (input) => ({
+      createProjectApiKey: vi.fn(async (input) => ({
 				id: input.id,
 				name: input.name,
 				keyPrefix: input.keyPrefix,
+        projectId: input.projectId,
+        createdByUserId: input.createdByUserId,
+        scopes: input.scopes,
 				createdAt: new Date("2026-01-02T00:00:00.000Z"),
 				lastUsedAt: null,
 			})),
-			deleteForUser: vi.fn(async () => true),
-			updateSecretForUser: vi.fn(async (input) => ({
+      deleteForProject: vi.fn(async () => true),
+      updateSecretForProject: vi.fn(async (input) => ({
 				id: input.id,
 				name: "Webhook",
 				keyPrefix: input.keyPrefix,
+        projectId: input.projectId,
+        createdByUserId: input.userId,
+        scopes: [
+          "workflow:read",
+          "workflow:write",
+          "workflow:execute",
+          "agent:write",
+        ],
 				createdAt: new Date("2026-01-02T00:00:00.000Z"),
 				lastUsedAt: null,
 			})),
 		} satisfies ApiKeyStore;
+    const workspaceProjects = fakeWorkspaceProjects();
 		const service = new ApplicationWorkflowDataService({
 			workflowDefinitions: makeService({}).workflowDefinitions,
 			workflowTriggers: fakeWorkflowTriggers(),
@@ -9367,7 +9781,7 @@ describe("ApplicationWorkflowDataService", () => {
 		appConnections: fakeAppConnections(),
 			adminPieces: fakeAdminPieces(),
 			apiKeys,
-			workspaceProjects: fakeWorkspaceProjects(),
+      workspaceProjects,
 			pieceCatalog: fakePieceCatalog(),
 			benchmarkBrowser: fakeBenchmarkBrowser(),
 			workflowExecutions: {} as WorkflowExecutionRepository,
@@ -9379,45 +9793,98 @@ describe("ApplicationWorkflowDataService", () => {
 			traceLineage: {} as TraceLineageStore,
 		});
 
-		await expect(service.listUserApiKeys("user-1")).resolves.toHaveLength(1);
 		await expect(
-			service.createUserApiKey({ userId: "user-1", name: " Webhook " }),
+      service.listUserApiKeys({ userId: "user-1", projectId: "project-1" }),
+    ).resolves.toHaveLength(1);
+    await expect(
+      service.createUserApiKey({
+        userId: "user-1",
+        projectId: "project-1",
+        name: " Workflow MCP ",
+      }),
 		).resolves.toMatchObject({
-			name: "Webhook",
+      name: "Workflow MCP",
+      projectId: "project-1",
+      scopes: [
+        "workflow:read",
+        "workflow:write",
+        "workflow:execute",
+        "agent:write",
+      ],
 			keyPrefix: expect.stringMatching(/^wfb_/),
 			key: expect.stringMatching(/^wfb_/),
 		});
 		await expect(
-			service.rotateUserApiKey({ userId: "user-1", keyId: "key-1" }),
+      service.rotateUserApiKey({
+        userId: "user-1",
+        projectId: "project-1",
+        keyId: "key-1",
+      }),
 		).resolves.toMatchObject({
 			id: "key-1",
 			keyPrefix: expect.stringMatching(/^wfb_/),
 			key: expect.stringMatching(/^wfb_/),
 		});
 		await expect(
-			service.deleteUserApiKey({ userId: "user-1", keyId: "key-1" }),
+      service.deleteUserApiKey({
+        userId: "user-1",
+        projectId: "project-1",
+        keyId: "key-1",
+      }),
 		).resolves.toBe(true);
 
-		expect(apiKeys.createUserApiKey).toHaveBeenCalledWith(
+    expect(apiKeys.listVisibleInProject).toHaveBeenCalledWith({
+      userId: "user-1",
+      projectId: "project-1",
+    });
+    expect(apiKeys.createProjectApiKey).toHaveBeenCalledWith(
 			expect.objectContaining({
 				userId: "user-1",
-				name: "Webhook",
+        projectId: "project-1",
+        createdByUserId: "user-1",
+        name: "Workflow MCP",
+        scopes: [
+          "workflow:read",
+          "workflow:write",
+          "workflow:execute",
+          "agent:write",
+        ],
 				keyHash: expect.any(String),
 				keyPrefix: expect.stringMatching(/^wfb_/),
 			}),
 		);
-		expect(apiKeys.updateSecretForUser).toHaveBeenCalledWith(
+    expect(apiKeys.updateSecretForProject).toHaveBeenCalledWith(
 			expect.objectContaining({
 				id: "key-1",
 				userId: "user-1",
+        projectId: "project-1",
 				keyHash: expect.any(String),
 				keyPrefix: expect.stringMatching(/^wfb_/),
 			}),
 		);
-		expect(apiKeys.deleteForUser).toHaveBeenCalledWith({
+    expect(apiKeys.deleteForProject).toHaveBeenCalledWith({
 			id: "key-1",
 			userId: "user-1",
+      projectId: "project-1",
 		});
+
+    vi.mocked(workspaceProjects.getProjectMemberRole).mockResolvedValue(
+      "VIEWER",
+    );
+    await expect(
+      service.createUserApiKey({
+        userId: "user-1",
+        projectId: "project-1",
+        name: "Denied",
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      service.rotateUserApiKey({
+        userId: "user-1",
+        projectId: "project-1",
+        keyId: "key-1",
+      }),
+    ).resolves.toBeNull();
 	});
 
 	it("delegates agent-run lifecycle operations to the agent-run port", async () => {
@@ -9555,7 +10022,9 @@ describe("ApplicationWorkflowDataService", () => {
 
 		expect(planArtifacts.upsertPlanArtifact).toHaveBeenCalledTimes(1);
 		expect(planArtifacts.updatePlanArtifactStatus).toHaveBeenCalledTimes(1);
-		expect(planArtifacts.listPlanArtifactsByExecutionId).toHaveBeenCalledWith("exec-1");
+    expect(planArtifacts.listPlanArtifactsByExecutionId).toHaveBeenCalledWith(
+      "exec-1",
+    );
 		expect(traceLineage.upsertTraceLineageLinks).toHaveBeenCalledTimes(1);
 	});
 
@@ -9628,7 +10097,10 @@ describe("ApplicationWorkflowDataService", () => {
 			listStaleRunningExecutions: vi.fn(async () => []),
 			updateReadModel: vi.fn(async () => undefined),
 			appendLog: vi.fn(async () => executionLog),
-				updateLog: vi.fn(async () => ({ ...executionLog, status: "success" as const })),
+      updateLog: vi.fn(async () => ({
+        ...executionLog,
+        status: "success" as const,
+      })),
 				listLogsByExecutionId: vi.fn(async () => [executionLog]),
 				listLogsByWorkflowSince: vi.fn(async () => [executionLog]),
 				listSessionIdsByExecutionId: vi.fn(async () => ["session-1"]),
@@ -9863,8 +10335,12 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowExecutions.getExecutionWorkspaceKey).toHaveBeenCalledWith(
 			"exec-1",
 		);
-		expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.getRunningByWorkflowId).toHaveBeenCalledWith("wf-1");
+    expect(workflowExecutions.getSessionOwnerContext).toHaveBeenCalledWith(
+      "exec-1",
+    );
+    expect(workflowExecutions.getRunningByWorkflowId).toHaveBeenCalledWith(
+      "wf-1",
+    );
 		expect(workflowExecutions.getLineage).toHaveBeenCalledWith("exec-1");
 		expect(workflowExecutions.listActiveForUser).toHaveBeenCalledWith("user-1");
 		expect(workflowExecutions.listForInternalAgent).toHaveBeenCalledWith({
@@ -9879,7 +10355,9 @@ describe("ApplicationWorkflowDataService", () => {
 			limit: 20,
 			include: "summary",
 		});
-		expect(workflowExecutions.listRunSummariesByWorkflowId).toHaveBeenCalledWith({
+    expect(
+      workflowExecutions.listRunSummariesByWorkflowId,
+    ).toHaveBeenCalledWith({
 			workflowId: "wf-1",
 			limit: 20,
 		});
@@ -9891,13 +10369,19 @@ describe("ApplicationWorkflowDataService", () => {
 			q: "Example",
 			limit: 10,
 		});
-		expect(workflowExecutions.listSessionsForExecutionLineage).toHaveBeenCalledWith({
+    expect(
+      workflowExecutions.listSessionsForExecutionLineage,
+    ).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			projectId: "project-1",
 			maxAncestors: 20,
 		});
-		expect(workflowExecutions.listOutputFilesByExecutionId).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.aggregateUsageMetricsForExecutionLineage).toHaveBeenCalledWith({
+    expect(
+      workflowExecutions.listOutputFilesByExecutionId,
+    ).toHaveBeenCalledWith("exec-1");
+    expect(
+      workflowExecutions.aggregateUsageMetricsForExecutionLineage,
+    ).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			projectId: "project-1",
 			maxAncestors: 20,
@@ -9908,17 +10392,31 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(workflowExecutions.appendLog).toHaveBeenCalledWith(
 			expect.objectContaining({ executionId: "exec-1", nodeId: "agent" }),
 		);
-		expect(workflowExecutions.updateLog).toHaveBeenCalledWith("exec-1", "log-1", {
+    expect(workflowExecutions.updateLog).toHaveBeenCalledWith(
+      "exec-1",
+      "log-1",
+      {
 			status: "success",
-		});
-		expect(workflowExecutions.listLogsByExecutionId).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.listSessionIdsByExecutionId).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.listAgentEventsByExecutionId).toHaveBeenCalledWith("exec-1");
-		expect(workflowExecutions.listAgentEventsByExecutionIdAfter).toHaveBeenCalledWith({
+      },
+    );
+    expect(workflowExecutions.listLogsByExecutionId).toHaveBeenCalledWith(
+      "exec-1",
+    );
+    expect(workflowExecutions.listSessionIdsByExecutionId).toHaveBeenCalledWith(
+      "exec-1",
+    );
+    expect(
+      workflowExecutions.listAgentEventsByExecutionId,
+    ).toHaveBeenCalledWith("exec-1");
+    expect(
+      workflowExecutions.listAgentEventsByExecutionIdAfter,
+    ).toHaveBeenCalledWith({
 			executionId: "exec-1",
 			afterEventId: 7,
 		});
-		expect(sessionEventNotifications.listenSessionEvents).toHaveBeenCalledTimes(1);
+    expect(sessionEventNotifications.listenSessionEvents).toHaveBeenCalledTimes(
+      1,
+    );
 		expect(sessions.findSessionIdByDaprInstanceId).toHaveBeenCalledWith(
 			"dapr-instance-1",
 		);
@@ -9949,7 +10447,9 @@ describe("ApplicationWorkflowDataService", () => {
 			artifactId: "artifact-1",
 			patch: { acceptance: { ok: true } },
 		});
-		expect(artifactStore.listSourceBundleArtifactsByWorkflowId).toHaveBeenCalledWith("wf-1");
+    expect(
+      artifactStore.listSourceBundleArtifactsByWorkflowId,
+    ).toHaveBeenCalledWith("wf-1");
 		expect(workflowFiles.createFile).toHaveBeenCalledWith(
 			expect.objectContaining({
 				userId: "user-1",
@@ -9988,8 +10488,13 @@ describe("ApplicationWorkflowDataService", () => {
 				fileId: "file-1",
 			}),
 		);
-		expect(workspaceSessions.upsertWorkflowWorkspaceSession).toHaveBeenCalledWith(
-			expect.objectContaining({ workspaceRef: "workspace-1", backend: "openshell" }),
+    expect(
+      workspaceSessions.upsertWorkflowWorkspaceSession,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceRef: "workspace-1",
+        backend: "openshell",
+      }),
 		);
 		expect(
 			workspaceSessions.listWorkflowWorkspaceSessionsByExecutionId,

@@ -1,8 +1,8 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getMemberByName, setMemberStatus } from "$lib/server/teams/team-repo";
 import { stopDurableRun } from "$lib/server/lifecycle";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/shutdown  { requestedBySessionId?, name }
@@ -12,13 +12,26 @@ import { stopDurableRun } from "$lib/server/lifecycle";
  * because teammate sessions are per-session task hubs (the durable/run wedge).
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const body = (await request.json().catch(() => ({}))) as { name?: string };
+  const body = (await request.json().catch(() => ({}))) as {
+    requestedBySessionId?: string;
+    name?: string;
+  };
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.requestedBySessionId,
+      requiredRole: "lead",
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
 	if (!body.name) return error(400, "name is required");
 
 	const member = await getMemberByName(params.teamId, body.name);
 	if (!member) return error(404, `no teammate '${body.name}' in this team`);
-	if (member.role === "lead") return error(400, "cannot shut down the team lead");
+  if (member.role === "lead")
+    return error(400, "cannot shut down the team lead");
 
 	const result = await stopDurableRun(
 		{ kind: "session", id: member.session_id },

@@ -147,7 +147,9 @@ describe("ApplicationSessionCommandService", () => {
 			sessionId: "session-1",
 			workspaceSandboxName: "ws-ready",
 		});
-		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith("session-1");
+    expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(result.session.workspaceSandboxName).toBe("ws-ready");
 		expect(result.session.daprInstanceId).toBe("session-1");
 	});
@@ -171,7 +173,9 @@ describe("ApplicationSessionCommandService", () => {
 				"OpenShell sandbox provisioning failed: failed to decode Protobuf message",
 		});
 		expect(repositoryMounter.mountSessionRepositories).not.toHaveBeenCalled();
-		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith("session-1");
+    expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(result.session.errorMessage).toBe(
 			"OpenShell sandbox provisioning failed: failed to decode Protobuf message",
 		);
@@ -220,7 +224,9 @@ describe("ApplicationSessionCommandService", () => {
 			status: "rescheduling",
 			errorMessage: null,
 		});
-		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith("session-1");
+    expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 	});
 
 	it("keeps CLI token spawn failures retry-safe and returns a precondition result", async () => {
@@ -242,7 +248,9 @@ describe("ApplicationSessionCommandService", () => {
 			settingsPath: "/settings/cli-tokens",
 			message: "AGY login required",
 		});
-		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenLastCalledWith({
+    expect(
+      sessions.updateSessionStatusUnlessTerminated,
+    ).toHaveBeenLastCalledWith({
 			id: "session-1",
 			status: "rescheduling",
 			errorMessage: "AGY login required",
@@ -261,7 +269,10 @@ describe("ApplicationSessionCommandService", () => {
 			projectId: "project-1",
 		});
 
-		expect(result).toEqual({ status: "not_found", message: "Session not found" });
+    expect(result).toEqual({
+      status: "not_found",
+      message: "Session not found",
+    });
 		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
 	});
 
@@ -417,14 +428,15 @@ describe("ApplicationSessionCommandService", () => {
 			hostBaseUrl: "http://agent-runtime:8002",
 		});
 
-		expect(repositoryMounter.mountSessionRepositoriesViaHost).toHaveBeenCalledWith(
-			"session-1",
-			"http://agent-runtime:8002",
-		);
+    expect(
+      repositoryMounter.mountSessionRepositoriesViaHost,
+    ).toHaveBeenCalledWith("session-1", "http://agent-runtime:8002");
 	});
 
 	it("reaps terminal workflow session hosts through the sandbox destroyer port", async () => {
-		vi.mocked(sessions.listReapableWorkflowSessionRuntimeHosts).mockResolvedValue([
+    vi.mocked(
+      sessions.listReapableWorkflowSessionRuntimeHosts,
+    ).mockResolvedValue([
 			{ sessionId: "old-session", runtimeAppId: "agent-session-old" },
 			{ sessionId: "session-1", runtimeAppId: "agent-session-current" },
 		]);
@@ -434,7 +446,9 @@ describe("ApplicationSessionCommandService", () => {
 			exceptSessionId: "session-1",
 		});
 
-		expect(sessions.listReapableWorkflowSessionRuntimeHosts).toHaveBeenCalledWith({
+    expect(
+      sessions.listReapableWorkflowSessionRuntimeHosts,
+    ).toHaveBeenCalledWith({
 			workflowExecutionId: "execution-1",
 		});
 		expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
@@ -579,16 +593,18 @@ describe("ApplicationSessionCommandService", () => {
 		});
 
 		expect(result).toEqual({ status: "ack", outcome: "missing_fields" });
-		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+    expect(
+      sessionAgentSlugs.resolveSessionAgentIdBySlug,
+    ).not.toHaveBeenCalled();
 		expect(sessionAgents.resolveSessionAgent).not.toHaveBeenCalled();
 		expect(workspaceProjects.getProjectMembershipDetail).not.toHaveBeenCalled();
 		expect(sessions.createSession).not.toHaveBeenCalled();
 	});
 
 	it("drops agent-trigger commands when the named agent cannot be resolved", async () => {
-		vi.mocked(sessionAgentSlugs.resolveSessionAgentIdBySlug).mockResolvedValueOnce(
-			null,
-		);
+    vi.mocked(
+      sessionAgentSlugs.resolveSessionAgentIdBySlug,
+    ).mockResolvedValueOnce(null);
 
 		const result = await service.dispatchAgentTrigger({
 			body: agentTriggerBody(),
@@ -623,9 +639,9 @@ describe("ApplicationSessionCommandService", () => {
 	});
 
 	it("drops agent-trigger commands when the user is not a project member", async () => {
-		vi.mocked(workspaceProjects.getProjectMembershipDetail).mockResolvedValueOnce(
-			null,
-		);
+    vi.mocked(
+      workspaceProjects.getProjectMembershipDetail,
+    ).mockResolvedValueOnce(null);
 
 		const result = await service.dispatchAgentTrigger({
 			body: agentTriggerBody(),
@@ -703,7 +719,9 @@ describe("ApplicationSessionCommandService", () => {
 	});
 
 	it("keeps agent-trigger spawn failures ack-safe", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
 		vi.mocked(workflowSpawner.spawnSessionWorkflow).mockRejectedValueOnce(
 			new Error("spawn failed"),
 		);
@@ -817,7 +835,9 @@ function fakeSessions(): SessionRepository {
 
 function fakeSessionEvents(): SessionEventLog {
 	return {
-		appendSessionEvent: vi.fn(async (sessionId, event) => ({
+    appendSessionEvent: vi.fn(
+      async (sessionId, event) =>
+        ({
 			id: "event-1",
 			sessionId,
 			sequence: 1,
@@ -829,7 +849,8 @@ function fakeSessionEvents(): SessionEventLog {
 			producerEpoch: event.producerEpoch ?? null,
 			createdAt: "2026-05-15T12:00:00.000Z",
 			timestamp: "2026-05-15T12:00:00.000Z",
-		}) satisfies SessionEventEnvelope),
+        }) satisfies SessionEventEnvelope,
+    ),
 		getSessionEvent: vi.fn(async () => null),
 		listSessionEvents: vi.fn(async () => []),
 		claimUnraisedTeamEvents: vi.fn(async () => []),
@@ -872,6 +893,7 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 function fakeWorkspaceProjects(): WorkspaceProjectRepository {
 	const createdAt = new Date("2026-05-15T12:00:00.000Z");
 	return {
+    hasActiveProjectMembership: vi.fn(async () => true),
 		getMemberProjectId: vi.fn(async () => "project-1"),
 		getFallbackMemberProjectId: vi.fn(async () => "project-1"),
 		listWorkspaceMemberships: vi.fn(async () => [
@@ -1088,7 +1110,11 @@ describe("ApplicationSessionCommandService.getSessionListPage", () => {
 
 	it("passes offset through for load-more paging", async () => {
 		const { service, listSessions } = makeService([], null);
-		await service.getSessionListPage({ projectId: "proj-1", offset: 50, limit: 50 });
+    await service.getSessionListPage({
+      projectId: "proj-1",
+      offset: 50,
+      limit: 50,
+    });
 		expect(listSessions).toHaveBeenCalledWith(
 			expect.objectContaining({ offset: 50, limit: 51 }),
 		);

@@ -50,7 +50,18 @@ import type {
 	WorkflowExecutionSessionRuntimeRecord,
 	WorkflowSessionRuntimeHostRecord,
 } from "$lib/server/application/ports";
-import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	agents,
@@ -96,10 +107,7 @@ import {
 	stopDurableRun,
 	type StopDurableRunMode,
 } from "$lib/server/lifecycle";
-import {
-	pauseDurableRun,
-	resumeDurableRun,
-} from "$lib/server/lifecycle/pause";
+import { pauseDurableRun, resumeDurableRun } from "$lib/server/lifecycle/pause";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PostgresLifecycleCoordinatorOwnerStore } from "$lib/server/application/adapters/lifecycle-ownership";
 import { isResourceInScope } from "$lib/server/workflows/project-scope";
@@ -145,6 +153,7 @@ function toPeerSessionRecord(session: SessionDetail): PeerSessionRecord {
 		vaultIds: session.vaultIds,
 		daprInstanceId: session.daprInstanceId,
 		natsSubject: session.natsSubject,
+    parentExecutionId: session.parentExecutionId,
 	};
 }
 
@@ -273,7 +282,8 @@ let lastEventBumpSweepAt = 0;
 
 function shouldSkipLastEventBump(sessionId: string, nowMs: number): boolean {
 	const prev = lastEventBumpAt.get(sessionId);
-	if (prev !== undefined && nowMs - prev < LAST_EVENT_BUMP_WINDOW_MS) return true;
+  if (prev !== undefined && nowMs - prev < LAST_EVENT_BUMP_WINDOW_MS)
+    return true;
 	lastEventBumpAt.set(sessionId, nowMs);
 	if (nowMs - lastEventBumpSweepAt > LAST_EVENT_BUMP_SWEEP_MS) {
 		lastEventBumpSweepAt = nowMs;
@@ -292,7 +302,8 @@ export class CurrentSessionRepository implements SessionRepository {
 		type SqlCondition = ReturnType<typeof eq>;
 		const conditions: SqlCondition[] = [];
 		if (filter.userId) conditions.push(eq(sessions.userId, filter.userId));
-		if (filter.projectId) conditions.push(eq(sessions.projectId, filter.projectId));
+    if (filter.projectId)
+      conditions.push(eq(sessions.projectId, filter.projectId));
 		if (filter.agentId) conditions.push(eq(sessions.agentId, filter.agentId));
 		if (filter.status) conditions.push(eq(sessions.status, filter.status));
 		if (filter.source === "direct") {
@@ -321,7 +332,9 @@ export class CurrentSessionRepository implements SessionRepository {
 			if (textCondition) conditions.push(textCondition as SqlCondition);
 		}
 		if (!filter.includeArchived) {
-			conditions.push(sql`${sessions.archivedAt} IS NULL` as unknown as SqlCondition);
+      conditions.push(
+        sql`${sessions.archivedAt} IS NULL` as unknown as SqlCondition,
+      );
 		}
 
 		const rows = await database
@@ -438,7 +451,9 @@ export class CurrentSessionRepository implements SessionRepository {
 		return rowToSessionDetail(row);
 	}
 
-	async ensureSession(input: EnsureSessionRecordInput): Promise<EnsureSessionRecordResult> {
+  async ensureSession(
+    input: EnsureSessionRecordInput,
+  ): Promise<EnsureSessionRecordResult> {
 		const database = requireDb(this.database);
 		const resolvedAgent = await resolveAgentRef({
 			id: input.agentId,
@@ -453,7 +468,9 @@ export class CurrentSessionRepository implements SessionRepository {
 			input.environmentVersion ?? resolvedAgent.environmentVersion ?? null;
 		const vaultIds =
 			input.vaultIds ??
-			(resolvedAgent.defaultVaultIds.length > 0 ? resolvedAgent.defaultVaultIds : []);
+      (resolvedAgent.defaultVaultIds.length > 0
+        ? resolvedAgent.defaultVaultIds
+        : []);
 		const values = {
 			id: input.id,
 			title: input.title ?? null,
@@ -487,7 +504,10 @@ export class CurrentSessionRepository implements SessionRepository {
 		return { session: existing, created: false };
 	}
 
-	async updateSessionTitle(input: { id: string; title: string }): Promise<SessionDetail | null> {
+  async updateSessionTitle(input: {
+    id: string;
+    title: string;
+  }): Promise<SessionDetail | null> {
 		const database = requireDb(this.database);
 		const [row] = await database
 			.update(sessions)
@@ -969,7 +989,9 @@ export class CurrentSessionRepository implements SessionRepository {
 	async listSandboxSessionOwners(input: {
 		sandboxNames: string[];
 	}): Promise<SandboxSessionOwnerRecord[]> {
-		const names = [...new Set(input.sandboxNames.map((name) => name.trim()).filter(Boolean))];
+    const names = [
+      ...new Set(input.sandboxNames.map((name) => name.trim()).filter(Boolean)),
+    ];
 		if (names.length === 0) return [];
 		const database = requireDb(this.database);
 		const rows = await database
@@ -1022,7 +1044,9 @@ export class CurrentSessionRepository implements SessionRepository {
 		return session ? toWorkflowEnsureSessionRecord(session) : null;
 	}
 
-	async createWorkflowEnsureSession(input: CreateWorkflowEnsureSessionInput): Promise<void> {
+  async createWorkflowEnsureSession(
+    input: CreateWorkflowEnsureSessionInput,
+  ): Promise<void> {
 		const database = requireDb(this.database);
 		await database.insert(sessions).values({
 			id: input.id,
@@ -1096,7 +1120,9 @@ export class CurrentSessionRepository implements SessionRepository {
 		);
 	}
 
-	async createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }> {
+  async createSessionFork(
+    input: CreateSessionForkInput,
+  ): Promise<{ id: string }> {
 		const session = await this.createSession({
 			agentId: input.agentId,
 			agentVersion: input.agentVersion ?? undefined,
@@ -1115,7 +1141,9 @@ export class CurrentSessionRepository implements SessionRepository {
 		return session ? toPeerSessionRecord(session) : null;
 	}
 
-	async createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord> {
+  async createPeerSession(
+    input: CreatePeerSessionInput,
+  ): Promise<PeerSessionRecord> {
 		const session = await this.createSession({
 			id: input.id,
 			agentId: input.agentId,
@@ -1127,7 +1155,9 @@ export class CurrentSessionRepository implements SessionRepository {
 		return toPeerSessionRecord(session);
 	}
 
-	async findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null> {
+  async findSessionIdByDaprInstanceId(
+    instanceId: string,
+  ): Promise<string | null> {
 		const value = instanceId.trim();
 		if (!value) return null;
 		const database = requireDb(this.database);
@@ -1148,7 +1178,10 @@ export class CurrentSessionRepository implements SessionRepository {
 		const matchers = [];
 		if (runtimeAppId) matchers.push(eq(sessions.runtimeAppId, runtimeAppId));
 		if (sessionId) {
-			matchers.push(eq(sessions.id, sessionId), eq(sessions.daprInstanceId, sessionId));
+      matchers.push(
+        eq(sessions.id, sessionId),
+        eq(sessions.daprInstanceId, sessionId),
+      );
 		}
 		if (matchers.length === 0) return null;
 		const database = requireDb(this.database);
@@ -1160,20 +1193,26 @@ export class CurrentSessionRepository implements SessionRepository {
 		return row?.id ?? null;
 	}
 
-	async getSessionFileOwner(
-		sessionId: string,
-	): Promise<{ id: string; userId: string; projectId: string | null } | null> {
+  async getSessionFileOwner(sessionId: string): Promise<{
+    id: string;
+    userId: string;
+    projectId: string | null;
+    status?: SessionStatus;
+    completedAt?: Date | null;
+  } | null> {
 		const database = requireDb(this.database);
 		const [row] = await database
 			.select({
 				id: sessions.id,
 				userId: sessions.userId,
 				projectId: sessions.projectId,
+        status: sessions.status,
+        completedAt: sessions.completedAt,
 			})
 			.from(sessions)
 			.where(eq(sessions.id, sessionId))
 			.limit(1);
-		return row ?? null;
+    return row ? { ...row, status: row.status as SessionStatus } : null;
 	}
 
 	async getSessionWorkflowContext(
@@ -1304,7 +1343,10 @@ export class KubernetesSessionProvisioningReader implements SessionProvisioningR
 		sessionId: string;
 		runtimeAppId?: string | null;
 	}) {
-		return getSessionProvisioningPreferObserver(input.sessionId, input.runtimeAppId);
+    return getSessionProvisioningPreferObserver(
+      input.sessionId,
+      input.runtimeAppId,
+    );
 	}
 }
 
@@ -1343,9 +1385,7 @@ export class DefaultSessionRuntimeConfigReader implements SessionRuntimeConfigRe
 	}
 }
 
-export class SessionAgentConfigCommandAdapter
-	implements SessionAgentConfigCommandPort
-{
+export class SessionAgentConfigCommandAdapter implements SessionAgentConfigCommandPort {
 	raiseSessionAgentConfigPatch(input: {
 		sessionId: string;
 		patch: unknown;
@@ -1375,7 +1415,10 @@ export class SessionAgentConfigCommandAdapter
 }
 
 export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser {
-	raiseSessionUserEvents(sessionId: string, events: UserEvent[]): Promise<void> {
+  raiseSessionUserEvents(
+    sessionId: string,
+    events: UserEvent[],
+  ): Promise<void> {
 		return raiseSessionUserEvents(sessionId, events);
 	}
 }
@@ -1383,7 +1426,14 @@ export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser 
 export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 	spawnSessionWorkflow(
 		sessionId: string,
-		options?: { persistentHost?: boolean },
+    options?: {
+      persistentHost?: boolean;
+      workflowMcpCapabilities?: {
+        scriptDepth: number;
+        teamId: string | null;
+        teamRole: "none" | "lead" | "member";
+      };
+    },
 	): Promise<{
 		instanceId: string;
 		natsSubject: string;
@@ -1395,8 +1445,7 @@ export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
 export class LifecycleSessionController implements SessionLifecycleController {
 	constructor(
 		private readonly goals?: SessionGoalStore,
-		private readonly coordinatorOwners: SessionCoordinatorOwnerPort =
-			new PostgresLifecycleCoordinatorOwnerStore(),
+    private readonly coordinatorOwners: SessionCoordinatorOwnerPort = new PostgresLifecycleCoordinatorOwnerStore(),
 	) {}
 
 	async checkSessionAccess(input: {
@@ -1549,9 +1598,7 @@ export class PostgresSessionGoalStore implements SessionGoalStore {
 		return toSessionGoalRecord(row)!;
 	}
 
-	async markGoalComplete(
-		sessionId: string,
-	): Promise<SessionGoalRecord | null> {
+  async markGoalComplete(sessionId: string): Promise<SessionGoalRecord | null> {
 		const [row] = await this.database
 			.update(threadGoals)
 			.set({
@@ -1602,9 +1649,7 @@ export class DaprSessionGoalLoopDriver implements SessionGoalLoopDriver {
 	}
 }
 
-export class RuntimeSessionGoalHarnessResolver
-	implements SessionGoalHarnessResolver
-{
+export class RuntimeSessionGoalHarnessResolver implements SessionGoalHarnessResolver {
 	constructor(
 		private readonly workflowData: () => Pick<
 			WorkflowDataService,
@@ -1651,9 +1696,7 @@ export class LifecycleSessionGoalScopeGuard implements SessionGoalScopeGuard {
 	}
 }
 
-export class DaprSessionUserEventCommandAdapter
-	implements SessionUserEventCommandPort
-{
+export class DaprSessionUserEventCommandAdapter implements SessionUserEventCommandPort {
 	constructor(
 		private readonly sessionEvents: SessionEventLog,
 		private readonly runtimeEvents: SessionRuntimeEventRaiser,
@@ -1674,7 +1717,10 @@ export class DaprSessionUserEventCommandAdapter
 		}
 
 		try {
-			await this.runtimeEvents.raiseSessionUserEvents(input.sessionId, input.events);
+      await this.runtimeEvents.raiseSessionUserEvents(
+        input.sessionId,
+        input.events,
+      );
 		} catch (err) {
 			console.warn("[sessions] raiseSessionUserEvents failed:", err);
 		}
@@ -1708,7 +1754,9 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 }
 
 export class KubernetesSessionSandboxDestroyer implements SessionSandboxDestroyer {
-	async deleteRuntimeSandbox(name: string): Promise<SessionSandboxDeleteResult> {
+  async deleteRuntimeSandbox(
+    name: string,
+  ): Promise<SessionSandboxDeleteResult> {
 		try {
 			const status = await deleteKubernetesSandbox(name);
 			return {
@@ -1726,7 +1774,9 @@ export class KubernetesSessionSandboxDestroyer implements SessionSandboxDestroye
 		}
 	}
 
-	async deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult> {
+  async deleteWorkspaceSandbox(
+    name: string,
+  ): Promise<SessionSandboxDeleteResult> {
 		try {
 			const response = await openshellRuntimeFetch(
 				`/api/v1/sandboxes/${encodeURIComponent(name)}`,
@@ -1790,7 +1840,11 @@ function toSessionGoalRecord(row: unknown): SessionGoalRecord | null {
 
 export class LegacyMlflowSessionTraceLifecycle implements SessionTraceLifecycleStore {
 	createInteractiveSessionTraceRun(
-		input: Parameters<NonNullable<SessionTraceLifecycleStore["createInteractiveSessionTraceRun"]>>[0],
+    input: Parameters<
+      NonNullable<
+        SessionTraceLifecycleStore["createInteractiveSessionTraceRun"]
+      >
+    >[0],
 	) {
 		return safeCreateInteractiveSessionMlflowRun(input);
 	}

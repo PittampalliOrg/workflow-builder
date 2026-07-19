@@ -122,18 +122,24 @@ export class ApplicationWorkflowExecutionControlService {
 			const rows = await this.deps.scriptCalls.listInternal(executionId);
 			return rows.flatMap((row) => {
 				if (row.status !== "running") return [];
-				const pause = (row.result as { pause?: Record<string, unknown> } | null)?.pause;
+        const pause = (row.result as { pause?: Record<string, unknown> } | null)
+          ?.pause;
 				if (!pause || pause.type !== "EVENT") return [];
-				const eventName = typeof pause.eventName === "string" ? pause.eventName : "";
+        const eventName =
+          typeof pause.eventName === "string" ? pause.eventName : "";
 				const waiterInstanceId =
-					typeof pause.waiterInstanceId === "string" ? pause.waiterInstanceId : "";
+          typeof pause.waiterInstanceId === "string"
+            ? pause.waiterInstanceId
+            : "";
 				if (!eventName || !waiterInstanceId) return [];
 				return [
 					{
 						callId: row.callId,
 						label: row.label ?? null,
 						logicalName:
-							typeof pause.logicalName === "string" ? pause.logicalName : "event",
+              typeof pause.logicalName === "string"
+                ? pause.logicalName
+                : "event",
 						message: typeof pause.message === "string" ? pause.message : null,
 						eventName,
 						waiterInstanceId,
@@ -221,10 +227,13 @@ export class ApplicationWorkflowExecutionControlService {
 			return workflowControlError(404, "Workflow not found");
 		}
 
-		const apiKeyValidation = await this.deps.workflowData.validateApiKeyForUser({
+    const apiKeyValidation = await this.deps.workflowData.validateApiKeyForUser(
+      {
 			authorizationHeader: input.authorizationHeader,
 			userId: workflow.userId,
-		});
+        projectId: workflow.projectId ?? null,
+      },
+    );
 		if (!apiKeyValidation.valid) {
 			return workflowControlError(
 				apiKeyValidation.statusCode || 401,
@@ -247,7 +256,9 @@ export class ApplicationWorkflowExecutionControlService {
 		}
 
 		const runningExecution =
-			await this.deps.workflowData.getRunningWorkflowExecution(input.workflowId);
+      await this.deps.workflowData.getRunningWorkflowExecution(
+        input.workflowId,
+      );
 		if (runningExecution) {
 			return {
 				status: "ok",
@@ -370,10 +381,15 @@ export class ApplicationWorkflowExecutionControlService {
 						: undefined,
 			},
 		);
-		if (result.notFound) return workflowControlError(404, "Execution not found");
+    if (result.notFound)
+      return workflowControlError(404, "Execution not found");
 
 		const httpStatus =
-			result.state === "confirmed" ? 200 : result.state === "stopping" ? 202 : 409;
+      result.state === "confirmed"
+        ? 200
+        : result.state === "stopping"
+          ? 202
+          : 409;
 		return {
 			status: "ok",
 			httpStatus,
@@ -448,7 +464,10 @@ export class ApplicationWorkflowExecutionControlService {
 		if (execution.executionIrVersion?.startsWith("dynamic-script")) {
 			const gates = await this.listScriptGates(input.executionId);
 			if (gates.length === 0) {
-				return workflowControlError(409, "No approval gate is waiting on this run");
+        return workflowControlError(
+          409,
+          "No approval gate is waiting on this run",
+        );
 			}
 			const requestedCallId =
 				typeof input.body?.callId === "string" ? input.body.callId : undefined;
@@ -472,7 +491,9 @@ export class ApplicationWorkflowExecutionControlService {
 				eventData: {
 					approved,
 					approvedBy: input.userId,
-					...(typeof input.body?.note === "string" ? { note: input.body.note } : {}),
+          ...(typeof input.body?.note === "string"
+            ? { note: input.body.note }
+            : {}),
 					source: "run-ui",
 				},
 			});
@@ -543,7 +564,8 @@ export class ApplicationWorkflowExecutionControlService {
 		// markers, plural (scripts can hold parallel approve()/waitForEvent()).
 		if (execution.executionIrVersion?.startsWith("dynamic-script")) {
 			const gates = await this.listScriptGates(input.executionId);
-			if (gates.length === 0) return { status: "ok", body: { awaiting: false } };
+      if (gates.length === 0)
+        return { status: "ok", body: { awaiting: false } };
 			return {
 				status: "ok",
 				body: {
@@ -750,7 +772,10 @@ export class ApplicationWorkflowExecutionControlService {
 			},
 		});
 		if (!raised.ok) {
-			return workflowControlError(raised.status, raised.detail || "Failed to raise skip event");
+      return workflowControlError(
+        raised.status,
+        raised.detail || "Failed to raise skip event",
+      );
 		}
 		return { status: "ok", httpStatus: 202, body: { ok: true } };
 	}
@@ -800,7 +825,9 @@ function findListenGate(
 	return null;
 }
 
-function resumeNodeId(body: Record<string, unknown> | undefined): string | undefined {
+function resumeNodeId(
+  body: Record<string, unknown> | undefined,
+): string | undefined {
 	const raw =
 		typeof body?.fromNodeId === "string" && body.fromNodeId.trim()
 			? body.fromNodeId.trim()
@@ -828,7 +855,9 @@ const TERMINAL_EXECUTION_STATUSES = new Set([
 /** A run is safe to resume-from when it is terminal or a stop was confirmed. */
 function isTerminalOrStopped(source: WorkflowExecutionRecord): boolean {
 	if (source.stopRequestedAt) return true;
-	return TERMINAL_EXECUTION_STATUSES.has(String(source.status ?? "").toLowerCase());
+  return TERMINAL_EXECUTION_STATUSES.has(
+    String(source.status ?? "").toLowerCase(),
+  );
 }
 
 function topLevelNodeIds(spec: unknown): string[] {

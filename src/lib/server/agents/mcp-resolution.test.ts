@@ -95,6 +95,36 @@ describe("agent MCP resolution boundary", () => {
 		});
 	});
 
+	it("omits a project MCP connection when the agent explicitly disables every tool", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [row()],
+			requestedServers: [
+				{
+					pieceName: "github",
+					allowedTools: [],
+				},
+			],
+			includeProjectConnections: true,
+		});
+
+		expect(result).toEqual({ mcpServers: [], warnings: [] });
+	});
+
+	it("omits a direct MCP endpoint when its explicit tool allowlist is empty", () => {
+		const result = resolveMcpServerConfigsFromRows({
+			rows: [],
+			requestedServers: [
+				{
+					server_name: "custom_tools",
+					url: "https://mcp.example.test/mcp",
+					allowedTools: [],
+				},
+			],
+		});
+
+		expect(result).toEqual({ mcpServers: [], warnings: [] });
+	});
+
 	it("resolves hosted workflow connections with the supplied bearer token", () => {
 		const result = resolveMcpServerConfigsFromRows({
 			rows: [

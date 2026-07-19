@@ -119,11 +119,6 @@ export function initDb(): void {
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required");
   }
-  if (!process.env.USER_ID) {
-    console.warn(
-      "[wf-mcp] USER_ID not set — workflow list reads are not user-scoped",
-    );
-  }
   pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
 }
 
@@ -151,21 +146,17 @@ function createDefaultTriggerNode(): NodeData {
 // ── Query Functions ────────────────────────────────────────
 
 export async function listWorkflows(
-  userId?: string,
+  projectId: string,
   limit?: number,
 ): Promise<WorkflowSummary[]> {
-  const userIdFilter = userId ?? process.env.USER_ID;
   let query = `
 		SELECT id, name, description, visibility, engine_type, spec_version, created_at, updated_at,
 			case when jsonb_typeof(nodes) = 'array' then jsonb_array_length(nodes) else 0 end as node_count,
 			case when jsonb_typeof(edges) = 'array' then jsonb_array_length(edges) else 0 end as edge_count
 		FROM workflows
+    WHERE project_id = $1
 	`;
-  const params: string[] = [];
-  if (userIdFilter) {
-    query += ` WHERE user_id = $1`;
-    params.push(userIdFilter);
-  }
+  const params = [projectId];
   query += ` ORDER BY updated_at DESC`;
   if (Number.isFinite(limit) && (limit as number) > 0) {
     query += ` LIMIT ${Math.min(Math.trunc(limit as number), 500)}`;
@@ -210,19 +201,32 @@ export async function getWorkflow(id: string): Promise<WorkflowRow | null> {
   };
 }
 
-/** Resolve a session's owner (user + project) for attribution — the same
- * model the BFF's internal agent routes use (X-Wfb-Session-Id lineage). */
-export async function getSessionOwner(
-  sessionId: string,
-): Promise<{ userId: string | null; projectId: string | null } | null> {
+/** Workspace-scoped lookup used by the public MCP workflow surface. */
+export async function getScopedWorkflow(
+  ref: string,
+  projectId: string,
+): Promise<WorkflowRow | null> {
   const result = await pool.query(
-    `SELECT user_id, project_id FROM sessions WHERE id = $1 LIMIT 1`,
-    [sessionId],
+    `SELECT id, name, description, nodes, edges, visibility, engine_type, spec_version, spec, created_at, updated_at
+     FROM workflows
+     WHERE (id = $1 OR name = $1) AND project_id = $2
+     ORDER BY (id = $1) DESC LIMIT 1`,
+    [ref, projectId],
   );
   if (result.rows.length === 0) return null;
+  const r = result.rows[0];
   return {
-    userId: result.rows[0].user_id ?? null,
-    projectId: result.rows[0].project_id ?? null,
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    nodes: r.nodes ?? [],
+    edges: r.edges ?? [],
+    visibility: r.visibility,
+    engineType: r.engine_type ?? null,
+    specVersion: r.spec_version ?? null,
+    spec: r.spec ?? null,
+    created_at: r.created_at?.toISOString?.() ?? r.created_at,
+    updated_at: r.updated_at?.toISOString?.() ?? r.updated_at,
   };
 }
 
@@ -628,14 +632,18 @@ export type ExecutionLogEntry = {
 
 export async function getExecutionByInstanceId(
   instanceId: string,
+  projectId: string,
 ): Promise<ExecutionRow | null> {
   // Accept EITHER the Dapr instance id OR the execution row id — callers
   // (agents digesting a Workflow tool result) commonly hold the execution id
   // (e.g. `wfs…`), and the two are 1:1.
   const result = await pool.query(
     `SELECT id, workflow_id, status, phase, error, started_at, completed_at, duration
-		 FROM workflow_executions WHERE dapr_instance_id = $1 OR id = $1 LIMIT 1`,
-    [instanceId],
+		 FROM workflow_executions
+     WHERE (dapr_instance_id = $1 OR id = $1)
+       AND project_id = $2
+     LIMIT 1`,
+    [instanceId, projectId],
   );
   if (result.rows.length === 0) return null;
   const r = result.rows[0];

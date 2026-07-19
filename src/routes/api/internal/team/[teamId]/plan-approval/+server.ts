@@ -1,9 +1,9 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import { injectTeamMessage } from "$lib/server/teams/team-messaging";
 import { nanoid } from "nanoid";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/plan-approval
@@ -18,28 +18,39 @@ import { nanoid } from "nanoid";
  * lead). Only the team's lead may decide.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		requestedBySessionId?: string;
 		name?: string;
 		approved?: boolean;
 		feedback?: string;
 	};
-	if (!body.requestedBySessionId || !body.name || typeof body.approved !== "boolean") {
-		return error(400, "requestedBySessionId, name, and approved are required");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.requestedBySessionId,
+      requiredRole: "lead",
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  if (!body.name || typeof body.approved !== "boolean") {
+    return error(400, "name and approved are required");
 	}
 	const store = getApplicationAdapters().teamStore;
 
 	const team = await store.getTeam(params.teamId);
 	if (!team) return error(404, "no such team");
-	if (team.lead_session_id !== body.requestedBySessionId) {
-		return error(403, "only the team lead can approve or reject a plan");
-	}
 
 	const member = await store.getMemberByName(params.teamId, body.name);
 	if (!member) return error(404, `no teammate '${body.name}' in this team`);
 	if (!member.plan_mode_required) {
-		return json({ ok: true, name: body.name, planModeRequired: false, note: "already approved" });
+    return json({
+      ok: true,
+      name: body.name,
+      planModeRequired: false,
+      note: "already approved",
+    });
 	}
 
 	if (body.approved) {
@@ -55,5 +66,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		sourceEventId: `team-plan-decision:${member.session_id}:${nanoid(8)}`,
 	});
 
-	return json({ ok: true, name: body.name, approved: body.approved, planModeRequired: !body.approved });
+  return json({
+    ok: true,
+    name: body.name,
+    approved: body.approved,
+    planModeRequired: !body.approved,
+  });
 };

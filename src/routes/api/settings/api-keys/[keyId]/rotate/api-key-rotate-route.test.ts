@@ -11,6 +11,8 @@ describe("settings API key rotate route", () => {
 		);
 
 		expect(source).toContain("workflowData.rotateUserApiKey");
+    expect(source).toContain("locals.session?.projectId");
+    expect(source).toContain("projectId,");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

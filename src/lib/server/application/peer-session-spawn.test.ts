@@ -8,13 +8,21 @@ import type {
 	SessionWorkflowSpawner,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
+import type { WorkflowMcpSessionTokenSigner } from "$lib/server/application/ports/workflow-mcp-auth";
+import type {
+  PeerSessionSpawnPolicy,
+  PeerSessionSpawnPrincipal,
+} from "$lib/server/application/peer-session-spawn";
 
 describe("ApplicationPeerSessionSpawnService", () => {
 	let peerSession: PeerSessionRecord;
 	let dispatchContext: PeerAgentDispatchContext;
 	let workflowData: Pick<
 		WorkflowDataService,
-		"ensurePeerSession" | "resolvePeerAgentDispatchContext"
+    | "ensurePeerSession"
+    | "resolvePeerAgentDispatchContext"
+    | "getSessionDetail"
+    | "getSessionFileOwner"
 	>;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let sandboxProvisioner: SandboxProvisioner;
@@ -23,6 +31,14 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		"attachWorkspaceSandbox" | "recordSandboxProvisioningError"
 	>;
 	let service: ApplicationPeerSessionSpawnService;
+  let workflowMcpSessionTokens: WorkflowMcpSessionTokenSigner;
+  const principal: PeerSessionSpawnPrincipal = {
+    userId: "user-1",
+    projectId: "project-1",
+    sessionId: "parent-session-1",
+    capabilities: { scriptDepth: 0, teamId: null, teamRole: "none" },
+  };
+  const callAgentPolicy: PeerSessionSpawnPolicy = { kind: "call_agent" };
 
 	beforeEach(() => {
 		peerSession = {
@@ -34,6 +50,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			vaultIds: ["vault-1"],
 			daprInstanceId: null,
 			natsSubject: null,
+      parentExecutionId: "parent-session-1",
 		};
 		dispatchContext = {
 			agentConfig: {
@@ -41,6 +58,14 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			} as unknown as PeerAgentDispatchContext["agentConfig"],
 			environmentConfig: { image: "env-image" },
 			callableAgents: [
+        {
+          slug: "peer",
+          agentId: "agent-peer",
+          version: 3,
+          appId: "dapr-agent-py",
+          team: "project-1",
+          registryKey: "project-1/peer",
+        },
 				{
 					slug: "reviewer",
 					agentId: "agent-reviewer",
@@ -59,6 +84,24 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				reused: false,
 			})),
 			resolvePeerAgentDispatchContext: vi.fn(async () => dispatchContext),
+      getSessionDetail: vi.fn(async ({ sessionId }) =>
+        sessionId === "parent-session-1"
+          ? ({
+              agentId: "agent-parent",
+              agentVersion: 1,
+            } as Awaited<ReturnType<WorkflowDataService["getSessionDetail"]>>)
+          : null,
+      ),
+      getSessionFileOwner: vi.fn(async (sessionId) => ({
+        id: sessionId,
+        userId: "user-1",
+        projectId: "project-1",
+        status: "running" as const,
+        completedAt: null,
+      })),
+    };
+    workflowMcpSessionTokens = {
+      sign: vi.fn(() => "signed-child-token"),
 		};
 		workflowSpawner = {
 			spawnSessionWorkflow: vi.fn(async () => ({
@@ -80,26 +123,30 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		service = new ApplicationPeerSessionSpawnService({
 			workflowData,
 			workflowSpawner,
+      workflowMcpSessionTokens,
 			sandboxProvisioner,
 			sessions,
 		});
 	});
 
+  const spawn = (
+    payload: unknown,
+    policy: PeerSessionSpawnPolicy = callAgentPolicy,
+  ) => service.spawnPeerSession(payload, principal, policy);
+
 	it("validates required peer-spawn fields before ensuring a session", async () => {
-		await expect(service.spawnPeerSession({})).resolves.toEqual({
+    await expect(spawn({})).resolves.toEqual({
 			status: "error",
 			httpStatus: 400,
 			message: "sessionId is required",
 		});
-		await expect(
-			service.spawnPeerSession({ sessionId: "ca-session-1" }),
-		).resolves.toEqual({
+    await expect(spawn({ sessionId: "ca-session-1" })).resolves.toEqual({
 			status: "error",
 			httpStatus: 400,
 			message: "peerAgentId is required",
 		});
 		await expect(
-			service.spawnPeerSession({
+      spawn({
 				sessionId: "x".repeat(65),
 				peerAgentId: "agent-peer",
 			}),
@@ -112,7 +159,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 	});
 
 	it("ensures and spawns a fresh peer session (no sandbox by default)", async () => {
-		const result = await service.spawnPeerSession(body({ title: "Peer review" }));
+    const result = await spawn(body({ title: "Peer review" }));
 
 		expect(result).toEqual({
 			status: "ok",
@@ -123,6 +170,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				daprInstanceId: "ca-session-1",
 				natsSubject: "session.events.ca-session-1",
 				sandboxName: null,
+        workflowMcpSessionToken: "signed-child-token",
 				reused: false,
 			},
 		});
@@ -131,11 +179,18 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			peerAgentId: "agent-peer",
 			prompt: "Review this change",
 			parentSessionId: "parent-session-1",
-			parentInstanceId: "parent-instance-1",
+      parentInstanceId: null,
 			title: "Peer review",
 		});
 		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
 			"ca-session-1",
+      {
+        workflowMcpCapabilities: {
+          scriptDepth: 0,
+          teamId: null,
+          teamRole: "none",
+        },
+      },
 		);
 		expect(sandboxProvisioner.provision).not.toHaveBeenCalled();
 	});
@@ -144,11 +199,17 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		const callOrder: string[] = [];
 		vi.mocked(sandboxProvisioner.provision).mockImplementationOnce(async () => {
 			callOrder.push("provision");
-			return { sandboxName: "ws-peer-1", workspaceRef: "ref-1", rootPath: "/sandbox" };
+      return {
+        sandboxName: "ws-peer-1",
+        workspaceRef: "ref-1",
+        rootPath: "/sandbox",
+      };
 		});
-		vi.mocked(sessions.attachWorkspaceSandbox).mockImplementationOnce(async () => {
+    vi.mocked(sessions.attachWorkspaceSandbox).mockImplementationOnce(
+      async () => {
 			callOrder.push("attach");
-		});
+      },
+    );
 		vi.mocked(workflowSpawner.spawnSessionWorkflow).mockImplementationOnce(
 			async () => {
 				callOrder.push("spawn");
@@ -159,7 +220,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			},
 		);
 
-		const result = await service.spawnPeerSession(
+    const result = await spawn(
 			body({ title: "teammate:impl", provisionSandbox: true }),
 		);
 
@@ -186,9 +247,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			new Error("Kueue admission timeout"),
 		);
 
-		const result = await service.spawnPeerSession(
-			body({ provisionSandbox: true }),
-		);
+    const result = await spawn(body({ provisionSandbox: true }));
 
 		expect(sessions.recordSandboxProvisioningError).toHaveBeenCalledWith({
 			sessionId: "ca-session-1",
@@ -196,6 +255,9 @@ describe("ApplicationPeerSessionSpawnService", () => {
 		});
 		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
 			"ca-session-1",
+      expect.objectContaining({
+        workflowMcpCapabilities: expect.objectContaining({ teamRole: "none" }),
+      }),
 		);
 		expect(result).toMatchObject({
 			status: "ok",
@@ -214,7 +276,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			reused: true,
 		});
 
-		const result = await service.spawnPeerSession(body());
+    const result = await spawn(body());
 
 		expect(result).toEqual({
 			status: "ok",
@@ -224,15 +286,18 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				agentVersion: 3,
 				daprInstanceId: "ca-session-1",
 				natsSubject: "session.events.ca-session-1",
+        workflowMcpSessionToken: "signed-child-token",
 				reused: true,
 			},
 		});
 		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
-		expect(workflowData.resolvePeerAgentDispatchContext).not.toHaveBeenCalled();
+    expect(workflowData.resolvePeerAgentDispatchContext).toHaveBeenCalledTimes(
+      1,
+    );
 	});
 
 	it("returns dispatch context for skipSpawn callers", async () => {
-		const result = await service.spawnPeerSession(body({ skipSpawn: true }));
+    const result = await spawn(body({ skipSpawn: true }));
 
 		expect(result).toEqual({
 			status: "ok",
@@ -248,6 +313,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				vaultIds: ["vault-1"],
 				callableAgents: dispatchContext.callableAgents,
 				registryTeam: "project-1",
+        workflowMcpSessionToken: "signed-child-token",
 				skipSpawn: true,
 			},
 		});
@@ -266,18 +332,16 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			status: 404,
 			message: "Peer agent missing",
 		});
-		await expect(service.spawnPeerSession(body())).resolves.toEqual({
+    await expect(spawn(body())).resolves.toEqual({
 			status: "error",
 			httpStatus: 404,
 			message: "Peer agent missing",
 		});
 
-		vi.mocked(workflowData.resolvePeerAgentDispatchContext).mockResolvedValueOnce(
-			null,
-		);
-		await expect(
-			service.spawnPeerSession(body({ skipSpawn: true })),
-		).resolves.toEqual({
+    vi.mocked(workflowData.resolvePeerAgentDispatchContext)
+      .mockResolvedValueOnce(dispatchContext)
+      .mockResolvedValueOnce(null);
+    await expect(spawn(body({ skipSpawn: true }))).resolves.toEqual({
 			status: "error",
 			httpStatus: 500,
 			message: "could not re-resolve peer agent-peer",
@@ -289,7 +353,7 @@ describe("ApplicationPeerSessionSpawnService", () => {
 			new Error("Dapr unavailable"),
 		);
 
-		await expect(service.spawnPeerSession(body())).resolves.toEqual({
+    await expect(spawn(body())).resolves.toEqual({
 			status: "ok",
 			httpStatus: 202,
 			body: {
@@ -298,11 +362,74 @@ describe("ApplicationPeerSessionSpawnService", () => {
 				agentVersion: 3,
 				daprInstanceId: null,
 				natsSubject: null,
+        workflowMcpSessionToken: "signed-child-token",
 				reused: false,
 				error: "Dapr unavailable",
 			},
 		});
 	});
+
+  it("rejects parent lineage and callable-agent violations", async () => {
+    await expect(
+      spawn(body({ parentSessionId: "another-session" })),
+    ).resolves.toMatchObject({ status: "error", httpStatus: 403 });
+
+    dispatchContext.callableAgents = [];
+    await expect(spawn(body())).resolves.toEqual({
+      status: "error",
+      httpStatus: 403,
+      message: "Peer agent is not in the parent session's callable allowlist",
+    });
+  });
+
+  it("rejects a reused session whose agent or parent lineage conflicts", async () => {
+    vi.mocked(workflowData.ensurePeerSession).mockResolvedValueOnce({
+      ok: true,
+      session: { ...peerSession, agentId: "different-agent" },
+      reused: true,
+    });
+
+    await expect(spawn(body())).resolves.toEqual({
+      status: "error",
+      httpStatus: 409,
+      message:
+        "Existing peer session does not match the requested agent and lineage",
+    });
+  });
+
+  it("mints member capability only for the signed team lead", async () => {
+    const teamPrincipal: PeerSessionSpawnPrincipal = {
+      ...principal,
+      capabilities: {
+        scriptDepth: 1,
+        teamId: "team-1",
+        teamRole: "lead",
+      },
+    };
+    const result = await service.spawnPeerSession(body(), teamPrincipal, {
+      kind: "team",
+      teamId: "team-1",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(workflowMcpSessionTokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "ca-session-1",
+        capabilities: {
+          scriptDepth: 1,
+          teamId: "team-1",
+          teamRole: "member",
+        },
+      }),
+    );
+
+    await expect(
+      service.spawnPeerSession(body(), principal, {
+        kind: "team",
+        teamId: "team-1",
+      }),
+    ).resolves.toMatchObject({ status: "error", httpStatus: 403 });
+  });
 });
 
 function body(overrides: Record<string, unknown> = {}) {

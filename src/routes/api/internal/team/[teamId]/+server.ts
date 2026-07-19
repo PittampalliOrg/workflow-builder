@@ -1,7 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getTeamView } from "$lib/server/teams/team-view";
+import { authorizeTeamActionRequest } from "../team-action-principal";
 
 /**
  * GET /api/internal/team/[teamId] — the team's members + tasks (the data the
@@ -9,7 +9,12 @@ import { getTeamView } from "$lib/server/teams/team-view";
  * the UI uses the authed public endpoint at /api/v1/sessions/[id]/team.
  */
 export const GET: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
 	const view = await getTeamView(params.teamId);
 	if (!view) return error(404, "team not found");
 	return json(view);

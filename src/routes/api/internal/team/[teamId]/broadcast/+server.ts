@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/broadcast  { fromSessionId?, content }
@@ -16,17 +16,25 @@ import { getApplicationAdapters } from "$lib/server/application";
  * `sourceEventId` dedup are all preserved. See docs/agent-teams-phase1.md.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		fromSessionId?: string;
 		content?: string;
 	};
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.fromSessionId,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
 	if (!body.content) return error(400, "content is required");
 
 	const broadcastId = randomUUID();
 	await getApplicationAdapters().eventBus.publish("workflow.team-broadcast", {
 		teamId: params.teamId,
-		fromSessionId: body.fromSessionId ?? null,
+    fromSessionId: authorization.principal.sessionId,
 		content: body.content,
 		broadcastId,
 	});

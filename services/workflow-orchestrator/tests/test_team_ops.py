@@ -135,7 +135,7 @@ def test_task_op_passes_assign_mode(monkeypatch):
 
     seen: list[tuple[str, str, dict | None]] = []
 
-    def fake_request(method, path, json_body=None):
+    def fake_request(method, path, json_body=None, **kwargs):
         seen.append((method, path, json_body))
         if path.endswith("ensure-script-team"):
             return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
@@ -173,7 +173,7 @@ def test_ensure_body_carries_token_budget(monkeypatch):
 
     seen: list[tuple[str, str, dict | None]] = []
 
-    def fake_request(method, path, json_body=None):
+    def fake_request(method, path, json_body=None, **kwargs):
         seen.append((method, path, json_body))
         if path.endswith("ensure-script-team"):
             return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
@@ -330,7 +330,10 @@ def test_execute_team_op_5xx_raises_for_activity_retry(monkeypatch):
 
 
 def test_execute_team_op_success_carries_team_identity(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
     def fake_request(method, url, **kwargs):
+        calls.append(kwargs)
         if url.endswith("/ensure-script-team"):
             return FakeResponse(200, {"teamId": "team-e1", "leadSessionId": "lead-e1"})
         return FakeResponse(200, {"ok": True, "task": {"id": "t1"}})
@@ -345,6 +348,10 @@ def test_execute_team_op_success_carries_team_identity(monkeypatch):
     assert out["success"] is True
     assert out["teamId"] == "team-e1"
     assert out["result"] == {"ok": True, "task": {"id": "t1"}}
+    assert calls[-1]["headers"]["X-Wfb-System-Principal"] == (
+        "workflow-orchestrator-team-script"
+    )
+    assert calls[-1]["headers"]["X-Wfb-Session-Id"] == "lead-e1"
 
 
 # ── Stage-1 UI data: rail labels + spawn sessionId backfill ───────────────

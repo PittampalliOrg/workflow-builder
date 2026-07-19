@@ -35,7 +35,7 @@ scripts with un-awaited calls, Promises in the returnValue, and "[object Promise
 - Return a value at the end (bare top-level `return {...}`) — it becomes the run's output.
 
 PLATFORM RULES (get these right):
-1. opts.model = a platform MODEL KEY (e.g. 'zai/glm-5.2', 'anthropic/claude-opus-4-8'), NOT a tier
+1. opts.model = a platform MODEL KEY (e.g. 'kimi/kimi-k3', 'anthropic/claude-opus-4-8'), NOT a tier
    alias ('opus'/'sonnet' silently fall back to the default). Omit to inherit the run default.
    meta.phases[].model IS honored as a fallback: opts.model > meta.phases[phase].model >
    defaults.model.
@@ -45,6 +45,7 @@ PLATFORM RULES (get these right):
 3. opts.isolation: use 'shared' to put agents on ONE shared workspace; default is per-agent
    isolated. 'worktree' is a no-op here.
 4. opts.effort ('low'|'medium'|'high'|'xhigh'|'max') is honored, clamped per provider.
+   Kimi K3 always runs at max thinking regardless of the requested value.
 5. budget.spent() counts input+output+cache_creation (net of cache reads), NOT output-only.
    Exhaustion makes unresolved agent() calls throw; in-flight agents still finish.
    Guard loops: while (budget.total && budget.remaining() > N) {...}.

@@ -1,8 +1,8 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
 import { runTeamHook } from "$lib/server/teams/team-hooks";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/tasks
@@ -23,7 +23,6 @@ import { runTeamHook } from "$lib/server/teams/team-hooks";
  * ops surface it as a catchable script error and MCP tools as tool feedback.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
 	const body = (await request.json().catch(() => ({}))) as {
 		title?: string;
 		description?: string;
@@ -32,13 +31,23 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		assignMode?: "direct" | "queue";
 		createdBySessionId?: string;
 	};
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.createdBySessionId,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
 	if (!body.title || !body.title.trim()) return error(400, "title is required");
 	const store = getApplicationAdapters().teamStore;
 
 	let assigneeSessionId: string | null = null;
 	if (body.assignTo) {
 		const member = await store.getMemberByName(params.teamId, body.assignTo);
-		if (!member) return error(404, `no teammate '${body.assignTo}' in this team`);
+    if (!member)
+      return error(404, `no teammate '${body.assignTo}' in this team`);
 		assigneeSessionId = member.session_id;
 	}
 
@@ -51,7 +60,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			assignee: body.assignTo ?? null,
 			dependsOn: Array.isArray(body.dependsOn) ? body.dependsOn : [],
 		},
-		sessionId: body.createdBySessionId ?? null,
+    sessionId: authorization.principal.sessionId,
 	});
 	if (gate.blocked) {
 		return json({ blocked: true, reason: gate.reason }, { status: 422 });
@@ -62,10 +71,12 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		title: body.title.trim(),
 		description: body.description ?? null,
 		dependsOn: Array.isArray(body.dependsOn) ? body.dependsOn : [],
-		createdBySessionId: body.createdBySessionId ?? null,
+    createdBySessionId: authorization.principal.sessionId,
 		assigneeSessionId,
 		status:
-			assigneeSessionId && body.assignMode !== "queue" ? "in_progress" : "pending",
+      assigneeSessionId && body.assignMode !== "queue"
+        ? "in_progress"
+        : "pending",
 	});
 
 	// Keep the (synthetic) container run's progress current; a no-op for

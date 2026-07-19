@@ -1,8 +1,8 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { validateInternalToken } from "$lib/server/internal-auth";
 import { claimNextTask } from "$lib/server/teams/team-tasks";
 import { getMemberBySession } from "$lib/server/teams/team-repo";
+import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
  * POST /api/internal/team/[teamId]/claim  { sessionId }
@@ -17,10 +17,20 @@ import { getMemberBySession } from "$lib/server/teams/team-repo";
  * the Claude Code plan-approval handshake.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
-	if (!validateInternalToken(request)) return error(401, "Unauthorized");
-	const body = (await request.json().catch(() => ({}))) as { sessionId?: string };
-	if (!body.sessionId) return error(400, "sessionId is required");
-	const member = await getMemberBySession(body.sessionId).catch(() => null);
+  const body = (await request.json().catch(() => ({}))) as {
+    sessionId?: string;
+  };
+  const authorization = await authorizeTeamActionRequest(
+    request,
+    params.teamId,
+    {
+      bodySessionId: body.sessionId,
+    },
+  );
+  if (!authorization.ok)
+    return error(authorization.status, authorization.error);
+  const sessionId = authorization.principal.sessionId;
+  const member = await getMemberBySession(sessionId).catch(() => null);
 	if (member && member.team_id === params.teamId && member.plan_mode_required) {
 		return json({
 			task: null,
@@ -31,7 +41,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	}
 	const task = await claimNextTask({
 		teamId: params.teamId,
-		sessionId: body.sessionId,
+    sessionId,
 	});
 	return json({ task });
 };

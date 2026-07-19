@@ -15,8 +15,8 @@ the memory note `project_argo_events_workflow_trigger`.
 
 **Dapr Workflow cannot be "triggered." A workflow instance is created ONLY by an explicit start call**
 (`POST /v1.0/workflows/dapr/<name>/start`, SDK `schedule_new_workflow`). There is no native
-"start-on-event" or "start-on-schedule." `wait_for_external_event` only *resumes* a RUNNING workflow
-(our approval-gate / `WEBHOOK` pause already uses it) — it never *starts* one.
+"start-on-event" or "start-on-schedule." `wait_for_external_event` only _resumes_ a RUNNING workflow
+(our approval-gate / `WEBHOOK` pause already uses it) — it never _starts_ one.
 
 So every "trigger" is the same shape:
 
@@ -37,7 +37,8 @@ idempotent start path, and let the UI parameterize which ingress backs each work
     fires the orchestrator async (`src/routes/api/workflows/[workflowId]/webhook/+server.ts`).
   - `MCP` → exposed as an MCP tool (`src/lib/server/db/mcp/index.ts`, `…/mcp/.../execute`).
   - `Manual` → UI "Run" / `POST /api/workflows/[id]/execute` (session auth).
-- **Internal start path** `POST /api/internal/agent/workflows/execute` (`X-Internal-Token`, body
+- **Internal start path** `POST /api/internal/agent/workflows/execute` (`X-Internal-Token` plus
+  `X-Wfb-System-Principal: workflow-trigger`, body
   `{workflowId|workflowName, triggerData}`) — service-to-service; **this is the seam every trigger backend
   should call.**
 - **Pub/sub agent-trigger** (P1/#251): NATS JetStream topic `workflow.agent-trigger` → BFF →
@@ -54,12 +55,12 @@ provisions/tears-down the listener when a workflow is published.
 
 ## 2. UI model: ONE trigger node with a category, NOT per-source event nodes
 
-**Recommendation: keep the single `trigger` start node and expand `triggerType` into a *category* with
-per-type parameterized config.** Render a distinct icon/label per category so it still *reads* like
+**Recommendation: keep the single `trigger` start node and expand `triggerType` into a _category_ with
+per-type parameterized config.** Render a distinct icon/label per category so it still _reads_ like
 "pick your event source," but it stays one node.
 
 | | **A. One trigger node + category (recommended)** | **B. A trigger category with N event-source node types (n8n/Activepieces style)** |
-|---|---|---|
+| ------------------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Fit with SW 1.0 | ✅ one entry point — matches the spec's single start | ⚠️ needs multi-entry / synthetic-start semantics the interpreter doesn't model |
 | Already built | ✅ `config.triggerType` exists + is read in 3 places | ✗ new node types + canvas + adapter work |
 | Spec/canvas cleanliness | ✅ one node, one config panel | ✗ a node per source; "which one starts the run?" ambiguity |
@@ -73,6 +74,7 @@ per-type parameterized config.** Render a distinct icon/label per category so it
 multiple workflows publishing to one internal topic, not multiple start nodes.)
 
 ### Trigger categories to expose (UI)
+
 `Manual` · `Webhook` · `Schedule` (cron/at) · `Event/Topic` (pub/sub) · `Cloud queue` (Kafka/SQS/RabbitMQ/…)
 · `Git/SCM` (GitHub/GitLab) · `Resource` (k8s object change) · `MCP` (existing).
 
@@ -87,14 +89,14 @@ From the Dapr + Argo-Events research (sources at bottom). Dapr ranks by "native 
 signal to a route":
 
 | Category | Most-native backing | Why / notes |
-|---|---|---|
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Schedule / delayed** | **Dapr Jobs API + Scheduler** (1.14+) | Durable (etcd-backed), **replica-deduplicated**, one-shot+delay+recurring+retry, carries a payload. Beats `bindings.cron` (in-memory, per-replica, fires on every replica). |
 | **Event / topic** | **Dapr declarative `Subscription` v2alpha1** (CEL `routes.rules` + `deadLetterTopic`) | Hot-reloaded, no code; one topic content-routes to many workflow types. The unifying bus (see §5). |
 | **Cloud queue / Kafka / MQTT / Service Bus / Event Hubs / GCP / SQS** | **Dapr input binding** per source, `scopes:[orchestrator]` | Native per-source connector → dedicated `/<binding-name>` route; least glue. |
-| **Webhook / HTTP** | No native Dapr HTTP *input* binding → **Argo Events webhook EventSource** OR the BFF terminates HTTP and **publishes to the bus** | Dapr has no `bindings.http` input; don't invent one. Use Argo Events (rich) or BFF-publish (simple). |
+| **Webhook / HTTP**                                                    | No native Dapr HTTP _input_ binding → **Argo Events webhook EventSource** OR the BFF terminates HTTP and **publishes to the bus** | Dapr has no `bindings.http` input; don't invent one. Use Argo Events (rich) or BFF-publish (simple).                                                                        |
 | **Git/SCM, Calendar, k8s Resource, Slack, Stripe, …** | **Argo Events EventSource** (27 source types) | Dapr has no connectors for these; Argo Events does. Hand off to the bus/route (see §6). |
 
-**Key insight:** Dapr covers *queues, schedules, and topics* natively and richly; **Argo Events covers the
+**Key insight:** Dapr covers _queues, schedules, and topics_ natively and richly; **Argo Events covers the
 "long tail" of event sources** (GitHub, calendar, k8s resource, Slack, Stripe, …) that Dapr has no binding
 for. They are complementary, not competing.
 
@@ -164,6 +166,7 @@ Why a single topic + CEL instead of N routes: hot-reloaded, no redeploy to add a
 dead-letter, and one place to enforce auth/idempotency/observability.
 
 **How each backing reaches the spine:**
+
 - `dapr-subscription` (topic triggers): publisher → `workflow.triggers` directly (or its own topic with a
   rule).
 - `dapr-job` (schedule): Scheduler fires the job → job handler publishes to `workflow.triggers`.
@@ -271,7 +274,7 @@ the Argo-webhook case).
 - **Auth on inbound HTTP** — internal-token for service callers; per-trigger signing secret for public webhooks
   (don't accept arbitrary `workflowId` from the public internet without a workflow-scoped secret).
 - **GitOps vs direct apply** — production backings via stacks GitOps; dev may direct-apply for iteration.
-- **No dispatch migration** — this is *additive* (start the existing workflow), consistent with
+- **No dispatch migration** — this is _additive_ (start the existing workflow), consistent with
   `event-driven-invocation-and-unified-hooks.md`; we do NOT change how nodes dispatch.
 
 ## References

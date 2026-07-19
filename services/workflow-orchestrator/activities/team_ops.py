@@ -63,17 +63,30 @@ def _base_url() -> str:
     )
 
 
-def _request(method: str, path: str, json_body: dict[str, Any] | None = None) -> tuple[int, Any]:
+def _request(
+    method: str,
+    path: str,
+    json_body: dict[str, Any] | None = None,
+    *,
+    acting_session_id: str | None = None,
+) -> tuple[int, Any]:
     """One HTTP call. Returns (status, parsed-json-or-text). Raises on transport."""
     token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
     if not token:
         raise TeamOpsApiError("INTERNAL_API_TOKEN is required for the team API")
     url = f"{_base_url()}/{path.lstrip('/')}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Token": token,
+        "X-Wfb-System-Principal": "workflow-orchestrator-team-script",
+    }
+    if acting_session_id:
+        headers["X-Wfb-Session-Id"] = acting_session_id
     try:
         response = requests.request(
             method,
             url,
-            headers={"Content-Type": "application/json", "X-Internal-Token": token},
+            headers=headers,
             json=json_body,
             timeout=_timeout_seconds(),
         )
@@ -151,6 +164,7 @@ def _op_request(
                 **({"model": args["model"]} if args.get("model") else {}),
                 "planModeRequired": bool(args.get("planModeRequired", False)),
             },
+            acting_session_id=lead_session_id,
         )
     if op == "task":
         return _request(
@@ -167,6 +181,7 @@ def _op_request(
                 **({"assignMode": args["assignMode"]} if args.get("assignMode") else {}),
                 "createdBySessionId": lead_session_id,
             },
+            acting_session_id=lead_session_id,
         )
     if op == "send":
         return _request(
@@ -177,15 +192,17 @@ def _op_request(
                 "to": args.get("to"),
                 "content": args.get("content"),
             },
+            acting_session_id=lead_session_id,
         )
     if op == "broadcast":
         return _request(
             "POST",
             f"{base}/broadcast",
             {"fromSessionId": lead_session_id, "content": args.get("content")},
+            acting_session_id=lead_session_id,
         )
     if op == "status":
-        return _request("GET", base)
+        return _request("GET", base, acting_session_id=lead_session_id)
     if op == "shutdown":
         name = args.get("name")
         if name:
@@ -193,10 +210,11 @@ def _op_request(
                 "POST",
                 f"{base}/shutdown",
                 {"requestedBySessionId": lead_session_id, "name": name},
+                acting_session_id=lead_session_id,
             )
         # No name → shut down every member (run-terminal cleanup). Best-effort
         # per member; report the members targeted.
-        status, body = _request("GET", base)
+        status, body = _request("GET", base, acting_session_id=lead_session_id)
         if status >= 400:
             return status, body
         members = body.get("members") if isinstance(body, dict) else None
@@ -211,6 +229,7 @@ def _op_request(
                 "POST",
                 f"{base}/shutdown",
                 {"requestedBySessionId": lead_session_id, "name": m_name},
+                acting_session_id=lead_session_id,
             )
             if s < 400:
                 targeted.append(m_name)
@@ -260,7 +279,9 @@ def get_team_state(ctx, input_data: dict) -> dict:
     if not ensured.get("success"):
         return ensured
     status, body = _request(
-        "GET", f"/api/internal/team/{quote(ensured['teamId'], safe='')}"
+        "GET",
+        f"/api/internal/team/{quote(ensured['teamId'], safe='')}",
+        acting_session_id=ensured["leadSessionId"],
     )
     if status >= 400:
         return {"success": False, "error": _client_error_message(status, body)}

@@ -21,14 +21,29 @@ const mocks = vi.hoisted(() => {
 		),
 	};
 	const validateInternalToken = vi.fn(() => true);
+  const principal = {
+    userId: "user-1",
+    projectId: "project-1",
+    sessionId: "parent-session-1",
+    scopes: ["workflow:execute"],
+    capabilities: { scriptDepth: 0, teamId: null, teamRole: "none" as const },
+  };
+  const internalWorkflowPrincipal = {
+    authorize: vi.fn(async () => ({ ok: true as const, principal })),
+  };
 	return {
 		peerSessionSpawn,
 		validateInternalToken,
+    principal,
+    internalWorkflowPrincipal,
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ peerSessionSpawn: mocks.peerSessionSpawn }),
+  getApplicationAdapters: () => ({
+    peerSessionSpawn: mocks.peerSessionSpawn,
+    internalWorkflowPrincipal: mocks.internalWorkflowPrincipal,
+  }),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -71,6 +86,10 @@ describe("internal spawn-peer route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.validateInternalToken.mockReturnValue(true);
+    mocks.internalWorkflowPrincipal.authorize.mockResolvedValue({
+      ok: true,
+      principal: mocks.principal,
+    });
 		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValue({
 			status: "ok",
 			body: {
@@ -125,6 +144,17 @@ describe("internal spawn-peer route", () => {
 		});
 		expect(mocks.peerSessionSpawn.spawnPeerSession).toHaveBeenCalledWith(
 			payload,
+      {
+        userId: "user-1",
+        projectId: "project-1",
+        sessionId: "parent-session-1",
+        capabilities: {
+          scriptDepth: 0,
+          teamId: null,
+          teamRole: "none",
+        },
+      },
+      { kind: "call_agent" },
 		);
 	});
 
