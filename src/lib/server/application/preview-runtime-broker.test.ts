@@ -338,6 +338,133 @@ describe("preview runtime broker application policy", () => {
     expect(PREVIEW_RUNTIME_ABSOLUTE_MAX_PAYLOAD_BYTES).toBeLessThan(25_000_000);
   });
 
+  it("forwards bounded Kimi image_url data parts without stringifying pixels", async () => {
+    const h = harness();
+    const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Inspect this screenshot." },
+          { type: "image_url", image_url: { url: imageUrl } },
+        ],
+      },
+    ];
+
+    await h.service.complete({
+      ...request,
+      payload: { model: "kimi-k3", messages },
+    });
+
+    expect(h.upstream.complete).toHaveBeenCalledWith({
+      identity,
+      payload: {
+        model: "kimi-k3",
+        messages,
+        max_completion_tokens: requestLimits.defaultCompletionTokens,
+        reasoning_effort: "max",
+      },
+    });
+  });
+
+  it.each([
+    [
+      "public URL",
+      {
+        type: "image_url",
+        image_url: { url: "https://example.com/ui.png" },
+      },
+    ],
+    [
+      "unsupported media type",
+      {
+        type: "image_url",
+        image_url: { url: "data:image/svg+xml;base64,PHN2Zz4=" },
+      },
+    ],
+    [
+      "non-base64 data URI",
+      { type: "image_url", image_url: { url: "data:image/png,raw" } },
+    ],
+    [
+      "invalid base64",
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,!!!!" },
+      },
+    ],
+    [
+      "non-canonical base64",
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,AB==" },
+      },
+    ],
+    [
+      "string image_url",
+      { type: "image_url", image_url: "data:image/png;base64,AAAA" },
+    ],
+    [
+      "extra image fields",
+      {
+        type: "image_url",
+        image_url: {
+          url: "data:image/png;base64,AAAA",
+          detail: "auto",
+        },
+      },
+    ],
+    [
+      "video part",
+      {
+        type: "video_url",
+        video_url: { url: "data:video/mp4;base64,AAAA" },
+      },
+    ],
+  ])(
+    "rejects malformed or unsupported multimodal content: %s",
+    async (_case, part) => {
+      const h = harness();
+
+      await expect(
+        h.service.complete({
+          ...request,
+          payload: {
+            model: "kimi-k3",
+            messages: [{ role: "user", content: [part] }],
+          },
+        }),
+      ).rejects.toMatchObject({ code: "invalid-request" });
+      expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+      expect(h.upstream.complete).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects image_url content outside user messages", async () => {
+    const h = harness();
+
+    await expect(
+      h.service.complete({
+        ...request,
+        payload: {
+          model: "kimi-k3",
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: "data:image/png;base64,AAAA" },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid-request" });
+    expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+  });
+
   it("enforces payload, message-content, and tool shape/size bounds", async () => {
     const oversized = harness({ requestLimits: { maxPayloadBytes: 1_024 } });
     await expect(
