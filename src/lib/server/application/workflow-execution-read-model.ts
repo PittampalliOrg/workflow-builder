@@ -5,6 +5,7 @@ import type {
 	WorkflowExecutionLogRecord,
 	WorkflowExecutionReadModelPort,
 	WorkflowExecutionRecord,
+	WorkflowExecutionStatus,
 	WorkflowRuntimeStatusPort,
 	WorkflowRuntimeStatusSnapshot,
 	WorkflowWorkspaceSessionRecord,
@@ -19,7 +20,31 @@ import {
 	LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
 } from "$lib/server/application/lite-profile";
 
-type ExecutionStatus = ExecutionReadModel["status"];
+type ExecutionStatus = WorkflowExecutionStatus;
+
+export type WorkflowExecutionStatusSnapshot = Pick<
+	WorkflowExecutionRecord,
+	"status" | "phase" | "progress" | "output" | "error" | "completedAt"
+>;
+
+export type WorkflowRuntimeExecutionStatusSnapshot = Pick<
+	WorkflowRuntimeStatusSnapshot,
+	"runtimeStatus" | "phase" | "progress" | "outputs" | "error" | "completedAt"
+>;
+
+type NormalizedRuntimeStatus =
+	| "FAILED"
+	| "TERMINATED"
+	| "CANCELED"
+	| "COMPLETED"
+	| "PENDING"
+	| "RUNNING"
+	| "SUSPENDED";
+
+export type ResolvedWorkflowExecutionStatusSnapshot = {
+	snapshot: WorkflowExecutionStatusSnapshot;
+	patch: WorkflowExecutionStatusSnapshot | null;
+};
 
 type SerializeExecutionReadModelOptions = {
 	compact?: boolean;
@@ -36,7 +61,7 @@ export function mapRuntimeStatus(
 	runtimeStatus: string | null | undefined,
 	fallback: ExecutionStatus,
 ): ExecutionStatus {
-	switch ((runtimeStatus ?? "").toUpperCase()) {
+	switch (normalizeRuntimeStatus(runtimeStatus)) {
 		case "COMPLETED":
 			return "success";
 		case "FAILED":
@@ -58,14 +83,138 @@ export function isExecutionStatusTerminal(status: ExecutionStatus): boolean {
 	return status === "success" || status === "error" || status === "cancelled";
 }
 
-/** A persisted terminal result is authoritative over the durable runtime envelope. */
+/** Resolve the explicit precedence between a persisted result and the runtime lifecycle. */
 export function resolveExecutionStatus(
 	runtimeStatus: string | null | undefined,
 	persistedStatus: ExecutionStatus,
 ): ExecutionStatus {
-	return isExecutionStatusTerminal(persistedStatus)
-		? persistedStatus
-		: mapRuntimeStatus(runtimeStatus, persistedStatus);
+	switch (normalizeRuntimeStatus(runtimeStatus)) {
+		case "FAILED":
+			return "error";
+		case "TERMINATED":
+		case "CANCELED":
+			return "cancelled";
+		case "COMPLETED":
+			return isExecutionStatusTerminal(persistedStatus) ? persistedStatus : "success";
+		case "PENDING":
+			return isExecutionStatusTerminal(persistedStatus) ? persistedStatus : "pending";
+		case "RUNNING":
+		case "SUSPENDED":
+			return isExecutionStatusTerminal(persistedStatus) ? persistedStatus : "running";
+		default:
+			return persistedStatus;
+	}
+}
+
+function normalizeRuntimeStatus(
+	runtimeStatus: string | null | undefined,
+): NormalizedRuntimeStatus | null {
+	switch ((runtimeStatus ?? "").trim().toUpperCase()) {
+		case "FAILED":
+		case "TERMINATED":
+		case "CANCELED":
+		case "COMPLETED":
+		case "PENDING":
+		case "RUNNING":
+		case "SUSPENDED":
+			return (runtimeStatus ?? "").trim().toUpperCase() as NormalizedRuntimeStatus;
+		default:
+			return null;
+	}
+}
+
+export function workflowExecutionStatusSnapshotFromRecord(
+	persisted: WorkflowExecutionStatusSnapshot,
+): WorkflowExecutionStatusSnapshot {
+	return {
+		status: persisted.status,
+		phase: persisted.phase,
+		progress: persisted.progress,
+		output: persisted.output,
+		error: persisted.error,
+		completedAt: persisted.completedAt,
+	};
+}
+
+function terminalPhase(status: ExecutionStatus): string | null {
+	switch (status) {
+		case "success":
+			return "completed";
+		case "error":
+			return "failed";
+		case "cancelled":
+			return "cancelled";
+		default:
+			return null;
+	}
+}
+
+function parseRuntimeCompletedAt(value: string | null): Date | null {
+	if (!value) return null;
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? new Date(timestamp) : null;
+}
+
+export function resolveExecutionStatusSnapshot(
+	input: {
+		persisted: WorkflowExecutionStatusSnapshot;
+		runtime: WorkflowRuntimeExecutionStatusSnapshot | null | undefined;
+		observedAt: Date;
+	},
+): ResolvedWorkflowExecutionStatusSnapshot {
+	const { persisted, runtime, observedAt } = input;
+	const current = workflowExecutionStatusSnapshotFromRecord(persisted);
+	if (!runtime || !normalizeRuntimeStatus(runtime.runtimeStatus)) {
+		return { snapshot: current, patch: null };
+	}
+
+	const status = resolveExecutionStatus(runtime.runtimeStatus, persisted.status);
+	if (isExecutionStatusTerminal(persisted.status) && status === persisted.status) {
+		return { snapshot: current, patch: null };
+	}
+	const terminal = isExecutionStatusTerminal(status);
+	const snapshot: WorkflowExecutionStatusSnapshot = terminal
+		? {
+				status,
+				phase: terminalPhase(status),
+				progress: 100,
+				output: persisted.output ?? runtime.outputs ?? null,
+				error:
+					status === "success"
+						? null
+						: status === "cancelled"
+							? (persisted.error ?? runtime.error)
+							: (runtime.error ?? persisted.error),
+				completedAt:
+					persisted.completedAt ?? parseRuntimeCompletedAt(runtime.completedAt) ?? observedAt,
+			}
+		: {
+				status,
+				phase: runtime.phase ?? persisted.phase,
+				progress: runtime.progress ?? persisted.progress,
+				output: persisted.output ?? runtime.outputs ?? null,
+				error: runtime.error ?? persisted.error,
+				completedAt: null,
+			};
+
+	return {
+		snapshot,
+		patch: executionStatusSnapshotChanged(persisted, snapshot) ? snapshot : null,
+	};
+}
+
+function executionStatusSnapshotChanged(
+	persisted: WorkflowExecutionStatusSnapshot,
+	effective: WorkflowExecutionStatusSnapshot,
+): boolean {
+	return (
+		effective.status !== persisted.status ||
+		effective.phase !== persisted.phase ||
+		effective.progress !== persisted.progress ||
+		effective.output !== persisted.output ||
+		effective.error !== persisted.error ||
+		(effective.completedAt?.getTime() ?? null) !== (persisted.completedAt?.getTime() ?? null)
+	);
 }
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -232,7 +381,7 @@ export class ApplicationWorkflowExecutionReadModelService
 				WorkflowDataService,
 				| "assertExecutionReadModelReady"
 				| "getExecutionById"
-				| "updateExecutionReadModel"
+				| "compareAndSetExecutionReadModel"
 				| "listExecutionLogs"
 				| "listRecentExecutionAgentEvents"
 				| "listWorkflowAgentRunsByExecutionId"
@@ -253,11 +402,13 @@ export class ApplicationWorkflowExecutionReadModelService
 		let execution = await this.readExecutionRow(input.executionId);
 		if (!execution) return null;
 
-		const runtime = input.refreshRuntime
+		const refresh = input.refreshRuntime
 			? await this.refreshExecutionRuntime(execution)
 			: null;
-		if (runtime) {
-			execution = (await this.readExecutionRow(input.executionId)) ?? execution;
+		const runtime = refresh?.runtime ?? null;
+		if (refresh) {
+			if (!refresh.execution) return null;
+			execution = refresh.execution;
 		}
 
 		const [steps, browserArtifacts, agentRuns, workspaces, agentEvents, traceIds, artifacts] =
@@ -289,7 +440,8 @@ export class ApplicationWorkflowExecutionReadModelService
 		const lastAgentEventId = agentEvents.at(-1)?.id ?? 0;
 		const runtimeStatus = runtime?.runtimeStatus ?? null;
 		const traceId = runtime?.traceId ?? execution.primaryTraceId ?? traceIds[0] ?? null;
-		const output = execution.output ?? runtime?.outputs ?? null;
+		const terminal = isExecutionStatusTerminal(execution.status);
+		const output = terminal ? execution.output : (execution.output ?? runtime?.outputs ?? null);
 		const nodeStatuses = buildNodeStatuses(
 			steps,
 			execution.currentNodeId,
@@ -313,9 +465,11 @@ export class ApplicationWorkflowExecutionReadModelService
 			input: execution.input ?? null,
 			output,
 			summaryOutput: execution.summaryOutput ?? null,
-			error: runtime?.error ?? execution.error,
+			error: terminal ? execution.error : (runtime?.error ?? execution.error),
 			startedAt: toIso(execution.startedAt),
-			completedAt: toIso(execution.completedAt) ?? runtime?.completedAt ?? null,
+			completedAt: terminal
+				? toIso(execution.completedAt)
+				: (toIso(execution.completedAt) ?? runtime?.completedAt ?? null),
 			nodeStatuses,
 			steps,
 			browserArtifacts: browserArtifacts as unknown as Array<Record<string, unknown>>,
@@ -380,7 +534,10 @@ export class ApplicationWorkflowExecutionReadModelService
 
 	private async refreshExecutionRuntime(
 		execution: WorkflowExecutionRecord,
-	): Promise<WorkflowRuntimeStatusSnapshot | null> {
+	): Promise<{
+		runtime: WorkflowRuntimeStatusSnapshot;
+		execution: WorkflowExecutionRecord | null;
+	} | null> {
 		if (!execution.daprInstanceId) return null;
 		if (execution.status !== "running" && execution.status !== "pending") return null;
 
@@ -389,21 +546,30 @@ export class ApplicationWorkflowExecutionReadModelService
 		// orchestrator (which would leave the run stuck in "running" forever).
 		if (isLiteWorkflowInstanceId(execution.daprInstanceId)) {
 			const completedAt = execution.completedAt ?? new Date();
-			await this.deps.workflowData.updateExecutionReadModel(execution.id, {
-				status: "error",
-				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
-				completedAt,
+			const winner = await this.deps.workflowData.compareAndSetExecutionReadModel({
+				executionId: execution.id,
+				expectedStatus: execution.status,
+				patch: {
+					status: "error",
+					phase: "failed",
+					progress: 100,
+					error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+					completedAt,
+				},
 			});
 			return {
-				runtimeStatus: "FAILED",
-				phase: execution.phase,
-				progress: execution.progress,
-				currentNodeId: execution.currentNodeId,
-				currentNodeName: execution.currentNodeName,
-				traceId: null,
-				outputs: null,
-				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
-				completedAt: toIso(completedAt),
+				execution: winner,
+				runtime: {
+					runtimeStatus: "FAILED",
+					phase: execution.phase,
+					progress: execution.progress,
+					currentNodeId: execution.currentNodeId,
+					currentNodeName: execution.currentNodeName,
+					traceId: null,
+					outputs: null,
+					error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+					completedAt: toIso(completedAt),
+				},
 			};
 		}
 
@@ -412,39 +578,34 @@ export class ApplicationWorkflowExecutionReadModelService
 				execution.daprInstanceId,
 			);
 			if (!runtime) return null;
-			const nextStatus = resolveExecutionStatus(runtime.runtimeStatus, execution.status);
-			const nextCompletedAt =
-				typeof runtime.completedAt === "string"
-					? new Date(runtime.completedAt)
-					: isExecutionStatusTerminal(nextStatus) && !execution.completedAt
-						? new Date()
-						: execution.completedAt;
-			const patch = {
-				status: nextStatus,
-				phase: runtime.phase ?? execution.phase,
-				progress: runtime.progress ?? execution.progress,
+			const statusResolution = resolveExecutionStatusSnapshot({
+				persisted: execution,
+				runtime,
+				observedAt: new Date(),
+			});
+			const runtimeFields = {
 				currentNodeId: runtime.currentNodeId ?? execution.currentNodeId,
 				currentNodeName: runtime.currentNodeName ?? execution.currentNodeName,
 				primaryTraceId: runtime.traceId ?? execution.primaryTraceId,
-				error: runtime.error ?? execution.error,
-				completedAt: nextCompletedAt,
 			};
+			const runtimeFieldsChanged =
+				runtimeFields.currentNodeId !== execution.currentNodeId ||
+				runtimeFields.currentNodeName !== execution.currentNodeName ||
+				runtimeFields.primaryTraceId !== execution.primaryTraceId;
 
-			const changed =
-				patch.status !== execution.status ||
-				patch.phase !== execution.phase ||
-				patch.progress !== execution.progress ||
-				patch.currentNodeId !== execution.currentNodeId ||
-				patch.currentNodeName !== execution.currentNodeName ||
-				patch.primaryTraceId !== execution.primaryTraceId ||
-				patch.error !== execution.error ||
-				(toIso(patch.completedAt) ?? null) !== toIso(execution.completedAt);
-
-			if (changed) {
-				await this.deps.workflowData.updateExecutionReadModel(execution.id, patch);
+			let winner: WorkflowExecutionRecord | null = execution;
+			if (statusResolution.patch || runtimeFieldsChanged) {
+				winner = await this.deps.workflowData.compareAndSetExecutionReadModel({
+					executionId: execution.id,
+					expectedStatus: execution.status,
+					patch: {
+						...(statusResolution.patch ?? {}),
+						...runtimeFields,
+					},
+				});
 			}
 
-			return runtime;
+			return { runtime, execution: winner };
 		} catch {
 			return null;
 		}

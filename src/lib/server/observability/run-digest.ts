@@ -75,6 +75,7 @@ function httpPath(attributes: Record<string, unknown> | undefined): string | nul
 
 /** Exclude only Kubernetes 404s whose client adapter explicitly treats absence as success. */
 function isExpectedKubernetesNotFound(span: ObservabilityTraceSpan): boolean {
+	if (span.serviceName !== 'workflow-builder') return false;
 	const attributes = span.attributes;
 	if (
 		attributeString(attributes, 'http.response.status_code', 'http.status_code') !== '404'

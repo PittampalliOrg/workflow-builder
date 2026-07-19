@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     phase: "complete",
 		progress: 100,
     outputs: { result: "ok" },
+		completedAt: "2026-07-02T12:00:45.000Z",
 	};
 	const workflowData = {
     getExecutionById: vi.fn(
@@ -40,7 +41,12 @@ const mocks = vi.hoisted(() => {
     ),
 		getWorkflowByRef: vi.fn(async () => workflow),
     getScopedWorkflowById: vi.fn(async () => workflow),
-    updateExecutionReadModel: vi.fn(async () => undefined),
+		compareAndSetExecutionReadModel: vi.fn(
+			async (input: { patch: Record<string, unknown> }) => ({
+				...execution,
+				...input.patch,
+			}),
+		),
 	};
   const internalWorkflowPrincipal = { authorize: vi.fn() };
 	const validateInternalOrPreviewControlRead = vi.fn(() => true);
@@ -143,7 +149,12 @@ describe("internal agent workflow execution status route", () => {
     );
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(mocks.workflow);
     mocks.workflowData.getScopedWorkflowById.mockResolvedValue(mocks.workflow);
-		mocks.workflowData.updateExecutionReadModel.mockResolvedValue(undefined);
+		mocks.workflowData.compareAndSetExecutionReadModel.mockImplementation(
+			async (input: { patch: Record<string, unknown> }) => ({
+				...mocks.execution,
+				...input.patch,
+			}),
+		);
     mocks.resolveInternalWorkflowPrincipal.mockResolvedValue({
       ok: true,
       principal: {
@@ -168,7 +179,7 @@ describe("internal agent workflow execution status route", () => {
     expect(source).toContain("workflowData.getScopedExecutionById");
     expect(source).toContain("workflowData.getWorkflowByRef");
     expect(source).toContain("workflowData.getScopedWorkflowById");
-    expect(source).toContain("workflowData.updateExecutionReadModel");
+		expect(source).toContain("workflowData.compareAndSetExecutionReadModel");
     expect(source).not.toContain("$lib/server/db");
     expect(source).not.toContain("$lib/server/db/schema");
     expect(source).not.toContain("drizzle-orm");
@@ -254,21 +265,27 @@ describe("internal agent workflow execution status route", () => {
 		await expectHttpStatus(Promise.resolve(GET(event() as never)), 404);
 		expect(mocks.workflowData.getWorkflowByRef).not.toHaveBeenCalled();
 		expect(mocks.daprFetch).not.toHaveBeenCalled();
-		expect(mocks.workflowData.updateExecutionReadModel).not.toHaveBeenCalled();
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).not.toHaveBeenCalled();
 	});
 
   it("syncs completed runtime status to the execution read model", async () => {
 		const response = (await GET(event() as never)) as Response;
+		const body = await response.json();
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toMatchObject({
+		expect(body).toMatchObject({
 			success: true,
       status: "success",
 			execution: {
         id: "exec-1",
         workflowId: "wf-1",
         status: "success",
-				workflow: {
+				phase: "completed",
+				progress: 100,
+				output: { result: "ok" },
+				error: null,
+				completedAt: "2026-07-02T12:00:45.000Z",
+					workflow: {
           id: "wf-1",
           name: "Example workflow",
         },
@@ -283,17 +300,28 @@ describe("internal agent workflow execution status route", () => {
 		expect(mocks.daprFetch).toHaveBeenCalledWith(
       "http://workflow-orchestrator.test/api/v2/workflows/sw-example-exec-exec-1/status",
 		);
-    expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith(
-      "exec-1",
-      {
-        status: "success",
-        phase: "complete",
-			progress: 100,
-        output: { result: "ok" },
-			error: null,
-        completedAt: expect.any(Date),
-      },
-    );
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: {
+				status: "success",
+				phase: "completed",
+				progress: 100,
+				output: { result: "ok" },
+				error: null,
+				completedAt: new Date("2026-07-02T12:00:45.000Z"),
+			},
+		});
+		const persistedSnapshot =
+			mocks.workflowData.compareAndSetExecutionReadModel.mock.calls[0]![0].patch;
+		expect({
+			status: body.execution.status,
+			phase: body.execution.phase,
+			progress: body.execution.progress,
+			output: body.execution.output,
+			error: body.execution.error,
+			completedAt: new Date(body.execution.completedAt),
+		}).toEqual(persistedSnapshot);
 	});
 
   it("does not report a persisted script failure as successful when Dapr completed", async () => {
@@ -330,6 +358,90 @@ describe("internal agent workflow execution status route", () => {
       },
       runtime: mocks.runtimeStatus,
     });
-    expect(mocks.workflowData.updateExecutionReadModel).not.toHaveBeenCalled();
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).not.toHaveBeenCalled();
   });
+
+  it("treats runtime failure as authoritative over a persisted success", async () => {
+		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
+			...mocks.execution,
+			status: "success",
+			phase: "completed",
+			progress: 100,
+			output: { result: "stale success" },
+			completedAt: new Date("2026-07-02T12:00:30.000Z"),
+		});
+		mocks.daprFetch.mockResolvedValueOnce(
+			Response.json({
+				runtimeStatus: "FAILED",
+				phase: "failed",
+				progress: 100,
+				outputs: { result: "failed" },
+				error: "runtime failed",
+				completedAt: "2026-07-02T12:00:50.000Z",
+			}),
+		);
+
+		const response = (await GET(event() as never)) as Response;
+		const body = await response.json();
+
+		expect(body).toMatchObject({
+			success: true,
+			status: "error",
+			error: "runtime failed",
+			execution: {
+				status: "error",
+				phase: "failed",
+				progress: 100,
+				output: { result: "stale success" },
+				error: "runtime failed",
+				completedAt: "2026-07-02T12:00:30.000Z",
+			},
+		});
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "success",
+			patch: {
+				status: "error",
+				phase: "failed",
+				progress: 100,
+				output: { result: "stale success" },
+				error: "runtime failed",
+				completedAt: new Date("2026-07-02T12:00:30.000Z"),
+			},
+		});
+	});
+
+	it("returns the terminal row that wins a reconciliation race", async () => {
+		const winner = {
+			...mocks.execution,
+			status: "error" as const,
+			phase: "failed",
+			progress: 100,
+			output: { success: false },
+			error: "agent budget exhausted",
+			completedAt: new Date("2026-07-02T12:00:44.000Z"),
+		};
+		mocks.workflowData.compareAndSetExecutionReadModel.mockResolvedValueOnce(winner);
+
+		const response = (await GET(event() as never)) as Response;
+		const body = await response.json();
+
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: expect.objectContaining({ status: "success" }),
+		});
+		expect(body).toMatchObject({
+			status: "error",
+			error: "agent budget exhausted",
+			execution: {
+				status: "error",
+				phase: "failed",
+				progress: 100,
+				output: { success: false },
+				error: "agent budget exhausted",
+				completedAt: "2026-07-02T12:00:44.000Z",
+			},
+		});
+	});
 });

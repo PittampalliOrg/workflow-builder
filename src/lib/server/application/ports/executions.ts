@@ -308,6 +308,12 @@ export type WorkflowExecutionReadModelPatch = Partial<
 	>
 >;
 
+export type CompareAndSetWorkflowExecutionReadModelInput = {
+	executionId: string;
+	expectedStatus: WorkflowExecutionStatus;
+	patch: WorkflowExecutionReadModelPatch;
+};
+
 export type WorkflowExecutionLogStatus = "pending" | "running" | "success" | "error";
 
 export type AppendWorkflowExecutionLogInput = {
@@ -450,6 +456,10 @@ export interface WorkflowExecutionRepository {
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
 	): Promise<void>;
+	/** Apply only when the stored status matches; otherwise return the current winning row. */
+	compareAndSetReadModel(
+		input: CompareAndSetWorkflowExecutionReadModelInput,
+	): Promise<WorkflowExecutionRecord | null>;
 	appendLog(input: AppendWorkflowExecutionLogInput): Promise<WorkflowExecutionLogRecord>;
 	updateLog(
 		executionId: string,

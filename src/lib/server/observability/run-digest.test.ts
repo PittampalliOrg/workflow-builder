@@ -129,6 +129,7 @@ describe('buildRunDigest', () => {
 		const expectedAbsence = [
 			span({
 				spanId: 'warm-pool-delete',
+				serviceName: 'workflow-builder',
 				status: 'error',
 				statusCode: 'Error',
 				attributes: {
@@ -140,6 +141,7 @@ describe('buildRunDigest', () => {
 			}),
 			span({
 				spanId: 'template-delete',
+				serviceName: 'workflow-builder',
 				status: 'error',
 				attributes: {
 					'http.request.method': 'DELETE',
@@ -150,6 +152,7 @@ describe('buildRunDigest', () => {
 			}),
 			span({
 				spanId: 'service-delete',
+				serviceName: 'workflow-builder',
 				status: 'error',
 				attributes: {
 					'http.method': 'DELETE',
@@ -160,6 +163,7 @@ describe('buildRunDigest', () => {
 			}),
 			span({
 				spanId: 'warm-pool-probe',
+				serviceName: 'workflow-builder',
 				status: 'error',
 				attributes: {
 					'http.request.method': 'GET',
@@ -170,6 +174,7 @@ describe('buildRunDigest', () => {
 			}),
 			span({
 				spanId: 'warm-pool-delete-repeat',
+				serviceName: 'workflow-builder',
 				status: 'error',
 				attributes: {
 					'http.method': 'DELETE',
@@ -179,6 +184,41 @@ describe('buildRunDigest', () => {
 				}
 			})
 		];
+		const unexpectedProducer = span({
+			spanId: 'unexpected-producer',
+			serviceName: 'workflow-orchestrator',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'DELETE',
+				'http.status_code': '404',
+				'http.target':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+			}
+		});
+		const unexpectedMethod = span({
+			spanId: 'unexpected-method',
+			serviceName: 'workflow-builder',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'POST',
+				'http.status_code': '404',
+				'http.target':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxwarmpools/agent-runtime-pool-coding'
+			}
+		});
+		const unexpectedPath = span({
+			spanId: 'unexpected-path',
+			serviceName: 'workflow-builder',
+			status: 'error',
+			statusCode: 'Error',
+			attributes: {
+				'http.method': 'DELETE',
+				'http.status_code': '404',
+				'http.target': '/api/v1/namespaces/workflow-builder/services/workflow-builder'
+			}
+		});
 		const actualFailure = span({
 			spanId: 'actual-failure',
 			status: 'error',
@@ -195,13 +235,24 @@ describe('buildRunDigest', () => {
 		const digest = buildRunDigest({
 			execution: EXEC,
 			calls: [],
-			spans: [...expectedAbsence, actualFailure],
+			spans: [
+				...expectedAbsence,
+				unexpectedProducer,
+				unexpectedMethod,
+				unexpectedPath,
+				actualFailure
+			],
 			llmSpans: []
 		});
 
 		expect(
 			digest.issues.filter((issue) => issue.kind === 'span_error').map((issue) => issue.spanId)
-		).toEqual(['actual-failure']);
+		).toEqual([
+			'unexpected-producer',
+			'unexpected-method',
+			'unexpected-path',
+			'actual-failure'
+		]);
 	});
 
 	it('handles empty journal (SW runs) without throwing', () => {

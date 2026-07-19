@@ -6,6 +6,7 @@ import {
 	ApplicationWorkflowExecutionReadModelService,
 	mapRuntimeStatus,
 	resolveExecutionStatus,
+	resolveExecutionStatusSnapshot,
 } from "$lib/server/application/workflow-execution-read-model";
 import type {
 	WorkflowDataService,
@@ -55,15 +56,17 @@ function service(args?: {
 	executions?: WorkflowExecutionRecord[];
 	runtime?: WorkflowRuntimeStatusPort;
 	listRecentEvents?: ReturnType<typeof vi.fn>;
-	updateReadModel?: ReturnType<typeof vi.fn>;
+	compareAndSetReadModel?: ReturnType<typeof vi.fn>;
 }) {
 	const executions = [...(args?.executions ?? [execution()])];
 	const listRecentEvents = args?.listRecentEvents ?? vi.fn(async () => []);
-	const updateReadModel = args?.updateReadModel ?? vi.fn(async () => undefined);
+	const compareAndSetReadModel =
+		args?.compareAndSetReadModel ??
+		vi.fn(async ({ patch }) => execution(patch as Partial<WorkflowExecutionRecord>));
 	const workflowData = {
 		assertExecutionReadModelReady: vi.fn(async () => undefined),
 		getExecutionById: vi.fn(async () => executions.shift() ?? executions.at(-1) ?? null),
-		updateExecutionReadModel: updateReadModel,
+		compareAndSetExecutionReadModel: compareAndSetReadModel,
 		listExecutionLogs: vi.fn(async () => [
 			{
 				id: "log-1",
@@ -97,7 +100,7 @@ function service(args?: {
 		WorkflowDataService,
 		| "assertExecutionReadModelReady"
 		| "getExecutionById"
-		| "updateExecutionReadModel"
+		| "compareAndSetExecutionReadModel"
 		| "listExecutionLogs"
 		| "listRecentExecutionAgentEvents"
 		| "listWorkflowAgentRunsByExecutionId"
@@ -147,15 +150,294 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		expect(mapRuntimeStatus("UNKNOWN", "pending")).toBe("pending");
 	});
 
-	it("keeps persisted terminal results authoritative over the runtime envelope", () => {
-		expect(resolveExecutionStatus("COMPLETED", "error")).toBe("error");
-		expect(resolveExecutionStatus("FAILED", "success")).toBe("success");
-		expect(resolveExecutionStatus("RUNNING", "cancelled")).toBe("cancelled");
-		expect(resolveExecutionStatus("COMPLETED", "running")).toBe("success");
+	it("resolves the explicit persisted/runtime status matrix", () => {
+		const runtimeStatuses = [
+			null,
+			"UNKNOWN",
+			"STALLED",
+			"PENDING",
+			"RUNNING",
+			"SUSPENDED",
+			"COMPLETED",
+			"FAILED",
+			"TERMINATED",
+			"CANCELED",
+		] as const;
+		const matrix = {
+			pending: [
+				"pending",
+				"pending",
+				"pending",
+				"pending",
+				"running",
+				"running",
+				"success",
+				"error",
+				"cancelled",
+				"cancelled",
+			],
+			running: [
+				"running",
+				"running",
+				"running",
+				"pending",
+				"running",
+				"running",
+				"success",
+				"error",
+				"cancelled",
+				"cancelled",
+			],
+			success: [
+				"success",
+				"success",
+				"success",
+				"success",
+				"success",
+				"success",
+				"success",
+				"error",
+				"cancelled",
+				"cancelled",
+			],
+			error: [
+				"error",
+				"error",
+				"error",
+				"error",
+				"error",
+				"error",
+				"error",
+				"error",
+				"cancelled",
+				"cancelled",
+			],
+			cancelled: [
+				"cancelled",
+				"cancelled",
+				"cancelled",
+				"cancelled",
+				"cancelled",
+				"cancelled",
+				"cancelled",
+				"error",
+				"cancelled",
+				"cancelled",
+			],
+		} as const;
+
+		for (const [persistedStatus, expectedStatuses] of Object.entries(matrix)) {
+			for (const [index, runtimeStatus] of runtimeStatuses.entries()) {
+				expect(
+					resolveExecutionStatus(
+						runtimeStatus,
+						persistedStatus as keyof typeof matrix,
+					),
+				).toBe(expectedStatuses[index]);
+			}
+		}
+		expect(resolveExecutionStatus("  failed  ", "success")).toBe("error");
 	});
 
-	it("refreshes running executions through the runtime port, persists, then rereads", async () => {
-		const updateReadModel = vi.fn(async () => undefined);
+	it("builds one coherent snapshot for a first terminal runtime observation", () => {
+		const observedAt = new Date("2026-07-03T00:01:00.000Z");
+		const persisted = {
+			status: "running" as const,
+			phase: "running",
+			progress: 40,
+			output: null,
+			error: "stale transient error",
+			completedAt: null,
+		};
+
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted,
+			runtime: {
+				runtimeStatus: "COMPLETED",
+				phase: null,
+				progress: null,
+				outputs: { result: "ok" },
+				error: null,
+				completedAt: null,
+			},
+			observedAt,
+		});
+
+		expect(snapshot).toEqual({
+			status: "success",
+			phase: "completed",
+			progress: 100,
+			output: { result: "ok" },
+			error: null,
+			completedAt: observedAt,
+		});
+		expect(patch).toEqual(snapshot);
+	});
+
+	it("keeps a persisted script failure snapshot intact for runtime completion", () => {
+		const persisted = {
+			status: "error" as const,
+			phase: "failed",
+			progress: 100,
+			output: { success: false },
+			error: "agent budget exhausted",
+			completedAt: new Date("2026-07-03T00:01:00.000Z"),
+		};
+
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted,
+			runtime: {
+				runtimeStatus: "COMPLETED",
+				phase: "complete",
+				progress: 100,
+				outputs: { success: true },
+				error: null,
+				completedAt: "2026-07-03T00:02:00.000Z",
+			},
+			observedAt: new Date("2026-07-03T00:03:00.000Z"),
+		});
+
+		expect(snapshot).toEqual(persisted);
+		expect(patch).toBeNull();
+	});
+
+	it.each([
+		["success", "RUNNING"],
+		["success", "COMPLETED"],
+		["error", "FAILED"],
+		["error", "COMPLETED"],
+		["cancelled", "CANCELED"],
+		["cancelled", "RUNNING"],
+	] as const)("freezes exact %s companion fields for runtime %s", (status, runtimeStatus) => {
+		const persisted = {
+			status,
+			phase: "persisted-phase",
+			progress: 73,
+			output: { source: "persisted" },
+			error: "persisted-error",
+			completedAt: new Date("2026-07-03T00:01:00.000Z"),
+		};
+
+		const resolved = resolveExecutionStatusSnapshot({
+			persisted,
+			runtime: {
+				runtimeStatus,
+				phase: "runtime-phase",
+				progress: 100,
+				outputs: { source: "runtime" },
+				error: "runtime-error",
+				completedAt: "2026-07-03T00:02:00.000Z",
+			},
+			observedAt: new Date("2026-07-03T00:03:00.000Z"),
+		});
+
+		expect(resolved).toEqual({ snapshot: persisted, patch: null });
+	});
+
+	it("uses a hard runtime failure snapshot when it changes a terminal result", () => {
+		const observedAt = new Date("2026-07-03T00:03:00.000Z");
+		const persistedCompletedAt = new Date("2026-07-03T00:01:00.000Z");
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted: {
+				status: "success",
+				phase: "completed",
+				progress: 100,
+				output: { result: "stale success" },
+				error: null,
+				completedAt: persistedCompletedAt,
+			},
+			runtime: {
+				runtimeStatus: "FAILED",
+				phase: "running",
+				progress: 40,
+				outputs: { result: "failed" },
+				error: "runtime failed",
+				completedAt: null,
+			},
+			observedAt,
+		});
+
+		expect(snapshot).toEqual({
+			status: "error",
+			phase: "failed",
+			progress: 100,
+			output: { result: "stale success" },
+			error: "runtime failed",
+			completedAt: persistedCompletedAt,
+		});
+		expect(patch).toEqual(snapshot);
+	});
+
+	it("canonicalizes an error-to-cancelled correction with persisted-first cancellation data", () => {
+		const persistedCompletedAt = new Date("2026-07-03T00:01:00.000Z");
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted: {
+				status: "error",
+				phase: "failed",
+				progress: 100,
+				output: { result: "partial" },
+				error: "persisted stop reason",
+				completedAt: persistedCompletedAt,
+			},
+			runtime: {
+				runtimeStatus: "CANCELED",
+				phase: "runtime-cancel",
+				progress: 20,
+				outputs: { result: "runtime" },
+				error: "runtime cancellation",
+				completedAt: "2026-07-03T00:02:00.000Z",
+			},
+			observedAt: new Date("2026-07-03T00:03:00.000Z"),
+		});
+
+		expect(snapshot).toEqual({
+			status: "cancelled",
+			phase: "cancelled",
+			progress: 100,
+			output: { result: "partial" },
+			error: "persisted stop reason",
+			completedAt: persistedCompletedAt,
+		});
+		expect(patch).toEqual(snapshot);
+	});
+
+	it("canonicalizes a cancelled-to-error correction with the runtime failure", () => {
+		const persistedCompletedAt = new Date("2026-07-03T00:01:00.000Z");
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted: {
+				status: "cancelled",
+				phase: "cancelled",
+				progress: 100,
+				output: { result: "partial" },
+				error: "persisted cancellation",
+				completedAt: persistedCompletedAt,
+			},
+			runtime: {
+				runtimeStatus: "FAILED",
+				phase: "runtime-failure",
+				progress: 40,
+				outputs: { result: "runtime" },
+				error: "runtime failed",
+				completedAt: "2026-07-03T00:02:00.000Z",
+			},
+			observedAt: new Date("2026-07-03T00:03:00.000Z"),
+		});
+
+		expect(snapshot).toEqual({
+			status: "error",
+			phase: "failed",
+			progress: 100,
+			output: { result: "partial" },
+			error: "runtime failed",
+			completedAt: persistedCompletedAt,
+		});
+		expect(patch).toEqual(snapshot);
+	});
+
+	it("refreshes running executions and uses the row returned by persistence", async () => {
+		const compareAndSetReadModel = vi.fn(async ({ patch }) =>
+			execution(patch as Partial<WorkflowExecutionRecord>),
+		);
 		const runtimeStatus = {
 			getWorkflowStatus: vi.fn(async () => ({
 				runtimeStatus: "COMPLETED",
@@ -170,19 +452,9 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 			})),
 		} satisfies WorkflowRuntimeStatusPort;
 		const { service: readModel, workflowData } = service({
-			executions: [
-				execution(),
-				execution({
-					status: "success",
-					phase: "completed",
-					progress: 100,
-					primaryTraceId: "trace-runtime",
-					output: { content: "done" },
-					completedAt: new Date("2026-07-03T00:01:00.000Z"),
-				}),
-			],
+			executions: [execution()],
 			runtime: runtimeStatus,
-			updateReadModel,
+			compareAndSetReadModel,
 		});
 
 		const model = await readModel.loadExecutionReadModel({
@@ -192,37 +464,84 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		});
 
 		expect(runtimeStatus.getWorkflowStatus).toHaveBeenCalledWith("sw-exec-1");
-		expect(updateReadModel).toHaveBeenCalledWith(
-			"exec-1",
+		expect(compareAndSetReadModel).toHaveBeenCalledWith(
 			expect.objectContaining({
-				status: "success",
-				phase: "completed",
-				progress: 100,
-				primaryTraceId: "trace-runtime",
+				executionId: "exec-1",
+				expectedStatus: "running",
+				patch: expect.objectContaining({
+					status: "success",
+					phase: "completed",
+					progress: 100,
+					primaryTraceId: "trace-runtime",
+				}),
 			}),
 		);
-		expect(workflowData.getExecutionById).toHaveBeenCalledTimes(2);
+		expect(workflowData.getExecutionById).toHaveBeenCalledTimes(1);
 		expect(model?.status).toBe("success");
 		expect(model?.traceId).toBe("trace-runtime");
 	});
 
+	it("uses the exact terminal row that wins a refresh race", async () => {
+		const winner = execution({
+			status: "error",
+			phase: "failed",
+			progress: 100,
+			output: { success: false },
+			error: "agent budget exhausted",
+			completedAt: new Date("2026-07-03T00:00:45.000Z"),
+		});
+		const compareAndSetReadModel = vi.fn(async () => winner);
+		const runtimeStatus = {
+			getWorkflowStatus: vi.fn(async () => ({
+				runtimeStatus: "COMPLETED",
+				phase: "completed",
+				progress: 100,
+				currentNodeId: "agent",
+				currentNodeName: "Agent",
+				traceId: null,
+				outputs: { success: true },
+				error: null,
+				completedAt: "2026-07-03T00:01:00.000Z",
+			})),
+		} satisfies WorkflowRuntimeStatusPort;
+		const { service: readModel, workflowData } = service({
+			executions: [execution()],
+			runtime: runtimeStatus,
+			compareAndSetReadModel,
+		});
+
+		const model = await readModel.loadExecutionReadModel({
+			executionId: "exec-1",
+			refreshRuntime: true,
+			includeAgentEvents: false,
+		});
+
+		expect(model).toMatchObject({
+			status: "error",
+			phase: "failed",
+			progress: 100,
+			output: { success: false },
+			error: "agent budget exhausted",
+			completedAt: "2026-07-03T00:00:45.000Z",
+		});
+		expect(compareAndSetReadModel).toHaveBeenCalledTimes(1);
+		expect(workflowData.getExecutionById).toHaveBeenCalledTimes(1);
+	});
+
 	it("surfaces a not-executed-in-lite state instead of polling a lite instance", async () => {
-		const updateReadModel = vi.fn(async () => undefined);
+		const compareAndSetReadModel = vi.fn(async ({ patch }) =>
+			execution({
+				daprInstanceId: "lite-abc",
+				...(patch as Partial<WorkflowExecutionRecord>),
+			}),
+		);
 		const runtimeStatus = {
 			getWorkflowStatus: vi.fn(async () => null),
 		} satisfies WorkflowRuntimeStatusPort;
 		const { service: readModel } = service({
-			executions: [
-				execution({ daprInstanceId: "lite-abc", status: "running" }),
-				execution({
-					daprInstanceId: "lite-abc",
-					status: "error",
-					error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
-					completedAt: new Date("2026-07-03T00:01:00.000Z"),
-				}),
-			],
+			executions: [execution({ daprInstanceId: "lite-abc", status: "running" })],
 			runtime: runtimeStatus,
-			updateReadModel,
+			compareAndSetReadModel,
 		});
 
 		const model = await readModel.loadExecutionReadModel({
@@ -232,11 +551,16 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		});
 
 		expect(runtimeStatus.getWorkflowStatus).not.toHaveBeenCalled();
-		expect(updateReadModel).toHaveBeenCalledWith(
-			"exec-1",
+		expect(compareAndSetReadModel).toHaveBeenCalledWith(
 			expect.objectContaining({
-				status: "error",
-				error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+				executionId: "exec-1",
+				expectedStatus: "running",
+				patch: expect.objectContaining({
+					status: "error",
+					phase: "failed",
+					progress: 100,
+					error: LITE_WORKFLOW_NOT_EXECUTED_MESSAGE,
+				}),
 			}),
 		);
 		expect(model?.status).toBe("error");
