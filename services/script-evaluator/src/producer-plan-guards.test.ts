@@ -224,7 +224,7 @@ describe("microservice-dev-session: emitted plan", () => {
 		);
 		const handoff = tasks.find((task) => task.actionSlug === "session/spawn");
 		expect((handoff?.args as Record<string, unknown> | undefined)?.agentSlug).toBe(
-			"glm-juicefs-builder-agent",
+			"kimi-k3-juicefs-builder-agent",
 		);
 		const instructions = String(
 			(handoff?.args as Record<string, unknown> | undefined)?.instructions ?? "",
@@ -258,7 +258,7 @@ describe("microservice-dev-session: emitted plan", () => {
 		);
 		const handoff = tasks.find((task) => task.actionSlug === "session/spawn");
 		expect((handoff?.args as Record<string, unknown> | undefined)?.agentSlug).toBe(
-			"glm-juicefs-builder-agent",
+			"kimi-k3-juicefs-builder-agent",
 		);
 	});
 });

@@ -152,6 +152,7 @@ import type {
 	PersistWorkflowRunDiffInput,
 	PersistWorkflowSourceBundleInput,
 	WorkflowDataService,
+	WorkflowDevSessionAgentPolicy,
 	WorkflowDefinition,
 	WorkflowDefinitionRepository,
 	WorkflowTriggerStore,
@@ -1009,11 +1010,42 @@ function workflowDevSessionId(executionId: string): string {
 	return `preview-dev-${sha256Hex(executionId).slice(0, 32)}`;
 }
 
+function workflowDevAgentConfigMatchesPolicy(
+	config: AgentConfig,
+	policy: WorkflowDevSessionAgentPolicy,
+): boolean {
+	const extended = config as AgentConfig & {
+		reasoningEffort?: string;
+		contextWindowTokens?: number;
+	};
+	return (
+		config.runtime?.trim() === policy.runtime &&
+		config.modelSpec?.trim() === policy.modelSpec &&
+		(policy.reasoningEffort === undefined ||
+			extended.reasoningEffort === policy.reasoningEffort) &&
+		(policy.contextWindowTokens === undefined ||
+			extended.contextWindowTokens === policy.contextWindowTokens) &&
+		(policy.runtimeIsolation === undefined ||
+			config.runtimeIsolation === policy.runtimeIsolation)
+	);
+}
+
+function workflowDevSessionAgentMatchesPolicy(
+	agent: { slug: string; runtime: string; config: AgentConfig },
+	policy: WorkflowDevSessionAgentPolicy,
+): boolean {
+	return (
+		agent.slug === policy.slug &&
+		agent.runtime === policy.runtime &&
+		workflowDevAgentConfigMatchesPolicy(agent.config, policy)
+	);
+}
+
 function workflowDevSessionKickoffData(input: {
 	executionId: string;
 	instructions: string;
 	title: string;
-	agentPolicy: { slug: string; runtime: string; modelSpec: string };
+	agentPolicy: WorkflowDevSessionAgentPolicy;
 }): Record<string, unknown> {
 	return {
 		type: "user.message",
@@ -1027,6 +1059,15 @@ function workflowDevSessionKickoffData(input: {
 			agentSlug: input.agentPolicy.slug,
 			agentRuntime: input.agentPolicy.runtime,
 			modelSpec: input.agentPolicy.modelSpec,
+			...(input.agentPolicy.reasoningEffort === undefined
+				? {}
+				: { reasoningEffort: input.agentPolicy.reasoningEffort }),
+			...(input.agentPolicy.contextWindowTokens === undefined
+				? {}
+				: { contextWindowTokens: input.agentPolicy.contextWindowTokens }),
+			...(input.agentPolicy.runtimeIsolation === undefined
+				? {}
+				: { runtimeIsolation: input.agentPolicy.runtimeIsolation }),
 		},
 	};
 }
@@ -5875,11 +5916,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 
 	async createWorkflowDevSession(input: {
 		executionId: string;
-		agentPolicy: {
-			slug: string;
-			runtime: string;
-			modelSpec: string;
-		};
+		agentPolicy: WorkflowDevSessionAgentPolicy;
+		replayAgentPolicies?: readonly WorkflowDevSessionAgentPolicy[];
 		instructions: string;
 		title?: string | null;
 	}): Promise<
@@ -5903,48 +5941,52 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { status: "execution_not_found" };
 		}
 
-		const agentSlug = input.agentPolicy.slug.trim();
-		const agentId =
-      await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
-        agentSlug,
-      );
-		const agent = agentId
-			? await this.requireSessionAgents().resolveSessionAgent({ agentId })
-			: null;
-		if (!agent) {
-			return { status: "agent_not_found", agentSlug };
-		}
-		const configRuntime = agent.config.runtime?.trim();
-		const modelSpec = agent.config.modelSpec?.trim();
-		if (
-			agent.slug !== agentSlug ||
-			agent.runtime !== input.agentPolicy.runtime ||
-			configRuntime !== input.agentPolicy.runtime ||
-			modelSpec !== input.agentPolicy.modelSpec
-		) {
-			return { status: "agent_policy_mismatch", agentSlug };
-		}
-
 		const sessions = this.requireSessions();
 		const sessionId = workflowDevSessionId(input.executionId);
 		const title = input.title ?? `Dev session (${input.executionId})`;
-		const ensured = await sessions.ensureSession({
-			id: sessionId,
-			agentId: agent.id,
-			agentVersion: agent.version ?? undefined,
-			userId: executionOwner.userId,
-			projectId: executionOwner.projectId ?? null,
-			workflowExecutionId: input.executionId,
-			title,
-		});
+		const existingSession = await sessions.getSession(sessionId);
+		let canonicalAgentId: string | null = null;
+		let ensured: Awaited<ReturnType<SessionRepository["ensureSession"]>>;
+		if (existingSession) {
+			ensured = { session: existingSession, created: false };
+		} else {
+			const agentSlug = input.agentPolicy.slug.trim();
+			const agentId =
+				await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
+					agentSlug,
+				);
+			const agent = agentId
+				? await this.requireSessionAgents().resolveSessionAgent({ agentId })
+				: null;
+			if (!agent) {
+				return { status: "agent_not_found", agentSlug };
+			}
+			if (!workflowDevSessionAgentMatchesPolicy(agent, input.agentPolicy)) {
+				return { status: "agent_policy_mismatch", agentSlug };
+			}
+
+			canonicalAgentId = agent.id;
+			ensured = await sessions.ensureSession({
+				id: sessionId,
+				agentId: agent.id,
+				agentVersion: agent.version ?? undefined,
+				userId: executionOwner.userId,
+				projectId: executionOwner.projectId ?? null,
+				workflowExecutionId: input.executionId,
+				title,
+			});
+		}
 		const session = ensured.session;
 		const sessionOwner = await sessions.getSessionFileOwner(session.id);
 		const pinnedAgent = await this.requireSessionAgents().resolveSessionAgent({
 			agentId: session.agentId,
 			agentVersion: session.agentVersion ?? undefined,
 		});
-		const pinnedRuntime = pinnedAgent?.config.runtime?.trim();
-		const pinnedModelSpec = pinnedAgent?.config.modelSpec?.trim();
+		const matchedAgentPolicy = pinnedAgent
+			? [input.agentPolicy, ...(input.replayAgentPolicies ?? [])].find((policy) =>
+					workflowDevSessionAgentMatchesPolicy(pinnedAgent, policy),
+				)
+			: undefined;
 		if (
 			session.id !== sessionId ||
 			session.workflowExecutionId !== input.executionId ||
@@ -5953,11 +5995,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionOwner.userId !== executionOwner.userId ||
 			sessionOwner.projectId !== (executionOwner.projectId ?? null) ||
 			!pinnedAgent ||
-			pinnedAgent.id !== agent.id ||
-			pinnedAgent.slug !== agentSlug ||
-			pinnedAgent.runtime !== input.agentPolicy.runtime ||
-			pinnedRuntime !== input.agentPolicy.runtime ||
-			pinnedModelSpec !== input.agentPolicy.modelSpec
+			pinnedAgent.id !== session.agentId ||
+			!matchedAgentPolicy ||
+			(ensured.created &&
+				(canonicalAgentId === null || pinnedAgent.id !== canonicalAgentId))
 		) {
 			return { status: "session_conflict", reason: "identity_mismatch" };
 		}
@@ -5966,7 +6007,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			executionId: input.executionId,
 			instructions: input.instructions,
 			title,
-			agentPolicy: input.agentPolicy,
+			agentPolicy: matchedAgentPolicy,
 		});
     const kickoff = await this.requireSessionEvents().appendSessionEvent(
       session.id,

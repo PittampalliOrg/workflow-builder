@@ -24,7 +24,7 @@
           },
           "agent": {
             "type": "string",
-            "default": "glm-juicefs-builder-agent"
+            "default": "kimi-k3-juicefs-builder-agent"
           }
         }
       }
@@ -51,7 +51,7 @@
           "mode": "execute_direct",
           "workspaceRef": "${ .runtime.executionId }",
           "agentRef": {
-            "slug": "${ .trigger.agent // \"glm-juicefs-builder-agent\" }"
+            "slug": "${ .trigger.agent // \"kimi-k3-juicefs-builder-agent\" }"
           },
           "agentConfig": {
             "name": "bundle-proof builder",

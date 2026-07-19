@@ -825,6 +825,15 @@ export interface PreviewDatabaseProvisioner {
 	drop(input: { executionId: string }): Promise<void>;
 }
 
+export type WorkflowDevSessionAgentPolicy = {
+	slug: string;
+	runtime: AgentConfig["runtime"];
+	modelSpec: string;
+	reasoningEffort?: string;
+	contextWindowTokens?: number;
+	runtimeIsolation?: AgentConfig["runtimeIsolation"];
+};
+
 export interface WorkflowDataService {
 	getUserProfile(userId: string): Promise<UserProfileRecord | null>;
 	isPlatformAdmin(userId: string): Promise<boolean>;
@@ -1503,11 +1512,8 @@ export interface WorkflowDataService {
 	}): Promise<SessionDetail | null>;
 	createWorkflowDevSession(input: {
 		executionId: string;
-		agentPolicy: {
-			slug: string;
-			runtime: string;
-			modelSpec: string;
-		};
+		agentPolicy: WorkflowDevSessionAgentPolicy;
+		replayAgentPolicies?: readonly WorkflowDevSessionAgentPolicy[];
 		instructions: string;
 		title?: string | null;
 	}): Promise<

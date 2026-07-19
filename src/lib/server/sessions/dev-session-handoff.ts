@@ -23,10 +23,24 @@ import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
  */
 
 const DEV_AGENT_POLICY = Object.freeze({
-	slug: "glm-juicefs-builder-agent",
+	slug: "kimi-k3-juicefs-builder-agent",
 	runtime: "dapr-agent-py-juicefs",
 	modelSpec: "kimi/kimi-k3",
+	reasoningEffort: "max",
+	contextWindowTokens: 1_048_576,
+	runtimeIsolation: "dedicated",
 });
+
+// Durable handoffs created before the canonical slug migration pinned this
+// agent version and recorded this smaller policy in their kickoff provenance.
+// It is replay-only: fresh sessions always resolve DEV_AGENT_POLICY above.
+const DEV_AGENT_REPLAY_POLICIES = Object.freeze([
+	Object.freeze({
+		slug: "glm-juicefs-builder-agent",
+		runtime: "dapr-agent-py-juicefs",
+		modelSpec: "kimi/kimi-k3",
+	}),
+]);
 
 export interface SpawnDevSessionParams {
 	executionId: string;
@@ -49,6 +63,7 @@ export async function spawnDevSession(params: SpawnDevSessionParams): Promise<{
 	const ensured = await getApplicationAdapters().workflowData.createWorkflowDevSession({
 		executionId: params.executionId,
 		agentPolicy: DEV_AGENT_POLICY,
+		replayAgentPolicies: DEV_AGENT_REPLAY_POLICIES,
 		instructions: params.instructions,
 		title: params.title,
 	});

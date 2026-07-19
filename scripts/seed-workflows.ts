@@ -4071,20 +4071,18 @@ async function seedGeneratorCriticShowcases(params: {
 			"Interactive PreviewEnvironment developer that edits the per-execution JuiceFS workspace, runs the service-aware sync helper, and validates the isolated live system without a host CLI credential.",
 		modelSpec: "deepseek-v4-pro",
 	});
-	// Kimi K3 builder on the juicefs-shared backend. The legacy slug is retained
-	// because durable workflows and existing sessions pin it as an identifier.
-	// The planner/generator/design-reviewer of the all-on-juicefs GAN visual loop
-	// (gan-harness-glm-visual-dashboard); the visual critic is the dev-verified
-	// cli-playwright-critic-agent (claude-code-cli, in-pod Chromium, juicefs-shared
-	// → same /sandbox/work). A glm-5v-turbo screenshot-judge is wired in code
-	// (B1 vision + zai/glm-5v-turbo model) but deferred for the live run until a
-	// browser-on-juicefs-dapr sidecar lane exists (AgentRuntime CR retired).
+	// Canonical Kimi K3 builder for new preview-native workflows. Existing agents
+	// and durable sessions that pin the retired GLM-named slug remain untouched;
+	// this seed only establishes the identity used by fresh runs.
+	// The preview script supplies the task-specific prompt and browser actions;
+	// this saved definition owns the model, workspace runtime, and isolation
+	// contract shared by new preview development workflows.
 	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
-		slug: "glm-juicefs-builder-agent",
+		slug: "kimi-k3-juicefs-builder-agent",
 		runtime: "dapr-agent-py-juicefs",
-		name: "Kimi K3 (JuiceFS) Builder Agent",
+		name: "Kimi K3 JuiceFS Builder Agent",
 		description:
-			"Kimi K3 builder on the juicefs-shared backend: plans + builds the dashboard pod-locally against the per-execution JuiceFS /sandbox/work, sharing it with the deterministic gate and the Playwright visual critic.",
+			"Canonical preview-native Kimi K3 builder on the JuiceFS workspace backend; plans, edits, and validates the selected services in the per-execution /sandbox/work mount.",
 		modelSpec: "kimi/kimi-k3",
 		reasoningEffort: "max",
 		contextWindowTokens: 1_048_576,

@@ -224,7 +224,7 @@ describe("preview-ui-development-gan port", () => {
 		const launchArgs = {
 			intent: "improve dashboard status visibility",
 			services: ["workflow-builder"],
-			agentSlug: "glm-juicefs-builder-agent",
+			agentSlug: "kimi-k3-juicefs-builder-agent",
 			keepPreview: "true",
 			mode: "preview-native",
 			previewOrigin: "https://wfb-feature-one.tail286401.ts.net",
@@ -288,7 +288,7 @@ describe("preview-ui-development-gan port", () => {
 		expect(second.status).toBe("need");
 		const generate = second.tasks[0];
 		expect(generate.kind).toBe("agent");
-		expect(generate.opts.agent).toBe("glm-juicefs-builder-agent");
+		expect(generate.opts.agent).toBe("kimi-k3-juicefs-builder-agent");
 			expect(generate.opts.model).toBe("kimi/kimi-k3");
 		expect(generate.opts.isolation).toBe("shared");
 		expect(generate.prompt).toContain("http://10.0.0.8:8001/__export");

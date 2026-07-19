@@ -11,7 +11,7 @@ const bundle = readFileSync(
 );
 
 function builderSeed(text: string): string {
-	const start = text.indexOf('slug: "glm-juicefs-builder-agent"');
+	const start = text.indexOf('slug: "kimi-k3-juicefs-builder-agent"');
 	if (start < 0) throw new Error("Kimi K3 JuiceFS builder seed is missing");
 	const remainder = text.slice(start);
 	const end = remainder.match(/\n\s*\}\);/);
@@ -25,7 +25,7 @@ describe("Kimi K3 JuiceFS builder seed", () => {
 	it("persists the model contract and dedicated runtime isolation", () => {
 		const seed = builderSeed(source);
 		for (const field of [
-			'slug: "glm-juicefs-builder-agent"',
+			'slug: "kimi-k3-juicefs-builder-agent"',
 			'runtime: "dapr-agent-py-juicefs"',
 			'modelSpec: "kimi/kimi-k3"',
 			'reasoningEffort: "max"',
@@ -49,5 +49,10 @@ describe("Kimi K3 JuiceFS builder seed", () => {
 		expect(seed).toContain('modelSpec: "kimi/kimi-k3"');
 		expect(seed).toContain("contextWindowTokens: 1048576");
 		expect(seed).toContain('runtimeIsolation: "dedicated"');
+	});
+
+	it("does not reseed the retired GLM-named identity", () => {
+		expect(source).not.toContain("glm-juicefs-builder-agent");
+		expect(bundle).not.toContain("glm-juicefs-builder-agent");
 	});
 });

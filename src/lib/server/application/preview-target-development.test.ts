@@ -169,7 +169,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         workflowInput: {
           intent: "x",
           services: ["workflow-builder"],
-          agentSlug: "glm-juicefs-builder-agent",
+          agentSlug: "kimi-k3-juicefs-builder-agent",
         },
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
@@ -187,7 +187,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         workflowInput: {
           intent: "x",
           services: ["workflow-builder"],
-          agentSlug: "glm-juicefs-builder-agent",
+          agentSlug: "kimi-k3-juicefs-builder-agent",
         },
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
@@ -198,9 +198,9 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",
         services: ["workflow-builder"],
-        agentSlug: "glm-juicefs-builder-agent",
+        agentSlug: "kimi-k3-juicefs-builder-agent",
       }),
-    ).toMatchObject({ agentSlug: "glm-juicefs-builder-agent" });
+    ).toMatchObject({ agentSlug: "kimi-k3-juicefs-builder-agent" });
     expect(() =>
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",
