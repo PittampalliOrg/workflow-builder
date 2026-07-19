@@ -54,6 +54,20 @@ export function mapRuntimeStatus(
 	}
 }
 
+export function isExecutionStatusTerminal(status: ExecutionStatus): boolean {
+	return status === "success" || status === "error" || status === "cancelled";
+}
+
+/** A persisted terminal result is authoritative over the durable runtime envelope. */
+export function resolveExecutionStatus(
+	runtimeStatus: string | null | undefined,
+	persistedStatus: ExecutionStatus,
+): ExecutionStatus {
+	return isExecutionStatusTerminal(persistedStatus)
+		? persistedStatus
+		: mapRuntimeStatus(runtimeStatus, persistedStatus);
+}
+
 function toIso(value: Date | string | null | undefined): string | null {
 	if (!value) return null;
 	if (value instanceof Date) return value.toISOString();
@@ -65,10 +79,6 @@ function parseDurationMs(value: string | null): number | null {
 	if (typeof value !== "string" || !value.trim()) return null;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isFinite(parsed) ? parsed : null;
-}
-
-function patchStatusIsTerminal(status: ExecutionStatus) {
-	return status === "success" || status === "error" || status === "cancelled";
 }
 
 function compactStepLog(step: ExecutionStepLog): ExecutionStepLog {
@@ -327,7 +337,7 @@ export class ApplicationWorkflowExecutionReadModelService
 		const readModel = model as ExecutionReadModel;
 		const includeAgentEvents = options?.includeAgentEvents ?? false;
 		const compact = options?.compact ?? false;
-		const shouldCompact = compact && !patchStatusIsTerminal(readModel.status);
+		const shouldCompact = compact && !isExecutionStatusTerminal(readModel.status);
 
 		return {
 			...readModel,
@@ -402,11 +412,11 @@ export class ApplicationWorkflowExecutionReadModelService
 				execution.daprInstanceId,
 			);
 			if (!runtime) return null;
-			const nextStatus = mapRuntimeStatus(runtime.runtimeStatus, execution.status);
+			const nextStatus = resolveExecutionStatus(runtime.runtimeStatus, execution.status);
 			const nextCompletedAt =
 				typeof runtime.completedAt === "string"
 					? new Date(runtime.completedAt)
-					: patchStatusIsTerminal(nextStatus) && !execution.completedAt
+					: isExecutionStatusTerminal(nextStatus) && !execution.completedAt
 						? new Date()
 						: execution.completedAt;
 			const patch = {

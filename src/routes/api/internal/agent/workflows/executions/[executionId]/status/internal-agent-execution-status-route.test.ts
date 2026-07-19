@@ -9,15 +9,15 @@ const mocks = vi.hoisted(() => {
     workflowId: "wf-1",
     userId: "user-1",
     projectId: "project-1",
-    status: "running" as const,
+    status: "running" as "pending" | "running" | "success" | "error" | "cancelled",
     phase: "running",
 		progress: 40,
-		error: null,
+		error: null as string | null,
     input: { prompt: "ship it" },
-		output: null,
+		output: null as unknown,
     daprInstanceId: "sw-example-exec-exec-1",
     startedAt: new Date("2026-07-02T12:00:00.000Z"),
-    completedAt: null,
+    completedAt: null as Date | null,
 	};
 	const workflow = {
     id: "wf-1",
@@ -295,4 +295,41 @@ describe("internal agent workflow execution status route", () => {
       },
     );
 	});
+
+  it("does not report a persisted script failure as successful when Dapr completed", async () => {
+    mocks.workflowData.getExecutionById.mockResolvedValueOnce({
+      ...mocks.execution,
+      status: "error",
+      phase: "failed",
+      progress: 100,
+      error: "agent budget exhausted",
+      output: {
+        success: false,
+        phase: "failed",
+        error: "agent budget exhausted",
+      },
+      completedAt: new Date("2026-07-02T12:01:00.000Z"),
+    });
+
+    const response = (await GET(event() as never)) as Response;
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      status: "error",
+      error: "agent budget exhausted",
+      execution: {
+        status: "error",
+        phase: "failed",
+        error: "agent budget exhausted",
+        output: {
+          success: false,
+          phase: "failed",
+          error: "agent budget exhausted",
+        },
+      },
+      runtime: mocks.runtimeStatus,
+    });
+    expect(mocks.workflowData.updateExecutionReadModel).not.toHaveBeenCalled();
+  });
 });

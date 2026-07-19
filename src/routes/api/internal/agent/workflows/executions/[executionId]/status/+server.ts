@@ -5,6 +5,10 @@ import {
   validateInternalToken,
 } from "$lib/server/internal-auth";
 import { getApplicationAdapters } from "$lib/server/application";
+import {
+  isExecutionStatusTerminal,
+  resolveExecutionStatus,
+} from "$lib/server/application/workflow-execution-read-model";
 import { daprFetch, getOrchestratorUrl } from "$lib/server/dapr-client";
 import { resolveInternalWorkflowPrincipal } from "../../../../../workflow-mcp-principal";
 
@@ -96,11 +100,12 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	// Map runtime status to local status
 	let effectiveStatus = execution.status;
 	let effectiveError = execution.error;
+	const rowIsTerminal = isExecutionStatusTerminal(execution.status);
 
 	if (runtime) {
     const runtimeStatus = (runtime.runtimeStatus as string) || "";
-		effectiveStatus = mapRuntimeStatus(runtimeStatus, execution.status);
-		if (runtime.error) {
+		effectiveStatus = resolveExecutionStatus(runtimeStatus, execution.status);
+		if (!rowIsTerminal && runtime.error) {
 			effectiveError = String(runtime.error);
 		}
 
@@ -114,11 +119,6 @@ export const GET: RequestHandler = async ({ request, params }) => {
 		// status at a stale phase/progress after completion, so post-terminal polls
 		// must not clobber the persisted final state (mirrors the running/pending-only
 		// refresh in workflow-execution-read-model).
-		const rowIsTerminal =
-      execution.status === "success" ||
-      execution.status === "error" ||
-      execution.status === "cancelled";
-
 		if (
 			!rowIsTerminal &&
 			(effectiveStatus !== execution.status ||
@@ -171,32 +171,3 @@ export const GET: RequestHandler = async ({ request, params }) => {
     error: effectiveError,
 	});
 };
-
-function mapRuntimeStatus(
-	runtimeStatus: string,
-  fallback: string,
-): "pending" | "running" | "success" | "error" | "cancelled" {
-	switch (runtimeStatus.toUpperCase()) {
-    case "COMPLETED":
-      return "success";
-    case "FAILED":
-      return "error";
-    case "TERMINATED":
-    case "CANCELED":
-      return "cancelled";
-    case "PENDING":
-      return "pending";
-    case "RUNNING":
-    case "SUSPENDED":
-      return "running";
-		default:
-      return (
-        (fallback as
-          | "pending"
-          | "running"
-          | "success"
-          | "error"
-          | "cancelled") || "running"
-      );
-	}
-}

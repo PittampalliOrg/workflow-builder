@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	ApplicationWorkflowExecutionReadModelService,
 	mapRuntimeStatus,
+	resolveExecutionStatus,
 } from "$lib/server/application/workflow-execution-read-model";
 import type {
 	WorkflowDataService,
@@ -144,6 +145,13 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		expect(mapRuntimeStatus("RUNNING", "pending")).toBe("running");
 		expect(mapRuntimeStatus("SUSPENDED", "pending")).toBe("running");
 		expect(mapRuntimeStatus("UNKNOWN", "pending")).toBe("pending");
+	});
+
+	it("keeps persisted terminal results authoritative over the runtime envelope", () => {
+		expect(resolveExecutionStatus("COMPLETED", "error")).toBe("error");
+		expect(resolveExecutionStatus("FAILED", "success")).toBe("success");
+		expect(resolveExecutionStatus("RUNNING", "cancelled")).toBe("cancelled");
+		expect(resolveExecutionStatus("COMPLETED", "running")).toBe("success");
 	});
 
 	it("refreshes running executions through the runtime port, persists, then rereads", async () => {
