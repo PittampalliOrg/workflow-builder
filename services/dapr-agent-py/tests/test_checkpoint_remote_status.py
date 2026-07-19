@@ -134,3 +134,37 @@ def test_log_checkpoint_remote_status_inactive(monkeypatch, caplog):
     assert any(
         "workspace checkpoint remote INACTIVE" in rec.getMessage() for rec in caplog.records
     )
+
+
+def test_remote_config_defaults_to_disabled_without_gitea(monkeypatch):
+    # Gitea was removed from the cluster: with no WORKFLOW_CHECKPOINT_GIT_* (or
+    # legacy GITEA_*) configuration the remote must resolve DISABLED with no
+    # URL — never a stale default pointing at the removed service. (Dapr
+    # config/secret lookups fail fast offline and return empty.)
+    for key in (
+        "WORKFLOW_CHECKPOINT_GIT_API_URL",
+        "WORKFLOW_CHECKPOINT_GIT_CLONE_BASE_URL",
+        "WORKFLOW_CHECKPOINT_GIT_OWNER",
+        "WORKFLOW_CHECKPOINT_GIT_REPO",
+        "WORKFLOW_CHECKPOINT_GIT_USERNAME",
+        "WORKFLOW_CHECKPOINT_GIT_REMOTE_URL",
+        "WORKFLOW_CHECKPOINT_GIT_TOKEN",
+        "WORKFLOW_CHECKPOINT_GIT_TOKEN_SECRET_NAME",
+        "GITEA_API_URL",
+        "GITEA_INTERNAL_CLONE_BASE_URL",
+        "GITEA_REPO_OWNER",
+        "GITEA_USERNAME",
+        "GITEA_TOKEN",
+        "GITEA_PASSWORD",
+        "GITEA_TOKEN_SECRET_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    config = cc._checkpoint_remote_config()
+
+    assert config["enabled"] is False
+    assert config["reason"] == "remote url not configured"
+    assert not config.get("remoteUrl")
+    assert "gitea" not in str(config.get("remoteUrl") or "").lower()
+    assert not config.get("username")
+    assert not config.get("owner")
