@@ -1030,6 +1030,17 @@ function workflowDevAgentConfigMatchesPolicy(
 	);
 }
 
+function workflowDevSessionAgentMatchesPolicy(
+	agent: { slug: string; runtime: string; config: AgentConfig },
+	policy: WorkflowDevSessionAgentPolicy,
+): boolean {
+	return (
+		agent.slug === policy.slug &&
+		agent.runtime === policy.runtime &&
+		workflowDevAgentConfigMatchesPolicy(agent.config, policy)
+	);
+}
+
 function workflowDevSessionKickoffData(input: {
 	executionId: string;
 	instructions: string;
@@ -5906,6 +5917,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	async createWorkflowDevSession(input: {
 		executionId: string;
 		agentPolicy: WorkflowDevSessionAgentPolicy;
+		replayAgentPolicies?: readonly WorkflowDevSessionAgentPolicy[];
 		instructions: string;
 		title?: string | null;
 	}): Promise<
@@ -5929,43 +5941,52 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			return { status: "execution_not_found" };
 		}
 
-		const agentSlug = input.agentPolicy.slug.trim();
-		const agentId =
-      await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
-        agentSlug,
-      );
-		const agent = agentId
-			? await this.requireSessionAgents().resolveSessionAgent({ agentId })
-			: null;
-		if (!agent) {
-			return { status: "agent_not_found", agentSlug };
-		}
-		if (
-			agent.slug !== agentSlug ||
-			agent.runtime !== input.agentPolicy.runtime ||
-			!workflowDevAgentConfigMatchesPolicy(agent.config, input.agentPolicy)
-		) {
-			return { status: "agent_policy_mismatch", agentSlug };
-		}
-
 		const sessions = this.requireSessions();
 		const sessionId = workflowDevSessionId(input.executionId);
 		const title = input.title ?? `Dev session (${input.executionId})`;
-		const ensured = await sessions.ensureSession({
-			id: sessionId,
-			agentId: agent.id,
-			agentVersion: agent.version ?? undefined,
-			userId: executionOwner.userId,
-			projectId: executionOwner.projectId ?? null,
-			workflowExecutionId: input.executionId,
-			title,
-		});
+		const existingSession = await sessions.getSession(sessionId);
+		let canonicalAgentId: string | null = null;
+		let ensured: Awaited<ReturnType<SessionRepository["ensureSession"]>>;
+		if (existingSession) {
+			ensured = { session: existingSession, created: false };
+		} else {
+			const agentSlug = input.agentPolicy.slug.trim();
+			const agentId =
+				await this.requireSessionAgentSlugs().resolveSessionAgentIdBySlug(
+					agentSlug,
+				);
+			const agent = agentId
+				? await this.requireSessionAgents().resolveSessionAgent({ agentId })
+				: null;
+			if (!agent) {
+				return { status: "agent_not_found", agentSlug };
+			}
+			if (!workflowDevSessionAgentMatchesPolicy(agent, input.agentPolicy)) {
+				return { status: "agent_policy_mismatch", agentSlug };
+			}
+
+			canonicalAgentId = agent.id;
+			ensured = await sessions.ensureSession({
+				id: sessionId,
+				agentId: agent.id,
+				agentVersion: agent.version ?? undefined,
+				userId: executionOwner.userId,
+				projectId: executionOwner.projectId ?? null,
+				workflowExecutionId: input.executionId,
+				title,
+			});
+		}
 		const session = ensured.session;
 		const sessionOwner = await sessions.getSessionFileOwner(session.id);
 		const pinnedAgent = await this.requireSessionAgents().resolveSessionAgent({
 			agentId: session.agentId,
 			agentVersion: session.agentVersion ?? undefined,
 		});
+		const matchedAgentPolicy = pinnedAgent
+			? [input.agentPolicy, ...(input.replayAgentPolicies ?? [])].find((policy) =>
+					workflowDevSessionAgentMatchesPolicy(pinnedAgent, policy),
+				)
+			: undefined;
 		if (
 			session.id !== sessionId ||
 			session.workflowExecutionId !== input.executionId ||
@@ -5974,13 +5995,10 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionOwner.userId !== executionOwner.userId ||
 			sessionOwner.projectId !== (executionOwner.projectId ?? null) ||
 			!pinnedAgent ||
-			pinnedAgent.id !== agent.id ||
-			pinnedAgent.slug !== agentSlug ||
-			pinnedAgent.runtime !== input.agentPolicy.runtime ||
-			!workflowDevAgentConfigMatchesPolicy(
-				pinnedAgent.config,
-				input.agentPolicy,
-			)
+			pinnedAgent.id !== session.agentId ||
+			!matchedAgentPolicy ||
+			(ensured.created &&
+				(canonicalAgentId === null || pinnedAgent.id !== canonicalAgentId))
 		) {
 			return { status: "session_conflict", reason: "identity_mismatch" };
 		}
@@ -5989,7 +6007,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			executionId: input.executionId,
 			instructions: input.instructions,
 			title,
-			agentPolicy: input.agentPolicy,
+			agentPolicy: matchedAgentPolicy,
 		});
     const kickoff = await this.requireSessionEvents().appendSessionEvent(
       session.id,

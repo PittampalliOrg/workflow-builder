@@ -1513,6 +1513,7 @@ export interface WorkflowDataService {
 	createWorkflowDevSession(input: {
 		executionId: string;
 		agentPolicy: WorkflowDevSessionAgentPolicy;
+		replayAgentPolicies?: readonly WorkflowDevSessionAgentPolicy[];
 		instructions: string;
 		title?: string | null;
 	}): Promise<

@@ -72,6 +72,13 @@ describe("spawnDevSession", () => {
 					contextWindowTokens: 1_048_576,
 					runtimeIsolation: "dedicated",
 				},
+				replayAgentPolicies: [
+					{
+						slug: "glm-juicefs-builder-agent",
+						runtime: "dapr-agent-py-juicefs",
+						modelSpec: "kimi/kimi-k3",
+					},
+				],
 			instructions: "open the repo and run ./sync.sh",
 			title: "Dev handoff",
 		});
