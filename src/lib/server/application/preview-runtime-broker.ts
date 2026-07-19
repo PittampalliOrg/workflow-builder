@@ -46,6 +46,12 @@ const MAX_JSON_NODES = 25_000;
 const MAX_OBJECT_KEYS = 128;
 const MAX_CONTENT_PARTS = 32;
 const MAX_TOOL_CALLS_PER_MESSAGE = 32;
+const KIMI_INLINE_IMAGE_PREFIXES = new Set([
+  "data:image/png;base64,",
+  "data:image/jpeg;base64,",
+  "data:image/webp;base64,",
+  "data:image/gif;base64,",
+]);
 const encoder = new TextEncoder();
 
 export const KIMI_K3_MODEL = "kimi-k3";
@@ -492,10 +498,18 @@ function validateMessage(
     }
     return;
   }
-  validateMessageContent(value.content, limits.maxContentBytes);
+  validateMessageContent(
+    value.content,
+    limits.maxContentBytes,
+    value.role === "user",
+  );
 }
 
-function validateMessageContent(value: unknown, maxBytes: number): void {
+function validateMessageContent(
+  value: unknown,
+  maxBytes: number,
+  allowImages: boolean,
+): void {
   if (typeof value === "string") {
     if (utf8Bytes(value) > maxBytes)
       return invalid("message content is too large");
@@ -511,16 +525,76 @@ function validateMessageContent(value: unknown, maxBytes: number): void {
   let bytes = 0;
   for (const part of value) {
     if (!isPlainRecord(part)) return invalid("message content part is invalid");
-    assertOnlyKeys(part, new Set(["type", "text"]), "message content part");
-    if (
-      !["text", "input_text", "output_text"].includes(String(part.type)) ||
-      typeof part.text !== "string"
-    ) {
-      return invalid("message content part must contain text");
+    if (["text", "input_text", "output_text"].includes(String(part.type))) {
+      assertOnlyKeys(part, new Set(["type", "text"]), "message content part");
+      if (typeof part.text !== "string") {
+        return invalid("message text content part is invalid");
+      }
+      bytes += utf8Bytes(part.text);
+      continue;
     }
-    bytes += utf8Bytes(part.text);
+    if (part.type === "image_url") {
+      if (!allowImages) {
+        return invalid("image_url content is valid only on user messages");
+      }
+      assertOnlyKeys(
+        part,
+        new Set(["type", "image_url"]),
+        "message image content part",
+      );
+      bytes += validateInlineImageUrl(part.image_url, maxBytes);
+      continue;
+    }
+    return invalid("message content part type is unsupported");
   }
   if (bytes > maxBytes) return invalid("message content is too large");
+}
+
+function validateInlineImageUrl(value: unknown, maxBytes: number): number {
+  if (!isPlainRecord(value)) return invalid("image_url must be an object");
+  assertOnlyKeys(value, new Set(["url"]), "image_url");
+  if (typeof value.url !== "string") {
+    return invalid("image_url requires a URL string");
+  }
+  const url = value.url;
+  const bytes = utf8Bytes(url);
+  if (bytes > maxBytes) return invalid("image_url is too large");
+  const prefix = [...KIMI_INLINE_IMAGE_PREFIXES].find((candidate) =>
+    url.startsWith(candidate),
+  );
+  if (!prefix || !hasCanonicalStandardBase64(url.slice(prefix.length))) {
+    return invalid("image_url must be a supported base64 data URI");
+  }
+  return bytes;
+}
+
+function hasCanonicalStandardBase64(value: string): boolean {
+  // Repeated-group regexes can exhaust V8's stack on multi-megabyte images.
+  if (value.length < 4 || value.length % 4 !== 0) return false;
+  let padding = 0;
+  if (value.charCodeAt(value.length - 1) === 0x3d) padding += 1;
+  if (value.charCodeAt(value.length - 2) === 0x3d) padding += 1;
+  const contentLength = value.length - padding;
+  let finalValue = 0;
+  for (let index = 0; index < contentLength; index += 1) {
+    const character = value.charCodeAt(index);
+    if (character >= 0x41 && character <= 0x5a) finalValue = character - 0x41;
+    else if (character >= 0x61 && character <= 0x7a)
+      finalValue = character - 0x61 + 26;
+    else if (character >= 0x30 && character <= 0x39)
+      finalValue = character - 0x30 + 52;
+    else if (character === 0x2b) finalValue = 62;
+    else if (character === 0x2f) finalValue = 63;
+    else return false;
+  }
+  for (let index = contentLength; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 0x3d) return false;
+  }
+  return (
+    (padding === 0 && contentLength % 4 === 0) ||
+    (padding === 1 && contentLength % 4 === 3 && (finalValue & 0x03) === 0) ||
+    (padding === 2 && contentLength % 4 === 2 && (finalValue & 0x0f) === 0)
+  );
 }
 
 function validateToolCall(value: unknown, maxBytes: number): void {
