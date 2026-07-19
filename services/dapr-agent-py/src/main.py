@@ -1209,6 +1209,11 @@ def _clean_runtime_context(value: dict[str, Any]) -> dict[str, Any]:
     )
     if allowed_tools:
         context["allowedTools"] = sorted(allowed_tools)
+    # Full-automation runs (agentConfig.interactionMode == "autonomous") hide
+    # AskUserQuestion — see get_llm_tools / _is_tool_allowed_for_instance.
+    raw_mode = agent_config.get("interactionMode") or value.get("interactionMode")
+    if isinstance(raw_mode, str) and raw_mode.strip():
+        context["interactionMode"] = raw_mode.strip().lower()
     if isinstance(value.get("effectiveAgentConfig"), dict):
         context["effectiveAgentConfig"] = value["effectiveAgentConfig"]
         for key, audit_value in effective_audit_fields(value["effectiveAgentConfig"]).items():
@@ -1337,16 +1342,16 @@ _BUILTIN_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     _normalize_tool_lookup_name("web_search"): ("WebSearch",),
     _normalize_tool_lookup_name("web_fetch"): ("WebFetch",),
     _normalize_tool_lookup_name("notebook_edit"): ("NotebookEdit",),
-    _normalize_tool_lookup_name("todo_write"): ("TodoWrite",),
+    _normalize_tool_lookup_name("todo_write"): ("TodoList",),
+    _normalize_tool_lookup_name("todo_list"): ("TodoList",),
     _normalize_tool_lookup_name("task_output"): ("TaskOutput",),
     _normalize_tool_lookup_name("task_stop"): ("TaskStop",),
-    _normalize_tool_lookup_name("ask_user"): ("AskUser",),
+    _normalize_tool_lookup_name("ask_user"): ("AskUserQuestion",),
+    _normalize_tool_lookup_name("ask_user_question"): ("AskUserQuestion",),
     _normalize_tool_lookup_name("send_message"): ("SendMessage",),
     _normalize_tool_lookup_name("skill"): ("Skill",),
     _normalize_tool_lookup_name("agent"): ("Agent",),
     _normalize_tool_lookup_name("call_agent"): ("CallAgent",),
-    _normalize_tool_lookup_name("list_mcp_resources"): ("ListMcpResources",),
-    _normalize_tool_lookup_name("read_mcp_resource"): ("ReadMcpResource",),
     _normalize_tool_lookup_name("read_session_events"): ("ReadSessionEvents",),
 }
 
@@ -2294,6 +2299,7 @@ class OpenShellDurableAgent(DurableAgent):
                 "instructionBundle": clean.get("instructionBundle"),
                 "permissionMode": clean.get("permissionMode"),
                 "allowedTools": clean.get("allowedTools"),
+                "interactionMode": clean.get("interactionMode"),
             }
         )
         with self._agent_context_lock:
@@ -2338,7 +2344,21 @@ class OpenShellDurableAgent(DurableAgent):
                 return context
         return {}
 
+    def _interaction_mode_for_instance(self, instance_id: str) -> str:
+        """Resolve agentConfig.interactionMode for the instance ('' when unset)."""
+        context = self._runtime_context_for_instance(instance_id)
+        return str(context.get("interactionMode") or "").strip().lower()
+
     def _is_tool_allowed_for_instance(self, instance_id: str, tool_name: str) -> bool:
+        if (
+            _normalize_tool_lookup_name(tool_name)
+            == _normalize_tool_lookup_name("AskUserQuestion")
+            and self._interaction_mode_for_instance(instance_id) == "autonomous"
+        ):
+            # Full-automation runs have no interactive user: AskUserQuestion is
+            # hidden adapter-side (get_llm_tools) and denied here at the
+            # execution gate so a stale or guessed call cannot run.
+            return False
         allowed_tools = None
         for candidate in _runtime_context_candidate_ids(instance_id):
             allowed_tools = self._allowed_tools_by_instance.get(candidate)
@@ -2824,6 +2844,22 @@ class OpenShellDurableAgent(DurableAgent):
                 before,
                 sorted(allowed_tools),
             )
+
+        if self._interaction_mode_for_instance(instance_id) == "autonomous":
+            # Full-automation runs have no interactive user: hide AskUserQuestion
+            # so the agent acts decisively instead of asking into the void.
+            before = len(tools)
+            tools = [
+                t
+                for t in tools
+                if _normalize_tool_lookup_name(getattr(t, "name", ""))
+                != _normalize_tool_lookup_name("AskUserQuestion")
+            ]
+            if len(tools) != before:
+                logger.info(
+                    "[tools] interactionMode=autonomous for %s: AskUserQuestion hidden",
+                    instance_id,
+                )
 
         # Hard allowed-tools enforcement when a skill is active. Mirrors
         # Claude Code's tools/SkillTool/SkillTool.ts:775-806 contextModifier

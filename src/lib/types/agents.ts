@@ -232,6 +232,16 @@ export type AgentConfig = {
 		| "dontAsk"
 		| "auto";
 
+	/**
+	 * Interaction contract for the session. `'interactive'` (default) offers the
+	 * AskUserQuestion tool so the agent can clarify with the user mid-run.
+	 * `'autonomous'` is for full-automation runs (benchmarks, unattended
+	 * workflows): dapr-agent-py hides AskUserQuestion from the model and denies
+	 * it at the execution gate, so the agent acts decisively instead of asking
+	 * into the void.
+	 */
+	interactionMode?: "interactive" | "autonomous";
+
 	builtinTools: string[];
 	tools?: string[];
 	mcpConnectionMode: "project" | "explicit" | "auto";

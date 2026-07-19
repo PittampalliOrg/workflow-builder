@@ -4,10 +4,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from src.openshell_runtime import get_runtime
 from .._security import expand_path
+from .prompt import get_glob_tool_description
 
 _MAX_RESULTS = 100
+
+
+class GlobArgs(BaseModel):
+    """Wire schema for the Glob tool (aligned with kimi-code v2 glob.ts)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    pattern: str = Field(
+        description=(
+            "Glob pattern to match files against, e.g. \"**/*.py\" or \"src/**/*.ts\". "
+            "A pattern containing a directory anchor (e.g. \"src/**/*.ts\") walks that "
+            "subdirectory of the search root."
+        ),
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Directory to search in. Accepts an absolute path or a path relative to "
+            "the current working directory. Omit to search the current working directory."
+        ),
+    )
 
 
 def glob_search(pattern: str, path: str | None = None) -> str:
@@ -64,5 +88,5 @@ def glob_search(pattern: str, path: str | None = None) -> str:
 
     return "\n".join(lines)
 
-from .prompt import get_glob_tool_description
+
 glob_search.__doc__ = get_glob_tool_description()

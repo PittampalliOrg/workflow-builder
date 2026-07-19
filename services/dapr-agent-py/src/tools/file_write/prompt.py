@@ -1,19 +1,21 @@
 """Prompt and constants for the FileWrite tool.
 
-Ported from claude-code-src/main/tools/FileWriteTool/prompt.ts
+Aligned with kimi-code v2's Write tool description (write.md), adapted to the
+dapr-agent-py sandbox runtime.
 """
-
-from ..file_read.prompt import FILE_READ_TOOL_NAME
 
 FILE_WRITE_TOOL_NAME = "Write"
 
 
 def get_write_tool_description() -> str:
-    return f"""Writes a file to the local filesystem.
+    return """Create, append to, or replace a file entirely.
 
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path.
-- If this is an existing file, you MUST use the {FILE_READ_TOOL_NAME} tool first to read the file's contents. This tool will fail if you did not read the file first.
-- Prefer the file_edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
-- NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked."""
+- Missing parent directories are created automatically (like `mkdir(parents=True, exist_ok=True)`).
+- Mode defaults to overwrite; append adds content at EOF without adding a newline.
+- Write is NOT ALLOWED for incremental changes to existing files, including trivial, one-line, quick, or cosmetic edits. Use Edit instead.
+- Use Write only when the file does not exist, you intend a complete replacement, or the new contents have little continuity with the old contents.
+- Do not create unsolicited documentation files (`*.md` write-ups, `README`s, summaries) just because a task finished — write one only when the user asks for it, or when a task or project instruction requires it.
+- Read before overwriting an existing file.
+- Write ignores the Read/Edit line-number view. NEVER include line prefixes.
+- Write outputs content literally, including supplied line endings: \\n stays LF, \\r\\n stays CRLF.
+- For new content too large for one call, overwrite the first chunk, then append subsequent chunks. Never chunk Write to modify an existing file."""

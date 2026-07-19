@@ -403,7 +403,10 @@ def _tool_parameters(tool: Any) -> dict[str, Any]:
     args_model = getattr(tool, "args_model", None)
     if args_model:
         try:
-            schema = args_model.model_json_schema()
+            # by_alias=True: aligned tools declare kimi-code wire names via
+            # pydantic aliases (e.g. Grep's "-i"/"-A"/"-B"/"-C"); without this
+            # the schema would show the python field names instead.
+            schema = args_model.model_json_schema(by_alias=True)
             if isinstance(schema, dict):
                 return schema
         except Exception:
