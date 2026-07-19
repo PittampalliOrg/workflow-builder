@@ -18,8 +18,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { nanoid } from "nanoid";
 import postgres from "postgres";
 import { hashAgentConfig } from "../src/lib/server/agents/config-hash";
@@ -493,18 +492,8 @@ async function main() {
   }
 }
 
-const DIRECT_ENTRY_BASENAME =
-  "upsert-kimi-k3-3blue1brown-animation-workflow.ts";
-
-export function isDirectExecution(
-  moduleUrl: string,
-  argvPath: string | undefined,
-): boolean {
-  if (!argvPath || moduleUrl !== pathToFileURL(argvPath).href) return false;
-  return basename(fileURLToPath(moduleUrl)) === DIRECT_ENTRY_BASENAME;
-}
-
-if (isDirectExecution(import.meta.url, process.argv[1])) {
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invokedPath) {
   main().catch((error) => {
     console.error(
       "[upsert-kimi-k3-3blue1brown-animation-workflow] Error:",

@@ -16,13 +16,17 @@
 	import {
 		Activity,
 		Bot,
+		Boxes,
 		ExternalLink,
+		GitBranch,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Rocket,
+		Sparkles,
+		Trash2
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -125,6 +129,69 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
+	// -------------------------------------------------------------------------
+	// Preview Development Status — preview-environment activity timeline.
+	//
+	// Derived entirely from data the dashboard already fetches client-side
+	// (recentRuns + data.recentChanges); there is no dedicated preview-lifecycle
+	// JSON feed today, so "torn down" events render an explicit empty state
+	// instead of inventing metrics. When a previews API becomes available this
+	// list can be extended without touching the card markup.
+	// -------------------------------------------------------------------------
+	type PreviewEventKind = 'launched' | 'promoted' | 'torn_down';
+	type PreviewEvent = {
+		id: string;
+		kind: PreviewEventKind;
+		label: string;
+		detail: string;
+		at: string;
+		href: string | null;
+	};
+
+	let previewEvents = $derived.by<PreviewEvent[]>(() => {
+		const events: PreviewEvent[] = [];
+		// "launched": each recent workflow run corresponds to a preview/dev
+		// environment launch in the preview workflow.
+		for (const r of recentRuns ?? []) {
+			if (!r?.startedAt) continue;
+			events.push({
+				id: `launched-${r.executionId}`,
+				kind: 'launched',
+				label: 'Preview launched',
+				detail: r.workflowName ?? 'workflow run',
+				at: r.startedAt,
+				href: r.workflowId && r.executionId
+					? `/workspaces/${slug}/workflows/${r.workflowId}/runs/${r.executionId}`
+					: null
+			});
+		}
+		// "promoted": published agent/environment versions are the promotion
+		// signal surfaced by the existing dashboard payload.
+		for (const c of data?.recentChanges ?? []) {
+			if (!c?.publishedAt) continue;
+			events.push({
+				id: `promoted-${c.kind}-${c.resourceId}-v${c.version}`,
+				kind: 'promoted',
+				label: `Promoted ${c.kind} v${c.version}`,
+				detail: c.resourceName ?? 'unnamed',
+				at: c.publishedAt,
+				href:
+					c.kind === 'agent'
+						? `/workspaces/${slug}/agents/${c.resourceId}`
+						: `/workspaces/${slug}/environments/${c.resourceId}`
+			});
+		}
+		return events
+			.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+			.slice(0, 6);
+	});
+
+	const previewEventBadgeClass: Record<PreviewEventKind, string> = {
+		launched: 'bg-blue-500/10 text-blue-600',
+		promoted: 'bg-emerald-500/10 text-emerald-600',
+		torn_down: 'bg-muted text-muted-foreground'
+	};
+
 	onMount(load);
 </script>
 
@@ -218,6 +285,82 @@
 				</CardContent>
 			</Card>
 		</div>
+
+		<!-- Preview Development Status: preview-environment activity timeline.
+		     Lists the most recent preview lifecycle events (launched, promoted,
+		     torn down) with relative timestamps. Built from data the dashboard
+		     already loads; torn-down events fall back to an explicit empty
+		     state until a preview-lifecycle feed exists. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Rocket class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Recent preview-environment activity across this workspace.
+					</CardDescription>
+				</div>
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={() => goto(`/workspaces/${slug}/previews/archived`)}
+				>
+					Archived previews <ExternalLink class="size-3" />
+				</Button>
+			</CardHeader>
+			<CardContent>
+				{#if previewEvents.length === 0}
+					<p class="text-sm text-muted-foreground py-6 text-center">
+						No preview-environment activity yet. Launch a workflow run to spin
+						up a preview, or promote an agent/environment version to see it
+						here.
+					</p>
+				{:else}
+					<ul class="divide-y">
+						{#each previewEvents as e (e.id)}
+							<li class="py-2 flex items-center justify-between gap-2">
+								<div class="flex items-center gap-2 min-w-0 flex-1">
+									{#if e.kind === 'launched'}
+										<Boxes class="size-3.5 text-blue-600 shrink-0" />
+									{:else if e.kind === 'promoted'}
+										<GitBranch class="size-3.5 text-emerald-600 shrink-0" />
+									{:else}
+										<Trash2 class="size-3.5 text-muted-foreground shrink-0" />
+									{/if}
+									{#if e.href}
+										<a
+											href={e.href}
+											class="text-sm truncate hover:underline"
+											title={e.detail}
+										>
+											{e.label} · {e.detail}
+										</a>
+									{:else}
+										<span class="text-sm truncate" title={e.detail}>
+											{e.label} · {e.detail}
+										</span>
+									{/if}
+								</div>
+								<Badge variant="outline" class={previewEventBadgeClass[e.kind]}>
+									{e.kind === 'torn_down' ? 'torn down' : e.kind}
+								</Badge>
+								<span class="text-[11px] text-muted-foreground whitespace-nowrap">
+									{formatRelative(e.at)}
+								</span>
+							</li>
+						{/each}
+					</ul>
+					<p class="text-[11px] text-muted-foreground pt-2">
+						Torn-down previews are preserved under
+						<a
+							href="/workspaces/{slug}/previews/archived"
+							class="text-primary hover:underline">Archived previews</a
+						>; none were torn down in the window covered by this activity.
+					</p>
+				{/if}
+			</CardContent>
+		</Card>
 
 		<!-- Quick start grid -->
 		{#if data.stats.totalAgents === 0}

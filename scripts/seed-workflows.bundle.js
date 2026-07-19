@@ -13469,8 +13469,7 @@ async function migrateKimiK3BrowserAgentsAndWorkflows(sql2, owner) {
 
 // scripts/upsert-kimi-k3-3blue1brown-animation-workflow.ts
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 var DATABASE_URL = process.env.DATABASE_URL;
 var WORKFLOW_ID = "kimi-k3-3blue1brown-animation";
 var WORKFLOW_NAME = "Kimi K3 3Blue1Brown-style Animation";
@@ -13850,12 +13849,8 @@ async function main() {
     await sql2.end({ timeout: 5 });
   }
 }
-var DIRECT_ENTRY_BASENAME = "upsert-kimi-k3-3blue1brown-animation-workflow.ts";
-function isDirectExecution(moduleUrl, argvPath) {
-  if (!argvPath || moduleUrl !== pathToFileURL(argvPath).href) return false;
-  return basename(fileURLToPath(moduleUrl)) === DIRECT_ENTRY_BASENAME;
-}
-if (isDirectExecution(import.meta.url, process.argv[1])) {
+var invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invokedPath) {
   main().catch((error) => {
     console.error(
       "[upsert-kimi-k3-3blue1brown-animation-workflow] Error:",
@@ -17571,8 +17566,7 @@ async function seedGeneratorCriticShowcases(params) {
 async function seedWorkflow() {
   console.log("[seed-workflows] Starting workflow seed...");
   const sql2 = src_default(DATABASE_URL2, { max: 1 });
-  const drizzleSql = src_default(DATABASE_URL2, { max: 1 });
-  const db = drizzle(drizzleSql, {
+  const db = drizzle(sql2, {
     schema: {
       agentProfileTemplateVersions,
       appConnections,
@@ -17812,7 +17806,7 @@ async function seedWorkflow() {
     });
     console.log("[seed-workflows] Completed successfully");
   } finally {
-    await Promise.all([sql2.end(), drizzleSql.end()]);
+    await sql2.end();
   }
 }
 seedWorkflow().catch((error) => {

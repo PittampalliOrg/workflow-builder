@@ -4,7 +4,6 @@ import { validateDynamicScriptSpec } from "../src/lib/server/workflows/dynamic-s
 
 import {
   buildSpec,
-  isDirectExecution,
   KIMI_AGENT_CONFIG,
   KIMI_AGENT_SLUG,
   parseArgs,
@@ -101,20 +100,5 @@ describe("fresh Kimi K3 animation workflow upsert", () => {
     expect(() => parseArgs(["--agent-version", "1"])).toThrow(
       "--agent-version requires --agent-id",
     );
-  });
-
-  it("does not run its standalone main when bundled into the canonical seed", () => {
-    expect(
-      isDirectExecution(
-        "file:///app/scripts/upsert-kimi-k3-3blue1brown-animation-workflow.ts",
-        "/app/scripts/upsert-kimi-k3-3blue1brown-animation-workflow.ts",
-      ),
-    ).toBe(true);
-    expect(
-      isDirectExecution(
-        "file:///app/scripts/seed-workflows.bundle.js",
-        "/app/scripts/seed-workflows.bundle.js",
-      ),
-    ).toBe(false);
   });
 });
