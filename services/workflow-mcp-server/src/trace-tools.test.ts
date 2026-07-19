@@ -361,6 +361,7 @@ describe("trace tools", () => {
               spanId: "llm-span",
               name: "gen_ai.chat.completions",
               service: "agent-runtime",
+              sessionId: "session-llm",
             },
           ],
         })),
@@ -375,6 +376,39 @@ describe("trace tools", () => {
         (action: { tool: string }) => action.tool,
       ),
     ).toEqual(["trace_get_span", "trace_get_llm_turn"]);
+    expect(llmResponse.structuredContent.nextActions[1].arguments).toEqual({
+      executionId: "execution-1",
+      sessionId: "session-llm",
+      limit: 3,
+    });
+  });
+
+  it("falls back to the exact span for LLM search results without a session", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        searchSpans: vi.fn(async () => ({
+          spans: [
+            {
+              spanId: "llm-span",
+              name: "claude_code.llm_request",
+              service: "dapr-agent-py",
+            },
+          ],
+        })),
+      }),
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "trace_search_spans",
+    );
+
+    const response = await tool?.handler({ executionId: "execution-1" });
+
+    expect(response.structuredContent.nextActions[1]).toMatchObject({
+      tool: "trace_get_llm_turn",
+      arguments: { executionId: "execution-1", spanId: "llm-span" },
+    });
   });
 
   it("only proposes LLM drill-down from LLM-related span detail", async () => {
@@ -413,7 +447,10 @@ describe("trace tools", () => {
             spanId: "model-span",
             name: "agent inference",
             service: "runtime",
-            attributes: { "gen_ai.request.model": "kimi-k3" },
+            attributes: {
+              "gen_ai.request.model": "kimi-k3",
+              "session.id": "session-model",
+            },
           },
         })),
       }),
@@ -430,6 +467,38 @@ describe("trace tools", () => {
         (action: { tool: string }) => action.tool,
       ),
     ).toEqual(["trace_get_logs", "trace_get_llm_turn"]);
+    expect(llmResponse.structuredContent.nextActions[1].arguments).toEqual({
+      executionId: "execution-1",
+      sessionId: "session-model",
+      limit: 3,
+    });
+  });
+
+  it("falls back to the requested span for LLM detail without a session", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        getSpan: vi.fn(async () => ({
+          span: {
+            spanId: "model-span",
+            name: "agent inference",
+            attributes: { "gen_ai.request.model": "kimi-k3" },
+          },
+        })),
+      }),
+    });
+    const tool = captured.find((entry) => entry.name === "trace_get_span");
+
+    const response = await tool?.handler({
+      executionId: "execution-1",
+      spanId: "model-span",
+    });
+
+    expect(response.structuredContent.nextActions[1]).toMatchObject({
+      tool: "trace_get_llm_turn",
+      arguments: { executionId: "execution-1", spanId: "model-span" },
+    });
   });
 
   it("proposes only directly authorized screenshot assets", async () => {

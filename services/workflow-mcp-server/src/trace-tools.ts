@@ -209,6 +209,42 @@ function looksLlmRelated(value: unknown): boolean {
   );
 }
 
+function spanSessionId(value: unknown): string | null {
+  const span = record(value);
+  if (!span) return null;
+  const sources = [
+    span,
+    record(span.attributes),
+    record(span.resourceAttributes),
+  ];
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of [
+      "sessionId",
+      "session.id",
+      "agent.session.id",
+      "workflow_builder.session_id",
+    ]) {
+      const candidate = source[key];
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function llmTurnArguments(
+  executionId: string,
+  span: unknown,
+  fallbackSpanId: string,
+): Record<string, unknown> {
+  const sessionId = spanSessionId(span);
+  return sessionId
+    ? { executionId, sessionId, limit: 3 }
+    : { executionId, spanId: fallbackSpanId };
+}
+
 function screenshotStorageRefs(value: unknown): string[] {
   const refs = new Set<string>();
   for (const artifact of records(value, "browserArtifacts")) {
@@ -480,10 +516,11 @@ export function registerTraceTools(
           if (looksLlmRelated(first)) {
             nextActions.push({
               tool: "trace_get_llm_turn",
-              arguments: {
-                executionId: args.executionId,
-                spanId: first.spanId,
-              },
+              arguments: llmTurnArguments(
+                args.executionId,
+                first,
+                first.spanId,
+              ),
               reason:
                 "Inspect the exact prompt and response for this LLM-related span.",
             });
@@ -529,10 +566,11 @@ export function registerTraceTools(
             reason: "Correlate the selected span with runtime logs.",
           },
         ];
-        if (looksLlmRelated(record(data)?.span)) {
+        const span = record(data)?.span;
+        if (looksLlmRelated(span)) {
           nextActions.push({
             tool: "trace_get_llm_turn",
-            arguments: { executionId, spanId },
+            arguments: llmTurnArguments(executionId, span, spanId),
             reason:
               "Inspect the exact prompt and response for this LLM-related span.",
           });
