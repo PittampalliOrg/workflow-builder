@@ -285,6 +285,54 @@ def test_execute_formula_tool_encrypted_output_verbatim(monkeypatch) -> None:
     assert formulas.execute_formula_tool("fetch", {"q": "x"}) == ENCRYPTED_BLOB
 
 
+def test_execute_formula_tool_result_plain_output_not_encrypted(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    calls: list[dict] = []
+    _install_formula_urlopen(
+        monkeypatch,
+        {"status": "succeeded", "context": {"output": "fiber-result"}},
+        calls,
+    )
+
+    content, encrypted = formulas.execute_formula_tool_result("fetch", {"url": "u"})
+
+    assert content == "fiber-result"
+    assert encrypted is False
+
+
+def test_execute_formula_tool_result_flags_encrypted_output(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    calls: list[dict] = []
+    _install_formula_urlopen(
+        monkeypatch,
+        {"status": "succeeded", "context": {"encrypted_output": ENCRYPTED_BLOB}},
+        calls,
+    )
+
+    content, encrypted = formulas.execute_formula_tool_result("fetch", {})
+
+    assert content == ENCRYPTED_BLOB
+    assert encrypted is True
+
+
+def test_execute_formula_tool_result_errors_are_not_encrypted(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    calls: list[dict] = []
+    _install_formula_urlopen(
+        monkeypatch,
+        {"status": "failed", "error": "quota exhausted"},
+        calls,
+    )
+
+    content, encrypted = formulas.execute_formula_tool_result("fetch", {})
+
+    assert content.startswith("Error:")
+    assert encrypted is False
+    unknown_content, unknown_encrypted = formulas.execute_formula_tool_result("nope", {})
+    assert unknown_content.startswith("Error:")
+    assert unknown_encrypted is False
+
+
 def test_execute_formula_tool_failed_status_surfaces_error(monkeypatch) -> None:
     monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
     calls: list[dict] = []
@@ -521,13 +569,31 @@ def test_encrypted_blob_survives_message_normalization() -> None:
 
 def test_main_dispatches_formula_tools_before_executor_fallback() -> None:
     source = (ROOT / "src/main.py").read_text()
-    assert source.index("elif formula_uri_for_tool(tool_name):") < source.index(
-        "result = super().run_tool(ctx, payload)"
-    )
     # MCP dispatch keeps precedence over formula dispatch.
     assert source.index("if mcp_tool is not None:") < source.index(
-        "elif formula_uri_for_tool(tool_name):"
+        "and formula_uri_for_tool(tool_name)"
     )
+    # Formula dispatch still runs before the executor fallback...
+    assert source.index("and formula_uri_for_tool(tool_name)") < source.index(
+        "result = super().run_tool(ctx, payload)"
+    )
+    # ...but a locally registered tool wins the collision: the formula branch is
+    # guarded by the executor lookup, so on an exact-name collision the call
+    # falls through to super().run_tool — matching the adapter-side contract
+    # ("local tools win name collisions"; the model saw the local declaration).
+    assert source.index("self.tool_executor.get_tool(tool_name) is None") < source.index(
+        "and formula_uri_for_tool(tool_name)"
+    )
+
+
+def test_main_marks_encrypted_formula_results_for_compaction() -> None:
+    source = (ROOT / "src/main.py").read_text()
+    assert "execute_formula_tool_result" in source
+    assert 'result["_kimi_encrypted_formula"] = True' in source
+    # The payload compaction layer exempts marked blobs from the 12 KiB clamp
+    # and pops the private marker before persistence.
+    payloads = (ROOT / "src/compaction/payloads.py").read_text()
+    assert 'item.pop("_kimi_encrypted_formula", None)' in payloads
 
 
 def test_adapter_injects_formula_declarations_in_chat_path() -> None:

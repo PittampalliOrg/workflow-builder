@@ -238,6 +238,15 @@ def compact_save_tool_results_payload(
             if is_multimodal_tool_content(content_text):
                 stats.compacted_result_chars += len(content_text)
                 continue
+            # Kimi formula encrypted_output blobs are opaque server-side state
+            # that must round-trip byte-for-byte into the next chat request —
+            # the generic 12 KiB text clamp would corrupt them (same failure
+            # mode as the multimodal marker above). run_tool marks them with a
+            # private key; pop it here so it never reaches message persistence.
+            # The separate 10 MiB state-budget guard still bounds overall size.
+            if item.pop("_kimi_encrypted_formula", None):
+                stats.compacted_result_chars += len(content_text)
+                continue
             bounded, changed = _truncate_text(
                 content_text,
                 cfg.max_tool_result_chars,
