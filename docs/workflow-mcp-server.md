@@ -141,12 +141,43 @@ routes, revalidates the stored owner and live session state, and grants only the
 minimum resource-specific scope. It is not external MCP authentication and must
 remain unset outside the bounded dev cutover.
 
-## Preview targets
+## Manage preview environments
 
-Workspace keys are not forwarded from dev into preview environments. Cross-
-target tool routing and cluster-wide preview discovery are disabled until the
-platform provides audience-bound target credential exchange. Connect a client
-directly to the intended preview MCP endpoint with a key created in that target.
+Workflow MCP manages dev preview environments through the Workflow Builder BFF;
+it does not discover namespaces with a Kubernetes service account and does not
+proxy MCP calls or credentials into a preview. The BFF resolves the signed
+workspace principal, applies the authoritative platform-admin and owner access
+policies, and calls the existing preview application ports.
+
+Use this sequence:
+
+1. Call `list_preview_services` to discover the current server-authorized
+   app-live service names.
+2. Call `list_preview_environments` to inspect fleet capacity, or
+   `get_preview_environment` for one exact generation.
+3. Call `launch_preview_environment` with a lowercase name. Omit `services` to
+   select every service in the current preview-native catalog. Identity,
+   platform revision, capabilities, provenance, and cold placement are derived
+   by the BFF. An optional `sourceRef` is resolved to a complete commit by the
+   server.
+4. Call `debug_preview_environment` for a bounded lifecycle, runtime, and trace
+   bundle. Use `query_preview_traces` for explicit service, status, text, and
+   time-range filters, including the full `7d` preview retention window.
+5. Before teardown, read the preview again and pass that same generation's
+   `provenance.requestId` and `sourceRevision` to
+   `teardown_preview_environment`. Poll the returned signed ticket with
+   `get_preview_teardown_status` until every physical absence check completes.
+
+Catalog, status, runtime, trace, and cleanup-status reads require
+`workflow:read`. Launch and teardown require `workflow:execute`. Fleet-wide and
+mutating operations additionally require the caller to be a Workflow Builder
+platform administrator; per-preview diagnostics are restricted to the owner or
+a platform administrator. These checks happen in the BFF, not in tool prompts.
+
+Direct Kubernetes discovery, cross-target MCP routing, and source-key
+forwarding remain deliberately disabled. A preview-local MCP endpoint is a
+separate audience and must not receive the dev workspace key through these
+tools.
 
 ## IDs that are not interchangeable
 
@@ -181,6 +212,13 @@ identity from another.
 - **No trace rows yet**: call `debug_workflow_execution` and
   `trace_get_digest` first. For an active run, follow the returned refresh or
   partial-data guidance before concluding telemetry is missing.
+- **Preview tools are denied**: confirm the key has `workflow:read` for
+  diagnostics or `workflow:execute` for lifecycle commands. Fleet launch,
+  listing, teardown, and teardown-status polling also require platform-admin
+  authorization in Workflow Builder.
+- **Preview evidence is partial**: honor `refreshAfterMs`, then repeat
+  `debug_preview_environment`. A generation-fence warning means the preview
+  changed while evidence was collected; refresh status before taking action.
 - **Session-only tool has no context**: set an actual Workflow Builder session
   ID explicitly for goal or explicit lineage work. Workflow CRUD, execution
   inspection, script execution, and trace debugging should continue to work

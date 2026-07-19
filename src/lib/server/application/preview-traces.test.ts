@@ -52,6 +52,7 @@ describe("preview trace query application boundary", () => {
       search: null,
       limit: 10,
     });
+    expect(normalizePreviewTraceQuery({ range: "7d" }).range).toBe("7d");
     expect(() => normalizePreviewTraceQuery({ sql: "select 1" })).toThrow(
       PreviewTraceQueryError,
     );

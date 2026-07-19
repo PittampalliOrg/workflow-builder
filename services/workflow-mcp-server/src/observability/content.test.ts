@@ -55,6 +55,56 @@ describe("diagnostic observability content", () => {
     ).toBeNull();
   });
 
+  it("keeps preview generation guards and signed teardown tickets out of spans", () => {
+    const signature = "e".repeat(64);
+    const request = diagnosticMcpRequestTrace({
+      method: "tools/call",
+      params: {
+        name: "get_preview_teardown_status",
+        arguments: {
+          name: "private-preview",
+          environmentUid: "private-uid",
+          requestId: "private-request",
+          sourceRevision: "b".repeat(40),
+          signature,
+        },
+      },
+    });
+    const envelope = {
+      ok: true,
+      telemetry: { state: "pending", isFinal: false, warnings: [] },
+      data: {
+        teardown: { phase: "pending" },
+        ticket: { signature, requestId: "private-request" },
+      },
+      nextActions: [
+        {
+          tool: "get_preview_teardown_status",
+          arguments: { signature },
+          reason: "private cleanup detail",
+        },
+      ],
+    };
+    const response = diagnosticMcpResponseTrace(
+      JSON.stringify({ result: { structuredContent: envelope } }),
+      "get_preview_teardown_status",
+    );
+
+    expect(request).toMatchObject({
+      tool: "get_preview_teardown_status",
+      argumentNames: ["name"],
+    });
+    expect(response).toMatchObject({
+      tool: "get_preview_teardown_status",
+      ok: true,
+      nextActionTools: ["get_preview_teardown_status"],
+    });
+    const serialized = JSON.stringify({ request, response });
+    expect(serialized).not.toContain(signature);
+    expect(serialized).not.toContain("private-request");
+    expect(serialized).not.toContain("private cleanup detail");
+  });
+
   it("summarizes envelopes without warnings, evidence, identifiers, or images", () => {
     const metadata = diagnosticEnvelopeTraceMetadata(
       {

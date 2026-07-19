@@ -27,6 +27,14 @@ const DIAGNOSTIC_TOOL_NAMES = new Set([
 	"trace_get_llm_turn",
 	"trace_get_logs",
 	"trace_get_browser_screenshot",
+	"list_preview_services",
+	"list_preview_environments",
+	"get_preview_environment",
+	"debug_preview_environment",
+	"query_preview_traces",
+	"launch_preview_environment",
+	"teardown_preview_environment",
+	"get_preview_teardown_status",
 ]);
 const DIAGNOSTIC_ARGUMENT_NAMES = new Set([
 	"executionId",
@@ -40,6 +48,13 @@ const DIAGNOSTIC_ARGUMENT_NAMES = new Set([
 	"errorsOnly",
 	"limit",
 	"cursor",
+	"name",
+	"range",
+	"service",
+	"search",
+	"sourceRef",
+	"ttlHours",
+	"lifecycle",
 ]);
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -60,7 +75,7 @@ function diagnosticDataSummary(value: unknown): Record<string, unknown> {
 	const root = record(value);
 	if (!root) return { present: value != null };
 	const counts = Object.fromEntries(
-		["executions", "spans", "turns", "logs", "browserArtifacts", "steps", "artifacts"]
+		["executions", "spans", "turns", "logs", "browserArtifacts", "steps", "artifacts", "previews", "traces", "services"]
 			.map((key) => [key, arrayCount(root, key)] as const)
 			.filter((entry): entry is readonly [string, number] => entry[1] !== undefined),
 	);
@@ -68,6 +83,8 @@ function diagnosticDataSummary(value: unknown): Record<string, unknown> {
 	const coverage = record(root.evidenceCoverage);
 	const execution = record(root.execution) ?? record(record(root.overview)?.execution);
 	const status = safeToken(execution?.status ?? root.status);
+	const preview = record(root.preview);
+	const previewPhase = safeToken(preview?.phase);
 	const contentType =
 		typeof root.contentType === "string" && root.contentType.startsWith("image/")
 			? root.contentType.slice(0, 100)
@@ -98,6 +115,7 @@ function diagnosticDataSummary(value: unknown): Record<string, unknown> {
 				}
 			: {}),
 		...(status ? { status } : {}),
+		...(previewPhase ? { previewPhase } : {}),
 		...(contentType ? { screenshot: { contentType, sizeBytes } } : {}),
 	};
 }

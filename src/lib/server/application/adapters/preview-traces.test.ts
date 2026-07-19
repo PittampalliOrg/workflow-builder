@@ -60,6 +60,21 @@ describe("preview trace query adapters", () => {
     }
   });
 
+  it("supports the full seven-day preview retention window", async () => {
+    const sql: string[] = [];
+    const adapter = new ClickHousePreviewTraceQueryAdapter(async (statement) => {
+      sql.push(statement);
+      return [];
+    });
+
+    await adapter.query({ identity, query: { ...query, range: "7d" } });
+
+    expect(sql).toHaveLength(2);
+    expect(sql.every((statement) => statement.includes("INTERVAL 7 DAY"))).toBe(
+      true,
+    );
+  });
+
   it("uses the tuple leaf and rejects a mismatched broker receipt", async () => {
     const fetchImpl = vi.fn(
       async (_url: string | URL | Request, init?: RequestInit) =>

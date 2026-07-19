@@ -159,7 +159,7 @@ export type VclusterPreviewRuntimeView = {
 };
 
 /** Bounded trace controls supported by the preview observability broker. */
-export type PreviewTraceRange = "15m" | "1h" | "6h" | "24h";
+export type PreviewTraceRange = "15m" | "1h" | "6h" | "24h" | "7d";
 export type PreviewTraceStatus = "all" | "ok" | "error";
 
 /** Client-safe trace summary. Raw spans and telemetry-store credentials stay physical. */

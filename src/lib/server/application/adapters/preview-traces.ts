@@ -26,6 +26,7 @@ const INTERVALS: Readonly<Record<PreviewTraceQuery["range"], string>> = {
   "1h": "1 HOUR",
   "6h": "6 HOUR",
   "24h": "24 HOUR",
+  "7d": "7 DAY",
 };
 const TOKEN = /^[0-9a-f]{64}$/;
 const TRACE_ID = /^[0-9a-f]{16,64}$/i;

@@ -15,6 +15,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { PostgresWorkflowPersistenceAdapter } from "./adapters/postgres-workflow-persistence.js";
 import { HttpWorkflowDiagnosticsAdapter } from "./adapters/http-workflow-diagnostics.js";
+import { HttpPreviewEnvironmentsAdapter } from "./adapters/http-preview-environments.js";
+import { ApplicationPreviewEnvironmentService } from "./application/preview-environments.js";
 import { ApplicationWorkflowDiagnosticsService } from "./application/workflow-diagnostics.js";
 import {
   hasWorkflowMcpScope,
@@ -36,6 +38,7 @@ import {
 } from "./workflow-tools.js";
 import { registerGoalTools } from "./goal-tools.js";
 import { registerTraceTools } from "./trace-tools.js";
+import { registerPreviewEnvironmentTools } from "./preview-tools.js";
 import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
@@ -279,6 +282,12 @@ function createMcpServer(
       ),
     });
   }
+  registerPreviewEnvironmentTools(mcpServer, {
+    principal,
+    previews: new ApplicationPreviewEnvironmentService(
+      new HttpPreviewEnvironmentsAdapter({ principal }),
+    ),
+  });
 
 	// Dynamic workflow script tool — also UI-independent. Suppressed inside
 	// script-spawned sessions (recursion guard) via suppressScriptTools.
@@ -495,6 +504,25 @@ async function main(): Promise<void> {
 				principal: TOOL_CATALOG_PRINCIPAL,
 				diagnostics: new ApplicationWorkflowDiagnosticsService(
 					new HttpWorkflowDiagnosticsAdapter({
+						principal: TOOL_CATALOG_PRINCIPAL,
+					}),
+				),
+			}),
+		];
+	}
+	// Count BFF-authorized preview lifecycle and diagnostic tools. Individual
+	// runtime registration still honors workflow:read / workflow:execute scopes.
+	{
+		const dryPreviewServer = new McpServer(
+			{ name: "dry-run-preview", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [
+			...registeredTools,
+			...registerPreviewEnvironmentTools(dryPreviewServer, {
+				principal: TOOL_CATALOG_PRINCIPAL,
+				previews: new ApplicationPreviewEnvironmentService(
+					new HttpPreviewEnvironmentsAdapter({
 						principal: TOOL_CATALOG_PRINCIPAL,
 					}),
 				),
