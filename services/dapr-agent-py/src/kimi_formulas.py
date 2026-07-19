@@ -8,7 +8,9 @@ that API inside dapr-agent-py:
 
 - ``ensure_formula_tools`` lazily fetches declarations once per process and
   indexes ``function.name -> (formula URI, declared name)`` so the durable
-  loop can route model tool calls back to the right formula.
+  loop can route model tool calls back to the right formula. A total load
+  failure is retried after a short cooldown rather than disabling formulas
+  for the process lifetime.
 - ``kimi_adapter._call_kimi_chat`` merges the declarations into every kimi-k3
   request's top-level ``tools`` field. Kimi's dynamic system-message tool
   loading is deliberately not used: this runtime's history-conformance layer
@@ -38,9 +40,12 @@ Config:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
+import threading
+import time
 from urllib.error import HTTPError
 import urllib.request
 from typing import Any
@@ -71,6 +76,16 @@ _formula_cache: list[dict[str, Any]] | None = None
 # lookup key -> (formula_uri, declared function name); keyed by both the exact
 # declared name and its normalized form so model echo variations still route.
 _index: dict[str, tuple[str, str]] = {}
+# Single-flights the load: chat calls and run_tool activities run on different
+# threads, and an unguarded first-touch could double-fetch or transiently
+# empty the index mid-dispatch.
+_formula_lock = threading.Lock()
+# Monotonic timestamp of the last TOTAL load failure (zero declarations from a
+# non-empty configured set). A total failure (e.g. a network blip at pod
+# start) is retried after this cooldown instead of disabling formulas for the
+# process lifetime; partial loads and deliberate disables stay permanent.
+_load_failed_at: float | None = None
+_LOAD_RETRY_COOLDOWN_SECONDS = 60.0
 
 
 def normalize_formula_uri(uri: str) -> str:
@@ -106,9 +121,11 @@ def configured_formula_uris() -> list[str]:
 
 def reset_formula_cache() -> None:
     """Drop the cached declarations + index (test hook)."""
-    global _formula_cache
-    _formula_cache = None
-    _index.clear()
+    global _formula_cache, _load_failed_at
+    with _formula_lock:
+        _formula_cache = None
+        _load_failed_at = None
+        _index.clear()
 
 
 def ensure_formula_tools() -> list[dict[str, Any]]:
@@ -117,46 +134,70 @@ def ensure_formula_tools() -> list[dict[str, Any]]:
     Per-formula failures are logged and skipped — formula loading must never
     break a chat call. Duplicate function names across formulas are skipped:
     Kimi rejects a request containing duplicate function names with a 400.
+
+    A TOTAL load failure (zero declarations from a non-empty configured set,
+    e.g. a network blip at pod start) is retried after
+    ``_LOAD_RETRY_COOLDOWN_SECONDS`` instead of disabling formulas for the
+    process lifetime. Partial loads and a deliberately empty ``KIMI_FORMULAS``
+    stay cached permanently, keeping the injected tool set deterministic.
     """
-    global _formula_cache
-    if _formula_cache is not None:
+    global _formula_cache, _load_failed_at
+    with _formula_lock:
+        if _formula_cache is not None:
+            if _load_failed_at is None:
+                return _formula_cache
+            if (time.monotonic() - _load_failed_at) < _LOAD_RETRY_COOLDOWN_SECONDS:
+                return _formula_cache
+            _formula_cache = None  # cooldown elapsed: retry the load below
+        declarations: list[dict[str, Any]] = []
+        _index.clear()
+        uris = configured_formula_uris()
+        # Concurrent fetch so a cold start (or retry) costs ~one timeout
+        # instead of N sequential ones while callers wait on the lock.
+        # executor.map preserves URI order, keeping declarations deterministic.
+        if uris:
+            with ThreadPoolExecutor(max_workers=min(8, len(uris))) as pool:
+                fetched = list(pool.map(_fetch_formula_tools, uris))
+        else:
+            fetched = []
+        for uri, uri_tools in zip(uris, fetched):
+            for tool in uri_tools:
+                function = tool.get("function") if isinstance(tool, dict) else None
+                name = str((function or {}).get("name") or "").strip()
+                if not name:
+                    logger.warning("[kimi-formulas] %s: skipping tool without a name", uri)
+                    continue
+                key = _normalize_lookup(name)
+                if key in _index:
+                    logger.warning(
+                        "[kimi-formulas] %s: skipping duplicate function name %r "
+                        "(already provided by %s)",
+                        uri,
+                        name,
+                        _index[key][0],
+                    )
+                    continue
+                _index[name] = (uri, name)
+                _index[key] = (uri, name)
+                declarations.append(tool)
+        _formula_cache = declarations
+        if declarations:
+            _load_failed_at = None
+            logger.info(
+                "[kimi-formulas] loaded %d formula tool(s): %s",
+                len(declarations),
+                sorted({entry[1] for entry in _index.values()}),
+            )
+        elif configured_formula_uris():
+            _load_failed_at = time.monotonic()
+            logger.warning(
+                "[kimi-formulas] no formula tools could be loaded from %d configured "
+                "formula(s); kimi-k3 runs will not have native tools until the "
+                "load is retried in %.0fs",
+                len(configured_formula_uris()),
+                _LOAD_RETRY_COOLDOWN_SECONDS,
+            )
         return _formula_cache
-    declarations: list[dict[str, Any]] = []
-    _index.clear()
-    for uri in configured_formula_uris():
-        for tool in _fetch_formula_tools(uri):
-            function = tool.get("function") if isinstance(tool, dict) else None
-            name = str((function or {}).get("name") or "").strip()
-            if not name:
-                logger.warning("[kimi-formulas] %s: skipping tool without a name", uri)
-                continue
-            key = _normalize_lookup(name)
-            if key in _index:
-                logger.warning(
-                    "[kimi-formulas] %s: skipping duplicate function name %r "
-                    "(already provided by %s)",
-                    uri,
-                    name,
-                    _index[key][0],
-                )
-                continue
-            _index[name] = (uri, name)
-            _index[key] = (uri, name)
-            declarations.append(tool)
-    _formula_cache = declarations
-    if declarations:
-        logger.info(
-            "[kimi-formulas] loaded %d formula tool(s): %s",
-            len(declarations),
-            sorted({entry[1] for entry in _index.values()}),
-        )
-    elif configured_formula_uris():
-        logger.warning(
-            "[kimi-formulas] no formula tools could be loaded from %d configured "
-            "formula(s); kimi-k3 runs will not have native tools in this process",
-            len(configured_formula_uris()),
-        )
-    return _formula_cache
 
 
 def formula_uri_for_tool(name: str) -> str | None:

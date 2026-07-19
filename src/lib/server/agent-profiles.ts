@@ -105,7 +105,15 @@ function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILL
 		version: 1,
 		source: 'builtin',
 		config: {
-			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
+			builtinTools: [
+				'execute_command',
+				'read_file',
+				'write_file',
+				'list_files',
+				'edit_file',
+				'glob_files',
+				'grep_search'
+			],
 			mcpConnectionMode: 'explicit',
 			mcpServers: [],
 			skills,
@@ -122,7 +130,15 @@ function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILL
 		version: 1,
 		source: 'builtin',
 		config: {
-			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
+			builtinTools: [
+				'execute_command',
+				'read_file',
+				'write_file',
+				'list_files',
+				'edit_file',
+				'glob_files',
+				'grep_search'
+			],
 			mcpConnectionMode: 'explicit',
 			mcpServers: [
 				{
@@ -148,7 +164,15 @@ function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILL
 		version: 1,
 		source: 'builtin',
 		config: {
-			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
+			builtinTools: [
+				'execute_command',
+				'read_file',
+				'write_file',
+				'list_files',
+				'edit_file',
+				'glob_files',
+				'grep_search'
+			],
 			mcpConnectionMode: 'explicit',
 			mcpServers: BROWSER_MCP_SERVERS,
 			skills,
@@ -165,7 +189,15 @@ function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILL
 		version: 1,
 		source: 'builtin',
 		config: {
-			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
+			builtinTools: [
+				'execute_command',
+				'read_file',
+				'write_file',
+				'list_files',
+				'edit_file',
+				'glob_files',
+				'grep_search'
+			],
 			mcpConnectionMode: 'explicit',
 			mcpServers: BROWSER_MCP_SERVERS,
 			skills,

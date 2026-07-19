@@ -212,6 +212,48 @@ def test_ensure_formula_tools_skips_failed_uri(monkeypatch, caplog) -> None:
     assert any("moonshot/broken" in record.message for record in caplog.records)
 
 
+def test_total_load_failure_is_retried_after_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    fetches: list[str] = []
+
+    def failing_urlopen(req, timeout: float = 0):
+        fetches.append(req.full_url)
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(formulas.urllib.request, "urlopen", failing_urlopen)
+    assert formulas.ensure_formula_tools() == []
+    # Inside the cooldown the empty set is served from cache — no refetch storm.
+    assert formulas.ensure_formula_tools() == []
+    assert len(fetches) == 1
+
+    # Cooldown over + network back: the next call reloads successfully instead
+    # of disabling formulas for the process lifetime.
+    monkeypatch.setattr(formulas, "_LOAD_RETRY_COOLDOWN_SECONDS", 0.0)
+    monkeypatch.setattr(
+        formulas.urllib.request,
+        "urlopen",
+        lambda req, timeout=0: _JsonResponse(_tools_payload("fetch")),
+    )
+    declarations = formulas.ensure_formula_tools()
+    assert [t["function"]["name"] for t in declarations] == ["fetch"]
+    assert formulas.formula_uri_for_tool("fetch") == "moonshot/fetch:latest"
+
+
+def test_deliberate_empty_config_is_never_retried(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "")
+    fetches: list[str] = []
+    monkeypatch.setattr(
+        formulas.urllib.request,
+        "urlopen",
+        lambda req, timeout=0: fetches.append(req.full_url),
+    )
+    monkeypatch.setattr(formulas, "_LOAD_RETRY_COOLDOWN_SECONDS", 0.0)
+
+    assert formulas.ensure_formula_tools() == []
+    assert formulas.ensure_formula_tools() == []
+    assert fetches == []
+
+
 def test_ensure_formula_tools_skips_duplicate_function_names(monkeypatch, caplog) -> None:
     monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest,moonshot/date:latest")
     fetched: list[str] = []
@@ -462,6 +504,30 @@ def test_with_formula_tools_merges_and_local_wins() -> None:
 def test_with_formula_tools_handles_none_local() -> None:
     merged = adapter._with_formula_tools(None, [_tools_payload("date")["tools"][0]])
     assert [t["function"]["name"] for t in merged] == ["date"]
+
+
+def test_with_formula_tools_shadowing_uses_normalized_names() -> None:
+    # A local tool whose name differs only by case/underscores still shadows
+    # the formula declaration: merge-side matching mirrors the executor and
+    # the run_tool dispatch guard (case-insensitive, underscores ignored).
+    local = [
+        {
+            "type": "function",
+            "function": {
+                "name": "FETCH",
+                "description": "local fetch",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": False,
+            },
+        }
+    ]
+
+    merged = adapter._with_formula_tools(
+        local,
+        [_tools_payload("fetch", "formula duplicate")["tools"][0]],
+    )
+
+    assert [t["function"]["name"] for t in merged] == ["FETCH"]
 
 
 # ---------------------------------------------------------------------------
