@@ -105,7 +105,7 @@ const sandboxName = requiredString(
 
 phase("Build");
 const animation = await agent(
-  `${description} - Build a self-contained browser animation in ${appPath} with index.html, styles.css, script.js, and README.md. Use Canvas or SVG so the result runs via a simple static file server. The browser animation is the required deliverable. Use stable DOM ids for validation: the main canvas must be <canvas id="canvas">, the play/pause control <button id="btn-play">, and the restart control <button id="btn-restart">. Do not install Manim; if a scene is useful, include scene.py as optional source only. Do not start a preview server; the downstream browser actions do that. The page must work as static files with only relative script.js imports. Do not create package.json because that selects the npm dev-server path. Verify the files, then return the file paths, a concise animation summary, and the verification performed.`,
+  `${description} - Build a self-contained browser animation in ${appPath} with index.html, styles.css, script.js, and README.md. Use Canvas or SVG so the result runs via a simple static file server. The browser animation is the required deliverable. Treat 1280x720 at 100% zoom as a hard required viewport. The complete title, formula, plot, live readout, and both controls must fit in one viewport without page scrolling, clipping, or overlap; size the stage responsively from both the available viewport width and height, not width alone. In a real browser at 1280x720, verify document.documentElement.scrollWidth <= 1280, document.documentElement.scrollHeight <= 720, canvas.getBoundingClientRect().top >= 0, canvas.getBoundingClientRect().bottom <= 720, and both control buttons are fully inside the viewport. Hiding overflow is not a substitute for satisfying those bounds. Also keep the layout usable without horizontal overflow at 390x844. Reserve distinct title/formula, plot, readout, and control safe zones. Clip every tangent and other animated plot primitive to the plot rectangle with Canvas ctx.clip() or an SVG clipPath, restore the drawing context before rendering title/readout UI, and ensure no tangent pixel can enter a UI safe zone at x = 0, pi/2, pi, 3pi/2, or 2pi. Do not scale font size with viewport width, and use zero letter spacing. Use stable DOM ids for validation: the main canvas must be <canvas id="canvas">, the play/pause control <button id="btn-play">, and the restart control <button id="btn-restart">. Do not install Manim; if a scene is useful, include scene.py as optional source only. Do not start a preview server; the downstream browser actions do that. The page must work as static files with only relative script.js imports. Do not create package.json because that selects the npm dev-server path. Verify syntax, interactions, and the measured viewport invariants, then return the file paths, a concise animation summary, and the verification performed.`,
   {
     label: "build_3b1b_animation",
     phase: "Build",
@@ -161,7 +161,7 @@ const screenshots = await action(
         goal: "Initial render of the canvas before any interaction.",
         waitForSelector: "canvas#canvas",
         pauseMs: 1500,
-        fullPage: true,
+        fullPage: false,
       },
       {
         id: "after-play",
@@ -171,7 +171,7 @@ const screenshots = await action(
         goal: "Trigger the play control once.",
         waitForSelector: "canvas#canvas",
         pauseMs: 2000,
-        fullPage: true,
+        fullPage: false,
       },
       {
         id: "after-second-play",
@@ -181,7 +181,7 @@ const screenshots = await action(
         goal: "Capture a later animation state after a second play interaction.",
         waitForSelector: "canvas#canvas",
         pauseMs: 1500,
-        fullPage: true,
+        fullPage: false,
       },
       {
         id: "after-restart",
@@ -191,7 +191,7 @@ const screenshots = await action(
         goal: "Restart the animation and capture the reset state.",
         waitForSelector: "canvas#canvas",
         pauseMs: 1500,
-        fullPage: true,
+        fullPage: false,
       },
     ],
     captureVideo: true,

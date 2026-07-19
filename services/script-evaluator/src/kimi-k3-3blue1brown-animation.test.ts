@@ -17,6 +17,11 @@ describe("fresh Kimi K3 3Blue1Brown animation dynamic script", () => {
       .replaceAll("__KIMI_AGENT_VERSION__", "1");
 
     expect(script).not.toMatch(/__[A-Z0-9_]+__/);
+    expect(script).toContain("1280x720");
+    expect(script).toContain("390x844");
+    expect(script).toContain("scrollHeight <= 720");
+    expect(script).toContain("Clip every tangent and other animated plot primitive");
+    expect(script.match(/fullPage: false/g)).toHaveLength(4);
     const result = await validateScript(script);
 
     expect(result.ok, result.error).toBe(true);
