@@ -130,9 +130,13 @@ export function buildBrowserSandboxTemplate(
 
 	// browser-use runtime pods OOMKill on 1Gi; mirror the controller's
 	// generous-memory default so the new pods don't regress.
+	// NOTE: the workflow-builder namespace LimitRange caps limit:request
+	// ratios at 8 (memory) and 20 (cpu) — every container in this template
+	// must respect that or pod creation is FORBIDDEN (verified live on dev:
+	// 128Mi request vs 2Gi limit = ratio 16 blocked every sandbox pod).
 	const resources = isBrowserUseImage
 		? {
-				requests: { memory: "128Mi", cpu: "75m" },
+				requests: { memory: "256Mi", cpu: "75m" },
 				limits: { memory: "2Gi", cpu: "1000m" },
 			}
 		: {
@@ -288,7 +292,9 @@ export function buildBrowserSandboxTemplate(
 				imagePullPolicy: "Always",
 				env: [{ name: "CHROME_CDP_HOST_REWRITE", value: "false" }],
 				resources: {
-					requests: { memory: "64Mi", cpu: "50m" },
+					// LimitRange ratio caps (mem 8x, cpu 20x) — keep requests at
+					// limits/8 and limits/20 or the namespace forbids the pod.
+					requests: { memory: "256Mi", cpu: "100m" },
 					limits: { memory: "2Gi", cpu: "2000m" },
 				},
 				volumeMounts: [{ name: "dshm", mountPath: "/dev/shm" }],
@@ -311,7 +317,7 @@ export function buildBrowserSandboxTemplate(
 				],
 				ports: [{ name: "mcp", containerPort: 3100 }],
 				resources: {
-					requests: { memory: "32Mi", cpu: "10m" },
+					requests: { memory: "64Mi", cpu: "25m" },
 					limits: { memory: "512Mi", cpu: "500m" },
 				},
 				readinessProbe: {
