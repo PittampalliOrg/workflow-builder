@@ -176,9 +176,9 @@
         "ownsSandbox": false,
         "requiresWarmPool": true,
         "requiresBrowserSidecars": true,
-        "multiProvider": true,
+        "multiProvider": false,
         "supportedProviders": [
-          "anthropic"
+          "kimi"
         ]
       }
     },
