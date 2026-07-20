@@ -140,8 +140,7 @@ describe("agent-browser lane policy", () => {
 		async function closeFromSession() {
 			const claim = registry.claimClose(firstSession.context);
 			if (!claim) {
-				await registry.waitForCloseResponse(firstSession.context);
-				return "joined";
+				return registry.waitForCloseResponse(firstSession.context);
 			}
 			await finalizeBrowserClose({
 				registry,
@@ -161,8 +160,36 @@ describe("agent-browser lane policy", () => {
 		await Promise.resolve();
 		assert.equal(childCloseCalls, 0);
 		finishChildClose();
-		assert.deepEqual(await Promise.all([owner, follower]), ["owner", "joined"]);
+		assert.deepEqual(await Promise.all([owner, follower]), ["owner", true]);
 		assert.equal(childCloseCalls, 1);
+	});
+
+	it("settles a concurrent follower false when owner finalization fails", async () => {
+		const registry = createBrowserContextRegistry();
+		const browserSession = "wfb-execution-failed-close";
+		const authorizationBinding =
+			"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const ownerLease = registry.acquire(browserSession, authorizationBinding);
+		const followerLease = registry.acquire(browserSession, authorizationBinding);
+		assert.equal(registry.commit(ownerLease), true);
+		assert.equal(registry.commit(followerLease), true);
+		const claim = registry.claimClose(ownerLease.context);
+		assert.ok(claim);
+		const follower = registry.waitForCloseResponse(followerLease.context);
+		await assert.rejects(
+			finalizeBrowserClose({
+				registry,
+				context: ownerLease.context,
+				claim,
+				timeoutMs: 1_000,
+				finalize: async () => {
+					throw new Error("close failed");
+				},
+			}),
+			/close failed/,
+		);
+		assert.equal(await follower, false);
+		await waitUntil(() => registry.current(browserSession) === null, "failed close release");
 	});
 
 	it("settles timed-out callers but fences replacement until finalize and cancel drain", async () => {
@@ -371,6 +398,18 @@ describe("agent-browser lane policy", () => {
 		assert.match(
 			handler,
 			/claimClose\(browserContext\)[\s\S]*waitForCloseResponse\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*finalizeBrowserClose\(\{[\s\S]*stopCapture\([\s\S]*"close"[\s\S]*child\.callTool\(/,
+		);
+		assert.equal(
+			handler.match(/return browserCloseFollowerResult\(closeSucceeded\);/g)?.length,
+			2,
+		);
+		assert.match(
+			bridge,
+			/function browserCloseFollowerResult\(closeSucceeded\)[\s\S]*if \(!closeSucceeded\) return browserCloseFailureResult\(\)/,
+		);
+		assert.match(
+			handler,
+			/catch \(err\)[\s\S]*close finalization failed[\s\S]*return browserCloseFailureResult\(\)/,
 		);
 	});
 

@@ -173,6 +173,30 @@ function resultText(result) {
 		.join("\n");
 }
 
+function browserCloseFailureResult() {
+	return {
+		content: [
+			{
+				type: "text",
+				text: "Browser close finalization reached its deadline.",
+			},
+		],
+		isError: true,
+	};
+}
+
+function browserCloseFollowerResult(closeSucceeded) {
+	if (!closeSucceeded) return browserCloseFailureResult();
+	return {
+		content: [
+			{
+				type: "text",
+				text: "Browser session was closed by another request.",
+			},
+		],
+	};
+}
+
 function timeoutFromEnv(name, fallbackMs) {
 	const value = Number(process.env[name] || fallbackMs);
 	return Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647
@@ -937,15 +961,9 @@ async function makeProxy(ctxRef, browserContext) {
 			)
 		) {
 			if (closesBrowser && browserContext.closing) {
-				await browserContexts.waitForCloseResponse(browserContext);
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Browser session was closed by another request.",
-						},
-					],
-				};
+				const closeSucceeded =
+					await browserContexts.waitForCloseResponse(browserContext);
+				return browserCloseFollowerResult(closeSucceeded);
 			}
 			return {
 				content: [{ type: "text", text: "Browser lane authorization is closing." }],
@@ -1006,15 +1024,9 @@ async function makeProxy(ctxRef, browserContext) {
 		if (closesBrowser) {
 			closeClaim = browserContexts.claimClose(browserContext);
 			if (!closeClaim) {
-				await browserContexts.waitForCloseResponse(browserContext);
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Browser session was closed by another request.",
-						},
-					],
-				};
+				const closeSucceeded =
+					await browserContexts.waitForCloseResponse(browserContext);
+				return browserCloseFollowerResult(closeSucceeded);
 			}
 		}
 		if (
@@ -1071,15 +1083,7 @@ async function makeProxy(ctxRef, browserContext) {
 				});
 			} catch (err) {
 				console.error(`[browser] close finalization failed: ${err?.message}`);
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Browser close finalization reached its deadline.",
-						},
-					],
-					isError: true,
-				};
+				return browserCloseFailureResult();
 			}
 		} else {
 			result = await child.callTool({ name, arguments: sanitizedArgs });
