@@ -182,6 +182,33 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     assert result["metadata"]["provider"] == "kimi-chat"
 
 
+def test_reasoning_effort_resolver_clamps_to_max_with_warning(caplog) -> None:
+    # kimi-k3 currently accepts only "max"; every other level clamps with a
+    # warning (the per-agent config path is live for when lower levels ship).
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="src.kimi_adapter"):
+        assert adapter._reasoning_effort("low") == "max"
+        assert adapter._reasoning_effort("high") == "max"
+        assert adapter._reasoning_effort("xhigh") == "max"
+        assert adapter._reasoning_effort(None) == "max"  # env default
+        assert adapter._reasoning_effort("max") == "max"
+    warnings = [r.getMessage() for r in caplog.records if "clamping" in r.getMessage()]
+    assert len(warnings) == 3  # low, high, xhigh — none for env-default or max
+
+
+def test_apply_kimi_output_mode_uses_per_agent_effort_override(caplog) -> None:
+    # The per-agent override (agentConfig.reasoningEffort, stamped by call_llm)
+    # wins over the env and clamps to the supported value without raising.
+    import logging
+
+    body: dict = {}
+    with caplog.at_level(logging.WARNING, logger="src.kimi_adapter"):
+        adapter._apply_kimi_output_mode(body, reasoning_effort="low")
+    assert body["reasoning_effort"] == "max"
+    assert any("clamping" in r.getMessage() for r in caplog.records)
+
+
 def test_kimi_sse_accumulates_reasoning_content_and_content(monkeypatch) -> None:
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
     lines = [

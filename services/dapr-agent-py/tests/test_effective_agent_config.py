@@ -401,6 +401,29 @@ def test_resolve_llm_metadata_carries_valid_reasoning_effort():
     assert "reasoningEffort" not in llm
 
 
+def test_resolve_llm_metadata_kimi_k3_honors_configured_reasoning_effort():
+    # Per-agent effort passes through for kimi-k3 (was hardcoded to "max"; the
+    # adapter clamps to API-supported values downstream instead).
+    llm = resolve_llm_metadata(
+        agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "High"}
+    )
+    assert llm["reasoningEffort"] == "high"
+    assert llm["contextWindowTokens"] == 1_048_576
+    # Unset or invalid effort falls back to the K3 default.
+    assert (
+        resolve_llm_metadata(agent_config={"modelSpec": "kimi/kimi-k3"})[
+            "reasoningEffort"
+        ]
+        == "max"
+    )
+    assert (
+        resolve_llm_metadata(
+            agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "bogus"}
+        )["reasoningEffort"]
+        == "max"
+    )
+
+
 def test_resolve_llm_metadata_carries_response_json_schema():
     schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
     llm = resolve_llm_metadata(agent_config={"modelSpec": "openai/gpt-5.5", "responseJsonSchema": schema})
@@ -457,12 +480,15 @@ def test_platform_default_is_kimi_k3():
     assert llm["reasoningEffort"] == "max"
 
 
-def test_kimi_k3_always_records_max_reasoning_effort():
+def test_kimi_k3_carries_configured_reasoning_effort_and_adapter_clamps():
+    # The snapshot now carries the per-agent configured effort for kimi-k3
+    # (previously forced to "max"); the kimi adapter clamps it to the values the
+    # API supports (only "max" today, with a warning).
     llm = resolve_llm_metadata(
         agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "low"}
     )
     assert llm["contextWindowTokens"] == 1_048_576
-    assert llm["reasoningEffort"] == "max"
+    assert llm["reasoningEffort"] == "low"
 
 
 def test_unknown_deepseek_spec_falls_back_to_v4_pro():
