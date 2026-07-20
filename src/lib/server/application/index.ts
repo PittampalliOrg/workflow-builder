@@ -239,7 +239,6 @@ import {
   KubernetesSessionProvisioningReader,
   LifecycleSessionController,
   LifecycleSessionGoalScopeGuard,
-  LegacyMlflowSessionTraceLifecycle,
   PostgresSessionGoalStore,
   RuntimeSessionGoalHarnessResolver,
   SessionAgentConfigCommandAdapter,
@@ -751,7 +750,6 @@ export function getApplicationAdapters(
   let sessionRuntimeConfigs: DefaultSessionRuntimeConfigReader | undefined;
   let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
   let sessionAgentConfigCommands: SessionAgentConfigCommandAdapter | undefined;
-  let sessionTraceLifecycle: LegacyMlflowSessionTraceLifecycle | undefined;
   let sessionGoalStore: PostgresSessionGoalStore | undefined;
   let peerAgentResolver: RegistryPeerAgentResolver | undefined;
   let agentSkillHydration: PostgresAgentSkillHydrationRepository | undefined;
@@ -1280,8 +1278,6 @@ export function getApplicationAdapters(
     (sessionRuntimeEvents ??= new DaprSessionRuntimeEventRaiser());
   const getSessionAgentConfigCommands = () =>
     (sessionAgentConfigCommands ??= new SessionAgentConfigCommandAdapter());
-  const getSessionTraceLifecycle = () =>
-    (sessionTraceLifecycle ??= new LegacyMlflowSessionTraceLifecycle());
   const getSessionGoalStore = () =>
     (sessionGoalStore ??= new PostgresSessionGoalStore(getDatabase()));
   const getGoalLoopStore = () => new PostgresGoalLoopStore(getDatabase);
@@ -2748,7 +2744,6 @@ export function getApplicationAdapters(
       repositoryMounter: getRepositoryMounter(),
       workflowSpawner: getWorkflowSpawner(),
       workspaceProjects: getWorkspaceProjects(),
-      sessionTraceLifecycle: getSessionTraceLifecycle(),
       sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
       workflowEphemeralAgents: new PostgresWorkflowEphemeralAgentStore(),
       agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
@@ -2816,7 +2811,6 @@ export function getApplicationAdapters(
       sessionAgents: getPeerAgentResolver(),
       sessionAgentSlugs: getPeerAgentResolver(),
       sessionAgentConfigCommands: getSessionAgentConfigCommands(),
-      sessionTraceLifecycle: getSessionTraceLifecycle(),
       peerAgentResolver: getPeerAgentResolver(),
       workflowAgentReads: getPeerAgentResolver(),
       runtimeRegistry: new LocalRuntimeRegistryReader(),

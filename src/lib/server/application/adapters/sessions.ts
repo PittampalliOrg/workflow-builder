@@ -37,7 +37,6 @@ import type {
 	SessionRuntimeEventRaiser,
 	SessionSandboxDeleteResult,
 	SessionSandboxDestroyer,
-	SessionTraceLifecycleStore,
 	SessionUserEventCommandPort,
 	SessionListInput,
 	SessionWorkflowSpawner,
@@ -78,11 +77,6 @@ import {
 	type Session,
 	type SessionResource as SessionResourceRow,
 } from "$lib/server/db/schema";
-import {
-	safeFinishMlflowRun,
-	safeCreateInteractiveSessionMlflowRun,
-	safePatchInteractiveSessionMlflowTraces,
-} from "$lib/server/application/adapters/mlflow-lifecycle";
 import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
 import { getSessionProvisioningPreferObserver } from "$lib/server/sessions/provisioning";
@@ -524,14 +518,7 @@ export class CurrentSessionRepository implements SessionRepository {
 			.update(sessions)
 			.set({ archivedAt, updatedAt: archivedAt })
 			.where(eq(sessions.id, id))
-			.returning({ id: sessions.id, mlflowRunId: sessions.mlflowRunId });
-		if (row?.mlflowRunId) {
-			void safeFinishMlflowRun({
-				runId: row.mlflowRunId,
-				status: "KILLED",
-				endTime: archivedAt,
-			});
-		}
+			.returning({ id: sessions.id });
 		return Boolean(row);
 	}
 
@@ -1251,18 +1238,10 @@ export class CurrentSessionRepository implements SessionRepository {
 			patch.pauseRequestedAt = input.pauseRequestedAt;
 		}
 		if (input.markCompleted) patch.completedAt = updatedAt;
-		const [row] = await database
+		await database
 			.update(sessions)
 			.set(patch)
-			.where(eq(sessions.id, input.id))
-			.returning({ mlflowRunId: sessions.mlflowRunId });
-		if (input.markCompleted && row?.mlflowRunId) {
-			void safeFinishMlflowRun({
-				runId: row.mlflowRunId,
-				status: input.status === "terminated" ? "FINISHED" : "FAILED",
-				endTime: patch.completedAt ?? patch.updatedAt,
-			});
-		}
+			.where(eq(sessions.id, input.id));
 	}
 
 	async updateSessionStatusUnlessTerminated(
@@ -1872,23 +1851,4 @@ function toSessionGoalRecord(row: unknown): SessionGoalRecord | null {
 		updatedAt: r.updatedAt,
 		completedAt: r.completedAt,
 	};
-}
-
-export class LegacyMlflowSessionTraceLifecycle implements SessionTraceLifecycleStore {
-	createInteractiveSessionTraceRun(
-    input: Parameters<
-      NonNullable<
-        SessionTraceLifecycleStore["createInteractiveSessionTraceRun"]
-      >
-    >[0],
-	) {
-		return safeCreateInteractiveSessionMlflowRun(input);
-	}
-
-	async patchInteractiveSessionTraces(input: {
-		sessionId: string;
-		status: "OK" | "ERROR";
-	}): Promise<void> {
-		await safePatchInteractiveSessionMlflowTraces(input);
-	}
 }

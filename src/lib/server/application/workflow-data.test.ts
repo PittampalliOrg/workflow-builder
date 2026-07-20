@@ -48,7 +48,6 @@ import type {
 	SessionRepository,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
-	SessionTraceLifecycleStore,
 	WorkflowDefinition,
 	WorkflowBrowserArtifactStore,
 	WorkflowDefinitionRepository,
@@ -107,10 +106,6 @@ vi.mock("$lib/server/security/encryption", () => ({
 
 vi.mock("$env/dynamic/private", () => ({
 	env: dynamicPrivateEnv,
-}));
-
-vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
-	safePatchInteractiveSessionMlflowTraces: vi.fn(async () => undefined),
 }));
 
 const baseWorkflow: WorkflowDefinition = {
@@ -942,12 +937,6 @@ function fakeEvaluationArtifacts(): EvaluationArtifactStore {
 	};
 }
 
-function fakeSessionTraceLifecycle(): SessionTraceLifecycleStore {
-	return {
-		patchInteractiveSessionTraces: vi.fn(async () => undefined),
-	};
-}
-
 function fakePeerAgentResolver(): PeerAgentResolver {
 	return {
 		resolvePeerAgentOwner: vi.fn(async () => ({
@@ -1624,7 +1613,6 @@ function makeService(options: {
 	sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 	codeCheckpoints?: WorkflowCodeCheckpointStore;
 	evaluationArtifacts?: EvaluationArtifactStore;
-	sessionTraceLifecycle?: SessionTraceLifecycleStore;
 	peerAgentResolver?: PeerAgentResolver;
 	workflowAgentReads?: WorkflowAgentReadRepository;
 	runtimeRegistry?: RuntimeRegistryReader;
@@ -1706,7 +1694,6 @@ function makeService(options: {
 		sessionProvisioning: options.sessionProvisioning,
 		codeCheckpoints: options.codeCheckpoints,
 		evaluationArtifacts: options.evaluationArtifacts,
-		sessionTraceLifecycle: options.sessionTraceLifecycle,
 		peerAgentResolver: options.peerAgentResolver,
 		workflowAgentReads: options.workflowAgentReads ?? fakeWorkflowAgentReads(),
 		runtimeRegistry: options.runtimeRegistry ?? fakeRuntimeRegistry(),
@@ -2305,13 +2292,11 @@ describe("ApplicationWorkflowDataService", () => {
 		const sessionEvents = fakeSessionEvents();
 		const codeCheckpoints = fakeCodeCheckpoints();
 		const evaluationArtifacts = fakeEvaluationArtifacts();
-		const sessionTraceLifecycle = fakeSessionTraceLifecycle();
 		const { service } = makeService({
 			sessions,
 			sessionEvents,
 			codeCheckpoints,
 			evaluationArtifacts,
-			sessionTraceLifecycle,
 		});
 
 		const result = await service.ingestSessionEvent({
@@ -2349,12 +2334,6 @@ describe("ApplicationWorkflowDataService", () => {
 			stopReason: { type: "terminated", event_ids: ["event-a"] },
 			markCompleted: true,
 		});
-    expect(
-      sessionTraceLifecycle.patchInteractiveSessionTraces,
-    ).toHaveBeenCalledWith({
-			sessionId: "session-1",
-			status: "OK",
-		});
     expect(sessions.getSessionWorkflowContext).toHaveBeenCalledWith(
       "session-1",
     );
@@ -2386,11 +2365,9 @@ describe("ApplicationWorkflowDataService", () => {
 	it("marks a session failed on session.status_errored and extracts the error message", async () => {
 		const sessions = fakeSessions();
 		const sessionEvents = fakeSessionEvents();
-		const sessionTraceLifecycle = fakeSessionTraceLifecycle();
     const { service } = makeService({
       sessions,
       sessionEvents,
-      sessionTraceLifecycle,
     });
 
 		await service.ingestSessionEvent({
@@ -2417,16 +2394,9 @@ describe("ApplicationWorkflowDataService", () => {
 		// `error` is on the whitelist → PRESERVED (not coerced to end_turn), so the
 		// failed row's stopReason stays distinct and no consumer of the normalized
 		// value (e.g. the goal loop) mistakes a failed turn for a normal end_turn.
-    expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
+		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith(
 			expect.objectContaining({ stopReason: { type: "error" } }),
 		);
-		// Interactive traces flip to ERROR (mirrors the terminated branch's OK patch).
-    expect(
-      sessionTraceLifecycle.patchInteractiveSessionTraces,
-    ).toHaveBeenCalledWith({
-			sessionId: "session-1",
-			status: "ERROR",
-		});
 	});
 
 	it("falls back to data.reason then data.message for the errored errorMessage", async () => {
@@ -2493,7 +2463,6 @@ describe("ApplicationWorkflowDataService", () => {
 		const { service } = makeService({
 			sessions,
 			sessionEvents: fakeSessionEvents(),
-			sessionTraceLifecycle: fakeSessionTraceLifecycle(),
 		});
 
 		await service.ingestSessionEvent({

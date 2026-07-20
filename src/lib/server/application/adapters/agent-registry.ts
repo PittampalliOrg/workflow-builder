@@ -16,7 +16,6 @@ import type {
 	AgentVersionSummary,
 } from "$lib/types/agents";
 import { createDefaultAgentConfig } from "$lib/types/agents";
-import { safeRegisterAgentVersionInMlflow } from "$lib/server/application/adapters/mlflow-lifecycle";
 import { hashAgentConfig } from "$lib/server/agents/config-hash";
 import { safeSyncOnArchive, safeSyncOnPublish } from "$lib/server/application/adapters/agent-registry-sync";
 
@@ -444,7 +443,6 @@ export async function createAgent(
 		return { agent: updated, version };
 	});
 
-	void safeRegisterAgentVersionInMlflow(result);
 	void safeSyncOnPublish(result.agent.id);
 	return rowToDetail(result.agent, result.version);
 }
@@ -588,13 +586,6 @@ export async function updateAgent(
 		input.name !== undefined ||
 		input.runtime !== undefined;
 	if (shouldSync) void safeSyncOnPublish(id);
-	if (result.version && shouldBumpVersion) {
-		void safeRegisterAgentVersionInMlflow({
-			agent: result.agent,
-			version: result.version,
-		});
-	}
-
 	if (!result.version) {
 		const fallback = createDefaultAgentConfig();
 		return {

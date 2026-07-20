@@ -178,11 +178,6 @@ vi.mock("$lib/server/sandboxes/provision", () => ({
 	),
 }));
 
-vi.mock("$lib/server/observability/mlflow-lifecycle", () => ({
-	registerAgentVersionInMlflow: vi.fn(async () => null),
-	safeCreateWorkflowAgentMlflowRun: vi.fn(async () => null),
-}));
-
 import { POST } from "./+server";
 
 const RUNTIME_POLICY = {

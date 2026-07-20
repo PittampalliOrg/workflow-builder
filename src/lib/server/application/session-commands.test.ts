@@ -11,7 +11,6 @@ import type {
 	SessionRepository,
 	SessionRepositoryMounter,
 	SessionSandboxDestroyer,
-	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
 	WorkspaceProjectRepository,
 	WorkflowEphemeralAgentStore,
@@ -35,7 +34,6 @@ describe("ApplicationSessionCommandService", () => {
 	let sandboxDestroyer: SessionSandboxDestroyer;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let workspaceProjects: WorkspaceProjectRepository;
-	let sessionTraceLifecycle: SessionTraceLifecycleStore;
 	let workflowEphemeralAgents: WorkflowEphemeralAgentStore;
 	let agentRuntimeSync: AgentRuntimeSyncPort;
 	let service: ApplicationSessionCommandService;
@@ -79,10 +77,6 @@ describe("ApplicationSessionCommandService", () => {
 			})),
 		};
 		workspaceProjects = fakeWorkspaceProjects();
-		sessionTraceLifecycle = {
-			createInteractiveSessionTraceRun: vi.fn(async () => null),
-			patchInteractiveSessionTraces: vi.fn(async () => undefined),
-		};
 		workflowEphemeralAgents = {
 			findOrCreateWorkflowEphemeralAgent: vi.fn(async () => ({
 				agentId: "workflow-ephemeral-agent-1",
@@ -102,7 +96,6 @@ describe("ApplicationSessionCommandService", () => {
 			repositoryMounter,
 			workflowSpawner,
 			workspaceProjects,
-			sessionTraceLifecycle,
 			sandboxDestroyer,
 			workflowEphemeralAgents,
 			agentRuntimeSync,
