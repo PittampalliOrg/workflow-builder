@@ -32,6 +32,7 @@ import type {
 	EvaluationDatasetCreateInput,
 	EvaluationDatasetRepository,
 } from "$lib/server/application/evaluation-datasets";
+import type { ModelCompletionPort } from "$lib/server/application/ports";
 import type {
 	EvaluationDefinitionCreateInput,
 	EvaluationDefinitionRepository,
@@ -130,6 +131,13 @@ export class LegacyEvaluationDefinitionRepository
 export class LegacyEvaluationRunItemRepository
 	implements EvaluationRunItemRepository
 {
+	constructor(
+		private readonly modelCompletion: Pick<
+			ModelCompletionPort,
+			"isAvailable" | "complete"
+		>,
+	) {}
+
 	getRun(projectId: string, runId: string): Promise<unknown | null> {
 		return getEvaluationRun(projectId, runId);
 	}
@@ -177,7 +185,7 @@ export class LegacyEvaluationRunItemRepository
 		runId: string;
 		itemId: string;
 	}): Promise<Record<string, unknown>> {
-		return startEvaluationRunItemWorkflow(input);
+		return startEvaluationRunItemWorkflow(input, this.modelCompletion);
 	}
 }
 

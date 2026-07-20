@@ -1,5 +1,6 @@
 import { json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import { requireInternal } from "$lib/server/internal-auth";
 import {
 	planGoal,
@@ -45,7 +46,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	const model = typeof body.model === "string" ? body.model : undefined;
 
 	try {
-		const result = await planGoal(intent, context, { model });
+		const result = await planGoal(intent, context, {
+			model,
+			modelCompletion: getApplicationAdapters().modelCompletion,
+		});
 		return json(result);
 	} catch (err) {
 		return json(

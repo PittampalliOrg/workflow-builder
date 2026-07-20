@@ -244,7 +244,11 @@ export async function startWorkflowRun(
       return { ok: false, status: 400, error: removedAgentCallsError };
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
-			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+			triggerData = await expandGreenfieldPromptInput(
+				spec,
+				triggerData,
+				app.modelCompletion,
+			);
 		}
 		const missing = getMissingRequiredTriggerFields(spec, triggerData);
 		if (missing.length > 0) {

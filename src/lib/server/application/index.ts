@@ -288,6 +288,7 @@ import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/applicatio
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { ConfiguredPublicApplicationUrlAdapter } from "$lib/server/application/adapters/public-application-url";
+import { KimiK3ModelCompletionAdapter } from "$lib/server/application/adapters/model-completion-kimi";
 import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
@@ -580,6 +581,7 @@ import { ApplicationWorkflowTargetAuthService } from "$lib/server/application/wo
 import { ApplicationWorkflowMcpPrincipalService } from "$lib/server/application/workflow-mcp-principal";
 import { ApplicationInternalWorkflowPrincipalService } from "$lib/server/application/internal-workflow-principal";
 import { ApplicationTeamActionAuthorizationService } from "$lib/server/application/team-action-authorization";
+import { ApplicationModelCompletionService } from "$lib/server/application/model-completion";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -651,6 +653,12 @@ export function getApplicationAdapters(
         },
       },
     }),
+  );
+  const modelCompletionAdapter = new KimiK3ModelCompletionAdapter({
+    previewDeployment: Boolean(config.previewDeployment),
+  });
+  const modelCompletion = new ApplicationModelCompletionService(
+    modelCompletionAdapter,
   );
 
   let database: ReturnType<typeof requirePostgresDb> | undefined;
@@ -1391,7 +1399,7 @@ export function getApplicationAdapters(
     ));
   const getEvaluationRunItems = () =>
     (evaluationRunItems ??= new ApplicationEvaluationRunItemService(
-      new LegacyEvaluationRunItemRepository(),
+      new LegacyEvaluationRunItemRepository(modelCompletion),
     ));
   const getEvaluationTemplates = () =>
     (evaluationTemplates ??= new ApplicationEvaluationTemplateService({
@@ -2798,6 +2806,7 @@ export function getApplicationAdapters(
       dashboard: getDashboard(),
       homePageReads: getHomePageReads(),
       modelCatalog: getModelCatalog(),
+      modelCompletion,
       workflowExecutions: getWorkflowExecutions(),
       sessions: getSessions(),
       sessionProvisioning: getSessionProvisioning(),
@@ -2868,6 +2877,7 @@ export function getApplicationAdapters(
     }));
   return {
     config,
+    modelCompletion,
     get workflowDefinitions() {
       return getWorkflowDefinitions();
     },

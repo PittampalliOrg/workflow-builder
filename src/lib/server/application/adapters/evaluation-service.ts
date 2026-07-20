@@ -26,6 +26,7 @@ import { stopDurableRun } from "$lib/server/lifecycle";
 import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-validation";
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
+import type { ModelCompletionPort } from "$lib/server/application/ports";
 import { validateTriggerModel } from "$lib/server/workflows/model-validation";
 import { applyWorkflowInputDefaults } from "$lib/utils/workflow-input-config";
 import {
@@ -1838,10 +1839,13 @@ export async function recordEvaluationRunItemGraderResults(params: {
 	return item;
 }
 
-export async function startEvaluationRunItemWorkflow(params: {
-	runId: string;
-	itemId: string;
-}) {
+export async function startEvaluationRunItemWorkflow(
+	params: {
+		runId: string;
+		itemId: string;
+	},
+	modelCompletion?: Pick<ModelCompletionPort, "isAvailable" | "complete">,
+) {
 	const database = requireDb();
 	const [row] = await database
 		.select({
@@ -1909,14 +1913,17 @@ export async function startEvaluationRunItemWorkflow(params: {
 				agentRef,
 			);
 			spec = await prepareEvaluationSubjectWorkflowSpec(stampedSpec);
-			triggerData = await prepareEvaluationWorkflowTriggerData({
-				spec,
-				runId: row.run.id,
-				itemId: row.item.id,
-				datasetRowId: row.item.datasetRowId,
-				input: { ...row.item.input, agentRef },
-				expectedOutput: row.item.expectedOutput,
-			});
+			triggerData = await prepareEvaluationWorkflowTriggerData(
+				{
+					spec,
+					runId: row.run.id,
+					itemId: row.item.id,
+					datasetRowId: row.item.datasetRowId,
+					input: { ...row.item.input, agentRef },
+					expectedOutput: row.item.expectedOutput,
+				},
+				modelCompletion,
+			);
 		} else if (
 			row.evaluation.taskConfig.adapter === "swebench" &&
 			swebenchEvalScriptProducerEnabled()
@@ -2005,14 +2012,17 @@ export async function startEvaluationRunItemWorkflow(params: {
 			workflowId: row.run.subjectId,
 		});
 		spec = await prepareEvaluationSubjectWorkflowSpec(workflow.spec);
-		triggerData = await prepareEvaluationWorkflowTriggerData({
-			spec,
-			runId: row.run.id,
-			itemId: row.item.id,
-			datasetRowId: row.item.datasetRowId,
-			input: row.item.input,
-			expectedOutput: row.item.expectedOutput,
-		});
+		triggerData = await prepareEvaluationWorkflowTriggerData(
+			{
+				spec,
+				runId: row.run.id,
+				itemId: row.item.id,
+				datasetRowId: row.item.datasetRowId,
+				input: row.item.input,
+				expectedOutput: row.item.expectedOutput,
+			},
+			modelCompletion,
+		);
 	} else {
 		throw error(
 			400,
@@ -3326,14 +3336,17 @@ async function resolveEvaluationSpecAgentRefs(
 	}
 }
 
-export async function prepareEvaluationWorkflowTriggerData(params: {
-	spec: Record<string, unknown>;
-	runId: string;
-	itemId: string;
-	datasetRowId: string | null;
-	input: Record<string, unknown>;
-	expectedOutput: unknown;
-}): Promise<Record<string, unknown>> {
+export async function prepareEvaluationWorkflowTriggerData(
+	params: {
+		spec: Record<string, unknown>;
+		runId: string;
+		itemId: string;
+		datasetRowId: string | null;
+		input: Record<string, unknown>;
+		expectedOutput: unknown;
+	},
+	modelCompletion?: Pick<ModelCompletionPort, "isAvailable" | "complete">,
+): Promise<Record<string, unknown>> {
 	let triggerData: Record<string, unknown> = {
 		...params.input,
 		evaluation: {
@@ -3345,7 +3358,11 @@ export async function prepareEvaluationWorkflowTriggerData(params: {
 		},
 	};
 	triggerData = applyWorkflowInputDefaults(params.spec, triggerData);
-	triggerData = await expandGreenfieldPromptInput(params.spec, triggerData);
+	triggerData = await expandGreenfieldPromptInput(
+		params.spec,
+		triggerData,
+		modelCompletion,
+	);
 	const missingTriggerFields = getMissingRequiredTriggerFields(params.spec, triggerData);
 	if (missingTriggerFields.length > 0) {
 		throw error(
