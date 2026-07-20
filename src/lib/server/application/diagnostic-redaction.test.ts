@@ -37,6 +37,33 @@ describe('redactDiagnosticEvidence', () => {
 		expect(value.body).toContain('https://[REDACTED]@example.test/private');
 	});
 
+	it('redacts structured and serialized screenshot pixels, including truncated JSON', () => {
+		const pixels = 'iVBORw0KGgo-sensitive-pixels';
+		const value = redactDiagnosticEvidence({
+			structured: { payloadBase64: pixels, contentType: 'image/png' },
+			serialized: JSON.stringify({
+				storageRef: 'screenshots/frame.png',
+				payloadBase64: pixels
+			}),
+			doublySerialized: JSON.stringify(
+				JSON.stringify({ payload_base64: pixels })
+			),
+			truncated: `{"payloadBase64":"${pixels}`,
+			dataUri: `data:image/png;base64,${pixels}`
+		});
+
+		expect(value.structured).toEqual({
+			payloadBase64: '[REDACTED]',
+			contentType: 'image/png'
+		});
+		expect(value.serialized).toContain('screenshots/frame.png');
+		expect(value.serialized).toContain('"payloadBase64":"[REDACTED]"');
+		expect(value.doublySerialized).toContain('payload_base64\\\":\\\"[REDACTED]');
+		expect(value.truncated).toBe('{"payloadBase64":"[REDACTED]');
+		expect(value.dataUri).toBe('[REDACTED image data URI]');
+		expect(JSON.stringify(value)).not.toContain(pixels);
+	});
+
 	it('caps nested evidence without losing the surrounding shape', () => {
 		const bounded = boundDiagnosticEvidence(
 			{ input: 'a'.repeat(20), output: 'b'.repeat(20) },

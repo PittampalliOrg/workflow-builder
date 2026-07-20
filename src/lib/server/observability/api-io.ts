@@ -1,5 +1,8 @@
 const API_IO_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const REMOTE_IO_METHODS = new Set(["GET", "POST"]);
+const BROWSER_ARTIFACT_UPLOAD_PATH = /^\/api\/internal\/browser-artifacts$/;
+const BROWSER_SCREENSHOT_RESPONSE_PATH =
+  /^\/api\/internal\/observability\/executions\/[^/]+\/browser-artifacts\/screenshot$/;
 
 function isRemotePath(pathname: string): boolean {
   return pathname.startsWith("/_app/remote/");
@@ -87,6 +90,9 @@ export async function requestPayloadForSpan(
     };
   }
   if (method === "GET" || method === "HEAD") return base;
+  if (method === "POST" && BROWSER_ARTIFACT_UPLOAD_PATH.test(url.pathname)) {
+    return { ...base, body: "[browser artifact payload omitted]" };
+  }
 
   const contentType = request.headers.get("content-type") ?? "";
   try {
@@ -117,12 +123,16 @@ export async function requestPayloadForSpan(
 
 export async function responsePayloadForSpan(
   response: Response,
+  url: URL,
 ): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
   const base = {
     status: response.status,
     contentType: contentType || undefined,
   };
+  if (response.ok && BROWSER_SCREENSHOT_RESPONSE_PATH.test(url.pathname)) {
+    return { ...base, body: "[browser screenshot payload omitted]" };
+  }
   if (contentType.includes("text/event-stream") || response.body == null) {
     return {
       ...base,

@@ -282,7 +282,7 @@ const apiIoHandle: Handle = async ({ event, resolve }) => {
       setSpanValue(span, "input", requestPayload);
       try {
         const response = await resolve(event);
-        const responsePayload = await responsePayloadForSpan(response);
+        const responsePayload = await responsePayloadForSpan(response, event.url);
         span.setAttribute("http.response.status_code", response.status);
         setSpanValue(span, "output", responsePayload);
         for (const target of spanTargets) {

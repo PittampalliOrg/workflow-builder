@@ -319,6 +319,35 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 		]);
 	});
 
+	it('removes serialized screenshot pixels from exact span evidence', async () => {
+		const pixels = 'iVBORw0KGgo-sensitive-pixels';
+		vi.mocked(reads.getSpan).mockResolvedValue({
+			...traceSpan(),
+			attributes: {
+				'session.id': 'session-1',
+				'output.value': JSON.stringify({
+					status: 200,
+					body: {
+						storageRef: 'screenshots/frame.png',
+						contentType: 'image/png',
+						payloadBase64: pixels
+					}
+				})
+			}
+		} as never);
+
+		const result = await service.getSpan({
+			execution,
+			spanId: '1'.padStart(16, '0')
+		});
+		const serialized = JSON.stringify(result.body);
+
+		expect(serialized).toContain('screenshots/frame.png');
+		expect(serialized).toContain('image/png');
+		expect(serialized).toContain('[REDACTED]');
+		expect(serialized).not.toContain(pixels);
+	});
+
 	it('does not touch telemetry storage when ClickHouse is unavailable', async () => {
 		vi.mocked(reads.isConfigured).mockReturnValue(false);
 
