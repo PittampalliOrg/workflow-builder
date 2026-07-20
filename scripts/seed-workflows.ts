@@ -3950,6 +3950,8 @@ async function ensureCliShowcaseAgentFor(
 	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
+	const maxTurns = opts.maxTurns ?? 50;
+	const timeoutMinutes = opts.timeoutMinutes ?? 30;
 	const config = {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
@@ -3962,8 +3964,8 @@ async function ensureCliShowcaseAgentFor(
 			: {}),
 		...(opts.effort ? { effort: opts.effort } : {}),
 		...(opts.instructions ? { instructions: opts.instructions } : {}),
-		maxTurns: opts.maxTurns ?? 50,
-		timeoutMinutes: opts.timeoutMinutes ?? 30,
+		maxTurns,
+		timeoutMinutes,
 		skills: [] as unknown[],
 		tools: [] as unknown[],
 		...(opts.allowedTools
@@ -3987,7 +3989,8 @@ async function ensureCliShowcaseAgentFor(
 		await sqlClient`
 			update agents
 			set name = ${name}, description = ${description}, runtime = ${runtime},
-				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null},
+				max_turns = ${maxTurns}, timeout_minutes = ${timeoutMinutes}
 			where id = ${agentId}`;
 		const cur = await sqlClient<{ config_hash: string | null }[]>`
 			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
@@ -4013,12 +4016,13 @@ async function ensureCliShowcaseAgentFor(
 			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime, instructions)
 			values (${agentId}, ${name},
 				${description},
-				${"general"}, ${50}, ${30}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
+				${"general"}, ${maxTurns}, ${timeoutMinutes}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
 	} else {
 		await sqlClient`
 			update agents
 			set name = ${name}, description = ${description}, runtime = ${runtime},
-				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null}
+				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null},
+				max_turns = ${maxTurns}, timeout_minutes = ${timeoutMinutes}
 			where id = ${agentId}`;
 	}
 	await sqlClient`
