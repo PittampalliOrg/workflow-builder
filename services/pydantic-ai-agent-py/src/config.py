@@ -72,6 +72,10 @@ COMPACTION_KEEP_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_KEEP_MESSAGES", 60)
 # Upstream MCP ClientSession has no per-call timeout, so a stalled
 # streamable-HTTP session would otherwise wedge a durable activity forever.
 MCP_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_TIMEOUT_SECONDS", 30)
+# MCP LISTING caches (per pod): successes reused for the session's activities,
+# failing servers skipped without re-probing. See ToolRouter.tools().
+MCP_TOOLS_CACHE_SECONDS = env_int("PYDANTIC_AI_MCP_TOOLS_CACHE_SECONDS", 300)
+MCP_FAIL_CACHE_SECONDS = env_int("PYDANTIC_AI_MCP_FAIL_CACHE_SECONDS", 120)
 
 # ---------------------------------------------------------------------------
 # Kimi K3 — the default (and only v1) provider
