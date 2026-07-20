@@ -184,6 +184,7 @@ from src.effective_agent_config import (
     DEFAULT_LLM_COMPONENT,
     build_effective_agent_config,
     effective_audit_fields,
+    is_kimi_k3_runtime_context,
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
@@ -237,6 +238,7 @@ from src.kimi_adapter import (
     coerce_kimi_reasoning_message,
     install_kimi_reasoning_state_schema,
 )
+from src.adapters.kimi_files_multimodal_media import KimiFilesMultimodalMediaAdapter
 from src.kimi_formulas import (
     execute_formula_tool_result,
     formula_uri_for_tool,
@@ -274,11 +276,13 @@ from dapr_agents.workflow.decorators import message_router, workflow_entry
 from dapr_agents.workflow.runners import AgentRunner
 from src.mcp_multimodal import (
     multimodal_tool_text,
+    offload_multimodal_tool_result,
     redact_multimodal_tool_result,
     replace_multimodal_tool_text,
     serialize_mcp_tool_result,
 )
 from src.mcp_config_state import load_mcp_config_state, save_mcp_config_state
+from src.ports.multimodal_media import MultimodalMediaOffloadPort
 
 # Concurrency plan P3: every log line carries the current session id so one
 # session's timeline is reconstructable across shared-pool replicas (pool pods
@@ -1689,6 +1693,9 @@ class OpenShellDurableAgent(DurableAgent):
     _active_llm_instance_id: str | None = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._multimodal_media_offloader: MultimodalMediaOffloadPort | None = kwargs.pop(
+            "multimodal_media_offloader", None
+        )
         super().__init__(*args, **kwargs)
         self._mcp_configs_by_instance: dict[str, dict[str, dict[str, Any]]] = {}
         # Instances whose MCP configs were written to (or read from) the state
@@ -3554,6 +3561,11 @@ class OpenShellDurableAgent(DurableAgent):
         """Publish tool_call_start/end streaming events with content."""
         inst_id = self._activity_instance_id(ctx, payload)
         context = self._runtime_context_for_instance(inst_id)
+        multimodal_media_offloader = (
+            self._multimodal_media_offloader
+            if is_kimi_k3_runtime_context(context)
+            else None
+        )
         exec_id = (
             context.get("executionId")
             or self._execution_id_by_instance.get(inst_id)
@@ -3999,6 +4011,7 @@ class OpenShellDurableAgent(DurableAgent):
                       mcp_serialization = serialize_mcp_tool_result(
                           mcp_result,
                           serialize_tool_result,
+                          media_offloader=multimodal_media_offloader,
                       )
                       serialized_result = mcp_serialization.display_text
                       try:
@@ -4131,6 +4144,11 @@ class OpenShellDurableAgent(DurableAgent):
                       result["_kimi_encrypted_formula"] = True
                 else:
                     result = super().run_tool(ctx, payload)
+              if multimodal_media_offloader is not None:
+                  result = offload_multimodal_tool_result(
+                      result,
+                      multimodal_media_offloader,
+                  )
               _exec_error = _tool_result_error(result)
               _exec_success = _exec_error is None
           except Exception as exc:
@@ -7110,6 +7128,7 @@ agent = OpenShellDurableAgent(
     # Concurrency plan P3: inject the env-tuned WorkflowRuntime (DurableAgent
     # otherwise constructs a bare one at dapr_agents/agents/durable.py:342).
     runtime=_build_tuned_workflow_runtime(),
+    multimodal_media_offloader=KimiFilesMultimodalMediaAdapter(),
     name=AGENT_SERVICE_NAME,
     role="OpenShell Durable Coding Agent",
     goal="Help users inspect, modify, and execute code safely inside an OpenShell sandbox",

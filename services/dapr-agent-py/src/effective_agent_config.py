@@ -591,6 +591,27 @@ def effective_audit_fields(snapshot: Mapping[str, Any] | None) -> dict[str, Any]
     return out
 
 
+def is_kimi_k3_runtime_context(context: Mapping[str, Any] | None) -> bool:
+    """Return whether a run can consume Kimi Files ``ms://`` image references."""
+    if not isinstance(context, Mapping):
+        return False
+    snapshot = context.get("effectiveAgentConfig")
+    llm = (
+        snapshot.get("llm")
+        if isinstance(snapshot, Mapping) and isinstance(snapshot.get("llm"), Mapping)
+        else {}
+    )
+    component = _string(context.get("llmComponent")) or _string(
+        llm.get("llmComponent")
+    )
+    if component != "llm-kimi-k3":
+        return False
+    provider_model = _string(context.get("providerModel")) or _string(
+        llm.get("providerModel")
+    )
+    return provider_model is None or provider_model.lower() == "kimi-k3"
+
+
 def runtime_context_audit_cache_fields(context: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return audit fields that must survive the in-memory runtime cache.
 
