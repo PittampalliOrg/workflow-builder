@@ -49,6 +49,27 @@ export class ApplicationWorkflowTargetAuthService {
     },
   ) {}
 
+  private async resolveAuthorizedIdentity(
+    input: Readonly<{ assertion: string; executionId: string }>,
+  ): Promise<WorkflowTargetAuthIdentity | null> {
+    const executionId = input.executionId.trim();
+    if (!executionId || !input.assertion.trim()) return null;
+    const claims = this.deps.assertions.verify(input.assertion.trim());
+    if (!claims || claims.executionId !== executionId) return null;
+    const identity =
+      await this.deps.identities.resolveExecutionOwner(executionId);
+    if (
+      !identity ||
+      !isCurrentlyAuthorized(identity) ||
+      identity.userId !== claims.userId ||
+      identity.projectId !== claims.projectId ||
+      identity.tokenVersion !== claims.tokenVersion
+    ) {
+      return null;
+    }
+    return identity;
+  }
+
   /**
    * Mint a purpose-limited proof for durable execution config. The proof is
    * useless without the bridge's INTERNAL_API_TOKEN and never authenticates a
@@ -84,23 +105,9 @@ export class ApplicationWorkflowTargetAuthService {
       executionId: string;
     }>,
   ): Promise<WorkflowTargetAuthExchange | null> {
-    const executionId = input.executionId.trim();
-    if (!executionId || !input.assertion.trim()) return null;
-
     try {
-      const claims = this.deps.assertions.verify(input.assertion.trim());
-      if (!claims || claims.executionId !== executionId) return null;
-      const identity =
-        await this.deps.identities.resolveExecutionOwner(executionId);
-      if (
-        !identity ||
-        !isCurrentlyAuthorized(identity) ||
-        identity.userId !== claims.userId ||
-        identity.projectId !== claims.projectId ||
-        identity.tokenVersion !== claims.tokenVersion
-      ) {
-        return null;
-      }
+      const identity = await this.resolveAuthorizedIdentity(input);
+      if (!identity) return null;
       const targetOrigin = this.deps.origin.getOrigin();
       const secure = new URL(targetOrigin).protocol === "https:";
       return {
@@ -109,6 +116,17 @@ export class ApplicationWorkflowTargetAuthService {
       };
     } catch {
       return null;
+    }
+  }
+
+  /** Revalidate a live browser capability without minting a UI credential. */
+  async validate(
+    input: Readonly<{ assertion: string; executionId: string }>,
+  ): Promise<boolean> {
+    try {
+      return Boolean(await this.resolveAuthorizedIdentity(input));
+    } catch {
+      return false;
     }
   }
 }

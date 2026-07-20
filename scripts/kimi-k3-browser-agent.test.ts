@@ -35,11 +35,21 @@ describe("Kimi K3 browser-agent migration", () => {
             name: "browser",
             url: "http://agent-browser-mcp:8000/mcp",
             headers: {
+              Authorization: "Bearer legacy-owner-token",
+              "X-API-Key": "legacy-api-key",
               "X-Wfb-Target-Auth": "credential-never-hardcoded",
               "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
               "X-Wfb-Browser-Target-Assertion": "stale-purpose-proof",
               "X-Wfb-Execution-Id": "stale-execution",
-              "X-Non-Secret-Routing": "retain-me",
+              "X-Non-Secret-Routing": "must-also-be-regenerated",
+            },
+          },
+          {
+            name: "legacy-helper",
+            url: "http://legacy-helper:8000/mcp",
+            headers: {
+              Authorization: "Bearer helper-token",
+              "X-API-Key": "helper-key",
             },
           },
         ],
@@ -57,9 +67,10 @@ describe("Kimi K3 browser-agent migration", () => {
       {
         name: "browser",
         url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
-        headers: {
-          "X-Non-Secret-Routing": "retain-me",
-        },
+      },
+      {
+        name: "legacy-helper",
+        url: "http://legacy-helper:8000/mcp",
       },
     ]);
     expect(JSON.stringify(config)).not.toContain("zai/glm-5.2");
@@ -68,6 +79,11 @@ describe("Kimi K3 browser-agent migration", () => {
     expect(JSON.stringify(config)).not.toContain("stale-purpose-proof");
     expect(JSON.stringify(config)).not.toContain("stale-execution");
     expect(JSON.stringify(config)).not.toContain("workflow-builder:3000");
+    expect(JSON.stringify(config)).not.toContain("legacy-owner-token");
+    expect(JSON.stringify(config)).not.toContain("legacy-api-key");
+    expect(JSON.stringify(config)).not.toContain("helper-token");
+    expect(JSON.stringify(config)).not.toContain("helper-key");
+    expect(JSON.stringify(config)).not.toContain("X-Non-Secret-Routing");
     expect(config).not.toHaveProperty("provider");
   });
 

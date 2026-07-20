@@ -33,13 +33,13 @@ export function targetAuthAssertionDigest(assertion) {
 
 /**
  * Authorize an MCP initialization before any execution-scoped browser key,
- * child process, or BrowserStation lane is selected. Anonymous callers remain
- * supported only when they present neither an execution id nor an assertion.
+ * child process, or BrowserStation lane is selected. Browser access is a
+ * workflow capability; executionless callers are always rejected.
  */
 export async function authorizeBrowserInitialization({
   executionId,
   targetAuth,
-  exchange,
+  validate,
 }) {
   const normalizedExecutionId =
     typeof executionId === "string" ? executionId.trim() : "";
@@ -47,33 +47,23 @@ export async function authorizeBrowserInitialization({
     typeof targetAuth?.assertion === "string"
       ? targetAuth.assertion.trim()
       : "";
-  if (!normalizedExecutionId) {
-    return assertion
-      ? null
-      : {
-          executionId: null,
-          targetAuth: null,
-          assertionDigest: null,
-          targetAuthExchange: null,
-        };
-  }
+  if (!normalizedExecutionId) return null;
   const assertionDigest = targetAuthAssertionDigest(assertion);
-  if (!assertionDigest || typeof exchange !== "function") return null;
-  let targetAuthExchange;
+  if (!assertionDigest || typeof validate !== "function") return null;
+  let authorized;
   try {
-    targetAuthExchange = await exchange({
+    authorized = await validate({
       assertion,
       executionId: normalizedExecutionId,
     });
   } catch {
     return null;
   }
-  if (!targetAuthExchange) return null;
+  if (authorized !== true) return null;
   return {
     executionId: normalizedExecutionId,
     targetAuth: { assertion },
     assertionDigest,
-    targetAuthExchange,
   };
 }
 
@@ -97,6 +87,43 @@ export function createTargetAuthSessionBindings() {
       entries.delete(browserSession);
     },
   };
+}
+
+/** Reauthorize every request; the MCP session id is routing state, not auth. */
+export async function reauthorizeBrowserSession({
+  executionId,
+  targetAuth,
+  expectedExecutionId,
+  expectedAssertionDigest,
+  browserSession,
+  bindings,
+  validate,
+}) {
+  const normalizedExecutionId =
+    typeof executionId === "string" ? executionId.trim() : "";
+  const assertion =
+    typeof targetAuth?.assertion === "string"
+      ? targetAuth.assertion.trim()
+      : "";
+  const digest = targetAuthAssertionDigest(assertion);
+  if (
+    !normalizedExecutionId ||
+    normalizedExecutionId !== expectedExecutionId ||
+    !digest ||
+    digest !== expectedAssertionDigest ||
+    !bindings?.matches(browserSession, assertion) ||
+    typeof validate !== "function"
+  ) {
+    return false;
+  }
+  try {
+    return (
+      (await validate({ assertion, executionId: normalizedExecutionId })) ===
+      true
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseOrigin(value) {
@@ -284,5 +311,41 @@ export async function exchangeTargetAuth({
     return parseTargetAuthExchange(await response.json(), nowMs);
   } catch {
     return null;
+  }
+}
+
+/** Validate current execution authorization without minting or retaining a cookie. */
+export async function validateTargetAuth({
+  bffUrl,
+  internalToken,
+  assertion,
+  executionId,
+  fetchImpl = fetch,
+}) {
+  if (!internalToken || !assertion || !executionId) return false;
+  let endpoint;
+  try {
+    endpoint = new URL(
+      "/api/internal/browser-target-auth/validate",
+      `${bffUrl.replace(/\/$/, "")}/`,
+    ).toString();
+  } catch {
+    return false;
+  }
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Token": internalToken,
+      },
+      body: JSON.stringify({
+        targetAuthAssertion: assertion,
+        executionId,
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }

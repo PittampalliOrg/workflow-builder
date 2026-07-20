@@ -8,8 +8,10 @@ import {
   openedUrlMatchesTargetOrigin,
   parseTargetAuthAssertion,
   parseTargetAuthExchange,
+  reauthorizeBrowserSession,
   targetAuthAssertionDigest,
   targetAuthCookieToolArguments,
+  validateTargetAuth,
   WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE,
 } from "./target-auth-policy.mjs";
 
@@ -82,24 +84,30 @@ test("exchanges only against the configured BFF with service auth", async () => 
 });
 
 test("fails execution initialization closed before browser allocation", async () => {
-  const exchange = async ({ assertion: supplied, executionId }) =>
-    supplied === assertion && executionId === "execution-1"
-      ? exchangePayload
-      : null;
+  const validate = async ({ assertion: supplied, executionId }) =>
+    supplied === assertion && executionId === "execution-1" ? true : false;
   let allocated = false;
   const denied = await authorizeBrowserInitialization({
     executionId: "guessed-execution-id",
     targetAuth: { assertion },
-    exchange,
+    validate,
   });
   if (denied) allocated = true;
   assert.equal(denied, null);
   assert.equal(allocated, false);
   assert.equal(
     await authorizeBrowserInitialization({
+      executionId: "",
+      targetAuth: null,
+      validate: async () => true,
+    }),
+    null,
+  );
+  assert.equal(
+    await authorizeBrowserInitialization({
       executionId: "execution-1",
       targetAuth: null,
-      exchange: async () => {
+      validate: async () => {
         throw new Error("missing assertions must not be exchanged");
       },
     }),
@@ -109,15 +117,114 @@ test("fails execution initialization closed before browser allocation", async ()
     await authorizeBrowserInitialization({
       executionId: "execution-1",
       targetAuth: { assertion },
-      exchange,
+      validate,
     }),
     {
       executionId: "execution-1",
       targetAuth: { assertion },
       assertionDigest: targetAuthAssertionDigest(assertion),
-      targetAuthExchange: exchangePayload,
     },
   );
+});
+
+test("revalidates the exact assertion on every existing-session request", async () => {
+  const bindings = createTargetAuthSessionBindings();
+  const browserSession = "wfb-execution-1";
+  const assertionDigest = bindings.bind(browserSession, assertion);
+  const validations = [];
+  const authorize = (overrides = {}) =>
+    reauthorizeBrowserSession({
+      executionId: "execution-1",
+      targetAuth: { assertion },
+      expectedExecutionId: "execution-1",
+      expectedAssertionDigest: assertionDigest,
+      browserSession,
+      bindings,
+      validate: async (input) => {
+        validations.push(input);
+        return true;
+      },
+      ...overrides,
+    });
+
+  assert.equal(await authorize(), true);
+  assert.equal(await authorize(), true);
+  assert.equal(validations.length, 2);
+  assert.equal(await authorize({ executionId: "guessed-execution" }), false);
+  assert.equal(await authorize({ targetAuth: null }), false);
+  assert.equal(
+    await authorize({
+      targetAuth: { assertion: "wfb_browser_auth_v1.other.signature" },
+    }),
+    false,
+  );
+  assert.equal(validations.length, 2);
+});
+
+test("fails existing sessions closed when authorization expires or is revoked", async () => {
+  const bindings = createTargetAuthSessionBindings();
+  const browserSession = "wfb-execution-1";
+  const assertionDigest = bindings.bind(browserSession, assertion);
+  for (const reason of ["terminal", "revoked", "expired"]) {
+    let calls = 0;
+    assert.equal(
+      await reauthorizeBrowserSession({
+        executionId: "execution-1",
+        targetAuth: { assertion },
+        expectedExecutionId: "execution-1",
+        expectedAssertionDigest: assertionDigest,
+        browserSession,
+        bindings,
+        validate: async () => {
+          calls += 1;
+          return false;
+        },
+      }),
+      false,
+      reason,
+    );
+    assert.equal(calls, 1, reason);
+  }
+  assert.equal(
+    await reauthorizeBrowserSession({
+      executionId: "execution-1",
+      targetAuth: { assertion },
+      expectedExecutionId: "execution-1",
+      expectedAssertionDigest: assertionDigest,
+      browserSession,
+      bindings,
+      validate: async () => {
+        throw new Error("BFF unavailable");
+      },
+    }),
+    false,
+  );
+});
+
+test("validates against the fixed BFF without returning a credential", async () => {
+  const requests = [];
+  assert.equal(
+    await validateTargetAuth({
+      bffUrl: targetOrigin,
+      internalToken: "internal-service-token",
+      assertion,
+      executionId: "execution-1",
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return new Response(null, { status: 204 });
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    requests[0].url,
+    `${targetOrigin}/api/internal/browser-target-auth/validate`,
+  );
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    targetAuthAssertion: assertion,
+    executionId: "execution-1",
+  });
+  assert.equal("Authorization" in requests[0].init.headers, false);
 });
 
 test("binds reusable browser sessions to the exact assertion", () => {

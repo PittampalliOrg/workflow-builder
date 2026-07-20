@@ -140,6 +140,46 @@ describe("ApplicationWorkflowTargetAuthService", () => {
     expect(h.cookies.issue).toHaveBeenCalledWith(identity, { secure: false });
   });
 
+  it("revalidates current authorization without issuing a credential", async () => {
+    const h = harness();
+    await expect(
+      h.service.validate({
+        assertion: "purpose-assertion",
+        executionId: "execution-1",
+      }),
+    ).resolves.toBe(true);
+    expect(h.identities.resolveExecutionOwner).toHaveBeenCalledWith(
+      "execution-1",
+    );
+    expect(h.cookies.issue).not.toHaveBeenCalled();
+    expect(h.origin.getOrigin).not.toHaveBeenCalled();
+  });
+
+  it("fails revalidation after assertion expiry or identity revocation", async () => {
+    const expired = harness();
+    expired.assertions.verify.mockReturnValueOnce(null);
+    await expect(
+      expired.service.validate({
+        assertion: "expired-purpose-assertion",
+        executionId: "execution-1",
+      }),
+    ).resolves.toBe(false);
+    expect(expired.identities.resolveExecutionOwner).not.toHaveBeenCalled();
+
+    const revoked = harness();
+    revoked.identities.resolveExecutionOwner.mockResolvedValueOnce({
+      ...identity,
+      projectMembershipId: null,
+    });
+    await expect(
+      revoked.service.validate({
+        assertion: "purpose-assertion",
+        executionId: "execution-1",
+      }),
+    ).resolves.toBe(false);
+    expect(revoked.cookies.issue).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "execution mismatch",

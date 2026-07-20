@@ -43,9 +43,11 @@ persists across calls within the session). On top of plain proxying it adds:
 3. **Curated tool surface.** The child runs the full `core,network,debug,state` profiles (the
    bridge needs the record/HAR/cookie tools), but both `tools/list` and `tools/call` are
    restricted to a small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 21 tools) with
-   schemas pruned to the properties that matter (`url`, `selector`, `text`, `path`, …).
-   Configuration can narrow but never broaden that curated set, so state tools such as
-   `cookies_get` remain bridge-internal.
+   per-tool schemas pruned to public properties. Call arguments are rebuilt from the same
+   allowlist, so hidden child plumbing such as session, namespace, restore state, headers,
+   and output paths cannot override the bridge-owned lane. Configuration can narrow but
+   never broaden that curated set, so state tools such as `cookies_get` remain
+   bridge-internal.
 
 4. **Demo scenes + auto-editor.** A bridge-implemented virtual tool `demo_scene`
    ({title, caption, focus?}) lets the agent mark scene boundaries with ONE semantic
@@ -63,15 +65,17 @@ persists across calls within the session). On top of plain proxying it adds:
    purpose-limited assertion bound to execution, user, and project. Every
    execution-scoped MCP initialization validates it at the fixed BFF internal
    endpoint using `INTERNAL_API_TOKEN` before selecting or spawning a browser
-   lane. The BFF revalidates live run state, active user status, and current
-   project membership; lane, MCP-session, and cookie-cache reuse are bound to a
-   digest of that exact assertion. On first target navigation the bridge plants
+   lane. Every later MCP POST, GET, or DELETE revalidates that exact assertion
+   and execution at a credential-free BFF validation endpoint before dispatch.
+   The BFF checks live run state, active user status, current project membership,
+   and credential version; lane, MCP-session, and cookie-cache reuse are bound to
+   a digest of that exact assertion. On first target navigation the bridge plants
    the validated owner cookie `HttpOnly`, `SameSite=Strict`, host-only, and only
    after an exact origin match. The assertion lasts up to one hour so K3 can
-   think before its first tool call; the 30-minute cookie is safely refreshed by
-   the bridge before expiry. No general access JWT enters durable agent config,
-   no global `Authorization` header is installed, and caller-selected origins
-   are ignored.
+   think before its first tool call; the 30-minute cookie is refreshed before
+   expiry, and refresh failure blocks the requested tool. No general access JWT
+   enters durable agent config, no global `Authorization` header is installed,
+   and caller-selected origins are ignored.
 
 6. **Execution-scoped browser lifecycle.** Any authorized MCP session carrying
    `X-Wfb-Execution-Id` leases a BrowserStation lane when the farm is configured, independent
@@ -79,6 +83,8 @@ persists across calls within the session). On top of plain proxying it adds:
    idle auto-capture cleanup persists the pending artifacts and then closes the abandoned
    browser. This keeps browser processes isolated per workflow run and prevents Chrome
    processes from accumulating in the bridge pod.
+   Executionless MCP initialization is rejected; the bridge never creates an
+   anonymous local-Chrome session.
 
 ## Endpoint
 

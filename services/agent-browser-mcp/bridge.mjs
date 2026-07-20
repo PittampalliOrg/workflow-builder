@@ -54,7 +54,10 @@ import {
 	inlineImage,
 	isExternallyCallableTool,
 	preserveMultimodalToolResult,
+	pruneExternalToolDefinition,
 	resolveExposedTools,
+	sanitizeAllowlistedArguments,
+	sanitizeExternalToolArguments,
 } from "./vision-contract.mjs";
 import {
 	shouldCloseBrowserAfterCapture,
@@ -67,9 +70,10 @@ import {
 	exchangeTargetAuth,
 	openedUrlMatchesTargetOrigin,
 	parseTargetAuthAssertion,
-	targetAuthAssertionDigest,
+	reauthorizeBrowserSession,
 	targetAuthCookieToolArguments,
 	targetAuthNeedsRefresh,
+	validateTargetAuth,
 } from "./target-auth-policy.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
@@ -105,27 +109,6 @@ const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 4500
 const EXPOSED_TOOLS = resolveExposedTools(
 	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(","),
 );
-
-// Schema properties worth showing the LLM; everything else (session, namespace,
-// restore*, extraArgs, screenshotDir, …) is plumbing the bridge/child handle.
-const EXPOSED_PROPS = new Set([
-	"url",
-	"selector",
-	"text",
-	"key",
-	"value",
-	"state",
-	"path",
-	"fullPage",
-	"format",
-	"quality",
-	"direction",
-	"amount",
-	"interactive",
-	"compact",
-	"depth",
-	"timeoutMs",
-]);
 
 // What the bridge records on its own: "video", "har", or both. Empty disables.
 const AUTO_CAPTURE = (process.env.AGENT_BROWSER_AUTO_CAPTURE ?? "video,har")
@@ -250,23 +233,6 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		contentType,
 		fileName,
 	});
-}
-
-function pruneToolForLlm(tool) {
-	const schema = tool.inputSchema || {};
-	const properties = {};
-	for (const [key, value] of Object.entries(schema.properties || {})) {
-		if (EXPOSED_PROPS.has(key)) properties[key] = value;
-	}
-	const required = (schema.required || []).filter((key) => EXPOSED_PROPS.has(key));
-	return {
-		...tool,
-		inputSchema: {
-			type: "object",
-			properties,
-			...(required.length ? { required } : {}),
-		},
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -636,56 +602,57 @@ async function plantTargetAuthCookie(browserSession, ctx, child) {
 }
 
 async function refreshTargetAuthCookie(browserSession, ctx, child) {
-	if (!ctx?.targetAuth || !authApplied.has(browserSession)) return;
+	if (!ctx?.targetAuth) return false;
+	if (!authApplied.has(browserSession)) return true;
 	try {
 		const existing = await targetAuthExchangeCache.peek(
 			browserSession,
 			targetAuthExchangeInput(ctx),
 		);
-		if (!targetAuthNeedsRefresh(existing)) return;
+		if (!targetAuthNeedsRefresh(existing)) return true;
 		const refreshed = await plantTargetAuthCookie(browserSession, ctx, child);
 		if (refreshed) {
 			console.error(
 				`[target-auth] owner cookie refreshed for ${refreshed.targetOrigin} exec=${ctx.executionId}`,
 			);
+			return true;
 		}
 	} catch (err) {
 		console.error(`[target-auth] refresh failed: ${err?.message}`);
 	}
+	return false;
 }
 
-/** If the run carries a target-auth assertion and the just-opened URL matches
- * the BFF-derived exact origin, exchange and plant the HttpOnly owner cookie so
- * subsequent navigations (including recorder context swaps) stay authenticated.
- * Returns true when the caller should re-open the page. */
-async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
-	if (!ctx?.targetAuth || authApplied.has(browserSession)) return false;
+/** Plant auth before the first navigation to the exact BFF-derived origin. */
+async function prepareTargetAuth(browserSession, ctx, child, requestedUrl) {
+	if (!ctx?.targetAuth || authApplied.has(browserSession)) return "skip";
 	const exchange = await resolveTargetAuth(browserSession, ctx);
 	if (!exchange) {
 		console.error(`[target-auth] exchange unavailable exec=${ctx.executionId ?? "-"}`);
-		return false;
+		return "failed";
 	}
-	if (!openedUrlMatchesTargetOrigin(openedUrl, exchange.targetOrigin)) {
+	if (!openedUrlMatchesTargetOrigin(requestedUrl, exchange.targetOrigin)) {
 		let openedOrigin = "invalid-url";
 		try {
-			openedOrigin = new URL(openedUrl).origin;
+			openedOrigin = new URL(requestedUrl).origin;
 		} catch {
 			/* keep invalid-url */
 		}
 		console.error(
-			`[target-auth] origin mismatch: opened=${openedOrigin} expected=${exchange.targetOrigin} — credential NOT presented`,
+			`[target-auth] origin mismatch: requested=${openedOrigin} expected=${exchange.targetOrigin} — credential NOT presented`,
 		);
-		return false;
+		return "skip";
 	}
 	try {
-		await plantTargetAuthCookie(browserSession, ctx, child);
+		const planted = await plantTargetAuthCookie(browserSession, ctx, child);
+		if (!planted) return "failed";
 		console.error(
 			`[target-auth] HttpOnly owner cookie set for ${exchange.targetOrigin} exec=${ctx.executionId}`,
 		);
-		return true;
+		return "applied";
 	} catch (err) {
 		console.error(`[target-auth] apply failed: ${err?.message}`);
-		return false;
+		return "failed";
 	}
 }
 
@@ -722,7 +689,9 @@ async function makeProxy(ctxRef, browserSession) {
 			cursor = page.nextCursor;
 		} while (cursor);
 		const allow = new Set(EXPOSED_TOOLS);
-		tools = tools.filter((t) => allow.has(t.name)).map(pruneToolForLlm);
+		tools = tools
+			.filter((t) => allow.has(t.name))
+			.map(pruneExternalToolDefinition);
 		if (AUTO_CAPTURE.includes("video")) tools.push(DEMO_SCENE_TOOL);
 		return { tools };
 	});
@@ -739,6 +708,10 @@ async function makeProxy(ctxRef, browserSession) {
 				isError: true,
 			};
 		}
+		const sanitizedArgs =
+			name === DEMO_SCENE_TOOL.name
+				? sanitizeAllowlistedArguments(args, ["title", "caption", "focus"])
+				: sanitizeExternalToolArguments(name, args);
 		// A lane still provisioning its farm browser must not let the first
 		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
 		// tell the agent to retry (cold farm scale-up can take minutes).
@@ -760,10 +733,25 @@ async function makeProxy(ctxRef, browserSession) {
 				};
 			}
 		}
-		await refreshTargetAuthCookie(browserSession, ctxRef.value, child);
+		if (!(await refreshTargetAuthCookie(browserSession, ctxRef.value, child))) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "Browser authorization could not be refreshed; the tool was not called.",
+					},
+				],
+				isError: true,
+			};
+		}
 		if (name === DEMO_SCENE_TOOL.name) {
 			try {
-				const message = await beginScene(browserSession, ctxRef.value, child, args);
+				const message = await beginScene(
+					browserSession,
+					ctxRef.value,
+					child,
+					sanitizedArgs,
+				);
 				return { content: [{ type: "text", text: message }] };
 			} catch (err) {
 				return {
@@ -777,24 +765,33 @@ async function makeProxy(ctxRef, browserSession) {
 		if (name === "agent_browser_close" && captures.has(browserSession)) {
 			await stopCapture(browserSession, "close", child);
 		}
-		let result = await child.callTool({ name, arguments: args || {} });
-		if (name === "agent_browser_close") {
-			releaseLaneBrowser(browserSession).catch(() => {});
-		}
-		// Plant the run owner's credential on the first open of the permitted
-		// host, then re-open so the agent (and the recorder) see the
-		// authenticated page. Must happen before startCapture's record_start.
 		if (
 			name === "agent_browser_open" &&
-			result?.isError !== true &&
 			ctxRef.value?.targetAuth &&
 			!authApplied.has(browserSession) &&
-			typeof args?.url === "string"
+			typeof sanitizedArgs.url === "string"
 		) {
-			const planted = await applyTargetAuth(browserSession, ctxRef.value, child, args.url);
-			if (planted) {
-				result = await child.callTool({ name, arguments: args });
+			const prepared = await prepareTargetAuth(
+				browserSession,
+				ctxRef.value,
+				child,
+				sanitizedArgs.url,
+			);
+			if (prepared === "failed") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Browser authorization could not be applied; navigation was not attempted.",
+						},
+					],
+					isError: true,
+				};
 			}
+		}
+		let result = await child.callTool({ name, arguments: sanitizedArgs });
+		if (name === "agent_browser_close") {
+			releaseLaneBrowser(browserSession).catch(() => {});
 		}
 		if (ARTIFACT_TOOLS[name]) {
 			try {
@@ -815,7 +812,7 @@ async function makeProxy(ctxRef, browserSession) {
 					browserSession,
 					ctxRef.value,
 					child,
-					typeof args?.url === "string" ? args.url : undefined,
+				typeof sanitizedArgs.url === "string" ? sanitizedArgs.url : undefined,
 				);
 			} catch (err) {
 				console.error(`[auto-capture] start failed: ${err?.message}`);
@@ -847,17 +844,23 @@ function requestHeader(req, name) {
 	return typeof value === "string" ? value.trim() : "";
 }
 
-function requestMatchesSessionAuthorization(req, session) {
-	if (!session.executionId) return true;
+async function requestMatchesSessionAuthorization(req, session) {
 	const targetAuth = parseTargetAuthAssertion(req.headers);
-	return (
-		requestHeader(req, "x-wfb-execution-id") === session.executionId &&
-		targetAuthAssertionDigest(targetAuth?.assertion) === session.assertionDigest &&
-		targetAuthSessionBindings.matches(
-			session.browserSession,
-			targetAuth?.assertion,
-		)
-	);
+	return reauthorizeBrowserSession({
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth,
+		expectedExecutionId: session.executionId,
+		expectedAssertionDigest: session.assertionDigest,
+		browserSession: session.browserSession,
+		bindings: targetAuthSessionBindings,
+		validate: ({ assertion, executionId }) =>
+			validateTargetAuth({
+				bffUrl: BFF,
+				internalToken: TOKEN,
+				assertion,
+				executionId,
+			}),
+	});
 }
 
 function rejectBrowserAuthorization(res) {
@@ -868,12 +871,12 @@ app.post("/mcp", async (req, res) => {
 	const sid = req.headers["mcp-session-id"];
 	const existingSession = typeof sid === "string" ? sessions.get(sid) : null;
 	if (existingSession) {
-		if (req.body?.method === "initialize") {
-			res.status(400).json({ error: "MCP session is already initialized" });
+		if (!(await requestMatchesSessionAuthorization(req, existingSession))) {
+			rejectBrowserAuthorization(res);
 			return;
 		}
-		if (!requestMatchesSessionAuthorization(req, existingSession)) {
-			rejectBrowserAuthorization(res);
+		if (req.body?.method === "initialize") {
+			res.status(400).json({ error: "MCP session is already initialized" });
 			return;
 		}
 		await existingSession.transport.handleRequest(req, res, req.body);
@@ -889,8 +892,8 @@ app.post("/mcp", async (req, res) => {
 	const initialization = await authorizeBrowserInitialization({
 		executionId: requestHeader(req, "x-wfb-execution-id"),
 		targetAuth,
-		exchange: ({ assertion, executionId }) =>
-			exchangeTargetAuth({
+		validate: ({ assertion, executionId }) =>
+			validateTargetAuth({
 				bffUrl: BFF,
 				internalToken: TOKEN,
 				assertion,
@@ -909,8 +912,8 @@ app.post("/mcp", async (req, res) => {
 			targetAuth: initialization.targetAuth,
 		},
 	};
-	// One browser per run: every MCP connection carrying the same execution id
-	// shares Chrome; connections without a run get a throwaway browser. A
+	// One browser per run: every authorized MCP connection carrying the same
+	// execution id shares Chrome. A
 	// `X-Wfb-Browser-Lane: per-node` header instead isolates each script call
 	// (node) in its own lane — leased from the BrowserStation farm when
 	// configured, a separate local Chrome otherwise.
@@ -919,31 +922,15 @@ app.post("/mcp", async (req, res) => {
 		laneHeader === "per-node" && ctxRef.value.executionId && ctxRef.value.nodeId
 			? String(ctxRef.value.nodeId).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "lane"
 			: null;
-	const browserSession = ctxRef.value.executionId
-		? laneKey
-			? `wfb-${ctxRef.value.executionId}--${laneKey}`
-			: `wfb-${ctxRef.value.executionId}`
-		: `wfb-anon-${randomUUID().slice(0, 8)}`;
+	const browserSession = laneKey
+		? `wfb-${ctxRef.value.executionId}--${laneKey}`
+		: `wfb-${ctxRef.value.executionId}`;
 	if (initialization.assertionDigest) {
 		const boundDigest = targetAuthSessionBindings.bind(
 			browserSession,
 			initialization.targetAuth.assertion,
 		);
 		if (boundDigest !== initialization.assertionDigest) {
-			rejectBrowserAuthorization(res);
-			return;
-		}
-		// Seed first-use cookie planting from this authoritative exchange. A reused
-		// lane keeps the cache entry for the cookie actually planted; its fresh BFF
-		// result is validation-only.
-		if (
-			!authApplied.has(browserSession) &&
-			!targetAuthExchangeCache.prime(
-				browserSession,
-				targetAuthExchangeInput(ctxRef.value),
-				initialization.targetAuthExchange,
-			)
-		) {
 			rejectBrowserAuthorization(res);
 			return;
 		}
@@ -990,7 +977,7 @@ async function replay(req, res) {
 		res.status(400).send("invalid or missing mcp-session-id");
 		return;
 	}
-	if (!requestMatchesSessionAuthorization(req, session)) {
+	if (!(await requestMatchesSessionAuthorization(req, session))) {
 		rejectBrowserAuthorization(res);
 		return;
 	}

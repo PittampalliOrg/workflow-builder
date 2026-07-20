@@ -13172,23 +13172,8 @@ function defaultBrowserMcpServer(probe) {
     ...probe ? { headers: { "X-Wfb-Browser-Lane": "per-node" } } : {}
   };
 }
-function durableBrowserHeaders(headers, probe) {
-  const runtimeHeaders = /* @__PURE__ */ new Set([
-    "x-wfb-target-auth",
-    "x-wfb-target-auth-host",
-    "x-wfb-browser-target-assertion",
-    "x-wfb-execution-id",
-    "x-wfb-workflow-id",
-    "x-wfb-node-id",
-    "x-wfb-browser-lane"
-  ]);
-  const retained = headers && typeof headers === "object" && !Array.isArray(headers) ? Object.fromEntries(
-    Object.entries(headers).filter(
-      ([name]) => !runtimeHeaders.has(name.toLowerCase())
-    )
-  ) : {};
-  if (probe) retained["X-Wfb-Browser-Lane"] = "per-node";
-  return Object.keys(retained).length ? retained : void 0;
+function platformOwnedBrowserHeaders(probe) {
+  return probe ? { "X-Wfb-Browser-Lane": "per-node" } : void 0;
 }
 function buildKimiK3BrowserAgentConfig(sourceConfig, options) {
   const source = sourceConfig ? structuredClone(sourceConfig) : {};
@@ -13200,18 +13185,25 @@ function buildKimiK3BrowserAgentConfig(sourceConfig, options) {
   delete source.llm_component;
   delete source.provider_model;
   const sourceServers = Array.isArray(source.mcpServers) ? structuredClone(source.mcpServers) : [];
-  const mcpServers2 = sourceServers.length ? sourceServers.map((entry) => {
-    if (!entry || typeof entry !== "object" || !("url" in entry) || !String(entry.url).includes("agent-browser-mcp")) {
+  let hasBrowserServer = false;
+  const mcpServers2 = sourceServers.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return entry;
     }
-    const { headers: sourceHeaders, ...server } = entry;
-    const headers = durableBrowserHeaders(sourceHeaders, options.probe);
+    const { headers: _legacyHeaders, ...server } = entry;
+    const isBrowserServer = String(server.name ?? "").toLowerCase() === "browser" || String(server.url ?? "").includes("agent-browser-mcp");
+    if (!isBrowserServer) return server;
+    hasBrowserServer = true;
+    const headers = platformOwnedBrowserHeaders(options.probe);
     return {
       ...server,
       url: BROWSER_MCP_URL,
       ...headers ? { headers } : {}
     };
-  }) : [defaultBrowserMcpServer(options.probe)];
+  });
+  if (!hasBrowserServer) {
+    mcpServers2.push(defaultBrowserMcpServer(options.probe));
+  }
   return {
     ...source,
     systemPrompt: KIMI_K3_BROWSER_SYSTEM_PROMPT,
