@@ -18,6 +18,9 @@ from typing import Any, Mapping
 
 EFFECTIVE_AGENT_CONFIG_SCHEMA_VERSION = "workflow-builder.effective-agent-config.v1"
 KIMI_K3_CONTEXT_WINDOW_TOKENS = 1_048_576
+# Reasoning-effort values the Kimi API accepts for kimi-k3. Only "max" today;
+# lower levels are documented as coming soon — extend this set when they ship.
+KIMI_K3_SUPPORTED_REASONING_EFFORTS: frozenset[str] = frozenset({"max"})
 
 
 MODEL_COMPONENT_MAP: dict[str, str] = {
@@ -354,11 +357,12 @@ def resolve_llm_metadata(
     effort = (_string(config.get("reasoningEffort")) or "").lower()
     if component == "llm-kimi-k3":
         out["contextWindowTokens"] = KIMI_K3_CONTEXT_WINDOW_TOKENS
-        # Per-agent reasoning effort rides the snapshot into the kimi adapter,
-        # which clamps to the values the API supports (only "max" today).
-        out["reasoningEffort"] = (
-            effort if effort in {"low", "medium", "high", "xhigh", "max"} else "max"
-        )
+        # Only API-valid effort values are recorded for kimi-k3: unset takes
+        # the "max" default; anything unsupported is dropped, not propagated
+        # (the adapter clamps as a safety net). Today the API accepts only
+        # "max"; when Kimi ships lower levels, extend the supported set.
+        if not effort or effort in KIMI_K3_SUPPORTED_REASONING_EFFORTS:
+            out["reasoningEffort"] = "max"
     elif effort in {"low", "medium", "high", "xhigh", "max"}:
         out["reasoningEffort"] = effort
     # Per-agent response JSON Schema for provider-native structured output
