@@ -78,6 +78,34 @@ describe("HttpWorkflowDiagnosticsAdapter", () => {
     );
   });
 
+  it("forwards tool-call filters and the span-tree node cap", async () => {
+    const fetchImpl = vi.fn(async () => response(200, { toolCalls: [] }));
+    const adapter = new HttpWorkflowDiagnosticsAdapter({
+      principal,
+      fetchImpl: fetchImpl as any,
+      workflowBuilderUrl: "http://bff",
+      internalApiToken: "internal",
+    });
+
+    await adapter.getToolCalls("execution-1", {
+      sessionId: "session-1",
+      toolName: "run_command",
+      errorsOnly: true,
+      limit: 10,
+    });
+    await adapter.getSpanTree("execution-1", 200);
+
+    const urls = (
+      fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>
+    ).map((call) => call[0]);
+    expect(urls[0]).toBe(
+      "http://bff/api/internal/observability/executions/execution-1/tool-calls?sessionId=session-1&toolName=run_command&errorsOnly=true&limit=10",
+    );
+    expect(urls[1]).toBe(
+      "http://bff/api/internal/observability/executions/execution-1/tree?maxNodes=200",
+    );
+  });
+
   it("maps BFF failures to stable diagnostics errors", async () => {
     const adapter = new HttpWorkflowDiagnosticsAdapter({
       principal,

@@ -18,6 +18,16 @@ export type WorkflowExecutionListQuery = {
 export type TraceSpanQuery = {
   query?: string;
   errorsOnly?: boolean;
+  service?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type TraceToolCallQuery = {
+  spanId?: string;
+  sessionId?: string;
+  toolName?: string;
+  errorsOnly?: boolean;
   limit?: number;
   cursor?: string;
 };
@@ -44,6 +54,8 @@ export interface WorkflowDiagnosticsPort {
   searchSpans(executionId: string, query: TraceSpanQuery): Promise<unknown>;
   getSpan(executionId: string, spanId: string): Promise<unknown>;
   getLlmTurns(executionId: string, query: TraceLlmTurnQuery): Promise<unknown>;
+  getToolCalls(executionId: string, query: TraceToolCallQuery): Promise<unknown>;
+  getSpanTree(executionId: string, maxNodes?: number): Promise<unknown>;
   searchLogs(executionId: string, query: TraceLogQuery): Promise<unknown>;
   getBrowserScreenshot(executionId: string, storageRef: string): Promise<unknown>;
 }

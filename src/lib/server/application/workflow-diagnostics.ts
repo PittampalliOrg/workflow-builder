@@ -11,7 +11,8 @@ import {
 } from '$lib/server/application/ports/workflow-diagnostics';
 import type {
 	ObservabilityExecutionEvidence,
-	ObservabilityExecutionEvidenceCategory
+	ObservabilityExecutionEvidenceCategory,
+	ObservabilityTraceSpan
 } from '$lib/types/observability';
 import {
 	boundDiagnosticEvidence,
@@ -272,6 +273,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 		execution: WorkflowDiagnosticsExecution;
 		query?: string;
 		errorsOnly: boolean;
+		service?: string;
 		limit: number;
 		offset: number;
 		encodeCursor(offset: number): string | null;
@@ -301,9 +303,11 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				}
 			};
 		}
+		const service = input.service?.trim();
 		const matches = await this.reads.searchSpans(execution, traceIds, {
 			query: input.query,
 			errorsOnly: input.errorsOnly,
+			...(service ? { serviceNames: [service] } : {}),
 			limit: limit + 1,
 			offset
 		});
@@ -563,4 +567,240 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 			telemetry: traceReadTelemetry(execution, traceIds, resolution.warnings)
 		});
 	}
+
+	async getToolCalls(input: {
+		execution: WorkflowDiagnosticsExecution;
+		spanId?: string;
+		sessionId?: string;
+		toolName?: string;
+		errorsOnly: boolean;
+		limit: number;
+		offset: number;
+		encodeCursor(offset: number): string | null;
+	}): Promise<WorkflowDiagnosticsQueryResponse> {
+		const { execution, offset } = input;
+		const limit = Math.min(50, Math.max(1, input.limit));
+		if (!this.reads.isConfigured()) {
+			return {
+				body: {
+					toolCalls: [],
+					page: emptyPage(limit),
+					telemetry: {
+						state: 'unavailable',
+						warnings: ['ClickHouse tool-span storage is not configured']
+					}
+				}
+			};
+		}
+		const resolution = await this.reads.resolveTraceIds(execution);
+		const { traceIds } = resolution;
+		if (traceIds.length === 0) {
+			return {
+				body: {
+					toolCalls: [],
+					page: emptyPage(limit),
+					telemetry: missingTraceTelemetry(execution, resolution.warnings)
+				}
+			};
+		}
+		const matches = await this.reads.searchToolSpans(execution, traceIds, {
+			workflowExecutionId: execution.id,
+			spanId: input.spanId,
+			sessionId: input.sessionId,
+			toolName: input.toolName,
+			errorsOnly: input.errorsOnly,
+			limit: limit + 1,
+			offset
+		});
+		const hasMore = matches.length > limit;
+		const toolCalls = matches.slice(0, limit).map((call) => {
+			const args = boundDiagnosticEvidence(call.toolArguments, 8_000);
+			const callResult = boundDiagnosticEvidence(call.toolResult, 8_000);
+			return {
+				timestamp: call.timestamp,
+				spanId: call.spanId,
+				traceId: call.traceId,
+				parentSpanId: call.parentSpanId,
+				service: call.serviceName,
+				sessionId: call.sessionId,
+				agentRunId: call.agentRunId,
+				toolName: call.toolName,
+				status: call.statusCode,
+				arguments: args.value,
+				result: callResult.value,
+				truncated: {
+					arguments: call.toolArgumentsTruncated || args.truncated,
+					result: call.toolResultTruncated || callResult.truncated
+				}
+			};
+		});
+		return response({
+			toolCalls,
+			total: toolCalls.length,
+			limited: hasMore,
+			page: {
+				limit,
+				count: toolCalls.length,
+				truncated: hasMore,
+				nextCursor: hasMore ? input.encodeCursor(offset + limit) : null
+			},
+			telemetry: traceReadTelemetry(execution, traceIds, resolution.warnings)
+		});
+	}
+
+	async getSpanTree(input: {
+		execution: WorkflowDiagnosticsExecution;
+		maxNodes: number;
+	}): Promise<WorkflowDiagnosticsQueryResponse> {
+		const { execution } = input;
+		const maxNodes = Math.min(800, Math.max(20, input.maxNodes));
+		if (!this.reads.isConfigured()) {
+			return {
+				body: {
+					roots: [],
+					telemetry: {
+						state: 'unavailable',
+						warnings: ['ClickHouse trace storage is not configured']
+					}
+				}
+			};
+		}
+		const resolution = await this.reads.resolveTraceIds(execution);
+		const { traceIds } = resolution;
+		if (traceIds.length === 0) {
+			return {
+				body: {
+					roots: [],
+					telemetry: missingTraceTelemetry(execution, resolution.warnings)
+				}
+			};
+		}
+		const batch = await this.reads.loadSpanSummaries(execution, traceIds, 5_000);
+		const projection = buildSpanTree(batch.spans, maxNodes);
+		return response({
+			roots: projection.roots,
+			spanCount: batch.spans.length,
+			renderedCount: projection.renderedCount,
+			truncated: {
+				spans: batch.truncated,
+				nodes: projection.nodesTruncated,
+				siblings: projection.siblingsOmitted > 0
+			},
+			omittedSiblings: projection.siblingsOmitted,
+			maxNodes,
+			telemetry: traceReadTelemetry(execution, traceIds, resolution.warnings)
+		});
+	}
+}
+
+type SpanTreeNode = {
+	spanId: string;
+	name: string;
+	service: string;
+	status: 'ok' | 'error';
+	durationMs: number;
+	startOffsetMs: number;
+	sessionId?: string;
+	statusMessage?: string;
+	children: SpanTreeNode[];
+	/** Count of same-name siblings collapsed out of `children` (repetition guard). */
+	omittedChildren?: number;
+};
+
+/**
+ * Project flat span summaries into a compact waterfall forest for one MCP
+ * read: repetitive same-name siblings collapse to their first three
+ * occurrences (middleware chains, per-item fan-outs), and the total rendered
+ * node count is capped. Names/durations only — attribute drills stay in
+ * trace_get_span / trace_get_llm_turn / trace_get_tool_calls.
+ */
+function buildSpanTree(
+	spans: ObservabilityTraceSpan[],
+	maxNodes: number
+): {
+	roots: SpanTreeNode[];
+	renderedCount: number;
+	nodesTruncated: boolean;
+	siblingsOmitted: number;
+} {
+	const byId = new Map(spans.map((span) => [span.spanId, span]));
+	const childrenOf = new Map<string, ObservabilityTraceSpan[]>();
+	const roots: ObservabilityTraceSpan[] = [];
+	for (const span of spans) {
+		const parent = span.parentSpanId && byId.has(span.parentSpanId) ? span.parentSpanId : null;
+		if (parent === null) {
+			roots.push(span);
+		} else {
+			const siblings = childrenOf.get(parent) ?? [];
+			siblings.push(span);
+			childrenOf.set(parent, siblings);
+		}
+	}
+	const startMsByTrace = new Map<string, number>();
+	for (const span of spans) {
+		const ms = Date.parse(span.startTime);
+		if (!Number.isFinite(ms)) continue;
+		const current = startMsByTrace.get(span.traceId);
+		if (current === undefined || ms < current) startMsByTrace.set(span.traceId, ms);
+	}
+	const byStart = (a: ObservabilityTraceSpan, b: ObservabilityTraceSpan) =>
+		Date.parse(a.startTime) - Date.parse(b.startTime) || a.spanId.localeCompare(b.spanId);
+
+	let renderedCount = 0;
+	let nodesTruncated = false;
+	let siblingsOmitted = 0;
+	const MAX_SIBLINGS_PER_NAME = 3;
+
+	const render = (span: ObservabilityTraceSpan): SpanTreeNode | null => {
+		if (renderedCount >= maxNodes) {
+			nodesTruncated = true;
+			return null;
+		}
+		renderedCount += 1;
+		const traceStart = startMsByTrace.get(span.traceId);
+		const startMs = Date.parse(span.startTime);
+		const sessionId = span.attributes?.['session.id'];
+		const node: SpanTreeNode = {
+			spanId: span.spanId,
+			name: span.operationName,
+			service: span.serviceName,
+			status: span.status,
+			durationMs: Math.round(span.duration * 100) / 100,
+			startOffsetMs:
+				traceStart !== undefined && Number.isFinite(startMs)
+					? Math.max(0, Math.round(startMs - traceStart))
+					: 0,
+			...(typeof sessionId === 'string' && sessionId ? { sessionId } : {}),
+			...(span.status === 'error' && span.statusMessage
+				? { statusMessage: span.statusMessage.slice(0, 200) }
+				: {}),
+			children: []
+		};
+		const children = (childrenOf.get(span.spanId) ?? []).sort(byStart);
+		const seenPerName = new Map<string, number>();
+		let omitted = 0;
+		for (const child of children) {
+			const nameKey = `${child.operationName}|${child.serviceName}`;
+			const seen = seenPerName.get(nameKey) ?? 0;
+			// Always keep error children; collapse healthy same-name repetition.
+			if (child.status !== 'error' && seen >= MAX_SIBLINGS_PER_NAME) {
+				omitted += 1;
+				continue;
+			}
+			seenPerName.set(nameKey, seen + 1);
+			const rendered = render(child);
+			if (rendered) node.children.push(rendered);
+		}
+		if (omitted > 0) {
+			node.omittedChildren = omitted;
+			siblingsOmitted += omitted;
+		}
+		return node;
+	};
+
+	const renderedRoots = roots
+		.sort(byStart)
+		.map(render)
+		.filter((node): node is SpanTreeNode => node !== null);
+	return { roots: renderedRoots, renderedCount, nodesTruncated, siblingsOmitted };
 }

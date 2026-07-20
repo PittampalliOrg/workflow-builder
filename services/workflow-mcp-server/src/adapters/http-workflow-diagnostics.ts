@@ -3,6 +3,7 @@ import type {
   TraceLlmTurnQuery,
   TraceLogQuery,
   TraceSpanQuery,
+  TraceToolCallQuery,
   WorkflowDiagnosticsPort,
   WorkflowExecutionListQuery,
 } from "../ports/workflow-diagnostics.js";
@@ -101,9 +102,27 @@ export class HttpWorkflowDiagnosticsAdapter implements WorkflowDiagnosticsPort {
     const params = new URLSearchParams();
     setParam(params, "query", query.query);
     setParam(params, "errorsOnly", query.errorsOnly);
+    setParam(params, "service", query.service);
     setParam(params, "limit", query.limit);
     setParam(params, "cursor", query.cursor);
     return this.get(`${this.executionPath(executionId)}/spans`, params);
+  }
+
+  getToolCalls(executionId: string, query: TraceToolCallQuery): Promise<unknown> {
+    const params = new URLSearchParams();
+    setParam(params, "spanId", query.spanId);
+    setParam(params, "sessionId", query.sessionId);
+    setParam(params, "toolName", query.toolName);
+    setParam(params, "errorsOnly", query.errorsOnly);
+    setParam(params, "limit", query.limit);
+    setParam(params, "cursor", query.cursor);
+    return this.get(`${this.executionPath(executionId)}/tool-calls`, params);
+  }
+
+  getSpanTree(executionId: string, maxNodes?: number): Promise<unknown> {
+    const params = new URLSearchParams();
+    setParam(params, "maxNodes", maxNodes);
+    return this.get(`${this.executionPath(executionId)}/tree`, params);
   }
 
   getSpan(executionId: string, spanId: string): Promise<unknown> {

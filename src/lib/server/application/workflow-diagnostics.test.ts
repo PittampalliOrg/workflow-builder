@@ -170,6 +170,28 @@ function port(): WorkflowDiagnosticsReadPort {
 				resourceAttributes: {},
 				logAttributes: {}
 			}
+		] as never),
+		loadSpanSummaries: vi.fn(async () => ({
+			spans: [traceSpan(1), traceSpan(2)] as never[],
+			truncated: false
+		})),
+		searchToolSpans: vi.fn(async () => [
+			{
+				timestamp: '2026-07-19T12:00:02.000Z',
+				traceId: 'a'.repeat(32),
+				spanId: '2'.padStart(16, '0'),
+				parentSpanId: '1'.padStart(16, '0'),
+				serviceName: 'pydantic-ai-agent-py',
+				sessionId: 'session-1',
+				workflowExecutionId: execution.id,
+				agentRunId: null,
+				toolName: 'run_command',
+				toolArguments: { command: 'echo hi', token: 'api_key=sk-secret' },
+				toolResult: 'hi',
+				statusCode: 'Ok',
+				toolArgumentsTruncated: false,
+				toolResultTruncated: false
+			}
 		] as never)
 	};
 }
@@ -451,5 +473,126 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 		expect(result.body).toMatchObject({ telemetry: { state: 'unavailable' } });
 		expect(reads.resolveTraceIds).not.toHaveBeenCalled();
 		expect(reads.searchSpans).not.toHaveBeenCalled();
+	});
+
+	it('binds tool-call evidence to the guarded execution and redacts payloads', async () => {
+		const result = await service.getToolCalls({
+			execution,
+			sessionId: 'session-1',
+			toolName: 'run_command',
+			errorsOnly: false,
+			limit: 20,
+			offset: 0,
+			encodeCursor: String
+		});
+
+		expect(reads.searchToolSpans).toHaveBeenCalledWith(
+			execution,
+			['a'.repeat(32)],
+			expect.objectContaining({
+				workflowExecutionId: execution.id,
+				sessionId: 'session-1',
+				toolName: 'run_command'
+			})
+		);
+		const body = result.body as {
+			toolCalls: Array<{ toolName: string; arguments: unknown }>;
+		};
+		expect(body.toolCalls).toHaveLength(1);
+		expect(body.toolCalls[0]).toMatchObject({
+			toolName: 'run_command',
+			sessionId: 'session-1',
+			status: 'Ok'
+		});
+		expect(JSON.stringify(body)).not.toContain('sk-secret');
+	});
+
+	it('projects a compact span tree with collapsed repetitive siblings and a node cap', async () => {
+		const parent = {
+			...traceSpan(1),
+			spanId: 'p'.repeat(16),
+			parentSpanId: null,
+			status: 'ok' as const,
+			statusCode: 'Unset',
+			statusMessage: ''
+		};
+		const child = (index: number, name: string, status: 'ok' | 'error' = 'ok') => ({
+			...traceSpan(1),
+			spanId: String(index).padStart(16, 'c'),
+			parentSpanId: parent.spanId,
+			operationName: name,
+			startTime: `2026-07-19T12:00:${String(10 + index).padStart(2, '0')}.000Z`,
+			status,
+			statusCode: status === 'error' ? 'Error' : 'Unset',
+			statusMessage: status === 'error' ? 'boom' : ''
+		});
+		const spans = [
+			parent,
+			child(1, 'sveltekit.handle'),
+			child(2, 'sveltekit.handle'),
+			child(3, 'sveltekit.handle'),
+			child(4, 'sveltekit.handle'),
+			child(5, 'sveltekit.handle', 'error'),
+			child(6, 'call_llm')
+		];
+		vi.mocked(reads.loadSpanSummaries).mockResolvedValue({
+			spans: spans as never[],
+			truncated: false
+		});
+
+		const result = await service.getSpanTree({ execution, maxNodes: 300 });
+		const body = result.body as {
+			roots: Array<{
+				spanId: string;
+				children: Array<{ name: string; status: string }>;
+				omittedChildren?: number;
+			}>;
+			renderedCount: number;
+			omittedSiblings: number;
+		};
+		expect(body.roots).toHaveLength(1);
+		const names = body.roots[0].children.map((node) => node.name);
+		// 3 healthy sveltekit.handle kept, 4th collapsed; the ERROR sibling always survives.
+		expect(names.filter((name) => name === 'sveltekit.handle')).toHaveLength(4);
+		expect(
+			body.roots[0].children.some(
+				(node) => node.name === 'sveltekit.handle' && node.status === 'error'
+			)
+		).toBe(true);
+		expect(names).toContain('call_llm');
+		expect(body.roots[0].omittedChildren).toBe(1);
+		expect(body.omittedSiblings).toBe(1);
+		expect(body.renderedCount).toBe(6);
+	});
+
+	it('caps the rendered span tree at maxNodes', async () => {
+		const root = {
+			...traceSpan(1),
+			spanId: 'r'.repeat(16),
+			parentSpanId: null,
+			status: 'ok' as const,
+			statusMessage: ''
+		};
+		const many = Array.from({ length: 60 }, (_, index) => ({
+			...traceSpan(1),
+			spanId: String(index).padStart(16, 'd'),
+			parentSpanId: root.spanId,
+			operationName: `op-${index}`,
+			startTime: `2026-07-19T12:00:0${index % 10}.00${index % 10}Z`,
+			status: 'ok' as const,
+			statusMessage: ''
+		}));
+		vi.mocked(reads.loadSpanSummaries).mockResolvedValue({
+			spans: [root, ...many] as never[],
+			truncated: false
+		});
+
+		const result = await service.getSpanTree({ execution, maxNodes: 20 });
+		const body = result.body as {
+			renderedCount: number;
+			truncated: { nodes: boolean };
+		};
+		expect(body.renderedCount).toBe(20);
+		expect(body.truncated.nodes).toBe(true);
 	});
 });

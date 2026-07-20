@@ -209,40 +209,18 @@ function looksLlmRelated(value: unknown): boolean {
   );
 }
 
-function spanSessionId(value: unknown): string | null {
-  const span = record(value);
-  if (!span) return null;
-  const sources = [
-    span,
-    record(span.attributes),
-    record(span.resourceAttributes),
-  ];
-  for (const source of sources) {
-    if (!source) continue;
-    for (const key of [
-      "sessionId",
-      "session.id",
-      "agent.session.id",
-      "workflow_builder.session_id",
-    ]) {
-      const candidate = source[key];
-      if (typeof candidate === "string" && candidate.trim()) {
-        return candidate.trim();
-      }
-    }
-  }
-  return null;
-}
-
 function llmTurnArguments(
   executionId: string,
-  span: unknown,
-  fallbackSpanId: string,
+  _span: unknown,
+  spanId: string,
 ): Record<string, unknown> {
-  const sessionId = spanSessionId(span);
-  return sessionId
-    ? { executionId, sessionId, limit: 3 }
-    : { executionId, spanId: fallbackSpanId };
+  // Prefer the concrete spanId: a span's session.id attribute may be the
+  // k8s-label-sanitized form daprd/collector stamp (lowercased + truncated
+  // to 63 chars), which never matches the full session ids the curated
+  // obs.llm_spans view stores — a sessionId lookup built from it returns
+  // empty. Session-wide paging stays available to callers that hold a real
+  // session id (e.g. from the digest's `sessions` list).
+  return { executionId, spanId };
 }
 
 function screenshotStorageRefs(value: unknown): string[] {
@@ -287,6 +265,12 @@ function executionNextActions(
         "The execution is still active; refresh after telemetry has advanced.",
     });
   }
+  actions.push({
+    tool: "trace_get_tree",
+    arguments: { executionId },
+    reason:
+      "See the run's structural waterfall (every phase/activity/agent span) in one bounded read.",
+  });
   // Error-status spans can describe expected retries, probes, or idempotent
   // cleanup. Keep them in the returned evidence, but only promote them as the
   // next debugging target when the run did not succeed or its digest found an
@@ -502,13 +486,14 @@ export function registerTraceTools(
 
   register(
     "trace_search_spans",
-    "Search execution-scoped spans by operation, service, status message, or session id. Results are bounded and paginated; use returned span/session ids for LLM-turn and log evidence.",
+    "Search execution-scoped spans by operation, service, status message, or session id; `service` filters to one exact service name (e.g. an agent runtime) so plumbing spans don't crowd the page. Results are bounded and paginated; use returned span ids for span/LLM-turn/log evidence, and prefer trace_get_tree first when you want the run's overall shape.",
     {
       title: "Search Trace Spans",
       inputSchema: {
         executionId: z.string().min(6),
         query: z.string().optional(),
         errorsOnly: z.boolean().optional(),
+        service: z.string().optional(),
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().optional(),
       },
@@ -517,6 +502,7 @@ export function registerTraceTools(
       executionId: string;
       query?: string;
       errorsOnly?: boolean;
+      service?: string;
       limit?: number;
       cursor?: string;
     }) => {
@@ -665,6 +651,97 @@ export function registerTraceTools(
         });
       } catch (error) {
         return errorResult("trace_get_llm_turn", error);
+      }
+    },
+  );
+
+  register(
+    "trace_get_tree",
+    "Get the execution's compact span waterfall in ONE bounded read: a name/service/duration/status hierarchy across every correlated trace, with repetitive same-name siblings collapsed (omittedChildren counts) and a hard node cap. Best first structural view; drill into specific spanIds with trace_get_span / trace_get_llm_turn / trace_get_tool_calls.",
+    {
+      title: "Get Span Tree",
+      inputSchema: {
+        executionId: z.string().min(6),
+        maxNodes: z.number().int().min(20).max(800).optional(),
+      },
+    },
+    async ({
+      executionId,
+      maxNodes,
+    }: {
+      executionId: string;
+      maxNodes?: number;
+    }) => {
+      try {
+        const data = await context.diagnostics.getSpanTree(
+          executionId,
+          maxNodes,
+        );
+        return result(data, {
+          tool: "trace_get_tree",
+          nextActions: [
+            {
+              tool: "trace_get_tool_calls",
+              arguments: { executionId },
+              reason:
+                "List the agent's tool calls with arguments and results for the branches seen in the tree.",
+            },
+          ],
+        });
+      } catch (error) {
+        return errorResult("trace_get_tree", error);
+      }
+    },
+  );
+
+  register(
+    "trace_get_tool_calls",
+    "List the execution's agent tool calls (curated tool-span evidence): tool name, arguments, result, and status per call, paginated. Filter by sessionId, toolName, spanId, or errorsOnly. This answers 'what did the agent actually do' without per-span drills.",
+    {
+      title: "Get Agent Tool Calls",
+      inputSchema: {
+        executionId: z.string().min(6),
+        spanId: z.string().optional(),
+        sessionId: z.string().optional(),
+        toolName: z.string().optional(),
+        errorsOnly: z.boolean().optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+        cursor: z.string().optional(),
+      },
+    },
+    async (args: {
+      executionId: string;
+      spanId?: string;
+      sessionId?: string;
+      toolName?: string;
+      errorsOnly?: boolean;
+      limit?: number;
+      cursor?: string;
+    }) => {
+      try {
+        const data = await context.diagnostics.getToolCalls(
+          args.executionId,
+          args,
+        );
+        const first = firstRecord(data, "toolCalls");
+        const nextActions: NextAction[] = [];
+        if (typeof first?.spanId === "string" && first.status === "Error") {
+          nextActions.push({
+            tool: "trace_get_logs",
+            arguments: { executionId: args.executionId, spanId: first.spanId },
+            reason: "Correlate the first failing tool call with runtime logs.",
+          });
+        }
+        const continuation = continuationAction(
+          "trace_get_tool_calls",
+          args,
+          data,
+          "Continue the tool-call page from the server-issued cursor.",
+        );
+        if (continuation) nextActions.push(continuation);
+        return result(data, { tool: "trace_get_tool_calls", nextActions });
+      } catch (error) {
+        return errorResult("trace_get_tool_calls", error);
       }
     },
   );

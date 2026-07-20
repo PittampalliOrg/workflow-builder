@@ -194,6 +194,30 @@ export class ClickHouseWorkflowDiagnosticsReadAdapter implements WorkflowDiagnos
 		}).then((batch) => batch.spans);
 	}
 
+	loadSpanSummaries(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		limit: number
+	) {
+		return getMultiTraceSpanSummaries(traceIds, {
+			limit,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		}).then((batch) => ({ spans: batch.spans, truncated: batch.truncated }));
+	}
+
+	searchToolSpans(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		query: Parameters<WorkflowDiagnosticsReadPort['searchToolSpans']>[2]
+	) {
+		return searchTraceToolSpans(traceIds, {
+			...query,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		});
+	}
+
 	getSpan(
 		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
