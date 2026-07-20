@@ -354,7 +354,11 @@ def resolve_llm_metadata(
     effort = (_string(config.get("reasoningEffort")) or "").lower()
     if component == "llm-kimi-k3":
         out["contextWindowTokens"] = KIMI_K3_CONTEXT_WINDOW_TOKENS
-        out["reasoningEffort"] = "max"
+        # Per-agent reasoning effort rides the snapshot into the kimi adapter,
+        # which clamps to the values the API supports (only "max" today).
+        out["reasoningEffort"] = (
+            effort if effort in {"low", "medium", "high", "xhigh", "max"} else "max"
+        )
     elif effort in {"low", "medium", "high", "xhigh", "max"}:
         out["reasoningEffort"] = effort
     # Per-agent response JSON Schema for provider-native structured output

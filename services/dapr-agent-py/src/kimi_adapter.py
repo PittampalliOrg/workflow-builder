@@ -1088,16 +1088,36 @@ def _publish_llm_usage(
         logger.debug("[session-event] kimi llm_usage emit failed: %s", exc)
 
 
+def _reasoning_effort(override: str | None = None) -> str:
+    """Resolve the K3 reasoning_effort value.
+
+    ``override`` is the per-agent ``agentConfig.reasoningEffort`` (stamped onto
+    the chat client by call_llm from the per-turn effective-config snapshot) and
+    WINS over the env default. Kimi currently accepts only "max" for kimi-k3
+    (lower levels are documented as coming soon), so any other level clamps to
+    "max" with a warning — the per-agent config path is live for when lower
+    levels ship.
+    """
+    effort = (
+        override or os.environ.get("KIMI_REASONING_EFFORT", "max")
+    ).strip().lower()
+    if effort != "max":
+        logger.warning(
+            "[kimi-chat] reasoning_effort=%r requested, but kimi-k3 currently "
+            "supports only 'max'; clamping to 'max'",
+            effort,
+        )
+    return "max"
+
+
 def _apply_kimi_output_mode(
     request_body: dict[str, Any],
     *,
     response_format: Any = None,
     native_json_schema: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
-    reasoning_effort = os.environ.get("KIMI_REASONING_EFFORT", "max").strip().lower()
-    if reasoning_effort != "max":
-        raise RuntimeError("KIMI_REASONING_EFFORT must be 'max' for kimi-k3.")
-    request_body["reasoning_effort"] = reasoning_effort
+    request_body["reasoning_effort"] = _reasoning_effort(reasoning_effort)
 
     if response_format is None and native_json_schema is None:
         return
@@ -1150,6 +1170,7 @@ def _call_kimi_chat(
     tool_choice: Any = None,
     native_json_schema: dict[str, Any] | None = None,
     structured_output_tool: bool = False,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     model = _get_kimi_model(component)
     converted_tools = _convert_tools_for_kimi_chat(tools)
@@ -1250,6 +1271,7 @@ def _call_kimi_chat(
             if response_format is None and not tool_mode
             else None
         ),
+        reasoning_effort=reasoning_effort,
     )
 
     logger.info(
@@ -1486,6 +1508,11 @@ def patch_for_kimi(llm_client: Any) -> None:
                     getattr(self, "_structured_output_mode", None) == "tool"
                     and response_format is None
                 ),
+                # Per-agent reasoning effort (agentConfig.reasoningEffort),
+                # stamped onto the client by call_llm alongside _llm_component;
+                # the env default applies only when unset. kimi-k3 currently
+                # accepts only "max"; other values clamp with a warning.
+                reasoning_effort=getattr(self, "_reasoning_effort", None),
             )
 
             if response_format is not None:

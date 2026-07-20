@@ -321,6 +321,12 @@ export function registerWorkflowTools(
 					.string()
 					.optional()
 					.describe("System prompt / persona for the agent."),
+				reasoning_effort: z
+					.enum(["low", "medium", "high", "xhigh", "max"])
+					.optional()
+					.describe(
+						"Per-agent reasoning effort (agentConfig.reasoningEffort), resolved per turn into the provider request. NOTE: kimi-k3 currently accepts only 'max' — other values clamp with a warning until lower levels ship.",
+					),
 				mcp_servers: z
 					.array(
 						z.object({
@@ -347,6 +353,7 @@ export function registerWorkflowTools(
 			model?: string;
 			runtime?: string;
 			system_prompt?: string;
+			reasoning_effort?: "low" | "medium" | "high" | "xhigh" | "max";
 			mcp_servers?: Array<Record<string, unknown>>;
 			tools?: string[];
 			skills?: string[];
@@ -369,6 +376,7 @@ export function registerWorkflowTools(
 				const config: Record<string, unknown> = { runtime };
 				if (args.model) config.modelSpec = args.model;
 				if (args.system_prompt) config.systemPrompt = args.system_prompt;
+				if (args.reasoning_effort) config.reasoningEffort = args.reasoning_effort;
 				if (args.mcp_servers) {
 					// dapr-agent-py exposes each MCP tool to the model as
 					// `<serverName>_<toolName>`. LLM function-calling only accepts

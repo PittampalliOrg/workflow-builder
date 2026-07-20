@@ -242,6 +242,15 @@ export type AgentConfig = {
 	 */
 	interactionMode?: "interactive" | "autonomous";
 
+	/**
+	 * Per-agent reasoning effort, resolved per turn into the effective config
+	 * and stamped onto the provider adapter's chat call (each adapter maps the
+	 * vocabulary to its accepted values — e.g. kimi-k3 currently accepts only
+	 * `"max"`, so other values clamp with a warning). Unset uses the provider
+	 * default.
+	 */
+	reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+
 	builtinTools: string[];
 	tools?: string[];
 	mcpConnectionMode: "project" | "explicit" | "auto";

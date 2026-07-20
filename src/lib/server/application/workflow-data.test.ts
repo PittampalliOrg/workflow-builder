@@ -5052,7 +5052,7 @@ describe("ApplicationWorkflowDataService", () => {
 	);
 
 	it.each([
-		["reasoning effort", { reasoningEffort: "high" }],
+		["reasoning effort", { reasoningEffort: "high" as const }],
 		["context window", { contextWindowTokens: 262_144 }],
 		["runtime isolation", { runtimeIsolation: "shared" as const }],
 	])(
@@ -5067,7 +5067,7 @@ describe("ApplicationWorkflowDataService", () => {
 					slug: "kimi-k3-juicefs-builder-agent",
 					config: {
 						modelSpec: "kimi/kimi-k3",
-						reasoningEffort: "max",
+						reasoningEffort: "max" as const,
 						contextWindowTokens: 1_048_576,
 						runtimeIsolation: "dedicated",
 						...configOverride,
