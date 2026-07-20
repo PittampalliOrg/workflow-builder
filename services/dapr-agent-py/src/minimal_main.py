@@ -7,7 +7,7 @@ session_workflow -> Dapr Agents agent_workflow -> call_llm/run_tool activities
 It reuses the existing OpenShell tools and provider adapters, but avoids the
 featureful dapr-agent-py session implementation: no per-turn child workflow,
 no event-log publishing, no memory summarization, no hooks/plugins, no peer
-agent fan-out, and no MLflow finalization path. The goal is to isolate whether
+agent fan-out, and no secondary trace-finalization path. The goal is to isolate whether
 our custom agent/session construction contributes to benchmark stalls or
 workflow nondeterminism.
 """
@@ -40,9 +40,7 @@ def _configure_durabletask_grpc_defaults() -> None:
         max_message_bytes = 16 * 1024 * 1024
     existing = getattr(durabletask_shared, "DEFAULT_GRPC_KEEPALIVE_OPTIONS", ())
     merged = {
-        str(key): value
-        for key, value in existing
-        if isinstance(key, str) and key
+        str(key): value for key, value in existing if isinstance(key, str) and key
     }
     merged.setdefault("grpc.max_receive_message_length", max_message_bytes)
     merged.setdefault("grpc.max_send_message_length", max_message_bytes)
@@ -148,8 +146,7 @@ def _agent_workflow_runtime_status() -> tuple[bool, dict[str, Any]]:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         details["metadataError"] = (
-            f"HTTP {exc.code}: "
-            f"{exc.read().decode('utf-8', errors='replace')[:300]}"
+            f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:300]}"
         )
         return False, details
     except Exception as exc:  # noqa: BLE001

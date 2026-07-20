@@ -262,9 +262,9 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
 def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     attrs: dict[str, Any] = dict(get_telemetry_attributes())
     attrs["span.type"] = span_type
-    attrs["mlflow.spanType"] = {
+    attrs["openinference.span.kind"] = {
         "interaction": "AGENT",
-        "llm_request": "CHAT_MODEL",
+        "llm_request": "LLM",
         "tool": "TOOL",
         "tool.blocked_on_user": "TOOL",
         "tool.execution": "TOOL",
@@ -281,6 +281,7 @@ def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[st
 # ---------------------------------------------------------------------------
 # interaction
 # ---------------------------------------------------------------------------
+
 
 def start_interaction_span(user_prompt: str) -> Any:
     """Start `claude_code.interaction`, the root user-turn span.
@@ -319,12 +320,6 @@ def start_interaction_span(user_prompt: str) -> Any:
     )
     handle.token = _interaction_ctx.set(handle)
 
-    # Promote curated attributes to MLflow trace tags so search filters
-    # like `tag.session.id = '...'` work. Phase 1 of plan
-    # research-the-most-popular-stateful-hinton.md. Best-effort: silent
-    # no-op when mlflow isn't initialised.
-    from .dapr_attributes import set_mlflow_trace_tags, trace_tags_from_attrs
-    set_mlflow_trace_tags(trace_tags_from_attrs(attrs), span=span)
     return span
 
 
@@ -349,10 +344,8 @@ def end_interaction_span() -> None:
 def current_interaction_span() -> Any:
     """Return the active `claude_code.interaction` OTel span, or None.
 
-    Used by Phase 2b cleanup: when `mlflow.anthropic.autolog()` covers
-    the LLM call's own span, prompt-cache breadcrumbs that used to ride
-    on `claude_code.llm_request` migrate UP to the per-turn interaction
-    span (whose lifetime spans the entire turn including retries).
+    Provider adapters may use this for turn-level attributes whose lifetime
+    spans retries and multiple provider requests.
     """
     handle = _interaction_ctx.get()
     if handle is None or handle.ended:
@@ -363,6 +356,7 @@ def current_interaction_span() -> Any:
 # ---------------------------------------------------------------------------
 # llm_request
 # ---------------------------------------------------------------------------
+
 
 def start_llm_request_span(
     model: str,
@@ -378,7 +372,6 @@ def start_llm_request_span(
     if tracer is None:
         return None
 
-    from opentelemetry import context as otel_context
     from opentelemetry import trace as otel_trace
 
     interaction_handle = _interaction_ctx.get()
@@ -386,7 +379,9 @@ def start_llm_request_span(
         "llm_request",
         {
             "model": model,
-            "llm_request.context": "interaction" if interaction_handle else "standalone",
+            "llm_request.context": "interaction"
+            if interaction_handle
+            else "standalone",
             "speed": "fast" if fast_mode else "normal",
         },
     )
@@ -512,6 +507,7 @@ def end_llm_request_span(
     _set_oi_content_attr(span, "llm.output_messages", _output_messages)
     try:
         from opentelemetry import trace as _ot
+
         _set_oi_content_attr(
             _ot.get_current_span(), "llm.output_messages", _output_messages
         )
@@ -531,6 +527,7 @@ def end_llm_request_span(
 # tool + tool.execution + tool.blocked_on_user
 # ---------------------------------------------------------------------------
 
+
 def start_tool_span(
     tool_name: str,
     *,
@@ -541,7 +538,6 @@ def start_tool_span(
     if tracer is None:
         return None
 
-    from opentelemetry import context as otel_context
     from opentelemetry import trace as otel_trace
 
     interaction_handle = _interaction_ctx.get()
@@ -554,12 +550,14 @@ def start_tool_span(
         if interaction_handle is not None
         else _fallback_parent_ctx()
     )
-    span = tracer.start_span(
-        "claude_code.tool", attributes=attrs, context=parent_ctx
-    )
+    span = tracer.start_span("claude_code.tool", attributes=attrs, context=parent_ctx)
     if tool_input:
         beta.add_tool_input_attributes(span, tool_name, tool_input)
-        _set_io_value(span, "input", {"tool_name": tool_name, "input": _safe_json_loads(tool_input)})
+        _set_io_value(
+            span,
+            "input",
+            {"tool_name": tool_name, "input": _safe_json_loads(tool_input)},
+        )
     # Tag the CURRENT span (the run_tool WorkflowActivity span) with the
     # OpenInference TOOL convention so the obs.tool_spans materialized view
     # picks it up — the claude_code.tool child span above has no
@@ -610,6 +608,7 @@ def end_tool_span(
         )
         try:
             from opentelemetry import trace as _ot_t
+
             _activity = _ot_t.get_current_span()
             if _activity is not None:
                 _set_oi_content_attr(
@@ -638,7 +637,6 @@ def start_tool_blocked_on_user_span() -> Any:
     if tracer is None:
         return None
 
-    from opentelemetry import context as otel_context
     from opentelemetry import trace as otel_trace
 
     tool_handle = _tool_ctx.get()
@@ -691,7 +689,6 @@ def start_tool_execution_span() -> Any:
     if tracer is None:
         return None
 
-    from opentelemetry import context as otel_context
     from opentelemetry import trace as otel_trace
 
     tool_handle = _tool_ctx.get()
@@ -735,7 +732,7 @@ def end_tool_execution_span(
         # Truncate to keep span attribute size bounded — same convention as
         # system_prompt_preview (500 chars). Larger payloads can still be
         # reconstructed from the underlying tool result; this is the at-a-
-        # glance preview surfaced in MLflow Traces / Phoenix.
+        # glance preview surfaced by the ClickHouse trace views.
         end_attrs["tool_output_preview"] = tool_output[:8000]
         end_attrs["tool_output_length"] = len(tool_output)
         _set_io_value(span, "output", {"tool_output": tool_output})
@@ -752,6 +749,7 @@ def end_tool_execution_span(
 # hook (beta only, like TS)
 # ---------------------------------------------------------------------------
 
+
 def start_hook_span(
     hook_event: str,
     hook_name: str,
@@ -764,7 +762,6 @@ def start_hook_span(
     if tracer is None:
         return None
 
-    from opentelemetry import context as otel_context
     from opentelemetry import trace as otel_trace
 
     parent_handle = _tool_ctx.get() or _interaction_ctx.get()
@@ -782,9 +779,7 @@ def start_hook_span(
         if parent_handle is not None
         else _fallback_parent_ctx()
     )
-    span = tracer.start_span(
-        "claude_code.hook", attributes=attrs, context=parent_ctx
-    )
+    span = tracer.start_span("claude_code.hook", attributes=attrs, context=parent_ctx)
     handle = _SpanHandle(
         span=span,
         start_time_ns=time.time_ns(),

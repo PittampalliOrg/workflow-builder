@@ -3127,7 +3127,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._ensure_mcp_client(inst_id)
 
         # Stamp workflow + agent context onto the current Dapr activity span
-        # so the call_llm span is filterable in MLflow / ClickHouse by agent
+        # so the call_llm span is filterable in ClickHouse by agent
         # slug, session id, and component without parsing the input/output
         # JSON blobs. The provider-specific gen_ai.* attrs land later, inside
         # the adapter's own enrichment block.
@@ -3160,7 +3160,7 @@ class OpenShellDurableAgent(DurableAgent):
                 agent_app_id=context.get("agentAppId"),
                 component=component,
                 iteration=iteration,
-                mlflow_span_type="CHAT_MODEL",
+                span_type="llm_request",
                 extra={
                     "agent.name": agent_name,
                     "agent.max_iterations": context.get("maxIterations"),
@@ -3689,7 +3689,7 @@ class OpenShellDurableAgent(DurableAgent):
                 agent_version=context.get("agentVersion"),
                 agent_slug=str(agent_slug) if agent_slug else None,
                 agent_app_id=context.get("agentAppId"),
-                mlflow_span_type="TOOL",
+                span_type="tool",
                 extra={
                     "agent.name": agent_name,
                     "tool.name": tool_name,
@@ -4371,19 +4371,6 @@ class OpenShellDurableAgent(DurableAgent):
             if isinstance(metadata.get("mlflowContext"), dict)
             else {}
         )
-        if not ctx.is_replaying and mlflow_context:
-            try:
-                from src.telemetry.providers import set_mlflow_trace_experiment_for_context
-
-                set_mlflow_trace_experiment_for_context(
-                    str(
-                        mlflow_context.get("traceExperimentId")
-                        or mlflow_context.get("experimentId")
-                        or ""
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[telemetry] MLflow context destination skipped: %s", exc)
         sandbox_name = (
             str(message.get("sandboxName") or metadata.get("sandboxName") or "").strip()
             or _sandbox_name_from_workspace_ref(
@@ -4670,30 +4657,6 @@ class OpenShellDurableAgent(DurableAgent):
             or instance_id
             or ""
         ).strip()
-        if not ctx.is_replaying and mlflow_context:
-            try:
-                from src.telemetry.dapr_attributes import set_mlflow_trace_tags
-
-                trace_tags: dict[str, Any] = {
-                    "session.id": mlflow_session_id or session_id_raw,
-                    "agent.session.id": session_id_raw,
-                    "workflow_builder.session_id": session_id_raw,
-                    "workflow_builder.mlflow_session_id": mlflow_session_id,
-                    "workflow_builder.turn_id": turn_id,
-                    "dapr.workflow.instance_id": instance_id,
-                    "workflow.execution.id": execution_id,
-                    "mlflow.run_id": mlflow_context.get("runId"),
-                    "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
-                    "mlflow.modelId": mlflow_context.get("activeModelId"),
-                    "mlflow.model.uri": mlflow_context.get("activeModelUri"),
-                }
-                set_mlflow_trace_tags(
-                    trace_tags,
-                    trace_name=f"agent.{message.get('agentSlug') or agent_config.get('slug') or 'unknown'}/turn.{turn_id or instance_id}",
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[telemetry] turn trace-tag set failed: %s", exc)
-
         # Phase 4 bridge: when session_workflow spawns agent_workflow, it
         # inlines sessionId into the child's message dict. Stash per-instance
         # so activities can pass it to publish_session_event.
@@ -4799,9 +4762,9 @@ class OpenShellDurableAgent(DurableAgent):
                 }
                 log_otel_event("user_prompt", _user_prompt_event_attrs)
                 # Mirror the log record into a span event on the
-                # claude_code.interaction span so the MLflow Trace UI's
-                # Events tab and Phoenix render the prompt inline. The
-                # log signal still ships independently.
+                # claude_code.interaction span so ClickHouse trace consumers
+                # can render the prompt inline. The log signal still ships
+                # independently.
                 if span is not None:
                     try:
                         span.add_event(
@@ -5506,9 +5469,8 @@ class OpenShellDurableAgent(DurableAgent):
                     # Force the BatchSpanProcessor to push the root span before
                     # the activity returns. Without this, the root span can sit
                     # in the queue (or get dropped when the queue is full from
-                    # a long, span-heavy turn) and MLflow keeps the trace
-                    # marked IN_PROGRESS with no root, which renders empty in
-                    # the MLflow Tracing UI even though child spans arrived.
+                    # a long, span-heavy turn), delaying or disconnecting the
+                    # terminal trace data consumed from ClickHouse.
                     flush_telemetry()
                     self._interaction_span_by_instance.pop(instance_id, None)
                     tok = self._interaction_ctx_token_by_instance.pop(
@@ -6279,19 +6241,6 @@ class OpenShellDurableAgent(DurableAgent):
             if isinstance(message.get("mlflowContext"), dict)
             else {}
         )
-        if not ctx.is_replaying and mlflow_context:
-            try:
-                from src.telemetry.providers import set_mlflow_trace_experiment_for_context
-
-                set_mlflow_trace_experiment_for_context(
-                    str(
-                        mlflow_context.get("traceExperimentId")
-                        or mlflow_context.get("experimentId")
-                        or ""
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[session-workflow] MLflow context destination skipped: %s", exc)
         workflow_instance_id = session_workflow_instance_id(
             getattr(ctx, "instance_id", None),
             session_id,
@@ -6318,53 +6267,6 @@ class OpenShellDurableAgent(DurableAgent):
                     **session_native_event_fields(workflow_instance_id),
                 },
             )
-            # Phase 4 v2: set an agent-aware MLflow trace name + agent tags
-            # ONCE at session entry so the Sessions/Traces UI shows
-            # `agent.<slug>/session.<sessionId>` instead of generic
-            # `session_workflow` defaults. The parent workflow already
-            # exported spans under this trace_id (W3C propagated from
-            # the orchestrator's call_child_workflow), so set_trace_tag
-            # finds the trace_info row already.
-            try:
-                from src.telemetry.dapr_attributes import set_mlflow_trace_tags
-                _agent_slug = (agent_cfg.get("slug") if isinstance(agent_cfg, dict) else None) or ""
-                if not _agent_slug:
-                    _app_id = os.environ.get("APP_ID") or os.environ.get("DAPR_APP_ID") or ""
-                    if _app_id.startswith("agent-runtime-"):
-                        _agent_slug = _app_id[len("agent-runtime-"):]
-                _agent_slug = _agent_slug.strip() or "unknown"
-                _display_name = f"agent.{_agent_slug}/session.{session_id}"
-                _trace_tags: dict[str, Any] = {
-                    "session.id": session_id,
-                    "agent.session.id": session_id,
-                    "workflow_builder.session_id": session_id,
-                    "agent.slug": _agent_slug,
-                }
-                if db_execution_id:
-                    _trace_tags["workflow.execution.id"] = db_execution_id
-                    _trace_tags["workflow_builder.trace_group_id"] = db_execution_id
-                for _key, _tag_key in (
-                    ("experimentId", "mlflow.experiment_id"),
-                    ("traceExperimentId", "mlflow.trace_experiment_id"),
-                    ("runId", "mlflow.run_id"),
-                    ("parentRunId", "mlflow.parent_run_id"),
-                    ("mlflowSessionId", "workflow_builder.mlflow_session_id"),
-                    ("activeModelId", "mlflow.modelId"),
-                    ("activeModelUri", "mlflow.model.uri"),
-                    ("activeModelUri", "agent.mlflow_uri"),
-                ):
-                    _value = mlflow_context.get(_key) if isinstance(mlflow_context, dict) else None
-                    if _value:
-                        _trace_tags[_tag_key] = str(_value)
-                set_mlflow_trace_tags(_trace_tags, trace_name=_display_name)
-                logger.info(
-                    "[session-workflow] MLflow trace tags set: name=%s slug=%s",
-                    _display_name,
-                    _agent_slug,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[session-workflow] trace-tag set failed: %s", exc)
-
         turn_counter = int(continuation_state["turnCounter"])
         continuation_count = int(continuation_state["continuationCount"])
         # When the Stop-hook goal driver is active for this goal-mode session, tag

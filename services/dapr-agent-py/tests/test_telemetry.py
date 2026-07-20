@@ -165,7 +165,8 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert interaction.attributes["mlflow.run_id"] == "run_1"
     assert interaction.attributes["mlflow.parent_run_id"] == "parent_run_1"
     assert interaction.attributes["workflow_builder.trace_group_id"] == "exec-1"
-    assert interaction.attributes["mlflow.spanType"] == "AGENT"
+    assert interaction.attributes["openinference.span.kind"] == "AGENT"
+    assert "mlflow.spanType" not in interaction.attributes
     # Prompt redacted by default (OTEL_LOG_USER_PROMPTS unset).
     assert interaction.attributes["user_prompt"] == "<REDACTED>"
 
@@ -178,7 +179,8 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert llm_span.attributes["success"] is True
     assert llm_span.attributes["llm_request.context"] == "interaction"
     assert llm_span.attributes["query_source"] == "test"
-    assert llm_span.attributes["mlflow.spanType"] == "CHAT_MODEL"
+    assert llm_span.attributes["openinference.span.kind"] == "LLM"
+    assert "mlflow.spanType" not in llm_span.attributes
     # llm_request should be a child of interaction.
     assert llm_span.parent is not None
     assert llm_span.parent.span_id == interaction.context.span_id
@@ -186,52 +188,15 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     tool_span = _find_span(exporter, "claude_code.tool")
     assert tool_span.attributes["tool_name"] == "Edit"
     assert tool_span.attributes["tool.call_id"] == "tc-1"
-    assert tool_span.attributes["mlflow.spanType"] == "TOOL"
+    assert tool_span.attributes["openinference.span.kind"] == "TOOL"
+    assert "mlflow.spanType" not in tool_span.attributes
     assert tool_span.parent.span_id == interaction.context.span_id
 
     exec_span_out = _find_span(exporter, "claude_code.tool.execution")
     assert exec_span_out.attributes["success"] is True
-    assert exec_span_out.attributes["mlflow.spanType"] == "TOOL"
+    assert exec_span_out.attributes["openinference.span.kind"] == "TOOL"
+    assert "mlflow.spanType" not in exec_span_out.attributes
     assert exec_span_out.parent.span_id == tool_span.context.span_id
-
-
-def test_interaction_mlflow_tags_target_new_span(telemetry_with_in_memory, monkeypatch):
-    exporter, _ = telemetry_with_in_memory
-    calls = []
-
-    def fake_set_mlflow_trace_tags(tags, **kwargs):
-        calls.append((tags, kwargs))
-
-    monkeypatch.setattr(
-        "src.telemetry.dapr_attributes.set_mlflow_trace_tags",
-        fake_set_mlflow_trace_tags,
-    )
-
-    from src.telemetry import (
-        end_interaction_span,
-        set_session_context,
-        start_interaction_span,
-    )
-
-    set_session_context(
-        instance_id="session-local",
-        mlflow_session_id="session-mlflow",
-        mlflow_run_id="run_1",
-        mlflow_model_id="model_1",
-        turn_id="session-local:turn-1",
-        workflow_trace_group_id="session-local",
-    )
-    span = start_interaction_span("hello")
-    end_interaction_span()
-
-    assert calls
-    tags, kwargs = calls[0]
-    assert kwargs["span"] is span
-    assert tags["session.id"] == "session-mlflow"
-    assert tags["mlflow.run_id"] == "run_1"
-    assert tags["mlflow.modelId"] == "model_1"
-    assert tags["workflow_builder.turn_id"] == "session-local:turn-1"
-    assert _find_span(exporter, "claude_code.interaction") is not None
 
 
 def test_current_trace_context_prefers_active_llm_span(telemetry_with_in_memory):
@@ -320,7 +285,9 @@ def test_dapr_agents_context_bridge_stamps_runtime_identity():
         mlflow_model_uri="models:/m-agent-tool",
     )
     try:
-        attrs = dict(_iter_context_bridge_attrs(lambda: iter([("session.id", "oi-session")])))
+        attrs = dict(
+            _iter_context_bridge_attrs(lambda: iter([("session.id", "oi-session")]))
+        )
     finally:
         reset_session_context(token)
 
@@ -363,64 +330,6 @@ def test_dapr_agents_context_bridge_drops_null_attributes():
     assert attrs["session.id"] == "wf-tool"
     assert attrs["openinference.span.kind"] == "TOOL"
     assert "span_type" not in attrs
-
-
-def test_mlflow_destination_hides_otlp_metrics_env(monkeypatch):
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
-
-    from src.telemetry.providers import _mlflow_destination_without_otlp_metrics
-
-    with _mlflow_destination_without_otlp_metrics():
-        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
-        assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in os.environ
-
-    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
-    assert os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == "http://collector:4318/v1/metrics"
-
-
-def test_context_local_mlflow_destination_uses_trace_experiment(monkeypatch):
-    calls = {}
-
-    class FakeMlflowExperimentLocation:
-        def __init__(self, experiment_id):
-            self.experiment_id = experiment_id
-
-    fake_mlflow = types.ModuleType("mlflow")
-
-    def fake_set_destination(location, **kwargs):
-        calls["otel_endpoint_visible"] = "OTEL_EXPORTER_OTLP_ENDPOINT" in os.environ
-        calls["otel_metrics_endpoint_visible"] = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" in os.environ
-        calls.update(
-            {"experiment_id": location.experiment_id, "kwargs": kwargs}
-        )
-
-    fake_mlflow.tracing = types.SimpleNamespace(set_destination=fake_set_destination)
-    fake_mlflow.set_tracking_uri = lambda uri: calls.update({"tracking_uri": uri})
-
-    fake_entities = types.ModuleType("mlflow.entities")
-    fake_trace_location = types.ModuleType("mlflow.entities.trace_location")
-    fake_trace_location.MlflowExperimentLocation = FakeMlflowExperimentLocation
-
-    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
-    monkeypatch.setitem(sys.modules, "mlflow.entities", fake_entities)
-    monkeypatch.setitem(sys.modules, "mlflow.entities.trace_location", fake_trace_location)
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
-
-    from src.telemetry.providers import set_mlflow_trace_experiment_for_context
-
-    assert set_mlflow_trace_experiment_for_context("per-workflow-11") is True
-    assert calls == {
-        "tracking_uri": "http://mlflow:5000",
-        "experiment_id": "per-workflow-11",
-        "kwargs": {"context_local": True},
-        "otel_endpoint_visible": False,
-        "otel_metrics_endpoint_visible": False,
-    }
-    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
-    assert os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == "http://collector:4318/v1/metrics"
 
 
 def test_beta_tracing_adds_content_when_flag_set(monkeypatch, telemetry_with_in_memory):
@@ -496,7 +405,9 @@ def test_beta_tracing_aliases_llm_and_tool_content_for_service_graph(
     tool_input = json.loads(tool_span.attributes["input.value"])
     assert tool_input["tool_name"] == "Bash"
     assert tool_input["input"]["password"] == "[REDACTED]"
-    assert json.loads(tool_span.attributes["output.value"])["result"] == {"stdout": "hi"}
+    assert json.loads(tool_span.attributes["output.value"])["result"] == {
+        "stdout": "hi"
+    }
 
 
 def test_state_tracing_redacts_content_before_serialization():
@@ -564,7 +475,9 @@ def test_state_tracing_stamps_request_and_response_content(
     store = FakeStateStoreService()
 
     assert store.load("session-1") == {"api_key": "should-not-appear", "value": 7}
-    assert store.save("session-1", {"password": "should-not-appear", "value": 8}) is None
+    assert (
+        store.save("session-1", {"password": "should-not-appear", "value": 8}) is None
+    )
     assert store.delete("session-1") is None
 
     load_span = _find_span(exporter, "state.load")
@@ -645,9 +558,7 @@ def test_interaction_adopts_inbound_trace_context_on_bare_threads(
 
     inbound_trace_id = "9fc592127bf865aceab30f09a1b39ee0"
     carrier = {"traceparent": f"00-{inbound_trace_id}-00f067aa0ba902b7-01"}
-    monkeypatch.setattr(
-        providers_module, "_inbound_trace_context", extract(carrier)
-    )
+    monkeypatch.setattr(providers_module, "_inbound_trace_context", extract(carrier))
 
     # A fresh thread starts with an empty contextvars Context — exactly the
     # environment where the old code rooted a new trace.
@@ -661,9 +572,7 @@ def test_interaction_adopts_inbound_trace_context_on_bare_threads(
     t.join()
 
     spans = exporter.get_finished_spans()
-    interaction = next(
-        s for s in spans if s.name == "claude_code.interaction"
-    )
+    interaction = next(s for s in spans if s.name == "claude_code.interaction")
     assert f"{interaction.context.trace_id:032x}" == inbound_trace_id
     assert interaction.parent is not None
     assert f"{interaction.parent.span_id:016x}" == "00f067aa0ba902b7"
@@ -674,7 +583,6 @@ def test_interaction_prefers_ambient_span_over_inbound(
 ):
     """When a valid span IS current (instrumented request path), the ambient
     context stays authoritative — inbound env context is only a fallback."""
-    from opentelemetry import trace as otel_trace
     from opentelemetry.propagate import extract
 
     from src.telemetry import providers as providers_module
@@ -688,7 +596,9 @@ def test_interaction_prefers_ambient_span_over_inbound(
     monkeypatch.setattr(
         providers_module,
         "_inbound_trace_context",
-        extract({"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-00f067aa0ba902b7-01"}),
+        extract(
+            {"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-00f067aa0ba902b7-01"}
+        ),
     )
 
     tracer = get_tracer()
