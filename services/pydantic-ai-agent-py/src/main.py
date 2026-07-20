@@ -72,6 +72,14 @@ logger = logging.getLogger(AGENT_SERVICE_NAME)
 
 set_incremental_tier_enabled(True)
 
+# OTel (traces + metrics + logs → collector); no-op without
+# OTEL_EXPORTER_OTLP_ENDPOINT. Must run before the workflow runtime starts so
+# activity spans + pydantic-ai's native instrumentation see the global
+# providers.
+from src.telemetry import init_telemetry  # noqa: E402
+
+init_telemetry()
+
 runtime = wf.WorkflowRuntime()
 runtime.register_workflow(session_workflow)
 runtime.register_workflow(agent_workflow)
