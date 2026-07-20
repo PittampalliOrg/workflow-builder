@@ -413,6 +413,17 @@ def test_kimi_stream_deltas_are_opt_in(monkeypatch) -> None:
     assert adapter._stream_deltas_enabled() is True
 
 
+def test_kimi_stream_delta_emitter_is_inert_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "_STREAM_DELTAS_ENABLED", False)
+    emitter = adapter._KimiStreamDeltaEmitter()
+
+    emitter.append("agent.message_delta", 0, "partial")
+    emitter.flush_all()
+
+    assert emitter._publish is None
+    assert emitter._buffers == {}
+
+
 def test_kimi_sse_accumulates_indexed_tool_call_fragments(monkeypatch) -> None:
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
     lines = [
