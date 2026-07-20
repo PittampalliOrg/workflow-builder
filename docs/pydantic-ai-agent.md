@@ -162,6 +162,28 @@ envFrom branch, next to the always-mounted `dapr-agent-py-config` +
 `dapr-agent-py-secrets` (KIMI_API_KEY). `ANTHROPIC_API_KEY` is not read by
 this service and must never be added to its env.
 
+## Durable per-sandbox scratch (/sandbox on a PVC)
+
+The pod's `/sandbox` workspace rides a small per-sandbox **RWO PVC** instead of
+an emptyDir (sandbox-execution-api swaps the volume when the agent image
+matches `pydantic-ai-agent-py`): an evicted/restarted pod resumes with its
+files, and the claim is ownerRef'd to the Sandbox CR so it GCs with the
+session. This is the upstream agent-sandbox `volumeClaimTemplates` pattern
+(StatefulSet-like volume identity) implemented through the platform's
+direct-PVC+ownerRef lane — see `docs/agent-sandbox-v0.5.0-upgrade-evaluation.md` §6.
+
+- Env (on sandbox-execution-api): `SANDBOX_PYDANTIC_SCRATCH_ENABLED`
+  (default true), `SANDBOX_PYDANTIC_SCRATCH_SIZE` (default `2Gi`),
+  `SANDBOX_PYDANTIC_SCRATCH_STORAGE_CLASS` (default: cluster default).
+- Claim name: `pyd-scratch-<sessionId>`.
+- **Node-affinity caveat**: the default `local-path` StorageClass pins the PV
+  to the first node; a same-node pod restart resumes cleanly, but if that node
+  is unschedulable the replacement pod pends on volume affinity. Point the
+  storage-class env at a network-attached class (e.g. a JuiceFS SC) if
+  cross-node reschedule matters more than local-disk speed.
+- Workspace semantics stay `pod-local` in the runtime registry — the scratch
+  changes the volume's *lifetime*, not its sharing domain.
+
 ## Gotchas (live-verified during bring-up)
 
 - harness top-level exports are lazy and partial — `RepoContext` imports from

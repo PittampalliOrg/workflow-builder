@@ -1397,3 +1397,75 @@ def test_delete_agent_workflow_host_reports_still_terminating(monkeypatch) -> No
 
     assert response["outcome"] == "error"
     assert "still terminating" in response["message"]
+
+
+def test_pydantic_agent_host_gets_durable_scratch_pvc() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sess-pyd-1",
+            agentAppId="agent-session-pyd1",
+            runId="run_1",
+            instanceId="inst-1",
+            executionClass="interactive-agent",
+            agentImage="ghcr.io/example/pydantic-ai-agent-py-sandbox:git-1",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="interactive-agent",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+    volumes = manifest["spec"]["podTemplate"]["spec"]["volumes"]
+    sandbox_volume = next(v for v in volumes if v["name"] == "sandbox")
+    # /sandbox rides the per-sandbox durable scratch PVC, not an emptyDir.
+    assert sandbox_volume["persistentVolumeClaim"]["claimName"] == (
+        "pyd-scratch-sess-pyd-1"
+    )
+    assert "emptyDir" not in sandbox_volume
+    mounts = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["volumeMounts"]
+    assert {"name": "sandbox", "mountPath": "/sandbox"} in mounts
+
+
+def test_non_pydantic_agent_host_keeps_emptydir_sandbox() -> None:
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sess-dapr-1",
+            agentAppId="agent-session-dapr1",
+            runId="run_1",
+            instanceId="inst-1",
+            executionClass="interactive-agent",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="interactive-agent",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+    volumes = manifest["spec"]["podTemplate"]["spec"]["volumes"]
+    sandbox_volume = next(v for v in volumes if v["name"] == "sandbox")
+    assert sandbox_volume == {"name": "sandbox", "emptyDir": {}}
+
+
+def test_pydantic_scratch_disabled_by_env(monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_PYDANTIC_SCRATCH_ENABLED", "false")
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sess-pyd-2",
+            agentAppId="agent-session-pyd2",
+            runId="run_1",
+            instanceId="inst-1",
+            executionClass="interactive-agent",
+            agentImage="ghcr.io/example/pydantic-ai-agent-py-sandbox:git-1",
+            timeoutSeconds=900,
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="interactive-agent",
+            agentHostImage="ghcr.io/example/dapr-agent-py-sandbox:git-1",
+        ),
+    )
+    volumes = manifest["spec"]["podTemplate"]["spec"]["volumes"]
+    sandbox_volume = next(v for v in volumes if v["name"] == "sandbox")
+    assert sandbox_volume == {"name": "sandbox", "emptyDir": {}}
