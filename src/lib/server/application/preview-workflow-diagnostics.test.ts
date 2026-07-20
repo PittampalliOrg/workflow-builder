@@ -65,6 +65,34 @@ function harness() {
 			traceIds: [], spans: [], llmSpans: [], llmSpansTruncated: false,
 			llmSpanLimit: 2_000, degradedSources: [], warnings: []
 		})),
+		loadInvestigationEvidence: vi.fn(async ({ request }) => ({
+			traceIds: [],
+			traceSpans: [],
+			logs: [],
+			llmSpans: [],
+			toolSpans: [],
+			truncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			rowTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			contentTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			limits: request.limits,
+			degradedSources: [],
+			warnings: []
+		})),
 		resolveTraceIds: vi.fn(async () => {
 			order.push('query');
 			return { traceIds: [], warnings: [] };
@@ -150,6 +178,37 @@ describe('preview workflow diagnostics broker', () => {
 					limit: 1_000,
 					offset: 0,
 					sql: 'select *'
+				})
+			)
+		).rejects.toMatchObject({ code: 'invalid-request' });
+	});
+
+	it('accepts only explicitly bounded investigation categories and scope', async () => {
+		const h = harness();
+		await h.service.execute(
+			command('investigation-evidence', {
+				categories: ['spans', 'logs'],
+				serviceNames: ['agent-runtime'],
+				limits: { spans: 10, logs: 20, llmSpans: 5, toolSpans: 10 }
+			})
+		);
+
+		expect(h.queries.loadInvestigationEvidence).toHaveBeenCalledWith({
+			identity,
+			execution: command().execution,
+			request: {
+				categories: ['spans', 'logs'],
+				serviceNames: ['agent-runtime'],
+				limits: { spans: 10, logs: 20, llmSpans: 5, toolSpans: 10 }
+			}
+		});
+
+		await expect(
+			h.service.execute(
+				command('investigation-evidence', {
+					categories: ['spans'],
+					serviceNames: [],
+					limits: { spans: 201, logs: 20, llmSpans: 5, toolSpans: 10 }
 				})
 			)
 		).rejects.toMatchObject({ code: 'invalid-request' });

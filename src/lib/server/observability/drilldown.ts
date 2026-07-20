@@ -207,10 +207,18 @@ export function filterInvestigationToSelection(
 		(d) => inSet(d.evidence?.spanId) || svcMatch(d.serviceName)
 	);
 	const issues = payload.issues.filter(
-		(i) => inSet(i.spanId) || svcMatch(i.serviceName) || stepMatch(i.workflowStepName)
+		(i) =>
+			i.id.startsWith('issue-trace-backend-') ||
+			inSet(i.spanId) ||
+			svcMatch(i.serviceName) ||
+			stepMatch(i.workflowStepName)
 	);
 	const events = payload.events.filter(
-		(e) => inSet(e.spanId) || svcMatch(e.serviceName) || stepMatch(e.workflowStepName)
+		(e) =>
+			e.id.startsWith('issue-trace-backend-') ||
+			inSet(e.spanId) ||
+			svcMatch(e.serviceName) ||
+			stepMatch(e.workflowStepName)
 	);
 
 	return {

@@ -17,7 +17,10 @@
  *   - SpanKind values are 'Client' | 'Server' | 'Producer' | 'Consumer' | 'Internal'.
  *   - StatusCode values are 'Unset' | 'Ok' | 'Error'.
  */
-import type { ObservabilityTraceSpan } from '$lib/types/observability';
+import type {
+	ObservabilityExecutionEvidence,
+	ObservabilityTraceSpan
+} from '$lib/types/observability';
 import {
 	CLICKHOUSE_DB,
 	escapeClickHouseString,
@@ -1180,6 +1183,7 @@ async function computeExecutionInsights(params: {
 	mode: ServiceGraphMode;
 	traceIds: string[];
 	spans?: ObservabilityTraceSpan[];
+	llmSpans?: GraphLlmSpan[];
 	logs?: StepLogRow[];
 	nodes: ServiceGraphNode[];
 	edges: ServiceGraphEdge[];
@@ -1191,9 +1195,11 @@ async function computeExecutionInsights(params: {
 			(params.traceIds.length
 				? (await getMultiTraceSpanSummaries(params.traceIds, params.window)).spans
 				: []);
-		const llmSpans = params.traceIds.length
-			? await getMultiTraceGraphLlmSpans(params.traceIds, params.window)
-			: [];
+		const llmSpans =
+			params.llmSpans ??
+			(params.traceIds.length
+				? await getMultiTraceGraphLlmSpans(params.traceIds, params.window)
+				: []);
 		return buildExecutionInsights({
 			mode: params.mode,
 			spans,
@@ -1233,8 +1239,20 @@ function warnGraphEnrichmentFailure(
 }
 
 async function loadDynamicScriptGraphTelemetry(
-	execution: ExecutionRow
+	execution: ExecutionRow,
+	evidence?: ObservabilityExecutionEvidence
 ): Promise<DynamicScriptGraphTelemetry> {
+	if (evidence) {
+		return {
+			traceIds: evidence.traceIds,
+			spans: evidence.traceSpans,
+			llmSpans: evidence.llmSpans,
+			truncated: evidence.rowTruncated.spans || evidence.rowTruncated.llmSpans,
+			limit: evidence.limits.spans,
+			degraded: evidence.degradedSources.length > 0,
+			warnings: evidence.warnings
+		};
+	}
 	const warnings: string[] = [];
 	let traceIds: string[];
 	try {
@@ -1312,6 +1330,8 @@ export interface BuildServiceGraphInput {
 	stepLogs?: ServiceGraphStepLogRow[];
 	/** Dynamic-script executions: the call journal (steps ARE the calls). */
 	scriptCalls?: ServiceGraphScriptCallRow[];
+	/** Execution-scoped telemetry loaded through the application diagnostics port. */
+	executionEvidence?: ObservabilityExecutionEvidence;
 }
 
 export async function buildServiceGraph(
@@ -1323,22 +1343,34 @@ export async function buildServiceGraph(
 	try {
 		if (query.mode === 'service' && query.scope === 'execution') {
 			if (!execution) return emptyServiceGraph(query, { warnings: ['Execution not found'] });
-			const traceIds = await resolveExecutionTraceIds(execution);
+			const evidence = input.executionEvidence;
+			const traceIds = evidence?.traceIds ?? (await resolveExecutionTraceIds(execution));
 			if (traceIds.length === 0) {
 				return emptyServiceGraph(query, {
-					warnings: ['No traces found for this execution']
+					degraded: evidence ? evidence.degradedSources.length > 0 : undefined,
+					warnings: [...(evidence?.warnings ?? []), 'No traces found for this execution']
 				});
 			}
-			const spanBatch = await getMultiTraceSpanSummaries(traceIds, {
-				startedAt: execution.startedAt,
-				completedAt: execution.completedAt
-			});
+			const spanBatch = evidence
+				? {
+						spans: evidence.traceSpans,
+						truncated: evidence.rowTruncated.spans,
+						limit: evidence.limits.spans
+					}
+				: await getMultiTraceSpanSummaries(traceIds, {
+						startedAt: execution.startedAt,
+						completedAt: execution.completedAt
+					});
 			const spans = spanBatch.spans;
+			const evidenceTruncated = evidence
+				? evidence.rowTruncated.spans || evidence.rowTruncated.llmSpans
+				: spanBatch.truncated;
 			const { nodes, edges } = buildServiceGraphFromSpans(spans);
 			const insights = await computeExecutionInsights({
 				mode: 'service',
 				traceIds,
 				spans,
+				llmSpans: evidence?.llmSpans,
 				nodes,
 				edges,
 				window: {
@@ -1354,10 +1386,14 @@ export async function buildServiceGraph(
 				meta: {
 					spanCount: spans.length,
 					traceCount: traceIds.length,
-					truncated: spanBatch.truncated,
-					warnings: spanBatch.truncated
-						? [`Showing the first ${spanBatch.limit} span summaries`]
-						: []
+					degraded: evidence && evidence.degradedSources.length > 0 ? true : undefined,
+					truncated: evidenceTruncated,
+					warnings: [
+						...(evidence?.warnings ?? []),
+						...(spanBatch.truncated && !evidence
+							? [`Showing the first ${spanBatch.limit} span summaries`]
+							: [])
+					]
 				}
 			};
 		}
@@ -1385,7 +1421,10 @@ export async function buildServiceGraph(
 			// Dynamic-script runs have no SW step logs — their step graph IS the
 			// call journal, enriched with per-session span timing + LLM usage.
 			if (input.scriptCalls && input.scriptCalls.length > 0) {
-				const telemetry = await loadDynamicScriptGraphTelemetry(execution);
+				const telemetry = await loadDynamicScriptGraphTelemetry(
+					execution,
+					input.executionEvidence
+				);
 				const { nodes, edges, insights } = buildStepGraphDynamicScript(
 					input.scriptCalls,
 					telemetry.spans,
@@ -1407,10 +1446,13 @@ export async function buildServiceGraph(
 			}
 			if (!workflow) return emptyServiceGraph(query, { warnings: ['Workflow not found'] });
 			const { nodes, edges, logs } = await buildStepGraphSingleExec(workflow, input.stepLogs ?? []);
-			const traceIds = await resolveExecutionTraceIds(execution);
+			const evidence = input.executionEvidence;
+			const traceIds = evidence?.traceIds ?? (await resolveExecutionTraceIds(execution));
 			const insights = await computeExecutionInsights({
 				mode: 'step',
 				traceIds,
+				spans: evidence?.traceSpans,
+				llmSpans: evidence?.llmSpans,
 				logs,
 				nodes,
 				edges,
@@ -1424,7 +1466,15 @@ export async function buildServiceGraph(
 				nodes,
 				edges,
 				insights,
-				meta: { spanCount: 0, traceCount: traceIds.length, warnings: [] }
+				meta: {
+					spanCount: evidence?.traceSpans.length ?? 0,
+					traceCount: traceIds.length,
+					degraded: evidence && evidence.degradedSources.length > 0 ? true : undefined,
+					truncated: evidence
+						? evidence.rowTruncated.spans || evidence.rowTruncated.llmSpans
+						: undefined,
+					warnings: evidence?.warnings ?? []
+				}
 			};
 		}
 

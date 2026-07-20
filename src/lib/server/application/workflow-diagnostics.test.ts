@@ -100,6 +100,34 @@ function port(): WorkflowDiagnosticsReadPort {
 				}
 			]
 		})),
+		loadInvestigationEvidence: vi.fn(async (_execution, request) => ({
+			traceIds: ['a'.repeat(32)],
+			traceSpans: [traceSpan() as never],
+			logs: [],
+			llmSpans: [],
+			toolSpans: [],
+			truncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			rowTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			contentTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			limits: request.limits,
+			degradedSources: [],
+			warnings: []
+		})),
 		resolveTraceIds: vi.fn(async () => ({ traceIds: ['a'.repeat(32)], warnings: [] })),
 		searchSpans: vi.fn(async () => [traceSpan(1), traceSpan(2)] as never),
 		getSpan: vi.fn(async () => traceSpan() as never),
@@ -189,6 +217,40 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 			telemetry: { state: 'complete', isFinal: true }
 		});
 		expect(JSON.stringify(result.body)).not.toContain('sk-secret');
+	});
+
+	it('normalizes bounded investigation categories and service scope before the port', async () => {
+		const result = await service.getInvestigationEvidence({
+			execution,
+			request: {
+				categories: ['spans', 'logs', 'spans'],
+				serviceNames: [' agent-runtime ', 'agent-runtime', ''],
+				limits: { spans: 99_999, logs: 2, llmSpans: 0, toolSpans: 3.8 }
+			}
+		});
+
+		expect(reads.loadInvestigationEvidence).toHaveBeenCalledWith(execution, {
+			categories: ['spans', 'logs'],
+			serviceNames: ['agent-runtime'],
+			limits: { spans: 200, logs: 2, llmSpans: 1, toolSpans: 3 }
+		});
+		expect(result.traceSpans).toHaveLength(1);
+	});
+
+	it('degrades an investigation transport failure without exposing backend secrets', async () => {
+		vi.mocked(reads.loadInvestigationEvidence).mockRejectedValue(
+			new Error('authorization: Bearer transport-secret')
+		);
+
+		const result = await service.getInvestigationEvidence({ execution });
+
+		expect(result).toMatchObject({
+			traceIds: [],
+			degradedSources: ['correlation'],
+			limits: { spans: 200, logs: 200, llmSpans: 50, toolSpans: 200 }
+		});
+		expect(result.warnings[0]).toContain('[REDACTED]');
+		expect(JSON.stringify(result)).not.toContain('transport-secret');
 	});
 
 	it('marks digest telemetry partial when LLM metadata is truncated', async () => {
@@ -309,6 +371,14 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 
 		expect(JSON.stringify(span.body)).not.toContain('hidden');
 		expect(JSON.stringify(span.body)).not.toContain('Bearer secret');
+		expect(span.body.span).toMatchObject({
+			operationName: 'operation-1',
+			serviceName: 'agent-runtime',
+			duration: 10,
+			status: 'error',
+			attributesTruncated: false,
+			truncated: false
+		});
 		expect(JSON.stringify(logs.body)).not.toContain('Bearer secret');
 		expect(logs.body.logs).toEqual([
 			expect.objectContaining({
@@ -317,6 +387,25 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 				bodyOriginalBytes: Buffer.byteLength('Bearer secret', 'utf8')
 			})
 		]);
+	});
+
+	it('preserves exact span truncation in both browser and MCP fields', async () => {
+		vi.mocked(reads.getSpan).mockResolvedValue({
+			...traceSpan(),
+			attributes: { payload: 'x'.repeat(60_000) }
+		} as never);
+
+		const result = await service.getSpan({
+			execution,
+			spanId: '1'.padStart(16, '0')
+		});
+
+		expect(result.body.span).toMatchObject({
+			operationName: 'operation-1',
+			name: 'operation-1',
+			attributesTruncated: true,
+			truncated: true
+		});
 	});
 
 	it('removes serialized screenshot pixels from exact span evidence', async () => {

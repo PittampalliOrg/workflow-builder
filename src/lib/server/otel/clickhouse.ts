@@ -45,6 +45,7 @@ export type TraceResourceScope = Readonly<Record<string, string>>;
 export type TraceSpanSummaryOptions = TraceTimeWindow & {
 	serviceNames?: string[];
 	limit?: number;
+	offset?: number;
 	resourceScope?: TraceResourceScope;
 };
 
@@ -126,13 +127,17 @@ function traceResourceScopeSuffix(scope: TraceResourceScope | undefined): string
 	return clauses.length > 0 ? `AND ${clauses.join(' AND ')}` : '';
 }
 
-function llmTraceResourceScopeSuffix(scope: TraceResourceScope | undefined): string {
+function llmTraceResourceScopeSuffix(
+	scope: TraceResourceScope | undefined,
+	window: TraceTimeWindow = {}
+): string {
 	const clauses = traceResourceScopeClauses(scope);
 	if (clauses.length === 0) return '';
 	return `AND (TraceId, SpanId) IN (
 		SELECT TraceId, SpanId
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE ${clauses.join(' AND ')}
+		${traceTimeWindowClause(window)}
 	)`;
 }
 
@@ -199,9 +204,9 @@ function mapObservabilityLlmSpan(row: Record<string, unknown>): ObservabilityLlm
 		cacheReadInputTokens: toNullableNumber(row.CacheReadInputTokens),
 		cacheCreationInputTokens: toNullableNumber(row.CacheCreationInputTokens),
 		reasoningTokens: toNullableNumber(row.ReasoningTokens),
-		inputMessagesTruncated: Boolean(row.InputMessagesTruncated),
-		outputMessagesTruncated: Boolean(row.OutputMessagesTruncated),
-		invocationParametersTruncated: Boolean(row.InvocationParametersTruncated)
+		inputMessagesTruncated: toBoolean(row.InputMessagesTruncated),
+		outputMessagesTruncated: toBoolean(row.OutputMessagesTruncated),
+		invocationParametersTruncated: toBoolean(row.InvocationParametersTruncated)
 	};
 }
 
@@ -234,8 +239,8 @@ function mapObservabilityToolSpan(row: Record<string, unknown>): ObservabilityTo
 		toolName: String(row.ToolName ?? ''),
 		toolArguments: safeJsonParse(row.ToolArguments, row.ToolArguments ?? null),
 		toolResult: safeJsonParse(row.ToolResult, row.ToolResult ?? null),
-		toolArgumentsTruncated: Boolean(row.ToolArgumentsTruncated),
-		toolResultTruncated: Boolean(row.ToolResultTruncated)
+		toolArgumentsTruncated: toBoolean(row.ToolArgumentsTruncated),
+		toolResultTruncated: toBoolean(row.ToolResultTruncated)
 	};
 }
 
@@ -585,6 +590,7 @@ async function queryTraceSpanSummaries(
 		? Number(options.limit)
 		: TRACE_SPAN_SUMMARY_LIMIT;
 	const limit = Math.min(50_000, Math.max(1, Math.floor(configuredLimit)));
+	const offset = Math.max(0, Math.floor(options.offset ?? 0));
 	const rows = await queryClickHouse(
 		`
 		SELECT
@@ -611,6 +617,7 @@ async function queryTraceSpanSummaries(
 		${traceResourceScopeSuffix(options.resourceScope)}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit + 1}
+		OFFSET ${offset}
 	`,
 		{ timeoutMs: TRACE_SPAN_SUMMARY_TIMEOUT_MS }
 	);
@@ -685,7 +692,7 @@ export async function getTraceSpanDetail(
 export async function getTraceSpanDetailForTraces(
 	traceIds: string[],
 	spanId: string,
-	options: { resourceScope?: TraceResourceScope } = {}
+	options: TraceTimeWindow & { resourceScope?: TraceResourceScope } = {}
 ): Promise<ObservabilityTraceSpan | null> {
 	const sanitizedTraceIds = sanitizeTraceIds(traceIds);
 	const normalizedSpanId = spanId.trim();
@@ -710,6 +717,7 @@ export async function getTraceSpanDetailForTraces(
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE TraceId IN (${inClause})
 		  AND SpanId = '${escapeClickHouseString(normalizedSpanId)}'
+		  ${traceTimeWindowClause(options)}
 		  ${traceResourceScopeSuffix(options.resourceScope)}
 		ORDER BY Timestamp ASC, TraceId ASC
 		LIMIT 1
@@ -744,10 +752,11 @@ export async function getMultiTraceLogs(
  */
 export async function searchTraceLogs(
 	traceIds: string[],
-	opts: {
+	opts: TraceTimeWindow & {
 		spanId?: string;
 		query?: string;
 		errorsOnly?: boolean;
+		serviceNames?: string[];
 		limit?: number;
 		offset?: number;
 		resourceScope?: TraceResourceScope;
@@ -789,6 +798,8 @@ export async function searchTraceLogs(
 			LogAttributes
 		FROM ${CLICKHOUSE_DB}.otel_logs
 		WHERE ${clauses.join(' AND ')}
+		${serviceNameClause(opts.serviceNames)}
+		${traceTimeWindowClause(opts)}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit}
 		OFFSET ${offset}
@@ -830,6 +841,32 @@ export async function getMultiTraceSpans(
 	return queryTraceSpans(`WHERE TraceId IN (${inClause}) ${serviceNameClause(serviceNames)}`);
 }
 
+/** SQL-bounded compact span search for execution diagnostics and UI continuation. */
+export async function searchTraceSpanSummaries(
+	traceIds: string[],
+	opts: TraceSpanSummaryOptions & { query?: string; errorsOnly?: boolean } = {}
+): Promise<TraceSpanSummaryBatch> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	const limit = Math.min(
+		50_000,
+		Math.max(1, Math.floor(opts.limit ?? TRACE_SPAN_SUMMARY_LIMIT))
+	);
+	if (sanitized.length === 0) return { spans: [], truncated: false, limit };
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	const clauses = [`TraceId IN (${inClause})`];
+	if (opts.errorsOnly) clauses.push(`StatusCode = 'Error'`);
+	if (opts.query?.trim()) {
+		const query = escapeClickHouseString(opts.query.trim());
+		clauses.push(
+			`(positionCaseInsensitive(SpanName, '${query}') > 0` +
+				` OR positionCaseInsensitive(ServiceName, '${query}') > 0` +
+				` OR positionCaseInsensitive(StatusMessage, '${query}') > 0` +
+				` OR positionCaseInsensitive(SpanAttributes['session.id'], '${query}') > 0)`
+		);
+	}
+	return queryTraceSpanSummaries(`WHERE ${clauses.join(' AND ')}`, opts);
+}
+
 /**
  * SQL-side span search for the trace-analyst tools: substring match over
  * operation/service/status-message/session-id with LIMIT pushed into
@@ -837,9 +874,10 @@ export async function getMultiTraceSpans(
  */
 export async function searchTraceSpans(
 	traceIds: string[],
-	opts: {
+	opts: TraceTimeWindow & {
 		query?: string;
 		errorsOnly?: boolean;
+		serviceNames?: string[];
 		limit?: number;
 		offset?: number;
 		resourceScope?: TraceResourceScope;
@@ -878,6 +916,8 @@ export async function searchTraceSpans(
 			ResourceAttributes
 		FROM ${CLICKHOUSE_DB}.otel_traces
 		WHERE ${clauses.join(' AND ')}
+		${serviceNameClause(opts.serviceNames)}
+		${traceTimeWindowClause(opts)}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit}
 		OFFSET ${offset}
@@ -888,10 +928,11 @@ export async function searchTraceSpans(
 /** SQL-bounded LLM evidence lookup for one span or one child session. */
 export async function searchTraceLlmSpans(
 	traceIds: string[],
-	opts: {
+	opts: TraceTimeWindow & {
 		workflowExecutionId: string;
 		spanId?: string;
 		sessionId?: string;
+		serviceNames?: string[];
 		limit?: number;
 		offset?: number;
 		traceResourceScope?: TraceResourceScope;
@@ -906,7 +947,7 @@ export async function searchTraceLlmSpans(
 	clauses.push(
 		`WorkflowExecutionId = '${escapeClickHouseString(workflowExecutionId)}'`
 	);
-	const traceScope = llmTraceResourceScopeSuffix(opts.traceResourceScope);
+	const traceScope = llmTraceResourceScopeSuffix(opts.traceResourceScope, opts);
 	if (opts.spanId?.trim()) {
 		clauses.push(`SpanId = '${escapeClickHouseString(opts.spanId.trim())}'`);
 	}
@@ -943,12 +984,63 @@ export async function searchTraceLlmSpans(
 			InvocationParametersTruncated
 		FROM ${CLICKHOUSE_OBS_DB}.llm_spans
 		WHERE ${clauses.join(' AND ')}
+		${serviceNameClause(opts.serviceNames)}
 		${traceScope}
+		${traceTimeWindowClause(opts)}
 		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
 		LIMIT ${limit}
 		OFFSET ${offset}
 	`);
 	return rows.map(mapObservabilityLlmSpan);
+}
+
+/** SQL-bounded tool evidence lookup for one execution's authorized trace set. */
+export async function searchTraceToolSpans(
+	traceIds: string[],
+	opts: TraceTimeWindow & {
+		workflowExecutionId: string;
+		serviceNames?: string[];
+		limit?: number;
+		offset?: number;
+		traceResourceScope?: TraceResourceScope;
+	}
+): Promise<ObservabilityToolSpan[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const workflowExecutionId = opts.workflowExecutionId.trim();
+	if (!workflowExecutionId) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	const limit = Math.min(201, Math.max(1, opts.limit ?? 51));
+	const offset = Math.max(0, opts.offset ?? 0);
+	const rows = await queryClickHouse(`
+		SELECT
+			Timestamp,
+			TraceId,
+			SpanId,
+			ParentSpanId,
+			ServiceName,
+			SessionId,
+			WorkflowExecutionId,
+			AgentRunId,
+			ToolName,
+			ToolArguments,
+			ToolResult,
+			StatusCode,
+			ToolArgumentsTruncated,
+			ToolResultTruncated
+		FROM ${CLICKHOUSE_OBS_DB}.tool_spans
+		WHERE TraceId IN (${inClause})
+		  AND WorkflowExecutionId = '${escapeClickHouseString(workflowExecutionId)}'
+		  AND ToolName != ''
+		  AND (ToolArguments != '{}' OR ToolResult != '{}')
+		${serviceNameClause(opts.serviceNames)}
+		${llmTraceResourceScopeSuffix(opts.traceResourceScope, opts)}
+		${traceTimeWindowClause(opts)}
+		ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC
+		LIMIT ${limit}
+		OFFSET ${offset}
+	`);
+	return rows.map(mapObservabilityToolSpan);
 }
 
 export async function getSessionTraceSpans(sessionId: string): Promise<ObservabilityTraceSpan[]> {
@@ -1007,7 +1099,7 @@ export async function getMultiTraceDigestLlmSpans(
 	if (sanitized.length === 0) return { spans: [], truncated: false, limit };
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const rows = await queryGraphLlmSpans(
-		`WHERE TraceId IN (${inClause}) ${traceTimeWindowClause(window)} ${llmTraceResourceScopeSuffix(traceResourceScope)}`,
+		`WHERE TraceId IN (${inClause}) ${traceTimeWindowClause(window)} ${llmTraceResourceScopeSuffix(traceResourceScope, window)}`,
 		{ limit: limit + 1 }
 	);
 	return { spans: rows.slice(0, limit), truncated: rows.length > limit, limit };

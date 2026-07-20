@@ -1,8 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
-import { buildExecutionInvestigation } from '$lib/server/observability/investigation';
-import { resolveExecutionTraceIds } from '$lib/server/otel/service-graph';
+import { redactDiagnosticEvidence } from '$lib/server/application/diagnostic-redaction';
+import { buildExecutionInvestigationFromEvidence } from '$lib/server/observability/investigation';
 import {
 	filterInvestigationToSelection,
 	selectionServiceScope
@@ -28,7 +28,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!selection) return error(400, 'Invalid or missing sel');
 	const mode = (url.searchParams.get('mode') as ServiceGraphMode) === 'step' ? 'step' : 'service';
 
-	const context = await getApplicationAdapters().workflowData.getObservabilityServiceGraphContext({
+	const application = getApplicationAdapters();
+	const context = await application.workflowData.getObservabilityServiceGraphContext({
 		userId: locals.session.userId,
 		projectId: locals.session.projectId ?? null,
 		executionId
@@ -38,12 +39,26 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 
 	try {
-		const traceIds = await resolveExecutionTraceIds(context.execution);
 		const serviceScope = selectionServiceScope(selection, mode) ?? undefined;
-		const full = await buildExecutionInvestigation(executionId, traceIds, serviceScope);
+		const evidence = await application.workflowDiagnostics.getInvestigationEvidence({
+			execution: context.execution,
+			request: {
+				serviceNames: serviceScope,
+				limits: { spans: 200, logs: 100, llmSpans: 20, toolSpans: 50 }
+			}
+		});
+		const full = await buildExecutionInvestigationFromEvidence(executionId, evidence, {
+			workflowReader: application.observabilityInvestigationWorkflowReader
+		});
 		const scoped = filterInvestigationToSelection(full, selection);
-		return json(scoped);
+		return json(redactDiagnosticEvidence(scoped), {
+			headers: { 'cache-control': 'no-store' }
+		});
 	} catch (err) {
-		return error(502, `Failed to build drill-down: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn('[observability] Failed to build execution drill-down', {
+			executionId,
+			message: err instanceof Error ? err.message : String(err)
+		});
+		return error(502, 'Failed to build drill-down');
 	}
 };

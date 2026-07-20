@@ -28,6 +28,7 @@
 		error?: string | null;
 		legacyTraceHref?: string | null;
 		fullTraceHref?: string | null;
+		spanDetailBase?: string | null;
 		onRefresh?: () => void;
 	}
 
@@ -37,6 +38,7 @@
 		error = null,
 		legacyTraceHref = null,
 		fullTraceHref = null,
+		spanDetailBase = null,
 		onRefresh = () => {}
 	}: Props = $props();
 
@@ -67,6 +69,24 @@
 	let spanDetailLoadingKey = $state<string | null>(null);
 	let spanDetailErrorKey = $state<string | null>(null);
 	let spanDetailError = $state<string | null>(null);
+	let continuationPayload = $state<ObservabilityInvestigationPayload | null>(null);
+	let continuationBase = $state<string | null>(null);
+	let continuationGeneration = $state(0);
+	let continuedTraceSpans = $state<ObservabilityTraceSpan[]>([]);
+	let nextSpanCursor = $state<string | null>(null);
+	let spanContinuationLoading = $state(false);
+	let spanContinuationError = $state<string | null>(null);
+
+	$effect(() => {
+		if (payload === continuationPayload && spanDetailBase === continuationBase) return;
+		continuationPayload = payload;
+		continuationBase = spanDetailBase;
+		continuationGeneration += 1;
+		continuedTraceSpans = [];
+		nextSpanCursor = payload?.evidenceCoverage?.spans.nextCursor ?? null;
+		spanContinuationLoading = false;
+		spanContinuationError = null;
+	});
 
 	// --- Helpers ---
 	function formatDuration(value: number): string {
@@ -114,7 +134,10 @@
 	}
 
 	// --- Derived data ---
-	const allTraceSpans = $derived(payload?.traceSpans ?? []);
+	const allTraceSpans = $derived.by(() => {
+		const spans = [...(payload?.traceSpans ?? []), ...continuedTraceSpans];
+		return [...new Map(spans.map((span) => [rowKey(span), span])).values()];
+	});
 	const allLogs = $derived(payload?.logs ?? []);
 	const allLlmSpans = $derived(payload?.llmSpans ?? []);
 	const allToolSpans = $derived(payload?.toolSpans ?? []);
@@ -205,7 +228,7 @@
 	const evidenceSpan = $derived.by(() => {
 		if (!selectedSpan) return null;
 		const detail = spanDetailCache[rowKey(selectedSpan)];
-		return detail ? { ...selectedSpan, ...detail, attributesTruncated: false } : selectedSpan;
+		return detail ? { ...selectedSpan, ...detail } : selectedSpan;
 	});
 
 	const isSpanDetailLoading = $derived(
@@ -227,10 +250,10 @@
 		spanDetailErrorKey = null;
 		spanDetailError = null;
 
-		void fetch(
-			`/api/observability/traces/${encodeURIComponent(summarySpan.traceId)}/spans/${encodeURIComponent(summarySpan.spanId)}`,
-			{ signal: controller.signal }
-		)
+		const detailUrl = spanDetailBase
+			? `${spanDetailBase.replace(/\/$/, '')}/${encodeURIComponent(summarySpan.spanId)}`
+			: `/api/observability/traces/${encodeURIComponent(summarySpan.traceId)}/spans/${encodeURIComponent(summarySpan.spanId)}`;
+		void fetch(detailUrl, { signal: controller.signal })
 			.then(async (response) => {
 				const body = await response.json().catch(() => null) as {
 					span?: ObservabilityTraceSpan | null;
@@ -403,6 +426,37 @@
 		store.selectDiagramNode(null);
 		store.selectDiagramEdge(null);
 	}
+
+	async function loadMoreSpans() {
+		if (!spanDetailBase || !nextSpanCursor || spanContinuationLoading) return;
+		const generation = continuationGeneration;
+		const base = spanDetailBase;
+		const cursor = nextSpanCursor;
+		spanContinuationLoading = true;
+		spanContinuationError = null;
+		try {
+			const response = await fetch(
+				`${base}?cursor=${encodeURIComponent(cursor)}`,
+				{ cache: 'no-store' }
+			);
+			const body = await response.json().catch(() => null) as {
+				spans?: ObservabilityTraceSpan[];
+				page?: { nextCursor?: string | null };
+				error?: string;
+			} | null;
+			if (!response.ok || !Array.isArray(body?.spans)) {
+				throw new Error(body?.error ?? `Span continuation failed (${response.status})`);
+			}
+			if (generation !== continuationGeneration) return;
+			continuedTraceSpans = [...continuedTraceSpans, ...body.spans];
+			nextSpanCursor = body.page?.nextCursor ?? null;
+		} catch (err) {
+			if (generation !== continuationGeneration) return;
+			spanContinuationError = err instanceof Error ? err.message : 'Span continuation failed';
+		} finally {
+			if (generation === continuationGeneration) spanContinuationLoading = false;
+		}
+	}
 </script>
 
 {#if isLoading}
@@ -514,13 +568,26 @@
 
 		{#snippet mainContent()}
 			{#if traceBackendWarnings.length > 0}
-				<div class="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/[0.08] px-4 py-2 text-[11px] text-amber-100" role="status">
+				<div class="flex flex-wrap items-start gap-2 border-b border-amber-500/20 bg-amber-500/[0.08] px-4 py-2 text-[11px] text-amber-100" role="status">
 					<CircleAlert size={13} class="mt-0.5 shrink-0 text-amber-300" />
-					<div class="min-w-0 space-y-0.5">
+					<div class="min-w-0 flex-1 space-y-0.5">
 						{#each traceBackendWarnings as warning (warning.id)}
 							<p class="break-words">{warning.label}</p>
 						{/each}
+						{#if spanContinuationError}
+							<p class="break-words text-red-200">{spanContinuationError}</p>
+						{/if}
 					</div>
+					{#if nextSpanCursor}
+						<button
+							class="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-amber-400/30 bg-amber-400/10 px-2 text-[10px] text-amber-100 hover:bg-amber-400/15 disabled:opacity-60"
+							disabled={spanContinuationLoading}
+							onclick={loadMoreSpans}
+						>
+							<ArrowDown size={11} />
+							{spanContinuationLoading ? 'Loading' : 'Load 100 more'}
+						</button>
+					{/if}
 				</div>
 			{/if}
 			{#if mainViewTab === 'goal' && payload.goalFlow}

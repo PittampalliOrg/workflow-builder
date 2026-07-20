@@ -1,7 +1,18 @@
 import type {
+	WorkflowDiagnosticsEvidenceRequest,
+	WorkflowDiagnosticsEvidenceRequestInput,
 	WorkflowDiagnosticsExecution,
 	WorkflowDiagnosticsReadPort
 } from '$lib/server/application/ports/workflow-diagnostics';
+import {
+	WORKFLOW_DIAGNOSTICS_DEFAULT_EVIDENCE_LIMITS,
+	WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES,
+	WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS
+} from '$lib/server/application/ports/workflow-diagnostics';
+import type {
+	ObservabilityExecutionEvidence,
+	ObservabilityExecutionEvidenceCategory
+} from '$lib/types/observability';
 import {
 	boundDiagnosticEvidence,
 	redactDiagnosticEvidence
@@ -67,9 +78,115 @@ function asRecord(value: unknown): Record<string, unknown> {
 		: {};
 }
 
+function normalizeEvidenceRequest(
+	input: WorkflowDiagnosticsEvidenceRequestInput = {}
+): WorkflowDiagnosticsEvidenceRequest {
+	const allowed = new Set<ObservabilityExecutionEvidenceCategory>(
+		WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES
+	);
+	const requestedCategories = input.categories ?? [...WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES];
+	const categories = [...new Set(requestedCategories.filter((category) => allowed.has(category)))];
+	const serviceNames = [
+		...new Set(
+			(input.serviceNames ?? [])
+				.map((name) => name.trim())
+				.filter(
+					(name) => name.length > 0 && name.length <= 160 && !/[\u0000-\u001f\u007f]/.test(name)
+				)
+		)
+	].slice(0, 20);
+	const limits = Object.fromEntries(
+		WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES.map((category) => {
+			const requested = input.limits?.[category];
+			const fallback = WORKFLOW_DIAGNOSTICS_DEFAULT_EVIDENCE_LIMITS[category];
+			return [
+				category,
+				Math.min(
+					WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS[category],
+					Math.max(1, Number.isFinite(requested) ? Math.floor(requested as number) : fallback)
+				)
+			];
+		})
+	) as unknown as WorkflowDiagnosticsEvidenceRequest['limits'];
+	return { categories, serviceNames, limits };
+}
+
 /** Application query service for execution-scoped workflow diagnostics. */
 export class ApplicationWorkflowDiagnosticsQueryService {
 	constructor(private readonly reads: WorkflowDiagnosticsReadPort) {}
+
+	async getInvestigationEvidence(input: {
+		execution: WorkflowDiagnosticsExecution;
+		request?: WorkflowDiagnosticsEvidenceRequestInput;
+	}): Promise<ObservabilityExecutionEvidence> {
+		const request = normalizeEvidenceRequest(input.request);
+		if (this.reads.isConfigured()) {
+			try {
+				return await this.reads.loadInvestigationEvidence(input.execution, request);
+			} catch (error) {
+				return {
+					traceIds: [],
+					traceSpans: [],
+					logs: [],
+					llmSpans: [],
+					toolSpans: [],
+					truncated: {
+						spans: false,
+						logs: false,
+						llmSpans: false,
+						toolSpans: false
+					},
+					rowTruncated: {
+						spans: false,
+						logs: false,
+						llmSpans: false,
+						toolSpans: false
+					},
+					contentTruncated: {
+						spans: false,
+						logs: false,
+						llmSpans: false,
+						toolSpans: false
+					},
+					limits: request.limits,
+					degradedSources: ['correlation'],
+					warnings: [
+						redactDiagnosticEvidence(
+							`Workflow diagnostics evidence unavailable: ${error instanceof Error ? error.message : String(error)}`
+						)
+					]
+				};
+			}
+		}
+		return {
+			traceIds: [],
+			traceSpans: [],
+			logs: [],
+			llmSpans: [],
+			toolSpans: [],
+			truncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			rowTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			contentTruncated: {
+				spans: false,
+				logs: false,
+				llmSpans: false,
+				toolSpans: false
+			},
+			limits: request.limits,
+			degradedSources: ['correlation'],
+			warnings: ['Workflow diagnostics telemetry is not configured']
+		};
+	}
 
 	async getDigest(input: {
 		execution: WorkflowDiagnosticsExecution;
@@ -191,18 +308,37 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 			offset
 		});
 		const hasMore = matches.length > limit;
-		const rows = matches.slice(0, limit).map((span) => ({
-			spanId: span.spanId,
-			parentSpanId: span.parentSpanId,
-			traceId: span.traceId,
-			name: span.operationName,
-			service: span.serviceName,
-			startTime: span.startTime,
-			durationMs: span.duration,
-			status: span.statusCode ?? span.status,
-			statusMessage: boundDiagnosticEvidence(span.statusMessage ?? null, 2_000).value,
-			sessionId: span.attributes?.['session.id'] ?? null
-		}));
+		const rows = matches.slice(0, limit).map((span) => {
+			const statusMessage = boundDiagnosticEvidence(span.statusMessage ?? null, 2_000);
+			const attributes = boundDiagnosticEvidence(span.attributes ?? {}, 750);
+			const resourceAttributes = boundDiagnosticEvidence(span.resourceAttributes ?? {}, 500);
+			return {
+				spanId: span.spanId,
+				parentSpanId: span.parentSpanId,
+				traceId: span.traceId,
+				name: span.operationName,
+				service: span.serviceName,
+				startTime: span.startTime,
+				durationMs: span.duration,
+				status: span.status,
+				statusMessage: statusMessage.value,
+				sessionId: span.attributes?.['session.id'] ?? null,
+				operationName: span.operationName,
+				serviceName: span.serviceName,
+				duration: span.duration,
+				statusCode: span.statusCode,
+				spanKind: span.spanKind,
+				attributes: attributes.value,
+				resourceAttributes: resourceAttributes.value,
+				attributesTruncated:
+					span.attributesTruncated || attributes.truncated || resourceAttributes.truncated,
+				hasInput: span.hasInput,
+				hasOutput: span.hasOutput,
+				inputSize: span.inputSize,
+				outputSize: span.outputSize,
+				depth: span.depth
+			};
+		});
 		return response({
 			spans: rows,
 			total: rows.length,
@@ -240,6 +376,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 		}
 		const attributes = boundDiagnosticEvidence(span.attributes, 50_000);
 		const resources = boundDiagnosticEvidence(span.resourceAttributes, 10_000);
+		const truncated = attributes.truncated || resources.truncated;
 		return response({
 			span: {
 				traceId: span.traceId,
@@ -248,13 +385,24 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 				name: span.operationName,
 				kind: span.spanKind,
 				service: span.serviceName,
+				operationName: span.operationName,
+				spanKind: span.spanKind,
+				serviceName: span.serviceName,
 				startTime: span.startTime,
 				durationMs: span.duration,
-				status: span.statusCode ?? span.status,
+				duration: span.duration,
+				status: span.status,
+				statusCode: span.statusCode,
 				statusMessage: boundDiagnosticEvidence(span.statusMessage ?? null, 2_000).value,
 				attributes: attributes.value,
 				resourceAttributes: resources.value,
-				truncated: attributes.truncated || resources.truncated
+				attributesTruncated: truncated,
+				truncated,
+				hasInput: span.hasInput,
+				hasOutput: span.hasOutput,
+				inputSize: span.inputSize,
+				outputSize: span.outputSize,
+				depth: span.depth
 			},
 			telemetry: traceReadTelemetry(input.execution, traceIds, resolution.warnings)
 		});

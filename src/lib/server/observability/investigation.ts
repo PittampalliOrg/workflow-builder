@@ -17,6 +17,7 @@ import {
 import { isBenignControlPlaneError } from '$lib/server/otel/service-graph';
 import { buildWorkflowTimeline } from '$lib/server/observability/workflow-timeline';
 import { buildGoalFlow } from '$lib/server/observability/goal-flow';
+import { boundDiagnosticEvidence } from '$lib/server/application/diagnostic-redaction';
 import type {
 	ObservabilityAgentDecisionDiagram,
 	ObservabilityAgentDecisionDiagramEdge,
@@ -25,6 +26,7 @@ import type {
 	ObservabilityAgentDecisionToolCall,
 	ObservabilityAgentDecisionToolResult,
 	ObservabilityAgentDecisionTurn,
+	ObservabilityExecutionEvidence,
 	ObservabilityInvestigationEvent,
 	ObservabilityInvestigationPayload,
 	ObservabilityIssueMarker,
@@ -1061,7 +1063,7 @@ export async function buildExecutionInvestigation(
 	const workflowReader = await getWorkflowReader(options.workflowReader);
 	const ids = sanitizeTraceIds(traceIds);
 	const stepInfo = await workflowReader.getWorkflowSteps(executionId);
-	const { steps, status, startedAt, completedAt } = stepInfo;
+	const { startedAt, completedAt } = stepInfo;
 	const traceBackend = await loadExecutionTraceBackend(
 		executionId,
 		ids,
@@ -1069,6 +1071,67 @@ export async function buildExecutionInvestigation(
 		startedAt,
 		completedAt
 	);
+	return buildExecutionInvestigationPayload(executionId, traceBackend, stepInfo);
+}
+
+/** Project adapter-owned, bounded execution evidence with locally owned workflow steps. */
+export async function buildExecutionInvestigationFromEvidence(
+	executionId: string,
+	evidence: ObservabilityExecutionEvidence,
+	options: ObservabilityInvestigationOptions = {}
+): Promise<ObservabilityInvestigationPayload> {
+	const workflowReader = await getWorkflowReader(options.workflowReader);
+	const loadedStepInfo = await workflowReader.getWorkflowSteps(executionId);
+	let stepContentTruncated = loadedStepInfo.steps.length > 200;
+	const boundedSteps = loadedStepInfo.steps.slice(0, 200).map((step) => {
+		const input = boundDiagnosticEvidence(step.input ?? null, 2_000);
+		const output = boundDiagnosticEvidence(step.output ?? null, 4_000);
+		const error = boundDiagnosticEvidence(step.error ?? null, 2_000);
+		stepContentTruncated ||=
+			input.truncated || output.truncated || error.truncated;
+		return {
+			...step,
+			input: input.value,
+			output: output.value,
+			error: typeof error.value === 'string' || error.value === null ? error.value : String(error.value)
+		};
+	});
+	const stepInfo: ObservabilityWorkflowStepInfo = {
+		...loadedStepInfo,
+		steps: boundedSteps
+	};
+	const allowedTraceIds = new Set(sanitizeTraceIds(evidence.traceIds));
+	const warnings = [
+		...evidence.warnings,
+		...(loadedStepInfo.steps.length > boundedSteps.length
+			? [`Workflow steps were limited to ${boundedSteps.length} rows`]
+			: []),
+		...(stepContentTruncated ? ['Workflow step content is truncated'] : [])
+	];
+	const traceBackend: TraceBackendData = {
+		traceSpans: evidence.traceSpans
+			.filter((span) => allowedTraceIds.has(span.traceId))
+			.slice(0, evidence.limits.spans),
+		logs: evidence.logs
+			.filter((log) => allowedTraceIds.has(log.traceId))
+			.slice(0, evidence.limits.logs),
+		llmSpans: evidence.llmSpans
+			.filter((span) => allowedTraceIds.has(span.traceId))
+			.slice(0, evidence.limits.llmSpans),
+		toolSpans: evidence.toolSpans
+			.filter((span) => allowedTraceIds.has(span.traceId))
+			.slice(0, evidence.limits.toolSpans),
+		warningMessage: warnings.join('; ') || null
+	};
+	return buildExecutionInvestigationPayload(executionId, traceBackend, stepInfo);
+}
+
+async function buildExecutionInvestigationPayload(
+	executionId: string,
+	traceBackend: TraceBackendData,
+	stepInfo: ObservabilityWorkflowStepInfo
+): Promise<ObservabilityInvestigationPayload> {
+	const { steps, status, startedAt, completedAt } = stepInfo;
 	const { traceSpans, logs, llmSpans, toolSpans } = traceBackend;
 	const sessionId =
 		traceSpans.find((s) => typeof s.attributes?.['session.id'] === 'string')?.attributes?.[

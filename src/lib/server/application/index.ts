@@ -119,6 +119,7 @@ import {
   ClickHouseTraceSpanDetailReader,
 } from "$lib/server/application/adapters/observability-trace-access";
 import { ClickHouseWorkflowDiagnosticsReadAdapter } from "$lib/server/application/adapters/workflow-diagnostics";
+import { postgresObservabilityInvestigationWorkflowReader } from "$lib/server/application/adapters/observability-investigation";
 import { HttpPreviewWorkflowDiagnosticsReadAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-http";
 import { ClickHousePreviewWorkflowDiagnosticsQueryAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-clickhouse";
 import { HmacPreviewWorkflowDiagnosticsAuthorizationAdapter } from "$lib/server/application/adapters/preview-workflow-diagnostics-authorization";
@@ -3004,6 +3005,9 @@ export function getApplicationAdapters(
     },
     get workflowDiagnostics() {
       return getWorkflowDiagnostics();
+    },
+    get observabilityInvestigationWorkflowReader() {
+      return postgresObservabilityInvestigationWorkflowReader;
     },
     get capabilityBundles() {
       return getCapabilityBundles();

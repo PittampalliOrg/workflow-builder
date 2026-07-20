@@ -100,4 +100,94 @@ describe('preview workflow diagnostics HTTP adapter', () => {
 			PreviewWorkflowDiagnosticsTransportError
 		);
 	});
+
+	it('brokers an explicitly bounded investigation request without product data', async () => {
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			expect(body.operation).toBe('investigation-evidence');
+			expect(body.request).toEqual({
+				categories: ['spans', 'logs'],
+				serviceNames: ['agent-runtime'],
+				limits: { spans: 10, logs: 20, llmSpans: 5, toolSpans: 10 }
+			});
+			expect(body.execution).not.toHaveProperty('output');
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					identity,
+					result: {
+						traceIds: ['a'.repeat(32)],
+						traceSpans: [],
+						logs: [],
+						llmSpans: [],
+						toolSpans: [],
+						truncated: {
+							spans: false,
+							logs: false,
+							llmSpans: false,
+							toolSpans: false
+						},
+						rowTruncated: {
+							spans: false,
+							logs: false,
+							llmSpans: false,
+							toolSpans: false
+						},
+						contentTruncated: {
+							spans: false,
+							logs: false,
+							llmSpans: false,
+							toolSpans: false
+						},
+						limits: { spans: 10, logs: 20, llmSpans: 5, toolSpans: 10 },
+						degradedSources: [],
+						warnings: []
+					}
+				}),
+				{ status: 200 }
+			);
+		});
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({
+				header: 'x-preview-control-capability',
+				token: 'd'.repeat(64)
+			}),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: fetchImpl as typeof fetch
+		});
+
+		await expect(
+			adapter.loadInvestigationEvidence(execution, {
+				categories: ['spans', 'logs'],
+				serviceNames: ['agent-runtime'],
+				limits: { spans: 10, logs: 20, llmSpans: 5, toolSpans: 10 }
+			})
+		).resolves.toMatchObject({
+			traceIds: ['a'.repeat(32)],
+			limits: { spans: 10 }
+		});
+	});
+
+	it('rejects broker evidence beyond the transport response cap', async () => {
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({ header: 'x-preview-control-capability', token: 'd'.repeat(64) }),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: vi.fn(async () =>
+				new Response('', {
+					status: 200,
+					headers: { 'content-length': String(4 * 1024 * 1024 + 1) }
+				})
+			) as typeof fetch
+		});
+
+		await expect(adapter.resolveTraceIds(execution)).rejects.toThrow(
+			'preview diagnostics broker response is too large'
+		);
+	});
 });

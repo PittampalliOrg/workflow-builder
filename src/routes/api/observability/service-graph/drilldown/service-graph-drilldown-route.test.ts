@@ -12,6 +12,11 @@ describe("observability service graph drilldown route", () => {
 
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("getObservabilityServiceGraphContext");
+		expect(source).toContain("workflowDiagnostics.getInvestigationEvidence");
+		expect(source).toContain("buildExecutionInvestigationFromEvidence");
+		expect(source).toContain("redactDiagnosticEvidence(scoped)");
+		expect(source).not.toContain("resolveExecutionTraceIds");
+		expect(source).not.toContain("$lib/server/otel");
 		expect(source).not.toContain("$lib/server/db");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");

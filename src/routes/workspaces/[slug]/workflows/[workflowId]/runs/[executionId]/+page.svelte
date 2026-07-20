@@ -569,7 +569,6 @@
 			? (policy as Record<string, unknown>)
 			: null;
 	});
-	const investigationSessionId = $derived(snapshot?.sessionId ?? null);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
 	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
@@ -1523,10 +1522,7 @@
 		isLoadingInvestigation = true;
 		investigationError = null;
 		try {
-			let res = await fetch(`/api/observability/executions/${encodeURIComponent(executionId)}/investigation`);
-			if (!res.ok && res.status === 404 && investigationSessionId) {
-				res = await fetch(`/api/observability/sessions/${encodeURIComponent(investigationSessionId)}/investigation`);
-			}
+			const res = await fetch(`/api/observability/executions/${encodeURIComponent(executionId)}/investigation`);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			if (data.error) {
@@ -3393,6 +3389,7 @@
 					isLoading={isLoadingInvestigation}
 					error={investigationError}
 					fullTraceHref={primaryInvestigationTraceId ? `/observability/${primaryInvestigationTraceId}` : null}
+					spanDetailBase={`/api/observability/executions/${encodeURIComponent(executionId)}/spans`}
 					onRefresh={() => {
 						investigationFetched = false;
 						fetchInvestigation();

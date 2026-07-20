@@ -5,6 +5,7 @@ import type {
 	PreviewWorkflowDiagnosticsDigestTelemetry,
 	PreviewWorkflowDiagnosticsOperation,
 	WorkflowDiagnosticsDigestRead,
+	WorkflowDiagnosticsEvidenceRequest,
 	WorkflowDiagnosticsExecution,
 	WorkflowDiagnosticsReadPort,
 	WorkflowDiagnosticsTraceResolution
@@ -18,6 +19,7 @@ import {
 import { PreviewRuntimeIdentityChangedError } from '$lib/server/application/ports';
 import { buildRunDigest } from '$lib/server/observability/run-digest';
 import type {
+	ObservabilityExecutionEvidence,
 	ObservabilityLlmSpan,
 	ObservabilityLogEntry,
 	ObservabilityTraceSpan
@@ -286,6 +288,102 @@ export class HttpPreviewWorkflowDiagnosticsReadAdapter implements WorkflowDiagno
 		return {
 			traceIds: stringArray(result.traceIds, 'trace ids'),
 			warnings: stringArray(result.warnings, 'trace warnings')
+		};
+	}
+
+	async loadInvestigationEvidence(
+		execution: WorkflowDiagnosticsExecution,
+		request: WorkflowDiagnosticsEvidenceRequest
+	): Promise<ObservabilityExecutionEvidence> {
+		const result = record(
+			await this.call('investigation-evidence', execution, {
+				categories: request.categories,
+				serviceNames: request.serviceNames,
+				limits: request.limits
+			})
+		);
+		const truncated = record(result?.truncated);
+		const rowTruncated = record(result?.rowTruncated);
+		const contentTruncated = record(result?.contentTruncated);
+		const limits = record(result?.limits);
+		if (
+			!result ||
+			!truncated ||
+			!rowTruncated ||
+			!contentTruncated ||
+			!limits ||
+			!Array.isArray(result.traceSpans) ||
+			!Array.isArray(result.logs) ||
+			!Array.isArray(result.llmSpans) ||
+			!Array.isArray(result.toolSpans)
+		) {
+			throw new PreviewWorkflowDiagnosticsTransportError(
+				'preview diagnostics investigation evidence is invalid'
+			);
+		}
+		const categories = ['spans', 'logs', 'llmSpans', 'toolSpans'] as const;
+		if (
+			categories.some(
+				(category) =>
+					typeof truncated[category] !== 'boolean' ||
+					typeof rowTruncated[category] !== 'boolean' ||
+					typeof contentTruncated[category] !== 'boolean' ||
+					truncated[category] !==
+						(Boolean(rowTruncated[category]) || Boolean(contentTruncated[category])) ||
+					!Number.isInteger(limits[category]) ||
+					Number(limits[category]) !== request.limits[category]
+			) ||
+			result.traceSpans.length > request.limits.spans ||
+			result.logs.length > request.limits.logs ||
+			result.llmSpans.length > request.limits.llmSpans ||
+			result.toolSpans.length > request.limits.toolSpans
+		) {
+			throw new PreviewWorkflowDiagnosticsTransportError(
+				'preview diagnostics investigation bounds are invalid'
+			);
+		}
+		const degradedSources = stringArray(result.degradedSources, 'investigation degraded sources');
+		if (
+			degradedSources.some(
+				(source) => source !== 'correlation' && !categories.includes(source as never)
+			)
+		) {
+			throw new PreviewWorkflowDiagnosticsTransportError(
+				'preview diagnostics investigation degraded sources are invalid'
+			);
+		}
+		return {
+			traceIds: stringArray(result.traceIds, 'investigation trace ids'),
+			traceSpans: result.traceSpans as ObservabilityTraceSpan[],
+			logs: result.logs as ObservabilityLogEntry[],
+			llmSpans: result.llmSpans as ObservabilityLlmSpan[],
+			toolSpans: result.toolSpans as ObservabilityExecutionEvidence['toolSpans'],
+			truncated: {
+				spans: truncated.spans as boolean,
+				logs: truncated.logs as boolean,
+				llmSpans: truncated.llmSpans as boolean,
+				toolSpans: truncated.toolSpans as boolean
+			},
+			rowTruncated: {
+				spans: rowTruncated.spans as boolean,
+				logs: rowTruncated.logs as boolean,
+				llmSpans: rowTruncated.llmSpans as boolean,
+				toolSpans: rowTruncated.toolSpans as boolean
+			},
+			contentTruncated: {
+				spans: contentTruncated.spans as boolean,
+				logs: contentTruncated.logs as boolean,
+				llmSpans: contentTruncated.llmSpans as boolean,
+				toolSpans: contentTruncated.toolSpans as boolean
+			},
+			limits: {
+				spans: Number(limits.spans),
+				logs: Number(limits.logs),
+				llmSpans: Number(limits.llmSpans),
+				toolSpans: Number(limits.toolSpans)
+			},
+			degradedSources: degradedSources as ObservabilityExecutionEvidence['degradedSources'],
+			warnings: stringArray(result.warnings, 'investigation warnings')
 		};
 	}
 
