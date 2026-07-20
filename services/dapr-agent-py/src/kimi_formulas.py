@@ -34,14 +34,13 @@ raising (the WebFetch precedent) so the activity completes, the error is
 journaled, and the model can adapt on its next turn.
 
 Config:
-- ``KIMI_FORMULAS`` — unset: the default set below (all documented formulas
-  except ``web-search``, which Kimi marks as being updated and not
-  recommended); set-but-empty: disabled entirely; comma-separated URIs:
+- ``KIMI_FORMULAS`` — unset or empty: disabled; comma-separated URIs opt in a
   custom set (normalized with default ``moonshot/`` namespace / ``:latest``
   tag, deduped order-preserving).
 - ``KIMI_FORMULA_TIMEOUT_SECONDS`` — fiber execution timeout (default 45).
-- Auth and base URL reuse ``KIMI_API_KEY`` / ``KIMI_BASE_URL`` from
-  ``kimi_adapter``.
+- Auth uses ``KIMI_API_KEY``. ``KIMI_FORMULAS_BASE_URL`` must identify a
+  separately verified Formula endpoint when formulas are enabled; the KFC
+  chat endpoint is not assumed to expose Formula APIs.
 """
 
 from __future__ import annotations
@@ -53,9 +52,11 @@ import os
 import re
 import threading
 import time
+from typing import Any
 from urllib.error import HTTPError
 import urllib.request
-from typing import Any
+
+from src.kimi_config import kimi_formulas_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +116,9 @@ def normalize_formula_uri(uri: str) -> str:
 def configured_formula_uris() -> list[str]:
     """Resolve the active formula set from KIMI_FORMULAS (see module docstring)."""
     raw = os.environ.get("KIMI_FORMULAS")
-    if raw is None:
-        uris = list(DEFAULT_FORMULA_URIS)
-    else:
-        raw = raw.strip()
-        if not raw:
-            return []
-        uris = [normalize_formula_uri(part) for part in raw.split(",") if part.strip()]
+    if raw is None or not raw.strip():
+        return []
+    uris = [normalize_formula_uri(part) for part in raw.split(",") if part.strip()]
     deduped = list(dict.fromkeys(uris))
     for uri in deduped:
         if uri.startswith("moonshot/web-search:"):
@@ -334,7 +331,12 @@ def _normalize_lookup(name: str) -> str:
 
 
 def _base_url() -> str:
-    return os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")
+    base_url = kimi_formulas_base_url()
+    if base_url is None:
+        raise RuntimeError(
+            "Kimi Formula tools require a verified KIMI_FORMULAS_BASE_URL"
+        )
+    return base_url
 
 
 def _execute_timeout_seconds() -> float:
@@ -352,8 +354,8 @@ def _fetch_formula_catalog() -> set[str] | None:
     absent from the catalog is skipped with an explicit warning instead of
     being silently swallowed by a per-URI 404.
     """
-    url = f"{_base_url()}/formulas"
     try:
+        url = f"{_base_url()}/formulas"
         payload = _http_json("GET", url, None, _FETCH_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 — catalog failure must not break loading
         logger.warning("[kimi-formulas] catalog fetch failed (continuing without): %s", exc)
@@ -374,8 +376,8 @@ def _fetch_formula_catalog() -> set[str] | None:
 
 
 def _fetch_formula_tools(uri: str) -> list[tuple[dict[str, Any], str | None]]:
-    url = f"{_base_url()}/formulas/{uri}/tools"
     try:
+        url = f"{_base_url()}/formulas/{uri}/tools"
         payload = _http_json("GET", url, None, _FETCH_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 — per-formula failure must not break chat
         logger.warning("[kimi-formulas] failed to fetch tools for %s: %s", uri, exc)

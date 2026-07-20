@@ -39,7 +39,7 @@ the registry's declared `per-activity` — is the P2 phase in the design doc.
 | Variable | Default | Purpose |
 |---|---|---|
 | `KIMI_API_KEY` | — (required) | Kimi authentication |
-| `KIMI_BASE_URL` | `https://api.moonshot.ai/v1` | OpenAI-compatible endpoint |
+| `KIMI_BASE_URL` | `https://api.kimi.com/coding/v1` | Kimi-for-Coding endpoint |
 | `KIMI_DEFAULT_MODEL` | `kimi-k3` | Model when agentConfig has no modelSpec |
 | `BROWSER_USE_CDP_URL` | `http://localhost:9222` | Remote Chromium attach |
 | `BROWSER_USE_MAX_STEPS` | `40` | Step budget when agentConfig has no maxTurns |

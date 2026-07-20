@@ -1,9 +1,9 @@
 """Direct Kimi chat-completions adapter for DaprChatClient.
 
-Kimi exposes an OpenAI-compatible chat completions API at
-https://api.moonshot.ai/v1. Keep direct Kimi models on the same durable-agent
-contract as Together, Foundry, NVIDIA, and DeepSeek: normal calls return
-LLMChatResponse and structured calls return the requested Pydantic model.
+Kimi exposes its coding API at https://api.kimi.com/coding/v1. Keep direct Kimi
+models on the same durable-agent contract as Together, Foundry, NVIDIA, and
+DeepSeek: normal calls return LLMChatResponse and structured calls return the
+requested Pydantic model.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from src.provider_conformance import (
     parse_structured_response,
     strict_json_schema,
 )
+from src.kimi_config import kimi_chat_base_url
 from src.mcp_multimodal import decode_multimodal_tool_content
 
 logger = logging.getLogger(__name__)
@@ -1223,10 +1224,9 @@ def _call_kimi_chat(
         logger.warning("[telemetry] llm_request (kimi) start failed: %s", exc)
 
     headers, auth_mode = _auth_headers()
-    base_url = os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
     url = os.environ.get(
         "KIMI_CHAT_COMPLETIONS_URL",
-        f"{base_url.rstrip('/')}/chat/completions",
+        f"{kimi_chat_base_url()}/chat/completions",
     )
     idle_timeout_seconds = _stream_idle_timeout_seconds()
     output_cap = max_tokens or int(

@@ -130,6 +130,8 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     timeouts: list[float] = []
 
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
+    monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+    monkeypatch.delenv("KIMI_CHAT_COMPLETIONS_URL", raising=False)
     monkeypatch.delenv("KIMI_STREAM_IDLE_TIMEOUT_SECONDS", raising=False)
 
     def urlopen(req, timeout: int):
@@ -163,7 +165,7 @@ def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
         [{"role": "user", "content": "hello"}],
     )
 
-    assert urls == ["https://api.moonshot.ai/v1/chat/completions"]
+    assert urls == ["https://api.kimi.com/coding/v1/chat/completions"]
     assert timeouts == [900.0]
     assert auth_headers == ["Bearer kimi-test"]
     assert accept_headers == ["text/event-stream"]

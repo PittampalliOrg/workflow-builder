@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from src.kimi_config import kimi_files_base_url
 from src.ports.multimodal_media import OffloadedMediaReference
 
 
@@ -64,7 +65,13 @@ class KimiFilesMultimodalMediaAdapter:
 
     @staticmethod
     def _base_url() -> str:
-        return os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")
+        base_url = kimi_files_base_url()
+        if base_url is None:
+            raise RuntimeError(
+                "Kimi Files offload is not configured. Set KIMI_FILES_BASE_URL "
+                "only for an endpoint that supports the Files API."
+            )
+        return base_url
 
     @staticmethod
     def _api_key() -> str:
@@ -314,4 +321,14 @@ class KimiFilesMultimodalMediaAdapter:
             return self._remember(digest, reference)
 
 
-__all__ = ["KimiFilesMultimodalMediaAdapter"]
+def configured_kimi_files_offloader() -> KimiFilesMultimodalMediaAdapter | None:
+    """Build the optional Files adapter without conflating it with KFC chat."""
+    if kimi_files_base_url() is None:
+        return None
+    return KimiFilesMultimodalMediaAdapter()
+
+
+__all__ = [
+    "KimiFilesMultimodalMediaAdapter",
+    "configured_kimi_files_offloader",
+]
