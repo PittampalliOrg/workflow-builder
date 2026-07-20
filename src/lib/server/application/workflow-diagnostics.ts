@@ -657,7 +657,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 		if (!this.reads.isConfigured()) {
 			return {
 				body: {
-					roots: [],
+					nodes: [],
 					telemetry: {
 						state: 'unavailable',
 						warnings: ['ClickHouse trace storage is not configured']
@@ -670,7 +670,7 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 		if (traceIds.length === 0) {
 			return {
 				body: {
-					roots: [],
+					nodes: [],
 					telemetry: missingTraceTelemetry(execution, resolution.warnings)
 				}
 			};
@@ -678,7 +678,11 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 		const batch = await this.reads.loadSpanSummaries(execution, traceIds, 5_000);
 		const projection = buildSpanTree(batch.spans, maxNodes);
 		return response({
-			roots: projection.roots,
+			// FLAT pre-order list, not nested objects: the shared MCP redaction
+			// pass caps recursion at depth 12 and real traces nest middleware
+			// chains far deeper — nesting would come back as
+			// "[redaction-depth-exceeded]". Render by indenting `depth`.
+			nodes: projection.nodes,
 			spanCount: batch.spans.length,
 			renderedCount: projection.renderedCount,
 			truncated: {
@@ -695,6 +699,8 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 
 type SpanTreeNode = {
 	spanId: string;
+	parentSpanId: string | null;
+	depth: number;
 	name: string;
 	service: string;
 	status: 'ok' | 'error';
@@ -702,23 +708,24 @@ type SpanTreeNode = {
 	startOffsetMs: number;
 	sessionId?: string;
 	statusMessage?: string;
-	children: SpanTreeNode[];
-	/** Count of same-name siblings collapsed out of `children` (repetition guard). */
+	/** Count of same-name siblings collapsed under this node (repetition guard). */
 	omittedChildren?: number;
 };
 
 /**
- * Project flat span summaries into a compact waterfall forest for one MCP
- * read: repetitive same-name siblings collapse to their first three
- * occurrences (middleware chains, per-item fan-outs), and the total rendered
- * node count is capped. Names/durations only — attribute drills stay in
- * trace_get_span / trace_get_llm_turn / trace_get_tool_calls.
+ * Project flat span summaries into a compact waterfall for one MCP read:
+ * pre-order (parent before children, siblings in start order) with a `depth`
+ * per node so consumers render it as an indented tree. Repetitive same-name
+ * siblings collapse to their first three occurrences (middleware chains,
+ * per-item fan-outs) and the total rendered node count is capped.
+ * Names/durations only — attribute drills stay in trace_get_span /
+ * trace_get_llm_turn / trace_get_tool_calls.
  */
 function buildSpanTree(
 	spans: ObservabilityTraceSpan[],
 	maxNodes: number
 ): {
-	roots: SpanTreeNode[];
+	nodes: SpanTreeNode[];
 	renderedCount: number;
 	nodesTruncated: boolean;
 	siblingsOmitted: number;
@@ -746,22 +753,23 @@ function buildSpanTree(
 	const byStart = (a: ObservabilityTraceSpan, b: ObservabilityTraceSpan) =>
 		Date.parse(a.startTime) - Date.parse(b.startTime) || a.spanId.localeCompare(b.spanId);
 
-	let renderedCount = 0;
+	const nodes: SpanTreeNode[] = [];
 	let nodesTruncated = false;
 	let siblingsOmitted = 0;
 	const MAX_SIBLINGS_PER_NAME = 3;
 
-	const render = (span: ObservabilityTraceSpan): SpanTreeNode | null => {
-		if (renderedCount >= maxNodes) {
+	const render = (span: ObservabilityTraceSpan, depth: number): void => {
+		if (nodes.length >= maxNodes) {
 			nodesTruncated = true;
-			return null;
+			return;
 		}
-		renderedCount += 1;
 		const traceStart = startMsByTrace.get(span.traceId);
 		const startMs = Date.parse(span.startTime);
 		const sessionId = span.attributes?.['session.id'];
 		const node: SpanTreeNode = {
 			spanId: span.spanId,
+			parentSpanId: span.parentSpanId ?? null,
+			depth,
 			name: span.operationName,
 			service: span.serviceName,
 			status: span.status,
@@ -773,9 +781,9 @@ function buildSpanTree(
 			...(typeof sessionId === 'string' && sessionId ? { sessionId } : {}),
 			...(span.status === 'error' && span.statusMessage
 				? { statusMessage: span.statusMessage.slice(0, 200) }
-				: {}),
-			children: []
+				: {})
 		};
+		nodes.push(node);
 		const children = (childrenOf.get(span.spanId) ?? []).sort(byStart);
 		const seenPerName = new Map<string, number>();
 		let omitted = 0;
@@ -788,19 +796,16 @@ function buildSpanTree(
 				continue;
 			}
 			seenPerName.set(nameKey, seen + 1);
-			const rendered = render(child);
-			if (rendered) node.children.push(rendered);
+			render(child, depth + 1);
 		}
 		if (omitted > 0) {
 			node.omittedChildren = omitted;
 			siblingsOmitted += omitted;
 		}
-		return node;
 	};
 
-	const renderedRoots = roots
-		.sort(byStart)
-		.map(render)
-		.filter((node): node is SpanTreeNode => node !== null);
-	return { roots: renderedRoots, renderedCount, nodesTruncated, siblingsOmitted };
+	for (const root of roots.sort(byStart)) {
+		render(root, 0);
+	}
+	return { nodes, renderedCount: nodes.length, nodesTruncated, siblingsOmitted };
 }
