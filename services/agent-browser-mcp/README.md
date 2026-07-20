@@ -8,18 +8,18 @@ video / PDF / HAR artifacts are **deterministically persisted to the owning work
 
 ## Why a service (not in the agent image)
 
-agent-browser is a Rust CLI that controls Chrome for Testing over CDP and speaks MCP over
-**stdio** (`agent-browser mcp`). Our dapr-agent-py agents attach MCP tools over HTTP
-(`transport: streamable_http`), and Chrome + its libraries are heavy. Running agent-browser
-as its own service keeps Chrome isolated in one image and leaves the agent image untouched —
-any agent can gain browser tools just by pointing `mcpServers` at this endpoint.
+agent-browser is a Rust CLI that controls Chrome over CDP and speaks MCP over **stdio**
+(`agent-browser mcp`). Our dapr-agent-py agents attach MCP tools over HTTP
+(`transport: streamable_http`), and Chrome + its libraries are heavy. The bridge keeps that
+runtime out of the agent image. In-cluster workflow executions lease an isolated browser from
+BrowserStation; pod-local Chrome is only the fallback when no farm is configured.
 
 ```
 dapr-agent-py agent  --(streamable_http MCP)-->  agent-browser-mcp :8000/mcp
                                                    └─ bridge.mjs (HTTP↔stdio MCP proxy
                                                       + artifact persistence + auto-capture)
                                                         └─ agent-browser mcp  (stdio JSON-RPC)
-                                                             └─ Chrome for Testing (CDP, headless)
+                                                             └─ BrowserStation lane (CDP)
 ```
 
 ## The bridge (`bridge.mjs`)
@@ -69,6 +69,13 @@ persists across calls within the session). On top of plain proxying it adds:
    never entered into a login form, and never passed through the LLM or the run
    trace. Intended for apps the run owner controls; it is not a way past
    third-party bot-detection or CAPTCHAs (those are respected, not bypassed).
+
+6. **Execution-scoped browser lifecycle.** Any MCP session carrying
+   `X-Wfb-Execution-Id` leases a BrowserStation lane when the farm is configured, independent
+   of the optional per-node header. Explicit `agent_browser_close` releases it immediately;
+   idle auto-capture cleanup persists the pending artifacts and then closes the abandoned
+   browser. This keeps browser processes isolated per workflow run and prevents Chrome
+   processes from accumulating in the bridge pod.
 
 ## Endpoint
 
