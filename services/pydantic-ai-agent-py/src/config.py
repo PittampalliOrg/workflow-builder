@@ -68,6 +68,11 @@ CLAMP_MAX_PART_CHARS = env_int("PYDANTIC_AI_CLAMP_MAX_PART_CHARS", 20000)
 COMPACTION_MAX_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_MAX_MESSAGES", 120)
 COMPACTION_KEEP_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_KEEP_MESSAGES", 60)
 
+# Total per-operation timeout for network (MCP) toolset get_tools/call_tool.
+# Upstream MCP ClientSession has no per-call timeout, so a stalled
+# streamable-HTTP session would otherwise wedge a durable activity forever.
+MCP_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_TIMEOUT_SECONDS", 30)
+
 # ---------------------------------------------------------------------------
 # Kimi K3 — the default (and only v1) provider
 # ---------------------------------------------------------------------------

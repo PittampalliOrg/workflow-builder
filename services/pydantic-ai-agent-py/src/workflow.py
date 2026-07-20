@@ -328,16 +328,18 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             # Capability after_tool_execute chain (OverflowingToolOutput
             # spills big results to <workspace>/.overflow and truncates the
             # in-history copy; the read_tool_result tool fetches the rest).
+            # tool_def is passed None: the overflow hook keys on the tool
+            # name (from `call`), so re-listing all toolsets — which would
+            # hit MCP over the network a second time and can wedge the
+            # durable activity — is neither needed nor safe here.
             try:
                 from pydantic_ai.messages import ToolCallPart
 
-                tools = await router.tools()
-                tool_def = tools[name][1].tool_def if name in tools else None
                 call_part = ToolCallPart(
                     tool_name=name, args=dict(args or {}), tool_call_id=tool_call_id
                 )
                 result = await router.apply_after_tool_execute(
-                    call=call_part, tool_def=tool_def, args=dict(args or {}), result=result
+                    call=call_part, tool_def=None, args=dict(args or {}), result=result
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[execute-tool] after_tool_execute chain failed: %s", exc)
