@@ -3908,7 +3908,7 @@ async function ensureShowcaseAgent(
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
-		values (${versionId}, ${agentId}, ${1}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
+		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config as postgres.JSONValue)}, ${configHash})`;
 	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
 	console.log(`[seed-workflows] Ensured showcase agent "${slug}"`);
 	return slug;
@@ -3992,16 +3992,27 @@ async function ensureCliShowcaseAgentFor(
 				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null},
 				max_turns = ${maxTurns}, timeout_minutes = ${timeoutMinutes}
 			where id = ${agentId}`;
-		const cur = await sqlClient<{ config_hash: string | null }[]>`
-			select config_hash from agent_versions where id = ${existing[0].current_version_id} limit 1`;
-		if (cur.length && cur[0].config_hash === configHash) return slug;
+		const cur = await sqlClient<
+			{ config_hash: string | null; config_type: string | null }[]
+		>`
+			select config_hash, jsonb_typeof(config) as config_type
+			from agent_versions
+			where id = ${existing[0].current_version_id}
+			limit 1`;
+		if (
+			cur.length &&
+			cur[0].config_hash === configHash &&
+			cur[0].config_type === "object"
+		) {
+			return slug;
+		}
 		const maxV = await sqlClient<{ v: number }[]>`
 			select coalesce(max(version), 0)::int as v from agent_versions where agent_id = ${agentId}`;
 		const nextVersion = (maxV[0]?.v ?? 0) + 1;
 		const newVersionId = generateId();
 		await sqlClient`
 			insert into agent_versions (id, agent_id, version, config, config_hash)
-			values (${newVersionId}, ${agentId}, ${nextVersion}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
+			values (${newVersionId}, ${agentId}, ${nextVersion}, ${sqlClient.json(config as postgres.JSONValue)}, ${configHash})`;
 		await sqlClient`update agents set current_version_id = ${newVersionId} where id = ${agentId}`;
 		console.log(
 			`[seed-workflows] Updated showcase agent "${slug}" -> v${nextVersion} (runtime=${runtime}, modelSpec=${opts.modelSpec ?? "n/a"})`,
@@ -4027,7 +4038,7 @@ async function ensureCliShowcaseAgentFor(
 	}
 	await sqlClient`
 		insert into agent_versions (id, agent_id, version, config, config_hash)
-		values (${versionId}, ${agentId}, ${1}, ${JSON.stringify(config)}::jsonb, ${configHash})`;
+		values (${versionId}, ${agentId}, ${1}, ${sqlClient.json(config as postgres.JSONValue)}, ${configHash})`;
 	await sqlClient`update agents set current_version_id = ${versionId} where id = ${agentId}`;
 	console.log(`[seed-workflows] Ensured CLI showcase agent "${slug}" (runtime=${runtime})`);
 	return slug;
