@@ -26,10 +26,10 @@
 //     do not touch it. The LLM never choreographs record_start/record_stop —
 //     models stall exactly there.
 //  3. CURATED TOOL SURFACE: the child runs with the full core,network,debug
-//     profiles (so the bridge can call capture tools), but tools/list shown to
-//     the LLM is filtered to a navigation-oriented action set with pruned
-//     schemas. 77+ tools × a dozen restore/namespace/session props each was
-//     measurable context bloat and provoked tool-choice loops.
+//     profiles (so the bridge can call capture tools), but external tools/list
+//     and tools/call are restricted to a navigation-oriented action set with
+//     pruned schemas. 77+ tools × a dozen restore/namespace/session props
+//     created measurable context bloat and provoked tool-choice loops.
 //  4. DEMO SCENES + AUTO-EDITOR: a bridge-implemented virtual tool `demo_scene`
 //     lets the agent mark scene boundaries with ONE semantic call (the bridge
 //     translates it to record_restart + metadata — no start/stop pairing).
@@ -52,16 +52,22 @@ import { renderDemo, readAndRm } from "./render.mjs";
 import {
 	DEFAULT_EXPOSED_TOOLS,
 	inlineImage,
+	isExternallyCallableTool,
 	preserveMultimodalToolResult,
+	resolveExposedTools,
 } from "./vision-contract.mjs";
 import {
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
 import {
+	authorizeBrowserInitialization,
 	createTargetAuthExchangeCache,
+	createTargetAuthSessionBindings,
+	exchangeTargetAuth,
 	openedUrlMatchesTargetOrigin,
 	parseTargetAuthAssertion,
+	targetAuthAssertionDigest,
 	targetAuthCookieToolArguments,
 	targetAuthNeedsRefresh,
 } from "./target-auth-policy.mjs";
@@ -93,15 +99,12 @@ const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 4500
 // derives the only allowed target origin and returns a short-lived owner cookie.
 // The bridge plants it HttpOnly for that exact origin and never creates a global
 // Authorization header.
-// Tools the LLM sees in tools/list. The child still exposes everything in
-// AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
-// discovery. Empty value = expose everything unfiltered.
-const EXPOSED_TOOLS = (
-	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(",")
-)
-	.split(",")
-	.map((s) => s.trim())
-	.filter(Boolean);
+// The child keeps internal capture/state tools available to the bridge, while
+// external tools/list and tools/call are restricted to this curated subset.
+// Configuration may narrow the set but cannot add internal child tools.
+const EXPOSED_TOOLS = resolveExposedTools(
+	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(","),
+);
 
 // Schema properties worth showing the LLM; everything else (session, namespace,
 // restore*, extraArgs, screenshotDir, …) is plumbing the bridge/child handle.
@@ -157,6 +160,9 @@ const DEMO_SCENE_TOOL = {
 		required: ["title"],
 	},
 };
+const EXPOSED_BRIDGE_TOOLS = AUTO_CAPTURE.includes("video")
+	? [DEMO_SCENE_TOOL.name]
+	: [];
 
 // Map an artifact-producing tool to how its output is persisted.
 // bucket 'screenshots' → inline <img>; bucket 'assets' kind 'video' → inline
@@ -275,6 +281,7 @@ function pruneToolForLlm(tool) {
 const lanes = new Map();
 const authApplied = new Set();
 const targetAuthExchangeCache = createTargetAuthExchangeCache();
+const targetAuthSessionBindings = createTargetAuthSessionBindings();
 
 function lanesEnabled() {
 	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
@@ -346,6 +353,7 @@ function ensureLaneBrowser(browserSession) {
 async function releaseLaneBrowser(browserSession) {
 	authApplied.delete(browserSession);
 	targetAuthExchangeCache.clear(browserSession);
+	targetAuthSessionBindings.clear(browserSession);
 	const lane = lanes.get(browserSession);
 	if (!lane) return;
 	lanes.delete(browserSession);
@@ -600,13 +608,20 @@ async function stopCapture(browserSession, reason, liveChild) {
 	}
 }
 
-async function resolveTargetAuth(browserSession, ctx) {
-	return targetAuthExchangeCache.resolve(browserSession, {
+function targetAuthExchangeInput(ctx) {
+	return {
 		bffUrl: BFF,
 		internalToken: TOKEN,
 		assertion: ctx?.targetAuth?.assertion,
 		executionId: ctx?.executionId,
-	});
+	};
+}
+
+async function resolveTargetAuth(browserSession, ctx) {
+	return targetAuthExchangeCache.resolve(
+		browserSession,
+		targetAuthExchangeInput(ctx),
+	);
 }
 
 async function plantTargetAuthCookie(browserSession, ctx, child) {
@@ -622,9 +637,12 @@ async function plantTargetAuthCookie(browserSession, ctx, child) {
 
 async function refreshTargetAuthCookie(browserSession, ctx, child) {
 	if (!ctx?.targetAuth || !authApplied.has(browserSession)) return;
-	const existing = await targetAuthExchangeCache.peek(browserSession);
-	if (!targetAuthNeedsRefresh(existing)) return;
 	try {
+		const existing = await targetAuthExchangeCache.peek(
+			browserSession,
+			targetAuthExchangeInput(ctx),
+		);
+		if (!targetAuthNeedsRefresh(existing)) return;
 		const refreshed = await plantTargetAuthCookie(browserSession, ctx, child);
 		if (refreshed) {
 			console.error(
@@ -703,15 +721,24 @@ async function makeProxy(ctxRef, browserSession) {
 			tools = tools.concat(page.tools || []);
 			cursor = page.nextCursor;
 		} while (cursor);
-		if (EXPOSED_TOOLS.length) {
-			const allow = new Set(EXPOSED_TOOLS);
-			tools = tools.filter((t) => allow.has(t.name)).map(pruneToolForLlm);
-		}
+		const allow = new Set(EXPOSED_TOOLS);
+		tools = tools.filter((t) => allow.has(t.name)).map(pruneToolForLlm);
 		if (AUTO_CAPTURE.includes("video")) tools.push(DEMO_SCENE_TOOL);
 		return { tools };
 	});
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		const { name, arguments: args } = req.params;
+		if (!isExternallyCallableTool(name, EXPOSED_TOOLS, EXPOSED_BRIDGE_TOOLS)) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Tool "${name}" is not available through this browser bridge.`,
+					},
+				],
+				isError: true,
+			};
+		}
 		// A lane still provisioning its farm browser must not let the first
 		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
 		// tell the agent to retry (cold farm scale-up can take minutes).
@@ -813,21 +840,73 @@ const app = express();
 app.use(express.json({ limit: "16mb" }));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
-const sessions = {}; // MCP sessionId -> { transport, cleanup }
+const sessions = new Map(); // MCP sessionId -> authorized transport context
+
+function requestHeader(req, name) {
+	const value = req.headers[name];
+	return typeof value === "string" ? value.trim() : "";
+}
+
+function requestMatchesSessionAuthorization(req, session) {
+	if (!session.executionId) return true;
+	const targetAuth = parseTargetAuthAssertion(req.headers);
+	return (
+		requestHeader(req, "x-wfb-execution-id") === session.executionId &&
+		targetAuthAssertionDigest(targetAuth?.assertion) === session.assertionDigest &&
+		targetAuthSessionBindings.matches(
+			session.browserSession,
+			targetAuth?.assertion,
+		)
+	);
+}
+
+function rejectBrowserAuthorization(res) {
+	res.status(403).json({ error: "Execution browser authorization denied" });
+}
 
 app.post("/mcp", async (req, res) => {
 	const sid = req.headers["mcp-session-id"];
-	if (typeof sid === "string" && sessions[sid]) {
-		await sessions[sid].transport.handleRequest(req, res, req.body);
+	const existingSession = typeof sid === "string" ? sessions.get(sid) : null;
+	if (existingSession) {
+		if (req.body?.method === "initialize") {
+			res.status(400).json({ error: "MCP session is already initialized" });
+			return;
+		}
+		if (!requestMatchesSessionAuthorization(req, existingSession)) {
+			rejectBrowserAuthorization(res);
+			return;
+		}
+		await existingSession.transport.handleRequest(req, res, req.body);
 		return;
 	}
-	// New session: the first (initialize) request carries the run headers.
+	if (req.body?.method !== "initialize") {
+		res.status(400).json({ error: "MCP initialization is required" });
+		return;
+	}
+	// Authorize before deriving an execution browser key or touching a browser.
+	// The BFF rechecks live run, owner, and project membership on every initialize.
+	const targetAuth = parseTargetAuthAssertion(req.headers);
+	const initialization = await authorizeBrowserInitialization({
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth,
+		exchange: ({ assertion, executionId }) =>
+			exchangeTargetAuth({
+				bffUrl: BFF,
+				internalToken: TOKEN,
+				assertion,
+				executionId,
+			}),
+	});
+	if (!initialization) {
+		rejectBrowserAuthorization(res);
+		return;
+	}
 	const ctxRef = {
 		value: {
-			executionId: req.headers["x-wfb-execution-id"] || null,
-			workflowId: req.headers["x-wfb-workflow-id"] || null,
-			nodeId: req.headers["x-wfb-node-id"] || null,
-			targetAuth: parseTargetAuthAssertion(req.headers),
+			executionId: initialization.executionId,
+			workflowId: requestHeader(req, "x-wfb-workflow-id") || null,
+			nodeId: requestHeader(req, "x-wfb-node-id") || null,
+			targetAuth: initialization.targetAuth,
 		},
 	};
 	// One browser per run: every MCP connection carrying the same execution id
@@ -845,6 +924,30 @@ app.post("/mcp", async (req, res) => {
 			? `wfb-${ctxRef.value.executionId}--${laneKey}`
 			: `wfb-${ctxRef.value.executionId}`
 		: `wfb-anon-${randomUUID().slice(0, 8)}`;
+	if (initialization.assertionDigest) {
+		const boundDigest = targetAuthSessionBindings.bind(
+			browserSession,
+			initialization.targetAuth.assertion,
+		);
+		if (boundDigest !== initialization.assertionDigest) {
+			rejectBrowserAuthorization(res);
+			return;
+		}
+		// Seed first-use cookie planting from this authoritative exchange. A reused
+		// lane keeps the cache entry for the cookie actually planted; its fresh BFF
+		// result is validation-only.
+		if (
+			!authApplied.has(browserSession) &&
+			!targetAuthExchangeCache.prime(
+				browserSession,
+				targetAuthExchangeInput(ctxRef.value),
+				initialization.targetAuthExchange,
+			)
+		) {
+			rejectBrowserAuthorization(res);
+			return;
+		}
+	}
 	if (
 		shouldProvisionFarmBrowser({
 			executionId: ctxRef.value.executionId,
@@ -859,7 +962,13 @@ app.post("/mcp", async (req, res) => {
 	const transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
 		onsessioninitialized: (newSid) => {
-			sessions[newSid] = { transport, cleanup };
+			sessions.set(newSid, {
+				transport,
+				cleanup,
+				executionId: initialization.executionId,
+				assertionDigest: initialization.assertionDigest,
+				browserSession,
+			});
 			console.error(
 				`[session] ${newSid} exec=${ctxRef.value.executionId ?? "-"} browser=${browserSession} node=${ctxRef.value.nodeId ?? "-"}`,
 			);
@@ -867,7 +976,7 @@ app.post("/mcp", async (req, res) => {
 	});
 	transport.onclose = async () => {
 		const id = transport.sessionId;
-		if (id && sessions[id]) delete sessions[id];
+		if (id) sessions.delete(id);
 		await cleanup();
 	};
 	await server.connect(transport);
@@ -876,11 +985,16 @@ app.post("/mcp", async (req, res) => {
 
 async function replay(req, res) {
 	const sid = req.headers["mcp-session-id"];
-	if (typeof sid !== "string" || !sessions[sid]) {
+	const session = typeof sid === "string" ? sessions.get(sid) : null;
+	if (!session) {
 		res.status(400).send("invalid or missing mcp-session-id");
 		return;
 	}
-	await sessions[sid].transport.handleRequest(req, res);
+	if (!requestMatchesSessionAuthorization(req, session)) {
+		rejectBrowserAuthorization(res);
+		return;
+	}
+	await session.transport.handleRequest(req, res);
 }
 app.get("/mcp", replay);
 app.delete("/mcp", replay);

@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 import {
 	DEFAULT_EXPOSED_TOOLS,
 	inlineImage,
+	isExternallyCallableTool,
 	preserveMultimodalToolResult,
+	resolveExposedTools,
 } from "./vision-contract.mjs";
 
 describe("agent-browser vision contract", () => {
@@ -11,12 +13,26 @@ describe("agent-browser vision contract", () => {
 		assert.ok(DEFAULT_EXPOSED_TOOLS.includes("agent_browser_screenshot"));
 		assert.ok(DEFAULT_EXPOSED_TOOLS.includes("agent_browser_snapshot"));
 		assert.ok(DEFAULT_EXPOSED_TOOLS.includes("agent_browser_get_text"));
+		assert.ok(DEFAULT_EXPOSED_TOOLS.includes("agent_browser_console"));
+		assert.ok(DEFAULT_EXPOSED_TOOLS.includes("agent_browser_errors"));
 		assert.equal(
 			DEFAULT_EXPOSED_TOOLS.some((name) =>
 				/(?:ocr|describe|caption|visual_analysis|image_analysis)/i.test(name),
 			),
 			false,
 		);
+	});
+
+	it("enforces the curated call surface while keeping state tools internal", () => {
+		const exposed = resolveExposedTools(
+			"agent_browser_open,agent_browser_screenshot,agent_browser_cookies_get,agent_browser_cookies_set",
+		);
+		assert.deepEqual(exposed, ["agent_browser_open", "agent_browser_screenshot"]);
+		assert.equal(isExternallyCallableTool("agent_browser_open", exposed), true);
+		assert.equal(isExternallyCallableTool("agent_browser_cookies_get", exposed), false);
+		assert.equal(isExternallyCallableTool("agent_browser_cookies_set", exposed), false);
+		assert.equal(isExternallyCallableTool("demo_scene", exposed, ["demo_scene"]), true);
+		assert.deepEqual(resolveExposedTools(""), [...DEFAULT_EXPOSED_TOOLS]);
 	});
 
 	it("keeps screenshot bytes in a structured MCP image block", () => {

@@ -1,9 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
 import {
   userIdentities,
   users,
+  projectMembers,
   workflowExecutions,
   workflows,
 } from "$lib/server/db/schema";
@@ -22,6 +23,8 @@ import { generateAccessToken } from "$lib/server/auth-jwt";
 const ASSERTION_PREFIX = "wfb_browser_auth_v1";
 const ASSERTION_AUDIENCE = "workflow-builder-browser-target-auth";
 const ASSERTION_PURPOSE = "browser-target-auth";
+const ASSERTION_SIGNING_KEY_CONTEXT =
+  "workflow-builder/browser-target-auth/assertion/v1";
 const DEFAULT_ASSERTION_TTL_SECONDS = 60 * 60;
 const MAX_ASSERTION_TTL_SECONDS = 60 * 60;
 const MAX_ASSERTION_BYTES = 2_048;
@@ -66,8 +69,17 @@ function configuredAssertionSecret(): string {
   return secret;
 }
 
-function assertionSignature(secret: string, encodedPayload: string): Buffer {
-  return createHmac("sha256", secret)
+function assertionSigningKey(rootSecret: string): Buffer {
+  return createHmac("sha256", rootSecret)
+    .update(ASSERTION_SIGNING_KEY_CONTEXT, "utf8")
+    .digest();
+}
+
+function assertionSignature(
+  rootSecret: string,
+  encodedPayload: string,
+): Buffer {
+  return createHmac("sha256", assertionSigningKey(rootSecret))
     .update(`${ASSERTION_PREFIX}.${encodedPayload}`, "utf8")
     .digest();
 }
@@ -86,6 +98,8 @@ function validClaimsShape(
     payload.userId.length > 0 &&
     typeof payload.projectId === "string" &&
     payload.projectId.length > 0 &&
+    Number.isInteger(payload.tokenVersion) &&
+    payload.tokenVersion! >= 0 &&
     Number.isInteger(payload.iat) &&
     Number.isInteger(payload.exp) &&
     payload.iat! <= nowSeconds + MAX_CLOCK_SKEW_SECONDS &&
@@ -110,7 +124,13 @@ export class HmacWorkflowTargetAuthAssertionAdapter implements WorkflowTargetAut
   }
 
   issue(claims: WorkflowTargetAuthAssertionClaims): string {
-    if (!claims.executionId || !claims.userId || !claims.projectId) {
+    if (
+      !claims.executionId ||
+      !claims.userId ||
+      !claims.projectId ||
+      !Number.isInteger(claims.tokenVersion) ||
+      claims.tokenVersion < 0
+    ) {
       throw new Error("browser target-auth assertion scope is incomplete");
     }
     const issuedAt = Math.floor(this.now().getTime() / 1_000);
@@ -121,6 +141,7 @@ export class HmacWorkflowTargetAuthAssertionAdapter implements WorkflowTargetAut
       executionId: claims.executionId,
       userId: claims.userId,
       projectId: claims.projectId,
+      tokenVersion: claims.tokenVersion,
       iat: issuedAt,
       exp: issuedAt + this.ttlSeconds,
     };
@@ -167,6 +188,7 @@ export class HmacWorkflowTargetAuthAssertionAdapter implements WorkflowTargetAut
         executionId: payload.executionId,
         userId: payload.userId,
         projectId: payload.projectId,
+        tokenVersion: payload.tokenVersion,
       };
     } catch {
       return null;
@@ -175,10 +197,16 @@ export class HmacWorkflowTargetAuthAssertionAdapter implements WorkflowTargetAut
 }
 
 export class PostgresWorkflowTargetAuthIdentityRepository implements WorkflowTargetAuthIdentityRepository {
+  constructor(
+    private readonly database: ReturnType<
+      typeof requirePostgresDb
+    > = requirePostgresDb(),
+  ) {}
+
   async resolveExecutionOwner(
     executionId: string,
   ): Promise<WorkflowTargetAuthIdentity | null> {
-    const [row] = await requirePostgresDb()
+    const [row] = await this.database
       .select({
         userId: workflowExecutions.userId,
         email: users.email,
@@ -187,21 +215,60 @@ export class PostgresWorkflowTargetAuthIdentityRepository implements WorkflowTar
           string | null
         >`coalesce(${workflowExecutions.projectId}, ${workflows.projectId})`,
         tokenVersion: userIdentities.tokenVersion,
+        executionStatus: workflowExecutions.status,
+        executionCompletedAt: workflowExecutions.completedAt,
+        executionStopRequestedAt: workflowExecutions.stopRequestedAt,
+        userStatus: users.status,
+        projectMembershipId: projectMembers.id,
       })
       .from(workflowExecutions)
       .innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
       .innerJoin(users, eq(users.id, workflowExecutions.userId))
       .innerJoin(userIdentities, eq(userIdentities.userId, users.id))
-      .where(eq(workflowExecutions.id, executionId))
+      .innerJoin(
+        projectMembers,
+        and(
+          eq(projectMembers.userId, workflowExecutions.userId),
+          eq(
+            projectMembers.projectId,
+            sql<string>`coalesce(${workflowExecutions.projectId}, ${workflows.projectId})`,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(workflowExecutions.id, executionId),
+          eq(workflowExecutions.status, "running"),
+          isNull(workflowExecutions.completedAt),
+          isNull(workflowExecutions.stopRequestedAt),
+          eq(users.status, "ACTIVE"),
+        ),
+      )
       .limit(1);
 
-    if (!row?.email || !row.platformId || !row.projectId) return null;
+    if (
+      !row?.email ||
+      !row.platformId ||
+      !row.projectId ||
+      row.executionStatus !== "running" ||
+      row.executionCompletedAt !== null ||
+      row.executionStopRequestedAt !== null ||
+      row.userStatus !== "ACTIVE" ||
+      !row.projectMembershipId
+    ) {
+      return null;
+    }
     return {
       userId: row.userId,
       email: row.email,
       platformId: row.platformId,
       projectId: row.projectId,
       tokenVersion: row.tokenVersion,
+      executionStatus: row.executionStatus,
+      executionCompletedAt: row.executionCompletedAt,
+      executionStopRequestedAt: row.executionStopRequestedAt,
+      userStatus: row.userStatus,
+      projectMembershipId: row.projectMembershipId,
     };
   }
 }

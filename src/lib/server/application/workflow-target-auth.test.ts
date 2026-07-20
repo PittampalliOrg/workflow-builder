@@ -1,27 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
+import type { WorkflowTargetAuthIdentity } from "$lib/server/application/ports";
 import { ApplicationWorkflowTargetAuthService } from "./workflow-target-auth";
 
-const identity = {
+const identity: WorkflowTargetAuthIdentity = {
   userId: "user-1",
   email: "owner@example.com",
   platformId: "platform-1",
   projectId: "project-1",
   tokenVersion: 4,
+  executionStatus: "running" as const,
+  executionCompletedAt: null,
+  executionStopRequestedAt: null,
+  userStatus: "ACTIVE" as const,
+  projectMembershipId: "membership-1",
 };
 
 function harness() {
   const identities = {
-    resolveExecutionOwner: vi.fn(async () => identity),
+    resolveExecutionOwner: vi.fn(
+      async (): Promise<WorkflowTargetAuthIdentity | null> => identity,
+    ),
   };
   const assertions = {
     issue: vi.fn(() => "purpose-assertion"),
     verify: vi.fn(
       (
         _assertion: string,
-      ): { executionId: string; userId: string; projectId: string } | null => ({
+      ): {
+        executionId: string;
+        userId: string;
+        projectId: string;
+        tokenVersion: number;
+      } | null => ({
         executionId: "execution-1",
         userId: "user-1",
         projectId: "project-1",
+        tokenVersion: 4,
       }),
     ),
   };
@@ -69,6 +83,7 @@ describe("ApplicationWorkflowTargetAuthService", () => {
       executionId: "execution-1",
       userId: "user-1",
       projectId: "project-1",
+      tokenVersion: 4,
     });
     expect(h.cookies.issue).not.toHaveBeenCalled();
   });
@@ -81,6 +96,23 @@ describe("ApplicationWorkflowTargetAuthService", () => {
     const h = harness();
     await expect(
       h.service.mintAssertion({ executionId: "execution-1", ...expected }),
+    ).resolves.toBeNull();
+    expect(h.assertions.issue).not.toHaveBeenCalled();
+  });
+
+  it("does not mint an assertion for a terminal execution", async () => {
+    const h = harness();
+    h.identities.resolveExecutionOwner.mockResolvedValueOnce({
+      ...identity,
+      executionStatus: "success",
+      executionCompletedAt: new Date("2026-07-20T20:00:00.000Z"),
+    });
+    await expect(
+      h.service.mintAssertion({
+        executionId: "execution-1",
+        expectedUserId: "user-1",
+        expectedProjectId: "project-1",
+      }),
     ).resolves.toBeNull();
     expect(h.assertions.issue).not.toHaveBeenCalled();
   });
@@ -115,6 +147,7 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         executionId: "execution-2",
         userId: "user-1",
         projectId: "project-1",
+        tokenVersion: 4,
       },
     },
     {
@@ -123,6 +156,7 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         executionId: "execution-1",
         userId: "user-2",
         projectId: "project-1",
+        tokenVersion: 4,
       },
     },
     {
@@ -131,6 +165,16 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         executionId: "execution-1",
         userId: "user-1",
         projectId: "project-2",
+        tokenVersion: 4,
+      },
+    },
+    {
+      name: "revoked token version",
+      claims: {
+        executionId: "execution-1",
+        userId: "user-1",
+        projectId: "project-1",
+        tokenVersion: 3,
       },
     },
   ])("rejects exchange on $name", async ({ claims }) => {
@@ -157,4 +201,47 @@ describe("ApplicationWorkflowTargetAuthService", () => {
     expect(h.identities.resolveExecutionOwner).not.toHaveBeenCalled();
     expect(h.cookies.issue).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      name: "pending execution",
+      identity: { ...identity, executionStatus: "pending" as const },
+    },
+    {
+      name: "terminal execution",
+      identity: {
+        ...identity,
+        executionStatus: "success" as const,
+        executionCompletedAt: new Date("2026-07-20T20:00:00.000Z"),
+      },
+    },
+    {
+      name: "stop-requested execution",
+      identity: {
+        ...identity,
+        executionStopRequestedAt: new Date("2026-07-20T20:00:00.000Z"),
+      },
+    },
+    {
+      name: "inactive user",
+      identity: { ...identity, userStatus: "INACTIVE" as const },
+    },
+    {
+      name: "revoked project membership",
+      identity: { ...identity, projectMembershipId: null },
+    },
+  ])(
+    "rejects an exchange for a $name",
+    async ({ identity: deniedIdentity }) => {
+      const h = harness();
+      h.identities.resolveExecutionOwner.mockResolvedValueOnce(deniedIdentity);
+      await expect(
+        h.service.exchange({
+          assertion: "purpose-assertion",
+          executionId: "execution-1",
+        }),
+      ).resolves.toBeNull();
+      expect(h.cookies.issue).not.toHaveBeenCalled();
+    },
+  );
 });

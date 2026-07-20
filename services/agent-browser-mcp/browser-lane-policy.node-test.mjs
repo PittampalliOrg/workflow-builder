@@ -51,4 +51,34 @@ describe("agent-browser lane policy", () => {
 		assert.match(bridge, /name: "agent_browser_close"/);
 		assert.match(dockerfile, /browser-lane-policy\.mjs/);
 	});
+
+	it("authorizes before selecting, provisioning, or spawning an execution lane", () => {
+		const bridge = readFileSync(new URL("./bridge.mjs", import.meta.url), "utf8");
+		const initialization = bridge.slice(bridge.indexOf('app.post("/mcp"'));
+		const authorizeAt = initialization.indexOf(
+			"await authorizeBrowserInitialization",
+		);
+		const sessionKeyAt = initialization.indexOf("const browserSession");
+		const provisionAt = initialization.indexOf("ensureLaneBrowser(browserSession)");
+		const spawnAt = initialization.indexOf("await makeProxy(ctxRef, browserSession)");
+		assert.ok(authorizeAt >= 0);
+		assert.ok(authorizeAt < sessionKeyAt);
+		assert.ok(sessionKeyAt < provisionAt);
+		assert.ok(provisionAt < spawnAt);
+		assert.match(
+			initialization.slice(authorizeAt, sessionKeyAt),
+			/if \(!initialization\)[\s\S]*rejectBrowserAuthorization/,
+		);
+	});
+
+	it("enforces the public tool allowlist before forwarding to the child", () => {
+		const bridge = readFileSync(new URL("./bridge.mjs", import.meta.url), "utf8");
+		const handler = bridge.slice(
+			bridge.indexOf("server.setRequestHandler(CallToolRequestSchema"),
+		);
+		const authorizeAt = handler.indexOf("isExternallyCallableTool(");
+		const forwardAt = handler.indexOf("child.callTool({ name, arguments:");
+		assert.ok(authorizeAt >= 0);
+		assert.ok(authorizeAt < forwardAt);
+	});
 });

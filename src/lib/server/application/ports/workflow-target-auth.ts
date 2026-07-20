@@ -4,12 +4,18 @@ export type WorkflowTargetAuthIdentity = Readonly<{
   platformId: string;
   projectId: string;
   tokenVersion: number;
+  executionStatus: "pending" | "running" | "success" | "error" | "cancelled";
+  executionCompletedAt: Date | null;
+  executionStopRequestedAt: Date | null;
+  userStatus: "ACTIVE" | "INACTIVE" | null;
+  projectMembershipId: string | null;
 }>;
 
 export type WorkflowTargetAuthAssertionClaims = Readonly<{
   executionId: string;
   userId: string;
   projectId: string;
+  tokenVersion: number;
 }>;
 
 export type WorkflowTargetAuthCookie = Readonly<{

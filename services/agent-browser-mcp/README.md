@@ -40,12 +40,12 @@ persists across calls within the session). On top of plain proxying it adds:
    session teardown). LLMs — especially smaller ones — reliably stall on choreographing
    `record_start`/`record_stop` pairs; taking capture out of the LLM's hands entirely makes
    video + HAR unconditional.
-3. **Curated tool surface.** The child runs the full `core,network,debug` profiles (the
-   bridge needs the record/HAR tools), but `tools/list` shown to the LLM is filtered to a
-   small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 19 tools) with schemas pruned
-   to the properties that matter (`url`, `selector`, `text`, `path`, …). 77 tools × a dozen
-   plumbing props each measurably degraded small-model tool choice. Calls to unlisted tools
-   still pass through — filtering only trims discovery.
+3. **Curated tool surface.** The child runs the full `core,network,debug,state` profiles (the
+   bridge needs the record/HAR/cookie tools), but both `tools/list` and `tools/call` are
+   restricted to a small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 21 tools) with
+   schemas pruned to the properties that matter (`url`, `selector`, `text`, `path`, …).
+   Configuration can narrow but never broaden that curated set, so state tools such as
+   `cookies_get` remain bridge-internal.
 
 4. **Demo scenes + auto-editor.** A bridge-implemented virtual tool `demo_scene`
    ({title, caption, focus?}) lets the agent mark scene boundaries with ONE semantic
@@ -60,18 +60,20 @@ persists across calls within the session). On top of plain proxying it adds:
 
 5. **Target-auth (authenticated demos of Workflow Builder).** Saved agents carry
    no target host or credential. For an execution, the BFF stamps only a
-   purpose-limited assertion bound to execution, user, and project. On first
-   navigation the bridge exchanges that assertion at the fixed BFF internal
-   endpoint using `INTERNAL_API_TOKEN`; the BFF revalidates current ownership,
-   derives its configured physical origin server-side, and returns a bounded
-   owner cookie. The bridge sets it `HttpOnly`, `SameSite=Strict`, host-only, and
-   only after an exact origin match. The assertion lasts up to one hour so K3 can
+   purpose-limited assertion bound to execution, user, and project. Every
+   execution-scoped MCP initialization validates it at the fixed BFF internal
+   endpoint using `INTERNAL_API_TOKEN` before selecting or spawning a browser
+   lane. The BFF revalidates live run state, active user status, and current
+   project membership; lane, MCP-session, and cookie-cache reuse are bound to a
+   digest of that exact assertion. On first target navigation the bridge plants
+   the validated owner cookie `HttpOnly`, `SameSite=Strict`, host-only, and only
+   after an exact origin match. The assertion lasts up to one hour so K3 can
    think before its first tool call; the 30-minute cookie is safely refreshed by
    the bridge before expiry. No general access JWT enters durable agent config,
    no global `Authorization` header is installed, and caller-selected origins
    are ignored.
 
-6. **Execution-scoped browser lifecycle.** Any MCP session carrying
+6. **Execution-scoped browser lifecycle.** Any authorized MCP session carrying
    `X-Wfb-Execution-Id` leases a BrowserStation lane when the farm is configured, independent
    of the optional per-node header. Explicit `agent_browser_close` releases it immediately;
    idle auto-capture cleanup persists the pending artifacts and then closes the abandoned
@@ -119,8 +121,8 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | var | default | meaning |
 | --- | --- | --- |
 | `PORT` | `8000` | HTTP port for the MCP endpoint |
-| `AGENT_BROWSER_TOOLS` | `core,network,debug` | tool profiles the **child** runs (record/HAR live in debug/network) |
-| `AGENT_BROWSER_EXPOSED_TOOLS` | 19 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
+| `AGENT_BROWSER_TOOLS` | `core,network,debug,state` | child profiles; record/HAR/state are used only by bridge internals unless their tools are in the curated public set |
+| `AGENT_BROWSER_EXPOSED_TOOLS` | 21 curated tools | comma-separated subset allowed through `tools/list` and `tools/call`; empty restores the curated default |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
 | `WORKFLOW_BUILDER_URL` | in-cluster BFF | fixed artifact and target-auth exchange base URL |

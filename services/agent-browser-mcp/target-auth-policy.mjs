@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE = "wb_access_token";
 export const TARGET_AUTH_ASSERTION_HEADER = "x-wfb-browser-target-assertion";
 
@@ -10,13 +12,91 @@ export const TARGET_AUTH_REFRESH_WINDOW_SECONDS = 5 * 60;
 /** The only execution-config value accepted by the bridge is a purpose proof. */
 export function parseTargetAuthAssertion(headers) {
   const assertion = String(headers[TARGET_AUTH_ASSERTION_HEADER] || "").trim();
-  if (
-    !assertion.startsWith(ASSERTION_PREFIX) ||
-    Buffer.byteLength(assertion, "utf8") > MAX_ASSERTION_BYTES
-  ) {
+  if (!targetAuthAssertionDigest(assertion)) {
     return null;
   }
   return { assertion };
+}
+
+/** Stable, non-secret binding for cache, lane, and MCP-session ownership. */
+export function targetAuthAssertionDigest(assertion) {
+  if (typeof assertion !== "string") return null;
+  const normalized = assertion.trim();
+  if (
+    !normalized.startsWith(ASSERTION_PREFIX) ||
+    Buffer.byteLength(normalized, "utf8") > MAX_ASSERTION_BYTES
+  ) {
+    return null;
+  }
+  return createHash("sha256").update(normalized, "utf8").digest("base64url");
+}
+
+/**
+ * Authorize an MCP initialization before any execution-scoped browser key,
+ * child process, or BrowserStation lane is selected. Anonymous callers remain
+ * supported only when they present neither an execution id nor an assertion.
+ */
+export async function authorizeBrowserInitialization({
+  executionId,
+  targetAuth,
+  exchange,
+}) {
+  const normalizedExecutionId =
+    typeof executionId === "string" ? executionId.trim() : "";
+  const assertion =
+    typeof targetAuth?.assertion === "string"
+      ? targetAuth.assertion.trim()
+      : "";
+  if (!normalizedExecutionId) {
+    return assertion
+      ? null
+      : {
+          executionId: null,
+          targetAuth: null,
+          assertionDigest: null,
+          targetAuthExchange: null,
+        };
+  }
+  const assertionDigest = targetAuthAssertionDigest(assertion);
+  if (!assertionDigest || typeof exchange !== "function") return null;
+  let targetAuthExchange;
+  try {
+    targetAuthExchange = await exchange({
+      assertion,
+      executionId: normalizedExecutionId,
+    });
+  } catch {
+    return null;
+  }
+  if (!targetAuthExchange) return null;
+  return {
+    executionId: normalizedExecutionId,
+    targetAuth: { assertion },
+    assertionDigest,
+    targetAuthExchange,
+  };
+}
+
+/** Exact-assertion binding for every reusable browser-session/lane key. */
+export function createTargetAuthSessionBindings() {
+  const entries = new Map();
+  return {
+    bind(browserSession, assertion) {
+      const digest = targetAuthAssertionDigest(assertion);
+      if (!browserSession || !digest) return null;
+      const existing = entries.get(browserSession);
+      if (existing && existing !== digest) return null;
+      entries.set(browserSession, digest);
+      return digest;
+    },
+    matches(browserSession, assertion) {
+      const digest = targetAuthAssertionDigest(assertion);
+      return Boolean(digest && entries.get(browserSession) === digest);
+    },
+    clear(browserSession) {
+      entries.delete(browserSession);
+    },
+  };
 }
 
 function parseOrigin(value) {
@@ -117,27 +197,46 @@ export function createTargetAuthExchangeCache({
 } = {}) {
   const entries = new Map();
   return {
-    async peek(browserSession) {
-      const pending = entries.get(browserSession);
-      return pending ? await pending : null;
+    prime(browserSession, input, value) {
+      const digest = targetAuthAssertionDigest(input?.assertion);
+      if (!browserSession || !digest || !value) return false;
+      const existing = entries.get(browserSession);
+      if (existing && existing.digest !== digest) return false;
+      entries.set(browserSession, {
+        digest,
+        pending: Promise.resolve(value),
+      });
+      return true;
+    },
+    async peek(browserSession, input) {
+      const digest = targetAuthAssertionDigest(input?.assertion);
+      const entry = entries.get(browserSession);
+      return digest && entry?.digest === digest ? await entry.pending : null;
     },
     async resolve(browserSession, input) {
-      const pendingExisting = entries.get(browserSession);
-      if (pendingExisting) {
-        const existing = await pendingExisting;
+      const digest = targetAuthAssertionDigest(input?.assertion);
+      if (!browserSession || !digest) return null;
+      const entry = entries.get(browserSession);
+      if (entry && entry.digest !== digest) return null;
+      if (entry) {
+        const existing = await entry.pending;
         if (!targetAuthNeedsRefresh(existing, now(), refreshWindowSeconds)) {
           return existing;
         }
         entries.delete(browserSession);
       }
       const pending = Promise.resolve().then(() => exchange(input));
-      entries.set(browserSession, pending);
+      entries.set(browserSession, { digest, pending });
       try {
         const resolved = await pending;
-        if (!resolved) entries.delete(browserSession);
+        if (!resolved && entries.get(browserSession)?.pending === pending) {
+          entries.delete(browserSession);
+        }
         return resolved;
       } catch (error) {
-        entries.delete(browserSession);
+        if (entries.get(browserSession)?.pending === pending) {
+          entries.delete(browserSession);
+        }
         throw error;
       }
     },

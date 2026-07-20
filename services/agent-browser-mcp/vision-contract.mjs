@@ -17,8 +17,25 @@ export const DEFAULT_EXPOSED_TOOLS = Object.freeze([
 	"agent_browser_get_url",
 	"agent_browser_get_title",
 	"agent_browser_pdf",
+	"agent_browser_console",
+	"agent_browser_errors",
 	"agent_browser_close",
 ]);
+
+/** Operator configuration may narrow, but never broaden, the public surface. */
+export function resolveExposedTools(configured) {
+	const requested = String(configured ?? "")
+		.split(",")
+		.map((name) => name.trim())
+		.filter(Boolean);
+	const selected = requested.length ? requested : DEFAULT_EXPOSED_TOOLS;
+	const curated = new Set(DEFAULT_EXPOSED_TOOLS);
+	return [...new Set(selected.filter((name) => curated.has(name)))];
+}
+
+export function isExternallyCallableTool(name, exposedTools, bridgeTools = []) {
+	return exposedTools.includes(name) || bridgeTools.includes(name);
+}
 
 export function inlineImage(result) {
 	const image = (result?.content || []).find(

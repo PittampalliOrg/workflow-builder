@@ -13,11 +13,22 @@ type ExpectedOwner = Readonly<{
   expectedProjectId: string | null;
 }>;
 
+function isCurrentlyAuthorized(identity: WorkflowTargetAuthIdentity): boolean {
+  return (
+    identity.executionStatus === "running" &&
+    identity.executionCompletedAt === null &&
+    identity.executionStopRequestedAt === null &&
+    identity.userStatus === "ACTIVE" &&
+    Boolean(identity.projectMembershipId)
+  );
+}
+
 function matchesExpectedOwner(
   identity: WorkflowTargetAuthIdentity,
   input: ExpectedOwner,
 ): boolean {
   return (
+    isCurrentlyAuthorized(identity) &&
     identity.userId === input.expectedUserId &&
     Boolean(input.expectedProjectId) &&
     identity.projectId === input.expectedProjectId
@@ -55,6 +66,7 @@ export class ApplicationWorkflowTargetAuthService {
         executionId,
         userId: identity.userId,
         projectId: identity.projectId,
+        tokenVersion: identity.tokenVersion,
       });
     } catch {
       return null;
@@ -82,8 +94,10 @@ export class ApplicationWorkflowTargetAuthService {
         await this.deps.identities.resolveExecutionOwner(executionId);
       if (
         !identity ||
+        !isCurrentlyAuthorized(identity) ||
         identity.userId !== claims.userId ||
-        identity.projectId !== claims.projectId
+        identity.projectId !== claims.projectId ||
+        identity.tokenVersion !== claims.tokenVersion
       ) {
         return null;
       }

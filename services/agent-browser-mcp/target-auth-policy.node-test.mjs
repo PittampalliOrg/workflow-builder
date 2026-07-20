@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  authorizeBrowserInitialization,
   createTargetAuthExchangeCache,
+  createTargetAuthSessionBindings,
   exchangeTargetAuth,
   openedUrlMatchesTargetOrigin,
   parseTargetAuthAssertion,
   parseTargetAuthExchange,
+  targetAuthAssertionDigest,
   targetAuthCookieToolArguments,
   WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE,
 } from "./target-auth-policy.mjs";
@@ -78,6 +81,57 @@ test("exchanges only against the configured BFF with service auth", async () => 
   });
 });
 
+test("fails execution initialization closed before browser allocation", async () => {
+  const exchange = async ({ assertion: supplied, executionId }) =>
+    supplied === assertion && executionId === "execution-1"
+      ? exchangePayload
+      : null;
+  let allocated = false;
+  const denied = await authorizeBrowserInitialization({
+    executionId: "guessed-execution-id",
+    targetAuth: { assertion },
+    exchange,
+  });
+  if (denied) allocated = true;
+  assert.equal(denied, null);
+  assert.equal(allocated, false);
+  assert.equal(
+    await authorizeBrowserInitialization({
+      executionId: "execution-1",
+      targetAuth: null,
+      exchange: async () => {
+        throw new Error("missing assertions must not be exchanged");
+      },
+    }),
+    null,
+  );
+  assert.deepEqual(
+    await authorizeBrowserInitialization({
+      executionId: "execution-1",
+      targetAuth: { assertion },
+      exchange,
+    }),
+    {
+      executionId: "execution-1",
+      targetAuth: { assertion },
+      assertionDigest: targetAuthAssertionDigest(assertion),
+      targetAuthExchange: exchangePayload,
+    },
+  );
+});
+
+test("binds reusable browser sessions to the exact assertion", () => {
+  const bindings = createTargetAuthSessionBindings();
+  const otherAssertion = "wfb_browser_auth_v1.other.signature";
+  assert.ok(bindings.bind("wfb-execution-1", assertion));
+  assert.equal(bindings.matches("wfb-execution-1", assertion), true);
+  assert.equal(bindings.matches("wfb-execution-1", ""), false);
+  assert.equal(bindings.matches("wfb-execution-1", otherAssertion), false);
+  assert.equal(bindings.bind("wfb-execution-1", otherAssertion), null);
+  bindings.clear("wfb-execution-1");
+  assert.ok(bindings.bind("wfb-execution-1", otherAssertion));
+});
+
 test("sets an HttpOnly cookie only for the exact BFF-derived origin", () => {
   const parsed = parseTargetAuthExchange(exchangePayload, nowMs);
   assert.ok(parsed);
@@ -145,13 +199,14 @@ test("refreshes the cached cookie before expiry", async () => {
       };
     },
   });
-  const first = await cache.resolve("browser-1", {});
+  const input = { assertion };
+  const first = await cache.resolve("browser-1", input);
   assert.equal(first.cookie.value, "cookie-1");
   currentMs += 4 * 60 * 1_000;
-  const cached = await cache.resolve("browser-1", {});
+  const cached = await cache.resolve("browser-1", input);
   assert.equal(cached.cookie.value, "cookie-1");
   currentMs += 2 * 60 * 1_000;
-  const refreshed = await cache.resolve("browser-1", {});
+  const refreshed = await cache.resolve("browser-1", input);
   assert.equal(refreshed.cookie.value, "cookie-2");
   assert.equal(calls, 2);
 });
@@ -165,7 +220,32 @@ test("leaves a failed exchange retryable", async () => {
       return calls === 1 ? null : exchangePayload;
     },
   });
-  assert.equal(await cache.resolve("browser-1", {}), null);
-  assert.deepEqual(await cache.resolve("browser-1", {}), exchangePayload);
+  const input = { assertion };
+  assert.equal(await cache.resolve("browser-1", input), null);
+  assert.deepEqual(await cache.resolve("browser-1", input), exchangePayload);
   assert.equal(calls, 2);
+});
+
+test("never reuses a primed exchange for a missing or different assertion", async () => {
+  let calls = 0;
+  const cache = createTargetAuthExchangeCache({
+    now: () => nowMs,
+    exchange: async () => {
+      calls += 1;
+      return exchangePayload;
+    },
+  });
+  assert.equal(cache.prime("browser-1", { assertion }, exchangePayload), true);
+  assert.deepEqual(
+    await cache.peek("browser-1", { assertion }),
+    exchangePayload,
+  );
+  assert.equal(await cache.peek("browser-1", { assertion: "" }), null);
+  assert.equal(
+    await cache.resolve("browser-1", {
+      assertion: "wfb_browser_auth_v1.other.signature",
+    }),
+    null,
+  );
+  assert.equal(calls, 0);
 });
