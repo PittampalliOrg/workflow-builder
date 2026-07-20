@@ -1,6 +1,6 @@
 /**
  * Human classification of raw team member events for the Live board: one
- * event → {label, tone}. Turns "mcp.tool_call wfb_goal_claim_task" into
+ * event → {label, tone}. Turns "mcp.tool_call wfb_team_claim_task" into
  * "claiming a task" so the board reads like a newsroom ticker, not a log.
  */
 
@@ -18,7 +18,8 @@ export type ActivityTone =
 	| "idle" // finished / waiting (muted)
 	| "error"; // failed (red)
 
-/** Friendly verbs for the team MCP tools (wfb_goal_-prefixed on the wire). */
+/** Friendly verbs for the team MCP tools (wfb_team_-prefixed on the wire;
+ * wfb_goal_ retained for in-flight sessions spawned before the rename). */
 const MCP_VERBS: Record<string, string> = {
 	claim_task: "claiming a task",
 	update_task: "completing a task",
@@ -37,7 +38,10 @@ const MCP_VERBS: Record<string, string> = {
 };
 
 function mcpVerb(tool: string): string | null {
-	const bare = tool.replace(/^wfb_goal_/, "").replace(/^wfb_/, "");
+	const bare = tool
+		.replace(/^wfb_team_/, "")
+		.replace(/^wfb_goal_/, "")
+		.replace(/^wfb_/, "");
 	return MCP_VERBS[bare] ?? null;
 }
 

@@ -777,7 +777,9 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(servers).toEqual([]);
 	});
 
-	it("keeps platform MCP server + session/guard headers for non-CLI dynamic-script spawns", async () => {
+	it("does not auto-wire any goal MCP server for non-CLI dynamic-script spawns", async () => {
+		// The goal MCP server (create/update/get_goal) is no longer injected —
+		// goals are authored in code and completed by the BFF evidence backstop.
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue({
 			engineType: "dynamic-script",
 		} as never);
@@ -792,11 +794,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 			mcpServers?: Array<Record<string, unknown>>;
 		};
 		const servers = config.mcpServers ?? [];
-		expect(servers).toHaveLength(1);
-		expect(String(servers[0].url)).toContain("workflow-mcp-server");
-		const headers = servers[0].headers as Record<string, string>;
-		expect(headers["X-Wfb-Session-Id"]).toBe("sess-dapr-agent-py");
-		expect(headers["X-Wfb-Script-Depth"]).toBe("1");
+		expect(servers).toEqual([]);
 	});
 
 	it("loads the resolved DB agent's full config (mcpServers/systemPrompt/builtinTools) for dynamic-script agent({agent})", async () => {
@@ -851,11 +849,12 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(config.modelSpec).toBe("kimi/kimi-k3");
 		expect(config.reasoningEffort).toBe("max");
 		expect(config.contextWindowTokens).toBe(1_048_576);
-		// The DB agent's agent-browser MCP server survives, PLUS the auto-wired goal server.
+		// The DB agent's agent-browser MCP server survives; no goal MCP server
+		// is auto-wired anymore.
 		const servers = config.mcpServers ?? [];
 		const urls = servers.map((s) => String(s.url));
 		expect(urls.some((u) => u.includes("agent-browser-mcp"))).toBe(true);
-		expect(urls.some((u) => u.includes("workflow-mcp-server"))).toBe(true);
+		expect(urls.some((u) => u.includes("workflow-mcp-server"))).toBe(false);
 		// The resolved agent id flows to the child session.
 		expect(childInput.resolvedAgentSlug ?? payload.resolvedAgentSlug).toBe(
 			"kimi-k3-browser-agent",

@@ -1,6 +1,7 @@
 import { daprFetch } from "$lib/server/dapr-client";
 import {
   deriveLeadTeamId,
+  ensureTeamMcpServer,
   stampTeamMcpHeaders,
 } from "$lib/server/teams/mcp-wiring";
 import { getMemberBySession } from "$lib/server/teams/team-repo";
@@ -358,12 +359,17 @@ export async function spawnSessionWorkflow(
 				}
 			: {}),
 		// Goals are authored in code (dynamic-script) and completed by the BFF
-		// evidence backstop, so the goal MCP server is no longer auto-wired here.
-		mcpServers: stampTeamMcpHeaders(rewrittenMcp, {
-			teamId,
-			isTeammate,
-			teamsEnabled,
-		}),
+		// evidence backstop, so the goal MCP server is no longer auto-wired.
+		// Team-capable sessions still get the Workflow MCP server injected (for
+		// the team tools), then stamped with their team headers.
+		mcpServers: stampTeamMcpHeaders(
+			ensureTeamMcpServer(rewrittenMcp, {
+				isTeammate,
+				teamsEnabled,
+				isCliRuntime: swapTarget?.capabilities?.interactiveTerminal === true,
+			}),
+			{ teamId, isTeammate, teamsEnabled },
+		),
 		compiledStaticPresetSections: compiledPresetStack.static,
 		compiledDynamicPresetSections: compiledPresetStack.dynamic,
 		// Phase 3a v2: per-ref version-id + mlflow_uri manifest so

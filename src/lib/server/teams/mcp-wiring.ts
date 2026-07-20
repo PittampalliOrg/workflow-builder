@@ -20,8 +20,66 @@
  * override (default off) for fleet-wide enablement.
  */
 
+/**
+ * The Workflow MCP server that hosts the team tools (claim_task / update_task /
+ * publish_knowledge / …). Previously teammates reached it via the goal MCP
+ * entry that `ensureGoalMcpServer` auto-wired; that entry was removed with the
+ * goal tools, so the team path now injects its own entry.
+ */
+export const WORKFLOW_MCP_SERVER_URL =
+	process.env.WORKFLOW_MCP_SERVER_URL ??
+	process.env.GOAL_MCP_SERVER_URL ??
+	"http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp";
+
+function normalizedUrl(value: unknown): string {
+	return typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+}
+
+function hasWorkflowMcpEntry(servers: unknown[]): boolean {
+	return servers.some((entry) => {
+		if (!entry || typeof entry !== "object") return false;
+		const url = (entry as Record<string, unknown>).url;
+		return (
+			normalizedUrl(url).includes("workflow-mcp-server") ||
+			normalizedUrl(url) === normalizedUrl(WORKFLOW_MCP_SERVER_URL)
+		);
+	});
+}
+
 export function deriveLeadTeamId(sessionId: string): string {
 	return `team-${sessionId}`;
+}
+
+/**
+ * Inject the Workflow MCP server entry (`wfb_team`) so team-capable sessions
+ * can reach the team tools. Same gate as `stampTeamMcpHeaders`: teammates
+ * always, opted-in leads (`agentConfig.teamsEnabled`), or the global override.
+ * Skipped when a workflow-mcp-server entry is already present (the header
+ * stamper then decorates that one). CLI-only exclusion is handled by callers.
+ */
+export function ensureTeamMcpServer<T>(
+	servers: T,
+	opts: { isTeammate: boolean; teamsEnabled?: boolean; isCliRuntime?: boolean },
+): T {
+	// CLI runtimes do not receive the platform-injected Workflow MCP entry
+	// (matches the prior goal-server behavior; CLI agents configure MCP via
+	// their own adapter).
+	if (opts.isCliRuntime) return servers;
+	const enabled =
+		opts.isTeammate ||
+		opts.teamsEnabled === true ||
+		process.env.TEAM_MCP_AUTO_WIRE === "true";
+	if (!enabled) return servers;
+	if (!Array.isArray(servers)) return servers;
+	if (hasWorkflowMcpEntry(servers)) return servers;
+	return [
+		...servers,
+		{
+			name: "wfb_team",
+			transport: "streamable_http",
+			url: WORKFLOW_MCP_SERVER_URL,
+		},
+	] as T;
 }
 
 export function stampTeamMcpHeaders<T>(
