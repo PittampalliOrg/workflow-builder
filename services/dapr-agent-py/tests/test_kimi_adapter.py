@@ -405,6 +405,14 @@ def test_kimi_sse_publishes_coalesced_nonterminal_deltas(monkeypatch) -> None:
     assert not any(event_type == "agent.message" for event_type, _, _ in published)
 
 
+def test_kimi_stream_deltas_are_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("DAPR_AGENT_PY_STREAM_DELTAS", raising=False)
+    assert adapter._stream_deltas_enabled() is False
+
+    monkeypatch.setenv("DAPR_AGENT_PY_STREAM_DELTAS", "true")
+    assert adapter._stream_deltas_enabled() is True
+
+
 def test_kimi_sse_accumulates_indexed_tool_call_fragments(monkeypatch) -> None:
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test")
     lines = [
