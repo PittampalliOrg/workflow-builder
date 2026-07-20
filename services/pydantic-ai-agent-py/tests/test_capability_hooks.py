@@ -189,3 +189,59 @@ async def test_read_tool_result_tool_is_offered(workspace):
     assert "read_tool_result" in names
     # core coding tools still present alongside it
     assert {"read_file", "write_file", "run_command"} <= names
+
+
+def test_execute_tool_does_not_relist_toolsets(monkeypatch, workspace):
+    """Regression guard: execute_tool must NOT call router.tools() a second
+    time for the after_tool_execute hook (that re-lists MCP over the network
+    and can wedge the durable activity). It routes tool_def=None instead."""
+    import src.workflow as _wf
+
+    calls = {"count": 0}
+    real = toolsets_mod.ToolRouter.tools
+
+    async def counting_tools(self):
+        calls["count"] += 1
+        return await real(self)
+
+    monkeypatch.setattr(toolsets_mod.ToolRouter, "tools", counting_tools)
+    toolsets_mod._ROUTERS.clear()
+    (workspace / "f.txt").write_text("hello")
+    out = execute_tool(
+        FakeActivityCtx(),
+        {
+            "call": {"toolName": "read_file", "toolCallId": "t1", "args": {"path": "f.txt"}},
+            "context": {},
+            "iteration": 0,
+        },
+    )
+    assert load_messages([out["message"]])[0].parts[0].tool_call_id == "t1"
+    # router.call lists once; the after-hook must NOT list again.
+    assert calls["count"] == 1
+
+
+def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
+    """A hung network (MCP) toolset times out and is skipped — the turn's
+    other tools still resolve (activity never wedges)."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(toolsets_mod, "MCP_TIMEOUT_SECONDS", 1)
+    toolsets_mod._ROUTERS.clear()
+    router = toolsets_mod.ToolRouter({})
+
+    class HangingToolset:
+        async def get_tools(self, ctx):
+            await _asyncio.sleep(60)
+            return {}
+
+    hung = HangingToolset()
+    router._toolsets.append(hung)
+    router._network_toolsets.add(id(hung))
+
+    async def go():
+        return await router.tools()
+
+    names = set(_asyncio.get_event_loop().run_until_complete(go())
+                if False else __import__("asyncio").run(go()))
+    # local FS/Shell tools still present despite the hung MCP toolset
+    assert {"read_file", "run_command"} <= names

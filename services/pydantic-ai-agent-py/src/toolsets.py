@@ -24,6 +24,7 @@ construction remains deterministic from the serializable agentConfig.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -39,6 +40,7 @@ from src.config import (
     COMPACTION_ENABLED,
     COMPACTION_KEEP_MESSAGES,
     COMPACTION_MAX_MESSAGES,
+    MCP_TIMEOUT_SECONDS,
     OVERFLOW_ENABLED,
     SHELL_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
@@ -146,7 +148,12 @@ class ToolRouter:
     def __init__(self, agent_config: dict[str, Any] | None) -> None:
         self._capabilities = build_capabilities(agent_config)
         self._toolsets: list[Any] = []
+        # Toolsets whose get_tools/call_tool cross the network (MCP): guard
+        # them with a timeout so a stalled streamable-HTTP session (no
+        # per-call timeout upstream) can never wedge a durable activity.
+        self._network_toolsets: set[int] = set()
         for cap in self._capabilities:
+            is_mcp = type(cap).__name__ == "MCP" or "mcp" in type(cap).__module__.lower()
             try:
                 toolset = cap.get_toolset()
             except Exception as exc:  # noqa: BLE001
@@ -156,17 +163,34 @@ class ToolRouter:
                 continue
             if toolset is not None:
                 self._toolsets.append(toolset)
+                if is_mcp:
+                    self._network_toolsets.add(id(toolset))
 
     # ------------------------------------------------------------------
     # Tool routing
     # ------------------------------------------------------------------
+
+    async def _get_tools(self, toolset: Any, ctx: Any) -> dict[str, Any]:
+        """get_tools on one toolset, timeout-guarded for network toolsets."""
+        coro = toolset.get_tools(ctx)
+        if id(toolset) in self._network_toolsets:
+            return await asyncio.wait_for(coro, timeout=MCP_TIMEOUT_SECONDS)
+        return await coro
 
     async def tools(self) -> dict[str, tuple[Any, Any]]:
         ctx = _run_context()
         combined: dict[str, tuple[Any, Any]] = {}
         for toolset in self._toolsets:
             try:
-                tools = await toolset.get_tools(ctx)
+                tools = await self._get_tools(toolset, ctx)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[toolsets] %s.get_tools timed out after %ss — MCP tools "
+                    "unavailable this turn (activity continues)",
+                    type(toolset).__name__,
+                    MCP_TIMEOUT_SECONDS,
+                )
+                continue
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[toolsets] get_tools failed on %s: %s", type(toolset).__name__, exc
@@ -184,7 +208,12 @@ class ToolRouter:
         if name not in tools:
             raise KeyError(f"unknown tool {name!r}; available: {sorted(tools)}")
         toolset, tool = tools[name]
-        return await toolset.call_tool(name, dict(args or {}), _run_context(), tool)
+        coro = toolset.call_tool(name, dict(args or {}), _run_context(), tool)
+        # Timeout-guard network (MCP) tool calls; local FS/Shell tools run
+        # unbounded (Shell has its own per-command timeout).
+        if id(toolset) in self._network_toolsets:
+            return await asyncio.wait_for(coro, timeout=MCP_TIMEOUT_SECONDS)
+        return await coro
 
     async def instructions(self) -> str:
         parts: list[str] = []
