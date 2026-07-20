@@ -3936,6 +3936,9 @@ async function ensureCliShowcaseAgentFor(
 		reasoningEffort?: string;
 		contextWindowTokens?: number;
 		runtimeIsolation?: "auto" | "shared" | "dedicated";
+		allowedTools?: string[];
+		maxTurns?: number;
+		timeoutMinutes?: number;
 		// Unified reasoning-effort selector for interactive-cli agents (mapped to
 		// each CLI's native control by the cli-agent-py adapters). Only set for
 		// agents that want a non-default effort (e.g. claude-code-cli "ultracode").
@@ -3959,10 +3962,13 @@ async function ensureCliShowcaseAgentFor(
 			: {}),
 		...(opts.effort ? { effort: opts.effort } : {}),
 		...(opts.instructions ? { instructions: opts.instructions } : {}),
-		maxTurns: 50,
-		timeoutMinutes: 30,
+		maxTurns: opts.maxTurns ?? 50,
+		timeoutMinutes: opts.timeoutMinutes ?? 30,
 		skills: [] as unknown[],
 		tools: [] as unknown[],
+		...(opts.allowedTools
+			? { allowedTools: [...opts.allowedTools].sort() }
+			: {}),
 		mcpServers: (opts.mcpServers ?? []) as unknown[],
 	};
 	const configHash = crypto
@@ -4087,6 +4093,41 @@ async function seedGeneratorCriticShowcases(params: {
 		reasoningEffort: "max",
 		contextWindowTokens: 1_048_576,
 		runtimeIsolation: "dedicated",
+	});
+	// Pixel reviewer for dynamic-script workflows. The BFF adds the trusted
+	// Workflow MCP connection to script-spawned sessions; this definition narrows
+	// that server to execution diagnostics and execution-owned screenshot blobs.
+	// It deliberately has no browser-control or filesystem tools because
+	// browser/validate already produced the evidence it reviews.
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: "kimi-k3-artifact-vision-reviewer-agent",
+		runtime: "dapr-agent-py",
+		name: "Kimi K3 Artifact Vision Reviewer",
+		description:
+			"Kimi K3 reviewer for execution-owned browser screenshots returned as native Workflow MCP image content.",
+		modelSpec: "kimi/kimi-k3",
+		reasoningEffort: "max",
+		contextWindowTokens: 1_048_576,
+		runtimeIsolation: "dedicated",
+		maxTurns: 12,
+		timeoutMinutes: 20,
+		mcpServers: [
+			{
+				name: "trace",
+				transport: "streamable_http",
+				url: "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp",
+				allowedTools: [
+					"debug_workflow_execution",
+					"trace_get_browser_screenshot",
+				],
+			},
+		],
+		allowedTools: [
+			"trace_debug_workflow_execution",
+			"trace_trace_get_browser_screenshot",
+		],
+		instructions:
+			"Review only execution-owned browser screenshots supplied through Workflow MCP. Use trace_debug_workflow_execution first and trace_trace_get_browser_screenshot for every requested storage reference. Treat screenshot tool image content as the visual source of truth. Do not infer pixels from metadata or transcript claims. Return the requested structured result as soon as all referenced screenshots have been inspected.",
 	});
 	// Shared Playwright MCP config for every CLI critic (same sandbox image →
 	// same `playwright-mcp` binary + pinned Chromium; --executable-path avoids the

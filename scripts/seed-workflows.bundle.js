@@ -17268,10 +17268,11 @@ async function ensureCliShowcaseAgentFor(sqlClient, userId, projectId, opts) {
     ...opts.runtimeIsolation ? { runtimeIsolation: opts.runtimeIsolation } : {},
     ...opts.effort ? { effort: opts.effort } : {},
     ...opts.instructions ? { instructions: opts.instructions } : {},
-    maxTurns: 50,
-    timeoutMinutes: 30,
+    maxTurns: opts.maxTurns ?? 50,
+    timeoutMinutes: opts.timeoutMinutes ?? 30,
     skills: [],
     tools: [],
+    ...opts.allowedTools ? { allowedTools: [...opts.allowedTools].sort() } : {},
     mcpServers: opts.mcpServers ?? []
   };
   const configHash = crypto4.createHash("sha256").update(JSON.stringify(config)).digest("hex");
@@ -17356,6 +17357,34 @@ async function seedGeneratorCriticShowcases(params) {
     reasoningEffort: "max",
     contextWindowTokens: 1048576,
     runtimeIsolation: "dedicated"
+  });
+  await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+    slug: "kimi-k3-artifact-vision-reviewer-agent",
+    runtime: "dapr-agent-py",
+    name: "Kimi K3 Artifact Vision Reviewer",
+    description: "Kimi K3 reviewer for execution-owned browser screenshots returned as native Workflow MCP image content.",
+    modelSpec: "kimi/kimi-k3",
+    reasoningEffort: "max",
+    contextWindowTokens: 1048576,
+    runtimeIsolation: "dedicated",
+    maxTurns: 12,
+    timeoutMinutes: 20,
+    mcpServers: [
+      {
+        name: "trace",
+        transport: "streamable_http",
+        url: "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp",
+        allowedTools: [
+          "debug_workflow_execution",
+          "trace_get_browser_screenshot"
+        ]
+      }
+    ],
+    allowedTools: [
+      "trace_debug_workflow_execution",
+      "trace_trace_get_browser_screenshot"
+    ],
+    instructions: "Review only execution-owned browser screenshots supplied through Workflow MCP. Use trace_debug_workflow_execution first and trace_trace_get_browser_screenshot for every requested storage reference. Treat screenshot tool image content as the visual source of truth. Do not infer pixels from metadata or transcript claims. Return the requested structured result as soon as all referenced screenshots have been inspected."
   });
   const PLAYWRIGHT_CRITIC_MCP = [
     {
