@@ -25,18 +25,19 @@ export const POST: RequestHandler = async ({ request }) => {
     );
   }
 
-  const valid = await getApplicationAdapters().workflowTargetAuth.validate({
-    assertion,
-    executionId,
-  });
-  if (!valid) {
+  const validation = await getApplicationAdapters().workflowTargetAuth.validate(
+    {
+      assertion,
+      executionId,
+    },
+  );
+  if (!validation) {
     return json(
       { error: "Invalid browser target authorization" },
       { status: 403 },
     );
   }
-  return new Response(null, {
-    status: 204,
+  return json(validation, {
     headers: {
       "Cache-Control": "no-store",
       Pragma: "no-cache",

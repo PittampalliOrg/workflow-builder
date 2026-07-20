@@ -101,6 +101,7 @@ import {
 import {
   EnvironmentWorkflowTargetAuthOriginProvider,
   HmacWorkflowTargetAuthAssertionAdapter,
+  HmacWorkflowTargetAuthBindingAdapter,
   JwtWorkflowTargetAuthCookieIssuer,
   PostgresWorkflowTargetAuthIdentityRepository,
 } from "$lib/server/application/adapters/workflow-target-auth";
@@ -1556,6 +1557,7 @@ export function getApplicationAdapters(
     (workflowTargetAuth ??= new ApplicationWorkflowTargetAuthService({
       identities: new PostgresWorkflowTargetAuthIdentityRepository(),
       assertions: new HmacWorkflowTargetAuthAssertionAdapter(),
+      bindings: new HmacWorkflowTargetAuthBindingAdapter(),
       cookies: new JwtWorkflowTargetAuthCookieIssuer(),
       origin: new EnvironmentWorkflowTargetAuthOriginProvider(),
     }));

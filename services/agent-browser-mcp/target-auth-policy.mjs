@@ -4,6 +4,9 @@ export const WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE = "wb_access_token";
 export const TARGET_AUTH_ASSERTION_HEADER = "x-wfb-browser-target-assertion";
 
 const ASSERTION_PREFIX = "wfb_browser_auth_v1.";
+const AUTHORIZATION_BINDING_PREFIX = "wfb_browser_binding_v1.";
+const AUTHORIZATION_BINDING_PATTERN =
+  /^wfb_browser_binding_v1\.[A-Za-z0-9_-]{43}$/;
 const MAX_ASSERTION_BYTES = 2_048;
 const MAX_COOKIE_LIFETIME_SECONDS = 30 * 60;
 const CLOCK_SKEW_SECONDS = 10;
@@ -50,43 +53,32 @@ export async function authorizeBrowserInitialization({
   if (!normalizedExecutionId) return null;
   const assertionDigest = targetAuthAssertionDigest(assertion);
   if (!assertionDigest || typeof validate !== "function") return null;
-  let authorized;
+  let authorizationBinding;
   try {
-    authorized = await validate({
-      assertion,
-      executionId: normalizedExecutionId,
-    });
+    authorizationBinding = parseTargetAuthorizationBinding(
+      await validate({
+        assertion,
+        executionId: normalizedExecutionId,
+      }),
+    );
   } catch {
     return null;
   }
-  if (authorized !== true) return null;
+  if (!authorizationBinding) return null;
   return {
     executionId: normalizedExecutionId,
     targetAuth: { assertion },
     assertionDigest,
+    authorizationBinding,
   };
 }
 
-/** Exact-assertion binding for every reusable browser-session/lane key. */
-export function createTargetAuthSessionBindings() {
-  const entries = new Map();
-  return {
-    bind(browserSession, assertion) {
-      const digest = targetAuthAssertionDigest(assertion);
-      if (!browserSession || !digest) return null;
-      const existing = entries.get(browserSession);
-      if (existing && existing !== digest) return null;
-      entries.set(browserSession, digest);
-      return digest;
-    },
-    matches(browserSession, assertion) {
-      const digest = targetAuthAssertionDigest(assertion);
-      return Boolean(digest && entries.get(browserSession) === digest);
-    },
-    clear(browserSession) {
-      entries.delete(browserSession);
-    },
-  };
+export function parseTargetAuthorizationBinding(value) {
+  if (typeof value !== "string") return null;
+  const binding = value.trim();
+  return value === binding && AUTHORIZATION_BINDING_PATTERN.test(binding)
+    ? binding
+    : null;
 }
 
 /** Reauthorize every request; the MCP session id is routing state, not auth. */
@@ -95,8 +87,9 @@ export async function reauthorizeBrowserSession({
   targetAuth,
   expectedExecutionId,
   expectedAssertionDigest,
-  browserSession,
-  bindings,
+  expectedAuthorizationBinding,
+  browserContext,
+  isBrowserContextCurrent,
   validate,
 }) {
   const normalizedExecutionId =
@@ -111,15 +104,18 @@ export async function reauthorizeBrowserSession({
     normalizedExecutionId !== expectedExecutionId ||
     !digest ||
     digest !== expectedAssertionDigest ||
-    !bindings?.matches(browserSession, assertion) ||
+    !parseTargetAuthorizationBinding(expectedAuthorizationBinding) ||
+    typeof isBrowserContextCurrent !== "function" ||
+    !isBrowserContextCurrent(browserContext, expectedAuthorizationBinding) ||
     typeof validate !== "function"
   ) {
     return false;
   }
   try {
     return (
-      (await validate({ assertion, executionId: normalizedExecutionId })) ===
-      true
+      parseTargetAuthorizationBinding(
+        await validate({ assertion, executionId: normalizedExecutionId }),
+      ) === expectedAuthorizationBinding
     );
   } catch {
     return false;
@@ -222,53 +218,60 @@ export function createTargetAuthExchangeCache({
   now = () => Date.now(),
   refreshWindowSeconds = TARGET_AUTH_REFRESH_WINDOW_SECONDS,
 } = {}) {
-  const entries = new Map();
+  let entry = null;
+  function inputBinding(input) {
+    return parseTargetAuthorizationBinding(input?.authorizationBinding);
+  }
   return {
-    prime(browserSession, input, value) {
-      const digest = targetAuthAssertionDigest(input?.assertion);
-      if (!browserSession || !digest || !value) return false;
-      const existing = entries.get(browserSession);
-      if (existing && existing.digest !== digest) return false;
-      entries.set(browserSession, {
-        digest,
+    prime(input, value) {
+      const authorizationBinding = inputBinding(input);
+      if (!authorizationBinding || !value) return false;
+      if (entry && entry.authorizationBinding !== authorizationBinding) {
+        return false;
+      }
+      entry = {
+        authorizationBinding,
         pending: Promise.resolve(value),
-      });
+      };
       return true;
     },
-    async peek(browserSession, input) {
-      const digest = targetAuthAssertionDigest(input?.assertion);
-      const entry = entries.get(browserSession);
-      return digest && entry?.digest === digest ? await entry.pending : null;
+    async peek(input) {
+      const authorizationBinding = inputBinding(input);
+      return authorizationBinding &&
+        entry?.authorizationBinding === authorizationBinding
+        ? await entry.pending
+        : null;
     },
-    async resolve(browserSession, input) {
-      const digest = targetAuthAssertionDigest(input?.assertion);
-      if (!browserSession || !digest) return null;
-      const entry = entries.get(browserSession);
-      if (entry && entry.digest !== digest) return null;
+    async resolve(input) {
+      const authorizationBinding = inputBinding(input);
+      if (!authorizationBinding) return null;
+      if (entry && entry.authorizationBinding !== authorizationBinding) {
+        return null;
+      }
       if (entry) {
         const existing = await entry.pending;
         if (!targetAuthNeedsRefresh(existing, now(), refreshWindowSeconds)) {
           return existing;
         }
-        entries.delete(browserSession);
+        entry = null;
       }
       const pending = Promise.resolve().then(() => exchange(input));
-      entries.set(browserSession, { digest, pending });
+      entry = { authorizationBinding, pending };
       try {
         const resolved = await pending;
-        if (!resolved && entries.get(browserSession)?.pending === pending) {
-          entries.delete(browserSession);
+        if (!resolved && entry?.pending === pending) {
+          entry = null;
         }
         return resolved;
       } catch (error) {
-        if (entries.get(browserSession)?.pending === pending) {
-          entries.delete(browserSession);
+        if (entry?.pending === pending) {
+          entry = null;
         }
         throw error;
       }
     },
-    clear(browserSession) {
-      entries.delete(browserSession);
+    clear() {
+      entry = null;
     },
   };
 }
@@ -322,7 +325,7 @@ export async function validateTargetAuth({
   executionId,
   fetchImpl = fetch,
 }) {
-  if (!internalToken || !assertion || !executionId) return false;
+  if (!internalToken || !assertion || !executionId) return null;
   let endpoint;
   try {
     endpoint = new URL(
@@ -330,12 +333,13 @@ export async function validateTargetAuth({
       `${bffUrl.replace(/\/$/, "")}/`,
     ).toString();
   } catch {
-    return false;
+    return null;
   }
   try {
     const response = await fetchImpl(endpoint, {
       method: "POST",
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         "X-Internal-Token": internalToken,
       },
@@ -343,9 +347,38 @@ export async function validateTargetAuth({
         targetAuthAssertion: assertion,
         executionId,
       }),
+      redirect: "error",
     });
-    return response.ok;
+    if (response.status !== 200) return null;
+    const mediaType = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      ?.toLowerCase();
+    const cacheDirectives = response.headers
+      .get("cache-control")
+      ?.split(",")
+      .map((directive) => directive.trim().toLowerCase());
+    if (
+      mediaType !== "application/json" ||
+      !cacheDirectives?.includes("no-store")
+    ) {
+      return null;
+    }
+    const text = await response.text();
+    if (!text || Buffer.byteLength(text, "utf8") > 512) return null;
+    const payload = JSON.parse(text);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length !== 1 ||
+      !("authorizationBinding" in payload)
+    ) {
+      return null;
+    }
+    return parseTargetAuthorizationBinding(payload.authorizationBinding);
   } catch {
-    return false;
+    return null;
   }
 }

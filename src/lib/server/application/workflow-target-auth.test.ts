@@ -39,6 +39,12 @@ function harness() {
       }),
     ),
   };
+  const bindings = {
+    derive: vi.fn(
+      () =>
+        "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ),
+  };
   const cookies = {
     issue: vi.fn(async () => ({
       name: "wb_access_token" as const,
@@ -58,11 +64,13 @@ function harness() {
   return {
     identities,
     assertions,
+    bindings,
     cookies,
     origin,
     service: new ApplicationWorkflowTargetAuthService({
       identities,
       assertions,
+      bindings,
       cookies,
       origin,
     }),
@@ -147,12 +155,21 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         assertion: "purpose-assertion",
         executionId: "execution-1",
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({
+      authorizationBinding:
+        "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
     expect(h.identities.resolveExecutionOwner).toHaveBeenCalledWith(
       "execution-1",
     );
     expect(h.cookies.issue).not.toHaveBeenCalled();
     expect(h.origin.getOrigin).not.toHaveBeenCalled();
+    expect(h.bindings.derive).toHaveBeenCalledWith({
+      executionId: "execution-1",
+      userId: "user-1",
+      projectId: "project-1",
+      tokenVersion: 4,
+    });
   });
 
   it("fails revalidation after assertion expiry or identity revocation", async () => {
@@ -163,7 +180,7 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         assertion: "expired-purpose-assertion",
         executionId: "execution-1",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
     expect(expired.identities.resolveExecutionOwner).not.toHaveBeenCalled();
 
     const revoked = harness();
@@ -176,7 +193,7 @@ describe("ApplicationWorkflowTargetAuthService", () => {
         assertion: "purpose-assertion",
         executionId: "execution-1",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
     expect(revoked.cookies.issue).not.toHaveBeenCalled();
   });
 

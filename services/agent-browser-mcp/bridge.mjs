@@ -60,13 +60,13 @@ import {
 	sanitizeExternalToolArguments,
 } from "./vision-contract.mjs";
 import {
+	createBrowserContextRegistry,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
 import {
 	authorizeBrowserInitialization,
 	createTargetAuthExchangeCache,
-	createTargetAuthSessionBindings,
 	exchangeTargetAuth,
 	openedUrlMatchesTargetOrigin,
 	parseTargetAuthAssertion,
@@ -236,18 +236,20 @@ async function persistArtifact(ctx, seen, toolName, result) {
 }
 
 // ---------------------------------------------------------------------------
-// BrowserStation lane registry.
+// Browser context registry.
 //
-// browserSession -> { browserId, ready } where `ready` resolves true when the
-// lane's agent-browser session is attached to a leased farm browser, or false
-// when the lease failed and the lane fell back to a local Chrome. Leases are
-// released on the agent's close, the idle stop, or (best-effort) never — the
-// farm's worker idle-out is the backstop for leaks.
+// Every entry owns one stable authorization binding, cookie cache, auth state,
+// and optional BrowserStation lane. Entry-aware release prevents stale cleanup
+// from deleting a replacement that advertises the same browser-session name.
 // ---------------------------------------------------------------------------
-const lanes = new Map();
-const authApplied = new Set();
-const targetAuthExchangeCache = createTargetAuthExchangeCache();
-const targetAuthSessionBindings = createTargetAuthSessionBindings();
+const browserContexts = createBrowserContextRegistry({
+	createState: () => ({
+		authApplied: false,
+		exchangeCache: createTargetAuthExchangeCache(),
+		lane: null,
+	}),
+	releaseResources: releaseBrowserContextResources,
+});
 
 function lanesEnabled() {
 	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
@@ -264,10 +266,11 @@ function bsFetch(path, init = {}) {
 	});
 }
 
-function ensureLaneBrowser(browserSession) {
-	const existing = lanes.get(browserSession);
-	if (existing) return existing.ready;
+function ensureLaneBrowser(browserContext) {
+	if (browserContext.lane) return browserContext.lane.ready;
+	const { browserSession } = browserContext;
 	const lane = { browserId: null, ready: null };
+	browserContext.lane = lane;
 	lane.ready = (async () => {
 		const created = await bsFetch("/browsers", { method: "POST", body: "{}" });
 		if (!created.ok) throw new Error(`lease HTTP ${created.status}`);
@@ -275,6 +278,9 @@ function ensureLaneBrowser(browserSession) {
 		const deadline = Date.now() + LANE_READY_TIMEOUT_MS;
 		let info;
 		for (;;) {
+			if (!browserContexts.isCurrent(browserContext)) {
+				throw new Error("lane authorization closed during provisioning");
+			}
 			const resp = await bsFetch(`/browsers/${lane.browserId}`);
 			if (resp.ok) {
 				info = await resp.json();
@@ -286,6 +292,9 @@ function ensureLaneBrowser(browserSession) {
 			}
 			if (Date.now() > deadline) throw new Error(`farm browser not ready in ${LANE_READY_TIMEOUT_MS}ms`);
 			await new Promise((r) => setTimeout(r, 3000));
+		}
+		if (!browserContexts.isCurrent(browserContext)) {
+			throw new Error("lane authorization closed before attachment");
 		}
 		const ws = BROWSERSTATION_URL.replace(/^http/, "ws") + info.websocket_url;
 		await new Promise((resolve, reject) => {
@@ -312,23 +321,27 @@ function ensureLaneBrowser(browserSession) {
 		}
 		return false;
 	});
-	lanes.set(browserSession, lane);
 	return lane.ready;
 }
 
-async function releaseLaneBrowser(browserSession) {
-	authApplied.delete(browserSession);
-	targetAuthExchangeCache.clear(browserSession);
-	targetAuthSessionBindings.clear(browserSession);
-	const lane = lanes.get(browserSession);
+async function releaseBrowserContextResources(browserContext) {
+	browserContext.authApplied = false;
+	browserContext.exchangeCache.clear();
+	const lane = browserContext.lane;
+	browserContext.lane = null;
 	if (!lane) return;
-	lanes.delete(browserSession);
+	await lane.ready?.catch(() => false);
 	if (!lane.browserId) return;
 	try {
 		await bsFetch(`/browsers/${lane.browserId}`, { method: "DELETE" });
-		console.error(`[lane] ${browserSession} released farm browser ${lane.browserId}`);
+		console.error(
+			`[lane] ${browserContext.browserSession}#${browserContext.generation} released farm browser ${lane.browserId}`,
+		);
+		lane.browserId = null;
 	} catch (err) {
-		console.error(`[lane] release failed for ${browserSession}: ${err?.message}`);
+		console.error(
+			`[lane] release failed for ${browserContext.browserSession}#${browserContext.generation}: ${err?.message}`,
+		);
 	}
 }
 
@@ -358,12 +371,14 @@ function newClipPath() {
 	return `/tmp/clip-${randomUUID().slice(0, 8)}.webm`;
 }
 
-async function startCapture(browserSession, ctx, child, openedUrl) {
+async function startCapture(browserContext, ctx, child, openedUrl) {
+	const { browserSession } = browserContext;
 	if (captures.has(browserSession)) return;
 	const pending = pendingScenes.get(browserSession);
 	pendingScenes.delete(browserSession);
 	const entry = {
 		ctx,
+		browserContext,
 		browserSession,
 		seen: new Set(),
 		clips: [], // [{path, title, caption}] — title null = not part of a demo
@@ -477,13 +492,20 @@ async function renderAndPersistDemo(entry) {
 	}
 }
 
-async function stopCapture(browserSession, reason, liveChild) {
+async function stopCapture(browserContext, reason, liveChild) {
+	const { browserSession } = browserContext;
 	const entry = captures.get(browserSession);
-	if (!entry || entry.stopped) return;
+	if (
+		!entry ||
+		entry.stopped ||
+		entry.browserContext !== browserContext ||
+		!browserContexts.beginClose(browserContext)
+	) {
+		return;
+	}
 	entry.stopped = true;
-	captures.delete(browserSession);
+	if (captures.get(browserSession) === entry) captures.delete(browserSession);
 	pendingScenes.delete(browserSession);
-	authApplied.delete(browserSession);
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 
 	// Prefer the child that carried the triggering call (alive for the duration
@@ -497,6 +519,7 @@ async function stopCapture(browserSession, reason, liveChild) {
 			child = ephemeral;
 		} catch (err) {
 			console.error(`[auto-capture] stop child spawn failed (${reason}): ${err?.message}`);
+			await browserContexts.release(entry.browserContext).catch(() => {});
 			return;
 		}
 	}
@@ -568,49 +591,49 @@ async function stopCapture(browserSession, reason, liveChild) {
 				/* ignore */
 			}
 		}
-		// A lane whose capture ended (close/idle/teardown) is done with its
-		// leased farm browser. Idempotent; the close path also releases.
-		releaseLaneBrowser(browserSession).catch(() => {});
+		// Explicit close releases only after the caller's child close completes.
+		if (reason !== "close") {
+			await browserContexts.release(entry.browserContext).catch(() => {});
+		}
 	}
 }
 
-function targetAuthExchangeInput(ctx) {
+function targetAuthExchangeInput(browserContext, ctx) {
 	return {
 		bffUrl: BFF,
 		internalToken: TOKEN,
 		assertion: ctx?.targetAuth?.assertion,
 		executionId: ctx?.executionId,
+		authorizationBinding: browserContext.authorizationBinding,
 	};
 }
 
-async function resolveTargetAuth(browserSession, ctx) {
-	return targetAuthExchangeCache.resolve(
-		browserSession,
-		targetAuthExchangeInput(ctx),
+async function resolveTargetAuth(browserContext, ctx) {
+	return browserContext.exchangeCache.resolve(
+		targetAuthExchangeInput(browserContext, ctx),
 	);
 }
 
-async function plantTargetAuthCookie(browserSession, ctx, child) {
-	const exchange = await resolveTargetAuth(browserSession, ctx);
+async function plantTargetAuthCookie(browserContext, ctx, child) {
+	const exchange = await resolveTargetAuth(browserContext, ctx);
 	if (!exchange) return null;
 	await child.callTool({
 		name: "agent_browser_cookies_set",
 		arguments: targetAuthCookieToolArguments(exchange),
 	});
-	authApplied.add(browserSession);
+	browserContext.authApplied = true;
 	return exchange;
 }
 
-async function refreshTargetAuthCookie(browserSession, ctx, child) {
+async function refreshTargetAuthCookie(browserContext, ctx, child) {
 	if (!ctx?.targetAuth) return false;
-	if (!authApplied.has(browserSession)) return true;
+	if (!browserContext.authApplied) return true;
 	try {
-		const existing = await targetAuthExchangeCache.peek(
-			browserSession,
-			targetAuthExchangeInput(ctx),
+		const existing = await browserContext.exchangeCache.peek(
+			targetAuthExchangeInput(browserContext, ctx),
 		);
 		if (!targetAuthNeedsRefresh(existing)) return true;
-		const refreshed = await plantTargetAuthCookie(browserSession, ctx, child);
+		const refreshed = await plantTargetAuthCookie(browserContext, ctx, child);
 		if (refreshed) {
 			console.error(
 				`[target-auth] owner cookie refreshed for ${refreshed.targetOrigin} exec=${ctx.executionId}`,
@@ -624,9 +647,9 @@ async function refreshTargetAuthCookie(browserSession, ctx, child) {
 }
 
 /** Plant auth before the first navigation to the exact BFF-derived origin. */
-async function prepareTargetAuth(browserSession, ctx, child, requestedUrl) {
-	if (!ctx?.targetAuth || authApplied.has(browserSession)) return "skip";
-	const exchange = await resolveTargetAuth(browserSession, ctx);
+async function prepareTargetAuth(browserContext, ctx, child, requestedUrl) {
+	if (!ctx?.targetAuth || browserContext.authApplied) return "skip";
+	const exchange = await resolveTargetAuth(browserContext, ctx);
 	if (!exchange) {
 		console.error(`[target-auth] exchange unavailable exec=${ctx.executionId ?? "-"}`);
 		return "failed";
@@ -644,7 +667,7 @@ async function prepareTargetAuth(browserSession, ctx, child, requestedUrl) {
 		return "skip";
 	}
 	try {
-		const planted = await plantTargetAuthCookie(browserSession, ctx, child);
+		const planted = await plantTargetAuthCookie(browserContext, ctx, child);
 		if (!planted) return "failed";
 		console.error(
 			`[target-auth] HttpOnly owner cookie set for ${exchange.targetOrigin} exec=${ctx.executionId}`,
@@ -660,8 +683,9 @@ function armIdleStop(browserSession) {
 	const entry = captures.get(browserSession);
 	if (!entry || !AUTO_CAPTURE_IDLE_MS) return;
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
+	const browserContext = entry.browserContext;
 	entry.idleTimer = setTimeout(() => {
-		stopCapture(browserSession, "idle").catch(() => {});
+		stopCapture(browserContext, "idle").catch(() => {});
 	}, AUTO_CAPTURE_IDLE_MS);
 	entry.idleTimer.unref?.();
 }
@@ -669,7 +693,8 @@ function armIdleStop(browserSession) {
 /** Build a per-connection MCP server that proxies to a fresh agent-browser child
  * (scoped to the run's browser session) and persists artifacts. `ctxRef.value`
  * is filled with the run context once the session initializes. */
-async function makeProxy(ctxRef, browserSession) {
+async function makeProxy(ctxRef, browserContext) {
+	const { browserSession } = browserContext;
 	const child = await spawnChild(browserSession);
 	const seenPaths = new Set();
 
@@ -712,10 +737,21 @@ async function makeProxy(ctxRef, browserSession) {
 			name === DEMO_SCENE_TOOL.name
 				? sanitizeAllowlistedArguments(args, ["title", "caption", "focus"])
 				: sanitizeExternalToolArguments(name, args);
+		if (
+			!browserContexts.isCurrent(
+				browserContext,
+				browserContext.authorizationBinding,
+			)
+		) {
+			return {
+				content: [{ type: "text", text: "Browser lane authorization is closing." }],
+				isError: true,
+			};
+		}
 		// A lane still provisioning its farm browser must not let the first
 		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
 		// tell the agent to retry (cold farm scale-up can take minutes).
-		const lane = lanes.get(browserSession);
+		const lane = browserContext.lane;
 		if (lane) {
 			const ready = await Promise.race([
 				lane.ready,
@@ -733,7 +769,7 @@ async function makeProxy(ctxRef, browserSession) {
 				};
 			}
 		}
-		if (!(await refreshTargetAuthCookie(browserSession, ctxRef.value, child))) {
+		if (!(await refreshTargetAuthCookie(browserContext, ctxRef.value, child))) {
 			return {
 				content: [
 					{
@@ -762,17 +798,23 @@ async function makeProxy(ctxRef, browserSession) {
 		}
 		// The agent is done with the browser — capture must be finalized while
 		// the browser session still exists.
-		if (name === "agent_browser_close" && captures.has(browserSession)) {
-			await stopCapture(browserSession, "close", child);
+		const closesBrowser = name === "agent_browser_close";
+		if (closesBrowser) {
+			if (!browserContexts.beginClose(browserContext)) {
+				return {
+					content: [{ type: "text", text: "Browser lane is already closing." }],
+					isError: true,
+				};
+			}
 		}
 		if (
 			name === "agent_browser_open" &&
 			ctxRef.value?.targetAuth &&
-			!authApplied.has(browserSession) &&
+			!browserContext.authApplied &&
 			typeof sanitizedArgs.url === "string"
 		) {
 			const prepared = await prepareTargetAuth(
-				browserSession,
+				browserContext,
 				ctxRef.value,
 				child,
 				sanitizedArgs.url,
@@ -789,9 +831,18 @@ async function makeProxy(ctxRef, browserSession) {
 				};
 			}
 		}
-		let result = await child.callTool({ name, arguments: sanitizedArgs });
-		if (name === "agent_browser_close") {
-			releaseLaneBrowser(browserSession).catch(() => {});
+		let result;
+		if (closesBrowser) {
+			try {
+				if (captures.has(browserSession)) {
+					await stopCapture(browserContext, "close", child);
+				}
+				result = await child.callTool({ name, arguments: sanitizedArgs });
+			} finally {
+				await browserContexts.release(browserContext).catch(() => {});
+			}
+		} else {
+			result = await child.callTool({ name, arguments: sanitizedArgs });
 		}
 		if (ARTIFACT_TOOLS[name]) {
 			try {
@@ -809,7 +860,7 @@ async function makeProxy(ctxRef, browserSession) {
 		) {
 			try {
 				await startCapture(
-					browserSession,
+					browserContext,
 					ctxRef.value,
 					child,
 				typeof sanitizedArgs.url === "string" ? sanitizedArgs.url : undefined,
@@ -851,8 +902,10 @@ async function requestMatchesSessionAuthorization(req, session) {
 		targetAuth,
 		expectedExecutionId: session.executionId,
 		expectedAssertionDigest: session.assertionDigest,
-		browserSession: session.browserSession,
-		bindings: targetAuthSessionBindings,
+		expectedAuthorizationBinding: session.authorizationBinding,
+		browserContext: session.browserContext,
+		isBrowserContextCurrent: (browserContext, authorizationBinding) =>
+			browserContexts.isCurrent(browserContext, authorizationBinding),
 		validate: ({ assertion, executionId }) =>
 			validateTargetAuth({
 				bffUrl: BFF,
@@ -910,6 +963,7 @@ app.post("/mcp", async (req, res) => {
 			workflowId: requestHeader(req, "x-wfb-workflow-id") || null,
 			nodeId: requestHeader(req, "x-wfb-node-id") || null,
 			targetAuth: initialization.targetAuth,
+			authorizationBinding: initialization.authorizationBinding,
 		},
 	};
 	// One browser per run: every authorized MCP connection carrying the same
@@ -925,27 +979,37 @@ app.post("/mcp", async (req, res) => {
 	const browserSession = laneKey
 		? `wfb-${ctxRef.value.executionId}--${laneKey}`
 		: `wfb-${ctxRef.value.executionId}`;
-	if (initialization.assertionDigest) {
-		const boundDigest = targetAuthSessionBindings.bind(
-			browserSession,
-			initialization.targetAuth.assertion,
-		);
-		if (boundDigest !== initialization.assertionDigest) {
-			rejectBrowserAuthorization(res);
-			return;
-		}
+	const existingBrowserContext = browserContexts.current(browserSession);
+	const browserContext = browserContexts.acquire(
+		browserSession,
+		initialization.authorizationBinding,
+	);
+	if (!browserContext) {
+		rejectBrowserAuthorization(res);
+		return;
 	}
 	if (
 		shouldProvisionFarmBrowser({
 			executionId: ctxRef.value.executionId,
 			farmConfigured: lanesEnabled(),
-			laneExists: lanes.has(browserSession),
+			laneExists: Boolean(browserContext.lane),
 		})
 	) {
 		// Fire the run or node lease now (idempotent); tool calls await readiness bounded.
-		ensureLaneBrowser(browserSession);
+		ensureLaneBrowser(browserContext);
 	}
-	const { server, cleanup } = await makeProxy(ctxRef, browserSession);
+	let proxy;
+	try {
+		proxy = await makeProxy(ctxRef, browserContext);
+	} catch (error) {
+		if (!existingBrowserContext) {
+			await browserContexts.release(browserContext).catch(() => {});
+		}
+		console.error(`[session] child startup failed: ${error?.message}`);
+		res.status(503).json({ error: "Browser lane unavailable" });
+		return;
+	}
+	const { server, cleanup } = proxy;
 	const transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
 		onsessioninitialized: (newSid) => {
@@ -954,7 +1018,8 @@ app.post("/mcp", async (req, res) => {
 				cleanup,
 				executionId: initialization.executionId,
 				assertionDigest: initialization.assertionDigest,
-				browserSession,
+				authorizationBinding: initialization.authorizationBinding,
+				browserContext,
 			});
 			console.error(
 				`[session] ${newSid} exec=${ctxRef.value.executionId ?? "-"} browser=${browserSession} node=${ctxRef.value.nodeId ?? "-"}`,

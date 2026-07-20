@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import {
   authorizeBrowserInitialization,
   createTargetAuthExchangeCache,
-  createTargetAuthSessionBindings,
   exchangeTargetAuth,
   openedUrlMatchesTargetOrigin,
   parseTargetAuthAssertion,
+  parseTargetAuthorizationBinding,
   parseTargetAuthExchange,
   reauthorizeBrowserSession,
   targetAuthAssertionDigest,
@@ -18,6 +18,11 @@ import {
 const nowMs = Date.parse("2026-07-20T20:00:00.000Z");
 const nowSeconds = Math.floor(nowMs / 1_000);
 const assertion = "wfb_browser_auth_v1.payload.signature";
+const rotatedAssertion = "wfb_browser_auth_v1.rotated.signature";
+const authorizationBinding =
+  "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const otherAuthorizationBinding =
+  "wfb_browser_binding_v1.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const targetOrigin =
   "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const exchangePayload = {
@@ -85,7 +90,9 @@ test("exchanges only against the configured BFF with service auth", async () => 
 
 test("fails execution initialization closed before browser allocation", async () => {
   const validate = async ({ assertion: supplied, executionId }) =>
-    supplied === assertion && executionId === "execution-1" ? true : false;
+    supplied === assertion && executionId === "execution-1"
+      ? authorizationBinding
+      : null;
   let allocated = false;
   const denied = await authorizeBrowserInitialization({
     executionId: "guessed-execution-id",
@@ -99,7 +106,7 @@ test("fails execution initialization closed before browser allocation", async ()
     await authorizeBrowserInitialization({
       executionId: "",
       targetAuth: null,
-      validate: async () => true,
+      validate: async () => authorizationBinding,
     }),
     null,
   );
@@ -123,14 +130,14 @@ test("fails execution initialization closed before browser allocation", async ()
       executionId: "execution-1",
       targetAuth: { assertion },
       assertionDigest: targetAuthAssertionDigest(assertion),
+      authorizationBinding,
     },
   );
 });
 
 test("revalidates the exact assertion on every existing-session request", async () => {
-  const bindings = createTargetAuthSessionBindings();
-  const browserSession = "wfb-execution-1";
-  const assertionDigest = bindings.bind(browserSession, assertion);
+  const assertionDigest = targetAuthAssertionDigest(assertion);
+  const browserContext = { authorizationBinding };
   const validations = [];
   const authorize = (overrides = {}) =>
     reauthorizeBrowserSession({
@@ -138,11 +145,13 @@ test("revalidates the exact assertion on every existing-session request", async 
       targetAuth: { assertion },
       expectedExecutionId: "execution-1",
       expectedAssertionDigest: assertionDigest,
-      browserSession,
-      bindings,
+      expectedAuthorizationBinding: authorizationBinding,
+      browserContext,
+      isBrowserContextCurrent: (context, binding) =>
+        context === browserContext && binding === authorizationBinding,
       validate: async (input) => {
         validations.push(input);
-        return true;
+        return authorizationBinding;
       },
       ...overrides,
     });
@@ -159,12 +168,23 @@ test("revalidates the exact assertion on every existing-session request", async 
     false,
   );
   assert.equal(validations.length, 2);
+  assert.equal(
+    await authorize({
+      validate: async () => otherAuthorizationBinding,
+    }),
+    false,
+  );
+  assert.equal(
+    await authorize({
+      isBrowserContextCurrent: () => false,
+    }),
+    false,
+  );
 });
 
 test("fails existing sessions closed when authorization expires or is revoked", async () => {
-  const bindings = createTargetAuthSessionBindings();
-  const browserSession = "wfb-execution-1";
-  const assertionDigest = bindings.bind(browserSession, assertion);
+  const assertionDigest = targetAuthAssertionDigest(assertion);
+  const browserContext = { authorizationBinding };
   for (const reason of ["terminal", "revoked", "expired"]) {
     let calls = 0;
     assert.equal(
@@ -173,11 +193,12 @@ test("fails existing sessions closed when authorization expires or is revoked", 
         targetAuth: { assertion },
         expectedExecutionId: "execution-1",
         expectedAssertionDigest: assertionDigest,
-        browserSession,
-        bindings,
+        expectedAuthorizationBinding: authorizationBinding,
+        browserContext,
+        isBrowserContextCurrent: () => true,
         validate: async () => {
           calls += 1;
-          return false;
+          return null;
         },
       }),
       false,
@@ -191,8 +212,9 @@ test("fails existing sessions closed when authorization expires or is revoked", 
       targetAuth: { assertion },
       expectedExecutionId: "execution-1",
       expectedAssertionDigest: assertionDigest,
-      browserSession,
-      bindings,
+      expectedAuthorizationBinding: authorizationBinding,
+      browserContext,
+      isBrowserContextCurrent: () => true,
       validate: async () => {
         throw new Error("BFF unavailable");
       },
@@ -211,10 +233,16 @@ test("validates against the fixed BFF without returning a credential", async () 
       executionId: "execution-1",
       fetchImpl: async (url, init) => {
         requests.push({ url, init });
-        return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({ authorizationBinding }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "private, no-store",
+          },
+        });
       },
     }),
-    true,
+    authorizationBinding,
   );
   assert.equal(
     requests[0].url,
@@ -224,19 +252,118 @@ test("validates against the fixed BFF without returning a credential", async () 
     targetAuthAssertion: assertion,
     executionId: "execution-1",
   });
+  assert.equal(requests[0].init.redirect, "error");
+  assert.equal(requests[0].init.headers.Accept, "application/json");
   assert.equal("Authorization" in requests[0].init.headers, false);
 });
 
-test("binds reusable browser sessions to the exact assertion", () => {
-  const bindings = createTargetAuthSessionBindings();
-  const otherAssertion = "wfb_browser_auth_v1.other.signature";
-  assert.ok(bindings.bind("wfb-execution-1", assertion));
-  assert.equal(bindings.matches("wfb-execution-1", assertion), true);
-  assert.equal(bindings.matches("wfb-execution-1", ""), false);
-  assert.equal(bindings.matches("wfb-execution-1", otherAssertion), false);
-  assert.equal(bindings.bind("wfb-execution-1", otherAssertion), null);
-  bindings.clear("wfb-execution-1");
-  assert.ok(bindings.bind("wfb-execution-1", otherAssertion));
+test("rejects redirects and every non-contract validation response", async () => {
+  const validBody = JSON.stringify({ authorizationBinding });
+  const cases = [
+    {
+      name: "redirect",
+      response: new Response(validBody, {
+        status: 302,
+        headers: {
+          Location: "https://attacker.example/validate",
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      }),
+    },
+    { name: "empty success", response: new Response(null, { status: 204 }) },
+    {
+      name: "wrong content type",
+      response: new Response(validBody, {
+        status: 200,
+        headers: { "Content-Type": "text/html", "Cache-Control": "no-store" },
+      }),
+    },
+    {
+      name: "cacheable response",
+      response: new Response(validBody, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    },
+    {
+      name: "lookalike cache directive",
+      response: new Response(validBody, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "not-no-store",
+        },
+      }),
+    },
+    {
+      name: "extra fields",
+      response: new Response(
+        JSON.stringify({ authorizationBinding, executionId: "execution-1" }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          },
+        },
+      ),
+    },
+    {
+      name: "malformed binding",
+      response: new Response(
+        JSON.stringify({ authorizationBinding: "execution-1:user-1" }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          },
+        },
+      ),
+    },
+  ];
+  for (const { name, response } of cases) {
+    assert.equal(
+      await validateTargetAuth({
+        bffUrl: targetOrigin,
+        internalToken: "internal-service-token",
+        assertion,
+        executionId: "execution-1",
+        fetchImpl: async () => response.clone(),
+      }),
+      null,
+      name,
+    );
+  }
+  assert.equal(
+    await validateTargetAuth({
+      bffUrl: targetOrigin,
+      internalToken: "internal-service-token",
+      assertion,
+      executionId: "execution-1",
+      fetchImpl: async () => {
+        throw new Error("BFF unavailable");
+      },
+    }),
+    null,
+  );
+});
+
+test("accepts only opaque authorization binding values", () => {
+  assert.equal(
+    parseTargetAuthorizationBinding(authorizationBinding),
+    authorizationBinding,
+  );
+  assert.equal(
+    parseTargetAuthorizationBinding(` ${authorizationBinding} `),
+    null,
+  );
+  assert.equal(parseTargetAuthorizationBinding("execution-1:user-1"), null);
+  assert.equal(
+    parseTargetAuthorizationBinding(`${authorizationBinding}.x`),
+    null,
+  );
 });
 
 test("sets an HttpOnly cookie only for the exact BFF-derived origin", () => {
@@ -306,14 +433,20 @@ test("refreshes the cached cookie before expiry", async () => {
       };
     },
   });
-  const input = { assertion };
-  const first = await cache.resolve("browser-1", input);
+  const input = { assertion, authorizationBinding };
+  const first = await cache.resolve(input);
   assert.equal(first.cookie.value, "cookie-1");
   currentMs += 4 * 60 * 1_000;
-  const cached = await cache.resolve("browser-1", input);
+  const cached = await cache.resolve({
+    assertion: rotatedAssertion,
+    authorizationBinding,
+  });
   assert.equal(cached.cookie.value, "cookie-1");
   currentMs += 2 * 60 * 1_000;
-  const refreshed = await cache.resolve("browser-1", input);
+  const refreshed = await cache.resolve({
+    assertion: rotatedAssertion,
+    authorizationBinding,
+  });
   assert.equal(refreshed.cookie.value, "cookie-2");
   assert.equal(calls, 2);
 });
@@ -327,13 +460,13 @@ test("leaves a failed exchange retryable", async () => {
       return calls === 1 ? null : exchangePayload;
     },
   });
-  const input = { assertion };
-  assert.equal(await cache.resolve("browser-1", input), null);
-  assert.deepEqual(await cache.resolve("browser-1", input), exchangePayload);
+  const input = { assertion, authorizationBinding };
+  assert.equal(await cache.resolve(input), null);
+  assert.deepEqual(await cache.resolve(input), exchangePayload);
   assert.equal(calls, 2);
 });
 
-test("never reuses a primed exchange for a missing or different assertion", async () => {
+test("reuses a primed exchange only for the same stable authorization binding", async () => {
   let calls = 0;
   const cache = createTargetAuthExchangeCache({
     now: () => nowMs,
@@ -342,15 +475,17 @@ test("never reuses a primed exchange for a missing or different assertion", asyn
       return exchangePayload;
     },
   });
-  assert.equal(cache.prime("browser-1", { assertion }, exchangePayload), true);
+  const input = { assertion, authorizationBinding };
+  assert.equal(cache.prime(input, exchangePayload), true);
   assert.deepEqual(
-    await cache.peek("browser-1", { assertion }),
+    await cache.peek({ assertion: rotatedAssertion, authorizationBinding }),
     exchangePayload,
   );
-  assert.equal(await cache.peek("browser-1", { assertion: "" }), null);
+  assert.equal(await cache.peek({ assertion, authorizationBinding: "" }), null);
   assert.equal(
-    await cache.resolve("browser-1", {
-      assertion: "wfb_browser_auth_v1.other.signature",
+    await cache.resolve({
+      assertion: rotatedAssertion,
+      authorizationBinding: otherAuthorizationBinding,
     }),
     null,
   );

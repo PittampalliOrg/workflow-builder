@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   validateInternalToken: vi.fn(() => true),
-  validate: vi.fn(async () => true),
+  validate: vi.fn(
+    async (): Promise<{ authorizationBinding: string } | null> => ({
+      authorizationBinding:
+        "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    }),
+  ),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -35,7 +40,10 @@ describe("POST /api/internal/browser-target-auth/validate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.validateInternalToken.mockReturnValue(true);
-    mocks.validate.mockResolvedValue(true);
+    mocks.validate.mockResolvedValue({
+      authorizationBinding:
+        "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
   });
 
   it("requires service authentication", async () => {
@@ -53,9 +61,12 @@ describe("POST /api/internal/browser-target-auth/validate", () => {
         targetOrigin: "https://attacker.example",
       }),
     } as never);
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.text()).toBe("");
+    expect(await response.json()).toEqual({
+      authorizationBinding:
+        "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
     expect(mocks.validate).toHaveBeenCalledWith({
       assertion: "purpose-assertion",
       executionId: "execution-1",
@@ -65,7 +76,7 @@ describe("POST /api/internal/browser-target-auth/validate", () => {
   it.each(["terminal", "revoked", "expired"])(
     "fails closed when authorization becomes %s after initialization",
     async () => {
-      mocks.validate.mockResolvedValueOnce(false);
+      mocks.validate.mockResolvedValueOnce(null);
       const response = await POST({
         request: request({
           targetAuthAssertion: "purpose-assertion",

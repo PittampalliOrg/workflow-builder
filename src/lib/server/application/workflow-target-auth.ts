@@ -1,10 +1,12 @@
 import type {
   WorkflowTargetAuthAssertionPort,
+  WorkflowTargetAuthBindingPort,
   WorkflowTargetAuthCookieIssuer,
   WorkflowTargetAuthExchange,
   WorkflowTargetAuthIdentity,
   WorkflowTargetAuthIdentityRepository,
   WorkflowTargetAuthOriginProvider,
+  WorkflowTargetAuthValidation,
 } from "$lib/server/application/ports";
 
 type ExpectedOwner = Readonly<{
@@ -44,6 +46,7 @@ export class ApplicationWorkflowTargetAuthService {
     private readonly deps: {
       identities: WorkflowTargetAuthIdentityRepository;
       assertions: WorkflowTargetAuthAssertionPort;
+      bindings: WorkflowTargetAuthBindingPort;
       cookies: WorkflowTargetAuthCookieIssuer;
       origin: WorkflowTargetAuthOriginProvider;
     },
@@ -122,11 +125,20 @@ export class ApplicationWorkflowTargetAuthService {
   /** Revalidate a live browser capability without minting a UI credential. */
   async validate(
     input: Readonly<{ assertion: string; executionId: string }>,
-  ): Promise<boolean> {
+  ): Promise<WorkflowTargetAuthValidation | null> {
     try {
-      return Boolean(await this.resolveAuthorizedIdentity(input));
+      const identity = await this.resolveAuthorizedIdentity(input);
+      if (!identity) return null;
+      return {
+        authorizationBinding: this.deps.bindings.derive({
+          executionId: input.executionId.trim(),
+          userId: identity.userId,
+          projectId: identity.projectId,
+          tokenVersion: identity.tokenVersion,
+        }),
+      };
     } catch {
-      return false;
+      return null;
     }
   }
 }

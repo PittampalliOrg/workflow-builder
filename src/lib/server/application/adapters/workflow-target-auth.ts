@@ -12,6 +12,7 @@ import { requirePostgresDb } from "$lib/server/application/adapters/postgres";
 import type {
   WorkflowTargetAuthAssertionClaims,
   WorkflowTargetAuthAssertionPort,
+  WorkflowTargetAuthBindingPort,
   WorkflowTargetAuthCookie,
   WorkflowTargetAuthCookieIssuer,
   WorkflowTargetAuthIdentity,
@@ -25,6 +26,9 @@ const ASSERTION_AUDIENCE = "workflow-builder-browser-target-auth";
 const ASSERTION_PURPOSE = "browser-target-auth";
 const ASSERTION_SIGNING_KEY_CONTEXT =
   "workflow-builder/browser-target-auth/assertion/v1";
+const AUTHORIZATION_BINDING_PREFIX = "wfb_browser_binding_v1";
+const AUTHORIZATION_BINDING_KEY_CONTEXT =
+  "workflow-builder/browser-target-auth/binding/v1";
 const DEFAULT_ASSERTION_TTL_SECONDS = 60 * 60;
 const MAX_ASSERTION_TTL_SECONDS = 60 * 60;
 const MAX_ASSERTION_BYTES = 2_048;
@@ -193,6 +197,37 @@ export class HmacWorkflowTargetAuthAssertionAdapter implements WorkflowTargetAut
     } catch {
       return null;
     }
+  }
+}
+
+export class HmacWorkflowTargetAuthBindingAdapter implements WorkflowTargetAuthBindingPort {
+  constructor(
+    private readonly secret: () => string = configuredAssertionSecret,
+  ) {}
+
+  derive(scope: WorkflowTargetAuthAssertionClaims): string {
+    if (
+      !scope.executionId ||
+      !scope.userId ||
+      !scope.projectId ||
+      !Number.isInteger(scope.tokenVersion) ||
+      scope.tokenVersion < 0
+    ) {
+      throw new Error("browser target-auth binding scope is incomplete");
+    }
+    const key = createHmac("sha256", this.secret())
+      .update(AUTHORIZATION_BINDING_KEY_CONTEXT, "utf8")
+      .digest();
+    const canonicalScope = JSON.stringify([
+      scope.executionId,
+      scope.userId,
+      scope.projectId,
+      scope.tokenVersion,
+    ]);
+    const binding = createHmac("sha256", key)
+      .update(canonicalScope, "utf8")
+      .digest("base64url");
+    return `${AUTHORIZATION_BINDING_PREFIX}.${binding}`;
   }
 }
 

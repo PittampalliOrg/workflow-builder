@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EnvironmentWorkflowTargetAuthOriginProvider,
   HmacWorkflowTargetAuthAssertionAdapter,
+  HmacWorkflowTargetAuthBindingAdapter,
   JwtWorkflowTargetAuthCookieIssuer,
   PostgresWorkflowTargetAuthIdentityRepository,
 } from "./workflow-target-auth";
@@ -103,6 +104,25 @@ describe("HmacWorkflowTargetAuthAssertionAdapter", () => {
     expect(adapter.verify(`${prefix}.${payload}.${signature}x`)).toBeNull();
     current = new Date(now.getTime() + 61_000);
     expect(adapter.verify(assertion)).toBeNull();
+  });
+});
+
+describe("HmacWorkflowTargetAuthBindingAdapter", () => {
+  it("derives a stable opaque purpose binding and rotates on scope changes", () => {
+    const adapter = new HmacWorkflowTargetAuthBindingAdapter(() => secret);
+    const scope = {
+      executionId: "execution-1",
+      userId: "user-1",
+      projectId: "project-1",
+      tokenVersion: 4,
+    };
+    const binding = adapter.derive(scope);
+    expect(binding).toMatch(/^wfb_browser_binding_v1\.[A-Za-z0-9_-]{43}$/);
+    expect(adapter.derive(scope)).toBe(binding);
+    expect(adapter.derive({ ...scope, tokenVersion: 5 })).not.toBe(binding);
+    expect(binding).not.toContain(scope.executionId);
+    expect(binding).not.toContain(scope.userId);
+    expect(binding).not.toContain(scope.projectId);
   });
 });
 

@@ -33,6 +33,10 @@ export type WorkflowTargetAuthExchange = Readonly<{
   cookie: WorkflowTargetAuthCookie;
 }>;
 
+export type WorkflowTargetAuthValidation = Readonly<{
+  authorizationBinding: string;
+}>;
+
 export interface WorkflowTargetAuthIdentityRepository {
   resolveExecutionOwner(
     executionId: string,
@@ -43,6 +47,11 @@ export interface WorkflowTargetAuthIdentityRepository {
 export interface WorkflowTargetAuthAssertionPort {
   issue(claims: WorkflowTargetAuthAssertionClaims): string;
   verify(assertion: string): WorkflowTargetAuthAssertionClaims | null;
+}
+
+/** Derives an opaque stable binding for one currently authorized run scope. */
+export interface WorkflowTargetAuthBindingPort {
+  derive(scope: WorkflowTargetAuthAssertionClaims): string;
 }
 
 /** Issues the short-lived UI cookie only after a successful bridge exchange. */
