@@ -48,4 +48,25 @@ describe("redactSecrets", () => {
 		// Non-secret fields pass through untouched.
 		expect(out.mcpServers[0].allowedTools).toEqual(["a", "b"]);
 	});
+
+	it("redacts screenshot pixels in structured, serialized, and data URI forms", () => {
+		const pixels = "iVBORw0KGgo-sensitive-pixels";
+		const out = redactSecrets({
+			payloadBase64: pixels,
+			serialized: `{"payloadBase64":"${pixels}"}`,
+			doublySerialized: JSON.stringify(
+				JSON.stringify({ payload_base64: pixels }),
+			),
+			imageUrl: `data:image/png;base64,${pixels}`,
+			storageRef: "screenshots/frame.png",
+		});
+		const serialized = JSON.stringify(out);
+
+		expect(out.payloadBase64).toBe("[REDACTED]");
+		expect(out.serialized).toContain('"payloadBase64":"[REDACTED]"');
+		expect(out.doublySerialized).toContain('payload_base64\\\":\\\"[REDACTED]');
+		expect(out.imageUrl).toBe("[REDACTED image data URI]");
+		expect(out.storageRef).toBe("screenshots/frame.png");
+		expect(serialized).not.toContain(pixels);
+	});
 });

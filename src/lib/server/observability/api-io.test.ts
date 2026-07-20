@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   operationNameForSpan,
   requestPayloadForSpan,
@@ -40,10 +40,77 @@ describe("api io capture helpers", () => {
       query: {},
       body: { prompt: "render a proof" },
     });
-    await expect(responsePayloadForSpan(response)).resolves.toMatchObject({
+    await expect(responsePayloadForSpan(response, url)).resolves.toMatchObject({
       status: 201,
       body: { ok: true, executionId: "exec_1" },
     });
+  });
+
+  it("omits browser screenshot response pixels without cloning the body", async () => {
+    const url = new URL(
+      "https://app.test/api/internal/observability/executions/execution-1/browser-artifacts/screenshot?storageRef=screenshots%2Fframe.png",
+    );
+    const pixels = "iVBORw0KGgo-sensitive-pixels";
+    const response = Response.json({
+      storageRef: "screenshots/frame.png",
+      contentType: "image/png",
+      payloadBase64: pixels,
+      sizeBytes: 20,
+    });
+    const clone = vi.spyOn(response, "clone");
+
+    const captured = await responsePayloadForSpan(response, url);
+
+    expect(captured).toEqual({
+      status: 200,
+      contentType: "application/json",
+      body: "[browser screenshot payload omitted]",
+    });
+    expect(clone).not.toHaveBeenCalled();
+    expect(JSON.stringify(captured)).not.toContain(pixels);
+  });
+
+  it("retains screenshot endpoint error evidence", async () => {
+    const url = new URL(
+      "https://app.test/api/internal/observability/executions/execution-1/browser-artifacts/screenshot",
+    );
+    const response = Response.json(
+      { error: "storageRef is required" },
+      { status: 400 },
+    );
+    const clone = vi.spyOn(response, "clone");
+
+    await expect(responsePayloadForSpan(response, url)).resolves.toEqual({
+      status: 400,
+      contentType: "application/json",
+      body: { error: "storageRef is required" },
+    });
+    expect(clone).toHaveBeenCalledOnce();
+  });
+
+  it("omits browser artifact upload pixels without cloning the body", async () => {
+    const url = new URL("https://app.test/api/internal/browser-artifacts");
+    const pixels = "iVBORw0KGgo-sensitive-upload-pixels";
+    const request = new Request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        executionId: "execution-1",
+        screenshots: [{ payloadBase64: pixels, contentType: "image/png" }],
+      }),
+    });
+    const clone = vi.spyOn(request, "clone");
+
+    const captured = await requestPayloadForSpan(request, url);
+
+    expect(captured).toEqual({
+      method: "POST",
+      path: "/api/internal/browser-artifacts",
+      query: {},
+      body: "[browser artifact payload omitted]",
+    });
+    expect(clone).not.toHaveBeenCalled();
+    expect(JSON.stringify(captured)).not.toContain(pixels);
   });
 
   it("captures SvelteKit remote function payloads without raw payload query noise", async () => {
@@ -79,7 +146,12 @@ describe("api io capture helpers", () => {
       headers: { "content-type": "text/event-stream" },
     });
 
-    await expect(responsePayloadForSpan(response)).resolves.toEqual({
+    await expect(
+      responsePayloadForSpan(
+        response,
+        new URL("https://app.test/api/workflows/executions/stream"),
+      ),
+    ).resolves.toEqual({
       status: 200,
       contentType: "text/event-stream",
       body: "[streaming response omitted]",

@@ -5,8 +5,11 @@ const COOKIE_HEADER_PATTERN = /\b(cookie|set-cookie)\s*:\s*[^\r\n]+/gi;
 const URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi;
 const ASSIGNMENT_PATTERN =
 	/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|session[_ -]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s,"'}]+["']?/gi;
+const IMAGE_DATA_URI_PATTERN = /data:image\/[^,\s]+;base64,[a-z0-9+\/_=-]+/gi;
+const SERIALIZED_PAYLOAD_BASE64_PATTERN =
+	/(\\?"payload[_-]?base64\\?"\s*:\s*\\?")[a-z0-9+\/_=-]*(\\?")?/gi;
 const SECRET_KEY_PATTERN =
-	/(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key)/i;
+	/(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key|payload[_-]?base64)/i;
 
 function redactText(value: string): string {
 	return value
@@ -14,7 +17,13 @@ function redactText(value: string): string {
 		.replace(AUTHORIZATION_HEADER_PATTERN, '$1: [REDACTED]')
 		.replace(COOKIE_HEADER_PATTERN, '$1: [REDACTED]')
 		.replace(BEARER_PATTERN, 'Bearer [REDACTED]')
-		.replace(ASSIGNMENT_PATTERN, (_match, label: string) => `${label}=[REDACTED]`);
+		.replace(ASSIGNMENT_PATTERN, (_match, label: string) => `${label}=[REDACTED]`)
+		.replace(IMAGE_DATA_URI_PATTERN, '[REDACTED image data URI]')
+		.replace(
+			SERIALIZED_PAYLOAD_BASE64_PATTERN,
+			(_match, prefix: string, closingQuote: string | undefined) =>
+				`${prefix}[REDACTED]${closingQuote ?? ''}`
+		);
 }
 
 function redactStrings(value: unknown, depth = 0): unknown {

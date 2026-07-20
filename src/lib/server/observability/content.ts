@@ -5,8 +5,21 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 const FALSY = new Set(['0', 'false', 'no', 'off']);
 const REDACTED = '[REDACTED]';
 const MAX_REDACT_DEPTH = 12;
+const IMAGE_DATA_URI_PATTERN = /data:image\/[^,\s]+;base64,[a-z0-9+\/_=-]+/gi;
+const SERIALIZED_PAYLOAD_BASE64_PATTERN =
+	/(\\?"payload[_-]?base64\\?"\s*:\s*\\?")[a-z0-9+\/_=-]*(\\?")?/gi;
 const SECRET_KEY_PATTERN =
-	/(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key)/i;
+	/(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key|payload[_-]?base64)/i;
+
+function redactString(value: string): string {
+	return value
+		.replace(IMAGE_DATA_URI_PATTERN, '[REDACTED image data URI]')
+		.replace(
+			SERIALIZED_PAYLOAD_BASE64_PATTERN,
+			(_match, prefix: string, closingQuote: string | undefined) =>
+				`${prefix}${REDACTED}${closingQuote ?? ''}`
+		);
+}
 
 export function contentTracingEnabled(): boolean {
 	if (TRUTHY.has((process.env.ENABLE_BETA_TRACING_DETAILED ?? '').trim().toLowerCase())) {
@@ -17,6 +30,7 @@ export function contentTracingEnabled(): boolean {
 
 function redact(value: unknown, depth = 0): unknown {
 	if (depth > MAX_REDACT_DEPTH) return '[redaction-depth-exceeded]';
+	if (typeof value === 'string') return redactString(value);
 	if (Array.isArray(value)) return value.map((item) => redact(item, depth + 1));
 	if (value && typeof value === 'object') {
 		if (value instanceof URLSearchParams) return redact(Object.fromEntries(value), depth + 1);
