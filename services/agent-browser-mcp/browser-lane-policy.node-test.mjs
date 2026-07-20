@@ -60,10 +60,12 @@ describe("agent-browser lane policy", () => {
 		const browserSession = "wfb-execution-1";
 		const authorizationBinding =
 			"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-		const first = registry.acquire(browserSession, authorizationBinding);
-		assert.ok(first);
+		const firstLease = registry.acquire(browserSession, authorizationBinding);
+		assert.ok(firstLease);
+		const first = firstLease.context;
 		first.cache.set("cookie", "owner-cookie");
-		assert.equal(registry.acquire(browserSession, authorizationBinding), first);
+		const sharedLease = registry.acquire(browserSession, authorizationBinding);
+		assert.equal(sharedLease.context, first);
 		assert.equal(
 			registry.acquire(
 				browserSession,
@@ -72,10 +74,11 @@ describe("agent-browser lane policy", () => {
 			null,
 		);
 
-		assert.equal(registry.beginClose(first), true);
-		assert.equal(registry.beginClose(first), true);
-		const firstCleanup = registry.release(first);
-		const concurrentCleanup = registry.release(first);
+		const closeClaim = registry.claimClose(first);
+		assert.ok(closeClaim);
+		assert.equal(registry.claimClose(first), null);
+		const firstCleanup = registry.release(first, closeClaim);
+		const concurrentCleanup = registry.release(first, closeClaim);
 		assert.equal(firstCleanup, concurrentCleanup);
 		assert.equal(first.released, true);
 		assert.equal(registry.current(browserSession), null);
@@ -84,20 +87,106 @@ describe("agent-browser lane policy", () => {
 		finishFirstRelease();
 		assert.equal(await firstCleanup, true);
 		assert.deepEqual(releasedGenerations, [first.generation]);
-		const replacement = registry.acquire(browserSession, authorizationBinding);
-		assert.ok(replacement);
+		const replacementLease = registry.acquire(
+			browserSession,
+			authorizationBinding,
+		);
+		assert.ok(replacementLease);
+		const replacement = replacementLease.context;
 		assert.notEqual(replacement, first);
 		assert.ok(replacement.generation > first.generation);
 		assert.equal(registry.current(browserSession), replacement);
 
-		assert.equal(await registry.release(first), true);
+		assert.equal(await registry.release(first, closeClaim), true);
 		assert.equal(registry.current(browserSession), replacement);
 		assert.deepEqual(releasedGenerations, [first.generation]);
-		assert.equal(await registry.release(replacement), true);
+		const replacementClaim = registry.claimClose(replacement);
+		assert.ok(replacementClaim);
+		assert.equal(await registry.release(replacement, replacementClaim), true);
 		assert.deepEqual(releasedGenerations, [
 			first.generation,
 			replacement.generation,
 		]);
+	});
+
+	it("allows exactly one of two concurrent MCP sessions to close the shared browser", async () => {
+		let finishChildClose;
+		const childCloseGate = new Promise((resolve) => {
+			finishChildClose = resolve;
+		});
+		let childCloseCalls = 0;
+		const registry = createBrowserContextRegistry();
+		const browserSession = "wfb-execution-1";
+		const authorizationBinding =
+			"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const firstSession = registry.acquire(browserSession, authorizationBinding);
+		const secondSession = registry.acquire(
+			browserSession,
+			authorizationBinding,
+		);
+		assert.equal(firstSession.context, secondSession.context);
+		assert.equal(registry.commit(firstSession), true);
+		assert.equal(registry.commit(secondSession), true);
+
+		async function closeFromSession() {
+			const claim = registry.claimClose(firstSession.context);
+			if (!claim) {
+				await registry.waitForClose(firstSession.context);
+				return "joined";
+			}
+			await childCloseGate;
+			childCloseCalls += 1;
+			await registry.release(firstSession.context, claim);
+			return "owner";
+		}
+
+		const owner = closeFromSession();
+		const follower = closeFromSession();
+		await Promise.resolve();
+		assert.equal(childCloseCalls, 0);
+		finishChildClose();
+		assert.deepEqual(await Promise.all([owner, follower]), ["owner", "joined"]);
+		assert.equal(childCloseCalls, 1);
+	});
+
+	it("keeps a follower context current when its creator initialization fails", async () => {
+		const releasedGenerations = [];
+		const registry = createBrowserContextRegistry({
+			releaseResources: async (context) => {
+				releasedGenerations.push(context.generation);
+			},
+		});
+		const browserSession = "wfb-execution-1";
+		const authorizationBinding =
+			"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const creator = registry.acquire(browserSession, authorizationBinding);
+		const follower = registry.acquire(browserSession, authorizationBinding);
+		assert.equal(creator.context, follower.context);
+		assert.equal(registry.commit(follower), true);
+		assert.equal(await registry.abandon(creator), true);
+		assert.equal(registry.current(browserSession), follower.context);
+		assert.deepEqual(releasedGenerations, []);
+
+		assert.equal(registry.detach(follower), true);
+		assert.equal(registry.detach(follower), false);
+		assert.equal(registry.current(browserSession), follower.context);
+		const closeClaim = registry.claimClose(follower.context);
+		assert.ok(closeClaim);
+		await registry.release(follower.context, closeClaim);
+
+		const failedCreator = registry.acquire(
+			"wfb-execution-2",
+			authorizationBinding,
+		);
+		const failedFollower = registry.acquire(
+			"wfb-execution-2",
+			authorizationBinding,
+		);
+		assert.equal(await registry.abandon(failedCreator), true);
+		assert.equal(registry.current("wfb-execution-2"), failedFollower.context);
+		assert.equal(await registry.abandon(failedFollower), true);
+		assert.equal(registry.current("wfb-execution-2"), null);
+		assert.deepEqual(releasedGenerations, [1, 2]);
 	});
 
 	it("wires the policy into the bridge and production image", () => {
@@ -144,6 +233,39 @@ describe("agent-browser lane policy", () => {
 		assert.doesNotMatch(initialization, /wfb-anon/);
 	});
 
+	it("tracks initialization leases through success, failure, and transport close", () => {
+		const bridge = readFileSync(
+			new URL("./bridge.mjs", import.meta.url),
+			"utf8",
+		);
+		const initialization = bridge.slice(bridge.indexOf('app.post("/mcp"'));
+		assert.match(
+			initialization,
+			/const acquisition = browserContexts\.acquire\(/,
+		);
+		assert.match(
+			initialization,
+			/const \{ context: browserContext \} = acquisition/,
+		);
+		assert.match(
+			initialization,
+			/makeProxy\(ctxRef, browserContext\)[\s\S]*browserContexts\.abandon\(acquisition\)/,
+		);
+		assert.match(
+			initialization,
+			/onsessioninitialized:[\s\S]*browserContexts\.commit\(acquisition\)/,
+		);
+		assert.match(initialization, /cleanup: cleanupOnce/);
+		assert.match(
+			initialization,
+			/transport\.onclose[\s\S]*if \(acquisitionCommitted\)[\s\S]*detach\(acquisition\)[\s\S]*else[\s\S]*abandon\(acquisition\)/,
+		);
+		assert.match(
+			initialization,
+			/if \(id\) sessions\.delete\(id\)[\s\S]*if \(acquisitionCommitted\)/,
+		);
+	});
+
 	it("keeps captured close finalization inside entry-aware release", () => {
 		const bridge = readFileSync(
 			new URL("./bridge.mjs", import.meta.url),
@@ -154,11 +276,9 @@ describe("agent-browser lane policy", () => {
 			bridge.indexOf("function targetAuthExchangeInput"),
 		);
 		assert.match(stopCapture, /entry\.browserContext !== browserContext/);
-		assert.match(stopCapture, /browserContexts\.beginClose\(browserContext\)/);
-		assert.match(
-			stopCapture,
-			/browserContexts\.release\(entry\.browserContext\)/,
-		);
+		assert.match(stopCapture, /browserContexts\.ownsClose\(browserContext/);
+		assert.match(stopCapture, /browserContexts\.claimClose\(browserContext\)/);
+		assert.match(stopCapture, /\.release\(entry\.browserContext, closeClaim\)/);
 		assert.match(
 			bridge,
 			/const browserContext = entry\.browserContext;[\s\S]*stopCapture\(browserContext, "idle"\)/,
@@ -169,7 +289,7 @@ describe("agent-browser lane policy", () => {
 		);
 		assert.match(
 			handler,
-			/if \(closesBrowser\) \{[\s\S]*try \{[\s\S]*stopCapture\(browserContext, "close", child\)[\s\S]*child\.callTool\([\s\S]*finally \{[\s\S]*browserContexts\.release\(browserContext\)/,
+			/claimClose\(browserContext\)[\s\S]*waitForClose\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*try \{[\s\S]*stopCapture\(browserContext, "close", child, closeClaim\)[\s\S]*child\.callTool\([\s\S]*finally \{[\s\S]*browserContexts\.release\(browserContext, closeClaim\)/,
 		);
 	});
 

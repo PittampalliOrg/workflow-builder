@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import {
   authorizeBrowserInitialization,
   createTargetAuthExchangeCache,
@@ -38,6 +39,22 @@ const exchangePayload = {
   },
 };
 
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
 test("accepts only the purpose assertion from execution config", () => {
   assert.deepEqual(
     parseTargetAuthAssertion({
@@ -68,7 +85,10 @@ test("exchanges only against the configured BFF with service auth", async () => 
       requests.push({ url, init });
       return new Response(JSON.stringify(exchangePayload), {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "private, no-store",
+        },
       });
     },
   });
@@ -78,14 +98,176 @@ test("exchanges only against the configured BFF with service auth", async () => 
     `${targetOrigin}/api/internal/browser-target-auth/exchange`,
   );
   assert.deepEqual(requests[0].init.headers, {
+    Accept: "application/json",
     "Content-Type": "application/json",
     "X-Internal-Token": "internal-service-token",
   });
+  assert.equal(requests[0].init.redirect, "error");
   assert.equal("Authorization" in requests[0].init.headers, false);
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     targetAuthAssertion: assertion,
     executionId: "execution-1",
   });
+});
+
+test("never forwards the internal token across an exchange redirect", async () => {
+  let attackerRequests = 0;
+  let leakedToken = null;
+  const attacker = createServer((req, res) => {
+    attackerRequests += 1;
+    leakedToken = req.headers["x-internal-token"] ?? null;
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(exchangePayload));
+  });
+  const attackerOrigin = await listen(attacker);
+  let bffRequests = 0;
+  let bffToken = null;
+  const redirectingBff = createServer((req, res) => {
+    bffRequests += 1;
+    bffToken = req.headers["x-internal-token"] ?? null;
+    res.writeHead(307, {
+      Location: `${attackerOrigin}/steal`,
+      "Cache-Control": "no-store",
+    });
+    res.end();
+  });
+  const bffOrigin = await listen(redirectingBff);
+  try {
+    assert.equal(
+      await exchangeTargetAuth({
+        bffUrl: bffOrigin,
+        internalToken: "internal-service-token",
+        assertion,
+        executionId: "execution-1",
+        nowMs,
+      }),
+      null,
+    );
+    assert.equal(bffRequests, 1);
+    assert.equal(bffToken, "internal-service-token");
+    assert.equal(attackerRequests, 0);
+    assert.equal(leakedToken, null);
+  } finally {
+    await Promise.all([closeServer(redirectingBff), closeServer(attacker)]);
+  }
+});
+
+test("rejects every non-contract exchange response", async () => {
+  const validBody = JSON.stringify(exchangePayload);
+  const strictHeaders = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  };
+  const cases = [
+    {
+      name: "wrong status",
+      response: new Response(validBody, {
+        status: 201,
+        headers: strictHeaders,
+      }),
+    },
+    {
+      name: "wrong content type",
+      response: new Response(validBody, {
+        status: 200,
+        headers: { ...strictHeaders, "Content-Type": "text/html" },
+      }),
+    },
+    {
+      name: "cacheable",
+      response: new Response(validBody, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    },
+    {
+      name: "lookalike cache directive",
+      response: new Response(validBody, {
+        status: 200,
+        headers: { ...strictHeaders, "Cache-Control": "not-no-store" },
+      }),
+    },
+    {
+      name: "invalid json",
+      response: new Response("{", { status: 200, headers: strictHeaders }),
+    },
+    {
+      name: "extra top-level key",
+      response: new Response(
+        JSON.stringify({ ...exchangePayload, userId: "user-1" }),
+        { status: 200, headers: strictHeaders },
+      ),
+    },
+    {
+      name: "extra cookie key",
+      response: new Response(
+        JSON.stringify({
+          ...exchangePayload,
+          cookie: { ...exchangePayload.cookie, refreshToken: "must-not-pass" },
+        }),
+        { status: 200, headers: strictHeaders },
+      ),
+    },
+    {
+      name: "oversized",
+      response: new Response(JSON.stringify({ padding: "x".repeat(20_000) }), {
+        status: 200,
+        headers: strictHeaders,
+      }),
+    },
+  ];
+  for (const { name, response } of cases) {
+    assert.equal(
+      await exchangeTargetAuth({
+        bffUrl: targetOrigin,
+        internalToken: "internal-service-token",
+        assertion,
+        executionId: "execution-1",
+        nowMs,
+        fetchImpl: async () => response,
+      }),
+      null,
+      name,
+    );
+  }
+});
+
+test("cancels a chunked exchange body as soon as it exceeds the byte cap", async () => {
+  let chunksProduced = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      chunksProduced += 1;
+      controller.enqueue(new Uint8Array(4_096));
+      if (chunksProduced === 10) controller.close();
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  assert.equal(
+    await exchangeTargetAuth({
+      bffUrl: targetOrigin,
+      internalToken: "internal-service-token",
+      assertion,
+      executionId: "execution-1",
+      nowMs,
+      fetchImpl: async () =>
+        new Response(body, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          },
+        }),
+    }),
+    null,
+  );
+  assert.equal(cancelled, true);
+  assert.ok(chunksProduced < 10);
 });
 
 test("fails execution initialization closed before browser allocation", async () => {
@@ -330,7 +512,7 @@ test("rejects redirects and every non-contract validation response", async () =>
         internalToken: "internal-service-token",
         assertion,
         executionId: "execution-1",
-        fetchImpl: async () => response.clone(),
+        fetchImpl: async () => response,
       }),
       null,
       name,

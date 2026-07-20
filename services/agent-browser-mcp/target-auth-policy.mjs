@@ -8,6 +8,8 @@ const AUTHORIZATION_BINDING_PREFIX = "wfb_browser_binding_v1.";
 const AUTHORIZATION_BINDING_PATTERN =
   /^wfb_browser_binding_v1\.[A-Za-z0-9_-]{43}$/;
 const MAX_ASSERTION_BYTES = 2_048;
+const MAX_EXCHANGE_RESPONSE_BYTES = 16_384;
+const MAX_VALIDATION_RESPONSE_BYTES = 512;
 const MAX_COOKIE_LIFETIME_SECONDS = 30 * 60;
 const CLOCK_SKEW_SECONDS = 10;
 export const TARGET_AUTH_REFRESH_WINDOW_SECONDS = 5 * 60;
@@ -143,12 +145,88 @@ function parseOrigin(value) {
   }
 }
 
+function hasExactKeys(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value);
+  return (
+    actualKeys.length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function hasStrictJsonNoStore(response) {
+  const mediaType = response.headers
+    .get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    ?.toLowerCase();
+  const cacheDirectives = response.headers
+    .get("cache-control")
+    ?.split(",")
+    .map((directive) => directive.trim().toLowerCase());
+  return (
+    mediaType === "application/json" && cacheDirectives?.includes("no-store")
+  );
+}
+
+async function readBoundedJson(response, maxBytes) {
+  const contentLength = response.headers.get("content-length");
+  if (
+    contentLength &&
+    (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)
+  ) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) return null;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!totalBytes) return null;
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return text ? JSON.parse(text) : null;
+}
+
 /** Validate the BFF response before a credential reaches the browser daemon. */
 export function parseTargetAuthExchange(payload, nowMs = Date.now()) {
-  if (!payload || typeof payload !== "object") return null;
+  if (!hasExactKeys(payload, ["targetOrigin", "cookie"])) return null;
   const targetOrigin = parseOrigin(payload.targetOrigin);
   const cookie = payload.cookie;
-  if (!targetOrigin || !cookie || typeof cookie !== "object") return null;
+  if (
+    !targetOrigin ||
+    !hasExactKeys(cookie, [
+      "name",
+      "value",
+      "expiresAt",
+      "httpOnly",
+      "secure",
+      "sameSite",
+      "path",
+    ])
+  ) {
+    return null;
+  }
   const nowSeconds = Math.floor(nowMs / 1_000);
   if (
     cookie.name !== WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE ||
@@ -302,6 +380,7 @@ export async function exchangeTargetAuth({
     const response = await fetchImpl(endpoint, {
       method: "POST",
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
         "X-Internal-Token": internalToken,
       },
@@ -309,9 +388,14 @@ export async function exchangeTargetAuth({
         targetAuthAssertion: assertion,
         executionId,
       }),
+      redirect: "error",
     });
-    if (!response.ok) return null;
-    return parseTargetAuthExchange(await response.json(), nowMs);
+    if (response.status !== 200 || !hasStrictJsonNoStore(response)) return null;
+    const payload = await readBoundedJson(
+      response,
+      MAX_EXCHANGE_RESPONSE_BYTES,
+    );
+    return parseTargetAuthExchange(payload, nowMs);
   } catch {
     return null;
   }
@@ -350,31 +434,12 @@ export async function validateTargetAuth({
       redirect: "error",
     });
     if (response.status !== 200) return null;
-    const mediaType = response.headers
-      .get("content-type")
-      ?.split(";", 1)[0]
-      ?.trim()
-      ?.toLowerCase();
-    const cacheDirectives = response.headers
-      .get("cache-control")
-      ?.split(",")
-      .map((directive) => directive.trim().toLowerCase());
-    if (
-      mediaType !== "application/json" ||
-      !cacheDirectives?.includes("no-store")
-    ) {
-      return null;
-    }
-    const text = await response.text();
-    if (!text || Buffer.byteLength(text, "utf8") > 512) return null;
-    const payload = JSON.parse(text);
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      Array.isArray(payload) ||
-      Object.keys(payload).length !== 1 ||
-      !("authorizationBinding" in payload)
-    ) {
+    if (!hasStrictJsonNoStore(response)) return null;
+    const payload = await readBoundedJson(
+      response,
+      MAX_VALIDATION_RESPONSE_BYTES,
+    );
+    if (!hasExactKeys(payload, ["authorizationBinding"])) {
       return null;
     }
     return parseTargetAuthorizationBinding(payload.authorizationBinding);

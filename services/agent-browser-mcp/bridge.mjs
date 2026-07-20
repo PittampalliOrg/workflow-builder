@@ -492,16 +492,29 @@ async function renderAndPersistDemo(entry) {
 	}
 }
 
-async function stopCapture(browserContext, reason, liveChild) {
+async function stopCapture(
+	browserContext,
+	reason,
+	liveChild,
+	existingCloseClaim = null,
+) {
 	const { browserSession } = browserContext;
 	const entry = captures.get(browserSession);
 	if (
 		!entry ||
 		entry.stopped ||
-		entry.browserContext !== browserContext ||
-		!browserContexts.beginClose(browserContext)
+		entry.browserContext !== browserContext
 	) {
-		return;
+		return false;
+	}
+	const closeClaim = existingCloseClaim
+		? browserContexts.ownsClose(browserContext, existingCloseClaim)
+			? existingCloseClaim
+			: null
+		: browserContexts.claimClose(browserContext);
+	if (!closeClaim) {
+		await browserContexts.waitForClose(browserContext);
+		return false;
 	}
 	entry.stopped = true;
 	if (captures.get(browserSession) === entry) captures.delete(browserSession);
@@ -519,7 +532,9 @@ async function stopCapture(browserContext, reason, liveChild) {
 			child = ephemeral;
 		} catch (err) {
 			console.error(`[auto-capture] stop child spawn failed (${reason}): ${err?.message}`);
-			await browserContexts.release(entry.browserContext).catch(() => {});
+			await browserContexts
+				.release(entry.browserContext, closeClaim)
+				.catch(() => {});
 			return;
 		}
 	}
@@ -593,9 +608,12 @@ async function stopCapture(browserContext, reason, liveChild) {
 		}
 		// Explicit close releases only after the caller's child close completes.
 		if (reason !== "close") {
-			await browserContexts.release(entry.browserContext).catch(() => {});
+			await browserContexts
+				.release(entry.browserContext, closeClaim)
+				.catch(() => {});
 		}
 	}
+	return true;
 }
 
 function targetAuthExchangeInput(browserContext, ctx) {
@@ -737,12 +755,24 @@ async function makeProxy(ctxRef, browserContext) {
 			name === DEMO_SCENE_TOOL.name
 				? sanitizeAllowlistedArguments(args, ["title", "caption", "focus"])
 				: sanitizeExternalToolArguments(name, args);
+		const closesBrowser = name === "agent_browser_close";
 		if (
 			!browserContexts.isCurrent(
 				browserContext,
 				browserContext.authorizationBinding,
 			)
 		) {
+			if (closesBrowser && browserContext.closing) {
+				await browserContexts.waitForClose(browserContext);
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Browser session was closed by another request.",
+						},
+					],
+				};
+			}
 			return {
 				content: [{ type: "text", text: "Browser lane authorization is closing." }],
 				isError: true,
@@ -798,12 +828,18 @@ async function makeProxy(ctxRef, browserContext) {
 		}
 		// The agent is done with the browser — capture must be finalized while
 		// the browser session still exists.
-		const closesBrowser = name === "agent_browser_close";
+		let closeClaim = null;
 		if (closesBrowser) {
-			if (!browserContexts.beginClose(browserContext)) {
+			closeClaim = browserContexts.claimClose(browserContext);
+			if (!closeClaim) {
+				await browserContexts.waitForClose(browserContext);
 				return {
-					content: [{ type: "text", text: "Browser lane is already closing." }],
-					isError: true,
+					content: [
+						{
+							type: "text",
+							text: "Browser session was closed by another request.",
+						},
+					],
 				};
 			}
 		}
@@ -835,11 +871,11 @@ async function makeProxy(ctxRef, browserContext) {
 		if (closesBrowser) {
 			try {
 				if (captures.has(browserSession)) {
-					await stopCapture(browserContext, "close", child);
+					await stopCapture(browserContext, "close", child, closeClaim);
 				}
 				result = await child.callTool({ name, arguments: sanitizedArgs });
 			} finally {
-				await browserContexts.release(browserContext).catch(() => {});
+				await browserContexts.release(browserContext, closeClaim).catch(() => {});
 			}
 		} else {
 			result = await child.callTool({ name, arguments: sanitizedArgs });
@@ -979,15 +1015,15 @@ app.post("/mcp", async (req, res) => {
 	const browserSession = laneKey
 		? `wfb-${ctxRef.value.executionId}--${laneKey}`
 		: `wfb-${ctxRef.value.executionId}`;
-	const existingBrowserContext = browserContexts.current(browserSession);
-	const browserContext = browserContexts.acquire(
+	const acquisition = browserContexts.acquire(
 		browserSession,
 		initialization.authorizationBinding,
 	);
-	if (!browserContext) {
+	if (!acquisition) {
 		rejectBrowserAuthorization(res);
 		return;
 	}
+	const { context: browserContext } = acquisition;
 	if (
 		shouldProvisionFarmBrowser({
 			executionId: ctxRef.value.executionId,
@@ -1002,20 +1038,26 @@ app.post("/mcp", async (req, res) => {
 	try {
 		proxy = await makeProxy(ctxRef, browserContext);
 	} catch (error) {
-		if (!existingBrowserContext) {
-			await browserContexts.release(browserContext).catch(() => {});
-		}
+		await browserContexts.abandon(acquisition).catch(() => {});
 		console.error(`[session] child startup failed: ${error?.message}`);
 		res.status(503).json({ error: "Browser lane unavailable" });
 		return;
 	}
 	const { server, cleanup } = proxy;
+	let acquisitionCommitted = false;
+	let cleanupPromise = null;
+	const cleanupOnce = () =>
+		(cleanupPromise ??= Promise.resolve().then(() => cleanup()));
 	const transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
 		onsessioninitialized: (newSid) => {
+			if (!browserContexts.commit(acquisition)) {
+				throw new Error("Browser context closed during MCP initialization");
+			}
+			acquisitionCommitted = true;
 			sessions.set(newSid, {
 				transport,
-				cleanup,
+				cleanup: cleanupOnce,
 				executionId: initialization.executionId,
 				assertionDigest: initialization.assertionDigest,
 				authorizationBinding: initialization.authorizationBinding,
@@ -1029,10 +1071,30 @@ app.post("/mcp", async (req, res) => {
 	transport.onclose = async () => {
 		const id = transport.sessionId;
 		if (id) sessions.delete(id);
-		await cleanup();
+		if (acquisitionCommitted) {
+			browserContexts.detach(acquisition);
+		} else {
+			await browserContexts.abandon(acquisition).catch(() => {});
+		}
+		await cleanupOnce();
 	};
-	await server.connect(transport);
-	await transport.handleRequest(req, res, req.body);
+	try {
+		await server.connect(transport);
+		await transport.handleRequest(req, res, req.body);
+	} catch (error) {
+		const id = transport.sessionId;
+		if (id) sessions.delete(id);
+		if (acquisitionCommitted) {
+			browserContexts.detach(acquisition);
+		} else {
+			await browserContexts.abandon(acquisition).catch(() => {});
+		}
+		await cleanupOnce().catch(() => {});
+		console.error(`[session] initialization failed: ${error?.message}`);
+		if (!res.headersSent) {
+			res.status(503).json({ error: "Browser session initialization failed" });
+		}
+	}
 });
 
 async function replay(req, res) {
