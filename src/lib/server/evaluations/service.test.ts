@@ -106,6 +106,47 @@ describe("evaluation agent workflow", () => {
 		});
 	});
 
+	it("expands greenfield evaluation input through the injected completion port", async () => {
+		let completionCalls = 0;
+		const triggerData = await prepareEvaluationWorkflowTriggerData(
+			{
+				spec: {
+					document: {
+						dsl: "1.0.0",
+						namespace: "tests",
+						name: "greenfield-eval",
+						"x-workflow-builder": {
+							input: {
+								mode: "single_prompt",
+								promptField: "prompt",
+								derivedFields: ["appName"],
+							},
+						},
+					},
+				},
+				runId: "run_1",
+				itemId: "item_1",
+				datasetRowId: "row_1",
+				input: { prompt: "Build a release dashboard" },
+				expectedOutput: null,
+			},
+			{
+				isAvailable: () => true,
+				complete: async () => {
+					completionCalls += 1;
+					return '{"appName":"Release Dashboard","repo":"example/release-dashboard"}';
+				},
+			},
+		);
+
+		expect(completionCalls).toBe(1);
+		expect(triggerData).toMatchObject({
+			prompt: "Build a release dashboard",
+			appName: "Release Dashboard",
+			repo: "example/release-dashboard",
+		});
+	});
+
 	it("renders a SWE-bench workflow that captures a model patch", () => {
 		const spec = buildSwebenchEvaluationWorkflowSpec({
 			evaluationName: "SWE-bench Lite",

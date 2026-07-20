@@ -73,7 +73,6 @@
 		"vitest": "^4.0.0"
 	},
 	"dependencies": {
-		"@ai-sdk/anthropic": "^3.0.66",
 		"@ai-sdk/openai": "^3.0.50",
 		"@ai-sdk/svelte": "^4.0.146",
 		"@battlefieldduck/xterm-svelte": "^2.2.1",

@@ -10,8 +10,8 @@
  * transcript.
  *
  * Mirrors the dual-provider structured-generation pattern of
- * `src/lib/server/workflows/greenfield-prompt.ts` (OpenAI-compatible gateway
- * when available, else Anthropic direct) + a tolerant JSON extractor.
+ * `src/lib/server/workflows/greenfield-prompt.ts` (Kimi through the application
+ * completion port) + a tolerant JSON extractor.
  *
  * Validation here is STATIC ONLY (lint) — we do NOT execute the proposed
  * commands. The output goalSpec matches the canonical contract consumed by
@@ -21,10 +21,7 @@
  * See docs/goal-authoring-and-claude-alignment.md (Part C).
  */
 import { env } from "$env/dynamic/private";
-import {
-	callOpenAICompatibleChatCompletion,
-	openAICompatibleTrafficAvailable,
-} from "$lib/server/ai/openai-gateway";
+import type { ModelCompletionPort } from "$lib/server/application/ports";
 
 /**
  * A single gradable rubric criterion. `objective` criteria are checkable against
@@ -155,57 +152,6 @@ function buildUserPrompt(intent: string, context?: PlanGoalContext): string {
 	if (context?.runtime) lines.push(`Agent runtime: ${context.runtime}`);
 	if (context?.notes) lines.push(`Additional context: ${context.notes}`);
 	return lines.join("\n");
-}
-
-function normalizeModel(model: string | undefined | null): string | undefined {
-	if (!isPresentString(model)) return undefined;
-	return model.trim();
-}
-
-/**
- * The MLflow AI gateway routes by BARE model name (e.g. `deepseek-v4-pro`,
- * `gpt-5.5`) — a `provider/model` spec like `deepseek/deepseek-v4-pro` 500s.
- * Strip a single leading provider segment so canonical model specs route
- * correctly. Multi-segment names (e.g. `nvidia/meta/llama-3.1-8b`) are left
- * intact (the gateway owns their routing).
- */
-function gatewayModelName(model: string): string {
-	const parts = model.split("/");
-	return parts.length === 2 ? parts[1] : model;
-}
-
-async function callAnthropic(
-	system: string,
-	user: string,
-	model: string,
-	apiKey: string,
-): Promise<string> {
-	const cleanModel = model.startsWith("anthropic/")
-		? model.slice("anthropic/".length)
-		: model;
-	const response = await fetch("https://api.anthropic.com/v1/messages", {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			"x-api-key": apiKey,
-			"anthropic-version": "2023-06-01",
-		},
-		body: JSON.stringify({
-			model: cleanModel,
-			max_tokens: MAX_TOKENS,
-			system,
-			messages: [{ role: "user", content: user }],
-		}),
-	});
-	if (!response.ok) {
-		throw new Error(
-			`Anthropic API error ${response.status}: ${await response.text()}`,
-		);
-	}
-	const data = await response.json();
-	const content = data.content?.[0]?.text;
-	if (!isPresentString(content)) throw new Error("No content in Anthropic response");
-	return content;
 }
 
 function coerceStringArray(value: unknown): string[] {
@@ -339,45 +285,35 @@ export function lintEvidenceCommands(spec: GoalSpec): GoalSpecLint {
 
 /**
  * Author a goalSpec from raw intent. Isolated, runtime-agnostic, one-shot.
- * Provider routing mirrors greenfield-prompt: OpenAI-compatible gateway when
- * available, else Anthropic direct. Throws if no provider is configured or the
- * model output can't be parsed into a valid objective.
+ * Provider routing mirrors greenfield-prompt: Kimi through the application
+ * completion port. Throws if Kimi is unavailable or the model output can't be
+ * parsed into a valid objective.
  */
 export async function planGoal(
 	intent: string,
 	context?: PlanGoalContext,
-	options?: { model?: string },
+	options?: {
+		model?: string;
+		modelCompletion?: Pick<ModelCompletionPort, "isAvailable" | "complete">;
+	},
 ): Promise<PlanGoalResult> {
 	if (!isPresentString(intent)) {
 		throw new Error("intent is required");
 	}
-	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiAvailable = openAICompatibleTrafficAvailable();
-	if (!anthropicKey && !openaiAvailable) {
-		throw new Error("No AI API key configured for planGoal");
+	const modelCompletion = options?.modelCompletion;
+	if (!modelCompletion?.isAvailable()) {
+		throw new Error("KIMI_API_KEY is not configured for planGoal");
 	}
 
 	const user = buildUserPrompt(intent, context);
-	const override = normalizeModel(options?.model);
-
-	const responseText = openaiAvailable
-		? await callOpenAICompatibleChatCompletion({
-				model: gatewayModelName(
-					override ?? env.GOAL_PLAN_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.5",
-				),
-				maxTokens: MAX_TOKENS,
-				responseFormat: { type: "json_object" },
-				messages: [
-					{ role: "system", content: SYSTEM_PROMPT },
-					{ role: "user", content: user },
-				],
-			})
-		: await callAnthropic(
-				SYSTEM_PROMPT,
-				user,
-				override ?? env.GOAL_PLAN_MODEL ?? env.ANTHROPIC_MODEL ?? "claude-haiku-4-5-20251001",
-				anthropicKey!,
-			);
+	const responseText = await modelCompletion.complete({
+		maxOutputTokens: MAX_TOKENS,
+		responseFormat: { type: "json_object" },
+		messages: [
+			{ role: "system", content: SYSTEM_PROMPT },
+			{ role: "user", content: user },
+		],
+	});
 
 	const raw = extractJson(responseText);
 	const goalSpec = normalizeGoalSpec(raw);

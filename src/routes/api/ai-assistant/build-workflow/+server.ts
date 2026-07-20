@@ -6,16 +6,9 @@
  */
 
 import { type RequestHandler } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { generateText } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import yaml from 'js-yaml';
 import { getApplicationAdapters } from '$lib/server/application';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
-import {
-	openAICompatibleTrafficAvailable,
-	workflowOpenAIModel
-} from '$lib/server/ai/openai-gateway';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 // Tools available for future ReAct-style planning (not yet wired to generateText)
@@ -64,15 +57,11 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		return new Response('Missing prompt or workflowId', { status: 400 });
 	}
 
-	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiAvailable = openAICompatibleTrafficAvailable();
-	if (!anthropicKey && !openaiAvailable) {
-		return new Response('No AI API key configured', { status: 503 });
+	const application = getApplicationAdapters();
+	const kimiAvailable = application.modelCompletion.isAvailable();
+	if (!kimiAvailable) {
+		return new Response('KIMI_API_KEY is not configured', { status: 503 });
 	}
-
-	const model = openaiAvailable
-		? workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5')
-		: anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8');
 
 	const userId = locals.session?.userId ?? null;
 	const encoder = new TextEncoder();
@@ -84,7 +73,6 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 			};
 
 			try {
-				const application = getApplicationAdapters();
 				const workflowData = application.workflowData;
 				// Load context
 				emit('status', { phase: 'loading', message: 'Loading action catalog and connections...' });
@@ -140,8 +128,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 					// Generate spec
 					emit('status', { phase: 'generating', message: `Generating workflow spec (attempt ${attempt})...` });
 
-					const result = await generateText({
-						model,
+					const result = await application.modelCompletion.generate({
 						system: systemPrompt,
 						messages: conversationMessages,
 						maxOutputTokens: 8192,

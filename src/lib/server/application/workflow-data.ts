@@ -127,6 +127,7 @@ import type {
 	McpAvailabilityReadModel,
 	McpCatalogConfiguredConnectionSummary,
 	McpRunRepository,
+	ModelCompletionPort,
 	ModelCatalogRepository,
 	ObservabilityTraceGoalChipReadModel,
 	ObservabilityTraceRepository,
@@ -1143,6 +1144,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			dashboard?: DashboardReadRepository;
 			homePageReads?: HomePageReadRepository;
 			modelCatalog?: ModelCatalogRepository;
+			modelCompletion?: Pick<ModelCompletionPort, "isAvailable" | "complete">;
 			workflowExecutions: WorkflowExecutionRepository;
 			sessions?: SessionRepository;
 			sessionProvisioning?: SessionProvisioningReader;
@@ -2622,12 +2624,16 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		};
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
 		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
-			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+			triggerData = await expandGreenfieldPromptInput(
+				spec,
+				triggerData,
+				this.deps.modelCompletion,
+			);
 		}
-    const missingTriggerFields = getMissingRequiredTriggerFields(
-      spec,
-      triggerData,
-    );
+		const missingTriggerFields = getMissingRequiredTriggerFields(
+			spec,
+			triggerData,
+		);
 		if (missingTriggerFields.length > 0) {
 			return {
 				ok: false,

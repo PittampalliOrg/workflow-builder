@@ -1,13 +1,7 @@
 import { type RequestHandler } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { generateText, stepCountIs } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
+import { getApplicationAdapters } from '$lib/server/application';
 import { buildSystemPrompt } from '$lib/server/ai-assistant/system-prompt';
 import { createWorkflowTools } from '$lib/server/ai-assistant/tools';
-import {
-	openAICompatibleTrafficAvailable,
-	workflowOpenAIModel
-} from '$lib/server/ai/openai-gateway';
 import {
 	applyWorkflowSpecOperations,
 	parseWorkflowSpecOperationPlan,
@@ -61,7 +55,6 @@ function specTaskNames(spec: Record<string, unknown> | null | undefined): string
 
 type ToolTraceResult = {
 	text: string;
-	output: unknown;
 	steps: ReadonlyArray<{
 		toolResults: ReadonlyArray<{ toolName: string; output: unknown }>;
 		toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>;
@@ -109,11 +102,11 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		return new Response('Missing messages', { status: 400 });
 	}
 
-	const anthropicKey = env.ANTHROPIC_API_KEY;
-	const openaiAvailable = openAICompatibleTrafficAvailable();
+	const application = getApplicationAdapters();
+	const kimiAvailable = application.modelCompletion.isAvailable();
 
-	if (!anthropicKey && !openaiAvailable) {
-		return new Response('No AI API key configured', { status: 503 });
+	if (!kimiAvailable) {
+		return new Response('KIMI_API_KEY is not configured', { status: 503 });
 	}
 
 	const userId = locals.session?.userId;
@@ -176,10 +169,6 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		null,
 	) + (executionContext ? '\n\n' + executionContext : '');
 
-	const model = openaiAvailable
-		? workflowOpenAIModel(env.OPENAI_MODEL || 'gpt-5.5')
-		: anthropic(env.ANTHROPIC_MODEL || 'claude-opus-4-8');
-
 	const modelMessages = messages.map((m) => {
 		const content = typeof m.content === 'string'
 			? m.content
@@ -224,17 +213,17 @@ Return the corrected JSON operation plan now.`,
 				}]
 			: modelMessages;
 
-		const result = await generateText({
-			model,
-			tools: {
-				...createWorkflowTools(userId ?? null, skFetch),
-			},
-			stopWhen: stepCountIs(feedback ? 6 : 8),
+		const tools = createWorkflowTools(userId ?? null, skFetch);
+		const maxSteps = feedback ? 6 : 8;
+		const maxOutputTokens = feedback ? 4096 : 8192;
+		const result = (await application.modelCompletion.generate({
 			system: attemptSystem,
 			messages: attemptMessages,
-			maxOutputTokens: feedback ? 4096 : 8192,
+			tools,
+			maxSteps,
+			maxOutputTokens,
 			abortSignal: request.signal,
-		}) as ToolTraceResult;
+		})) as ToolTraceResult;
 		toolCalls.push(...result.steps.flatMap((step) => step.toolCalls.map((call) => call.toolName)));
 		if (attempt > 0) toolCalls.push(`repairOperationPlan:${attempt}`);
 

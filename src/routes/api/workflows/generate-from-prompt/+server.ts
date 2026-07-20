@@ -1,10 +1,7 @@
 import { json, error } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { env } from "$env/dynamic/private";
-import {
-  callOpenAICompatibleChatCompletion,
-  openAICompatibleTrafficAvailable,
-} from "$lib/server/ai/openai-gateway";
+import { getApplicationAdapters } from "$lib/server/application";
+import type { ModelCompletionPort } from "$lib/server/application/ports";
 
 const SYSTEM_PROMPT = `You are a workflow generator. Given a user's description, generate a CNCF Serverless Workflow 1.0 definition with nodes and edges for a visual workflow builder.
 
@@ -64,37 +61,13 @@ Respond with ONLY valid JSON in this exact format (no markdown, no explanation):
   "edges": [...]
 }`;
 
-async function callAnthropic(prompt: string, model: string, apiKey: string) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${text}`);
-  }
-
-  const data = await response.json();
-  const content = data.content?.[0]?.text;
-  if (!content) throw new Error("No content in Anthropic response");
-  return content;
-}
-
-async function callOpenAI(prompt: string, model: string) {
-  return callOpenAICompatibleChatCompletion({
-    model,
-    maxTokens: 4096,
+async function callKimi(
+  prompt: string,
+  modelCompletion: Pick<ModelCompletionPort, "complete">,
+) {
+  return modelCompletion.complete({
+    maxOutputTokens: 4096,
+    responseFormat: { type: "json_object" },
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: prompt },
@@ -129,13 +102,13 @@ export const POST: RequestHandler = async ({ request }) => {
     return error(400, "Missing or invalid prompt");
   }
 
-  const anthropicKey = env.ANTHROPIC_API_KEY;
-  const openaiAvailable = openAICompatibleTrafficAvailable();
+  const modelCompletion = getApplicationAdapters().modelCompletion;
+  const kimiAvailable = modelCompletion.isAvailable();
 
-  if (!anthropicKey && !openaiAvailable) {
+  if (!kimiAvailable) {
     return error(
       503,
-      "No AI API key configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)",
+      "KIMI_API_KEY is not configured",
     );
   }
 
@@ -148,15 +121,7 @@ export const POST: RequestHandler = async ({ request }) => {
     .join("\n");
 
   try {
-    let responseText: string;
-
-    if (openaiAvailable) {
-      const model = env.OPENAI_MODEL || "gpt-5.5";
-      responseText = await callOpenAI(enrichedPrompt, model);
-    } else {
-      const model = env.ANTHROPIC_MODEL || "claude-opus-4-8";
-      responseText = await callAnthropic(enrichedPrompt, model, anthropicKey!);
-    }
+    const responseText = await callKimi(enrichedPrompt, modelCompletion);
 
     const result = extractJson(responseText);
 

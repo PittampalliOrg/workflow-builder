@@ -1,5 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
+import { getApplicationAdapters } from "$lib/server/application";
 import {
 	planGoal,
 	finalizeGoalSpecFromText,
@@ -40,7 +41,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const model = typeof body.model === "string" ? body.model : undefined;
 
 	try {
-		const result = await planGoal(intent, context, { model });
+		const result = await planGoal(intent, context, {
+			model,
+			modelCompletion: getApplicationAdapters().modelCompletion,
+		});
 		return json(result);
 	} catch (err) {
 		return error(502, err instanceof Error ? err.message : "planGoal failed");
