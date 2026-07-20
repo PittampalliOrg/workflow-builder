@@ -8,7 +8,7 @@
 # each artifact-producing tool call (screenshot/video/pdf/HAR/trace), reads the
 # produced file off this pod and POSTs it to the run's browser-artifacts store
 # (keyed by the X-Wfb-Execution-Id header). Chrome is isolated in THIS image.
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 # Chrome for Testing runtime libraries + ffmpeg (agent-browser shells out to
 # ffmpeg for WebM video recording — without it `record stop` fails).
@@ -24,8 +24,8 @@ RUN npm install -g agent-browser@0.31.2
 
 # The bridge (MCP proxy + artifact persistence).
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY bridge.mjs browser-lane-policy.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
 
 # Pre-download Chrome for Testing into the image (version-matched to the CLI).

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import ray
 
 from .routes import router, service as browser_service
+from .service import RAY_NAMESPACE
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Initializing Ray connection...")
     if not ray.is_initialized():
-        ray.init(address="auto")
+        ray.init(address="auto", namespace=RAY_NAMESPACE)
     logger.info("Ray initialized successfully")
 
     # Background reaper for stale BrowserActors. Configurable via

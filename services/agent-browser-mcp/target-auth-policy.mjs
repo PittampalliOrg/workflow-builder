@@ -155,6 +155,43 @@ export function authorizeBrowserSessionTermination({
   );
 }
 
+/**
+ * Permit the MCP client's one schema-cache refresh after browser close.
+ *
+ * Closing the browser invalidates the live browser capability, but MCP clients
+ * may issue one tools/list after a successful tools/call to validate its output
+ * schema. The caller owns and atomically consumes `schemaRefreshAvailable`
+ * before forwarding the request; this predicate never mutates session state.
+ */
+export function authorizeBrowserSessionPostCloseToolsList({
+  method,
+  schemaRefreshAvailable,
+  browserContext,
+  sessionId,
+  executionId,
+  targetAuth,
+  expectedSessionId,
+  expectedExecutionId,
+  expectedAssertionDigest,
+}) {
+  if (
+    method !== "tools/list" ||
+    schemaRefreshAvailable !== true ||
+    browserContext?.closing !== true ||
+    browserContext?.closeResponseSettled !== true
+  ) {
+    return false;
+  }
+  return authorizeBrowserSessionTermination({
+    sessionId,
+    executionId,
+    targetAuth,
+    expectedSessionId,
+    expectedExecutionId,
+    expectedAssertionDigest,
+  });
+}
+
 function parseOrigin(value) {
   if (typeof value !== "string" || !value.trim()) return null;
   try {

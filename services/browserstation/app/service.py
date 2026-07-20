@@ -11,10 +11,37 @@ import ray
 from ray.util.state import list_actors
 import websockets
 
+from app.actor_reaper import (
+    ActorIdentity,
+    merge_reconciled_actor_times,
+    reconcile_actor_start_times,
+    stale_actor_ages,
+)
 from app.lib import fetch_ws
 from app.models import ActorInfo, BrowserInfo, BrowserList, BrowserStatus, Health
+from app.websocket_transport import (
+    UPSTREAM_TO_CLIENT,
+    relay_websocket_messages,
+    websocket_limits,
+)
 
 logger = logging.getLogger(__name__)
+
+RAY_NAMESPACE = "browserstation"
+QUEUED_ACTOR_STATES = ("PENDING_CREATION", "DEPENDENCIES_UNREADY", "RESTARTING")
+REAPABLE_ACTOR_STATES = ("ALIVE", *QUEUED_ACTOR_STATES)
+
+
+def _query_browser_actors(
+    states: tuple[str, ...], *, all_namespaces: bool = False, detail: bool = False
+):
+    records = []
+    for state in states:
+        filters = [("class_name", "=", "BrowserActor"), ("state", "=", state)]
+        if not all_namespaces:
+            filters.append(("ray_namespace", "=", RAY_NAMESPACE))
+        records.extend(list_actors(filters=filters, limit=10_000, detail=detail))
+    return records
 
 
 # Tunable timeouts. Defaults raised from the originals (2s, 5s) to absorb
@@ -27,6 +54,7 @@ _CHROME_HEALTHCHECK_TIMEOUT = float(
 _WS_CONNECT_TIMEOUT = float(
     os.environ.get("BROWSERSTATION_WS_CONNECT_TIMEOUT_SECONDS", "10.0")
 )
+_WS_MAX_MESSAGE_BYTES, _WS_MAX_QUEUE = websocket_limits()
 # TTL after which an alive BrowserActor gets force-killed by the reaper to
 # clean up zombie browsers from orphaned executions. 0 disables.
 _ACTOR_TTL_SECONDS = int(os.environ.get("BROWSERSTATION_ACTOR_TTL_SECONDS", "1800"))
@@ -60,14 +88,13 @@ class BrowserActor:
 
 
 class BrowserService:
-    # Track when each named actor was created so the reaper can kill it
-    # after _ACTOR_TTL_SECONDS even if no client explicitly deletes it.
-    # In-memory only; on restart the reaper falls back to letting Ray's
-    # natural lifecycle reap idle actors at next reschedule.
-    _actor_creation_times: dict[str, float] = {}
+    # Monotonic start estimates are reconciled against Ray's live actor list on
+    # every reaper pass. Deployed Ray 2.47 uses a stable first-seen fallback;
+    # newer schemas can preserve exact age when start_time_ms is available.
+    _actor_creation_times: dict[ActorIdentity, float] = {}
 
-    def _find_actor(self, browser_id: str):
-        actors = list_actors(filters=[("class_name", "=", "BrowserActor")])
+    async def _find_actor(self, browser_id: str):
+        actors = await asyncio.to_thread(_query_browser_actors, REAPABLE_ACTOR_STATES)
         for actor in actors:
             if actor.name == browser_id:
                 return actor
@@ -76,23 +103,14 @@ class BrowserService:
     async def health(self):
         try:
             ray_status = ray.is_initialized()
-            alive_actors = list_actors(
-                filters=[("class_name", "=", "BrowserActor"), ("state", "=", "ALIVE")]
-            )
-            pending_actors = list_actors(
-                filters=[
-                    ("class_name", "=", "BrowserActor"),
-                    ("state", "=", "PENDING_CREATION"),
-                ]
-            )
-            dead_actors = list_actors(
-                filters=[("class_name", "=", "BrowserActor"), ("state", "=", "DEAD")]
+            actors = await asyncio.to_thread(
+                _query_browser_actors, (*REAPABLE_ACTOR_STATES, "DEAD")
             )
 
             browser_states = {
-                "alive": len(alive_actors),
-                "pending": len(pending_actors),
-                "dead": len(dead_actors),
+                "alive": sum(actor.state == "ALIVE" for actor in actors),
+                "pending": sum(actor.state in QUEUED_ACTOR_STATES for actor in actors),
+                "dead": sum(actor.state == "DEAD" for actor in actors),
             }
 
             try:
@@ -114,26 +132,30 @@ class BrowserService:
 
     async def create_browser(self):
         browser_id = str(uuid.uuid4())
-        BrowserActor.options(name=browser_id, lifetime="detached").remote(browser_id)
-        self._actor_creation_times[browser_id] = time.monotonic()
+        await asyncio.to_thread(
+            lambda: BrowserActor.options(
+                name=browser_id,
+                namespace=RAY_NAMESPACE,
+                lifetime="detached",
+            ).remote(browser_id)
+        )
+        self._actor_creation_times[(RAY_NAMESPACE, browser_id)] = time.monotonic()
         return ActorInfo(
             browser_id=browser_id,
             proxy_url=f"/ws/browsers/{browser_id}/devtools/browser",
         )
 
     async def list_browsers(self):
-        alive_actors = list_actors(
-            filters=[("class_name", "=", "BrowserActor"), ("state", "=", "ALIVE")]
-        )
-        pending_actors = list_actors(
-            filters=[
-                ("class_name", "=", "BrowserActor"),
-                ("state", "=", "PENDING_CREATION"),
-            ]
-        )
+        actors = await asyncio.to_thread(_query_browser_actors, REAPABLE_ACTOR_STATES)
+        alive_actors = [actor for actor in actors if actor.state == "ALIVE"]
+        pending_actors = [
+            actor for actor in actors if actor.state in QUEUED_ACTOR_STATES
+        ]
 
         async def get_browser_info(actor):
-            actor_handle = ray.get_actor(actor.name)
+            actor_handle = await asyncio.to_thread(
+                ray.get_actor, actor.name, namespace=RAY_NAMESPACE
+            )
             info = await actor_handle.get_info.remote()
             return {
                 "browser_id": actor.name,
@@ -149,11 +171,11 @@ class BrowserService:
         return BrowserList(browsers=alive_browsers + pending_browsers)
 
     async def get_browser(self, browser_id: str):
-        actor_record = self._find_actor(browser_id)
+        actor_record = await self._find_actor(browser_id)
         if actor_record is None:
             raise HTTPException(status_code=404, detail="Browser not found")
 
-        if actor_record.state == "PENDING_CREATION":
+        if actor_record.state in QUEUED_ACTOR_STATES:
             return BrowserInfo(
                 browser_id=browser_id,
                 pod_ip="",
@@ -165,16 +187,20 @@ class BrowserService:
             raise HTTPException(status_code=404, detail="Browser not found")
 
         try:
-            actor = ray.get_actor(browser_id)
+            actor = await asyncio.to_thread(
+                ray.get_actor, browser_id, namespace=RAY_NAMESPACE
+            )
             return await actor.get_info.remote()
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="Browser not found") from exc
 
     async def delete_browser(self, browser_id: str):
         try:
-            actor = ray.get_actor(browser_id)
-            ray.kill(actor)
-            self._actor_creation_times.pop(browser_id, None)
+            actor = await asyncio.to_thread(
+                ray.get_actor, browser_id, namespace=RAY_NAMESPACE
+            )
+            await asyncio.to_thread(ray.kill, actor)
+            self._actor_creation_times.pop((RAY_NAMESPACE, browser_id), None)
             return BrowserStatus(browser_id=browser_id, status="closed")
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="Browser not found") from exc
@@ -183,16 +209,56 @@ class BrowserService:
                 status_code=500, detail=f"Failed to kill actor {exc}"
             ) from exc
 
+    async def reap_stale_actors_once(self):
+        now_monotonic = time.monotonic()
+        scan_start = dict(self._actor_creation_times)
+        actors = await asyncio.to_thread(
+            _query_browser_actors,
+            REAPABLE_ACTOR_STATES,
+            all_namespaces=True,
+            detail=True,
+        )
+        reconciled = reconcile_actor_start_times(
+            actors,
+            scan_start,
+            now_monotonic=now_monotonic,
+            now_epoch_ms=time.time() * 1000,
+        )
+        merge_reconciled_actor_times(self._actor_creation_times, scan_start, reconciled)
+
+        stale_actors = stale_actor_ages(
+            reconciled,
+            now_monotonic=now_monotonic,
+            ttl_seconds=_ACTOR_TTL_SECONDS,
+        )
+        for (namespace, bid), age in stale_actors.items():
+            try:
+                actor = await asyncio.to_thread(ray.get_actor, bid, namespace=namespace)
+                await asyncio.to_thread(ray.kill, actor)
+                logger.info(
+                    "Reaper killed stale actor %s (age=%ds, ttl=%ds)",
+                    bid,
+                    age,
+                    _ACTOR_TTL_SECONDS,
+                )
+            except ValueError:
+                logger.debug("Reaper: actor %s already gone", bid)
+                self._actor_creation_times.pop((namespace, bid), None)
+            except Exception as exc:
+                # Retain the original age so a transient Ray failure is
+                # retried on the next pass, not after another full TTL.
+                logger.warning("Reaper failed to kill actor %s: %s", bid, exc)
+            else:
+                self._actor_creation_times.pop((namespace, bid), None)
+
     async def reap_stale_actors(self):
         """Periodic background task: kill BrowserActors older than
         BROWSERSTATION_ACTOR_TTL_SECONDS so orphan browsers from crashed
         executions don't accumulate. Started by the FastAPI lifespan
         on app startup; runs forever until shutdown.
 
-        Cleanup of DEAD-state actors (cosmetic noise in /health) is
-        handled implicitly: ray.kill on an already-DEAD actor is a no-op
-        and safe to retry. We focus on ALIVE actors that have outlived
-        their TTL since this is what causes resource leaks.
+        Cleanup is limited to active and queued BrowserActors; DEAD-state
+        records are diagnostic history and do not consume worker capacity.
         """
         if _ACTOR_TTL_SECONDS <= 0:
             logger.info("Actor reaper disabled (BROWSERSTATION_ACTOR_TTL_SECONDS=0)")
@@ -205,28 +271,7 @@ class BrowserService:
         )
         while True:
             try:
-                now = time.monotonic()
-                stale_ids = [
-                    bid
-                    for bid, created in list(self._actor_creation_times.items())
-                    if (now - created) >= _ACTOR_TTL_SECONDS
-                ]
-                for bid in stale_ids:
-                    age = now - self._actor_creation_times[bid]
-                    try:
-                        actor = ray.get_actor(bid)
-                        ray.kill(actor)
-                        logger.info(
-                            "Reaper killed stale actor %s (age=%ds, ttl=%ds)",
-                            bid,
-                            age,
-                            _ACTOR_TTL_SECONDS,
-                        )
-                    except ValueError:
-                        # Actor already gone; just drop the bookkeeping entry.
-                        logger.debug("Reaper: actor %s already gone", bid)
-                    finally:
-                        self._actor_creation_times.pop(bid, None)
+                await self.reap_stale_actors_once()
             except Exception as exc:
                 logger.warning("Actor reaper iteration failed: %s", exc)
             await asyncio.sleep(_ACTOR_REAPER_INTERVAL_SECONDS)
@@ -235,7 +280,9 @@ class BrowserService:
         await websocket.accept()
 
         try:
-            actor = ray.get_actor(browser_id)
+            actor = await asyncio.to_thread(
+                ray.get_actor, browser_id, namespace=RAY_NAMESPACE
+            )
         except ValueError:
             await websocket.close(code=1008, reason="Browser not found")
             return
@@ -258,23 +305,36 @@ class BrowserService:
 
         chrome_ws_url = f"ws://{info.pod_ip}:9223/{path}"
 
-        async with websockets.connect(
-            chrome_ws_url, timeout=_WS_CONNECT_TIMEOUT
-        ) as chrome_ws:
+        async def close_client() -> None:
+            try:
+                await websocket.close(code=1011, reason="Chrome connection closed")
+            except (OSError, RuntimeError, WebSocketDisconnect):
+                # The downstream may already have closed while the upstream
+                # disconnect was propagating.
+                pass
 
-            async def client_to_chrome():
+        try:
+            async with websockets.connect(
+                chrome_ws_url,
+                open_timeout=_WS_CONNECT_TIMEOUT,
+                max_size=_WS_MAX_MESSAGE_BYTES,
+                max_queue=_WS_MAX_QUEUE,
+            ) as chrome_ws:
                 try:
-                    while True:
-                        msg = await websocket.receive_text()
-                        await chrome_ws.send(msg)
+                    completed = await relay_websocket_messages(
+                        receive_client=websocket.receive_text,
+                        send_upstream=chrome_ws.send,
+                        upstream_messages=chrome_ws,
+                        send_client=websocket.send_text,
+                    )
                 except WebSocketDisconnect:
-                    pass
-
-            async def chrome_to_client():
-                try:
-                    async for msg in chrome_ws:
-                        await websocket.send_text(msg)
+                    return
                 except websockets.exceptions.ConnectionClosed:
-                    pass
+                    await close_client()
+                    return
 
-            await asyncio.gather(client_to_chrome(), chrome_to_client())
+                if UPSTREAM_TO_CLIENT in completed:
+                    await close_client()
+        except Exception as exc:
+            logger.warning("Chrome websocket proxy failed for %s: %s", browser_id, exc)
+            await close_client()
