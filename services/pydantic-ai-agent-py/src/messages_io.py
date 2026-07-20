@@ -89,3 +89,48 @@ def response_tool_calls(response: ModelResponse) -> list[dict[str, Any]]:
                 }
             )
     return calls
+
+
+def openinference_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """Flatten pydantic-ai messages to the `{role, content}` array the curated
+    ClickHouse views (`llm.input_messages` / `llm.output_messages`) and the
+    agent-conversation UI render. Lossy by design — the native pydantic-ai
+    `gen_ai.input.messages` attrs on the nested chat span keep full fidelity."""
+    flat: list[dict[str, Any]] = []
+    for message in messages:
+        for part in getattr(message, "parts", None) or []:
+            kind = getattr(part, "part_kind", "")
+            if kind == "system-prompt":
+                flat.append({"role": "system", "content": str(part.content)})
+            elif kind == "user-prompt":
+                content = part.content
+                flat.append(
+                    {
+                        "role": "user",
+                        "content": content
+                        if isinstance(content, str)
+                        else str(content),
+                    }
+                )
+            elif kind == "tool-return":
+                flat.append(
+                    {
+                        "role": "tool",
+                        "name": getattr(part, "tool_name", ""),
+                        "content": str(part.content),
+                    }
+                )
+            elif kind == "retry-prompt":
+                flat.append({"role": "user", "content": str(part.content)})
+            elif kind == "text":
+                flat.append({"role": "assistant", "content": str(part.content)})
+            elif kind == "tool-call":
+                flat.append(
+                    {
+                        "role": "assistant",
+                        "content": f"[tool_call {part.tool_name}] "
+                        + str(part.args or ""),
+                    }
+                )
+            # thinking parts stay out of the flat view on purpose
+    return flat

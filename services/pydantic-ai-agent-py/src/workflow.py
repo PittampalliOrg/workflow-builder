@@ -39,6 +39,7 @@ from src.messages_io import (
     bootstrap_request,
     dump_messages,
     load_messages,
+    openinference_messages,
     response_text,
     response_tool_calls,
     tool_return_message,
@@ -46,6 +47,13 @@ from src.messages_io import (
     user_request,
 )
 from src.session_native import terminal_stop_reason_from_events
+from src.telemetry import (
+    activity_span,
+    content_capture_enabled,
+    flush_telemetry,
+    instrument_model,
+    set_content_attr,
+)
 from src.toolsets import get_router
 
 logger = logging.getLogger(__name__)
@@ -151,6 +159,30 @@ def build_model_settings() -> dict[str, Any]:
     )
 
 
+def _span_base_attrs(context: dict, iteration: int) -> dict[str, Any]:
+    """Platform identity attrs every activity span carries.
+
+    `session.id` / `workflow.execution.id` are the keys the BFF ClickHouse
+    reader and the curated obs.* views filter on; the rest make the trace
+    self-describing without a DB join.
+    """
+    attrs: dict[str, Any] = {"agent.framework": "pydantic-ai", "iteration": iteration}
+    if context.get("sessionId"):
+        attrs["session.id"] = str(context["sessionId"])
+    if context.get("dbExecutionId"):
+        attrs["workflow.execution.id"] = str(context["dbExecutionId"])
+    if context.get("workflowInstanceId"):
+        attrs["dapr.workflow.instance_id"] = str(context["workflowInstanceId"])
+    if context.get("turnId"):
+        attrs["workflow_builder.turn_id"] = str(context["turnId"])
+    if context.get("turn") is not None:
+        attrs["agent.turn"] = int(context.get("turn") or 0)
+    model_spec = (context.get("agentConfig") or {}).get("modelSpec")
+    if model_spec:
+        attrs["agent.model_spec"] = str(model_spec)
+    return attrs
+
+
 # ---------------------------------------------------------------------------
 # Activities
 # ---------------------------------------------------------------------------
@@ -186,7 +218,7 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         "[activity:%s] iteration=%d scope=%s", CALL_LLM_ACTIVITY, iteration, scope
     )
 
-    async def run() -> dict:
+    async def run(span) -> dict:
         router = get_router(agent_cfg)
         messages = load_messages(payload.get("messages"))
         task = str(payload.get("task") or "")
@@ -211,7 +243,10 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             function_tools=await router.tool_defs(),
             allow_text_output=True,
         )
-        model = build_model()
+        # Native pydantic-ai instrumentation: the wrapped model emits the
+        # GenAI-semconv `chat <model>` span (request params, messages, usage,
+        # cost, token metrics) as a child of this activity's span.
+        model = instrument_model(build_model())
         request_context = ModelRequestContext(
             model=model,
             messages=messages,
@@ -231,12 +266,54 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
 
         response = await router.apply_model_request(request_context, base_handler)
         response = await router.apply_after_model_request(request_context, response)
+        input_messages = list(request_context.messages)
         messages = list(request_context.messages)
         messages.append(response)
 
         text = response_text(response)
         tool_calls = response_tool_calls(response)
         usage = response.usage
+
+        if span is not None:
+            # Platform/OpenInference contract on the ACTIVITY span: the
+            # curated obs.llm_spans view gates on openinference.span.kind
+            # and reads llm.token_count.* / llm.{input,output}_messages.
+            # The nested native chat span has no span.kind, so it is never
+            # double-counted by the view.
+            try:
+                gross_input = int(getattr(usage, "input_tokens", 0) or 0)
+                output_toks = int(getattr(usage, "output_tokens", 0) or 0)
+                span.set_attribute("openinference.span.kind", "LLM")
+                span.set_attribute(
+                    "llm.model_name",
+                    str(getattr(response, "model_name", None) or KIMI_DEFAULT_MODEL),
+                )
+                span.set_attribute("llm.provider", "kimi")
+                span.set_attribute("llm.token_count.prompt", gross_input)
+                span.set_attribute("llm.token_count.completion", output_toks)
+                span.set_attribute("llm.token_count.total", gross_input + output_toks)
+                cache_read_toks = int(getattr(usage, "cache_read_tokens", 0) or 0)
+                if cache_read_toks:
+                    span.set_attribute(
+                        "gen_ai.usage.cache_read_input_tokens", cache_read_toks
+                    )
+                cache_write_toks = int(getattr(usage, "cache_write_tokens", 0) or 0)
+                if cache_write_toks:
+                    span.set_attribute(
+                        "gen_ai.usage.cache_creation_input_tokens", cache_write_toks
+                    )
+                finish = getattr(response, "finish_reason", None)
+                if finish:
+                    span.set_attribute("llm.finish_reason", str(finish))
+                if content_capture_enabled():
+                    set_content_attr(
+                        span, "llm.input_messages", openinference_messages(input_messages)
+                    )
+                    set_content_attr(
+                        span, "llm.output_messages", openinference_messages([response])
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[call-llm] span stamping failed: %s", exc)
 
         if session_id:
             if text or tool_calls:
@@ -281,7 +358,13 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             "text": text,
         }
 
-    return asyncio.run(run())
+    try:
+        with activity_span("call_llm", _span_base_attrs(context, iteration)) as span:
+            return asyncio.run(run(span))
+    finally:
+        # Per-session pods are reaped at session end — flush per activity so
+        # a reap between batch-export ticks loses nothing.
+        flush_telemetry()
 
 
 def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
@@ -312,15 +395,6 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         scope,
     )
 
-    if session_id:
-        publish_session_event(
-            session_id,
-            "tool_call_start",
-            {"toolName": name, "args": args, "tool_use_id": tool_call_id},
-            source_event_id=f"{scope}:{turn_id}:{tool_call_id}:start",
-            instance_id=scope,
-        )
-
     async def run() -> tuple[str, str | None]:
         router = get_router(agent_cfg)
         try:
@@ -348,21 +422,58 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             logger.warning("[execute-tool] %s failed: %s", name, exc)
             return f"Tool {name} failed: {type(exc).__name__}: {exc}", str(exc)
 
-    output, error = asyncio.run(run())
+    span_attrs = {
+        **_span_base_attrs(context, iteration),
+        # OpenInference TOOL contract (obs.tool_spans) + OTel GenAI conventions.
+        "openinference.span.kind": "TOOL",
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": name,
+        "tool.name": name,
+        **({"gen_ai.tool.call.id": tool_call_id} if tool_call_id else {}),
+    }
+    try:
+        with activity_span(f"execute_tool {name}", span_attrs) as span:
+            if span is not None and content_capture_enabled():
+                set_content_attr(span, "tool.arguments", dict(args or {}))
 
-    if session_id:
-        publish_session_event(
-            session_id,
-            "tool_call_error" if error else "tool_call_end",
-            {
-                "toolName": name,
-                "tool_use_id": tool_call_id,
-                "output": truncate(output),
-                **({"error": truncate(error, 1000)} if error else {}),
-            },
-            source_event_id=f"{scope}:{turn_id}:{tool_call_id}:end",
-            instance_id=scope,
-        )
+            if session_id:
+                publish_session_event(
+                    session_id,
+                    "tool_call_start",
+                    {"toolName": name, "args": args, "tool_use_id": tool_call_id},
+                    source_event_id=f"{scope}:{turn_id}:{tool_call_id}:start",
+                    instance_id=scope,
+                )
+
+            output, error = asyncio.run(run())
+
+            if span is not None:
+                if content_capture_enabled():
+                    set_content_attr(span, "tool.result", truncate(output))
+                if error:
+                    try:
+                        from opentelemetry.trace import Status, StatusCode
+
+                        span.set_status(Status(StatusCode.ERROR, error[:200]))
+                        span.set_attribute("tool.error", error[:1000])
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            if session_id:
+                publish_session_event(
+                    session_id,
+                    "tool_call_error" if error else "tool_call_end",
+                    {
+                        "toolName": name,
+                        "tool_use_id": tool_call_id,
+                        "output": truncate(output),
+                        **({"error": truncate(error, 1000)} if error else {}),
+                    },
+                    source_event_id=f"{scope}:{turn_id}:{tool_call_id}:end",
+                    instance_id=scope,
+                )
+    finally:
+        flush_telemetry()
 
     message = tool_return_message(name, tool_call_id, output)
     return {"message": dump_messages([message])[0]}
