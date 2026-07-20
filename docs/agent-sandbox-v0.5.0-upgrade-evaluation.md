@@ -118,3 +118,47 @@ v1beta1 changes; **gate on the `isAdoptable` risk** at the ryzen canary; keep th
 Lifecycle/pause/dispatch/admission stack custom; and treat `operatingMode:Suspended`,
 `SandboxClaim`+`volumeClaimTemplates`, and snapshots as out-of-scope (skip/defer). The warm-pool app-id
 blocker and slow builds are separate workstreams unaffected by this release.
+
+## 6. Addendum (2026-07-20): upstream volumes docs vs our JuiceFS
+
+Review of https://agent-sandbox.sigs.k8s.io/docs/volumes/ (two guides:
+`volume-claim-template`, `gcsfuse-csi`), against the question "is our JuiceFS
+the same kind of thing as gcsfuse, and would it work with their
+volumeClaimTemplates strategy?"
+
+**Same architectural role, stronger semantics.** gcsfuse CSI and JuiceFS CSI
+are both FUSE filesystems over object storage exposed through a CSI driver
+and mountable RWX. Differences that matter: gcsfuse is a thin stateless
+bucket mapping (weak POSIX: non-atomic rename, slow listings, no separate
+metadata tier) and its sidecar injection (`gke-gcsfuse/volumes: "true"` +
+Workload Identity) is **GKE-managed — unusable on our Kind/Talos clusters**.
+JuiceFS keeps a real metadata engine (our Postgres) with chunked data in
+MinIO/S3, giving full POSIX (atomic rename, close-to-open consistency,
+cached metadata) cloud-agnostically. So the gcsfuse guide is not a usable
+resource for us directly; it *validates* JuiceFS-on-MinIO as the
+self-hosted equivalent of the pattern upstream is blessing.
+
+**volumeClaimTemplates compatibility: yes mechanically, no for run
+workspaces.** `SandboxTemplate.spec.volumeClaimTemplates` (v1beta1,
+StatefulSet-like: per-sandbox PVC `\<claim\>-\<pod\>`, stable across pod
+recreation, pre-provisionable in warm pools) provisions via any
+StorageClass — a `juicefs` StorageClass with `pathPattern` works fine. But
+its key is **per-sandbox**, and our `/sandbox/work` key is
+**per-run/workspaceRef**: one workspace shared by multiple sandboxes
+(generator+critic), remounted by resume-from-step forks, retained past the
+sandbox. volumeClaimTemplates cannot express "mount run X's workspace" —
+this is exactly why the v0.5.0 eval kept SEA-created PVCs+ownerRef for
+workspaces, and that stands.
+
+**Where it IS worth adopting (post-upgrade, complements §5):**
+1. **Per-sandbox durable scratch for pod-local runtimes** (e.g.
+   pydantic-ai-agent-py `/sandbox`): a small RWO claim template would make a
+   rescheduled/evicted pod resume with its files — reschedule-durability
+   without moving the runtime onto shared FS.
+2. **Warm-pool dependency-cache volumes**: pre-provisioned PVCs carrying
+   baked caches align with the build-state guidance in
+   `agent-workspace-build-and-gan-loop-best-practices.md` (block PVC for
+   build state, RWX only for sharing — the same position upstream takes).
+
+Both require the v1beta1/v0.5.0 upgrade this doc already recommends; neither
+changes the workspace architecture.
