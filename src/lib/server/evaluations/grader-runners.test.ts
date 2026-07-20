@@ -97,4 +97,77 @@ describe("LLM judge runner", () => {
 			),
 		).resolves.toMatchObject({ passed: true });
 	});
+
+	it.each([
+		{ type: "llm_judge" as const, threshold: 0.75, expectedPassed: true },
+		{ type: "mlflow_judge" as const, threshold: 0.85, expectedPassed: false },
+	])(
+		"recursively runs a nested $type with its canonical threshold",
+		async ({ type, threshold, expectedPassed }) => {
+			const grader = validateGraderDefinition({
+				id: "outer",
+				name: "Outer multi",
+				type: "multi",
+				config: {
+					aggregation: "all",
+					graders: [
+						{
+							id: "inner",
+							name: "Inner multi",
+							type: "multi",
+							config: {
+								aggregation: "all",
+								graders: [
+									{
+										id: "judge",
+										name: "Nested judge",
+										type,
+										passThreshold: threshold,
+										config: { prompt: "Judge {{actual}}" },
+									},
+								],
+							},
+						},
+					],
+				},
+			});
+
+			const result = await runGraderAsync(
+				grader,
+				{ input: {}, expectedOutput: "expected", generatedOutput: "actual" },
+				{ judge },
+			);
+
+			expect(result).toMatchObject({
+				type: "multi",
+				score: 0.8,
+				passed: expectedPassed,
+				children: [
+					{
+						type: "multi",
+						score: 0.8,
+						passed: expectedPassed,
+						children: [
+							{
+								type,
+								score: 0.8,
+								passed: expectedPassed,
+								details: {
+									passThreshold: threshold,
+									evalGraderType: "llm_judge",
+									legacyGraderType:
+										type === "mlflow_judge" ? "mlflow_judge" : null,
+								},
+							},
+						],
+					},
+				],
+			});
+			expect(judge.judge).toHaveBeenCalledWith({
+				name: "Nested judge",
+				prompt: "Judge actual",
+			});
+			expect(mocks.daprFetch).not.toHaveBeenCalled();
+		},
+	);
 });

@@ -972,11 +972,6 @@
 								<div class="flex items-center gap-2 text-xs text-muted-foreground">
 									<Loader2 class="h-3 w-3 animate-spin" /> Loading spans…
 								</div>
-							{:else if (detail.runInstance.traceIds?.length ?? 0) === 0}
-								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-									No trace IDs recorded for this instance. The runtime may have completed before
-									OTel spans propagated, or this run predates OTel instrumentation.
-								</div>
 							{:else if spansError}
 								<Alert variant="destructive">
 									<AlertDescription>
@@ -1046,6 +1041,10 @@
 										<AlertDescription>{spansMoreError}</AlertDescription>
 									</Alert>
 								{/if}
+							{:else if (detail.runInstance.traceIds?.length ?? 0) === 0}
+								<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+									No trace IDs or workflow-log fallback spans are available for this instance.
+								</div>
 							{/if}
 						</TabsContent>
 

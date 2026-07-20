@@ -246,6 +246,9 @@ export async function runGraderAsync(
 	context: GraderContext,
 	dependencies: import("./grader-runners").AsyncGraderDependencies = {},
 ): Promise<GraderResult> {
+	if (grader.type === "multi") {
+		return runMultiGraderAsync(grader, context, dependencies);
+	}
 	const needsAsync =
 		grader.type === "score_model" ||
 		grader.type === "llm_judge" ||
@@ -390,6 +393,26 @@ function runMultiGrader(
 	const children = (grader.config.graders as GraderDefinition[]).map((child) =>
 		runGrader(child, context),
 	);
+	return aggregateMultiGrader(grader, children);
+}
+
+async function runMultiGraderAsync(
+	grader: GraderDefinition,
+	context: GraderContext,
+	dependencies: import("./grader-runners").AsyncGraderDependencies,
+): Promise<GraderResult> {
+	const children = await Promise.all(
+		(grader.config.graders as GraderDefinition[]).map((child) =>
+			runGraderAsync(child, context, dependencies),
+		),
+	);
+	return aggregateMultiGrader(grader, children);
+}
+
+function aggregateMultiGrader(
+	grader: GraderDefinition,
+	children: GraderResult[],
+): GraderResult {
 	const aggregation = readString(grader.config.aggregation, "average");
 	const scored = children.filter((child) => typeof child.score === "number");
 	const score =

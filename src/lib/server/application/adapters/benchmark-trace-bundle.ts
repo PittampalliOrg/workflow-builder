@@ -26,6 +26,8 @@ export type SwebenchTraceBundleBackend =
 	| "workflow_logs"
 	| "none";
 
+export type SwebenchAuxiliaryTraceStatus = "found" | "missing" | "unknown";
+
 export type SwebenchTraceBundle = {
 	version: 1;
 	backend: SwebenchTraceBundleBackend;
@@ -35,7 +37,7 @@ export type SwebenchTraceBundle = {
 	instanceId: string;
 	traceIds: string[];
 	canonicalTraceId: string | null;
-	auxiliaryTraces: Array<{ traceId: string; status: "found" | "missing" }>;
+	auxiliaryTraces: Array<{ traceId: string; status: SwebenchAuxiliaryTraceStatus }>;
 	mlflowTracesUrl: string | null;
 	traceSpans: ObservabilityTraceSpan[];
 	llmSpans: ObservabilityLlmSpan[];
@@ -56,6 +58,7 @@ export type SwebenchTraceBundle = {
 		agentIdentityComplete: boolean;
 		auxiliaryTracesFound: number;
 		auxiliaryTracesMissing: number;
+		auxiliaryTracesUnknown: number;
 	};
 	groups: {
 		workflowRoot: number;
@@ -194,6 +197,7 @@ export async function loadSwebenchTraceBundle(params: {
 			runInstanceId: benchmarkRunInstances.id,
 			instanceId: benchmarkRunInstances.instanceId,
 			traceIds: benchmarkRunInstances.traceIds,
+			legacyTraceId: benchmarkRunInstances.mlflowTraceId,
 			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
 			primaryTraceId: workflowExecutions.primaryTraceId,
 			instanceStartedAt: benchmarkRunInstances.startedAt,
@@ -217,42 +221,13 @@ export async function loadSwebenchTraceBundle(params: {
 		.limit(1);
 	if (!row) return null;
 
-	const warnings: string[] = [];
-	const recordedTraceIds = Array.isArray(row.traceIds)
-		? row.traceIds.filter(
-				(value): value is string =>
-					typeof value === "string" && Boolean(value.trim()),
-			)
-		: [];
-	const auxiliaryTraceIds = normalizeTraceIds(row.traceIds);
-	const invalidTraceIdCount = recordedTraceIds.filter(
-		(traceId) => normalizeTraceBundleId(traceId) === null,
-	).length;
-	if (invalidTraceIdCount > 0) {
-		warnings.push(`${invalidTraceIdCount} invalid recorded trace id(s) were omitted`);
-	}
-	const normalizedPrimaryTraceId =
-		typeof row.primaryTraceId === "string"
-			? normalizeTraceBundleId(row.primaryTraceId)
-			: null;
-	if (
-		typeof row.primaryTraceId === "string" &&
-		row.primaryTraceId.trim() &&
-		!normalizedPrimaryTraceId
-	) {
-		warnings.push("The recorded primary trace id was invalid; using an auxiliary trace id");
-	}
-	const canonicalTraceId =
-		normalizedPrimaryTraceId ?? auxiliaryTraceIds[0] ?? null;
-	const allTraceIds = canonicalTraceId
-		? [canonicalTraceId, ...auxiliaryTraceIds.filter((id) => id !== canonicalTraceId)]
-		: auxiliaryTraceIds;
-	const traceIds = allTraceIds.slice(0, MAX_TRACE_IDS);
-	if (allTraceIds.length > traceIds.length) {
-		warnings.push(
-			`Trace id set was capped at ${MAX_TRACE_IDS}; ${allTraceIds.length - traceIds.length} ids were omitted`,
-		);
-	}
+	const resolvedTraceIds = resolveStoredTraceBundleIds({
+		primaryTraceId: row.primaryTraceId,
+		legacyTraceId: row.legacyTraceId,
+		traceIds: row.traceIds,
+	});
+	const warnings = [...resolvedTraceIds.warnings];
+	const { canonicalTraceId, traceIds } = resolvedTraceIds;
 	const page = traceBundlePage(params.options, {
 		startedAt:
 			row.executionStartedAt ?? row.instanceStartedAt ?? row.runStartedAt ?? row.instanceCreatedAt,
@@ -484,6 +459,7 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 			warnings,
 			derivedLlmSpanCount: 0,
 			derivedToolSpanCount: 0,
+			auxiliaryTraceSearchComplete: true,
 			truncated: Boolean(input.workflowNodeSpansTruncated),
 			nextCursor: input.workflowNodeSpansTruncated
 				? encodeTraceBundleCursor(page.offset + page.limit)
@@ -597,6 +573,8 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 		warnings,
 		derivedLlmSpanCount,
 		derivedToolSpanCount,
+		auxiliaryTraceSearchComplete:
+			rawResult.status === "fulfilled" && !rawTruncated && page.offset === 0,
 		truncated,
 		nextCursor: truncated ? encodeTraceBundleCursor(page.offset + page.limit) : null,
 	});
@@ -699,17 +677,26 @@ function createBundle(
 		warnings: string[];
 		derivedLlmSpanCount: number;
 		derivedToolSpanCount: number;
+		auxiliaryTraceSearchComplete: boolean;
 		truncated: boolean;
 		nextCursor: string | null;
 	},
 ): SwebenchTraceBundle {
 	const errorSpanCount = values.traceSpans.filter((span) => span.status === "error").length;
-	const foundTraceIds = new Set(values.traceSpans.map((span) => span.traceId));
+	const foundTraceIds = new Set([
+		...values.traceSpans.map((span) => span.traceId),
+		...values.llmSpans.map((span) => span.traceId),
+		...values.toolSpans.map((span) => span.traceId),
+	]);
 	const auxiliaryTraces = input.traceIds
 		.filter((traceId) => traceId !== input.canonicalTraceId)
 		.map((traceId) => ({
 			traceId,
-			status: foundTraceIds.has(traceId) ? "found" as const : "missing" as const,
+			status: foundTraceIds.has(traceId)
+				? "found" as const
+				: values.auxiliaryTraceSearchComplete
+					? "missing" as const
+					: "unknown" as const,
 		}));
 	const groups = groupTraceSpans(values.traceSpans);
 	const requiredContext = defaultRequiredContext(
@@ -744,6 +731,7 @@ function createBundle(
 			...requiredContext,
 			auxiliaryTracesFound: auxiliaryTraces.filter((trace) => trace.status === "found").length,
 			auxiliaryTracesMissing: auxiliaryTraces.filter((trace) => trace.status === "missing").length,
+			auxiliaryTracesUnknown: auxiliaryTraces.filter((trace) => trace.status === "unknown").length,
 		},
 		groups,
 		source: {
@@ -843,7 +831,57 @@ function defaultRequiredContext(
 		agentIdentityComplete,
 		auxiliaryTracesFound: 0,
 		auxiliaryTracesMissing: 0,
+		auxiliaryTracesUnknown: 0,
 	};
+}
+
+export function resolveStoredTraceBundleIds(input: {
+	primaryTraceId?: string | null;
+	legacyTraceId?: string | null;
+	traceIds?: unknown;
+}): { canonicalTraceId: string | null; traceIds: string[]; warnings: string[] } {
+	const warnings: string[] = [];
+	const recordedTraceIds = Array.isArray(input.traceIds)
+		? input.traceIds.filter(
+				(value): value is string => typeof value === "string" && Boolean(value.trim()),
+			)
+		: [];
+	const auxiliaryTraceIds = normalizeTraceIds(input.traceIds);
+	const invalidTraceIdCount = recordedTraceIds.filter(
+		(traceId) => normalizeTraceBundleId(traceId) === null,
+	).length;
+	if (invalidTraceIdCount > 0) {
+		warnings.push(`${invalidTraceIdCount} invalid recorded trace id(s) were omitted`);
+	}
+
+	const normalizedPrimaryTraceId = input.primaryTraceId
+		? normalizeTraceBundleId(input.primaryTraceId)
+		: null;
+	if (input.primaryTraceId?.trim() && !normalizedPrimaryTraceId) {
+		warnings.push("The recorded primary trace id was invalid; using another recorded trace id");
+	}
+	const normalizedLegacyTraceId = input.legacyTraceId
+		? normalizeTraceBundleId(input.legacyTraceId)
+		: null;
+	if (input.legacyTraceId?.trim() && !normalizedLegacyTraceId) {
+		warnings.push("The historical benchmark trace id was invalid and was omitted");
+	}
+
+	const canonicalTraceId =
+		normalizedPrimaryTraceId ?? normalizedLegacyTraceId ?? auxiliaryTraceIds[0] ?? null;
+	const allTraceIds = [
+		canonicalTraceId,
+		normalizedLegacyTraceId,
+		...auxiliaryTraceIds,
+	].filter((traceId): traceId is string => Boolean(traceId));
+	const uniqueTraceIds = [...new Set(allTraceIds)];
+	const traceIds = uniqueTraceIds.slice(0, MAX_TRACE_IDS);
+	if (uniqueTraceIds.length > traceIds.length) {
+		warnings.push(
+			`Trace id set was capped at ${MAX_TRACE_IDS}; ${uniqueTraceIds.length - traceIds.length} ids were omitted`,
+		);
+	}
+	return { canonicalTraceId, traceIds, warnings };
 }
 
 export function normalizeTraceBundleId(value: string): string | null {

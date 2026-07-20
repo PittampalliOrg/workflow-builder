@@ -21,6 +21,7 @@ import {
 	encodeTraceBundleCursor,
 	normalizeTraceBundleId,
 	normalizeRawTraceSpans,
+	resolveStoredTraceBundleIds,
 	safeSwebenchTraceArtifactPath,
 } from "./trace-bundle";
 
@@ -71,6 +72,29 @@ describe("trace bundle identity and pagination", () => {
 	it("round-trips opaque cursors and rejects malformed values", () => {
 		expect(decodeTraceBundleCursor(encodeTraceBundleCursor(50))).toBe(50);
 		expect(decodeTraceBundleCursor("not-base64-json")).toBe(0);
+	});
+
+	it("resolves the historical benchmark instance trace id without losing modern precedence", () => {
+		const legacyOnly = resolveStoredTraceBundleIds({
+			legacyTraceId: "tr-0123456789abcdef0123456789abcdef",
+			traceIds: [],
+		});
+		expect(legacyOnly).toMatchObject({
+			canonicalTraceId: "0123456789abcdef0123456789abcdef",
+			traceIds: ["0123456789abcdef0123456789abcdef"],
+			warnings: [],
+		});
+
+		const modernPrimary = resolveStoredTraceBundleIds({
+			primaryTraceId: "fedcba9876543210fedcba9876543210",
+			legacyTraceId: "tr-0123456789abcdef0123456789abcdef",
+			traceIds: ["fedcba9876543210fedcba9876543210"],
+		});
+		expect(modernPrimary.canonicalTraceId).toBe("fedcba9876543210fedcba9876543210");
+		expect(modernPrimary.traceIds).toEqual([
+			"fedcba9876543210fedcba9876543210",
+			"0123456789abcdef0123456789abcdef",
+		]);
 	});
 });
 
@@ -452,7 +476,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			runId: "run_1",
 			runInstanceId: "ri_1",
 			instanceId: "django__django-1",
-			traceIds: ["abc123"],
+			traceIds: ["abc123", "later-page-trace"],
 			canonicalTraceId: "abc123",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
 			workflowExecutionId: "exec-1",
@@ -462,9 +486,14 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 		expect(bundle.traceSpans).toHaveLength(1);
 		expect(bundle.truncated).toBe(true);
 		expect(decodeTraceBundleCursor(bundle.nextCursor)).toBe(51);
+		expect(bundle.auxiliaryTraces).toEqual([
+			{ traceId: "later-page-trace", status: "unknown" },
+		]);
+		expect(bundle.requiredContext.auxiliaryTracesMissing).toBe(0);
+		expect(bundle.requiredContext.auxiliaryTracesUnknown).toBe(1);
 		expect(bundle.warnings).toContain("ClickHouse LLM span query failed: llm view unavailable");
 		expect(getMultiTraceSpanSummaries).toHaveBeenCalledWith(
-			["abc123"],
+			["abc123", "later-page-trace"],
 			expect.objectContaining({ limit: 1, offset: 50 }),
 		);
 	});
