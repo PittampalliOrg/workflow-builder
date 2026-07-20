@@ -58,7 +58,13 @@ import {
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
-import { parseTargetAuth } from "./target-auth-policy.mjs";
+import {
+	createTargetAuthExchangeCache,
+	openedUrlMatchesTargetOrigin,
+	parseTargetAuthAssertion,
+	targetAuthCookieToolArguments,
+	targetAuthNeedsRefresh,
+} from "./target-auth-policy.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -81,16 +87,12 @@ const LANE_READY_TIMEOUT_MS = Number(process.env.BROWSERSTATION_READY_TIMEOUT_MS
 // agent's MCP call doesn't hit client timeouts during farm scale-up.
 const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 45000);
 
-// Target-auth injection: authenticate the demo browser to an app the run owner
-// controls, WITHOUT the LLM typing credentials and WITHOUT the token entering
-// the trace. The run's owning session forwards, per run, on the browser MCP
-// entry:
-//   X-Wfb-Target-Auth       = "<cookieName>=<cookieValue>"
-//   X-Wfb-Target-Auth-Host  = the ONE host the credential may be presented to
-// The bridge sets that cookie (via agent-browser cookies_set) the first time the
-// agent opens a page on the matching host, then re-opens so the agent sees the
-// authenticated page. HOST-SCOPING is the safety boundary: the owner credential
-// is never attached to any other origin the browser visits.
+// Target-auth injection: execution config carries only a short-lived,
+// purpose-specific assertion. On first navigation the bridge exchanges that
+// assertion with the fixed BFF endpoint using INTERNAL_API_TOKEN. The BFF
+// derives the only allowed target origin and returns a short-lived owner cookie.
+// The bridge plants it HttpOnly for that exact origin and never creates a global
+// Authorization header.
 // Tools the LLM sees in tools/list. The child still exposes everything in
 // AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
 // discovery. Empty value = expose everything unfiltered.
@@ -271,6 +273,8 @@ function pruneToolForLlm(tool) {
 // farm's worker idle-out is the backstop for leaks.
 // ---------------------------------------------------------------------------
 const lanes = new Map();
+const authApplied = new Set();
+const targetAuthExchangeCache = createTargetAuthExchangeCache();
 
 function lanesEnabled() {
 	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
@@ -340,6 +344,8 @@ function ensureLaneBrowser(browserSession) {
 }
 
 async function releaseLaneBrowser(browserSession) {
+	authApplied.delete(browserSession);
+	targetAuthExchangeCache.clear(browserSession);
 	const lane = lanes.get(browserSession);
 	if (!lane) return;
 	lanes.delete(browserSession);
@@ -594,41 +600,70 @@ async function stopCapture(browserSession, reason, liveChild) {
 	}
 }
 
-// browserSessions whose owner credential has already been planted.
-const authApplied = new Set();
+async function resolveTargetAuth(browserSession, ctx) {
+	return targetAuthExchangeCache.resolve(browserSession, {
+		bffUrl: BFF,
+		internalToken: TOKEN,
+		assertion: ctx?.targetAuth?.assertion,
+		executionId: ctx?.executionId,
+	});
+}
 
-/** If the run carries a target-auth credential and the just-opened URL is on the
- * permitted host, plant it (cookie or header) so subsequent navigations — incl.
- * the recorder's fresh-context record_start, which preserves cookies — are
- * authenticated. Returns true if it planted something (caller should re-open so
- * the agent sees the authenticated page). Host-scoped: the credential is never
- * set for any other origin. */
-async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
-	const auth = ctx?.targetAuth;
-	if (!auth || authApplied.has(browserSession)) return false;
-	let host, hostname;
-	try {
-		const u = new URL(openedUrl);
-		host = u.host.toLowerCase();
-		hostname = u.hostname.toLowerCase();
-	} catch {
-		return false;
-	}
-	// A ported auth host (host:port) matches exactly; a port-less one matches the
-	// hostname on any port (the hostname is the trust boundary — in-cluster svc
-	// DNS ports vary and a silent mismatch cost us two runs). Never any other origin.
-	const hostMatches = auth.host.includes(":") ? host === auth.host : hostname === auth.host;
-	if (!hostMatches) {
-		console.error(`[target-auth] host mismatch: opened=${host} expected=${auth.host} — credential NOT presented`);
-		return false;
-	}
+async function plantTargetAuthCookie(browserSession, ctx, child) {
+	const exchange = await resolveTargetAuth(browserSession, ctx);
+	if (!exchange) return null;
+	await child.callTool({
+		name: "agent_browser_cookies_set",
+		arguments: targetAuthCookieToolArguments(exchange),
+	});
 	authApplied.add(browserSession);
+	return exchange;
+}
+
+async function refreshTargetAuthCookie(browserSession, ctx, child) {
+	if (!ctx?.targetAuth || !authApplied.has(browserSession)) return;
+	const existing = await targetAuthExchangeCache.peek(browserSession);
+	if (!targetAuthNeedsRefresh(existing)) return;
 	try {
-		await child.callTool({
-			name: "agent_browser_cookies_set",
-			arguments: { name: auth.cookieName, value: auth.cookieValue, url: openedUrl },
-		});
-		console.error(`[target-auth] cookie ${auth.cookieName} set for ${host} exec=${ctx.executionId}`);
+		const refreshed = await plantTargetAuthCookie(browserSession, ctx, child);
+		if (refreshed) {
+			console.error(
+				`[target-auth] owner cookie refreshed for ${refreshed.targetOrigin} exec=${ctx.executionId}`,
+			);
+		}
+	} catch (err) {
+		console.error(`[target-auth] refresh failed: ${err?.message}`);
+	}
+}
+
+/** If the run carries a target-auth assertion and the just-opened URL matches
+ * the BFF-derived exact origin, exchange and plant the HttpOnly owner cookie so
+ * subsequent navigations (including recorder context swaps) stay authenticated.
+ * Returns true when the caller should re-open the page. */
+async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
+	if (!ctx?.targetAuth || authApplied.has(browserSession)) return false;
+	const exchange = await resolveTargetAuth(browserSession, ctx);
+	if (!exchange) {
+		console.error(`[target-auth] exchange unavailable exec=${ctx.executionId ?? "-"}`);
+		return false;
+	}
+	if (!openedUrlMatchesTargetOrigin(openedUrl, exchange.targetOrigin)) {
+		let openedOrigin = "invalid-url";
+		try {
+			openedOrigin = new URL(openedUrl).origin;
+		} catch {
+			/* keep invalid-url */
+		}
+		console.error(
+			`[target-auth] origin mismatch: opened=${openedOrigin} expected=${exchange.targetOrigin} — credential NOT presented`,
+		);
+		return false;
+	}
+	try {
+		await plantTargetAuthCookie(browserSession, ctx, child);
+		console.error(
+			`[target-auth] HttpOnly owner cookie set for ${exchange.targetOrigin} exec=${ctx.executionId}`,
+		);
 		return true;
 	} catch (err) {
 		console.error(`[target-auth] apply failed: ${err?.message}`);
@@ -698,6 +733,7 @@ async function makeProxy(ctxRef, browserSession) {
 				};
 			}
 		}
+		await refreshTargetAuthCookie(browserSession, ctxRef.value, child);
 		if (name === DEMO_SCENE_TOOL.name) {
 			try {
 				const message = await beginScene(browserSession, ctxRef.value, child, args);
@@ -791,7 +827,7 @@ app.post("/mcp", async (req, res) => {
 			executionId: req.headers["x-wfb-execution-id"] || null,
 			workflowId: req.headers["x-wfb-workflow-id"] || null,
 			nodeId: req.headers["x-wfb-node-id"] || null,
-			targetAuth: parseTargetAuth(req.headers),
+			targetAuth: parseTargetAuthAssertion(req.headers),
 		},
 	};
 	// One browser per run: every MCP connection carrying the same execution id

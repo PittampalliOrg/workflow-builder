@@ -58,17 +58,18 @@ persists across calls within the session). On top of plain proxying it adds:
    `demo_scene`) never ships in a demo. Runs that never call `demo_scene` keep the
    plain raw session video (previous behavior).
 
-5. **Target-auth (authenticated demos of your own app).** To demo an app that
-   requires login, the run's owning session forwards two headers on the browser
-   MCP entry: `X-Wfb-Target-Auth` (`<cookieName>=<value>`)
-   and `X-Wfb-Target-Auth-Host` (the one host it may be presented to). The first
-   time the agent opens a page on that host, the bridge plants the credential
-   with `cookies_set` and re-opens so the
-   agent — and the recorder — see the authenticated app. The credential is
-   **host-scoped**: it is never attached to any other origin the browser visits,
-   never entered into a login form, and never passed through the LLM or the run
-   trace. Intended for apps the run owner controls; it is not a way past
-   third-party bot-detection or CAPTCHAs (those are respected, not bypassed).
+5. **Target-auth (authenticated demos of Workflow Builder).** Saved agents carry
+   no target host or credential. For an execution, the BFF stamps only a
+   purpose-limited assertion bound to execution, user, and project. On first
+   navigation the bridge exchanges that assertion at the fixed BFF internal
+   endpoint using `INTERNAL_API_TOKEN`; the BFF revalidates current ownership,
+   derives its configured physical origin server-side, and returns a bounded
+   owner cookie. The bridge sets it `HttpOnly`, `SameSite=Strict`, host-only, and
+   only after an exact origin match. The assertion lasts up to one hour so K3 can
+   think before its first tool call; the 30-minute cookie is safely refreshed by
+   the bridge before expiry. No general access JWT enters durable agent config,
+   no global `Authorization` header is installed, and caller-selected origins
+   are ignored.
 
 6. **Execution-scoped browser lifecycle.** Any MCP session carrying
    `X-Wfb-Execution-Id` leases a BrowserStation lane when the farm is configured, independent
@@ -90,18 +91,14 @@ persists across calls within the session). On top of plain proxying it adds:
 // rejects hyphenated names.
 [{ "name": "browser",
    "transport": "streamable_http",
-   "url": "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
-   "headers": {
-     "X-Wfb-Target-Auth-Host": "workflow-builder.workflow-builder.svc.cluster.local"
-   } }]
+   "url": "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp" }]
 ```
 
 BrowserStation workers run in `ray-system`, so browser targets in another
 namespace must also use a cross-namespace service FQDN, for example
-`http://workflow-builder.workflow-builder.svc.cluster.local:3000`. When creating
-the agent through Workflow MCP, provide that hostname as the MCP entry's
-`target_auth_host`; the adapter writes the host restriction, while the BFF mints
-and injects the actual credential only for the execution.
+`http://workflow-builder.workflow-builder.svc.cluster.local:3000`. That origin is
+server-owned (`WORKFLOW_BROWSER_TARGET_ORIGIN` on the BFF, with the same FQDN as
+its default); it is not part of saved agent configuration.
 
 The agent then calls `browser_agent_browser_open`, `browser_agent_browser_snapshot`, etc.
 Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's Browser tab.
@@ -126,8 +123,8 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | `AGENT_BROWSER_EXPOSED_TOOLS` | 19 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
-| `WORKFLOW_BUILDER_URL` | in-cluster BFF | artifact sink base URL |
-| `INTERNAL_API_TOKEN` | _(unset)_ | internal token for `/api/internal/browser-artifacts` |
+| `WORKFLOW_BUILDER_URL` | in-cluster BFF | fixed artifact and target-auth exchange base URL |
+| `INTERNAL_API_TOKEN` | _(unset)_ | service token for artifact upload and target-auth exchange |
 | `AGENT_BROWSER_ENCRYPTION_KEY` | _(unset)_ | optional; encrypts saved auth state |
 | `DEMO_TARGET_SECONDS` | `75` | target length of the rendered demo video |
 | `DEMO_MAX_SPEEDUP` | `2.5` | cap on the uniform speed-up used to fit the target |

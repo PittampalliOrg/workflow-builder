@@ -50,7 +50,7 @@ function fakePersistence(
 }
 
 describe("workflow tools registration", () => {
-	it("normalizes browser MCP names and persists only a target-auth host", () => {
+	it("normalizes MCP names and drops caller-controlled auth configuration", () => {
 		expect(
 			normalizeAgentMcpServer({
 				name: "browser-tools",
@@ -63,10 +63,6 @@ describe("workflow tools registration", () => {
 			name: "browser_tools",
 			transport: "streamable_http",
 			url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
-			headers: {
-				"X-Wfb-Target-Auth-Host":
-					"workflow-builder.workflow-builder.svc.cluster.local",
-			},
 		});
 	});
 

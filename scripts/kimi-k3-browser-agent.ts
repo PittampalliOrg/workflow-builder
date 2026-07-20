@@ -46,22 +46,28 @@ function defaultBrowserMcpServer(probe: boolean): JsonRecord {
     name: "browser",
     transport: "streamable_http",
     url: BROWSER_MCP_URL,
-    headers: {
-      "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-      ...(probe ? { "X-Wfb-Browser-Lane": "per-node" } : {}),
-    },
+    ...(probe ? { headers: { "X-Wfb-Browser-Lane": "per-node" } } : {}),
   };
 }
 
-function executionSafeBrowserHeaders(
+function durableBrowserHeaders(
   headers: unknown,
   probe: boolean,
 ): JsonRecord | undefined {
+  const runtimeHeaders = new Set([
+    "x-wfb-target-auth",
+    "x-wfb-target-auth-host",
+    "x-wfb-browser-target-assertion",
+    "x-wfb-execution-id",
+    "x-wfb-workflow-id",
+    "x-wfb-node-id",
+    "x-wfb-browser-lane",
+  ]);
   const retained =
     headers && typeof headers === "object" && !Array.isArray(headers)
       ? Object.fromEntries(
           Object.entries(headers as JsonRecord).filter(
-            ([name]) => name.toLowerCase() !== "x-wfb-target-auth",
+            ([name]) => !runtimeHeaders.has(name.toLowerCase()),
           ),
         )
       : {};
@@ -71,8 +77,9 @@ function executionSafeBrowserHeaders(
 
 /**
  * Build the canonical K3 browser config while retaining deployment-specific
- * non-secret MCP headers from the existing GLM agent. Target auth is minted
- * per execution and must never be copied into a durable agent version.
+ * non-secret MCP headers from the existing GLM agent. The bridge URL and every
+ * WFB execution/auth header are platform-owned and must never be copied into a
+ * durable agent version.
  */
 export function buildKimiK3BrowserAgentConfig(
   sourceConfig: JsonRecord | null,
@@ -100,11 +107,12 @@ export function buildKimiK3BrowserAgentConfig(
           return entry;
         }
         const { headers: sourceHeaders, ...server } = entry as JsonRecord;
-        const headers = executionSafeBrowserHeaders(
-          sourceHeaders,
-          options.probe,
-        );
-        return { ...server, ...(headers ? { headers } : {}) };
+        const headers = durableBrowserHeaders(sourceHeaders, options.probe);
+        return {
+          ...server,
+          url: BROWSER_MCP_URL,
+          ...(headers ? { headers } : {}),
+        };
       })
     : [defaultBrowserMcpServer(options.probe)];
 

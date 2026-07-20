@@ -13169,16 +13169,22 @@ function defaultBrowserMcpServer(probe) {
     name: "browser",
     transport: "streamable_http",
     url: BROWSER_MCP_URL,
-    headers: {
-      "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-      ...probe ? { "X-Wfb-Browser-Lane": "per-node" } : {}
-    }
+    ...probe ? { headers: { "X-Wfb-Browser-Lane": "per-node" } } : {}
   };
 }
-function executionSafeBrowserHeaders(headers, probe) {
+function durableBrowserHeaders(headers, probe) {
+  const runtimeHeaders = /* @__PURE__ */ new Set([
+    "x-wfb-target-auth",
+    "x-wfb-target-auth-host",
+    "x-wfb-browser-target-assertion",
+    "x-wfb-execution-id",
+    "x-wfb-workflow-id",
+    "x-wfb-node-id",
+    "x-wfb-browser-lane"
+  ]);
   const retained = headers && typeof headers === "object" && !Array.isArray(headers) ? Object.fromEntries(
     Object.entries(headers).filter(
-      ([name]) => name.toLowerCase() !== "x-wfb-target-auth"
+      ([name]) => !runtimeHeaders.has(name.toLowerCase())
     )
   ) : {};
   if (probe) retained["X-Wfb-Browser-Lane"] = "per-node";
@@ -13199,11 +13205,12 @@ function buildKimiK3BrowserAgentConfig(sourceConfig, options) {
       return entry;
     }
     const { headers: sourceHeaders, ...server } = entry;
-    const headers = executionSafeBrowserHeaders(
-      sourceHeaders,
-      options.probe
-    );
-    return { ...server, ...headers ? { headers } : {} };
+    const headers = durableBrowserHeaders(sourceHeaders, options.probe);
+    return {
+      ...server,
+      url: BROWSER_MCP_URL,
+      ...headers ? { headers } : {}
+    };
   }) : [defaultBrowserMcpServer(options.probe)];
   return {
     ...source,

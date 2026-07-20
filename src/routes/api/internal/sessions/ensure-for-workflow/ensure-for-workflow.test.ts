@@ -133,7 +133,7 @@ const mocks = vi.hoisted(() => {
 			})),
 		},
 		workflowTargetAuth: {
-			mintAccessToken: vi.fn(async () => "fresh-target-access-token"),
+			mintAssertion: vi.fn(async () => "wfb_browser_auth_v1.signed.proof"),
 		},
     workflowMcpSessionTokenSigner: {
       sign: vi.fn(() => "signed-workflow-mcp-session"),
@@ -625,13 +625,13 @@ describe("dynamic-script spawn MCP wiring", () => {
 		mocks.state.hostCalls.length = 0;
 		mocks.workflowData.getWorkflowByRef.mockReset();
 		mocks.workflowData.getWorkflowByRef.mockResolvedValue(null);
-		mocks.workflowTargetAuth.mintAccessToken.mockReset();
-		mocks.workflowTargetAuth.mintAccessToken.mockResolvedValue(
-			"fresh-target-access-token",
+		mocks.workflowTargetAuth.mintAssertion.mockReset();
+		mocks.workflowTargetAuth.mintAssertion.mockResolvedValue(
+			"wfb_browser_auth_v1.signed.proof",
 		);
 	});
 
-	it("replaces stale browser target auth only in execution-scoped config", async () => {
+	it("replaces persisted browser credentials and hosts with an execution assertion", async () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
 		const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -647,24 +647,28 @@ describe("dynamic-script spawn MCP wiring", () => {
 					mcpServers: [
 						{
 							name: "browser",
-							url: "http://agent-browser-mcp:8000/mcp",
-							headers: {
-								"X-Wfb-Target-Auth": "Bearer stale-persisted-token",
-								"X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-								"X-Wfb-Browser-Lane": "per-node",
+							url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+								headers: {
+									"X-Wfb-Target-Auth": "Bearer eyJ.user.signature",
+									"X-Wfb-Target-Auth-Host": "attacker.example:443",
+									"X-Wfb-Browser-Target-Assertion": "stale-assertion",
+									"X-Wfb-Execution-Id": "caller-execution",
+									"X-Wfb-Workflow-Id": "caller-workflow",
+									"X-Wfb-Node-Id": "caller-node",
+									"X-Wfb-Browser-Lane": "per-node",
 							},
 						},
 						{
 							name: "other",
 							url: "http://other-mcp:8000/mcp",
-							headers: { "X-Wfb-Target-Auth": "non-browser-untouched" },
+							headers: { "X-Wfb-Target-Auth": "must-also-be-stripped" },
 						},
 					],
 				},
 			},
 		});
 
-		expect(mocks.workflowTargetAuth.mintAccessToken).toHaveBeenCalledWith({
+		expect(mocks.workflowTargetAuth.mintAssertion).toHaveBeenCalledWith({
 			executionId: "execution-1",
 			expectedUserId: "user-1",
 			expectedProjectId: "project-1",
@@ -681,9 +685,13 @@ describe("dynamic-script spawn MCP wiring", () => {
       string
     >;
 		expect(persistedBrowserHeaders["X-Wfb-Target-Auth"]).toBeUndefined();
-		expect(persistedBrowserHeaders["X-Wfb-Target-Auth-Host"]).toBe(
-			"workflow-builder:3000",
-		);
+		expect(persistedBrowserHeaders["X-Wfb-Target-Auth-Host"]).toBeUndefined();
+		expect(
+			persistedBrowserHeaders["X-Wfb-Browser-Target-Assertion"],
+		).toBeUndefined();
+		expect(persistedBrowserHeaders["X-Wfb-Execution-Id"]).toBe("execution-1");
+		expect(persistedBrowserHeaders["X-Wfb-Workflow-Id"]).toBe("wf-1");
+		expect(persistedBrowserHeaders["X-Wfb-Node-Id"]).toBe("run-agent");
 
 		const childInput = payload.childInput as Record<string, unknown>;
 		const childConfig = childInput.agentConfig as {
@@ -693,14 +701,16 @@ describe("dynamic-script spawn MCP wiring", () => {
       string,
       string
     >;
-		expect(browserHeaders["X-Wfb-Target-Auth"]).toBe(
-			"wb_access_token=fresh-target-access-token",
+		expect(browserHeaders["X-Wfb-Browser-Target-Assertion"]).toBe(
+			"wfb_browser_auth_v1.signed.proof",
 		);
+		expect(browserHeaders["X-Wfb-Target-Auth"]).toBeUndefined();
+		expect(browserHeaders["X-Wfb-Target-Auth-Host"]).toBeUndefined();
 		expect(browserHeaders["X-Wfb-Browser-Lane"]).toBe("per-node");
 		expect(childConfig.mcpServers[1]).toEqual({
 			name: "other",
 			url: "http://other-mcp:8000/mcp",
-			headers: { "X-Wfb-Target-Auth": "non-browser-untouched" },
+			headers: {},
 		});
     const hostConfig = (
       mocks.state.hostCalls.at(-1) as {
@@ -709,27 +719,26 @@ describe("dynamic-script spawn MCP wiring", () => {
     ).agentConfig;
 		expect(
 			(hostConfig.mcpServers[0].headers as Record<string, string>)[
-				"X-Wfb-Target-Auth"
+				"X-Wfb-Browser-Target-Assertion"
 			],
-		).toBe("wb_access_token=fresh-target-access-token");
+		).toBe("wfb_browser_auth_v1.signed.proof");
 
 		const { childInput: _childInput, ...topLevel } = payload;
-		expect(JSON.stringify(topLevel)).not.toContain("fresh-target-access-token");
-		expect(JSON.stringify(log.mock.calls)).not.toContain(
-			"fresh-target-access-token",
-		);
-		expect(JSON.stringify(info.mock.calls)).not.toContain(
-			"fresh-target-access-token",
-		);
-		expect(JSON.stringify(warn.mock.calls)).not.toContain(
-			"fresh-target-access-token",
-		);
+		expect(JSON.stringify(persisted)).not.toContain("eyJ.user.signature");
+		expect(JSON.stringify(payload)).not.toContain("eyJ.user.signature");
+		expect(JSON.stringify(payload)).not.toContain("Bearer");
+		expect(JSON.stringify(payload)).not.toContain("attacker.example");
+		expect(JSON.stringify(payload)).not.toContain("wb_access_token");
+		expect(JSON.stringify(topLevel)).not.toContain("signed.proof");
+		expect(JSON.stringify(log.mock.calls)).not.toContain("signed.proof");
+		expect(JSON.stringify(info.mock.calls)).not.toContain("signed.proof");
+		expect(JSON.stringify(warn.mock.calls)).not.toContain("signed.proof");
 		log.mockRestore();
 		info.mockRestore();
 		warn.mockRestore();
 	});
 
-	it("strips stale auth without minting when the browser target host is absent", async () => {
+	it("does not send assertions or run identity to a non-FQDN browser endpoint", async () => {
 		const payload = await callEnsureForWorkflow({
 			runtime: "dapr-agent-py",
 			modelSpec: "kimi/kimi-k3",
@@ -743,7 +752,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 						{
 							url: "http://agent-browser-mcp:8000/mcp",
 							headers: {
-								"X-Wfb-Target-Auth": "Bearer stale-persisted-token",
+								"X-Wfb-Target-Auth": "Bearer stale-token",
 							},
 						},
 					],
@@ -751,11 +760,48 @@ describe("dynamic-script spawn MCP wiring", () => {
 			},
 		});
 
-		expect(mocks.workflowTargetAuth.mintAccessToken).not.toHaveBeenCalled();
+		expect(mocks.workflowTargetAuth.mintAssertion).not.toHaveBeenCalled();
+		const config = (payload.childInput as Record<string, unknown>)
+			.agentConfig as { mcpServers: Array<Record<string, unknown>> };
+		expect(config.mcpServers[0].headers).toEqual({});
+		expect(JSON.stringify(config)).not.toContain("X-Wfb-Execution-Id");
+		expect(JSON.stringify(config)).not.toContain("stale-token");
+	});
+
+	it("strips stale auth and omits an assertion when execution ownership is absent", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "openai",
+			token: "unused",
+			body: {
+				agentConfig: {
+					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+					mcpServers: [
+						{
+							url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+							headers: {
+								"X-Wfb-Target-Auth": "Bearer stale-persisted-token",
+								"X-Wfb-Target-Auth-Host": "attacker.example",
+								"X-Wfb-Browser-Target-Assertion": "stale-assertion",
+							},
+						},
+					],
+				},
+			},
+		});
+
+		expect(mocks.workflowTargetAuth.mintAssertion).not.toHaveBeenCalled();
 		const config = (payload.childInput as Record<string, unknown>)
 			.agentConfig as { mcpServers: Array<Record<string, unknown>> };
 		expect(config.mcpServers[0].headers).not.toHaveProperty(
 			"X-Wfb-Target-Auth",
+		);
+		expect(config.mcpServers[0].headers).not.toHaveProperty(
+			"X-Wfb-Target-Auth-Host",
+		);
+		expect(config.mcpServers[0].headers).not.toHaveProperty(
+			"X-Wfb-Browser-Target-Assertion",
 		);
 	});
 
