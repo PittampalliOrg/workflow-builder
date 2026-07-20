@@ -983,7 +983,7 @@ describe("preview acceptance infrastructure adapters", () => {
     });
     const unresolved = {
       ...environment(null),
-      name: "a".repeat(40),
+      name: "---",
     } as PreviewEnvironment;
 
     await expect(
