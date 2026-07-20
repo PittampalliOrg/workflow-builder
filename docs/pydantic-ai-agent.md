@@ -58,13 +58,71 @@ seam (`src/toolsets.py`) and routed by name in the `execute_tool` activity:
 - **MCP**: `agentConfig.mcpServers` entries with `streamable_http` URLs are
   wired via the core `MCP` capability; stdio servers are skipped in v1.
 
-**Granularity note (goal constraint):** every capability above splits cleanly —
-each tool call is its own activity. Capabilities that intrinsically wrap the
-model call or the whole run (`CodeMode`, `Planning`, `Memory`, `Guardrails`,
-compaction) are **not enabled in v1**: they hook `wrap_model_request`/
-`wrap_run`, which would execute coarser than per-activity granularity. Enable
-them later by folding their wrappers into `call_llm` (still one activity per
-LLM message) — documented here per the granularity escape hatch.
+### Capability hooks (compatibility with Dapr durability)
+
+Because the **Dapr workflow is the run loop** (not pydantic-ai's graph), a
+harness capability is compatible iff every seam it uses maps onto one of our
+two activities. The rule and the seam-by-seam verdicts:
+
+| Capability seam | Hosted in | Durable? |
+|---|---|---|
+| `get_toolset` / `prepare_tools` | tools offered in `call_llm`, run in `execute_tool` | ✅ per-activity |
+| `get_instructions` | system-prompt bootstrap in `call_llm` | ✅ recorded in history |
+| `before/wrap/after_model_request` | around `model.request()` in `call_llm` | ✅ — the transformed history is the activity's RETURN value |
+| `after_tool_execute` | around the tool result in `execute_tool` | ✅ result is the activity's return |
+| `wrap_run` / `before_run` / `after_run` / node & event-stream hooks | — | ❌ no pydantic-ai run to attach to |
+
+`src/toolsets.py::ToolRouter` hosts the `before/wrap/after_model_request`
+chains inside `call_llm` and the `after_tool_execute` chain inside
+`execute_tool`. Crucially, the compacted/transformed message list is what the
+activity **returns**, so Dapr replay and the durable history stay consistent
+and bounded.
+
+**Enabled in v1** (env-gated, on by default):
+- **OverflowingToolOutput** (`after_tool_execute`, `get_toolset`): large tool
+  results spill to a `LocalFileStore` under `<workspace>/.overflow` and are
+  truncated in-history; the model fetches the rest via the injected
+  `read_tool_result` tool. Replaces the earlier `TOOL_RESULT_MAX_CHARS` hard
+  truncation. Env: `PYDANTIC_AI_OVERFLOW_ENABLED`.
+- **Compaction** (`before_model_request`), deterministic (no LLM call):
+  `ClampOversizedMessages` then `SlidingWindow`. Env:
+  `PYDANTIC_AI_COMPACTION_ENABLED`, `PYDANTIC_AI_CLAMP_MAX_PART_CHARS`,
+  `PYDANTIC_AI_COMPACTION_MAX_MESSAGES`, `PYDANTIC_AI_COMPACTION_KEEP_MESSAGES`.
+  Together with Overflow these are the **16 MiB workflow-payload ceiling
+  mitigation** — not just compatible but wanted.
+
+**Verified scope distinction (would bite otherwise):**
+`ClampOversizedMessages` clamps **`ModelResponse` parts only** (prior
+assistant text + tool-call args) — NOT `UserPromptPart` or `ToolReturnPart`
+(`_clamp_oversized_messages.py:143` skips non-`ModelResponse` messages).
+Tool RESULTS are the domain of **OverflowingToolOutput** instead. The two are
+complementary; neither shrinks user prompts (those ride the SlidingWindow).
+
+**Available but NOT enabled** (compatible; add by appending to
+`build_capabilities` when needed): `Memory` (toolset + instructions +
+`before_model_request`; point its store at the workspace — cross-session
+needs an external backend), `Guardrails` `InputGuard` (`wrap_model_request`),
+`Planning` (verify it keeps no cross-step in-process state first),
+`SummarizingCompaction`/`TieredCompaction` (LLM-backed — fine, the call runs
+inside `call_llm`).
+
+**Incompatible / deliberately excluded** (need the run graph or duplicate the
+platform): `SubAgents` and `StepPersistence` (`wrap_run`; the Dapr workflow
+already IS the run + step persistence — use platform delegation / replay
+instead); harness `Dynamic Workflow` (conflicts with the platform
+dynamic-script engine).
+
+**Hook retry rule:** hook chains re-run on **activity retry** (up to
+`retryMaxAttempts`=3). Side effects inside them must be idempotent, and error
+hooks must not swallow exceptions Dapr's RetryPolicy needs to see. The chains
+are fail-soft per capability (a throwing hook is logged and skipped) so a
+buggy capability can't wedge a turn.
+
+**Granularity note (goal constraint):** every enabled capability splits
+cleanly — each tool call is its own activity, each model call its own. The
+one capability that would violate per-activity granularity is **CodeMode**
+(collapses N tool calls into one `run_code` activity); it stays disabled for
+that reason, documented here per the granularity escape hatch.
 
 ## Model: kimi-k3 (only v1 provider)
 

@@ -54,6 +54,21 @@ SHELL_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_SHELL_TIMEOUT_SECONDS", 120)
 TOOL_RESULT_MAX_CHARS = env_int("PYDANTIC_AI_TOOL_RESULT_MAX_CHARS", 8000)
 
 # ---------------------------------------------------------------------------
+# Harness hook capabilities (hosted inside the durable activities)
+# ---------------------------------------------------------------------------
+
+# OverflowingToolOutput: big tool results spill to a LocalFileStore under
+# <workspace>/.overflow (readable later via the read_tool_result tool) and
+# are truncated in-history — protects the 16 MiB workflow payload ceiling.
+OVERFLOW_ENABLED = env_bool("PYDANTIC_AI_OVERFLOW_ENABLED", True)
+# Compaction chain (before_model_request, in order): clamp oversized parts,
+# then slide the window. Deterministic (no LLM summarization) in v1.
+COMPACTION_ENABLED = env_bool("PYDANTIC_AI_COMPACTION_ENABLED", True)
+CLAMP_MAX_PART_CHARS = env_int("PYDANTIC_AI_CLAMP_MAX_PART_CHARS", 20000)
+COMPACTION_MAX_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_MAX_MESSAGES", 120)
+COMPACTION_KEEP_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_KEEP_MESSAGES", 60)
+
+# ---------------------------------------------------------------------------
 # Kimi K3 — the default (and only v1) provider
 # ---------------------------------------------------------------------------
 
