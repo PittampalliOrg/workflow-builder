@@ -5,6 +5,12 @@
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
+	import {
+		Card,
+		CardDescription,
+		CardHeader,
+		CardTitle
+	} from '$lib/components/ui/card';
 	import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
 	import {
 		AlertDialog,
@@ -334,6 +340,34 @@
 					onchanged={() => void tick()}
 					onlaunchagent={launchAgentRun}
 				/>
+
+				<Card
+					data-testid="retained-preview-trace-proof"
+					role="region"
+					aria-labelledby="retained-preview-trace-proof-title"
+					class="border-emerald-500/30"
+				>
+					<CardHeader class="gap-1.5 py-4">
+						<div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+							<CardTitle
+								id="retained-preview-trace-proof-title"
+								class="flex min-w-0 items-center gap-2 text-sm"
+							>
+								<Activity class="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+								<span>Retained preview trace proof</span>
+							</CardTitle>
+							<Badge
+								variant="outline"
+								class="shrink-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+							>
+								Traces available
+							</Badge>
+						</div>
+						<CardDescription class="text-xs">
+							Workflow traces available for this retained preview.
+						</CardDescription>
+					</CardHeader>
+				</Card>
 
 				<section class="space-y-3" aria-labelledby="live-sessions-heading">
 					<div class="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
