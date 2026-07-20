@@ -245,3 +245,50 @@ def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
                 if False else __import__("asyncio").run(go()))
     # local FS/Shell tools still present despite the hung MCP toolset
     assert {"read_file", "run_command"} <= names
+
+
+class _FlakyToolset:
+    """Network toolset double: fails get_tools until told otherwise."""
+
+    def __init__(self):
+        self.list_calls = 0
+        self.healthy = False
+        self.tool_def = type("TD", (), {"name": "remote_tool"})()
+
+    async def get_tools(self, ctx):
+        self.list_calls += 1
+        if not self.healthy:
+            raise RuntimeError("Client failed to connect")
+        tool = type("T", (), {"tool_def": self.tool_def})()
+        return {"remote_tool": tool}
+
+
+def test_mcp_listing_negative_and_positive_cache(monkeypatch, tmp_path):
+    import src.toolsets as toolsets_mod
+    from src.toolsets import ToolRouter
+
+    monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    router = ToolRouter({})
+    flaky = _FlakyToolset()
+    router._toolsets.append(flaky)
+    router._network_toolsets.add(id(flaky))
+
+    import asyncio as aio
+
+    # First round probes and fails -> negative-cached.
+    aio.run(router.tools())
+    assert flaky.list_calls == 1
+    # Second round within the fail window must NOT re-probe.
+    aio.run(router.tools())
+    assert flaky.list_calls == 1
+
+    # Expire the failure window; server is healthy now -> one probe, cached.
+    router._mcp_fail_until[id(flaky)] = 0.0
+    flaky.healthy = True
+    tools = aio.run(router.tools())
+    assert "remote_tool" in tools
+    assert flaky.list_calls == 2
+    # Subsequent rounds serve from the positive cache (fresh event loop too).
+    tools = aio.run(router.tools())
+    assert "remote_tool" in tools
+    assert flaky.list_calls == 2

@@ -29,6 +29,7 @@ import hashlib
 import inspect
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,9 @@ from src.config import (
     COMPACTION_ENABLED,
     COMPACTION_KEEP_MESSAGES,
     COMPACTION_MAX_MESSAGES,
+    MCP_FAIL_CACHE_SECONDS,
     MCP_TIMEOUT_SECONDS,
+    MCP_TOOLS_CACHE_SECONDS,
     OVERFLOW_ENABLED,
     SHELL_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
@@ -152,6 +155,16 @@ class ToolRouter:
         # them with a timeout so a stalled streamable-HTTP session (no
         # per-call timeout upstream) can never wedge a durable activity.
         self._network_toolsets: set[int] = set()
+        # Per-toolset MCP LISTING caches. Every durable activity re-enters the
+        # router, and re-listing every MCP server per activity is O(servers ×
+        # activities) network handshakes — with several wired servers (auto
+        # project connections) and one cold/broken endpoint this taxed each
+        # activity 30-45s and starved team turns. Listings are stable within a
+        # session, so cache successes for MCP_TOOLS_CACHE_SECONDS and
+        # NEGATIVE-cache failing servers for MCP_FAIL_CACHE_SECONDS (skip
+        # without re-probing). Tool CALLS still connect fresh per call.
+        self._mcp_tools_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._mcp_fail_until: dict[int, float] = {}
         for cap in self._capabilities:
             is_mcp = type(cap).__name__ == "MCP" or "mcp" in type(cap).__module__.lower()
             try:
@@ -179,23 +192,48 @@ class ToolRouter:
 
     async def tools(self) -> dict[str, tuple[Any, Any]]:
         ctx = _run_context()
+        now = time.monotonic()
         combined: dict[str, tuple[Any, Any]] = {}
         for toolset in self._toolsets:
+            is_network = id(toolset) in self._network_toolsets
+            if is_network:
+                cached = self._mcp_tools_cache.get(id(toolset))
+                if cached and cached[0] > now:
+                    for name, tool in cached[1].items():
+                        combined.setdefault(name, (toolset, tool))
+                    continue
+                fail_until = self._mcp_fail_until.get(id(toolset), 0.0)
+                if fail_until > now:
+                    continue  # negative-cached failing server; skip re-probe
             try:
                 tools = await self._get_tools(toolset, ctx)
             except asyncio.TimeoutError:
                 logger.warning(
                     "[toolsets] %s.get_tools timed out after %ss — MCP tools "
-                    "unavailable this turn (activity continues)",
+                    "unavailable (skipping this server for %ss)",
                     type(toolset).__name__,
                     MCP_TIMEOUT_SECONDS,
+                    MCP_FAIL_CACHE_SECONDS,
                 )
+                if is_network:
+                    self._mcp_fail_until[id(toolset)] = now + MCP_FAIL_CACHE_SECONDS
                 continue
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "[toolsets] get_tools failed on %s: %s", type(toolset).__name__, exc
+                    "[toolsets] get_tools failed on %s: %s (skipping for %ss)",
+                    type(toolset).__name__,
+                    exc,
+                    MCP_FAIL_CACHE_SECONDS,
                 )
+                if is_network:
+                    self._mcp_fail_until[id(toolset)] = now + MCP_FAIL_CACHE_SECONDS
                 continue
+            if is_network:
+                self._mcp_tools_cache[id(toolset)] = (
+                    now + MCP_TOOLS_CACHE_SECONDS,
+                    dict(tools),
+                )
+                self._mcp_fail_until.pop(id(toolset), None)
             for name, tool in tools.items():
                 combined.setdefault(name, (toolset, tool))
         return combined
