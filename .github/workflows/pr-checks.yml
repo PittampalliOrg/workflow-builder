@@ -69,6 +69,9 @@ jobs:
       - name: Generate plugin registry
         run: pnpm discover-plugins
 
+      - name: Build database script bundles
+        run: pnpm build:db-scripts
+
       # NOTE: `pnpm check` already runs svelte-check (which IS the type check —
       # the package.json `type-check` script is the identical invocation, kept
       # for local use). Running it twice here cost ~3min per CI run.

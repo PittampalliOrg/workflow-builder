@@ -11,8 +11,6 @@ const entries = [
 	"scripts/queue-swebench-environment-validation.ts",
 	"scripts/sync-swebench-environment-builds.ts",
 	"scripts/start-swebench-benchmark-run.ts",
-	"scripts/backfill-agent-application-state.ts",
-	"scripts/cutover-mlflow-application-lineage.ts",
 	"scripts/session-native-cutover-purge.ts",
 	// Seeds platform_oauth_apps rows from OAUTH_APP_<SUFFIX>_CLIENT_ID/SECRET
 	// env vars. Wired into Job-db-seed.yaml so OAuth providers (github,
