@@ -201,6 +201,92 @@ describe("trace tools", () => {
     );
   });
 
+  it("does not promote incidental error spans for a successful run with a clean digest", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        debugWorkflowExecution: vi.fn(async () => ({
+          overview: { execution: { status: "success" } },
+          digest: { issues: [] },
+          errorSpans: {
+            spans: [
+              {
+                spanId: "cleanup-404",
+                name: "DELETE",
+                attributes: {
+                  "http.status_code": "404",
+                  "http.target": "/apis/example/sandboxtemplates/pool",
+                },
+              },
+            ],
+          },
+          errorLogs: { logs: [] },
+          evidenceCoverage: {
+            overview: "available",
+            digest: "available",
+            spans: "available",
+            logs: "available",
+          } as const,
+          warnings: [],
+          telemetry: {
+            state: "complete" as const,
+            isFinal: true,
+            warnings: [] as string[],
+          },
+        })),
+      }),
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "debug_workflow_execution",
+    );
+
+    const response = await tool?.handler({ executionId: "execution-1" });
+
+    expect(response.structuredContent.data.errorSpans.spans).toHaveLength(1);
+    expect(response.structuredContent.nextActions).toEqual([]);
+  });
+
+  it("still promotes error evidence when a successful run digest reports an issue", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        debugWorkflowExecution: vi.fn(async () => ({
+          overview: { execution: { status: "success" } },
+          digest: { issues: [{ code: "retry_exhaustion" }] },
+          errorSpans: { spans: [{ spanId: "span-with-issue" }] },
+          errorLogs: { logs: [] },
+          evidenceCoverage: {
+            overview: "available",
+            digest: "available",
+            spans: "available",
+            logs: "available",
+          } as const,
+          warnings: [],
+          telemetry: {
+            state: "complete" as const,
+            isFinal: true,
+            warnings: [] as string[],
+          },
+        })),
+      }),
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "debug_workflow_execution",
+    );
+
+    const response = await tool?.handler({ executionId: "execution-1" });
+
+    expect(response.structuredContent.nextActions[0]).toMatchObject({
+      tool: "trace_get_span",
+      arguments: {
+        executionId: "execution-1",
+        spanId: "span-with-issue",
+      },
+    });
+  });
+
   it("rejects ambiguous LLM selectors before calling the port", async () => {
     const useCases = diagnostics();
     const { server, captured } = fakeServer();

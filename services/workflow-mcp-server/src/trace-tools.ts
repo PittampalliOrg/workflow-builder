@@ -261,6 +261,17 @@ function screenshotStorageRefs(value: unknown): string[] {
   return [...refs].slice(0, 6);
 }
 
+function hasDigestIssues(value: unknown): boolean {
+  const issues = record(value)?.issues;
+  return Array.isArray(issues) && issues.length > 0;
+}
+
+function isSuccessfulExecutionStatus(status: string | null): boolean {
+  return ["success", "succeeded", "completed"].includes(
+    status?.toLowerCase() ?? "",
+  );
+}
+
 function executionNextActions(
   executionId: string,
   diagnostic: unknown,
@@ -276,7 +287,15 @@ function executionNextActions(
         "The execution is still active; refresh after telemetry has advanced.",
     });
   }
-  const spans = firstRecord(root?.errorSpans, "spans");
+  // Error-status spans can describe expected retries, probes, or idempotent
+  // cleanup. Keep them in the returned evidence, but only promote them as the
+  // next debugging target when the run did not succeed or its digest found an
+  // evidence-backed issue.
+  const shouldInvestigateErrors =
+    !isSuccessfulExecutionStatus(status) || hasDigestIssues(root?.digest);
+  const spans = shouldInvestigateErrors
+    ? firstRecord(root?.errorSpans, "spans")
+    : null;
   if (typeof spans?.spanId === "string") {
     actions.push({
       tool: "trace_get_span",
@@ -306,27 +325,29 @@ function executionNextActions(
         "Inspect the captured browser pixels with the model's vision capability.",
     });
   }
-  const spanContinuation = continuationAction(
-    "trace_search_spans",
-    { executionId, errorsOnly: true, limit: 20 },
-    root?.errorSpans,
-    "Continue the failing-span search from the server-issued cursor.",
-  );
-  if (spanContinuation) actions.push(spanContinuation);
-  const logContinuation = continuationAction(
-    "trace_get_logs",
-    { executionId, errorsOnly: true, limit: 40 },
-    root?.errorLogs,
-    "Continue the error-log search from the server-issued cursor.",
-  );
-  if (logContinuation) actions.push(logContinuation);
-  if (!spans) {
-    actions.push({
-      tool: "trace_search_spans",
-      arguments: { executionId, errorsOnly: true, limit: 40 },
-      reason:
-        "Search for failing spans when the bounded first pass returned none.",
-    });
+  if (shouldInvestigateErrors) {
+    const spanContinuation = continuationAction(
+      "trace_search_spans",
+      { executionId, errorsOnly: true, limit: 20 },
+      root?.errorSpans,
+      "Continue the failing-span search from the server-issued cursor.",
+    );
+    if (spanContinuation) actions.push(spanContinuation);
+    const logContinuation = continuationAction(
+      "trace_get_logs",
+      { executionId, errorsOnly: true, limit: 40 },
+      root?.errorLogs,
+      "Continue the error-log search from the server-issued cursor.",
+    );
+    if (logContinuation) actions.push(logContinuation);
+    if (!spans) {
+      actions.push({
+        tool: "trace_search_spans",
+        arguments: { executionId, errorsOnly: true, limit: 40 },
+        reason:
+          "Search for failing spans when the bounded first pass returned none.",
+      });
+    }
   }
   return actions;
 }
