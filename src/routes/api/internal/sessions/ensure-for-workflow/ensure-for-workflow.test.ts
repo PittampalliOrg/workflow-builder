@@ -694,7 +694,7 @@ describe("dynamic-script spawn MCP wiring", () => {
       string
     >;
 		expect(browserHeaders["X-Wfb-Target-Auth"]).toBe(
-			"Bearer fresh-target-access-token",
+			"wb_access_token=fresh-target-access-token",
 		);
 		expect(browserHeaders["X-Wfb-Browser-Lane"]).toBe("per-node");
 		expect(childConfig.mcpServers[1]).toEqual({
@@ -711,7 +711,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 			(hostConfig.mcpServers[0].headers as Record<string, string>)[
 				"X-Wfb-Target-Auth"
 			],
-		).toBe("Bearer fresh-target-access-token");
+		).toBe("wb_access_token=fresh-target-access-token");
 
 		const { childInput: _childInput, ...topLevel } = payload;
 		expect(JSON.stringify(topLevel)).not.toContain("fresh-target-access-token");

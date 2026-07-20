@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import { ACCESS_TOKEN_COOKIE } from "$lib/server/auth-cookies";
 import type {
 	WorkflowDataService,
 	WorkflowPublishedAgent,
@@ -95,7 +96,9 @@ function stampAgentBrowserRunHeaders(
 			...(ctx.workflowId ? { "X-Wfb-Workflow-Id": ctx.workflowId } : {}),
 			...(ctx.nodeId ? { "X-Wfb-Node-Id": ctx.nodeId } : {}),
 			...(typeof targetHost === "string" && targetAccessToken
-				? { "X-Wfb-Target-Auth": `Bearer ${targetAccessToken}` }
+				? {
+						"X-Wfb-Target-Auth": `${ACCESS_TOKEN_COOKIE}=${targetAccessToken}`,
+					}
 				: {}),
 		};
 		return { ...e, headers };

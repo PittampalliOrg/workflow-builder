@@ -58,6 +58,7 @@ import {
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
+import { parseTargetAuth } from "./target-auth-policy.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -84,25 +85,12 @@ const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 4500
 // controls, WITHOUT the LLM typing credentials and WITHOUT the token entering
 // the trace. The run's owning session forwards, per run, on the browser MCP
 // entry:
-//   X-Wfb-Target-Auth       = "<cookieName>=<cookieValue>" (or "Bearer <token>")
+//   X-Wfb-Target-Auth       = "<cookieName>=<cookieValue>"
 //   X-Wfb-Target-Auth-Host  = the ONE host the credential may be presented to
 // The bridge sets that cookie (via agent-browser cookies_set) the first time the
 // agent opens a page on the matching host, then re-opens so the agent sees the
 // authenticated page. HOST-SCOPING is the safety boundary: the owner credential
 // is never attached to any other origin the browser visits.
-function parseTargetAuth(headers) {
-	const raw = String(headers["x-wfb-target-auth"] || "").trim();
-	const host = String(headers["x-wfb-target-auth-host"] || "").trim().toLowerCase();
-	if (!raw || !host) return null;
-	// "Bearer <jwt>" → send as an Authorization header instead of a cookie.
-	if (/^bearer\s+/i.test(raw)) {
-		return { host, kind: "header", headerName: "Authorization", headerValue: raw };
-	}
-	const eq = raw.indexOf("=");
-	if (eq <= 0) return null;
-	return { host, kind: "cookie", cookieName: raw.slice(0, eq), cookieValue: raw.slice(eq + 1) };
-}
-
 // Tools the LLM sees in tools/list. The child still exposes everything in
 // AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
 // discovery. Empty value = expose everything unfiltered.
@@ -636,19 +624,11 @@ async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
 	}
 	authApplied.add(browserSession);
 	try {
-		if (auth.kind === "cookie") {
-			await child.callTool({
-				name: "agent_browser_cookies_set",
-				arguments: { name: auth.cookieName, value: auth.cookieValue, url: openedUrl },
-			});
-			console.error(`[target-auth] cookie ${auth.cookieName} set for ${host} exec=${ctx.executionId}`);
-		} else {
-			await child.callTool({
-				name: "agent_browser_set_headers",
-				arguments: { headers: { [auth.headerName]: auth.headerValue } },
-			});
-			console.error(`[target-auth] auth header set for ${host} exec=${ctx.executionId}`);
-		}
+		await child.callTool({
+			name: "agent_browser_cookies_set",
+			arguments: { name: auth.cookieName, value: auth.cookieValue, url: openedUrl },
+		});
+		console.error(`[target-auth] cookie ${auth.cookieName} set for ${host} exec=${ctx.executionId}`);
 		return true;
 	} catch (err) {
 		console.error(`[target-auth] apply failed: ${err?.message}`);
