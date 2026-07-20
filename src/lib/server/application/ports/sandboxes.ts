@@ -109,6 +109,10 @@ export interface SandboxPreviewGatewayPort {
 	runtimeFetch(path: string, options?: RequestInit): Promise<Response>;
 }
 
+export interface PublicApplicationUrlPort {
+	resolve(input: { request: Request; fallbackUrl: URL }): Promise<string>;
+}
+
 export type SandboxSessionOwnerRecord = {
 	sandboxName: string;
 	id: string;

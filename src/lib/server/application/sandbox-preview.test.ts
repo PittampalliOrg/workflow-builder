@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import type {
+	PublicApplicationUrlPort,
 	SandboxPreviewGatewayPort,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
 
 describe("ApplicationSandboxPreviewService", () => {
 	let preview: SandboxPreviewGatewayPort;
+	let publicApplicationUrl: PublicApplicationUrlPort;
 	let workflowData: Pick<WorkflowDataService, "getExecutionWorkspaceRoute">;
 	let service: ApplicationSandboxPreviewService;
 
@@ -22,7 +24,14 @@ describe("ApplicationSandboxPreviewService", () => {
 				kept: true,
 			})),
 			runtimeFetch: vi.fn(async () =>
-				Response.json({ success: true, port: 3009 }),
+				Response.json({
+					success: true,
+					previewId: "preview-1",
+					proxyPath: "/api/workspaces/preview/preview-1/",
+					baseUrl: "http://127.0.0.1:43127",
+					status: "running",
+					resolvedAppPath: "apps/web",
+				}),
 			),
 		};
 		workflowData = {
@@ -32,7 +41,14 @@ describe("ApplicationSandboxPreviewService", () => {
 				workspaceSlug: "workspace-slug",
 			})),
 		};
-		service = new ApplicationSandboxPreviewService({ preview, workflowData });
+		publicApplicationUrl = {
+			resolve: vi.fn(async () => "https://workflow.example"),
+		};
+		service = new ApplicationSandboxPreviewService({
+			preview,
+			publicApplicationUrl,
+			workflowData,
+		});
 	});
 
 	it("starts an execution sandbox preview through the gateway", async () => {
@@ -88,7 +104,40 @@ describe("ApplicationSandboxPreviewService", () => {
 				pageUrl: expect.stringContaining(
 					"https://workflow.example/workspaces/workspace-slug/workflows/runtime-preview/exec-1?previewId=preview-1",
 				),
-				runtime: { success: true, port: 3009 },
+				status: "running",
+				resolvedAppPath: "apps/web",
+			},
+		});
+		expect(result.status === "ok" ? result.body : {}).not.toHaveProperty(
+			"runtime",
+		);
+		expect(result.status === "ok" ? result.body : {}).not.toHaveProperty(
+			"baseUrl",
+		);
+		expect(result.status === "ok" ? result.body : {}).not.toHaveProperty(
+			"proxyPath",
+		);
+	});
+
+	it("uses a trusted public origin for internal action callers", async () => {
+		vi.mocked(publicApplicationUrl.resolve).mockResolvedValueOnce(
+			"https://workflow-builder-dev.example/path-is-ignored",
+		);
+		const result = await service.startExecutionSandboxPreview({
+			executionId: "exec-1",
+			request: new Request("http://workflow-builder:3000/internal/start"),
+			fallbackUrl: new URL("http://workflow-builder:3000/internal/start"),
+			body: { previewId: "preview-1" },
+		});
+
+		expect(result).toMatchObject({
+			status: "ok",
+			body: {
+				proxyUrl:
+					"https://workflow-builder-dev.example/api/workflows/executions/exec-1/sandbox-preview/preview-1/",
+				pageUrl: expect.stringMatching(
+					/^https:\/\/workflow-builder-dev\.example\/workspaces\//,
+				),
 			},
 		});
 	});

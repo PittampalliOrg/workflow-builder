@@ -248,3 +248,20 @@ describe("built-in one-shot CLI agent action", () => {
     }
   });
 });
+
+describe("built-in browser preview action", () => {
+  it("publishes only canonical execution-scoped preview addresses", async () => {
+    const detail = await getActionCatalogDetail(
+      "builtin.browser/start-preview",
+      null,
+    );
+    expect(detail).not.toBeNull();
+    const outputSchema = asRecord(detail!.outputSchema);
+    const properties = asRecord(outputSchema.properties);
+
+    expect(properties).toHaveProperty("proxyUrl");
+    expect(properties).toHaveProperty("pageUrl");
+    expect(properties).not.toHaveProperty("baseUrl");
+    expect(properties).not.toHaveProperty("proxyPath");
+  });
+});
