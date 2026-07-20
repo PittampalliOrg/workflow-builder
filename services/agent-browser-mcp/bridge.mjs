@@ -61,11 +61,14 @@ import {
 } from "./vision-contract.mjs";
 import {
 	createBrowserContextRegistry,
+	finalizeBrowserClose,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
+import { createMcpSessionLifecycle } from "./mcp-session-lifecycle.mjs";
 import {
 	authorizeBrowserInitialization,
+	authorizeBrowserSessionTermination,
 	createTargetAuthExchangeCache,
 	exchangeTargetAuth,
 	openedUrlMatchesTargetOrigin,
@@ -83,6 +86,10 @@ const BFF =
 	process.env.WORKFLOW_BUILDER_URL ||
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const CLOSE_FINALIZATION_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_CLOSE_TIMEOUT_MS", 420000);
+const BFF_IO_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_BFF_IO_TIMEOUT_MS", 120000);
+const BROWSERSTATION_IO_TIMEOUT_MS = timeoutFromEnv("BROWSERSTATION_IO_TIMEOUT_MS", 30000);
+const BROWSER_PROCESS_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_PROCESS_TIMEOUT_MS", 60000);
 
 // BrowserStation lanes: every execution-scoped browser is leased from the
 // BrowserStation farm (KubeRay; one Chrome per worker pod), keeping Chromium
@@ -165,6 +172,63 @@ function resultText(result) {
 		.map((c) => c.text)
 		.join("\n");
 }
+
+function timeoutFromEnv(name, fallbackMs) {
+	const value = Number(process.env[name] || fallbackMs);
+	return Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647
+		? value
+		: fallbackMs;
+}
+
+function boundedSignal(parentSignal, timeoutMs) {
+	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	return parentSignal
+		? AbortSignal.any([parentSignal, timeoutSignal])
+		: timeoutSignal;
+}
+
+async function waitWithSignal(promise, parentSignal, timeoutMs, label) {
+	const signal = boundedSignal(parentSignal, timeoutMs);
+	let onAbort;
+	try {
+		if (signal.aborted) {
+			throw parentSignal?.aborted
+				? parentSignal.reason
+				: new Error(`${label} exceeded ${timeoutMs}ms`);
+		}
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				onAbort = () =>
+					reject(
+						parentSignal?.aborted
+							? parentSignal.reason
+							: new Error(`${label} exceeded ${timeoutMs}ms`),
+					);
+				signal.addEventListener("abort", onAbort, { once: true });
+			}),
+		]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
+}
+
+async function waitWithTimeout(promise, timeoutMs, label) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)),
+					timeoutMs,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 // agent-browser echoes the saved path in its text output (e.g. "HAR saved to
 // /root/.agent-browser/tmp/har/har-….har", "Recording saved to …").
 function pathFromResult(result) {
@@ -172,7 +236,11 @@ function pathFromResult(result) {
 	return m ? m[0] : null;
 }
 
-async function persistBlob(ctx, { bucket, kind, payloadBase64, contentType, fileName }) {
+async function persistBlob(
+	ctx,
+	{ bucket, kind, payloadBase64, contentType, fileName },
+	signal,
+) {
 	if (!ctx?.executionId || !TOKEN) return;
 	const body = {
 		workflowExecutionId: ctx.executionId,
@@ -190,16 +258,18 @@ async function persistBlob(ctx, { bucket, kind, payloadBase64, contentType, file
 			method: "POST",
 			headers: { "Content-Type": "application/json", "X-Internal-Token": TOKEN },
 			body: JSON.stringify(body),
+			signal: boundedSignal(signal, BFF_IO_TIMEOUT_MS),
 		});
 		console.error(
 			`[artifact] ${fileName} (${contentType}) exec=${ctx.executionId} http=${resp.status}`,
 		);
 	} catch (err) {
+		if (signal?.aborted) throw signal.reason ?? err;
 		console.error(`[artifact] POST failed for ${fileName}: ${err?.message}`);
 	}
 }
 
-async function persistArtifact(ctx, seen, toolName, result) {
+async function persistArtifact(ctx, seen, toolName, result, signal) {
 	const spec = ARTIFACT_TOOLS[toolName];
 	if (!spec || !ctx?.executionId || !TOKEN) return;
 
@@ -219,8 +289,9 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		if (!p || seen.has(p)) return; // nothing new produced
 		seen.add(p);
 		try {
-			payloadBase64 = (await readFile(p)).toString("base64");
+			payloadBase64 = (await readFile(p, { signal })).toString("base64");
 		} catch (err) {
+			if (signal?.aborted) throw signal.reason ?? err;
 			console.error(`[artifact] read ${p} failed: ${err?.message}`);
 			return;
 		}
@@ -232,7 +303,7 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		payloadBase64,
 		contentType,
 		fileName,
-	});
+	}, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -256,23 +327,30 @@ function lanesEnabled() {
 }
 
 function bsFetch(path, init = {}) {
+	const { signal, ...requestInit } = init;
 	return fetch(`${BROWSERSTATION_URL}${path}`, {
-		...init,
+		...requestInit,
 		headers: {
 			"X-API-Key": BROWSERSTATION_API_KEY,
 			"Content-Type": "application/json",
-			...(init.headers || {}),
+			...(requestInit.headers || {}),
 		},
+		signal: boundedSignal(signal, BROWSERSTATION_IO_TIMEOUT_MS),
 	});
 }
 
 function ensureLaneBrowser(browserContext) {
 	if (browserContext.lane) return browserContext.lane.ready;
 	const { browserSession } = browserContext;
-	const lane = { browserId: null, ready: null };
+	const lane = { browserId: null, ready: null, controller: new AbortController() };
+	const { signal } = lane.controller;
 	browserContext.lane = lane;
 	lane.ready = (async () => {
-		const created = await bsFetch("/browsers", { method: "POST", body: "{}" });
+		const created = await bsFetch("/browsers", {
+			method: "POST",
+			body: "{}",
+			signal,
+		});
 		if (!created.ok) throw new Error(`lease HTTP ${created.status}`);
 		lane.browserId = (await created.json()).browser_id;
 		const deadline = Date.now() + LANE_READY_TIMEOUT_MS;
@@ -281,7 +359,7 @@ function ensureLaneBrowser(browserContext) {
 			if (!browserContexts.isCurrent(browserContext)) {
 				throw new Error("lane authorization closed during provisioning");
 			}
-			const resp = await bsFetch(`/browsers/${lane.browserId}`);
+			const resp = await bsFetch(`/browsers/${lane.browserId}`, { signal });
 			if (resp.ok) {
 				info = await resp.json();
 				if (info.chrome_ready && info.websocket_url) break;
@@ -291,7 +369,12 @@ function ensureLaneBrowser(browserContext) {
 				throw new Error("lease expired waiting for farm capacity");
 			}
 			if (Date.now() > deadline) throw new Error(`farm browser not ready in ${LANE_READY_TIMEOUT_MS}ms`);
-			await new Promise((r) => setTimeout(r, 3000));
+			await waitWithSignal(
+				new Promise((resolve) => setTimeout(resolve, 3000)),
+				signal,
+				4000,
+				"browser lane poll",
+			);
 		}
 		if (!browserContexts.isCurrent(browserContext)) {
 			throw new Error("lane authorization closed before attachment");
@@ -302,8 +385,31 @@ function ensureLaneBrowser(browserContext) {
 				env: { ...process.env, AGENT_BROWSER_SESSION: browserSession },
 				stdio: ["ignore", "ignore", "inherit"],
 			});
-			p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`connect exit ${code}`))));
-			p.on("error", reject);
+			let settled = false;
+			let timer;
+			const onAbort = () => {
+				p.kill("SIGKILL");
+				finish(signal.reason ?? new Error("browser lane attachment aborted"));
+			};
+			const finish = (error) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal.removeEventListener("abort", onAbort);
+				error ? reject(error) : resolve();
+			};
+			timer = setTimeout(() => {
+				p.kill("SIGKILL");
+				finish(
+					new Error(`agent-browser connect exceeded ${BROWSER_PROCESS_TIMEOUT_MS}ms`),
+				);
+			}, BROWSER_PROCESS_TIMEOUT_MS);
+			p.on("exit", (code) =>
+				finish(code === 0 ? null : new Error(`connect exit ${code}`)),
+			);
+			p.on("error", finish);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
 		});
 		console.error(`[lane] ${browserSession} attached to farm browser ${lane.browserId}`);
 		return true;
@@ -330,7 +436,12 @@ async function releaseBrowserContextResources(browserContext) {
 	const lane = browserContext.lane;
 	browserContext.lane = null;
 	if (!lane) return;
-	await lane.ready?.catch(() => false);
+	lane.controller.abort(new Error("browser context released"));
+	await waitWithTimeout(
+		lane.ready?.catch(() => false),
+		BROWSER_PROCESS_TIMEOUT_MS,
+		"browser lane release wait",
+	).catch(() => false);
 	if (!lane.browserId) return;
 	try {
 		await bsFetch(`/browsers/${lane.browserId}`, { method: "DELETE" });
@@ -345,14 +456,45 @@ async function releaseBrowserContextResources(browserContext) {
 	}
 }
 
-function spawnChild(browserSession) {
+async function closeChild(child, label = "agent-browser child close") {
+	if (!child) return;
+	await waitWithTimeout(
+		Promise.resolve().then(() => child.close()),
+		BROWSER_PROCESS_TIMEOUT_MS,
+		label,
+	);
+}
+
+async function spawnChild(browserSession, signal) {
 	const childTransport = new StdioClientTransport({
 		command: "agent-browser",
 		args: ["mcp", "--tools", TOOLS],
 		env: { ...process.env, AGENT_BROWSER_SESSION: browserSession },
 	});
 	const child = new Client({ name: "agent-browser-child", version: "1.0.0" });
-	return child.connect(childTransport).then(() => child);
+	if (signal) {
+		signal.addEventListener(
+			"abort",
+			() => {
+				closeChild(child, "aborted agent-browser child close").catch(() => {});
+			},
+			{ once: true },
+		);
+	}
+	try {
+		signal?.throwIfAborted();
+		await waitWithSignal(
+			child.connect(childTransport),
+			signal,
+			BROWSER_PROCESS_TIMEOUT_MS,
+			"agent-browser child connect",
+		);
+		signal?.throwIfAborted();
+		return child;
+	} catch (error) {
+		await closeChild(child, "failed agent-browser child close").catch(() => {});
+		throw error;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -449,11 +591,17 @@ async function beginScene(browserSession, ctx, child, args) {
 	return `Scene ${n} started: "${title}". Perform the scene's actions now.`;
 }
 
-async function renderAndPersistDemo(entry) {
+async function renderAndPersistDemo(entry, signal) {
 	const titled = entry.clips.filter((c) => c.title);
 	try {
-		const demo = await renderDemo(titled, { site: entry.site, focus: entry.focus });
-		const buf = await readAndRm(demo.path);
+		signal?.throwIfAborted();
+		const demo = await renderDemo(
+			titled,
+			{ site: entry.site, focus: entry.focus },
+			{ signal },
+		);
+		signal?.throwIfAborted();
+		const buf = await readAndRm(demo.path, signal);
 		// Parallel lanes each render their own mini-demo; name by scene so the
 		// Browser tab distinguishes them from the run-level demo.mp4.
 		const laneSuffix = entry.browserSession?.includes("--")
@@ -469,23 +617,26 @@ async function renderAndPersistDemo(entry) {
 			payloadBase64: buf.toString("base64"),
 			contentType: "video/mp4",
 			fileName: laneSuffix ? `page-${laneSuffix}.mp4` : "demo.mp4",
-		});
+		}, signal);
 		console.error(
 			`[demo] rendered ${demo.seconds.toFixed(1)}s (${titled.length} scene(s), speedup ${demo.speedup.toFixed(2)}x) exec=${entry.ctx.executionId}`,
 		);
 	} catch (err) {
+		if (signal?.aborted) throw signal.reason ?? err;
 		console.error(`[demo] render failed (${err?.message}) — persisting raw scene clips`);
 		for (const clip of titled) {
 			try {
-				const buf = await readFile(clip.path);
+				signal?.throwIfAborted();
+				const buf = await readFile(clip.path, { signal });
 				await persistBlob(entry.ctx, {
 					bucket: "assets",
 					kind: "video",
 					payloadBase64: buf.toString("base64"),
 					contentType: "video/webm",
 					fileName: clip.path.split("/").pop(),
-				});
-			} catch {
+				}, signal);
+			} catch (error) {
+				if (signal?.aborted) throw signal.reason ?? error;
 				/* clip unreadable — skip */
 			}
 		}
@@ -496,7 +647,8 @@ async function stopCapture(
 	browserContext,
 	reason,
 	liveChild,
-	existingCloseClaim = null,
+	existingCloseClaim,
+	signal,
 ) {
 	const { browserSession } = browserContext;
 	const entry = captures.get(browserSession);
@@ -507,11 +659,12 @@ async function stopCapture(
 	) {
 		return false;
 	}
-	const closeClaim = existingCloseClaim
-		? browserContexts.ownsClose(browserContext, existingCloseClaim)
-			? existingCloseClaim
-			: null
-		: browserContexts.claimClose(browserContext);
+	const closeClaim = browserContexts.ownsClose(
+		browserContext,
+		existingCloseClaim,
+	)
+		? existingCloseClaim
+		: null;
 	if (!closeClaim) {
 		await browserContexts.waitForClose(browserContext);
 		return false;
@@ -528,17 +681,16 @@ async function stopCapture(
 	let ephemeral = null;
 	if (!child) {
 		try {
-			ephemeral = await spawnChild(browserSession);
+			signal?.throwIfAborted();
+			ephemeral = await spawnChild(browserSession, signal);
 			child = ephemeral;
 		} catch (err) {
 			console.error(`[auto-capture] stop child spawn failed (${reason}): ${err?.message}`);
-			await browserContexts
-				.release(entry.browserContext, closeClaim)
-				.catch(() => {});
-			return;
+			throw err;
 		}
 	}
 	try {
+		signal?.throwIfAborted();
 		if (entry.videoActive) {
 			entry.videoActive = false;
 			try {
@@ -547,28 +699,29 @@ async function stopCapture(
 				const result = await child.callTool(
 					{ name: "agent_browser_record_stop", arguments: {} },
 					undefined,
-					{ timeout: 300000 },
+					{ timeout: 300000, signal },
 				);
+				signal?.throwIfAborted();
 				const hasDemoScenes = entry.clips.some((c) => c.title);
 				if (hasDemoScenes) {
 					// When the AGENT explicitly closes, the run finalizes right after this returns —
 					// render+persist SYNCHRONOUSLY, or demo.mp4 lands after the run snapshot is frozen
-					// and the viewer must hard-refresh to see it. Idle/teardown paths have nobody
-					// waiting, so background them (don't block timers/exit).
-					if (reason === "close") {
-						console.error(`[auto-capture] video stopped (${reason}) — rendering demo inline`);
-						await renderAndPersistDemo(entry);
-					} else {
-						console.error(`[auto-capture] video stopped (${reason}) — demo render queued`);
-						renderAndPersistDemo(entry).catch((err) =>
-							console.error(`[demo] background render error: ${err?.message}`),
-						);
-					}
+					// and the viewer must hard-refresh to see it. The close deadline now also
+					// bounds idle rendering, so every path finishes before releasing the lane.
+					console.error(`[auto-capture] video stopped (${reason}) — rendering demo inline`);
+					await renderAndPersistDemo(entry, signal);
 				} else {
-					await persistArtifact(entry.ctx, entry.seen, "agent_browser_record_stop", result);
+					await persistArtifact(
+						entry.ctx,
+						entry.seen,
+						"agent_browser_record_stop",
+						result,
+						signal,
+					);
 					console.error(`[auto-capture] video stopped+persisted (${reason})`);
 				}
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[auto-capture] record_stop failed (${reason}): ${err?.message}`);
 			}
 		}
@@ -578,11 +731,19 @@ async function stopCapture(
 				const result = await child.callTool(
 					{ name: "agent_browser_network_har_stop", arguments: {} },
 					undefined,
-					{ timeout: 300000 },
+					{ timeout: 300000, signal },
 				);
-				await persistArtifact(entry.ctx, entry.seen, "agent_browser_network_har_stop", result);
+				signal?.throwIfAborted();
+				await persistArtifact(
+					entry.ctx,
+					entry.seen,
+					"agent_browser_network_har_stop",
+					result,
+					signal,
+				);
 				console.error(`[auto-capture] HAR stopped+persisted (${reason})`);
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[auto-capture] har_stop failed (${reason}): ${err?.message}`);
 			}
 		}
@@ -591,26 +752,19 @@ async function stopCapture(
 				await child.callTool(
 					{ name: "agent_browser_close", arguments: {} },
 					undefined,
-					{ timeout: 60000 },
+					{ timeout: 60000, signal },
 				);
 				console.error(`[browser] session closed after ${reason} cleanup`);
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[browser] close failed after ${reason}: ${err?.message}`);
 			}
 		}
 	} finally {
 		if (ephemeral) {
-			try {
-				await ephemeral.close();
-			} catch {
-				/* ignore */
-			}
-		}
-		// Explicit close releases only after the caller's child close completes.
-		if (reason !== "close") {
-			await browserContexts
-				.release(entry.browserContext, closeClaim)
-				.catch(() => {});
+			await closeChild(ephemeral, "ephemeral agent-browser child close").catch(
+				() => {},
+			);
 		}
 	}
 	return true;
@@ -703,7 +857,27 @@ function armIdleStop(browserSession) {
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 	const browserContext = entry.browserContext;
 	entry.idleTimer = setTimeout(() => {
-		stopCapture(browserContext, "idle").catch(() => {});
+		const closeClaim = browserContexts.claimClose(browserContext);
+		if (!closeClaim) {
+			browserContexts.waitForClose(browserContext).catch(() => {});
+			return;
+		}
+		finalizeBrowserClose({
+			registry: browserContexts,
+			context: browserContext,
+			claim: closeClaim,
+			timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
+			finalize: (signal) =>
+				stopCapture(
+					browserContext,
+					"idle",
+					undefined,
+					closeClaim,
+					signal,
+				),
+		}).catch((err) =>
+			console.error(`[auto-capture] idle finalization failed: ${err?.message}`),
+		);
 	}, AUTO_CAPTURE_IDLE_MS);
 	entry.idleTimer.unref?.();
 }
@@ -870,12 +1044,42 @@ async function makeProxy(ctxRef, browserContext) {
 		let result;
 		if (closesBrowser) {
 			try {
-				if (captures.has(browserSession)) {
-					await stopCapture(browserContext, "close", child, closeClaim);
-				}
-				result = await child.callTool({ name, arguments: sanitizedArgs });
-			} finally {
-				await browserContexts.release(browserContext, closeClaim).catch(() => {});
+				result = await finalizeBrowserClose({
+					registry: browserContexts,
+					context: browserContext,
+					claim: closeClaim,
+					timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
+					finalize: async (signal) => {
+						if (captures.has(browserSession)) {
+							await stopCapture(
+								browserContext,
+								"close",
+								child,
+								closeClaim,
+								signal,
+							);
+						}
+						signal.throwIfAborted();
+						return child.callTool(
+							{ name, arguments: sanitizedArgs },
+							undefined,
+							{ timeout: 60000, signal },
+						);
+					},
+					cancel: () =>
+						closeChild(child, "deadline agent-browser child close"),
+				});
+			} catch (err) {
+				console.error(`[browser] close finalization failed: ${err?.message}`);
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Browser close finalization reached its deadline.",
+						},
+					],
+					isError: true,
+				};
 			}
 		} else {
 			result = await child.callTool({ name, arguments: sanitizedArgs });
@@ -911,11 +1115,7 @@ async function makeProxy(ctxRef, browserContext) {
 	const cleanup = async () => {
 		// Transport closes after every dapr-agent-py tool call — the run (and
 		// its capture) outlives this proxy. Just release the child process.
-		try {
-			await child.close();
-		} catch {
-			/* ignore */
-		}
+		await closeChild(child).catch(() => {});
 	};
 	return { server, cleanup };
 }
@@ -949,6 +1149,17 @@ async function requestMatchesSessionAuthorization(req, session) {
 				assertion,
 				executionId,
 			}),
+	});
+}
+
+function requestMatchesSessionTerminationAuthorization(req, session) {
+	return authorizeBrowserSessionTermination({
+		sessionId: requestHeader(req, "mcp-session-id"),
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth: parseTargetAuthAssertion(req.headers),
+		expectedSessionId: session.sessionId,
+		expectedExecutionId: session.executionId,
+		expectedAssertionDigest: session.assertionDigest,
 	});
 }
 
@@ -1044,20 +1255,19 @@ app.post("/mcp", async (req, res) => {
 		return;
 	}
 	const { server, cleanup } = proxy;
-	let acquisitionCommitted = false;
-	let cleanupPromise = null;
-	const cleanupOnce = () =>
-		(cleanupPromise ??= Promise.resolve().then(() => cleanup()));
-	const transport = new StreamableHTTPServerTransport({
+	let transport;
+	const lifecycle = createMcpSessionLifecycle({
+		registry: browserContexts,
+		acquisition,
+		sessions,
+		cleanup,
+		getTransportSessionId: () => transport?.sessionId ?? null,
+	});
+	transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
 		onsessioninitialized: (newSid) => {
-			if (!browserContexts.commit(acquisition)) {
-				throw new Error("Browser context closed during MCP initialization");
-			}
-			acquisitionCommitted = true;
-			sessions.set(newSid, {
+			lifecycle.initialize(newSid, {
 				transport,
-				cleanup: cleanupOnce,
 				executionId: initialization.executionId,
 				assertionDigest: initialization.assertionDigest,
 				authorizationBinding: initialization.authorizationBinding,
@@ -1069,27 +1279,14 @@ app.post("/mcp", async (req, res) => {
 		},
 	});
 	transport.onclose = async () => {
-		const id = transport.sessionId;
-		if (id) sessions.delete(id);
-		if (acquisitionCommitted) {
-			browserContexts.detach(acquisition);
-		} else {
-			await browserContexts.abandon(acquisition).catch(() => {});
-		}
-		await cleanupOnce();
+		await lifecycle.dispose().catch(() => {});
 	};
 	try {
 		await server.connect(transport);
 		await transport.handleRequest(req, res, req.body);
+		await lifecycle.cleanupUncommittedAfterHandle().catch(() => {});
 	} catch (error) {
-		const id = transport.sessionId;
-		if (id) sessions.delete(id);
-		if (acquisitionCommitted) {
-			browserContexts.detach(acquisition);
-		} else {
-			await browserContexts.abandon(acquisition).catch(() => {});
-		}
-		await cleanupOnce().catch(() => {});
+		await lifecycle.dispose().catch(() => {});
 		console.error(`[session] initialization failed: ${error?.message}`);
 		if (!res.headersSent) {
 			res.status(503).json({ error: "Browser session initialization failed" });
@@ -1104,11 +1301,21 @@ async function replay(req, res) {
 		res.status(400).send("invalid or missing mcp-session-id");
 		return;
 	}
-	if (!(await requestMatchesSessionAuthorization(req, session))) {
+	const authorized =
+		req.method === "DELETE"
+			? requestMatchesSessionTerminationAuthorization(req, session)
+			: await requestMatchesSessionAuthorization(req, session);
+	if (!authorized) {
 		rejectBrowserAuthorization(res);
 		return;
 	}
-	await session.transport.handleRequest(req, res);
+	try {
+		await session.transport.handleRequest(req, res);
+	} finally {
+		if (req.method === "DELETE") {
+			await session.dispose().catch(() => {});
+		}
+	}
 }
 app.get("/mcp", replay);
 app.delete("/mcp", replay);

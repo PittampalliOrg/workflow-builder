@@ -10,6 +10,7 @@ const AUTHORIZATION_BINDING_PATTERN =
 const MAX_ASSERTION_BYTES = 2_048;
 const MAX_EXCHANGE_RESPONSE_BYTES = 16_384;
 const MAX_VALIDATION_RESPONSE_BYTES = 512;
+const DEFAULT_TARGET_AUTH_HTTP_TIMEOUT_MS = 30_000;
 const MAX_COOKIE_LIFETIME_SECONDS = 30 * 60;
 const CLOCK_SKEW_SECONDS = 10;
 export const TARGET_AUTH_REFRESH_WINDOW_SECONDS = 5 * 60;
@@ -122,6 +123,36 @@ export async function reauthorizeBrowserSession({
   } catch {
     return false;
   }
+}
+
+/**
+ * DELETE removes only the exact local MCP capability. It remains available
+ * after the shared browser context closes so transport and child cleanup can
+ * complete without requiring a live run or browser lane.
+ */
+export function authorizeBrowserSessionTermination({
+  sessionId,
+  executionId,
+  targetAuth,
+  expectedSessionId,
+  expectedExecutionId,
+  expectedAssertionDigest,
+}) {
+  const normalizedSessionId =
+    typeof sessionId === "string" ? sessionId.trim() : "";
+  const normalizedExecutionId =
+    typeof executionId === "string" ? executionId.trim() : "";
+  const assertion =
+    typeof targetAuth?.assertion === "string"
+      ? targetAuth.assertion.trim()
+      : "";
+  return Boolean(
+    normalizedSessionId &&
+    normalizedSessionId === expectedSessionId &&
+    normalizedExecutionId &&
+    normalizedExecutionId === expectedExecutionId &&
+    targetAuthAssertionDigest(assertion) === expectedAssertionDigest,
+  );
 }
 
 function parseOrigin(value) {
@@ -365,6 +396,7 @@ export async function exchangeTargetAuth({
   executionId,
   fetchImpl = fetch,
   nowMs = Date.now(),
+  timeoutMs = DEFAULT_TARGET_AUTH_HTTP_TIMEOUT_MS,
 }) {
   if (!internalToken || !assertion || !executionId) return null;
   let endpoint;
@@ -389,6 +421,7 @@ export async function exchangeTargetAuth({
         executionId,
       }),
       redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status !== 200 || !hasStrictJsonNoStore(response)) return null;
     const payload = await readBoundedJson(
@@ -408,6 +441,7 @@ export async function validateTargetAuth({
   assertion,
   executionId,
   fetchImpl = fetch,
+  timeoutMs = DEFAULT_TARGET_AUTH_HTTP_TIMEOUT_MS,
 }) {
   if (!internalToken || !assertion || !executionId) return null;
   let endpoint;
@@ -432,6 +466,7 @@ export async function validateTargetAuth({
         executionId,
       }),
       redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status !== 200) return null;
     if (!hasStrictJsonNoStore(response)) return null;

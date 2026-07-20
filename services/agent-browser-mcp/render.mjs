@@ -22,7 +22,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-const run = promisify(execFile);
+const runFile = promisify(execFile);
+const PROCESS_TIMEOUT_MS = Number(process.env.DEMO_PROCESS_TIMEOUT_MS || 300000);
+
+function run(file, args, options = {}) {
+	return runFile(file, args, {
+		timeout: PROCESS_TIMEOUT_MS,
+		killSignal: "SIGKILL",
+		...options,
+	});
+}
 
 const FONT_DIR = "/usr/share/fonts/truetype/liberation";
 const FONT_BOLD = `${FONT_DIR}/LiberationSans-Bold.ttf`;
@@ -39,13 +48,13 @@ const MAX_SPEEDUP = Number(process.env.DEMO_MAX_SPEEDUP || 2.5);
 const FREEZE_MIN_S = Number(process.env.DEMO_FREEZE_MIN_S || 1.4);
 const FREEZE_KEEP_S = 0.5;
 
-async function ffprobeDuration(path) {
+async function ffprobeDuration(path, signal) {
 	const { stdout } = await run("ffprobe", [
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "csv=p=0",
 		path,
-	]);
+	], { signal });
 	const d = Number.parseFloat(String(stdout).trim());
 	return Number.isFinite(d) ? d : 0;
 }
@@ -56,9 +65,9 @@ async function ffprobeDuration(path) {
  * duration probe fails, fully re-encode to a constant 1280x720@10fps —
  * verified to recover 4-min lane recordings intact. Returns the clip
  * (possibly re-pathed into `dir`); never throws. */
-async function normalizeClip(dir, clip, index) {
+async function normalizeClip(dir, clip, index, signal) {
 	try {
-		if ((await ffprobeDuration(clip.path)) >= 0.4) return clip;
+		if ((await ffprobeDuration(clip.path, signal)) >= 0.4) return clip;
 		const fixed = join(dir, `norm-${index}.webm`);
 		await run("ffmpeg", [
 			"-hide_banner", "-y",
@@ -69,25 +78,27 @@ async function normalizeClip(dir, clip, index) {
 			"-c:v", "libvpx", "-b:v", "1M",
 			"-deadline", "realtime", "-cpu-used", "8",
 			fixed,
-		]);
-		if ((await ffprobeDuration(fixed)) >= 0.4) return { ...clip, path: fixed };
-	} catch {
+		], { signal });
+		if ((await ffprobeDuration(fixed, signal)) >= 0.4) return { ...clip, path: fixed };
+	} catch (error) {
+		if (signal?.aborted) throw signal.reason ?? error;
 		/* fall through to the original clip */
 	}
 	return clip;
 }
 
 /** Freeze spans [{start, end}] via freezedetect (end may be clip end). */
-async function detectFreezes(path, duration) {
+async function detectFreezes(path, duration, signal) {
 	let stderr = "";
 	try {
 		const res = await run(
 			"ffmpeg",
 			["-hide_banner", "-i", path, "-vf", `freezedetect=n=0.003:d=${FREEZE_MIN_S}`, "-an", "-f", "null", "-"],
-			{ maxBuffer: 32 * 1024 * 1024 },
+			{ maxBuffer: 32 * 1024 * 1024, signal },
 		);
 		stderr = String(res.stderr || "");
 	} catch (err) {
+		if (signal?.aborted) throw signal.reason ?? err;
 		stderr = String(err?.stderr || "");
 	}
 	const spans = [];
@@ -142,9 +153,9 @@ function wrapText(text, width) {
 }
 
 /** drawtext via textfile= (sidesteps quote/percent escaping entirely). */
-async function textFilter(dir, id, text, opts) {
+async function textFilter(dir, id, text, opts, signal) {
 	const file = join(dir, `${id}.txt`);
-	await writeFile(file, String(text ?? ""));
+	await writeFile(file, String(text ?? ""), { signal });
 	const { font = FONT_REG, size = 24, color = "white", x = "24", y = "24", box = false, boxcolor = "black@0.55", boxborder = 10, spacing = 8 } = opts || {};
 	return (
 		`drawtext=fontfile=${esc(font)}:textfile=${esc(file)}:fontsize=${size}` +
@@ -153,7 +164,7 @@ async function textFilter(dir, id, text, opts) {
 	);
 }
 
-async function renderCard(dir, name, seconds, blocks) {
+async function renderCard(dir, name, seconds, blocks, signal) {
 	// blocks: [{text, size, font, color, yExpr}]
 	const filters = [];
 	for (let i = 0; i < blocks.length; i++) {
@@ -166,7 +177,7 @@ async function renderCard(dir, name, seconds, blocks) {
 				x: "(w-text_w)/2",
 				y: b.yExpr,
 				spacing: 10,
-			}),
+			}, signal),
 		);
 	}
 	const out = join(dir, `${name}.mp4`);
@@ -177,14 +188,14 @@ async function renderCard(dir, name, seconds, blocks) {
 		"-vf", filters.join(","),
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-an",
 		out,
-	]);
+	], { signal });
 	return out;
 }
 
-async function renderScene(dir, clip, index, total, speedup) {
-	const duration = await ffprobeDuration(clip.path);
+async function renderScene(dir, clip, index, total, speedup, signal) {
+	const duration = await ffprobeDuration(clip.path, signal);
 	if (duration < 0.4) return null;
-	const freezes = await detectFreezes(clip.path, duration);
+	const freezes = await detectFreezes(clip.path, duration, signal);
 	const keep = keepIntervals(duration, freezes);
 	const select = keep.map(([a, b]) => `between(t,${a.toFixed(3)},${b.toFixed(3)})`).join("+");
 
@@ -203,13 +214,13 @@ async function renderScene(dir, clip, index, total, speedup) {
 		`drawbox=x=0:y=${H - 96}:w=${W}:h=96:color=black@0.55:t=fill`,
 		await textFilter(dir, `s${index}-title`, title, {
 			font: FONT_BOLD, size: 30, x: "28", y: `${H - 84}`,
-		}),
+		}, signal),
 		await textFilter(dir, `s${index}-cap`, caption, {
 			font: FONT_REG, size: 20, color: "white@0.92", x: "28", y: `${H - 44}`,
-		}),
+		}, signal),
 		await textFilter(dir, `s${index}-badge`, `Scene ${index + 1}/${total}`, {
 			font: FONT_BOLD, size: 20, x: `w-text_w-24`, y: "20", box: true,
-		}),
+		}, signal),
 	);
 	const out = join(dir, `scene-${index}.mp4`);
 	await run(
@@ -220,7 +231,7 @@ async function renderScene(dir, clip, index, total, speedup) {
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-an",
 			out,
 		],
-		{ maxBuffer: 32 * 1024 * 1024 },
+		{ maxBuffer: 32 * 1024 * 1024, signal },
 	);
 	return { out, keptSeconds: keep.reduce((s, [a, b]) => s + (b - a), 0) / (speedup > 1.01 ? speedup : 1) };
 }
@@ -231,17 +242,19 @@ async function renderScene(dir, clip, index, total, speedup) {
  * meta: {site, focus}
  * Returns {path, seconds, scenes} — caller persists and cleans up `path`.
  */
-export async function renderDemo(clips, meta) {
+export async function renderDemo(clips, meta, { signal } = {}) {
+	signal?.throwIfAborted();
 	const dir = await mkdtemp(join(tmpdir(), "demo-"));
+	signal?.throwIfAborted();
 	try {
 		// First pass: measure kept footage at natural speed to size the speedup.
 		let naturalTotal = 0;
 		const measured = [];
 		for (let ci = 0; ci < clips.length; ci++) {
-			const clip = await normalizeClip(dir, clips[ci], ci);
-			const duration = await ffprobeDuration(clip.path);
+			const clip = await normalizeClip(dir, clips[ci], ci, signal);
+			const duration = await ffprobeDuration(clip.path, signal);
 			if (duration < 0.4) continue;
-			const keep = keepIntervals(duration, await detectFreezes(clip.path, duration));
+			const keep = keepIntervals(duration, await detectFreezes(clip.path, duration, signal));
 			const kept = keep.reduce((s, [a, b]) => s + (b - a), 0);
 			naturalTotal += kept;
 			measured.push(clip);
@@ -259,11 +272,11 @@ export async function renderDemo(clips, meta) {
 				{ text: site, font: FONT_BOLD, size: 54, yExpr: "(h/2)-110" },
 				{ text: focusLines, size: 26, color: "white@0.92", yExpr: "(h/2)-20" },
 				{ text: "Automated site demo", size: 20, color: "white@0.6", yExpr: "h-90" },
-			]),
+			], signal),
 		);
 		const sceneTitles = [];
 		for (let i = 0; i < measured.length; i++) {
-			const rendered = await renderScene(dir, measured[i], i, measured.length, speedup);
+			const rendered = await renderScene(dir, measured[i], i, measured.length, speedup, signal);
 			if (rendered) {
 				parts.push(rendered.out);
 				sceneTitles.push(measured[i].title || `Scene ${i + 1}`);
@@ -279,27 +292,31 @@ export async function renderDemo(clips, meta) {
 					yExpr: "210",
 				},
 				{ text: site, size: 20, color: "white@0.6", yExpr: "h-90" },
-			]),
+			], signal),
 		);
 
 		const listFile = join(dir, "concat.txt");
-		await writeFile(listFile, parts.map((p) => `file '${p}'`).join("\n"));
+		signal?.throwIfAborted();
+		await writeFile(listFile, parts.map((p) => `file '${p}'`).join("\n"), { signal });
+		signal?.throwIfAborted();
 		const outPath = join(tmpdir(), `demo-${Date.now()}.mp4`);
 		await run("ffmpeg", [
 			"-hide_banner", "-y",
 			"-f", "concat", "-safe", "0", "-i", listFile,
 			"-c", "copy", "-movflags", "+faststart",
 			outPath,
-		]);
-		const seconds = await ffprobeDuration(outPath);
+		], { signal });
+		const seconds = await ffprobeDuration(outPath, signal);
 		return { path: outPath, seconds, scenes: sceneTitles, speedup };
 	} finally {
 		await rm(dir, { recursive: true, force: true }).catch(() => {});
 	}
 }
 
-export async function readAndRm(path) {
-	const buf = await readFile(path);
+export async function readAndRm(path, signal) {
+	signal?.throwIfAborted();
+	const buf = await readFile(path, { signal });
+	signal?.throwIfAborted();
 	await rm(path, { force: true }).catch(() => {});
 	return buf;
 }

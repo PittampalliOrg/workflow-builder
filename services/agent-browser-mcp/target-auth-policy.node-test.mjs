@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
+  authorizeBrowserSessionTermination,
   authorizeBrowserInitialization,
   createTargetAuthExchangeCache,
   exchangeTargetAuth,
@@ -103,6 +104,7 @@ test("exchanges only against the configured BFF with service auth", async () => 
     "X-Internal-Token": "internal-service-token",
   });
   assert.equal(requests[0].init.redirect, "error");
+  assert.ok(requests[0].init.signal instanceof AbortSignal);
   assert.equal("Authorization" in requests[0].init.headers, false);
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     targetAuthAssertion: assertion,
@@ -405,6 +407,39 @@ test("fails existing sessions closed when authorization expires or is revoked", 
   );
 });
 
+test("authorizes termination for only the exact local MCP capability", () => {
+  const input = {
+    sessionId: "mcp-session-1",
+    executionId: "execution-1",
+    targetAuth: { assertion },
+    expectedSessionId: "mcp-session-1",
+    expectedExecutionId: "execution-1",
+    expectedAssertionDigest: targetAuthAssertionDigest(assertion),
+  };
+  assert.equal(authorizeBrowserSessionTermination(input), true);
+  assert.equal(
+    authorizeBrowserSessionTermination({
+      ...input,
+      sessionId: "mcp-session-2",
+    }),
+    false,
+  );
+  assert.equal(
+    authorizeBrowserSessionTermination({
+      ...input,
+      executionId: "execution-2",
+    }),
+    false,
+  );
+  assert.equal(
+    authorizeBrowserSessionTermination({
+      ...input,
+      targetAuth: { assertion: rotatedAssertion },
+    }),
+    false,
+  );
+});
+
 test("validates against the fixed BFF without returning a credential", async () => {
   const requests = [];
   assert.equal(
@@ -435,6 +470,7 @@ test("validates against the fixed BFF without returning a credential", async () 
     executionId: "execution-1",
   });
   assert.equal(requests[0].init.redirect, "error");
+  assert.ok(requests[0].init.signal instanceof AbortSignal);
   assert.equal(requests[0].init.headers.Accept, "application/json");
   assert.equal("Authorization" in requests[0].init.headers, false);
 });

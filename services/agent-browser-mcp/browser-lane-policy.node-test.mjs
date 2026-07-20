@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
 	createBrowserContextRegistry,
+	finalizeBrowserClose,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
@@ -134,9 +135,16 @@ describe("agent-browser lane policy", () => {
 				await registry.waitForClose(firstSession.context);
 				return "joined";
 			}
-			await childCloseGate;
-			childCloseCalls += 1;
-			await registry.release(firstSession.context, claim);
+			await finalizeBrowserClose({
+				registry,
+				context: firstSession.context,
+				claim,
+				timeoutMs: 1_000,
+				finalize: async () => {
+					await childCloseGate;
+					childCloseCalls += 1;
+				},
+			});
 			return "owner";
 		}
 
@@ -147,6 +155,58 @@ describe("agent-browser lane policy", () => {
 		finishChildClose();
 		assert.deepEqual(await Promise.all([owner, follower]), ["owner", "joined"]);
 		assert.equal(childCloseCalls, 1);
+	});
+
+	it("aborts a stalled close, settles followers, and prevents a second child close", async () => {
+		let childCloseCalls = 0;
+		let observedAbort = false;
+		let releasedAfterAbort = false;
+		const registry = createBrowserContextRegistry({
+			releaseResources: async () => {
+				releasedAfterAbort = observedAbort;
+			},
+		});
+		const browserSession = "wfb-execution-deadline";
+		const authorizationBinding =
+			"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+		const ownerLease = registry.acquire(browserSession, authorizationBinding);
+		const followerLease = registry.acquire(browserSession, authorizationBinding);
+		assert.equal(registry.commit(ownerLease), true);
+		assert.equal(registry.commit(followerLease), true);
+		const claim = registry.claimClose(ownerLease.context);
+		assert.ok(claim);
+		const follower = (async () => {
+			assert.equal(registry.claimClose(followerLease.context), null);
+			return registry.waitForClose(followerLease.context);
+		})();
+		const owner = finalizeBrowserClose({
+			registry,
+			context: ownerLease.context,
+			claim,
+			timeoutMs: 10,
+			abortDrainTimeoutMs: 10,
+			finalize: async (signal) => {
+				await new Promise(() => {
+					signal.addEventListener(
+						"abort",
+						() => {
+							observedAbort = true;
+						},
+						{ once: true },
+					);
+				});
+			},
+			cancel: async () => {
+				childCloseCalls += 1;
+			},
+		});
+		await assert.rejects(owner, /close finalization exceeded 10ms/);
+		assert.equal(await follower, true);
+		assert.equal(observedAbort, true);
+		assert.equal(releasedAfterAbort, true);
+		assert.equal(childCloseCalls, 1);
+		assert.equal(registry.current(browserSession), null);
+		assert.ok(registry.acquire(browserSession, authorizationBinding));
 	});
 
 	it("keeps a follower context current when its creator initialization fails", async () => {
@@ -203,6 +263,7 @@ describe("agent-browser lane policy", () => {
 		assert.match(bridge, /shouldCloseBrowserAfterCapture\(reason\)/);
 		assert.match(bridge, /name: "agent_browser_close"/);
 		assert.match(dockerfile, /browser-lane-policy\.mjs/);
+		assert.match(dockerfile, /mcp-session-lifecycle\.mjs/);
 		assert.match(dockerfile, /target-auth-policy\.mjs/);
 	});
 
@@ -251,19 +312,10 @@ describe("agent-browser lane policy", () => {
 			initialization,
 			/makeProxy\(ctxRef, browserContext\)[\s\S]*browserContexts\.abandon\(acquisition\)/,
 		);
-		assert.match(
-			initialization,
-			/onsessioninitialized:[\s\S]*browserContexts\.commit\(acquisition\)/,
-		);
-		assert.match(initialization, /cleanup: cleanupOnce/);
-		assert.match(
-			initialization,
-			/transport\.onclose[\s\S]*if \(acquisitionCommitted\)[\s\S]*detach\(acquisition\)[\s\S]*else[\s\S]*abandon\(acquisition\)/,
-		);
-		assert.match(
-			initialization,
-			/if \(id\) sessions\.delete\(id\)[\s\S]*if \(acquisitionCommitted\)/,
-		);
+		assert.match(initialization, /createMcpSessionLifecycle\(\{/);
+		assert.match(initialization, /onsessioninitialized:[\s\S]*lifecycle\.initialize\(/);
+		assert.match(initialization, /transport\.onclose[\s\S]*lifecycle\.dispose\(\)/);
+		assert.match(initialization, /cleanupUncommittedAfterHandle\(\)/);
 	});
 
 	it("keeps captured close finalization inside entry-aware release", () => {
@@ -276,12 +328,12 @@ describe("agent-browser lane policy", () => {
 			bridge.indexOf("function targetAuthExchangeInput"),
 		);
 		assert.match(stopCapture, /entry\.browserContext !== browserContext/);
-		assert.match(stopCapture, /browserContexts\.ownsClose\(browserContext/);
-		assert.match(stopCapture, /browserContexts\.claimClose\(browserContext\)/);
-		assert.match(stopCapture, /\.release\(entry\.browserContext, closeClaim\)/);
+		assert.match(stopCapture, /browserContexts\.ownsClose\(\s*browserContext/);
+		assert.doesNotMatch(stopCapture, /browserContexts\.claimClose\(browserContext\)/);
+		assert.doesNotMatch(stopCapture, /browserContexts\.release\(/);
 		assert.match(
 			bridge,
-			/const browserContext = entry\.browserContext;[\s\S]*stopCapture\(browserContext, "idle"\)/,
+			/const browserContext = entry\.browserContext;[\s\S]*claimClose\(browserContext\)[\s\S]*finalizeBrowserClose\(\{[\s\S]*"idle"/,
 		);
 		const handler = bridge.slice(
 			bridge.indexOf("server.setRequestHandler(CallToolRequestSchema"),
@@ -289,7 +341,7 @@ describe("agent-browser lane policy", () => {
 		);
 		assert.match(
 			handler,
-			/claimClose\(browserContext\)[\s\S]*waitForClose\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*try \{[\s\S]*stopCapture\(browserContext, "close", child, closeClaim\)[\s\S]*child\.callTool\([\s\S]*finally \{[\s\S]*browserContexts\.release\(browserContext, closeClaim\)/,
+			/claimClose\(browserContext\)[\s\S]*waitForClose\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*finalizeBrowserClose\(\{[\s\S]*stopCapture\([\s\S]*"close"[\s\S]*child\.callTool\(/,
 		);
 	});
 
@@ -342,5 +394,7 @@ describe("agent-browser lane policy", () => {
 		assert.match(existingPost, /await requestMatchesSessionAuthorization/);
 		const replay = bridge.slice(bridge.indexOf("async function replay"));
 		assert.match(replay, /await requestMatchesSessionAuthorization/);
+		assert.match(replay, /requestMatchesSessionTerminationAuthorization/);
+		assert.match(replay, /finally \{[\s\S]*session\.dispose\(\)/);
 	});
 });

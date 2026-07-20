@@ -10,6 +10,61 @@ export function shouldCloseBrowserAfterCapture(reason) {
 	return reason !== "close";
 }
 
+/** Runs the one close owner's work under a deadline and always settles waiters. */
+export async function finalizeBrowserClose({
+	registry,
+	context,
+	claim,
+	finalize,
+	timeoutMs,
+	cancel = async () => {},
+	abortDrainTimeoutMs = 5_000,
+}) {
+	if (
+		!registry?.ownsClose(context, claim) ||
+		typeof finalize !== "function" ||
+		typeof cancel !== "function" ||
+		!Number.isFinite(timeoutMs) ||
+		timeoutMs <= 0 ||
+		!Number.isFinite(abortDrainTimeoutMs) ||
+		abortDrainTimeoutMs <= 0
+	) {
+		throw new Error("invalid browser close ownership or deadline");
+	}
+	const controller = new AbortController();
+	const finalization = Promise.resolve().then(() => finalize(controller.signal));
+	let timedOut = false;
+	let cancellation = Promise.resolve();
+	let timer;
+	const deadline = new Promise((_, reject) => {
+		timer = setTimeout(() => {
+			timedOut = true;
+			const error = new Error(`browser close finalization exceeded ${timeoutMs}ms`);
+			controller.abort(error);
+			cancellation = Promise.resolve()
+				.then(() => cancel(error))
+				.catch(() => {});
+			reject(error);
+		}, timeoutMs);
+	});
+	try {
+		return await Promise.race([finalization, deadline]);
+	} finally {
+		clearTimeout(timer);
+		if (timedOut) {
+			let drainTimer;
+			await Promise.race([
+				Promise.allSettled([finalization, cancellation]),
+				new Promise((resolve) => {
+					drainTimer = setTimeout(resolve, abortDrainTimeoutMs);
+				}),
+			]);
+			clearTimeout(drainTimer);
+		}
+		await registry.release(context, claim);
+	}
+}
+
 /** Entry-aware lifecycle for a reusable run browser and its authorization state. */
 export function createBrowserContextRegistry({
 	releaseResources = async () => {},
