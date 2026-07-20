@@ -832,7 +832,13 @@ export async function syncAgentRuntimeCR(agentId: string): Promise<void> {
 			modelSpec:
 				typeof config?.modelSpec === "string" ? config.modelSpec : null,
 			mcpServers,
-			useBrowserSidecar,
+			// The in-repo browser-use-agent image (services/browser-use-agent)
+			// is browser-less: it attaches to the chromium sidecar over CDP
+			// (localhost:9222). The legacy hand-built image bundled its own
+			// browser and ran sidecar-less; giving it the sidecar is harmless.
+			// This also matches the registry descriptor's
+			// `requiresBrowserSidecars: true` for browser-use-agent.
+			useBrowserSidecar: useBrowserSidecar || isBrowserUseAgent,
 		});
 		const pool = buildBrowserSandboxWarmPool({
 			agentSlug: runtimeRoute.slug,

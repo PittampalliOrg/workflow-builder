@@ -1,0 +1,36 @@
+[project]
+name = "browser-use-agent"
+version = "0.1.0"
+description = "Durable browser automation agent: dapr-agents DurableAgent (executor seam) driving browser-use, default model kimi-k3"
+requires-python = ">=3.12"
+dependencies = [
+    "dapr-agents==1.0.4",
+    "dapr>=1.18,<1.19",
+    "dapr-ext-workflow>=1.18,<1.19",
+    "browser-use==0.13.6",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+]
+
+[tool.uv]
+# browser-use pins anthropic==0.76.0 exactly; dapr-agents needs >=0.98,<1.0.
+# Neither Anthropic client is on this service's hot path (Kimi K3 rides
+# browser-use's OpenAI-compatible ChatOpenAI, and the dapr-agents executor
+# seam bypasses its chat clients), so force the newer SDK to co-install.
+override-dependencies = ["anthropic>=0.98.0,<1.0.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

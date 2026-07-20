@@ -1,0 +1,15 @@
+# Sandbox-pod image for the browser-use-agent runtime (per the runtime
+# registry, dispatched via SandboxWarmPool with chromium + playwright-mcp
+# sidecars). Identical to ./Dockerfile today — kept as a separate file so the
+# sandbox image can diverge (workspace tooling) without touching the plain
+# service image, matching the dapr-agent-py convention.
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-dev
+COPY src/ src/
+RUN mkdir -p /sandbox /mnt/session/outputs
+ENV AGENT_SERVICE_NAME=browser-use-agent
+EXPOSE 8002
+CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]
