@@ -514,11 +514,7 @@
 	const startTime = $derived(snapshot?.startedAt ?? null);
 	const endTime = $derived(snapshot?.completedAt ?? null);
 	const nodeStatuses = $derived(snapshot?.nodeStatuses ?? {});
-	const output = $derived(
-		(snapshot?.output as Record<string, unknown> | null) ??
-			(snapshot?.summaryOutput as Record<string, unknown> | null) ??
-			null
-	);
+	const output = $derived(snapshot?.output ?? snapshot?.summaryOutput ?? null);
 	const input = $derived((snapshot?.input as Record<string, unknown> | null) ?? null);
 	const errorMessage = $derived(snapshot?.error ?? null);
 	const instanceId = $derived(snapshot?.instanceId ?? null);
@@ -2639,10 +2635,19 @@
 			</RunConsole>
 		</TabsContent>
 
-		<!-- Tab: Outputs (generic workflow_artifacts) -->
+		<!-- Tab: workflow return plus generic workflow_artifacts -->
 		<TabsContent value="outputs" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
-				<ArtifactList artifacts={outputArtifacts} mode="all" {executionId} />
+				{#if output !== null}
+					<JsonViewer data={output} label="Workflow return" collapsed={false} />
+				{/if}
+				{#if outputArtifacts.length > 0}
+					<ArtifactList artifacts={outputArtifacts} mode="all" {executionId} />
+				{:else if output === null}
+					<p class="p-3 text-sm italic text-muted-foreground">
+						No workflow return or output artifacts are available for this execution.
+					</p>
+				{/if}
 			</div>
 		</TabsContent>
 
