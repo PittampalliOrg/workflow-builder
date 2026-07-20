@@ -278,6 +278,7 @@ from src.mcp_multimodal import (
     replace_multimodal_tool_text,
     serialize_mcp_tool_result,
 )
+from src.mcp_config_state import load_mcp_config_state, save_mcp_config_state
 
 # Concurrency plan P3: every log line carries the current session id so one
 # session's timeline is reconstructable across shared-pool replicas (pool pods
@@ -2660,9 +2661,11 @@ class OpenShellDurableAgent(DurableAgent):
         if store is None:
             return
         try:
-            store.save(
+            save_mcp_config_state(
+                store,
                 key=self._mcp_configs_state_key(instance_id),
-                value={"configs": mcp_configs, "allowedTools": mcp_allowed_tools},
+                configs=mcp_configs,
+                allowed_tools_by_server=mcp_allowed_tools,
                 ttl_in_seconds=24 * 3600,
             )
             self._mcp_configs_persisted.add(instance_id)
@@ -2680,7 +2683,10 @@ class OpenShellDurableAgent(DurableAgent):
         if store is None:
             return False
         try:
-            doc = store.load(key=self._mcp_configs_state_key(instance_id), default=None)
+            state = load_mcp_config_state(
+                store,
+                key=self._mcp_configs_state_key(instance_id),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[mcp] Failed to load persisted MCP configs for instance %s: %s",
@@ -2688,20 +2694,17 @@ class OpenShellDurableAgent(DurableAgent):
                 exc,
             )
             return False
-        if not isinstance(doc, dict):
+        if state is None:
             return False
-        configs = doc.get("configs")
-        if not isinstance(configs, dict) or not configs:
-            return False
-        self._mcp_configs_by_instance[instance_id] = configs
-        allowed = doc.get("allowedTools")
-        if isinstance(allowed, dict):
-            self._mcp_allowed_tools_by_instance[instance_id] = allowed
+        self._mcp_configs_by_instance[instance_id] = state.configs
+        self._mcp_allowed_tools_by_instance[instance_id] = (
+            state.allowed_tools_by_server
+        )
         self._mcp_configs_persisted.add(instance_id)
         logger.info(
             "[mcp] Hydrated %d MCP server config(s) for instance %s from state "
             "store (cross-replica)",
-            len(configs),
+            len(state.configs),
             instance_id,
         )
         return True
