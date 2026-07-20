@@ -611,9 +611,15 @@ def _stream_idle_timeout_seconds() -> float:
     return timeout
 
 
-_STREAM_DELTAS_ENABLED = os.environ.get(
-    "DAPR_AGENT_PY_STREAM_DELTAS", "true"
-).strip().lower() in ("1", "true", "yes", "on")
+def _stream_deltas_enabled() -> bool:
+    # Provider streaming stays enabled for long K3 requests. Publishing each
+    # partial chunk into session history is a separate, explicitly opt-in path.
+    return os.environ.get(
+        "DAPR_AGENT_PY_STREAM_DELTAS", "false"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
+_STREAM_DELTAS_ENABLED = _stream_deltas_enabled()
 _DELTA_COALESCE_MS = int(os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_MS", "80"))
 _DELTA_COALESCE_BYTES = int(
     os.environ.get("DAPR_AGENT_PY_DELTA_COALESCE_BYTES", "2048")
@@ -621,7 +627,7 @@ _DELTA_COALESCE_BYTES = int(
 
 
 class _KimiStreamDeltaEmitter:
-    """Publish bounded K3 deltas without duplicating the terminal message."""
+    """Optionally publish bounded K3 deltas without duplicating the terminal message."""
 
     def __init__(self) -> None:
         self._session_id: str | None = None
