@@ -2762,6 +2762,74 @@ def _bind_cli_transcript_pvc_owner(
         )
 
 
+def _pydantic_scratch_enabled(image: str) -> bool:
+    """Per-sandbox durable scratch for the pod-local pydantic-ai runtime.
+
+    When on, the pod's /sandbox workspace rides a small per-sandbox RWO PVC
+    instead of an emptyDir, so an evicted/rescheduled pod resumes with its
+    files (StatefulSet-like volume identity — the volumeClaimTemplates
+    pattern from upstream agent-sandbox docs, done via the platform's
+    direct-PVC+ownerRef lane; see docs/agent-sandbox-v0.5.0-upgrade-evaluation.md §6).
+    The PVC is ownerRef'd to the Sandbox CR so it GCs with the session.
+    """
+    if "pydantic-ai-agent-py" not in (image or ""):
+        return False
+    return os.environ.get("SANDBOX_PYDANTIC_SCRATCH_ENABLED", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _pydantic_scratch_claim_name(request: AgentWorkflowHostRequest) -> str:
+    return _safe_resource_name(f"pyd-scratch-{request.sessionId}", max_length=63)
+
+
+def _ensure_pydantic_scratch_pvc(
+    core: Any,
+    request: AgentWorkflowHostRequest,
+    class_config: ExecutionClassConfig,
+    *,
+    namespace: str,
+) -> str | None:
+    image = request.agentImage or class_config.agentHostImage
+    if not _pydantic_scratch_enabled(image):
+        return None
+    name = _pydantic_scratch_claim_name(request)
+    spec: dict[str, Any] = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {
+            "requests": {
+                "storage": os.environ.get("SANDBOX_PYDANTIC_SCRATCH_SIZE", "2Gi")
+            }
+        },
+    }
+    storage_class = os.environ.get("SANDBOX_PYDANTIC_SCRATCH_STORAGE_CLASS", "").strip()
+    if storage_class:
+        spec["storageClassName"] = storage_class
+    body = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "app": "pydantic-ai-scratch",
+                "workflow-builder.cnoe.io/session-id": _safe_name(
+                    request.sessionId, max_length=63
+                ),
+            },
+        },
+        "spec": spec,
+    }
+    try:
+        core.create_namespaced_persistent_volume_claim(namespace=namespace, body=body)
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    return name
+
+
 def _cli_shared_workspace_enabled(class_config: ExecutionClassConfig) -> bool:
     return bool(class_config.sharedWorkspaceStoreCsiDriver)
 
@@ -3443,6 +3511,22 @@ def build_agent_workflow_host_sandbox_manifest(
             volume
             for volume in pod_spec["volumes"]
             if volume.get("name") not in {"openshell-client-tls", "openshell-client-ca"}
+        ]
+    if _pydantic_scratch_enabled(image):
+        # Durable per-sandbox scratch: /sandbox rides a PVC (ensured by the
+        # create handler, ownerRef'd to the Sandbox CR) instead of an emptyDir,
+        # so a rescheduled pod resumes with its files. Pod-local semantics are
+        # unchanged — only the volume's lifetime moves from pod to sandbox.
+        pod_spec["volumes"] = [
+            {
+                "name": "sandbox",
+                "persistentVolumeClaim": {
+                    "claimName": _pydantic_scratch_claim_name(request)
+                },
+            }
+            if volume.get("name") == "sandbox"
+            else volume
+            for volume in pod_spec["volumes"]
         ]
     if _cli_transcript_enabled(class_config):
         # Per-session durable transcript subtree. The PVC is provisioned by the
@@ -5237,6 +5321,11 @@ def submit_agent_workflow_host(
         seed_workspace_pvc_name = _ensure_cli_seed_workspace_volume(
             core, body, class_config, namespace=namespace
         )
+        # Per-sandbox durable scratch PVC for the pod-local pydantic runtime
+        # (also before the Sandbox CR so the pod's mount never races the claim).
+        pydantic_scratch_pvc_name = _ensure_pydantic_scratch_pvc(
+            core, body, class_config, namespace=namespace
+        )
         created_sandbox: dict[str, Any] | None = None
         try:
             created_sandbox = custom.create_namespaced_custom_object(
@@ -5289,6 +5378,12 @@ def submit_agent_workflow_host(
                     seed_workspace_pvc_name = _ensure_cli_seed_workspace_volume(
                         core, body, class_config, namespace=namespace
                     )
+                if pydantic_scratch_pvc_name:
+                    # The old CR's foreground delete GC'd the owned scratch PVC;
+                    # re-ensure so the new run starts with a clean claim.
+                    pydantic_scratch_pvc_name = _ensure_pydantic_scratch_pvc(
+                        core, body, class_config, namespace=namespace
+                    )
                 created_sandbox = custom.create_namespaced_custom_object(
                     group="agents.x-k8s.io",
                     version="v1alpha1",
@@ -5333,6 +5428,17 @@ def submit_agent_workflow_host(
                 custom,
                 namespace=namespace,
                 pvc_name=seed_workspace_pvc_name,
+                sandbox_name=sandbox_name,
+                sandbox=created_sandbox,
+            )
+        if pydantic_scratch_pvc_name:
+            # Same generic PVC-ownerRef patch: scratch lives exactly as long as
+            # the Sandbox CR (survives pod reschedule, GCs with the session).
+            _bind_cli_transcript_pvc_owner(
+                core,
+                custom,
+                namespace=namespace,
+                pvc_name=pydantic_scratch_pvc_name,
                 sandbox_name=sandbox_name,
                 sandbox=created_sandbox,
             )
