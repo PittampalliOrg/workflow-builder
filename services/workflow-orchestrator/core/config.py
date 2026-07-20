@@ -57,6 +57,7 @@ class OrchestratorConfig:
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     DAPR_AGENT_PY_JUICEFS_APP_ID: str = "dapr-agent-py-juicefs"
     ADK_AGENT_PY_APP_ID: str = "adk-agent-py"
+    PYDANTIC_AI_AGENT_PY_APP_ID: str = "pydantic-ai-agent-py"
     CLAUDE_AGENT_PY_APP_ID: str = "claude-agent-py"
     # interactive-cli family (cli-agent-py host service; per-session sandbox pods).
     # All three CLI runtimes share ONE host image/service — distinct config keys
@@ -113,6 +114,7 @@ class OrchestratorConfig:
                 "DAPR_AGENT_PY_TESTING_APP_ID",
                 "DAPR_AGENT_PY_JUICEFS_APP_ID",
                 "ADK_AGENT_PY_APP_ID",
+                "PYDANTIC_AI_AGENT_PY_APP_ID",
                 "CLAUDE_AGENT_PY_APP_ID",
                 "CLAUDE_CODE_CLI_APP_ID",
                 "CLAUDE_CODE_CLI_GLM_APP_ID",
@@ -187,6 +189,7 @@ class OrchestratorConfig:
                 "dapr-agent-py-juicefs",
             ),
             "ADK_AGENT_PY_APP_ID": ("ADK_AGENT_PY_APP_ID", "adk-agent-py"),
+            "PYDANTIC_AI_AGENT_PY_APP_ID": ("PYDANTIC_AI_AGENT_PY_APP_ID", "pydantic-ai-agent-py"),
             "CLAUDE_AGENT_PY_APP_ID": (
                 "CLAUDE_AGENT_PY_APP_ID",
                 "claude-agent-py",

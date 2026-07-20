@@ -220,6 +220,44 @@
       }
     },
     {
+      "id": "pydantic-ai-agent-py",
+      "_comment": "Pydantic AI 2.x + pydantic-ai-harness coding agent on the Diagrid python-ai durable pattern: EVERY LLM message is a call_llm activity and EVERY tool call its own execute_tool activity (when_all fan-out) — hence per-activity durability. Tools = harness FileSystem/Shell/RepoContext (+ MCP streamable_http from agentConfig.mcpServers) executing POD-LOCAL at /sandbox. Kimi-only v1 (kimi-k3 via pydantic-ai OpenAIChatModel). See services/pydantic-ai-agent-py/ + docs/pydantic-ai-agent.md.",
+      "appIdConfigKey": "PYDANTIC_AI_AGENT_PY_APP_ID",
+      "instancePrefix": "durable-pydantic",
+      "family": "durable-session",
+      "mainContainerName": "pydantic-ai-agent-py",
+      "imageEnvKey": "AGENT_RUNTIME_PYDANTIC_DEFAULT_IMAGE",
+      "agentMetadataFramework": "Pydantic AI",
+      "benchmarkEligible": false,
+      "capabilitiesVerified": false,
+      "capabilities": {
+        "durabilityGranularity": "per-activity",
+        "workspaceBackend": "pod-local",
+        "workflowDispatch": "auto-turn",
+        "retryMaxAttempts": 3,
+        "durableTurnTimer": false,
+        "supportsMcp": true,
+        "supportsSkills": false,
+        "supportsBuiltinOpenShellTools": false,
+        "supportsHooks": false,
+        "hookTiming": "batch",
+        "eventDrivenInvocation": false,
+        "portableHooks": false,
+        "hookBlockingGranularity": "none",
+        "supportsPermissionGating": false,
+        "supportsPlugins": false,
+        "supportsCompaction": false,
+        "incrementalEvents": true,
+        "ownsSandbox": true,
+        "requiresWarmPool": false,
+        "requiresBrowserSidecars": false,
+        "multiProvider": false,
+        "supportedProviders": [
+          "kimi"
+        ]
+      }
+    },
+    {
       "id": "claude-code-cli",
       "appIdConfigKey": "CLAUDE_CODE_CLI_APP_ID",
       "instancePrefix": "durable-claude-cli",

@@ -3194,6 +3194,10 @@ def build_agent_workflow_host_sandbox_manifest(
             env_from.append(
                 {"configMapRef": {"name": "claude-agent-py-config", "optional": True}}
             )
+        if "pydantic-ai-agent-py" in image:
+            env_from.append(
+                {"configMapRef": {"name": "pydantic-ai-agent-py-config", "optional": True}}
+            )
         env_from.extend(
             [
                 {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},

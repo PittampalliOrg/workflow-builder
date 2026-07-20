@@ -89,6 +89,17 @@ EXPECTED: dict[str, dict[str, object]] = {
         "supportsMcp": True,
         "capabilitiesVerified": False,
     },
+    "pydantic-ai-agent-py": {
+        "family": "durable-session",
+        "durabilityGranularity": "per-activity",
+        "workflowDispatch": "auto-turn",
+        "multiProvider": False,
+        "ownsSandbox": True,
+        "requiresWarmPool": False,
+        "requiresBrowserSidecars": False,
+        "supportsMcp": True,
+        "capabilitiesVerified": False,
+    },
     "claude-agent-py": {
         "family": "durable-session",
         "durabilityGranularity": "per-turn",
