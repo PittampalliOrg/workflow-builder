@@ -18,6 +18,7 @@ export type WizardRow = {
 export type GraderType =
 	| 'string_check'
 	| 'text_similarity'
+	| 'llm_judge'
 	| 'score_model'
 	| 'python'
 	| 'multi'

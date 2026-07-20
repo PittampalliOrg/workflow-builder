@@ -16,6 +16,8 @@
 	type GraderType =
 		| 'string_check'
 		| 'text_similarity'
+		| 'llm_judge'
+		| 'mlflow_judge'
 		| 'score_model'
 		| 'python'
 		| 'multi'
@@ -171,6 +173,9 @@
 				return 'String check';
 			case 'text_similarity':
 				return 'Text similarity';
+			case 'llm_judge':
+			case 'mlflow_judge':
+				return 'Kimi K3 judge';
 			case 'score_model':
 				return 'Model labeler';
 			case 'python':

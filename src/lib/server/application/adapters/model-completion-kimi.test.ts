@@ -7,6 +7,7 @@ import {
 	KimiK3ModelCompletionAdapter,
 	PREVIEW_RUNTIME_EGRESS_BASE_URL,
 } from "./model-completion-kimi";
+import { ApplicationEvaluationJudgeService } from "$lib/server/application/evaluation-judge";
 
 function successfulFetch(
 	calls: Array<{ input: RequestInfo | URL; init?: RequestInit }>,
@@ -21,6 +22,44 @@ function successfulFetch(
 }
 
 describe("KimiK3ModelCompletionAdapter", () => {
+	it("composes the evaluation judge through K3 with max reasoning", async () => {
+		const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+		const adapter = new KimiK3ModelCompletionAdapter({
+			previewDeployment: false,
+			environment: { KIMI_API_KEY: "physical-kimi-key" },
+			fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({ input, init });
+				return Response.json({
+					choices: [
+						{
+							message: {
+								content: JSON.stringify({
+									score: 1,
+									verdict: "GOOD",
+									rationale: "Correct",
+								}),
+							},
+						},
+					],
+				});
+			}) as typeof fetch,
+		});
+		const judge = new ApplicationEvaluationJudgeService(adapter, {
+			modelName: "kimi-k3",
+		});
+
+		await expect(judge.judge({ prompt: "Judge the output" })).resolves.toMatchObject({
+			model: "kimi-k3",
+			score: 1,
+		});
+		expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({
+			model: "kimi-k3",
+			reasoning_effort: "max",
+			max_completion_tokens: KIMI_K3_MAX_COMPLETION_TOKENS,
+			response_format: { type: "json_object" },
+		});
+	});
+
 	it("routes physical BFF completions directly to Kimi-for-Coding", async () => {
 		const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
 		const adapter = new KimiK3ModelCompletionAdapter({
@@ -28,7 +67,7 @@ describe("KimiK3ModelCompletionAdapter", () => {
 			environment: {
 				KIMI_API_KEY: "physical-kimi-key",
 					KIMI_BASE_URL: "https://wrong-kimi-endpoint.invalid/v1",
-				LLM_GATEWAY_OPENAI_BASE_URL: "http://mlflow-gateway.test/v1",
+				LLM_GATEWAY_OPENAI_BASE_URL: "http://legacy-gateway.test/v1",
 				AI_GATEWAY_API_KEY: "legacy-gateway-key",
 			},
 			fetch: successfulFetch(calls),

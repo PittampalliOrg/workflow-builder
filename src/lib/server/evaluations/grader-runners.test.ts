@@ -20,16 +20,24 @@ vi.mock("$lib/server/kube/client", () => ({
 
 import { runGraderAsync, validateGraderDefinition } from "./graders";
 
+const judge = {
+	isAvailable: () => true,
+	judge: vi.fn(async () => ({
+		model: "kimi-k3",
+		score: 0.8,
+		rationale: "Correct",
+		raw: { verdict: "GOOD" },
+	})),
+};
+
 describe("LLM judge runner", () => {
 	beforeEach(() => {
 		mocks.daprFetch.mockReset();
-		mocks.daprFetch.mockResolvedValue(
-			Response.json({ score: 0.8, rationale: "Correct", raw: { verdict: "GOOD" } }),
-		);
+		judge.judge.mockClear();
 	});
 
 	it.each(["llm_judge", "mlflow_judge"] as const)(
-		"dispatches %s through the provider-neutral orchestrator endpoint",
+		"dispatches %s through the injected application judge",
 		async (type) => {
 			const grader = validateGraderDefinition({
 				id: "judge-1",
@@ -43,30 +51,50 @@ describe("LLM judge runner", () => {
 			});
 
 			await expect(
-				runGraderAsync(grader, {
-					input: {},
-					expectedOutput: "expected",
-					generatedOutput: "actual",
-				}),
+				runGraderAsync(
+					grader,
+					{
+						input: {},
+						expectedOutput: "expected",
+						generatedOutput: "actual",
+					},
+					{ judge },
+				),
 			).resolves.toMatchObject({
 				type,
 				score: 0.8,
 				passed: true,
-				details: { model: "judge-default", rationale: "Correct" },
-			});
-
-			expect(mocks.daprFetch).toHaveBeenCalledTimes(1);
-			const [url, init] = mocks.daprFetch.mock.calls[0] as [string, RequestInit];
-			expect(url).toBe("http://workflow-orchestrator/api/v2/observability/judge");
-			const body = JSON.parse(String(init.body));
-			expect(body).toMatchObject({
-				model: "judge-default",
-				prompt: "Compare expected with actual",
-				metadata: {
-					eval_grader_type: "llm_judge",
-					legacy_grader_type: type === "mlflow_judge" ? "mlflow_judge" : null,
+				details: {
+					model: "kimi-k3",
+					rationale: "Correct",
+					evalGraderType: "llm_judge",
+					legacyGraderType: type === "mlflow_judge" ? "mlflow_judge" : null,
 				},
 			});
+
+			expect(judge.judge).toHaveBeenCalledWith({
+				name: "Correctness",
+				prompt: "Compare expected with actual",
+			});
+			expect(mocks.daprFetch).not.toHaveBeenCalled();
 		},
 	);
+
+	it("uses 0.5 as the canonical judge threshold when none is supplied", async () => {
+		const grader = validateGraderDefinition({
+			name: "Default threshold",
+			type: "llm_judge",
+			config: { prompt: "Judge {{actual}}" },
+		});
+
+		expect(grader.passThreshold).toBe(0.5);
+		expect(grader.config.passThreshold).toBe(0.5);
+		await expect(
+			runGraderAsync(
+				grader,
+				{ input: {}, expectedOutput: null, generatedOutput: "answer" },
+				{ judge },
+			),
+		).resolves.toMatchObject({ passed: true });
+	});
 });

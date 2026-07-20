@@ -24,6 +24,7 @@ import type {
 	EvaluationRunLaunchPort,
 	EvaluationSubjectTypeInput,
 } from "$lib/server/application/run-launch";
+import type { EvaluationJudge } from "$lib/server/application/evaluation-judge";
 
 export class LegacyBenchmarkRunLaunchAdapter implements BenchmarkRunLaunchPort {
 	listRuns(input: {
@@ -70,15 +71,20 @@ export class LegacyBenchmarkRunLaunchAdapter implements BenchmarkRunLaunchPort {
 }
 
 export class LegacyEvaluationRunLaunchAdapter implements EvaluationRunLaunchPort {
+	constructor(private readonly judge: EvaluationJudge) {}
+
 	listRuns(projectId: string, limit: number) {
 		return listEvaluationRuns(projectId, limit);
 	}
 
 	createRun(input: EvaluationRunLaunchCreateInput) {
-		return createEvaluationRun({
-			...input,
-			subjectType: input.subjectType as LegacyEvaluationSubjectTypeInput,
-		} satisfies CreateEvaluationRunInput) as Promise<CreatedRun>;
+		return createEvaluationRun(
+			{
+				...input,
+				subjectType: input.subjectType as LegacyEvaluationSubjectTypeInput,
+			} satisfies CreateEvaluationRunInput,
+			this.judge,
+		) as Promise<CreatedRun>;
 	}
 
 	startCoordinator(runId: string) {

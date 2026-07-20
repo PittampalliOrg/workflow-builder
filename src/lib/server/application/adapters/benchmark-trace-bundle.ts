@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "$lib/server/db";
 import {
 	benchmarkRunInstances,
@@ -7,10 +7,11 @@ import {
 	workflowExecutions,
 } from "$lib/server/db/schema";
 import {
-	getMultiTraceLlmSpans,
-	getMultiTraceSpans,
-	getMultiTraceToolSpans,
+	getMultiTraceSpanSummaries,
+	searchTraceLlmSpans,
+	searchTraceToolSpans,
 } from "$lib/server/otel/clickhouse";
+import type { BenchmarkTraceBundleQueryOptions } from "$lib/server/application/benchmark-route-operations";
 import type {
 	ObservabilityLlmMessage,
 	ObservabilityLlmSpan,
@@ -74,11 +75,19 @@ export type SwebenchTraceBundle = {
 		rawTraceSpanCount: number;
 	};
 	warnings: string[];
+	truncated: boolean;
+	nextCursor: string | null;
 };
 
-type LoadTraceBundleOptions = {
-	preferArtifact?: boolean;
-	repairArtifact?: boolean;
+const DEFAULT_TRACE_BUNDLE_LIMIT = 50;
+const MAX_TRACE_BUNDLE_LIMIT = 50;
+const MAX_TRACE_IDS = 32;
+
+type TraceBundlePage = {
+	limit: number;
+	offset: number;
+	startedAt?: string | Date | null;
+	completedAt?: string | Date | null;
 };
 
 type RawBuildInput = {
@@ -93,7 +102,69 @@ type RawBuildInput = {
 	artifactPath: string;
 	workflowExecutionId?: string | null;
 	workflowNodeSpans?: ObservabilityTraceSpan[];
+	workflowNodeSpansTruncated?: boolean;
+	page?: TraceBundlePage;
 };
+
+export function encodeTraceBundleCursor(offset: number): string {
+	return Buffer.from(JSON.stringify({ v: 1, offset: Math.max(0, Math.floor(offset)) }))
+		.toString("base64url");
+}
+
+export function decodeTraceBundleCursor(cursor: string | null | undefined): number {
+	if (!cursor?.trim()) return 0;
+	if (cursor.trim().length > 256) return 0;
+	try {
+		const parsed = JSON.parse(Buffer.from(cursor.trim(), "base64url").toString("utf8")) as {
+			v?: unknown;
+			offset?: unknown;
+		};
+		if (parsed.v === 1 && Number.isInteger(parsed.offset) && Number(parsed.offset) >= 0) {
+			return Math.min(100_000, Number(parsed.offset));
+		}
+	} catch {
+		// Invalid cursors restart at the first page and emit a warning below.
+	}
+	return 0;
+}
+
+function traceBundlePage(
+	options: BenchmarkTraceBundleQueryOptions | undefined,
+	defaults: { startedAt?: string | Date | null; completedAt?: string | Date | null },
+): TraceBundlePage {
+	const requestedLimit = Number(options?.limit);
+	const limit = Number.isFinite(requestedLimit)
+		? Math.min(MAX_TRACE_BUNDLE_LIMIT, Math.max(1, Math.floor(requestedLimit)))
+		: DEFAULT_TRACE_BUNDLE_LIMIT;
+	const defaultStart = validDate(defaults.startedAt);
+	const defaultEnd = validDate(defaults.completedAt);
+	const requestedStart = validDate(options?.timeWindow?.startedAt);
+	const requestedEnd = validDate(options?.timeWindow?.completedAt);
+	return {
+		limit,
+		offset: decodeTraceBundleCursor(options?.cursor),
+		startedAt: laterDate(defaultStart, requestedStart)?.toISOString(),
+		completedAt: earlierDate(defaultEnd, requestedEnd)?.toISOString(),
+	};
+}
+
+function validDate(value: string | Date | null | undefined): Date | null {
+	if (value == null) return null;
+	const date = value instanceof Date ? value : new Date(value);
+	return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function laterDate(left: Date | null, right: Date | null): Date | null {
+	if (!left) return right;
+	if (!right) return left;
+	return left.getTime() >= right.getTime() ? left : right;
+}
+
+function earlierDate(left: Date | null, right: Date | null): Date | null {
+	if (!left) return right;
+	if (!right) return left;
+	return left.getTime() <= right.getTime() ? left : right;
+}
 
 export function safeSwebenchTraceArtifactPath(instanceId: string): string {
 	const safe =
@@ -109,7 +180,7 @@ export async function loadSwebenchTraceBundle(params: {
 	runId: string;
 	instanceId: string;
 	projectId?: string | null;
-	options?: LoadTraceBundleOptions;
+	options?: BenchmarkTraceBundleQueryOptions;
 }): Promise<SwebenchTraceBundle | null> {
 	if (!db) return null;
 	const database = db;
@@ -125,6 +196,13 @@ export async function loadSwebenchTraceBundle(params: {
 			traceIds: benchmarkRunInstances.traceIds,
 			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
 			primaryTraceId: workflowExecutions.primaryTraceId,
+			instanceStartedAt: benchmarkRunInstances.startedAt,
+			inferenceCompletedAt: benchmarkRunInstances.inferenceCompletedAt,
+			instanceCreatedAt: benchmarkRunInstances.createdAt,
+			runStartedAt: benchmarkRuns.startedAt,
+			runCompletedAt: benchmarkRuns.completedAt,
+			executionStartedAt: workflowExecutions.startedAt,
+			executionCompletedAt: workflowExecutions.completedAt,
 		})
 		.from(benchmarkRunInstances)
 		.innerJoin(benchmarkRuns, eq(benchmarkRuns.id, benchmarkRunInstances.runId))
@@ -139,24 +217,68 @@ export async function loadSwebenchTraceBundle(params: {
 		.limit(1);
 	if (!row) return null;
 
+	const warnings: string[] = [];
+	const recordedTraceIds = Array.isArray(row.traceIds)
+		? row.traceIds.filter(
+				(value): value is string =>
+					typeof value === "string" && Boolean(value.trim()),
+			)
+		: [];
 	const auxiliaryTraceIds = normalizeTraceIds(row.traceIds);
+	const invalidTraceIdCount = recordedTraceIds.filter(
+		(traceId) => normalizeTraceBundleId(traceId) === null,
+	).length;
+	if (invalidTraceIdCount > 0) {
+		warnings.push(`${invalidTraceIdCount} invalid recorded trace id(s) were omitted`);
+	}
+	const normalizedPrimaryTraceId =
+		typeof row.primaryTraceId === "string"
+			? normalizeTraceBundleId(row.primaryTraceId)
+			: null;
+	if (
+		typeof row.primaryTraceId === "string" &&
+		row.primaryTraceId.trim() &&
+		!normalizedPrimaryTraceId
+	) {
+		warnings.push("The recorded primary trace id was invalid; using an auxiliary trace id");
+	}
 	const canonicalTraceId =
-		typeof row.primaryTraceId === "string" && row.primaryTraceId.trim()
-			? row.primaryTraceId.trim()
-			: auxiliaryTraceIds[0] ?? null;
-	const traceIds = canonicalTraceId
+		normalizedPrimaryTraceId ?? auxiliaryTraceIds[0] ?? null;
+	const allTraceIds = canonicalTraceId
 		? [canonicalTraceId, ...auxiliaryTraceIds.filter((id) => id !== canonicalTraceId)]
 		: auxiliaryTraceIds;
+	const traceIds = allTraceIds.slice(0, MAX_TRACE_IDS);
+	if (allTraceIds.length > traceIds.length) {
+		warnings.push(
+			`Trace id set was capped at ${MAX_TRACE_IDS}; ${allTraceIds.length - traceIds.length} ids were omitted`,
+		);
+	}
+	const page = traceBundlePage(params.options, {
+		startedAt:
+			row.executionStartedAt ?? row.instanceStartedAt ?? row.runStartedAt ?? row.instanceCreatedAt,
+		completedAt:
+			row.executionCompletedAt ?? row.inferenceCompletedAt ?? row.runCompletedAt,
+	});
+	if (params.options?.cursor?.trim() && page.offset === 0) {
+		warnings.push("Invalid trace cursor; restarted at the first page");
+	}
 	const artifactPath = safeSwebenchTraceArtifactPath(row.instanceId);
-	const workflowNodeSpans = row.workflowExecutionId
-		? await loadWorkflowNodeTraceSpans({
+	let workflowNodeBatch = { spans: [] as ObservabilityTraceSpan[], truncated: false };
+	if (row.workflowExecutionId) {
+		try {
+			workflowNodeBatch = await loadWorkflowNodeTraceSpans({
 				workflowExecutionId: row.workflowExecutionId,
 				runId: row.runId,
 				runInstanceId: row.runInstanceId,
 				instanceId: row.instanceId,
 				traceId: canonicalTraceId ?? traceIds[0] ?? null,
-			})
-		: [];
+				limit: page.limit,
+				offset: page.offset,
+			});
+		} catch (err) {
+			warnings.push(`Workflow node span query failed: ${errorMessage(err)}`);
+		}
+	}
 	const base: RawBuildInput = {
 		runId: row.runId,
 		runInstanceId: row.runInstanceId,
@@ -165,11 +287,11 @@ export async function loadSwebenchTraceBundle(params: {
 		canonicalTraceId,
 		artifactPath,
 		workflowExecutionId: row.workflowExecutionId,
-		workflowNodeSpans,
+		workflowNodeSpans: workflowNodeBatch.spans,
+		workflowNodeSpansTruncated: workflowNodeBatch.truncated,
+		page,
 	};
 
-	const warnings: string[] = [];
-	void params.options;
 	return buildSwebenchTraceBundle(base, warnings);
 }
 
@@ -179,8 +301,10 @@ async function loadWorkflowNodeTraceSpans(input: {
 	runInstanceId: string | null;
 	instanceId: string;
 	traceId: string | null;
-}): Promise<ObservabilityTraceSpan[]> {
-	if (!db) return [];
+	limit: number;
+	offset: number;
+}): Promise<{ spans: ObservabilityTraceSpan[]; truncated: boolean }> {
+	if (!db) return { spans: [], truncated: false };
 	const logs = await db
 		.select({
 			id: workflowExecutionLogs.id,
@@ -189,28 +313,37 @@ async function loadWorkflowNodeTraceSpans(input: {
 			nodeType: workflowExecutionLogs.nodeType,
 			activityName: workflowExecutionLogs.activityName,
 			status: workflowExecutionLogs.status,
-			input: workflowExecutionLogs.input,
-			output: workflowExecutionLogs.output,
-			error: workflowExecutionLogs.error,
+			checkoutCommand: sql<string | null>`case when ${workflowExecutionLogs.nodeId} = 'checkout_repo' then left(coalesce(${workflowExecutionLogs.input} #>> '{command}', ${workflowExecutionLogs.input} #>> '{body,command}', ${workflowExecutionLogs.input} #>> '{input,command}'), 2000) end`,
+			checkoutStderr: sql<string | null>`case when ${workflowExecutionLogs.nodeId} = 'checkout_repo' then left(coalesce(${workflowExecutionLogs.output} #>> '{result,stderr}', ${workflowExecutionLogs.output} #>> '{stderr}'), 2000) end`,
+			checkoutStdout: sql<string | null>`case when ${workflowExecutionLogs.nodeId} = 'checkout_repo' then left(coalesce(${workflowExecutionLogs.output} #>> '{result,stdout}', ${workflowExecutionLogs.output} #>> '{stdout}'), 2000) end`,
+			error: sql<string | null>`left(${workflowExecutionLogs.error}, 1000)`,
 			startedAt: workflowExecutionLogs.startedAt,
 			completedAt: workflowExecutionLogs.completedAt,
 			duration: workflowExecutionLogs.duration,
 		})
 		.from(workflowExecutionLogs)
 		.where(eq(workflowExecutionLogs.executionId, input.workflowExecutionId))
-		.orderBy(asc(workflowExecutionLogs.startedAt));
-	if (logs.length === 0) return [];
+		.orderBy(asc(workflowExecutionLogs.startedAt), asc(workflowExecutionLogs.id))
+		.limit(input.limit + 1)
+		.offset(input.offset);
+	if (logs.length === 0) return { spans: [], truncated: false };
 
 	const traceId =
-		normalizeBundleTraceId(input.traceId ?? "") ??
+		normalizeTraceBundleId(input.traceId ?? "") ??
 		`workflow-${safeSyntheticId(input.workflowExecutionId)}`;
-	return logs.map((log, index) => {
+	const truncated = logs.length > input.limit;
+	const spans = logs.slice(0, input.limit).map((log, index) => {
 		const duration = workflowLogDurationMs(log);
 		const checkout =
 			log.nodeId === "checkout_repo"
-				? checkoutAttributes(log.input ?? null, log.output)
+				? checkoutAttributes({
+						command: log.checkoutCommand,
+						stderr: log.checkoutStderr,
+						stdout: log.checkoutStdout,
+					})
 				: {};
-		const status = log.status === "error" ? "error" : "ok";
+		const status: ObservabilityTraceSpan["status"] =
+			log.status === "error" ? "error" : "ok";
 		const attributes: Record<string, unknown> = {
 			"gen_ai.operation.name": "workflow.node",
 			"workflow.execution.id": input.workflowExecutionId,
@@ -246,6 +379,7 @@ async function loadWorkflowNodeTraceSpans(input: {
 			depth: 0,
 		};
 	});
+	return { spans, truncated };
 }
 
 function mergeTraceSpans(
@@ -285,16 +419,18 @@ function workflowLogDurationMs(log: {
 	return 0;
 }
 
-function checkoutAttributes(input: unknown, output: unknown): Record<string, unknown> {
+function checkoutAttributes(input: {
+	command: string | null;
+	stderr: string | null;
+	stdout: string | null;
+}): Record<string, unknown> {
 	const attributes: Record<string, unknown> = {
 		"workspace.action": "checkout_repo",
 		"git.operation": "checkout",
 	};
-	const command = stringByPath(input, ["command", "body.command", "input.command"]);
-	const outputRecord = recordFromValue(output);
-	const result = outputRecord ? recordFromValue(outputRecord.result) ?? outputRecord : null;
-	const stderr = stringFrom(result?.stderr);
-	const stdout = stringFrom(result?.stdout);
+	const command = stringFrom(input.command);
+	const stderr = stringFrom(input.stderr);
+	const stdout = stringFrom(input.stdout);
 	const repoUrl =
 		extractGitRepoUrl(command) ??
 		extractGitRepoUrl(stderr) ??
@@ -303,25 +439,6 @@ function checkoutAttributes(input: unknown, output: unknown): Record<string, unk
 	if (stderr) attributes["git.stderr_excerpt"] = stderr.slice(0, 1000);
 	if (stdout) attributes["git.stdout_excerpt"] = stdout.slice(0, 1000);
 	return attributes;
-}
-
-function stringByPath(value: unknown, paths: string[]): string | null {
-	for (const path of paths) {
-		let node = value;
-		let found = true;
-		for (const part of path.split(".")) {
-			const record = recordFromValue(node);
-			if (!record || !(part in record)) {
-				found = false;
-				break;
-			}
-			node = record[part];
-		}
-		if (!found) continue;
-		const text = stringFrom(node);
-		if (text) return text;
-	}
-	return null;
 }
 
 function extractGitRepoUrl(value: string | null | undefined): string | null {
@@ -347,6 +464,10 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 	input: RawBuildInput,
 	warnings: string[] = [],
 ): Promise<SwebenchTraceBundle> {
+	const page = input.page ?? {
+		limit: DEFAULT_TRACE_BUNDLE_LIMIT,
+		offset: 0,
+	};
 	const mlflowTracesUrl = publicTraceUrl(
 		input.canonicalTraceId ?? input.traceIds[0],
 	);
@@ -363,20 +484,66 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 			warnings,
 			derivedLlmSpanCount: 0,
 			derivedToolSpanCount: 0,
+			truncated: Boolean(input.workflowNodeSpansTruncated),
+			nextCursor: input.workflowNodeSpansTruncated
+				? encodeTraceBundleCursor(page.offset + page.limit)
+				: null,
 		});
 	}
+
+	const queryWindow = {
+		startedAt: page.startedAt,
+		completedAt: page.completedAt,
+		offset: page.offset,
+	};
+	const workflowExecutionId = input.workflowExecutionId?.trim() ?? "";
+	if (!workflowExecutionId) {
+		warnings.push("Derived LLM and tool evidence is unavailable because the workflow execution id is missing");
+	}
+	const [rawResult, llmResult, toolResult] = await Promise.allSettled([
+		getMultiTraceSpanSummaries(input.traceIds, {
+			...queryWindow,
+			limit: page.limit,
+		}),
+		workflowExecutionId
+			? searchTraceLlmSpans(input.traceIds, {
+					...queryWindow,
+					workflowExecutionId,
+					limit: page.limit + 1,
+				})
+			: Promise.resolve([]),
+		workflowExecutionId
+			? searchTraceToolSpans(input.traceIds, {
+					...queryWindow,
+					workflowExecutionId,
+					limit: page.limit + 1,
+				})
+			: Promise.resolve([]),
+	]);
 
 	let traceSpans: ObservabilityTraceSpan[] = [];
 	let llmSpans: ObservabilityLlmSpan[] = [];
 	let toolSpans: ObservabilityToolSpan[] = [];
-	try {
-		[llmSpans, toolSpans, traceSpans] = await Promise.all([
-			getMultiTraceLlmSpans(input.traceIds),
-			getMultiTraceToolSpans(input.traceIds),
-			getMultiTraceSpans(input.traceIds),
-		]);
-	} catch (err) {
-		warnings.push(`ClickHouse trace query failed: ${errorMessage(err)}`);
+	let rawTruncated = false;
+	let llmTruncated = false;
+	let toolTruncated = false;
+	if (rawResult.status === "fulfilled") {
+		traceSpans = rawResult.value.spans;
+		rawTruncated = rawResult.value.truncated;
+	} else {
+		warnings.push(`Raw ClickHouse span query failed: ${errorMessage(rawResult.reason)}`);
+	}
+	if (llmResult.status === "fulfilled") {
+		llmTruncated = llmResult.value.length > page.limit;
+		llmSpans = llmResult.value.slice(0, page.limit);
+	} else {
+		warnings.push(`ClickHouse LLM span query failed: ${errorMessage(llmResult.reason)}`);
+	}
+	if (toolResult.status === "fulfilled") {
+		toolTruncated = toolResult.value.length > page.limit;
+		toolSpans = toolResult.value.slice(0, page.limit);
+	} else {
+		warnings.push(`ClickHouse tool span query failed: ${errorMessage(toolResult.reason)}`);
 	}
 
 	llmSpans.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -412,6 +579,14 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 		traceSpans = mergeTraceSpans(traceSpans, input.workflowNodeSpans);
 		if (backend === "none") backend = "workflow_logs";
 	}
+	const truncated =
+		rawTruncated ||
+		llmTruncated ||
+		toolTruncated ||
+		Boolean(input.workflowNodeSpansTruncated);
+	if (truncated) {
+		warnings.push(`Trace bundle page is capped at ${page.limit} rows per evidence stream`);
+	}
 
 	return createBundle(input, {
 		backend,
@@ -422,6 +597,8 @@ export async function buildSwebenchTraceBundleFromClickHouse(
 		warnings,
 		derivedLlmSpanCount,
 		derivedToolSpanCount,
+		truncated,
+		nextCursor: truncated ? encodeTraceBundleCursor(page.offset + page.limit) : null,
 	});
 }
 
@@ -522,6 +699,8 @@ function createBundle(
 		warnings: string[];
 		derivedLlmSpanCount: number;
 		derivedToolSpanCount: number;
+		truncated: boolean;
+		nextCursor: string | null;
 	},
 ): SwebenchTraceBundle {
 	const errorSpanCount = values.traceSpans.filter((span) => span.status === "error").length;
@@ -576,6 +755,8 @@ function createBundle(
 			rawTraceSpanCount: values.traceSpans.length,
 		},
 		warnings: values.warnings,
+		truncated: values.truncated,
+		nextCursor: values.nextCursor,
 	};
 }
 
@@ -665,18 +846,18 @@ function defaultRequiredContext(
 	};
 }
 
-function normalizeBundleTraceId(value: string): string | null {
+export function normalizeTraceBundleId(value: string): string | null {
 	const trimmed = value.trim().toLowerCase();
 	if (!trimmed) return null;
 	const traceparent = trimmed.match(/^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$/);
 	if (traceparent && !/^0+$/.test(traceparent[1])) return traceparent[1];
 	const normalized = trimmed.startsWith("tr-") ? trimmed.slice(3) : trimmed;
 	if (/^[a-f0-9]{32}$/.test(normalized) && !/^0+$/.test(normalized)) return normalized;
-	return value.trim() || null;
+	return null;
 }
 
 function publicTraceUrl(traceId: string | null | undefined): string | null {
-	const normalized = traceId ? normalizeBundleTraceId(traceId) : null;
+	const normalized = traceId ? normalizeTraceBundleId(traceId) : null;
 	return normalized ? `/observability/${encodeURIComponent(normalized)}` : null;
 }
 
@@ -856,8 +1037,9 @@ function normalizeTraceIds(value: unknown): string[] {
 	return Array.from(
 		new Set(
 			value
-				.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-				.map((item) => item.trim()),
+				.filter((item): item is string => typeof item === "string")
+				.map(normalizeTraceBundleId)
+				.filter((item): item is string => item !== null),
 		),
 	);
 }

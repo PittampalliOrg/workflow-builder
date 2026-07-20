@@ -72,13 +72,26 @@ export function validateGraderDefinition(
 			? raw.name.trim()
 			: defaultGraderName(type, index);
 	const config = validateGraderConfig(type, raw.config);
+	const judgeThreshold =
+		type === "llm_judge" || type === "mlflow_judge"
+			? clampNumber(config.passThreshold, 0, 1, 0.5)
+			: 1;
+	const passThreshold = clampNumber(
+		raw.passThreshold,
+		0,
+		1,
+		judgeThreshold,
+	);
+	if (type === "llm_judge" || type === "mlflow_judge") {
+		config.passThreshold = passThreshold;
+	}
 	return {
 		id: typeof raw.id === "string" ? raw.id : undefined,
 		name,
 		type,
 		config,
 		weight: clampNumber(raw.weight, 1, 100, 1),
-		passThreshold: clampNumber(raw.passThreshold, 0, 1, 1),
+		passThreshold,
 		enabled: raw.enabled !== false,
 	};
 }
@@ -231,6 +244,7 @@ export function runGrader(
 export async function runGraderAsync(
 	grader: GraderDefinition,
 	context: GraderContext,
+	dependencies: import("./grader-runners").AsyncGraderDependencies = {},
 ): Promise<GraderResult> {
 	const needsAsync =
 		grader.type === "score_model" ||
@@ -242,7 +256,7 @@ export async function runGraderAsync(
 			(grader.config.url as string).trim().length > 0);
 	if (!needsAsync) return runGrader(grader, context);
 	const runners = await import("./grader-runners");
-	const result = await runners.runGraderAsync(grader, context);
+	const result = await runners.runGraderAsync(grader, context, dependencies);
 	if (result.skipped && result.error === "async runner declined; use sync runGrader") {
 		return runGrader(grader, context);
 	}

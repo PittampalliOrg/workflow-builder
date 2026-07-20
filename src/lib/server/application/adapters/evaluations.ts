@@ -33,6 +33,7 @@ import type {
 	EvaluationDatasetRepository,
 } from "$lib/server/application/evaluation-datasets";
 import type { ModelCompletionPort } from "$lib/server/application/ports";
+import type { EvaluationJudge } from "$lib/server/application/evaluation-judge";
 import type {
 	EvaluationDefinitionCreateInput,
 	EvaluationDefinitionRepository,
@@ -136,6 +137,7 @@ export class LegacyEvaluationRunItemRepository
 			ModelCompletionPort,
 			"isAvailable" | "complete"
 		>,
+		private readonly judge: EvaluationJudge,
 	) {}
 
 	getRun(projectId: string, runId: string): Promise<unknown | null> {
@@ -151,7 +153,7 @@ export class LegacyEvaluationRunItemRepository
 	}
 
 	updateOutput(input: EvaluationRunItemOutputInput): Promise<unknown | null> {
-		return updateEvaluationRunItemOutput(input);
+		return updateEvaluationRunItemOutput(input, this.judge);
 	}
 
 	markStatus(input: {
@@ -167,7 +169,7 @@ export class LegacyEvaluationRunItemRepository
 		runId: string;
 		itemId: string;
 	}): Promise<unknown | null> {
-		return syncEvaluationRunItemFromExecution(input);
+		return syncEvaluationRunItemFromExecution(input, this.judge);
 	}
 
 	recordGraderResults(input: {
@@ -192,6 +194,8 @@ export class LegacyEvaluationRunItemRepository
 export class LegacyEvaluationRunRepository
 	implements EvaluationRunRepository
 {
+	constructor(private readonly judge: EvaluationJudge) {}
+
 	getInternalRun(
 		runId: string,
 		options?: { itemMode?: "summary" | "full" },
@@ -224,7 +228,7 @@ export class LegacyEvaluationRunRepository
 	}
 
 	gradeRun(projectId: string, runId: string): Promise<unknown> {
-		return gradeEvaluationRun(projectId, runId);
+		return gradeEvaluationRun(projectId, runId, this.judge);
 	}
 
 	buildPredictionsJsonl(projectId: string, runId: string): Promise<string> {

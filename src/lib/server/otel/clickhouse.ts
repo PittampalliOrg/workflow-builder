@@ -86,6 +86,11 @@ export function isClickHouseConfigured(): boolean {
 const CLICKHOUSE_TIMEOUT_MS = Number(process.env.CLICKHOUSE_TIMEOUT_MS) || 30_000;
 const TRACE_SPAN_SUMMARY_TIMEOUT_MS = Number(process.env.TRACE_SPAN_SUMMARY_TIMEOUT_MS) || 20_000;
 const TRACE_SPAN_SUMMARY_LIMIT = Number(process.env.TRACE_SPAN_SUMMARY_LIMIT) || 20_000;
+const TRACE_SUMMARY_ATTRIBUTE_MAX_BYTES = 2_048;
+const TRACE_EVIDENCE_PAYLOAD_MAX_BYTES = Math.min(
+	1_048_576,
+	Math.max(1024, Number(process.env.TRACE_EVIDENCE_PAYLOAD_MAX_BYTES) || 32_768)
+);
 
 export async function queryClickHouse(
 	sql: string,
@@ -324,7 +329,25 @@ const COMPACT_SPAN_ATTRIBUTE_KEYS = [
 	'error',
 	'error.type',
 	'exception.type',
-	'exception.message'
+	'exception.message',
+	'workflow.status',
+	'status',
+	'agent.id',
+	'agent.version',
+	'agent.slug',
+	'agent.app_id',
+	'gen_ai.usage.input_tokens',
+	'gen_ai.usage.output_tokens',
+	'gen_ai.usage.total_tokens',
+	'gen_ai.usage.cache_read_input_tokens',
+	'gen_ai.usage.cache_creation_input_tokens',
+	'gen_ai.usage.reasoning_tokens',
+	'llm.token_count.prompt',
+	'llm.token_count.completion',
+	'llm.token_count.total',
+	'llm.token_count.cache_read',
+	'llm.token_count.cache_creation',
+	'llm.token_count.reasoning'
 ] as const;
 
 const COMPACT_RESOURCE_ATTRIBUTE_KEYS = [
@@ -340,7 +363,12 @@ function compactAttributeSelect(
 	prefix: string,
 	keys: readonly string[]
 ): string {
-	return keys.map((key, index) => `${column}['${key}'] AS ${prefix}${index}`).join(',\n\t\t\t');
+	return keys
+		.map(
+			(key, index) =>
+				`left(${column}['${key}'], ${TRACE_SUMMARY_ATTRIBUTE_MAX_BYTES}) AS ${prefix}${index}`
+		)
+		.join(',\n\t\t\t');
 }
 
 function mapCompactAttributes(
@@ -546,7 +574,7 @@ async function queryTraceSpans(whereClause: string): Promise<ObservabilityTraceS
 			ServiceName,
 			Duration/1000000 AS DurationMs,
 			StatusCode,
-			StatusMessage,
+			left(StatusMessage, 4096) AS StatusMessage,
 			Timestamp,
 			SpanAttributes,
 			ResourceAttributes
@@ -602,7 +630,7 @@ async function queryTraceSpanSummaries(
 			ServiceName,
 			Duration/1000000 AS DurationMs,
 			StatusCode,
-			StatusMessage,
+			left(StatusMessage, 4096) AS StatusMessage,
 			Timestamp,
 			${compactAttributeSelect('SpanAttributes', 'SpanAttr', COMPACT_SPAN_ATTRIBUTE_KEYS)},
 			${compactAttributeSelect('ResourceAttributes', 'ResourceAttr', COMPACT_RESOURCE_ATTRIBUTE_KEYS)},
@@ -968,9 +996,9 @@ export async function searchTraceLlmSpans(
 			AgentRunId,
 			ModelName,
 			Provider,
-			InputMessages,
-			OutputMessages,
-			InvocationParameters,
+			if(length(llm.InputMessages) <= ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}, llm.InputMessages, '[]') AS InputMessages,
+			if(length(llm.OutputMessages) <= ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}, llm.OutputMessages, '[]') AS OutputMessages,
+			if(length(llm.InvocationParameters) <= ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}, llm.InvocationParameters, '{"_trace_payload_truncated":true}') AS InvocationParameters,
 			FinishReason,
 			PromptTokens,
 			CompletionTokens,
@@ -979,10 +1007,10 @@ export async function searchTraceLlmSpans(
 			CacheCreationInputTokens,
 			ReasoningTokens,
 			StatusCode,
-			InputMessagesTruncated,
-			OutputMessagesTruncated,
-			InvocationParametersTruncated
-		FROM ${CLICKHOUSE_OBS_DB}.llm_spans
+			toUInt8(llm.InputMessagesTruncated = 1 OR length(llm.InputMessages) > ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}) AS InputMessagesTruncated,
+			toUInt8(llm.OutputMessagesTruncated = 1 OR length(llm.OutputMessages) > ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}) AS OutputMessagesTruncated,
+			toUInt8(llm.InvocationParametersTruncated = 1 OR length(llm.InvocationParameters) > ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}) AS InvocationParametersTruncated
+		FROM ${CLICKHOUSE_OBS_DB}.llm_spans AS llm
 		WHERE ${clauses.join(' AND ')}
 		${serviceNameClause(opts.serviceNames)}
 		${traceScope}
@@ -1023,12 +1051,12 @@ export async function searchTraceToolSpans(
 			WorkflowExecutionId,
 			AgentRunId,
 			ToolName,
-			ToolArguments,
-			ToolResult,
+			if(length(tool.ToolArguments) <= ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}, tool.ToolArguments, '{"_trace_payload_truncated":true}') AS ToolArguments,
+			if(length(tool.ToolResult) <= ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}, tool.ToolResult, '{"_trace_payload_truncated":true}') AS ToolResult,
 			StatusCode,
-			ToolArgumentsTruncated,
-			ToolResultTruncated
-		FROM ${CLICKHOUSE_OBS_DB}.tool_spans
+			toUInt8(tool.ToolArgumentsTruncated = 1 OR length(tool.ToolArguments) > ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}) AS ToolArgumentsTruncated,
+			toUInt8(tool.ToolResultTruncated = 1 OR length(tool.ToolResult) > ${TRACE_EVIDENCE_PAYLOAD_MAX_BYTES}) AS ToolResultTruncated
+		FROM ${CLICKHOUSE_OBS_DB}.tool_spans AS tool
 		WHERE TraceId IN (${inClause})
 		  AND WorkflowExecutionId = '${escapeClickHouseString(workflowExecutionId)}'
 		  AND ToolName != ''

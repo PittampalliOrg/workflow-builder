@@ -52,7 +52,6 @@ const ADAPTER_IMPORT_ALLOWLIST = [
 	"^src/lib/server/lifecycle/pause\\.ts$",
 	"^src/lib/server/lifecycle/resolvers\\.ts$",
 	"^src/lib/server/observability/investigation\\.ts$",
-	"^src/lib/server/observability/mlflow-lifecycle\\.ts$",
 	"^src/lib/server/openshell-sessions\\.ts$",
 	"^src/lib/server/skill-ingest\\.ts$",
 	"^src/lib/server/startup\\.ts$",

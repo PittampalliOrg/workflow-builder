@@ -5,18 +5,21 @@ import type {
 } from "$lib/types/observability";
 
 vi.mock("$lib/server/otel/clickhouse", () => ({
-	getMultiTraceLlmSpans: vi.fn(),
-	getMultiTraceToolSpans: vi.fn(),
-	getMultiTraceSpans: vi.fn(),
+	getMultiTraceSpanSummaries: vi.fn(),
+	searchTraceLlmSpans: vi.fn(),
+	searchTraceToolSpans: vi.fn(),
 }));
 import {
-	getMultiTraceLlmSpans,
-	getMultiTraceSpans,
-	getMultiTraceToolSpans,
+	getMultiTraceSpanSummaries,
+	searchTraceLlmSpans,
+	searchTraceToolSpans,
 } from "$lib/server/otel/clickhouse";
 import {
 	buildSwebenchTraceBundle,
 	buildSwebenchTraceBundleFromClickHouse,
+	decodeTraceBundleCursor,
+	encodeTraceBundleCursor,
+	normalizeTraceBundleId,
 	normalizeRawTraceSpans,
 	safeSwebenchTraceArtifactPath,
 } from "./trace-bundle";
@@ -49,6 +52,25 @@ describe("safeSwebenchTraceArtifactPath", () => {
 		expect(safeSwebenchTraceArtifactPath("../weird/id:value ")).toBe(
 			"traces/weird_id_value/trace-bundle.json",
 		);
+	});
+});
+
+describe("trace bundle identity and pagination", () => {
+	it("normalizes historical MLflow-prefixed and traceparent ids", () => {
+		expect(normalizeTraceBundleId("tr-0123456789abcdef0123456789abcdef")).toBe(
+			"0123456789abcdef0123456789abcdef",
+		);
+		expect(
+			normalizeTraceBundleId(
+				"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+			),
+		).toBe("0123456789abcdef0123456789abcdef");
+		expect(normalizeTraceBundleId("not-a-trace-id")).toBeNull();
+	});
+
+	it("round-trips opaque cursors and rejects malformed values", () => {
+		expect(decodeTraceBundleCursor(encodeTraceBundleCursor(50))).toBe(50);
+		expect(decodeTraceBundleCursor("not-base64-json")).toBe(0);
 	});
 });
 
@@ -156,9 +178,9 @@ describe("workflow log trace bundle fallback", () => {
 
 describe("buildSwebenchTraceBundleFromClickHouse", () => {
 	beforeEach(() => {
-		vi.mocked(getMultiTraceLlmSpans).mockReset();
-		vi.mocked(getMultiTraceToolSpans).mockReset();
-		vi.mocked(getMultiTraceSpans).mockReset();
+		vi.mocked(searchTraceLlmSpans).mockReset();
+		vi.mocked(searchTraceToolSpans).mockReset();
+		vi.mocked(getMultiTraceSpanSummaries).mockReset();
 	});
 
 	it("uses derived spans when obs tables are populated", async () => {
@@ -188,17 +210,19 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
-			baseSpan({
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({
 				spanId: "llm-derived",
 				attributes: {
 					"gen_ai.usage.cache_read_input_tokens": 42,
 					"gen_ai.usage.reasoning_tokens": 9,
 				},
-			}),
-		]);
+			})],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -209,6 +233,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_derived");
@@ -247,9 +272,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [
 			baseSpan({
 				spanId: "llm-derived",
 				attributes: { "mlflow.spanType": "CHAT_MODEL" },
@@ -264,7 +290,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"output.value": "{\"output\":\"file.py | 1 +\"}",
 				},
 			}),
-		]);
+			],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -275,6 +304,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_raw");
@@ -311,9 +341,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [
 			baseSpan({
 				traceId: "primary123",
 				spanId: "root",
@@ -345,7 +376,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"mlflow.spanType": "CHAT_MODEL",
 				},
 			}),
-		]);
+			],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -356,6 +390,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: null,
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.requiredContext.rootPresent).toBe(true);
@@ -370,10 +405,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 	});
 
 	it("falls back to raw OTel normalization when derived tables are empty", async () => {
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
-			baseSpan({
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({
 				spanId: "llm-raw",
 				attributes: {
 					"openinference.span.kind": "LLM",
@@ -381,8 +416,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"input.value": "prompt",
 					"output.value": "answer",
 				},
-			}),
-		]);
+			})],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -393,11 +430,42 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: null,
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_raw");
 		expect(bundle.llmSpans).toHaveLength(1);
 		expect(bundle.summary.traceSpanCount).toBe(1);
 		expect(bundle.warnings[0]).toContain("derived obs.llm_spans");
+	});
+
+	it("returns a bounded next page and isolates a failed evidence source", async () => {
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({ spanId: "raw-1" })],
+			truncated: true,
+			limit: 1,
+		});
+		vi.mocked(searchTraceLlmSpans).mockRejectedValue(new Error("llm view unavailable"));
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+
+		const bundle = await buildSwebenchTraceBundleFromClickHouse({
+			runId: "run_1",
+			runInstanceId: "ri_1",
+			instanceId: "django__django-1",
+			traceIds: ["abc123"],
+			canonicalTraceId: "abc123",
+			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
+			page: { limit: 1, offset: 50 },
+		});
+
+		expect(bundle.traceSpans).toHaveLength(1);
+		expect(bundle.truncated).toBe(true);
+		expect(decodeTraceBundleCursor(bundle.nextCursor)).toBe(51);
+		expect(bundle.warnings).toContain("ClickHouse LLM span query failed: llm view unavailable");
+		expect(getMultiTraceSpanSummaries).toHaveBeenCalledWith(
+			["abc123"],
+			expect.objectContaining({ limit: 1, offset: 50 }),
+		);
 	});
 });

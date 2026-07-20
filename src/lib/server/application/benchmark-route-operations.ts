@@ -39,6 +39,15 @@ export type BenchmarkRunCreateResult =
 	| { status: "ok"; run: Record<string, unknown> }
 	| { status: "validation_error"; message: string };
 
+export type BenchmarkTraceBundleQueryOptions = {
+	limit?: number;
+	cursor?: string | null;
+	timeWindow?: {
+		startedAt?: string | null;
+		completedAt?: string | null;
+	};
+};
+
 export type BenchmarkRouteOperationsPort = {
 	listSuites(projectId?: string | null): Promise<unknown[]>;
 	createRun(input: BenchmarkRunCreateInput): Promise<BenchmarkRunCreateResult>;
@@ -59,7 +68,7 @@ export type BenchmarkRouteOperationsPort = {
 		runId: string;
 		instanceId: string;
 		projectId: string;
-		options?: Record<string, unknown>;
+		options?: BenchmarkTraceBundleQueryOptions;
 	}): Promise<unknown | null>;
 	applyPreflight(input: {
 		runId: string;

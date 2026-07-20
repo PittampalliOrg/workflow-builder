@@ -86,4 +86,20 @@ describe("evaluation graders", () => {
 			});
 		}
 	});
+
+	it("keeps one canonical judge threshold across the definition and config", () => {
+		const grader = validateGraderDefinition({
+			name: "Correctness judge",
+			type: "llm_judge",
+			passThreshold: 0.7,
+			config: {
+				model: "kimi-k3",
+				prompt: "Judge {{actual}}",
+				passThreshold: 0.2,
+			},
+		});
+
+		expect(grader.passThreshold).toBe(0.7);
+		expect(grader.config.passThreshold).toBe(0.7);
+	});
 });

@@ -9,6 +9,7 @@
 		Activity,
 		Bot,
 		Check,
+		ChevronDown,
 		Coins,
 		Copy,
 		ExternalLink,
@@ -129,6 +130,8 @@
 			source: string;
 		};
 		warnings?: string[];
+		truncated?: boolean;
+		nextCursor?: string | null;
 	};
 
 	type TabValue = 'overview' | 'patch' | 'scoring' | 'trace' | 'harness' | 'logs';
@@ -142,7 +145,9 @@
 	let copied = $state<string | null>(null);
 	let spans = $state<SpansPayload | null>(null);
 	let spansLoading = $state(false);
+	let spansLoadingMore = $state(false);
 	let spansError = $state<string | null>(null);
+	let spansMoreError = $state<string | null>(null);
 	let terminating = $state(false);
 
 	const canTerminate = $derived(
@@ -263,6 +268,7 @@
 		detail = null;
 		spans = null;
 		spansError = null;
+		spansMoreError = null;
 		try {
 			const res = await fetch(
 				`/api/benchmarks/runs/${encodeURIComponent(rid)}/instances/${encodeURIComponent(iid)}`
@@ -292,6 +298,58 @@
 		} finally {
 			spansLoading = false;
 		}
+	}
+
+	async function loadMoreSpans(rid: string, iid: string) {
+		const cursor = spans?.nextCursor;
+		if (!cursor || spansLoadingMore) return;
+		spansLoadingMore = true;
+		spansMoreError = null;
+		try {
+			const query = new URLSearchParams({ cursor });
+			const res = await fetch(
+				`/api/benchmarks/runs/${encodeURIComponent(rid)}/instances/${encodeURIComponent(iid)}/spans?${query}`
+			);
+			if (!res.ok) throw new Error(`Failed to load more spans (${res.status})`);
+			const next = (await res.json()) as SpansPayload;
+			spans = spans ? mergeSpansPayload(spans, next) : next;
+		} catch (err) {
+			spansMoreError = err instanceof Error ? err.message : String(err);
+		} finally {
+			spansLoadingMore = false;
+		}
+	}
+
+	function mergeSpansPayload(current: SpansPayload, next: SpansPayload): SpansPayload {
+		const traceSpans = dedupeBySpanKey([
+			...(current.traceSpans ?? []),
+			...(next.traceSpans ?? [])
+		]);
+		const llmSpans = dedupeBySpanKey([...current.llmSpans, ...next.llmSpans]);
+		const toolSpans = dedupeBySpanKey([...current.toolSpans, ...next.toolSpans]);
+		return {
+			...current,
+			...next,
+			traceIds: [...new Set([...current.traceIds, ...next.traceIds])],
+			traceSpans,
+			llmSpans,
+			toolSpans,
+			warnings: [...new Set([...(current.warnings ?? []), ...(next.warnings ?? [])])],
+			summary: next.summary
+				? {
+						...next.summary,
+						traceCount: new Set([...current.traceIds, ...next.traceIds]).size,
+						traceSpanCount: traceSpans.length,
+						llmSpanCount: llmSpans.length,
+						toolSpanCount: toolSpans.length,
+						errorSpanCount: traceSpans.filter((span) => span.status === 'error').length
+					}
+				: current.summary
+		};
+	}
+
+	function dedupeBySpanKey<T extends { traceId: string; spanId: string }>(items: T[]): T[] {
+		return [...new Map(items.map((item) => [`${item.traceId}:${item.spanId}`, item])).values()];
 	}
 
 	async function terminateInstance() {
@@ -966,6 +1024,28 @@
 										usage: detail.runInstance.usage
 									}}
 								/>
+								{#if spans.nextCursor}
+									<div class="flex justify-center pt-1">
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={spansLoadingMore}
+											onclick={() => loadMoreSpans(runId, instanceId)}
+										>
+											{#if spansLoadingMore}
+												<Loader2 class="h-3.5 w-3.5 animate-spin" />
+											{:else}
+												<ChevronDown class="h-3.5 w-3.5" />
+											{/if}
+											Load more
+										</Button>
+									</div>
+								{/if}
+								{#if spansMoreError}
+									<Alert variant="destructive">
+										<AlertDescription>{spansMoreError}</AlertDescription>
+									</Alert>
+								{/if}
 							{/if}
 						</TabsContent>
 
