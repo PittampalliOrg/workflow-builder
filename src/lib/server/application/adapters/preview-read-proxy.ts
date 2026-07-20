@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import type {
   PreviewArtifactSummary,
@@ -25,12 +26,14 @@ import type {
  * (verified live on dev). A CLAIMED warm-pool member keeps its POOL-named
  * namespace/services (the alias is display-only), so the backing id is
  * `pool ?? name` — the same keying rule as the E1 feed streams. When the
- * composed service name would exceed the 63-char DNS label limit (the vcluster
- * syncer hash-truncates it unpredictably), fall back to the tailnet URL.
+ * composed service name exceeds the 63-char DNS label limit, reproduce the
+ * vCluster syncer's deterministic hash truncation so the broker stays on the
+ * in-cluster path.
  */
 
 const IN_CLUSTER_SERVICE_PREFIX = "workflow-builder-x-workflow-builder-x-";
 const DNS_LABEL_MAX = 63;
+const VCLUSTER_HASH_LENGTH = 10;
 const DEFAULT_TIMEOUT_MS = 4_000;
 const DEFAULT_MAX_CONTENT_BYTES = 25 * 1024 * 1024; // Files-API upload cap.
 const DEFAULT_TAILNET_SUFFIX = "tail286401.ts.net";
@@ -40,6 +43,16 @@ function sanitizeBackingName(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function vclusterSyncedServiceName(name: string): string {
+  if (name.length <= DNS_LABEL_MAX) return name;
+  const digest = createHash("sha256")
+    .update(name)
+    .digest("hex")
+    .slice(0, VCLUSTER_HASH_LENGTH);
+  const prefixLength = DNS_LABEL_MAX - VCLUSTER_HASH_LENGTH - 1;
+  return `${name.slice(0, prefixLength)}-${digest}`;
 }
 
 function configuredTailnetSuffix(): string | null {
@@ -90,10 +103,10 @@ function exactTailnetFallback(target: PreviewRunTarget): string | null {
 export function previewApiBaseUrl(target: PreviewRunTarget): string | null {
   const backing = sanitizeBackingName(target.pool ?? target.name);
   if (backing) {
-    const service = `${IN_CLUSTER_SERVICE_PREFIX}${backing}`;
-    if (service.length <= DNS_LABEL_MAX) {
-      return `http://${service}.vcluster-${backing}.svc.cluster.local:3000`;
-    }
+    const service = vclusterSyncedServiceName(
+      `${IN_CLUSTER_SERVICE_PREFIX}${backing}`,
+    );
+    return `http://${service}.vcluster-${backing}.svc.cluster.local:3000`;
   }
   return exactTailnetFallback(target);
 }

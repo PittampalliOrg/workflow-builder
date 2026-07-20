@@ -34,33 +34,37 @@ describe("previewApiBaseUrl", () => {
     );
   });
 
-  it("falls back to the tailnet URL when the synced name would exceed the DNS label limit", () => {
-    const name = "a".repeat(40); // 38-char prefix + 40 > 63
+  it("matches vCluster's deterministic hash truncation for long synced Service names", () => {
+    const name = "k3-native-vision-proof-0720b";
     expect(
       previewApiBaseUrl(
         target({ name, url: `https://wfb-${name}.tail286401.ts.net` }),
       ),
-    ).toBe(`https://wfb-${name}.tail286401.ts.net`);
+    ).toBe(
+      "http://workflow-builder-x-workflow-builder-x-k3-native-visi-d4e168033c.vcluster-k3-native-vision-proof-0720b.svc.cluster.local:3000",
+    );
   });
 
-  it("rejects a stored fallback URL outside the exact preview tailnet origin", () => {
+  it("ignores stored external URLs when an in-cluster backing Service is resolvable", () => {
     const name = "a".repeat(40);
     expect(
       previewApiBaseUrl(
         target({ name, url: "https://attacker.example/internal" }),
       ),
-    ).toBeNull();
+    ).toBe(
+      "http://workflow-builder-x-workflow-builder-x-aaaaaaaaaaaaaa-23cefb3d3d.vcluster-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.svc.cluster.local:3000",
+    );
     expect(
       previewApiBaseUrl(
         target({ name, url: `http://wfb-${name}.tail286401.ts.net` }),
       ),
-    ).toBeNull();
+    ).toBe(
+      "http://workflow-builder-x-workflow-builder-x-aaaaaaaaaaaaaa-23cefb3d3d.vcluster-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.svc.cluster.local:3000",
+    );
   });
 
   it("returns null when nothing is resolvable", () => {
-    expect(
-      previewApiBaseUrl(target({ name: "a".repeat(40), url: null })),
-    ).toBeNull();
+    expect(previewApiBaseUrl(target({ name: "---", url: null }))).toBeNull();
   });
 });
 
