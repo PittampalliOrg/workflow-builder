@@ -317,6 +317,9 @@ function imageForRuntime(runtime: string): string | null {
 	if (runtime === "adk-agent-py") {
 		return cleanString(env.AGENT_RUNTIME_ADK_DEFAULT_IMAGE) ?? null;
 	}
+	if (runtime === "pydantic-ai-agent-py") {
+		return cleanString(env.AGENT_RUNTIME_PYDANTIC_DEFAULT_IMAGE) ?? null;
+	}
 	if (runtime === "claude-agent-py") {
 		return cleanString(env.AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE) ?? null;
 	}

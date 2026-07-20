@@ -46,7 +46,8 @@ describe("runtime registry — readers", () => {
 				"codex-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-juicefs",
-				"dapr-agent-py-testing"
+				"dapr-agent-py-testing",
+				"pydantic-ai-agent-py"
 			].sort()
 		);
 	});
@@ -75,7 +76,8 @@ describe("runtime registry — readers", () => {
 				"codex-cli",
 				"dapr-agent-py",
 				"dapr-agent-py-juicefs",
-				"dapr-agent-py-testing"
+				"dapr-agent-py-testing",
+				"pydantic-ai-agent-py"
 			].sort()
 		);
 		expect(listWorkflowDispatchRuntimeIds()).not.toContain("browser-use-agent");
@@ -89,6 +91,7 @@ describe("runtime registry — readers", () => {
 			"dapr-agent-py",
 			"claude-agent-py",
 			"adk-agent-py",
+			"pydantic-ai-agent-py",
 			"browser-use-agent",
 			"cli-agent-py",
 			"chromium",
@@ -130,6 +133,7 @@ describe("Phase 2b — image override + framework", () => {
 		// image and browser-use takes the warm-pool lane, so both are null.
 		expect(getRuntimeDescriptor("adk-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_ADK_DEFAULT_IMAGE");
 		expect(getRuntimeDescriptor("claude-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_CLAUDE_DEFAULT_IMAGE");
+		expect(getRuntimeDescriptor("pydantic-ai-agent-py")?.imageEnvKey).toBe("AGENT_RUNTIME_PYDANTIC_DEFAULT_IMAGE");
 		expect(getRuntimeDescriptor("claude-code-cli")?.imageEnvKey).toBe("AGENT_RUNTIME_CLAUDE_CLI_DEFAULT_IMAGE");
 		expect(getRuntimeDescriptor("dapr-agent-py")?.imageEnvKey).toBeNull();
 		expect(getRuntimeDescriptor("dapr-agent-py-testing")?.imageEnvKey).toBeNull();
@@ -140,6 +144,7 @@ describe("Phase 2b — image override + framework", () => {
 		expect(getRuntimeDescriptor("dapr-agent-py")?.agentMetadataFramework).toBe("Dapr Agents");
 		expect(getRuntimeDescriptor("claude-agent-py")?.agentMetadataFramework).toBe("Claude Agent SDK");
 		expect(getRuntimeDescriptor("adk-agent-py")?.agentMetadataFramework).toBe("Google ADK");
+		expect(getRuntimeDescriptor("pydantic-ai-agent-py")?.agentMetadataFramework).toBe("Pydantic AI");
 	});
 
 	it("validateAgentMetadata accepts any registered framework, rejects unknown", () => {

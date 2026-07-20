@@ -25,6 +25,7 @@ export type AgentRuntime =
 	| "dapr-agent-py-juicefs"
 	| "dapr-agent-py-testing"
 	| "adk-agent-py"
+	| "pydantic-ai-agent-py"
 	| "claude-agent-py"
 	| "claude-code-cli"
 	| "claude-code-cli-glm"

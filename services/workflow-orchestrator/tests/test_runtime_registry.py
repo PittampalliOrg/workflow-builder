@@ -52,6 +52,11 @@ def _reference_targets() -> dict[str, dict[str, str]]:
             "app_id": config.ADK_AGENT_PY_APP_ID,
             "instance_prefix": "durable-adk",
         },
+        "pydantic-ai-agent-py": {
+            "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+            "app_id": config.PYDANTIC_AI_AGENT_PY_APP_ID,
+            "instance_prefix": "durable-pydantic",
+        },
         "claude-agent-py": {
             "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
             "app_id": config.CLAUDE_AGENT_PY_APP_ID,
@@ -203,7 +208,7 @@ def test_unknown_runtime_no_slug_raises_same_message():
     assert (
         "adk-agent-py, agy-cli, browser-use-agent, claude-agent-py, "
         "claude-code-cli, claude-code-cli-glm, codex-cli, dapr-agent-py, "
-        "dapr-agent-py-juicefs, dapr-agent-py-testing"
+        "dapr-agent-py-juicefs, dapr-agent-py-testing, pydantic-ai-agent-py"
     ) in str(new_exc.value)
 
 
