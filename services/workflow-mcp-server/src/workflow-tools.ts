@@ -26,6 +26,7 @@ const WORKFLOW_BUILDER_URL =
 	process.env.WORKFLOW_BUILDER_URL ??
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const TARGET_AUTH_HOST_HEADER = "X-Wfb-Target-Auth-Host";
 const targetInput = z
 	.string()
 	.optional()
@@ -97,6 +98,29 @@ function requirePrincipal(
   principal?: WorkflowMcpPrincipal,
 ): WorkflowMcpPrincipal | null {
   return principal ?? null;
+}
+
+export function normalizeAgentMcpServer(
+	server: Record<string, unknown>,
+): Record<string, unknown> {
+	const {
+		target_auth_host: targetAuthHost,
+		// Credentials are minted per execution. Never persist caller-supplied
+		// headers through this MCP authoring surface.
+		headers: _ignoredHeaders,
+		...rest
+	} = server;
+	const rawName = typeof rest.name === "string" ? rest.name : "";
+	const normalized: Record<string, unknown> = {
+		...rest,
+		name: rawName.replace(/[^A-Za-z0-9_]/g, "_"),
+	};
+	if (typeof targetAuthHost === "string" && targetAuthHost.trim()) {
+		normalized.headers = {
+			[TARGET_AUTH_HOST_HEADER]: targetAuthHost.trim().toLowerCase(),
+		};
+	}
+	return normalized;
 }
 
 function resolveExecutionRef(args: {
@@ -297,7 +321,7 @@ export function registerWorkflowTools(
 		{
 			title: "Create Agent",
 			description:
-        "Register a new agent in the authenticated workspace so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (for example 'kimi/kimi-k3'). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Use `skills` to attach agent skills. Returns the created agent's id and slug. Ownership always comes from the authenticated MCP connection.",
+        "Register a new agent in the authenticated workspace so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (for example 'kimi/kimi-k3'). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?, target_auth_host?}); for a stdio server give command/args instead of url. For agent-browser-mcp, set target_auth_host to the one app host allowed to receive the per-execution owner credential; use a cross-namespace FQDN such as workflow-builder.workflow-builder.svc.cluster.local. Never provide the credential itself. Use `skills` to attach agent skills. Returns the created agent's id and slug. Ownership always comes from the authenticated MCP connection.",
 			inputSchema: {
 				name: z.string().describe("Human-readable agent name."),
 				slug: z
@@ -335,11 +359,24 @@ export function registerWorkflowTools(
 							url: z.string().optional(),
 							command: z.string().optional(),
 							args: z.array(z.string()).optional(),
+							target_auth_host: z
+								.string()
+								.trim()
+								.min(1)
+								.max(253)
+								.regex(
+									/^[A-Za-z0-9.-]+(?::[1-9][0-9]{0,4})?$/,
+									"Use a hostname or hostname:port without a scheme, path, or credentials",
+								)
+								.optional()
+								.describe(
+									"For agent-browser-mcp only: the single app host allowed to receive the owner-scoped credential minted at run time. Prefer a Kubernetes service FQDN across namespaces.",
+								),
 						}),
 					)
 					.optional()
 					.describe(
-						"MCP servers that provide the agent's tools. NOTE: a non-CLI agent sees each tool as `<serverName>_<toolName>` — reference tools by that prefixed name in the system prompt. Server names are normalized to [A-Za-z0-9_].",
+						"MCP servers that provide the agent's tools. NOTE: a non-CLI agent sees each tool as `<serverName>_<toolName>` — reference tools by that prefixed name in the system prompt. Server names are normalized to [A-Za-z0-9_]. Browser target credentials are minted per execution; configure only target_auth_host, never a credential header.",
 					),
 				tools: z.array(z.string()).optional(),
 				skills: z.array(z.string()).optional(),
@@ -384,11 +421,7 @@ export function registerWorkflowTools(
 					// name the model sees diverge from the executor's key — the model
 					// calls it and gets "tool not found". Normalize server names to a
 					// safe charset so the tools stay callable.
-					config.mcpServers = args.mcp_servers.map((s) => {
-						const raw = typeof s.name === "string" ? s.name : "";
-						const safe = raw.replace(/[^A-Za-z0-9_]/g, "_");
-						return safe !== raw ? { ...s, name: safe } : s;
-					});
+					config.mcpServers = args.mcp_servers.map(normalizeAgentMcpServer);
 				}
 				if (args.tools) config.tools = args.tools;
 				if (args.skills) config.skills = args.skills;

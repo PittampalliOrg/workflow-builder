@@ -90,8 +90,18 @@ persists across calls within the session). On top of plain proxying it adds:
 // rejects hyphenated names.
 [{ "name": "browser",
    "transport": "streamable_http",
-   "url": "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp" }]
+   "url": "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+   "headers": {
+     "X-Wfb-Target-Auth-Host": "workflow-builder.workflow-builder.svc.cluster.local"
+   } }]
 ```
+
+BrowserStation workers run in `ray-system`, so browser targets in another
+namespace must also use a cross-namespace service FQDN, for example
+`http://workflow-builder.workflow-builder.svc.cluster.local:3000`. When creating
+the agent through Workflow MCP, provide that hostname as the MCP entry's
+`target_auth_host`; the adapter writes the host restriction, while the BFF mints
+and injects the actual credential only for the execution.
 
 The agent then calls `browser_agent_browser_open`, `browser_agent_browser_snapshot`, etc.
 Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's Browser tab.
