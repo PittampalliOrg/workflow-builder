@@ -6,7 +6,7 @@
   "description": "Vercel agent-browser as a streamable-HTTP MCP server (Chrome-isolated) for non-CLI (dapr-agent-py) agents, with deterministic artifact persistence to the owning run.",
   "scripts": {
     "start": "node bridge.mjs",
-    "test": "node --test vision-contract.node-test.mjs"
+    "test": "node --test *.node-test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.26.0",
