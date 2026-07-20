@@ -231,16 +231,16 @@ describe("workflowMcpSessionToolAccess", () => {
   it("omits every session tool group when its scope is absent", () => {
     expect(
       workflowMcpSessionToolAccess({ ...principal, scopes: ["workflow:read"] }),
-    ).toEqual({ goal: false, team: false });
+    ).toEqual({ team: false });
   });
 
   it("exposes only explicitly scoped session tool groups", () => {
     expect(
       workflowMcpSessionToolAccess({
         ...principal,
-        scopes: ["session:goal", "session:trace"],
+        scopes: ["session:team", "session:trace"],
       }),
-    ).toEqual({ goal: true, team: false });
+    ).toEqual({ team: true });
   });
 
   it("never exposes session tools without signed session lineage", () => {
@@ -248,8 +248,8 @@ describe("workflowMcpSessionToolAccess", () => {
       workflowMcpSessionToolAccess({
         ...principal,
         sessionId: undefined,
-        scopes: ["session:goal", "session:team", "session:trace"],
+        scopes: ["session:team", "session:trace"],
       }),
-    ).toEqual({ goal: false, team: false });
+    ).toEqual({ team: false });
   });
 });

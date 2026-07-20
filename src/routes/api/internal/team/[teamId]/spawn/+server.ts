@@ -36,7 +36,7 @@ import {
  * NOTE (remaining wiring): the teammate's agentConfig must also carry the team
  * MCP server with X-Wfb-Team-Id (so it can claim/message) and X-Wfb-Team-Depth
  * (so it cannot spawn nested teams). That stamping belongs in
- * sessions/spawn.ts::spawnSessionWorkflow alongside ensureGoalMcpServer — see
+ * sessions/spawn.ts::spawnSessionWorkflow (via stampTeamMcpHeaders) — see
  * docs/agent-teams-phase1.md § "remaining wiring".
  */
 export const POST: RequestHandler = async ({ params, request }) => {
