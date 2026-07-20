@@ -38,6 +38,7 @@ def test_set_activity_attrs_stamps_workflow_and_agent_identity() -> None:
         agent_slug="coding-agent",
         agent_app_id="agent-runtime-coding-agent",
         component="llm-openai",
+        span_type="llm_request",
         extra={"tool.name": "read_file"},
     )
 
@@ -51,6 +52,9 @@ def test_set_activity_attrs_stamps_workflow_and_agent_identity() -> None:
     assert span.attrs["agent.slug"] == "coding-agent"
     assert span.attrs["agent.app_id"] == "agent-runtime-coding-agent"
     assert span.attrs["dapr.component"] == "llm-openai"
+    assert span.attrs["span.type"] == "llm_request"
+    assert span.attrs["openinference.span.kind"] == "LLM"
+    assert "mlflow.spanType" not in span.attrs
     assert span.attrs["tool.name"] == "read_file"
 
 

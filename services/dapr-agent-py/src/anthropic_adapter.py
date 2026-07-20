@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Conservative default — matches Claude Code's capped slot-reservation default.
 # Most responses fit well within this; those that don't trigger escalation.
-CAPPED_DEFAULT_MAX_TOKENS = int(
-    os.environ.get("DAPR_AGENT_PY_MAX_TOKENS", "16384")
-)
+CAPPED_DEFAULT_MAX_TOKENS = int(os.environ.get("DAPR_AGENT_PY_MAX_TOKENS", "16384"))
 
 # Escalation target when the capped default is exhausted.
 # Claude Code uses 64k; Opus 4.6 supports up to 128k output.
@@ -143,11 +141,13 @@ def _convert_tools_for_anthropic(tools: list[Any] | None) -> list[dict] | None:
         else:
             schema = {"type": "object", "properties": {}}
 
-        anthropic_tools.append({
-            "name": tool.name,
-            "description": getattr(tool, "description", "") or tool.name,
-            "input_schema": schema,
-        })
+        anthropic_tools.append(
+            {
+                "name": tool.name,
+                "description": getattr(tool, "description", "") or tool.name,
+                "input_schema": schema,
+            }
+        )
 
     if not anthropic_tools:
         return None
@@ -301,10 +301,7 @@ def _contains_image_block(content: Any) -> bool:
     """True if any element in a content list looks like an Anthropic image block."""
     if not isinstance(content, list):
         return False
-    return any(
-        isinstance(b, dict) and b.get("type") == "image"
-        for b in content
-    )
+    return any(isinstance(b, dict) and b.get("type") == "image" for b in content)
 
 
 def _strip_images_from_tool_result(
@@ -324,10 +321,12 @@ def _strip_images_from_tool_result(
                 continue
             new_blocks.append(b)
         if image_count:
-            new_blocks.append({
-                "type": "text",
-                "text": f"[compacted: {image_count} screenshot(s) dropped from context to fit prompt budget]",
-            })
+            new_blocks.append(
+                {
+                    "type": "text",
+                    "text": f"[compacted: {image_count} screenshot(s) dropped from context to fit prompt budget]",
+                }
+            )
         if not new_blocks:
             new_blocks.append({"type": "text", "text": "[compacted screenshot]"})
         return {
@@ -370,7 +369,9 @@ def _compact_image_tool_results(
         return messages
 
     # Everything except the last `keep_last` gets compacted.
-    to_compact = set(image_positions[:-keep_last]) if keep_last > 0 else set(image_positions)
+    to_compact = (
+        set(image_positions[:-keep_last]) if keep_last > 0 else set(image_positions)
+    )
     if not to_compact:
         return messages
 
@@ -487,24 +488,38 @@ def _normalize_messages_for_anthropic(
                     system_parts.append(text)
                 continue
             if role == "tool":
-                messages.append({
-                    "role": "user",
-                    "content": [{"type": "tool_result",
-                                 "tool_use_id": map_tool_use_id(m.get("tool_call_id", "")),
-                                 "content": str(content)[:5000] if content else "ok"}]
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": map_tool_use_id(
+                                    m.get("tool_call_id", "")
+                                ),
+                                "content": str(content)[:5000] if content else "ok",
+                            }
+                        ],
+                    }
+                )
             elif role == "assistant" and m.get("tool_calls"):
                 content_blocks = []
                 if content and isinstance(content, str) and content.strip():
                     content_blocks.append({"type": "text", "text": content})
                 for call in m["tool_calls"]:
                     fn = call.get("function", {}) if isinstance(call, dict) else {}
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": map_tool_use_id(call.get("id", "") if isinstance(call, dict) else ""),
-                        "name": fn.get("name", ""),
-                        "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": map_tool_use_id(
+                                call.get("id", "") if isinstance(call, dict) else ""
+                            ),
+                            "name": fn.get("name", ""),
+                            "input": json.loads(fn.get("arguments", "{}"))
+                            if isinstance(fn.get("arguments"), str)
+                            else fn.get("arguments", {}),
+                        }
+                    )
                 messages.append({"role": "assistant", "content": content_blocks})
             else:
                 messages.append({"role": role, "content": content})
@@ -517,12 +532,20 @@ def _normalize_messages_for_anthropic(
                     system_parts.append(text)
                 continue
             if role == "tool":
-                messages.append({
-                    "role": "user",
-                    "content": [{"type": "tool_result",
-                                 "tool_use_id": map_tool_use_id(getattr(m, "tool_call_id", "")),
-                                 "content": str(content)[:5000] if content else "ok"}]
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": map_tool_use_id(
+                                    getattr(m, "tool_call_id", "")
+                                ),
+                                "content": str(content)[:5000] if content else "ok",
+                            }
+                        ],
+                    }
+                )
             else:
                 msg_dict = {"role": role, "content": content}
                 tc = getattr(m, "tool_calls", None)
@@ -532,12 +555,18 @@ def _normalize_messages_for_anthropic(
                         content_blocks.append({"type": "text", "text": content})
                     for call in tc:
                         fn = call.get("function", {}) if isinstance(call, dict) else {}
-                        content_blocks.append({
-                            "type": "tool_use",
-                            "id": map_tool_use_id(call.get("id", "") if isinstance(call, dict) else ""),
-                            "name": fn.get("name", ""),
-                            "input": json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {}),
-                        })
+                        content_blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": map_tool_use_id(
+                                    call.get("id", "") if isinstance(call, dict) else ""
+                                ),
+                                "name": fn.get("name", ""),
+                                "input": json.loads(fn.get("arguments", "{}"))
+                                if isinstance(fn.get("arguments"), str)
+                                else fn.get("arguments", {}),
+                            }
+                        )
                     msg_dict["content"] = content_blocks
                 messages.append(msg_dict)
 
@@ -558,14 +587,16 @@ def _extract_response(response: Any) -> tuple[str, list[dict], list[str]]:
             if t:
                 thinking_blocks.append(t)
         elif block.type == "tool_use":
-            tool_calls.append({
-                "id": block.id,
-                "type": "function",
-                "function": {
-                    "name": block.name,
-                    "arguments": json.dumps(block.input),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": block.id,
+                    "type": "function",
+                    "function": {
+                        "name": block.name,
+                        "arguments": json.dumps(block.input),
+                    },
+                }
+            )
     return content, tool_calls, thinking_blocks
 
 
@@ -603,7 +634,8 @@ def _model_supports_adaptive_thinking(model: str) -> bool:
 
 
 def _response_to_assistant_message(
-    content: str, tool_calls: list[dict],
+    content: str,
+    tool_calls: list[dict],
 ) -> list[dict]:
     """Convert extracted response into Anthropic message content blocks.
 
@@ -615,14 +647,16 @@ def _response_to_assistant_message(
         blocks.append({"type": "text", "text": content})
     for tc in tool_calls:
         fn = tc.get("function", {})
-        blocks.append({
-            "type": "tool_use",
-            "id": tc.get("id", ""),
-            "name": fn.get("name", ""),
-            "input": json.loads(fn.get("arguments", "{}"))
-            if isinstance(fn.get("arguments"), str)
-            else fn.get("arguments", {}),
-        })
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": fn.get("name", ""),
+                "input": json.loads(fn.get("arguments", "{}"))
+                if isinstance(fn.get("arguments"), str)
+                else fn.get("arguments", {}),
+            }
+        )
     return blocks
 
 
@@ -736,9 +770,7 @@ def _stream_final_message(client: Any, **request_kwargs: Any) -> Any:
                 block = getattr(event, "content_block", None)
                 block_type = getattr(block, "type", None)
                 tool_use_id = (
-                    getattr(block, "id", None)
-                    if block_type == "tool_use"
-                    else None
+                    getattr(block, "id", None) if block_type == "tool_use" else None
                 )
                 # Pre-seed the buffer with empty state; the kind is set when
                 # the first delta lands (text_delta / thinking_delta / etc.).
@@ -813,7 +845,9 @@ def _call_anthropic_sdk(
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("No Anthropic authentication configured. Set ANTHROPIC_API_KEY.")
+        raise RuntimeError(
+            "No Anthropic authentication configured. Set ANTHROPIC_API_KEY."
+        )
     import anthropic
 
     # max_retries enables SDK-internal retry for 5xx, 429, and transient
@@ -858,7 +892,8 @@ def _call_anthropic_sdk(
     # threshold we split into a list[TextBlockParam] with cache_control on the
     # static block, otherwise we forward as a plain (boundary-stripped) string.
     system_param, prompt_cache_telemetry = _build_system_param(
-        kwargs.get("system"), cache_ttl=cache_ttl,
+        kwargs.get("system"),
+        cache_ttl=cache_ttl,
     )
 
     # Patch empty user messages (Anthropic rejects whitespace-only content)
@@ -872,14 +907,9 @@ def _call_anthropic_sdk(
         else:
             patched_messages.append(m)
 
-    # Phase 2b cleanup: manual `claude_code.llm_request` span dropped.
-    # `mlflow.anthropic.autolog()` (init'd in providers.py) now emits the
-    # canonical `Anthropic.messages.create` span with full input/output
-    # messages, tool calls, reasoning blocks, and `gen_ai.usage.*` token
-    # counts — superseding the hand-rolled span. Prompt-cache breadcrumbs
-    # that used to ride on llm_request migrate UP to the interaction
-    # span (whose lifetime spans the whole turn). `record_tokens`
-    # metric emission stays — Prometheus dashboards depend on it.
+    # Emit the same explicit OpenTelemetry LLM span used by the other provider
+    # adapters. The span is exported once through OTLP and remains independent
+    # from any provider SDK instrumentation.
     import time as _time
 
     agg_input_tokens = 0
@@ -888,6 +918,58 @@ def _call_anthropic_sdk(
     agg_cache_create = 0
     llm_start_monotonic = _time.monotonic()
     ttft_ms_recorded: float | None = None
+    llm_span = None
+    try:
+        from src.telemetry import start_llm_request_span
+
+        trace_system_prompt = (
+            system_param
+            if isinstance(system_param, str) or system_param is None
+            else json.dumps(system_param, default=str)
+        )
+        llm_span = start_llm_request_span(
+            model,
+            fast_mode=False,
+            query_source="dapr_agent_py.anthropic_adapter",
+            system_prompt=trace_system_prompt,
+            tools_json=json.dumps(anthropic_tools) if anthropic_tools else None,
+            messages_for_api=list(patched_messages),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[telemetry] llm_request (anthropic) start failed: %s", exc)
+
+    def _finish_llm_span(
+        *,
+        success: bool,
+        error: str | None = None,
+        model_output: str | None = None,
+        thinking_output: str | None = None,
+    ) -> None:
+        nonlocal llm_span
+        if llm_span is None:
+            return
+        span, llm_span = llm_span, None
+        try:
+            from src.telemetry import end_llm_request_span
+
+            end_llm_request_span(
+                span,
+                input_tokens=agg_input_tokens or None,
+                output_tokens=agg_output_tokens or None,
+                cache_read_tokens=agg_cache_read or None,
+                cache_creation_tokens=agg_cache_create or None,
+                success=success,
+                error=error,
+                has_tool_call=bool(tool_calls) if success else None,
+                ttft_ms=ttft_ms_recorded
+                if ttft_ms_recorded is not None
+                else (_time.monotonic() - llm_start_monotonic) * 1000.0,
+                model_output=model_output,
+                thinking_output=thinking_output,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[telemetry] llm_request (anthropic) end failed: %s", exc)
+
     interaction_span = None
     try:
         from src.telemetry import current_interaction_span
@@ -937,7 +1019,10 @@ def _call_anthropic_sdk(
 
     logger.info(
         "[anthropic-sdk] Calling %s with %d messages, %d tools, max_tokens=%d",
-        model, len(patched_messages), len(anthropic_tools or []), max_tokens,
+        model,
+        len(patched_messages),
+        len(anthropic_tools or []),
+        max_tokens,
     )
     # Greppable per-turn line so production logs surface whether the cache
     # path actually fired, how big each half of the prompt was, and which
@@ -945,34 +1030,33 @@ def _call_anthropic_sdk(
     logger.info(
         "[instruction-bundle] mode=%s breakpoints=%d prefix_chars=%d tail_chars=%d cache_ttl=%s",
         "sectioned" if prompt_cache_telemetry["cache_eligible"] else "legacy",
-        prompt_cache_telemetry["cache_breakpoints"]
-        + (1 if anthropic_tools else 0),
+        prompt_cache_telemetry["cache_breakpoints"] + (1 if anthropic_tools else 0),
         prompt_cache_telemetry["prefix_chars"],
         prompt_cache_telemetry["tail_chars"],
         prompt_cache_telemetry["cache_ttl"],
     )
-    # Stamp prompt-cache attributes on the parent interaction span so
-    # debugging tools (ClickHouse, MLflow trace UI) can surface them
-    # alongside cache_creation/cache_read tokens. Phase 2b cleanup
-    # migrated these UP from `claude_code.llm_request` (now removed —
-    # `mlflow.anthropic.autolog()` is the canonical LLM-call span).
-    if interaction_span is not None:
+    # Stamp prompt-cache attributes on both the provider span and the parent
+    # interaction span so ClickHouse can expose request- and turn-level views.
+    cache_attribute_spans = [
+        span for span in (llm_span, interaction_span) if span is not None
+    ]
+    for cache_span in dict.fromkeys(cache_attribute_spans):
         try:
-            interaction_span.set_attribute(
+            cache_span.set_attribute(
                 "prompt.prefix_chars", prompt_cache_telemetry["prefix_chars"]
             )
-            interaction_span.set_attribute(
+            cache_span.set_attribute(
                 "prompt.tail_chars", prompt_cache_telemetry["tail_chars"]
             )
-            interaction_span.set_attribute(
+            cache_span.set_attribute(
                 "prompt.cache_eligible", prompt_cache_telemetry["cache_eligible"]
             )
-            interaction_span.set_attribute(
+            cache_span.set_attribute(
                 "prompt.cache_breakpoints",
                 prompt_cache_telemetry["cache_breakpoints"]
                 + (1 if anthropic_tools else 0),
             )
-            interaction_span.set_attribute(
+            cache_span.set_attribute(
                 "prompt.cache_ttl", prompt_cache_telemetry["cache_ttl"]
             )
             if anthropic_tools:
@@ -986,15 +1070,19 @@ def _call_anthropic_sdk(
                         "utf-8"
                     )
                 ).hexdigest()
-                interaction_span.set_attribute("prompt.tools_hash", tools_hash)
-                interaction_span.set_attribute("prompt.tools_count", len(anthropic_tools))
+                cache_span.set_attribute("prompt.tools_hash", tools_hash)
+                cache_span.set_attribute("prompt.tools_count", len(anthropic_tools))
         except Exception as exc:  # noqa: BLE001
             logger.debug("[telemetry] prompt-cache attrs set failed: %s", exc)
 
     try:
-        response = _stream_final_message(client, **request_kwargs)
-        content, tool_calls, thinking_blocks = _extract_response(response)
-        _emit_thinking(thinking_blocks)
+        try:
+            response = _stream_final_message(client, **request_kwargs)
+            content, tool_calls, thinking_blocks = _extract_response(response)
+            _emit_thinking(thinking_blocks)
+        except Exception as exc:
+            _finish_llm_span(success=False, error=str(exc))
+            raise
         if ttft_ms_recorded is None:
             import time as _time
 
@@ -1006,11 +1094,7 @@ def _call_anthropic_sdk(
             agg_cache_read += int(getattr(_u, "cache_read_input_tokens", 0) or 0)
             agg_cache_create += int(getattr(_u, "cache_creation_input_tokens", 0) or 0)
     except Exception as exc:
-        # Phase 2b cleanup: claude_code.llm_request span removed —
-        # `mlflow.anthropic.autolog()` handles the LLM-call span end
-        # state. Error context still surfaces via the autolog span's
-        # status code + exception event. `exc` is used below for the
-        # session-event publish and the re-raise.
+        _finish_llm_span(success=False, error=str(exc))
         # Emit a usage event even on failure so the UI can show the caller
         # consumed tokens before the error. recovery_count is not yet defined
         # here (failure occurred in Attempt 1); use 0.
@@ -1034,9 +1118,7 @@ def _call_anthropic_sdk(
                         "cache_read_input_tokens": agg_cache_read,
                         "cache_creation_input_tokens": agg_cache_create,
                         "ttft_ms": ttft_ms_recorded,
-                        "duration_ms": (
-                            _time.monotonic() - llm_start_monotonic
-                        )
+                        "duration_ms": (_time.monotonic() - llm_start_monotonic)
                         * 1000.0,
                         "recovery_attempts": 0,
                         "success": False,
@@ -1053,18 +1135,20 @@ def _call_anthropic_sdk(
     # with ESCALATED_MAX_TOKENS. No recovery message, no multi-turn — just
     # a clean retry with a higher limit. Fires once.
 
-    if (
-        response.stop_reason == "max_tokens"
-        and max_tokens < ESCALATED_MAX_TOKENS
-    ):
+    if response.stop_reason == "max_tokens" and max_tokens < ESCALATED_MAX_TOKENS:
         logger.info(
             "[anthropic-sdk] max_tokens hit at %d, escalating to %d",
-            max_tokens, ESCALATED_MAX_TOKENS,
+            max_tokens,
+            ESCALATED_MAX_TOKENS,
         )
         request_kwargs["max_tokens"] = ESCALATED_MAX_TOKENS
-        response = _stream_final_message(client, **request_kwargs)
-        content, tool_calls, thinking_blocks = _extract_response(response)
-        _emit_thinking(thinking_blocks)
+        try:
+            response = _stream_final_message(client, **request_kwargs)
+            content, tool_calls, thinking_blocks = _extract_response(response)
+            _emit_thinking(thinking_blocks)
+        except Exception as exc:
+            _finish_llm_span(success=False, error=str(exc))
+            raise
         _u = getattr(response, "usage", None)
         if _u is not None:
             agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
@@ -1088,28 +1172,37 @@ def _call_anthropic_sdk(
         recovery_count += 1
         logger.info(
             "[anthropic-sdk] max_tokens recovery attempt %d/%d",
-            recovery_count, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
+            recovery_count,
+            MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
         )
 
         # Build continuation: original messages + partial assistant + recovery
         assistant_blocks = _response_to_assistant_message(content, tool_calls)
         continuation_messages = list(patched_messages)
         if assistant_blocks:
-            continuation_messages.append({
-                "role": "assistant",
-                "content": assistant_blocks,
-            })
-        continuation_messages.append({
-            "role": "user",
-            "content": _RECOVERY_MESSAGE,
-        })
+            continuation_messages.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_blocks,
+                }
+            )
+        continuation_messages.append(
+            {
+                "role": "user",
+                "content": _RECOVERY_MESSAGE,
+            }
+        )
 
         request_kwargs["messages"] = continuation_messages
         request_kwargs["max_tokens"] = max_tokens
 
-        response = _stream_final_message(client, **request_kwargs)
-        content, tool_calls, thinking_blocks = _extract_response(response)
-        _emit_thinking(thinking_blocks)
+        try:
+            response = _stream_final_message(client, **request_kwargs)
+            content, tool_calls, thinking_blocks = _extract_response(response)
+            _emit_thinking(thinking_blocks)
+        except Exception as exc:
+            _finish_llm_span(success=False, error=str(exc))
+            raise
         _u = getattr(response, "usage", None)
         if _u is not None:
             agg_input_tokens += int(getattr(_u, "input_tokens", 0) or 0)
@@ -1133,6 +1226,12 @@ def _call_anthropic_sdk(
     if recovery_count > 0:
         content = accumulated_content
         tool_calls = accumulated_tool_calls
+
+    _finish_llm_span(
+        success=True,
+        model_output=content or None,
+        thinking_output="\n\n".join(thinking_blocks) or None,
+    )
 
     # Build the final result
     result: dict[str, Any] = {
@@ -1159,10 +1258,7 @@ def _call_anthropic_sdk(
         "recovery_attempts": recovery_count,
     }
 
-    # Phase 2b cleanup: claude_code.llm_request span lifecycle removed —
-    # `mlflow.anthropic.autolog()` emits the canonical LLM-call span with
-    # `gen_ai.usage.*` covering all token types. We still emit Prometheus
-    # token metrics here because dashboards depend on them.
+    # Token metrics complement the OTLP span for aggregate dashboards.
     try:
         from src.telemetry import record_cost, record_tokens
 
@@ -1194,8 +1290,7 @@ def _call_anthropic_sdk(
                     "cache_read_input_tokens": agg_cache_read,
                     "cache_creation_input_tokens": agg_cache_create,
                     "ttft_ms": ttft_ms_recorded,
-                    "duration_ms": (_time.monotonic() - llm_start_monotonic)
-                    * 1000.0,
+                    "duration_ms": (_time.monotonic() - llm_start_monotonic) * 1000.0,
                     "recovery_attempts": recovery_count,
                     "success": True,
                     "prompt_prefix_chars": prompt_cache_telemetry["prefix_chars"],
@@ -1231,11 +1326,19 @@ def patch_for_anthropic(llm_client: Any) -> None:
 
     def patched_generate(self: Any, *args: Any, **kwargs: Any) -> Any:
         component = getattr(self, "_llm_component", None)
-        logger.info("[anthropic-sdk] generate called, component=%s, has_tools=%s, has_messages=%s",
-                     component, bool(kwargs.get("tools")), bool(kwargs.get("messages")))
+        logger.info(
+            "[anthropic-sdk] generate called, component=%s, has_tools=%s, has_messages=%s",
+            component,
+            bool(kwargs.get("tools")),
+            bool(kwargs.get("messages")),
+        )
 
         if component and _is_anthropic_component(component):
-            from dapr_agents.types.message import LLMChatResponse, LLMChatCandidate, AssistantMessage
+            from dapr_agents.types.message import (
+                LLMChatResponse,
+                LLMChatCandidate,
+                AssistantMessage,
+            )
 
             prompt = args[0] if args else kwargs.get("prompt", "")
             raw_messages = kwargs.get("messages")
@@ -1320,13 +1423,16 @@ def patch_for_anthropic(llm_client: Any) -> None:
                 # content as the requested Pydantic model and return it directly.
                 if response_format is not None and result.get("content"):
                     import re as _re
+
                     content_text = str(result["content"])
 
                     parsed = None
                     try:
                         parsed = json.loads(content_text)
                     except (ValueError, json.JSONDecodeError):
-                        match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content_text, _re.DOTALL)
+                        match = _re.search(
+                            r"```(?:json)?\s*\n?(.*?)\n?```", content_text, _re.DOTALL
+                        )
                         if match:
                             try:
                                 parsed = json.loads(match.group(1).strip())
@@ -1358,7 +1464,7 @@ def patch_for_anthropic(llm_client: Any) -> None:
                 # Stamp GenAI semconv attrs on the active Dapr activity span
                 # (the `agent-session-X.call_llm` span the dapr-agents
                 # WorkflowActivityRegistrationWrapper wrapped around us) AND
-                # include `usage` in the returned metadata so MLflow/Phoenix
+                # include `usage` in the returned metadata so ClickHouse
                 # consumers see token counts as searchable OTel attrs instead
                 # of buried inside the JSON output blob.
                 tel = result.get("_telemetry") or {}
@@ -1416,10 +1522,12 @@ def patch_for_anthropic(llm_client: Any) -> None:
                     )
 
                 return LLMChatResponse(
-                    results=[LLMChatCandidate(
-                        message=msg,
-                        finish_reason=finish_reason,
-                    )],
+                    results=[
+                        LLMChatCandidate(
+                            message=msg,
+                            finish_reason=finish_reason,
+                        )
+                    ],
                     metadata={
                         "provider": "anthropic-sdk",
                         "model": anthropic_model,
@@ -1436,4 +1544,6 @@ def patch_for_anthropic(llm_client: Any) -> None:
 
     DaprChatClient.generate = patched_generate
     DaprChatClient._anthropic_patched = True
-    logger.info("[anthropic-sdk] Patched DaprChatClient class for Anthropic direct SDK calls")
+    logger.info(
+        "[anthropic-sdk] Patched DaprChatClient class for Anthropic direct SDK calls"
+    )

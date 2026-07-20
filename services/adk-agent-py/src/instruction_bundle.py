@@ -39,10 +39,10 @@ def _string_list(value: Any) -> list[str]:
 
 def _coerce_prompt_preset_manifest(value: Any) -> list[dict[str, Any]]:
     """Phase 3a v2: shape the BFF's `promptPresetManifest` entries for use as
-    MLflow trace-tag inputs. Each kept entry has `promptVersionId` (str) and
-    optionally `mlflowUri` (str | None). Drops rows that are missing the
-    PK so the downstream tagging code never has to defend against partial
-    data."""
+    telemetry inputs. Each kept entry has `promptVersionId` (str) and may carry
+    the legacy `mlflowUri` field while persisted manifests are migrated. Drops
+    rows that are missing the PK so downstream code never has to defend against
+    partial data."""
     if not isinstance(value, list):
         return []
     out: list[dict[str, Any]] = []
@@ -282,11 +282,15 @@ def build_instruction_bundle(
     persona = {
         "systemPrompt": _string(config.get("systemPrompt")),
     }
-    skills = [
-        name
-        for name in (_skill_name(item) for item in config.get("skills") or [])
-        if name
-    ] if isinstance(config.get("skills"), list) else []
+    skills = (
+        [
+            name
+            for name in (_skill_name(item) for item in config.get("skills") or [])
+            if name
+        ]
+        if isinstance(config.get("skills"), list)
+        else []
+    )
     raw_cache_ttl = config.get("cacheTtl")
     cache_ttl = raw_cache_ttl if raw_cache_ttl in ("5m", "1h") else "5m"
     runtime = {
@@ -309,9 +313,9 @@ def build_instruction_bundle(
         ),
         # Phase 3a v2: per-ref manifest mirroring the compiled sections above.
         # Each entry has `promptId`, `version`, `promptVersionId`, `mlflowUri`.
-        # Surfaced into the MLflow trace via `start_interaction_span()` as
-        # `tag.prompt_version_id` + `tag.prompt_version` so prompt iteration →
-        # run quality is queryable across runs.
+        # Surfaced into OTLP spans via `start_interaction_span()` as
+        # `prompt_version_id` + `prompt_version` so prompt iteration and run
+        # quality remain queryable across runs.
         "promptPresetManifest": _coerce_prompt_preset_manifest(
             config.get("promptPresetManifest")
         ),
@@ -337,11 +341,15 @@ def build_instruction_bundle(
     if runtime["sandboxName"]:
         sources.append(_source("runtime.sandboxName", "runtime", "runtime", "runtime"))
     if runtime["skills"]:
-        sources.append(_source("runtime.skills", "runtime", "agentConfig.skills", "runtime"))
+        sources.append(
+            _source("runtime.skills", "runtime", "agentConfig.skills", "runtime")
+        )
     if runtime["currentDate"]:
         sources.append(_source("runtime.currentDate", "runtime", "runtime", "runtime"))
     if runtime["mcpInstructions"]:
-        sources.append(_source("runtime.mcpInstructions", "runtime", "mcp-clients", "runtime"))
+        sources.append(
+            _source("runtime.mcpInstructions", "runtime", "mcp-clients", "runtime")
+        )
     if runtime["compiledStaticPresetSections"]:
         sources.append(
             _source(
@@ -363,13 +371,17 @@ def build_instruction_bundle(
     # Always emit cacheTtl source so its origin is auditable on every bundle
     # (default '5m' is just as significant as an explicit '1h' for cost analysis).
     if "cacheTtl" in control_fields:
-        sources.append(_source("runtime.cacheTtl", "user", "session.control", "control"))
+        sources.append(
+            _source("runtime.cacheTtl", "user", "session.control", "control")
+        )
     elif raw_cache_ttl in ("5m", "1h"):
         sources.append(_source("runtime.cacheTtl", "agent-profile", source_id, "base"))
     else:
         sources.append(_source("runtime.cacheTtl", "runtime", "default", "runtime"))
 
-    normalized_source = "workflow-node" if prompt_source == "workflow-node" else "session"
+    normalized_source = (
+        "workflow-node" if prompt_source == "workflow-node" else "session"
+    )
     sources.append(
         _source(
             "user.prompt",
@@ -384,7 +396,11 @@ def build_instruction_bundle(
         "agent": {
             **({"id": effective_agent_id} if effective_agent_id else {}),
             **({"version": effective_version} if effective_version is not None else {}),
-            **({"configHash": _string(agent_config_hash)} if _string(agent_config_hash) else {}),
+            **(
+                {"configHash": _string(agent_config_hash)}
+                if _string(agent_config_hash)
+                else {}
+            ),
             **({"slug": effective_agent_slug} if effective_agent_slug else {}),
         },
         "persona": persona,
@@ -437,8 +453,12 @@ def instruction_bundle_audit_payload(
         "instructionHash": bundle.get("instructionHash"),
         "templateName": bundle.get("templateName"),
         "templateHash": bundle.get("templateHash"),
-        "agent": bundle.get("agent") if isinstance(bundle.get("agent"), Mapping) else {},
-        "sources": bundle.get("sources") if isinstance(bundle.get("sources"), list) else [],
+        "agent": bundle.get("agent")
+        if isinstance(bundle.get("agent"), Mapping)
+        else {},
+        "sources": bundle.get("sources")
+        if isinstance(bundle.get("sources"), list)
+        else [],
         "oversized": True,
         "size_bytes": size,
         "renderedLengths": {

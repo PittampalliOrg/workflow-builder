@@ -1062,33 +1062,6 @@ export interface SessionUserEventCommandPort {
 	}): Promise<"ok" | "not_found">;
 }
 
-export interface SessionTraceLifecycleStore {
-	createInteractiveSessionTraceRun?(input: {
-		sessionId: string;
-		title?: string | null;
-		projectId?: string | null;
-		userId?: string | null;
-		agentId: string;
-		agentName?: string | null;
-		agentSlug?: string | null;
-		agentVersion?: number | null;
-		agentAppId?: string | null;
-		activeModelId?: string | null;
-		activeModelName?: string | null;
-		activeModelUri?: string | null;
-		existingRunId?: string | null;
-	}): Promise<{
-		experimentId: string;
-		runId: string;
-		parentRunId?: string | null;
-		mlflowSessionId?: string | null;
-	} | null>;
-	patchInteractiveSessionTraces(input: {
-		sessionId: string;
-		status: "OK" | "ERROR";
-	}): Promise<void>;
-}
-
 export type SessionCommandAgent = {
 	id: string;
 	name: string;

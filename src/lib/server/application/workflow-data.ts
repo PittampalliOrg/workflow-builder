@@ -188,7 +188,6 @@ import type {
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
 	SessionRuntimeStatusReader,
-	SessionTraceLifecycleStore,
 	TraceLineageStore,
 	UpdateWorkflowDefinitionInput,
 	UpdateWorkflowEnsureSessionRuntimeInput,
@@ -1156,7 +1155,6 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			sessionAgentConfigCommands?: SessionAgentConfigCommandPort;
 			codeCheckpoints?: WorkflowCodeCheckpointStore;
 			evaluationArtifacts?: EvaluationArtifactStore;
-			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			peerAgentResolver?: PeerAgentResolver;
 			workflowAgentReads?: WorkflowAgentReadRepository;
 			runtimeRegistry?: RuntimeRegistryReader;
@@ -6496,20 +6494,12 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				status: "idle",
 				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
 			});
-			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
-				sessionId: input.sessionId,
-				status: "OK",
-			});
 		} else if (input.type === "session.status_terminated") {
 			await sessions.updateSessionStatus({
 				id: input.sessionId,
 				status: "terminated",
 				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
 				markCompleted: true,
-			});
-			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
-				sessionId: input.sessionId,
-				status: "OK",
 			});
 			cleanupSessionSandbox = true;
 		} else if (input.type === "session.status_rescheduled") {
@@ -6539,10 +6529,6 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 				status: "failed",
 				stopReason: normalizeSessionStopReason(input.data?.stop_reason),
 				errorMessage,
-			});
-			void this.deps.sessionTraceLifecycle?.patchInteractiveSessionTraces({
-				sessionId: input.sessionId,
-				status: "ERROR",
 			});
 		}
 

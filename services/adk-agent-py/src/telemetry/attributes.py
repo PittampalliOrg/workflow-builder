@@ -42,8 +42,8 @@ class SessionContext:
     # Phase 3a v2: Prompt Workbench preset bindings carried by the BFF in
     # `agentConfig.promptPresetManifest`. `prompt_version_ids` is the
     # `resource_prompt_versions.id` (PK) per binding; `prompt_version_uris`
-    # is the matching MLflow Prompt Registry URI (when present). Both are
-    # comma-joined for the trace-tag value (single-value tag keys).
+    # is the legacy Prompt Registry URI (when present). Both are comma-joined
+    # for the span attribute value.
     prompt_version_ids: tuple[str, ...] = ()
     prompt_version_uris: tuple[str, ...] = ()
 
@@ -194,9 +194,8 @@ def get_telemetry_attributes() -> dict[str, Any]:
 
     # Phase 3a v2: Prompt Workbench preset bindings carried by the BFF.
     # Single-value tags get a comma-joined list when multiple presets are
-    # bound (typical: one static + one dynamic). The set is small (<5
-    # in practice) so a flat string is the right tag shape — MLflow's
-    # search supports `tag.prompt_version_id LIKE '%abc123%'`.
+    # bound (typical: one static + one dynamic). The set is small (<5 in
+    # practice), so a flat string remains efficient for ClickHouse filters.
     if ctx.prompt_version_ids:
         attrs["prompt_version_id"] = ",".join(ctx.prompt_version_ids)
     if ctx.prompt_version_uris:

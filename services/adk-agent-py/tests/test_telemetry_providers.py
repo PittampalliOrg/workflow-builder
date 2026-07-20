@@ -26,25 +26,25 @@ class DummySpan:
 def test_sanitizer_replaces_null_span_type_on_start():
     span = DummySpan(
         "LLM.generate_content",
-        {"span_type": None, "mlflow.spanType": None, "kept": "value"},
+        {"span.type": None, "openinference.span.kind": None, "kept": "value"},
     )
 
     _SanitizingSpanProcessor().on_start(span)
 
-    assert span.attributes["span_type"] == "CHAT_MODEL"
-    assert span.attributes["mlflow.spanType"] == "CHAT_MODEL"
+    assert span.attributes["span.type"] == "llm_request"
+    assert span.attributes["openinference.span.kind"] == "LLM"
     assert span.attributes["kept"] == "value"
 
 
 def test_sanitizer_uses_chain_for_unknown_null_span_type():
     attrs = _attrs_with_valid_span_type(
-        DummySpan("unknown.operation", {"span_type": None}),
-        {"span_type": None, "other": None},
+        DummySpan("unknown.operation", {"span.type": None}),
+        {"span.type": None, "other": None},
     )
 
     assert attrs == {
-        "span_type": "CHAIN",
-        "mlflow.spanType": "CHAIN",
+        "span.type": "chain",
+        "openinference.span.kind": "CHAIN",
     }
 
 
@@ -56,7 +56,7 @@ def test_otlp_encoder_guard_filters_null_attributes():
     _install_otlp_attribute_encoder_guard()
 
     encoded = trace_encoder._encode_attributes(
-        {"span_type": None, "mlflow.spanType": "TOOL", "other": None}
+        {"span.type": None, "openinference.span.kind": "TOOL", "other": None}
     )
 
-    assert [item.key for item in encoded] == ["mlflow.spanType"]
+    assert [item.key for item in encoded] == ["openinference.span.kind"]

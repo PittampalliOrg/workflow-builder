@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import contextmanager
 from typing import Any
 from collections.abc import Iterator
 
@@ -98,9 +97,8 @@ def init_telemetry() -> bool:
         # --- Tracer ---
         # Long SWE-bench turns produce hundreds of child spans before the root
         # `claude_code.interaction` span ends. The default queue (2048) and
-        # batch size (512) silently drop spans under that load, leaving the
-        # root span trapped in MLflow as `IN_PROGRESS`. Bump both, and let env
-        # overrides win.
+        # batch size (512) silently drop spans under that load. Bump both, and
+        # let env overrides win.
         bsp_queue = _parse_int_env("OTEL_BSP_MAX_QUEUE_SIZE", 8192)
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
@@ -115,18 +113,6 @@ def init_telemetry() -> bool:
         )
         trace.set_tracer_provider(tp)
         _tracer_provider = tp
-
-        # --- MLflow tracing destination ---
-        # Add MLflow as an ADDITIONAL span processor on the TracerProvider
-        # so spans go to BOTH the OTEL Collector (ClickHouse + Tempo) AND
-        # MLflow's tracking server. MLflow's `set_destination()` writes
-        # trace_request_metadata that the search/UI API requires — the
-        # collector's otlphttp/mlflow path stores spans but is
-        # search-invisible. Setting MLFLOW_USE_DEFAULT_TRACER_PROVIDER=false
-        # tells mlflow to attach its processor to our TP instead of
-        # installing its own.
-        os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
-        _init_mlflow_destination()
 
         # --- Inbound W3C trace-context (BFF -> sandbox-execution-api -> here) ---
         # The Sandbox manifest stamps the parent BFF traceparent on the pod's
@@ -194,10 +180,14 @@ def _iter_context_bridge_attrs(original: Any) -> Iterator[tuple[str, Any]]:
     `src.telemetry.attributes`, so expose it through the same hook before the
     wrapper snapshots span attributes.
     """
+
     def _non_null_attrs(items: Any) -> Iterator[tuple[str, Any]]:
         for key, value in items:
             if value is None:
-                logger.debug("Dropping null OpenTelemetry attribute from Dapr Agents bridge: %s", key)
+                logger.debug(
+                    "Dropping null OpenTelemetry attribute from Dapr Agents bridge: %s",
+                    key,
+                )
                 continue
             yield key, value
 
@@ -224,9 +214,13 @@ def _install_dapr_agents_context_bridge() -> None:
             module = __import__(module_name, fromlist=["get_attributes_from_context"])
             original = getattr(module, "get_attributes_from_context", None)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Dapr Agents context bridge skipped for %s: %s", module_name, exc)
+            logger.debug(
+                "Dapr Agents context bridge skipped for %s: %s", module_name, exc
+            )
             continue
-        if original is None or getattr(original, "_workflow_builder_context_bridge", False):
+        if original is None or getattr(
+            original, "_workflow_builder_context_bridge", False
+        ):
             continue
 
         def bridged_get_attributes_from_context(
@@ -234,151 +228,14 @@ def _install_dapr_agents_context_bridge() -> None:
         ) -> Iterator[tuple[str, Any]]:
             yield from _iter_context_bridge_attrs(_original)
 
-        setattr(bridged_get_attributes_from_context, "_workflow_builder_context_bridge", True)
-        setattr(module, "get_attributes_from_context", bridged_get_attributes_from_context)
-
-
-@contextmanager
-def _mlflow_destination_without_otlp_metrics() -> Iterator[None]:
-    """Prevent MLflow's trace processor from creating its internal OTLP metric exporter.
-
-    MLflow still exports traces to the configured MlflowExperimentLocation. This only
-    disables MLflow's span-duration metric labels for this process; workflow-builder's
-    own OTLP trace and metric exporters keep using OTEL_EXPORTER_OTLP_ENDPOINT.
-    """
-    hidden = {
-        name: os.environ.pop(name, None)
-        for name in (
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        setattr(
+            bridged_get_attributes_from_context,
+            "_workflow_builder_context_bridge",
+            True,
         )
-    }
-    try:
-        yield
-    finally:
-        for name, value in hidden.items():
-            if value is not None:
-                os.environ[name] = value
-
-
-def _init_mlflow_destination() -> None:
-    """Add MLflow as a span destination on the active TracerProvider.
-
-    No-op when `mlflow` isn't installed or when
-    `MLFLOW_TRACKING_URI`/`MLFLOW_TRACE_EXPERIMENT_ID` aren't set.
-    Failures are logged but never raise — tracing must stay best-effort.
-    """
-    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-    experiment_id = (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
-    if not tracking_uri or not experiment_id:
-        logger.info(
-            "MLflow tracing destination skipped (MLFLOW_TRACKING_URI=%r, "
-            "MLFLOW_TRACE_EXPERIMENT_ID=%r)",
-            tracking_uri or "<unset>",
-            experiment_id or "<unset>",
+        setattr(
+            module, "get_attributes_from_context", bridged_get_attributes_from_context
         )
-        return
-
-    try:
-        import mlflow
-        from mlflow.entities.trace_location import MlflowExperimentLocation
-    except Exception as exc:  # noqa: BLE001
-        logger.info("mlflow SDK unavailable; MLflow tracing destination skipped (%s)", exc)
-        return
-
-    try:
-        mlflow.set_tracking_uri(tracking_uri)
-        with _mlflow_destination_without_otlp_metrics():
-            mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
-        logger.info(
-            "MLflow tracing destination set: experiment_id=%s tracking_uri=%s",
-            experiment_id,
-            tracking_uri,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to set MLflow tracing destination: %s", exc)
-        return
-
-    # --- Phase 2b: provider-level autolog ------------------------------
-    # mlflow.anthropic.autolog() instruments every Anthropic Python SDK
-    # call (Messages, Tool Use, structured prompts) and emits child
-    # spans under our existing claude_code.interaction roll-up. Combined
-    # with MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true (Phase 2a, ConfigMap),
-    # the autolog span attributes get translated to standard OTel
-    # gen_ai.* keys on OTLP export — making the same data queryable
-    # from ClickHouse + Tempo without provider-specific glue.
-    #
-    # Gated by DAPR_AGENT_PY_MLFLOW_AUTOLOG_ANTHROPIC=true (default true
-    # on dev for soak; can disable per-env via configmap if needed).
-    autolog_anthropic = (
-        os.environ.get("DAPR_AGENT_PY_MLFLOW_AUTOLOG_ANTHROPIC", "true")
-        .strip()
-        .lower()
-        not in {"0", "false", "no", "off"}
-    )
-    if autolog_anthropic:
-        try:
-            import mlflow.anthropic  # type: ignore[import-not-found]
-            mlflow.anthropic.autolog(log_traces=True, silent=True)
-            logger.info("MLflow Anthropic autolog enabled (Phase 2b)")
-        except Exception as exc:  # noqa: BLE001
-            logger.info("MLflow Anthropic autolog skipped (%s)", exc)
-
-    # mlflow.litellm.autolog() — covers MLflow AI Gateway proxied
-    # calls. Lower priority for now: until Phase 2c expands the Gateway
-    # config with our provider set, the only calls flowing through it
-    # are the two existing OpenAI routes. Still cheap to enable so the
-    # plumbing is verified end-to-end.
-    autolog_litellm = (
-        os.environ.get("DAPR_AGENT_PY_MLFLOW_AUTOLOG_LITELLM", "true")
-        .strip()
-        .lower()
-        not in {"0", "false", "no", "off"}
-    )
-    if autolog_litellm:
-        try:
-            import mlflow.litellm  # type: ignore[import-not-found]
-            mlflow.litellm.autolog(log_traces=True, silent=True)
-            logger.info("MLflow LiteLLM autolog enabled (Phase 2b/2c)")
-        except Exception as exc:  # noqa: BLE001
-            logger.info("MLflow LiteLLM autolog skipped (%s)", exc)
-
-
-def set_mlflow_trace_experiment_for_context(experiment_id: str | None) -> bool:
-    """Set a context-local MLflow trace destination for the current workflow turn."""
-    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-    experiment_id = (experiment_id or "").strip()
-    if not tracking_uri or not experiment_id:
-        return False
-
-    try:
-        import mlflow
-        from mlflow.entities.trace_location import MlflowExperimentLocation
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("mlflow SDK unavailable; context-local destination skipped (%s)", exc)
-        return False
-
-    try:
-        mlflow.set_tracking_uri(tracking_uri)
-        try:
-            with _mlflow_destination_without_otlp_metrics():
-                mlflow.tracing.set_destination(
-                    MlflowExperimentLocation(experiment_id=experiment_id),
-                    context_local=True,
-                )
-        except TypeError:
-            with _mlflow_destination_without_otlp_metrics():
-                mlflow.tracing.set_destination(
-                    MlflowExperimentLocation(experiment_id=experiment_id)
-                )
-        logger.info(
-            "MLflow context-local tracing destination set: experiment_id=%s",
-            experiment_id,
-        )
-        return True
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to set context-local MLflow tracing destination: %s", exc)
-        return False
 
 
 # Cached inbound (orchestrator/BFF) trace context extracted from the
@@ -437,7 +294,7 @@ def get_tracer():
 
     Use the TracerProvider we built in init_telemetry() DIRECTLY rather than the
     ambient global. OpenTelemetry's `set_tracer_provider()` is a one-shot: if any
-    component (durabletask / Dapr SDK / MLflow / FastAPI instrumentor) set a
+    component (durabletask / Dapr SDK / FastAPI instrumentor) set a
     provider before us, our `set_tracer_provider(tp)` is silently ignored and the
     global provider has no OTLP exporter — so every `trace.get_tracer()` span
     (claude_code.*, state.*) is created but never exported. DaprAgentsInstrumentor
@@ -473,13 +330,14 @@ def flush_telemetry(timeout_ms: int | None = None) -> None:
 
     Call after ending the root `claude_code.interaction` span at the end of
     an agent_workflow turn so the root span doesn't sit in the queue past the
-    activity return — which is what leaves MLflow traces stuck in
-    `IN_PROGRESS` with no root.
+    activity return so terminal spans are available to ClickHouse promptly.
     """
     if not _ready or _tracer_provider is None:
         return
-    effective = timeout_ms if timeout_ms is not None else _parse_int_env(
-        "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS", 5_000
+    effective = (
+        timeout_ms
+        if timeout_ms is not None
+        else _parse_int_env("CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS", 5_000)
     )
     try:
         flush = getattr(_tracer_provider, "force_flush", None)

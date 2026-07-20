@@ -277,7 +277,7 @@ def set_activity_attrs(
     agent_app_id: str | None = None,
     component: str | None = None,
     iteration: int | None = None,
-    mlflow_span_type: str | None = None,
+    span_type: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> None:
     """Generic workflow-context attrs for any Dapr activity span."""
@@ -309,9 +309,17 @@ def set_activity_attrs(
         _safe_set(span, "dapr.component", component)
     if iteration is not None:
         _safe_set(span, "agent.iteration", int(iteration))
-    if mlflow_span_type:
-        _safe_set(span, "span_type", mlflow_span_type)
-        _safe_set(span, "mlflow.spanType", mlflow_span_type)
+    if span_type:
+        _safe_set(span, "span.type", span_type)
+        _safe_set(
+            span,
+            "openinference.span.kind",
+            {
+                "llm_request": "LLM",
+                "tool": "TOOL",
+                "agent": "AGENT",
+            }.get(span_type, "CHAIN"),
+        )
     if extra:
         for k, v in extra.items():
             _safe_set(span, str(k), v)

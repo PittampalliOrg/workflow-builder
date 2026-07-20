@@ -1,8 +1,8 @@
 """Best-effort OpenTelemetry trace finalization activity.
 
 This activity records the workflow's trace linkage through workflow-data. It
-does not call MLflow or any trace backend directly; spans should already export
-through the normal OpenTelemetry pipeline.
+does not call a trace backend directly; spans should already export through the
+normal OpenTelemetry pipeline.
 """
 
 from __future__ import annotations

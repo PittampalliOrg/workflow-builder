@@ -223,20 +223,11 @@ def _stagger_workflow_start(payload: dict[str, Any]) -> None:
 
 
 def _workflow_baggage(payload: dict[str, Any]) -> str:
-    mlflow_context = payload.get("mlflowContext")
-    if not isinstance(mlflow_context, dict):
-        mlflow_context = {}
     attrs = {
         "session.id": payload.get("workflowExecutionId"),
         "workflow.execution.id": payload.get("workflowExecutionId"),
         "workflow.id": payload.get("workflowId"),
         "workflow_builder.trace_group_id": payload.get("workflowExecutionId"),
-        "mlflow.experiment_id": mlflow_context.get("traceExperimentId")
-        or mlflow_context.get("experimentId"),
-        "mlflow.run_id": mlflow_context.get("runId"),
-        "mlflow.parent_run_id": mlflow_context.get("parentRunId"),
-        "mlflow.modelId": mlflow_context.get("activeModelId"),
-        "mlflow.model.uri": mlflow_context.get("activeModelUri"),
     }
     return ",".join(
         f"{key}={quote(str(value), safe='')}"

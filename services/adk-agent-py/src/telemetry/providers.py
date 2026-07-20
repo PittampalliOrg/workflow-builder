@@ -56,11 +56,11 @@ def _clean_attrs(attrs: Any) -> dict[str, Any] | None:
 def _install_otlp_attribute_encoder_guard() -> None:
     """Filter invalid attributes at the final OTLP protobuf encoding boundary.
 
-    ADK/Diagrid and MLflow autologging can attach event, log, or metric
-    attributes outside our span processor/exporter wrappers. The OTLP encoder
-    rejects ``None`` values and only logs a generic key-level failure, so keep
-    this guard close to the exporter setup and apply it to each encoder module
-    that imports the helper directly.
+    ADK/Diagrid can attach event, log, or metric attributes outside our span
+    processor/exporter wrappers. The OTLP encoder rejects ``None`` values and
+    only logs a generic key-level failure, so keep this guard close to the
+    exporter setup and apply it to each encoder module that imports the helper
+    directly.
     """
 
     try:
@@ -92,32 +92,30 @@ def _install_otlp_attribute_encoder_guard() -> None:
             module._encode_attributes = guarded_encode_attributes
 
 
-def _infer_mlflow_span_type(span_name: str | None) -> str:
+def _infer_span_type(span_name: str | None) -> str:
     name = (span_name or "").strip().lower()
     if "tool" in name:
-        return "TOOL"
-    if (
-        "llm" in name
-        or "generate_content" in name
-        or "chat" in name
-        or "model" in name
-    ):
-        return "CHAT_MODEL"
+        return "tool"
+    if "llm" in name or "generate_content" in name or "chat" in name or "model" in name:
+        return "llm_request"
     if "agent" in name or "session" in name:
-        return "AGENT"
-    return "CHAIN"
+        return "agent"
+    return "chain"
 
 
 def _attrs_with_valid_span_type(span: Any, attrs: Any) -> dict[str, Any] | None:
     cleaned = _clean_attrs(attrs) or {}
     original = dict(attrs or {})
-    inferred = _infer_mlflow_span_type(getattr(span, "name", None))
-    raw_span_type = original.get("span_type", cleaned.get("span_type"))
-    raw_mlflow_span_type = original.get("mlflow.spanType", cleaned.get("mlflow.spanType"))
+    inferred = _infer_span_type(getattr(span, "name", None))
+    raw_span_type = original.get("span.type", cleaned.get("span.type"))
     if raw_span_type is None:
-        cleaned["span_type"] = inferred
-    if raw_mlflow_span_type is None:
-        cleaned["mlflow.spanType"] = cleaned.get("span_type") or inferred
+        cleaned["span.type"] = inferred
+    if original.get("openinference.span.kind") is None:
+        cleaned["openinference.span.kind"] = {
+            "llm_request": "LLM",
+            "tool": "TOOL",
+            "agent": "AGENT",
+        }.get(cleaned.get("span.type") or inferred, "CHAIN")
     return cleaned or None
 
 
@@ -125,7 +123,9 @@ def _replace_span_attrs(span: Any, attrs: dict[str, Any] | None) -> None:
     try:
         setattr(span, "_attributes", attrs or {})
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Failed to replace attrs for span %s: %s", getattr(span, "name", "?"), exc)
+        logger.debug(
+            "Failed to replace attrs for span %s: %s", getattr(span, "name", "?"), exc
+        )
 
 
 class _SanitizingSpanExporter:
@@ -170,7 +170,9 @@ class _SanitizingSpanExporter:
                 instrumentation_scope=span.instrumentation_scope,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to sanitize span %s: %s", getattr(span, "name", "?"), exc)
+            logger.debug(
+                "Failed to sanitize span %s: %s", getattr(span, "name", "?"), exc
+            )
             return span
 
 
@@ -239,12 +241,12 @@ def telemetry_debug_state() -> dict[str, Any]:
 
     return {
         "ready": _ready,
-        "configured_provider": type(_tracer_provider).__name__ if _tracer_provider else None,
+        "configured_provider": type(_tracer_provider).__name__
+        if _tracer_provider
+        else None,
         "global_provider": global_provider,
-        "otel_endpoint": bool((os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()),
-        "mlflow_tracking_uri": bool((os.environ.get("MLFLOW_TRACKING_URI") or "").strip()),
-        "mlflow_experiment_id": bool(
-            (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
+        "otel_endpoint": bool(
+            (os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip()
         ),
     }
 
@@ -307,11 +309,10 @@ def init_telemetry() -> bool:
         )
 
         # --- Tracer ---
-        # Long SWE-bench turns produce hundreds of child spans before the root
+        # Long agent turns produce hundreds of child spans before the root
         # `claude_code.interaction` span ends. The default queue (2048) and
-        # batch size (512) silently drop spans under that load, leaving the
-        # root span trapped in MLflow as `IN_PROGRESS`. Bump both, and let env
-        # overrides win.
+        # batch size (512) silently drop spans under that load. Bump both, and
+        # let env overrides win.
         bsp_queue = _parse_int_env("OTEL_BSP_MAX_QUEUE_SIZE", 8192)
         bsp_batch = _parse_int_env("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 2048)
         bsp_delay = _parse_int_env("OTEL_BSP_SCHEDULE_DELAY", 5_000)
@@ -319,7 +320,9 @@ def init_telemetry() -> bool:
         tp.add_span_processor(_SanitizingSpanProcessor())
         tp.add_span_processor(
             BatchSpanProcessor(
-                _SanitizingSpanExporter(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")),
+                _SanitizingSpanExporter(
+                    OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
+                ),
                 max_queue_size=bsp_queue,
                 max_export_batch_size=bsp_batch,
                 schedule_delay_millis=bsp_delay,
@@ -327,18 +330,6 @@ def init_telemetry() -> bool:
         )
         trace.set_tracer_provider(tp)
         _tracer_provider = tp
-
-        # --- MLflow tracing destination ---
-        # Add MLflow as an ADDITIONAL span processor on the TracerProvider
-        # so spans go to BOTH the OTEL Collector (ClickHouse + Tempo) AND
-        # MLflow's tracking server. MLflow's `set_destination()` writes
-        # trace_request_metadata that the search/UI API requires — the
-        # collector's otlphttp/mlflow path stores spans but is
-        # search-invisible. Setting MLFLOW_USE_DEFAULT_TRACER_PROVIDER=false
-        # tells mlflow to attach its processor to our TP instead of
-        # installing its own.
-        os.environ.setdefault("MLFLOW_USE_DEFAULT_TRACER_PROVIDER", "false")
-        _init_mlflow_destination()
 
         # --- Inbound W3C trace-context (BFF -> sandbox-execution-api -> here) ---
         # The Sandbox manifest stamps the parent BFF traceparent on the pod's
@@ -387,81 +378,6 @@ def init_telemetry() -> bool:
         return False
 
 
-def _init_mlflow_destination() -> None:
-    """Add MLflow as a span destination on the active TracerProvider.
-
-    No-op when `mlflow` isn't installed or when
-    `MLFLOW_TRACKING_URI`/`MLFLOW_TRACE_EXPERIMENT_ID` aren't set.
-    Failures are logged but never raise — tracing must stay best-effort.
-    """
-    tracking_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()
-    experiment_id = (os.environ.get("MLFLOW_TRACE_EXPERIMENT_ID") or "").strip()
-    if not tracking_uri or not experiment_id:
-        logger.info(
-            "MLflow tracing destination skipped (MLFLOW_TRACKING_URI=%r, "
-            "MLFLOW_TRACE_EXPERIMENT_ID=%r)",
-            tracking_uri or "<unset>",
-            experiment_id or "<unset>",
-        )
-        return
-
-    try:
-        import mlflow
-        from mlflow.entities.trace_location import MlflowExperimentLocation
-    except Exception as exc:  # noqa: BLE001
-        logger.info("mlflow SDK unavailable; MLflow tracing destination skipped (%s)", exc)
-        return
-
-    try:
-        mlflow.set_tracking_uri(tracking_uri)
-        mlflow.tracing.set_destination(MlflowExperimentLocation(experiment_id=experiment_id))
-        logger.info(
-            "MLflow tracing destination set: experiment_id=%s tracking_uri=%s",
-            experiment_id,
-            tracking_uri,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to set MLflow tracing destination: %s", exc)
-        return
-
-    # --- Phase 2b: provider-level autolog ------------------------------
-    # mlflow.anthropic.autolog() instruments every Anthropic Python SDK
-    # call (Messages, Tool Use, structured prompts) and emits child
-    # spans under our existing claude_code.interaction roll-up. Combined
-    # with MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true (Phase 2a, ConfigMap),
-    # the autolog span attributes get translated to standard OTel
-    # gen_ai.* keys on OTLP export — making the same data queryable
-    # from ClickHouse + Tempo without provider-specific glue.
-    #
-    # Gated by DAPR_AGENT_PY_MLFLOW_AUTOLOG_ANTHROPIC=true (default true
-    # on dev for soak; can disable per-env via configmap if needed).
-    # Anthropic autolog is irrelevant for adk-agent-py (Gemini-only by
-    # default). LiteLLM autolog below stays — it covers ADK agents
-    # configured with `provider="litellm"` (Claude / OpenAI / etc.).
-    autolog_anthropic = False
-    if False:  # kept for diff symmetry with dapr-agent-py
-        pass
-
-    # mlflow.litellm.autolog() — covers MLflow AI Gateway proxied
-    # calls. Lower priority for now: until Phase 2c expands the Gateway
-    # config with our provider set, the only calls flowing through it
-    # are the two existing OpenAI routes. Still cheap to enable so the
-    # plumbing is verified end-to-end.
-    autolog_litellm = (
-        os.environ.get("ADK_AGENT_PY_MLFLOW_AUTOLOG_LITELLM", "true")
-        .strip()
-        .lower()
-        not in {"0", "false", "no", "off"}
-    )
-    if autolog_litellm:
-        try:
-            import mlflow.litellm  # type: ignore[import-not-found]
-            mlflow.litellm.autolog(log_traces=True, silent=True)
-            logger.info("MLflow LiteLLM autolog enabled (Phase 2b/2c)")
-        except Exception as exc:  # noqa: BLE001
-            logger.info("MLflow LiteLLM autolog skipped (%s)", exc)
-
-
 def _attach_inbound_trace_context() -> None:
     """Honor WORKFLOW_BUILDER_TRACEPARENT/TRACESTATE downward-API env vars.
 
@@ -503,6 +419,7 @@ def get_tracer():
         return _tracer_provider.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
 
     from opentelemetry import trace
+
     return trace.get_tracer(_TRACER_SCOPE, _TRACER_VERSION)
 
 
@@ -526,13 +443,14 @@ def flush_telemetry(timeout_ms: int | None = None) -> None:
 
     Call after ending the root `claude_code.interaction` span at the end of
     an agent_workflow turn so the root span doesn't sit in the queue past the
-    activity return — which is what leaves MLflow traces stuck in
-    `IN_PROGRESS` with no root.
+    activity return so terminal spans are available to ClickHouse promptly.
     """
     if not _ready or _tracer_provider is None:
         return
-    effective = timeout_ms if timeout_ms is not None else _parse_int_env(
-        "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS", 5_000
+    effective = (
+        timeout_ms
+        if timeout_ms is not None
+        else _parse_int_env("CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS", 5_000)
     )
     try:
         flush = getattr(_tracer_provider, "force_flush", None)

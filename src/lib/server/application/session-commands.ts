@@ -30,7 +30,6 @@ import type {
 	SessionRepositoryMountTarget,
 	SessionRepositoryMounter,
 	SessionSandboxDestroyer,
-	SessionTraceLifecycleStore,
 	SessionWorkflowSpawner,
 	WorkspaceProjectRepository,
 	WorkflowEphemeralAgentStore,
@@ -213,7 +212,6 @@ export class ApplicationSessionCommandService {
 			repositoryMounter: SessionRepositoryMounter;
 			workflowSpawner: SessionWorkflowSpawner;
 			workspaceProjects?: WorkspaceProjectRepository;
-			sessionTraceLifecycle?: SessionTraceLifecycleStore;
 			sandboxDestroyer?: SessionSandboxDestroyer;
 			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
 			agentRuntimeSync?: AgentRuntimeSyncPort;
@@ -709,7 +707,6 @@ export class ApplicationSessionCommandService {
 				agentId: session.agentId,
 				agentVersion: session.agentVersion ?? undefined,
 			});
-			await this.attachTraceContext({ session, resolvedAgent, userId: input.userId });
 			await this.appendInitialMessage({ sessionId: session.id, body });
 
 			const mergedRepos = dedupeRepositoriesByUrl([
@@ -873,39 +870,6 @@ export class ApplicationSessionCommandService {
 					err instanceof Error ? err.message : "Experiment agent create failed",
 			};
 		}
-	}
-
-	private async attachTraceContext(input: {
-		session: SessionDetail;
-		resolvedAgent: Awaited<ReturnType<SessionAgentResolver["resolveSessionAgent"]>>;
-		userId: string;
-	}): Promise<void> {
-		const traceLifecycle = this.deps.sessionTraceLifecycle;
-		if (!traceLifecycle?.createInteractiveSessionTraceRun || !input.resolvedAgent) {
-			return;
-		}
-		const mlflowRunContext =
-			await traceLifecycle.createInteractiveSessionTraceRun({
-				sessionId: input.session.id,
-				title: input.session.title,
-				projectId: input.session.projectId,
-				userId: input.userId,
-				agentId: input.resolvedAgent.id,
-				agentName: input.resolvedAgent.name,
-				agentSlug: input.resolvedAgent.slug,
-				agentVersion: input.resolvedAgent.version,
-				agentAppId: input.resolvedAgent.runtimeAppId,
-				activeModelId: input.resolvedAgent.mlflowModelVersion,
-				activeModelName: input.resolvedAgent.mlflowModelName,
-				activeModelUri: input.resolvedAgent.mlflowUri,
-				existingRunId: input.session.mlflowRunId,
-			});
-		if (!mlflowRunContext) return;
-		input.session.mlflowExperimentId = mlflowRunContext.experimentId;
-		input.session.mlflowRunId = mlflowRunContext.runId;
-		input.session.mlflowParentRunId = mlflowRunContext.parentRunId ?? null;
-		input.session.mlflowSessionId =
-			mlflowRunContext.mlflowSessionId ?? input.session.id;
 	}
 
 	private async appendInitialMessage(input: {

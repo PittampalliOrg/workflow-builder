@@ -1,7 +1,7 @@
 """Workflow Builder telemetry patch for Diagrid's ADK durable bridge.
 
 Diagrid's ADK runner emits durable activity spans, but those spans do not carry
-the MLflow/OpenInference attributes that the workflow UI and MLflow collector
+the OpenTelemetry/OpenInference attributes that the workflow UI and collector
 use to classify LLM/tool work. Patch the registered workflow and activities so
 each LLM and tool activity gets the same typed span shape as dapr-agent-py.
 """
@@ -158,7 +158,7 @@ def _stamp_current_activity(
     ctx: Mapping[str, Any],
     *,
     activity: str,
-    mlflow_span_type: str | None = None,
+    span_type: str | None = None,
 ) -> Any | None:
     span = get_current_span()
     if span is None:
@@ -175,7 +175,7 @@ def _stamp_current_activity(
         agent_app_id=_clean_string(ctx.get("agent.app_id")),
         component=_clean_string(ctx.get("dapr.component")),
         iteration=_int_or_none(ctx.get("agent.iteration")),
-        mlflow_span_type=mlflow_span_type,
+        span_type=span_type,
         extra={
             "workflow.activity": activity,
             "workflow.activity.correlation_id": ctx.get(
@@ -344,12 +344,11 @@ def _patch_workflow_module(module: Any) -> None:
         _stamp_current_activity(
             tel,
             activity="call_llm_activity",
-            mlflow_span_type="CHAT_MODEL",
+            span_type="llm_request",
         )
         attrs = {
             **_base_attrs(tel),
-            "span_type": "CHAT_MODEL",
-            "mlflow.spanType": "CHAT_MODEL",
+            "span.type": "llm_request",
             "openinference.span.kind": "LLM",
             "gen_ai.operation.name": "chat",
             "input.mime_type": "application/json",
@@ -380,8 +379,7 @@ def _patch_workflow_module(module: Any) -> None:
             if span is not None:
                 for key, value in attrs.items():
                     span.set_attribute(key, value)
-                span.set_attribute("span_type", "CHAT_MODEL")
-                span.set_attribute("mlflow.spanType", "CHAT_MODEL")
+                span.set_attribute("span.type", "llm_request")
                 span.set_attribute("openinference.span.kind", "LLM")
                 span.set_attribute("gen_ai.operation.name", "chat")
                 span.set_attribute("input.mime_type", "application/json")
@@ -460,12 +458,11 @@ def _patch_workflow_module(module: Any) -> None:
         _stamp_current_activity(
             tel,
             activity="execute_tool_activity",
-            mlflow_span_type="TOOL",
+            span_type="tool",
         )
         attrs = {
             **_base_attrs(tel),
-            "span_type": "TOOL",
-            "mlflow.spanType": "TOOL",
+            "span.type": "tool",
             "openinference.span.kind": "TOOL",
             "gen_ai.operation.name": "execute_tool",
             "gen_ai.tool.name": tool_name,
