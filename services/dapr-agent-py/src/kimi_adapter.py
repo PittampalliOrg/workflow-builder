@@ -54,10 +54,7 @@ def _is_kimi_component(component: str) -> bool:
 
 
 def _get_kimi_model(component: str) -> str:
-    return COMPONENT_MODEL_MAP.get(
-        component,
-        os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k3"),
-    )
+    return COMPONENT_MODEL_MAP.get(component, "kimi-k3")
 
 
 def _kimi_reasoning_state_models() -> tuple[Any, Any]:

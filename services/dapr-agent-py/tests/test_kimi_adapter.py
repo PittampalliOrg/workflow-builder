@@ -119,6 +119,12 @@ def test_kimi_auth_headers_use_kimi_api_key(monkeypatch) -> None:
     assert auth_mode == "kimi-api-key"
 
 
+def test_kimi_model_fallback_is_pinned_to_k3(monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_DEFAULT_MODEL", "kimi-k2.6")
+
+    assert adapter._get_kimi_model("unmapped-kimi-component") == "kimi-k3"
+
+
 def test_kimi_k3_chat_uses_openai_compatible_endpoint_and_max_reasoning(
     monkeypatch,
 ) -> None:
