@@ -18,7 +18,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { setSpanOutput } from "./observability/content.js";
 import type { RegisteredTool } from "./workflow-tools.js";
-import { currentGoalSessionId } from "./goal-context.js";
+import { currentSessionId } from "./session-context.js";
 import { currentTeamId } from "./team-context.js";
 import { currentWorkflowMcpContext } from "./auth-context.js";
 import { getTeam, listMembers, listTasks } from "./team-db.js";
@@ -30,7 +30,7 @@ const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 export function currentTeamActionHeaders(): Record<string, string> {
   const principal = currentWorkflowMcpContext().principal;
-  const sessionId = currentGoalSessionId();
+  const sessionId = currentSessionId();
   if (
     !principal ||
     !principal.principalAssertion ||
@@ -64,7 +64,7 @@ function errorResult(msg: string) {
 function requireCtx():
 	| { sessionId: string; teamId: string }
 	| { error: ReturnType<typeof errorResult> } {
-	const sessionId = currentGoalSessionId();
+	const sessionId = currentSessionId();
 	const teamId = currentTeamId();
 	if (!sessionId)
 		return {

@@ -36,7 +36,6 @@ import {
 	registerWorkflowTools,
 	type RegisteredTool,
 } from "./workflow-tools.js";
-import { registerGoalTools } from "./goal-tools.js";
 import { registerTraceTools } from "./trace-tools.js";
 import { registerPreviewEnvironmentTools } from "./preview-tools.js";
 import {
@@ -48,8 +47,8 @@ import {
 	parseStructuredOutputContext,
 	STRUCTURED_OUTPUT_TOOL_NAME,
 } from "./structured-output-tools.js";
-import { runWithGoalContext } from "./goal-context.js";
 import { runWithTeamContext } from "./team-context.js";
+import { runWithSessionContext } from "./session-context.js";
 import { registerTeamTools } from "./team-tools.js";
 import {
 	diagnosticMcpRequestTrace,
@@ -268,12 +267,9 @@ function createMcpServer(
 	// Current workflow tools are UI-independent. The legacy Remote DOM/canvas
 	// authoring tools are no longer registered by workflow-tools.ts.
   registerWorkflowTools(mcpServer, { persistence, principal });
-	// Goal tools register regardless of the UI so any MCP-capable agent runtime
-	// can drive the Codex-/goal-parity loop. Session scope comes from the
-  // authenticated principal (see runWithGoalContext below).
-  if (sessionTools.goal) {
-	registerGoalTools(mcpServer);
-  }
+  // Goal MCP tools (create_goal/update_goal/get_goal) were removed — goals
+  // are authored in code via the dynamic-script engine and completed by the
+  // BFF evidence backstop, not self-declared/self-completed over MCP.
   if (hasWorkflowMcpScope(principal, "workflow:read")) {
     registerTraceTools(mcpServer, {
       principal,
@@ -426,14 +422,14 @@ async function handleMcpPost(
 	await server.connect(transport);
 
 	// Bind the workflow-builder session (codex thread) for this request so the
-	// goal tools can resolve which session they act on.
+	// session-scoped tools (e.g. team tools) can resolve which session.
   const wfbSessionId = context.principal?.sessionId;
   const wfbTeamId = context.principal?.capabilities.teamId ?? null;
   await runWithWorkflowMcpContext(context, () =>
-    runWithGoalContext({ sessionId: wfbSessionId ?? null }, () =>
+    runWithSessionContext({ sessionId: wfbSessionId ?? null }, () =>
       runWithTeamContext({ teamId: wfbSessionId ? wfbTeamId : null }, () =>
-			transport.handleRequest(req, res, body),
-		),
+        transport.handleRequest(req, res, body),
+      ),
     ),
 	);
 }
@@ -482,14 +478,6 @@ async function main(): Promise<void> {
         principal: TOOL_CATALOG_PRINCIPAL,
       }),
 		];
-	}
-	// Always count the goal tools.
-	{
-		const dryGoalServer = new McpServer(
-			{ name: "dry-run-goal", version: "0.0.0" },
-			{ capabilities: { tools: {} } },
-		);
-		registeredTools = [...registeredTools, ...registerGoalTools(dryGoalServer)];
 	}
 	// Count workspace-scoped trace tools. Runtime registration still requires
 	// workflow:read from the authenticated principal.

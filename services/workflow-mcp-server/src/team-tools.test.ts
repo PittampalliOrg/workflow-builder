@@ -3,7 +3,7 @@ import {
   runWithWorkflowMcpContext,
   type WorkflowMcpRequestContext,
 } from "./auth-context.js";
-import { runWithGoalContext } from "./goal-context.js";
+import { runWithSessionContext } from "./session-context.js";
 import { currentTeamActionHeaders } from "./team-tools.js";
 
 const context: WorkflowMcpRequestContext = {
@@ -25,7 +25,7 @@ const context: WorkflowMcpRequestContext = {
 describe("Workflow MCP team action headers", () => {
   it("forwards the signed principal assertion and its exact session lineage", () => {
     const headers = runWithWorkflowMcpContext(context, () =>
-      runWithGoalContext({ sessionId: "session-1" }, () =>
+      runWithSessionContext({ sessionId: "session-1" }, () =>
         currentTeamActionHeaders(),
       ),
     );
@@ -40,7 +40,7 @@ describe("Workflow MCP team action headers", () => {
   it("rejects a request context whose session differs from the assertion", () => {
     expect(() =>
       runWithWorkflowMcpContext(context, () =>
-        runWithGoalContext({ sessionId: "other-session" }, () =>
+        runWithSessionContext({ sessionId: "other-session" }, () =>
           currentTeamActionHeaders(),
         ),
       ),

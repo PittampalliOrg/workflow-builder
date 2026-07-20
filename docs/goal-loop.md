@@ -40,18 +40,15 @@ Event-driven off the session event-log adapter side-effects (`src/lib/server/app
 
 `continuation.md` (next-turn steering: budget readout, "avoid repeating work", the **completion-audit** protocol — prompt-to-artifact checklist, no proxy signals, uncertainty = not achieved, call `update_goal` only when genuinely done) and `budget_limit.md` (wrap-up steering: no new substantive work, summarize + hand off). Rendered by `render.ts` (tiny `{{ var }}` replacer; objective stays wrapped in `<untrusted_objective>` so it's data, not instructions).
 
-### Completion contract — goal MCP tools (workflow-mcp-server)
+### Completion contract — code-authored goals + BFF evidence backstop
 
-`services/workflow-mcp-server/src/{goal-tools,goal-context,goal-db}.ts`, registered alongside the workflow tools; **now actually deployed** (stacks `Deployment-workflow-mcp-server.yaml` + `Service-workflow-mcp-server.yaml`, port **3200**, `DATABASE_URL` + `INTERNAL_API_TOKEN` via `envFrom workflow-builder-secrets`; Dockerfile pnpm pinned `@9`).
+The goal **MCP** tools (`create_goal`/`update_goal`/`get_goal`) and their auto-wire were **REMOVED** (goals are authored in code via the dynamic-script engine now; agents no longer self-declare or self-complete goals over MCP). `services/workflow-mcp-server/src/{goal-tools,goal-db}.ts` were deleted; `goal-context.ts` was renamed to `session-context.ts` (it's the shared session-id `AsyncLocalStorage`, still used by the team tools). The workflow-mcp-server Deployment/Service (port **3200**) stays — it still hosts the workflow/script/trace/team tools.
 
-- **`create_goal { objective, token_budget?, max_iterations? }`** — agent-initiated goal (replaces any existing one). The BFF driver picks it up on the next idle.
-- **`update_goal { status }`** — accepts **ONLY `"complete"`** (pause/resume/budget transitions are user/system-owned). Returns a `completion_budget_report` so the agent reports final elapsed/consumed budget.
-- **`get_goal {}`** — objective, status, tokens used/budget/remaining, elapsed, iterations.
-- **Session scoping**: the BFF stamps `X-Wfb-Session-Id` into the goal MCP entry's headers at spawn (`stampGoalMcpSessionHeader`, `src/lib/server/sessions/spawn.ts:409` — matched by name `~goal` or URL `workflow-mcp-server`, never leaked to third-party servers); `index.ts` runs each MCP request inside an `AsyncLocalStorage` context (`goal-context.ts`), so the session id is **never a tool argument**.
+Goals are **authored** via the non-MCP HTTP path (`POST/GET/PATCH /api/v1/sessions/[id]/goal`, the Goal card) or in dynamic-script code (goalSpec/evidence). They are **completed** by:
+- the **BFF evidence backstop** — `evaluateGoalCompletion` runs each idle against the declared `evidence.commands` (the only completion path for agents that finish silently), calling `POST /api/internal/goals/[sessionId]/evaluate`, and
+- budget/iteration guardrails.
 
-### Auto-wire — every MCP-capable session gets the tools
-
-`ensureGoalMcpServer` (`spawn.ts:384`) appends `{ name:"goal", transport:"streamable_http", url: GOAL_MCP_SERVER_URL }` to `agentConfig.mcpServers` on the session spawn path when the runtime descriptor declares `supportsMcp` — without the tools, a UI-set goal could only end via caps or manual pause. Opt-out `GOAL_MCP_AUTO_WIRE=false`; URL override `GOAL_MCP_SERVER_URL` (default `http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp`). Skipped when an entry already matches the goal server.
+Since all goals are now evidence-backed (or code-authored with a goalSpec), removing the MCP self-completion path (`update_goal`) does not strand them. Evidence-less/self-judged goals (a retired pattern) no longer have an agent-driven completion signal.
 
 ---
 

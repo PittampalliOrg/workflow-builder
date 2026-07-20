@@ -32,11 +32,7 @@ import {
 	runtimeHasNativeGoalHarness,
 	runtimeUsesSharedWorkspace,
 } from "$lib/server/sessions/runtime-target";
-import {
-	ensureGoalMcpServer,
-	stampGoalMcpSessionHeader,
-	stampScriptGuardHeader,
-} from "$lib/server/goals/mcp-wiring";
+import { stampScriptGuardHeader } from "$lib/server/goals/mcp-wiring";
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -62,7 +58,7 @@ import {
  * (screenshot / video / pdf / HAR) to THIS run's browser-artifacts store. Those
  * artifacts live on the agent-browser-mcp pod, so the run identity has to travel
  * with the MCP connection; scoping by URL keeps the headers off every other
- * server. Mirrors stampGoalMcpSessionHeader.
+ * server. Same URL-scoped header pattern as stampScriptGuardHeader.
  */
 function stampAgentBrowserRunHeaders(
 	servers: unknown[],
@@ -566,29 +562,14 @@ export const POST: RequestHandler = async ({ request }) => {
       return null;
     }
   })();
-	// Auto-wire the platform goal MCP server (+ session header) only for non-CLI:
-	//   - evaluator-mode goal sessions (update_goal self-completion), and
-	//   - DYNAMIC-SCRIPT-spawned non-CLI sessions that rely on platform tools.
-	// CLI agents should not inherit default goal tools; their callable schema
-	// should contain only explicitly configured MCP servers plus runtime-internal
-	// tools such as StructuredOutput. Single-shot SW-1.0 runs also stay untouched.
-	const shouldAutoWireGoalMcp =
-		(evaluatorGoal || isDynamicScriptSpawn) && !isCliRuntime;
+  // Goals are authored in code (dynamic-script) and completed by the BFF
+  // evidence backstop; the goal MCP server is no longer auto-wired. Only
+  // explicitly-configured MCP servers reach the dispatched session.
   const configuredMcpServers =
     (baseDispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [];
   let dispatchAgentConfig: AgentConfig = {
-					...baseDispatchAgentConfig,
-					mcpServers: stampGoalMcpSessionHeader(
-      shouldAutoWireGoalMcp
-        ? ensureGoalMcpServer(
-            configuredMcpServers,
-							swapTarget?.capabilities?.supportsMcp ?? false,
-							isCliRuntime,
-          )
-        : configuredMcpServers,
-						sessionId,
-      workflowMcpSessionToken,
-					),
+    ...baseDispatchAgentConfig,
+    mcpServers: configuredMcpServers,
   } as AgentConfig;
 	// Recursion guard: when the SPAWNING workflow is a dynamic-script, stamp the
 	// script-depth header on any explicitly configured workflow-mcp-server entries

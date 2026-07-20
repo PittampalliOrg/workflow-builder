@@ -1,10 +1,7 @@
 import { daprFetch } from "$lib/server/dapr-client";
 import {
-	ensureGoalMcpServer,
-	stampGoalMcpSessionHeader,
-} from "$lib/server/goals/mcp-wiring";
-import {
   deriveLeadTeamId,
+  ensureTeamMcpServer,
   stampTeamMcpHeaders,
 } from "$lib/server/teams/mcp-wiring";
 import { getMemberBySession } from "$lib/server/teams/team-repo";
@@ -361,20 +358,16 @@ export async function spawnSessionWorkflow(
 					}${teamModeFragment}`.trim(),
 				}
 			: {}),
+		// Goals are authored in code (dynamic-script) and completed by the BFF
+		// evidence backstop, so the goal MCP server is no longer auto-wired.
+		// Team-capable sessions still get the Workflow MCP server injected (for
+		// the team tools), then stamped with their team headers.
 		mcpServers: stampTeamMcpHeaders(
-			stampGoalMcpSessionHeader(
-				ensureGoalMcpServer(
-					rewrittenMcp,
-					swapTarget?.capabilities?.supportsMcp ?? false,
-					// CLI agents should not inherit the platform goal MCP by default.
-					// They keep only explicitly configured MCP servers plus their
-					// runtime-internal tools, which avoids noisy goal tools in one-shot
-					// workflow runs.
-					swapTarget?.capabilities?.interactiveTerminal === true,
-				),
-				sessionId,
-        workflowMcpSessionToken,
-			),
+			ensureTeamMcpServer(rewrittenMcp, {
+				isTeammate,
+				teamsEnabled,
+				isCliRuntime: swapTarget?.capabilities?.interactiveTerminal === true,
+			}),
 			{ teamId, isTeammate, teamsEnabled },
 		),
 		compiledStaticPresetSections: compiledPresetStack.static,

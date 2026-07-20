@@ -12,20 +12,20 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-export type GoalRequestContext = {
+export type SessionRequestContext = {
 	sessionId?: string | null;
 };
 
-const goalContext = new AsyncLocalStorage<GoalRequestContext>();
+const goalContext = new AsyncLocalStorage<SessionRequestContext>();
 
-export function runWithGoalContext<T>(
-	context: GoalRequestContext,
+export function runWithSessionContext<T>(
+	context: SessionRequestContext,
 	fn: () => T,
 ): T {
 	return goalContext.run(context, fn);
 }
 
-export function currentGoalSessionId(): string | null {
+export function currentSessionId(): string | null {
 	const sessionId = goalContext.getStore()?.sessionId?.trim();
 	return sessionId ? sessionId : null;
 }
