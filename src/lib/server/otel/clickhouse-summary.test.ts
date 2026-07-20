@@ -86,10 +86,12 @@ describe('compact ClickHouse trace span loading', () => {
 		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
 		expect(sql).not.toMatch(/^\s*SpanAttributes,?\s*$/m);
 		expect(sql).not.toMatch(/^\s*ResourceAttributes,?\s*$/m);
+		expect(sql).toContain("left(SpanAttributes['session.id'], 2048)");
 		expect(sql).toContain("Timestamp >= '2026-07-09 15:27:09.000'");
 		expect(sql).toContain("Timestamp <= '2026-07-09 15:27:25.000'");
 		expect(sql).toContain('ORDER BY Timestamp ASC, TraceId ASC, SpanId ASC');
 		expect(sql).toContain('LIMIT 3');
+		expect(sql).toContain('left(StatusMessage, 4096) AS StatusMessage');
 
 		expect(result).toMatchObject({ truncated: true, limit: 2 });
 		expect(result.spans).toHaveLength(2);
@@ -229,9 +231,12 @@ describe('compact ClickHouse trace span loading', () => {
 		expect(sql).toContain('CacheReadInputTokens');
 		expect(sql).toContain('CacheCreationInputTokens');
 		expect(sql).toContain('ReasoningTokens');
+		expect(sql).toContain('if(length(llm.InputMessages) <= 32768');
+		expect(sql).toContain('if(length(llm.OutputMessages) <= 32768');
+		expect(sql).toContain('length(llm.InvocationParameters) > 32768');
 		expect(sql).toContain('LIMIT 11');
 		expect(sql).toContain('OFFSET 20');
-			expect(turns[0]).toMatchObject({
+		expect(turns[0]).toMatchObject({
 			cacheReadInputTokens: 60,
 			cacheCreationInputTokens: 15,
 			reasoningTokens: 10,
@@ -268,6 +273,9 @@ describe('compact ClickHouse trace span loading', () => {
 			expect(sql).toContain("Timestamp >= '2026-07-09 15:27:09.000'");
 			expect(sql).toContain("Timestamp <= '2026-07-09 15:27:25.000'");
 		}
+		const toolSql = String(fetchMock.mock.calls[4]?.[1]?.body ?? '');
+		expect(toolSql).toContain('if(length(tool.ToolArguments) <= 32768');
+		expect(toolSql).toContain('length(tool.ToolResult) > 32768');
 	});
 
 	it('loads run-digest LLM totals without transcript columns and reports truncation', async () => {

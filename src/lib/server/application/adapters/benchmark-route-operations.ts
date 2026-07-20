@@ -31,6 +31,7 @@ import type {
 	BenchmarkRunCreateInput,
 	BenchmarkRunCreateResult,
 	BenchmarkRunStatusInput,
+	BenchmarkTraceBundleQueryOptions,
 } from "$lib/server/application/benchmark-route-operations";
 
 export class LegacyBenchmarkRouteOperationsAdapter
@@ -102,7 +103,7 @@ export class LegacyBenchmarkRouteOperationsAdapter
 		runId: string;
 		instanceId: string;
 		projectId: string;
-		options?: Record<string, unknown>;
+		options?: BenchmarkTraceBundleQueryOptions;
 	}) {
 		return loadSwebenchTraceBundle(input);
 	}

@@ -5,31 +5,24 @@ import type {
 } from "$lib/types/observability";
 
 vi.mock("$lib/server/otel/clickhouse", () => ({
-	getMultiTraceLlmSpans: vi.fn(),
-	getMultiTraceToolSpans: vi.fn(),
-	getMultiTraceSpans: vi.fn(),
+	getMultiTraceSpanSummaries: vi.fn(),
+	searchTraceLlmSpans: vi.fn(),
+	searchTraceToolSpans: vi.fn(),
 }));
-vi.mock("./mlflow", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./mlflow")>();
-	return {
-		...actual,
-		getMlflowNativeTrace: vi.fn(),
-	};
-});
-
 import {
-	getMultiTraceLlmSpans,
-	getMultiTraceSpans,
-	getMultiTraceToolSpans,
+	getMultiTraceSpanSummaries,
+	searchTraceLlmSpans,
+	searchTraceToolSpans,
 } from "$lib/server/otel/clickhouse";
-import { getMlflowNativeTrace } from "./mlflow";
 import {
 	buildSwebenchTraceBundle,
 	buildSwebenchTraceBundleFromClickHouse,
-	buildSwebenchTraceBundleFromMlflowNative,
+	decodeTraceBundleCursor,
+	encodeTraceBundleCursor,
+	normalizeTraceBundleId,
 	normalizeRawTraceSpans,
+	resolveStoredTraceBundleIds,
 	safeSwebenchTraceArtifactPath,
-	sanitizedTraceBundleWarnings,
 } from "./trace-bundle";
 
 const baseSpan = (overrides: Partial<ObservabilityTraceSpan>): ObservabilityTraceSpan => ({
@@ -63,47 +56,45 @@ describe("safeSwebenchTraceArtifactPath", () => {
 	});
 });
 
-describe("sanitizedTraceBundleWarnings", () => {
-	it("drops transient artifact repair warnings from native MLflow bundles", () => {
-		const warnings = sanitizedTraceBundleWarnings({
-			backend: "mlflow_artifact",
-			source: {
-				kind: "mlflow_native",
-				generatedAt: "2026-05-17T00:00:00.000Z",
-				mlflowRunId: "run",
-				derivedLlmSpanCount: 1,
-				derivedToolSpanCount: 1,
-				rawTraceSpanCount: 2,
-			},
-			warnings: [
-				"MLflow artifact traces/django/trace-bundle.json used clickhouse_raw; rebuilt from native MLflow traces",
-				"MLflow artifact traces/django/trace-bundle.json was missing; rebuilt from trace backends",
-				"MLflow native trace read failed for abc123: timeout",
-			],
-		});
-
-		expect(warnings).toEqual(["MLflow native trace read failed for abc123: timeout"]);
+describe("trace bundle identity and pagination", () => {
+	it("normalizes historical MLflow-prefixed and traceparent ids", () => {
+		expect(normalizeTraceBundleId("tr-0123456789abcdef0123456789abcdef")).toBe(
+			"0123456789abcdef0123456789abcdef",
+		);
+		expect(
+			normalizeTraceBundleId(
+				"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+			),
+		).toBe("0123456789abcdef0123456789abcdef");
+		expect(normalizeTraceBundleId("not-a-trace-id")).toBeNull();
 	});
 
-	it("preserves warnings for non-native bundles", () => {
-		const warnings = [
-			"MLflow artifact traces/django/trace-bundle.json was missing; rebuilt from trace backends",
-		];
+	it("round-trips opaque cursors and rejects malformed values", () => {
+		expect(decodeTraceBundleCursor(encodeTraceBundleCursor(50))).toBe(50);
+		expect(decodeTraceBundleCursor("not-base64-json")).toBe(0);
+	});
 
-		expect(
-			sanitizedTraceBundleWarnings({
-				backend: "clickhouse_raw",
-				source: {
-					kind: "clickhouse_raw",
-					generatedAt: "2026-05-17T00:00:00.000Z",
-					mlflowRunId: "run",
-					derivedLlmSpanCount: 0,
-					derivedToolSpanCount: 0,
-					rawTraceSpanCount: 1,
-				},
-				warnings,
-			}),
-		).toEqual(warnings);
+	it("resolves the historical benchmark instance trace id without losing modern precedence", () => {
+		const legacyOnly = resolveStoredTraceBundleIds({
+			legacyTraceId: "tr-0123456789abcdef0123456789abcdef",
+			traceIds: [],
+		});
+		expect(legacyOnly).toMatchObject({
+			canonicalTraceId: "0123456789abcdef0123456789abcdef",
+			traceIds: ["0123456789abcdef0123456789abcdef"],
+			warnings: [],
+		});
+
+		const modernPrimary = resolveStoredTraceBundleIds({
+			primaryTraceId: "fedcba9876543210fedcba9876543210",
+			legacyTraceId: "tr-0123456789abcdef0123456789abcdef",
+			traceIds: ["fedcba9876543210fedcba9876543210"],
+		});
+		expect(modernPrimary.canonicalTraceId).toBe("fedcba9876543210fedcba9876543210");
+		expect(modernPrimary.traceIds).toEqual([
+			"fedcba9876543210fedcba9876543210",
+			"0123456789abcdef0123456789abcdef",
+		]);
 	});
 });
 
@@ -211,10 +202,9 @@ describe("workflow log trace bundle fallback", () => {
 
 describe("buildSwebenchTraceBundleFromClickHouse", () => {
 	beforeEach(() => {
-		vi.mocked(getMultiTraceLlmSpans).mockReset();
-		vi.mocked(getMultiTraceToolSpans).mockReset();
-		vi.mocked(getMultiTraceSpans).mockReset();
-		vi.mocked(getMlflowNativeTrace).mockReset();
+		vi.mocked(searchTraceLlmSpans).mockReset();
+		vi.mocked(searchTraceToolSpans).mockReset();
+		vi.mocked(getMultiTraceSpanSummaries).mockReset();
 	});
 
 	it("uses derived spans when obs tables are populated", async () => {
@@ -244,17 +234,19 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
-			baseSpan({
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({
 				spanId: "llm-derived",
 				attributes: {
 					"gen_ai.usage.cache_read_input_tokens": 42,
 					"gen_ai.usage.reasoning_tokens": 9,
 				},
-			}),
-		]);
+			})],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -265,6 +257,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_derived");
@@ -303,9 +296,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [
 			baseSpan({
 				spanId: "llm-derived",
 				attributes: { "mlflow.spanType": "CHAT_MODEL" },
@@ -320,7 +314,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"output.value": "{\"output\":\"file.py | 1 +\"}",
 				},
 			}),
-		]);
+			],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -331,6 +328,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_raw");
@@ -367,9 +365,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			outputMessagesTruncated: false,
 			invocationParametersTruncated: false,
 		};
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([llmSpan]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([llmSpan]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [
 			baseSpan({
 				traceId: "primary123",
 				spanId: "root",
@@ -401,7 +400,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"mlflow.spanType": "CHAT_MODEL",
 				},
 			}),
-		]);
+			],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -412,6 +414,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: null,
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.requiredContext.rootPresent).toBe(true);
@@ -426,10 +429,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 	});
 
 	it("falls back to raw OTel normalization when derived tables are empty", async () => {
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([
-			baseSpan({
+		vi.mocked(searchTraceLlmSpans).mockResolvedValue([]);
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({
 				spanId: "llm-raw",
 				attributes: {
 					"openinference.span.kind": "LLM",
@@ -437,8 +440,10 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 					"input.value": "prompt",
 					"output.value": "answer",
 				},
-			}),
-		]);
+			})],
+			truncated: false,
+			limit: 50,
+		});
 
 		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
@@ -449,6 +454,7 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 			mlflowExperimentId: "1",
 			mlflowRunId: null,
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
 		});
 
 		expect(bundle.backend).toBe("clickhouse_raw");
@@ -456,122 +462,39 @@ describe("buildSwebenchTraceBundleFromClickHouse", () => {
 		expect(bundle.summary.traceSpanCount).toBe(1);
 		expect(bundle.warnings[0]).toContain("derived obs.llm_spans");
 	});
-});
 
-describe("buildSwebenchTraceBundleFromMlflowNative", () => {
-	beforeEach(() => {
-		vi.mocked(getMultiTraceLlmSpans).mockReset();
-		vi.mocked(getMultiTraceToolSpans).mockReset();
-		vi.mocked(getMultiTraceSpans).mockReset();
-		vi.mocked(getMlflowNativeTrace).mockReset();
-	});
-
-	it("uses native MLflow spans as the preferred bundle source", async () => {
-		const loadNativeTrace = vi.fn().mockResolvedValue({
-			trace: {
-				trace_info: { trace_id: "tr-primary123", state: "OK" },
-				spans: [
-					{
-						name: "workflow.finalize",
-						span_id: "root",
-						start_time_unix_nano: 1_000_000,
-						end_time_unix_nano: 11_000_000,
-						status: { code: "STATUS_CODE_OK" },
-						attributes: [
-							{ key: "gen_ai.operation.name", value: { string_value: "workflow" } },
-							{ key: "workflow.status", value: { string_value: "OK" } },
-						],
-					},
-					{
-						name: "workflow.node.solve",
-						span_id: "node",
-						start_time_unix_nano: 12_000_000,
-						end_time_unix_nano: 18_000_000,
-						status: { code: "STATUS_CODE_OK" },
-						attributes: [
-							{ key: "gen_ai.operation.name", value: { string_value: "workflow.node" } },
-						],
-					},
-					{
-						name: "agent.call_llm",
-						span_id: "llm",
-						start_time_unix_nano: 20_000_000,
-						end_time_unix_nano: 40_000_000,
-						status: { code: "STATUS_CODE_OK" },
-						attributes: [
-							{ key: "mlflow.spanType", value: { string_value: "CHAT_MODEL" } },
-							{ key: "gen_ai.request.model", value: { string_value: "deepseek" } },
-							{ key: "gen_ai.usage.input_tokens", value: { int_value: 11 } },
-							{ key: "gen_ai.usage.output_tokens", value: { int_value: 7 } },
-							{ key: "workflow.id", value: { string_value: "wf" } },
-							{ key: "workflow.execution.id", value: { string_value: "exec-1" } },
-							{ key: "workflow.node.id", value: { string_value: "solve" } },
-							{ key: "workflow.node.name", value: { string_value: "Solve" } },
-							{ key: "agent.id", value: { string_value: "agent-1" } },
-							{ key: "agent.version", value: { string_value: "1" } },
-							{ key: "agent.slug", value: { string_value: "agent" } },
-							{ key: "agent.app_id", value: { string_value: "agent-runtime-agent" } },
-						],
-					},
-					{
-						name: "agent.run_tool",
-						span_id: "tool",
-						start_time_unix_nano: 41_000_000,
-						end_time_unix_nano: 42_000_000,
-						status: { code: "STATUS_CODE_OK" },
-						attributes: [
-							{ key: "mlflow.spanType", value: { string_value: "TOOL" } },
-							{ key: "tool.name", value: { string_value: "bash_run" } },
-							{ key: "input.value", value: { string_value: "{\"command\":\"pwd\"}" } },
-						],
-					},
-				],
-			},
+	it("returns a bounded next page and isolates a failed evidence source", async () => {
+		vi.mocked(getMultiTraceSpanSummaries).mockResolvedValue({
+			spans: [baseSpan({ spanId: "raw-1" })],
+			truncated: true,
+			limit: 1,
 		});
+		vi.mocked(searchTraceLlmSpans).mockRejectedValue(new Error("llm view unavailable"));
+		vi.mocked(searchTraceToolSpans).mockResolvedValue([]);
 
-		const bundle = await buildSwebenchTraceBundleFromMlflowNative({
+		const bundle = await buildSwebenchTraceBundleFromClickHouse({
 			runId: "run_1",
 			runInstanceId: "ri_1",
 			instanceId: "django__django-1",
-			traceIds: ["primary123"],
-			canonicalTraceId: "primary123",
-			mlflowExperimentId: "6",
-			mlflowRunId: "mlrun",
-			artifactPath: "traces/django__django-1/trace-bundle.json",
-		}, [], loadNativeTrace);
-
-		expect(bundle.backend).toBe("mlflow_native");
-		expect(bundle.requiredContext.rootPresent).toBe(true);
-		expect(bundle.requiredContext.statusFinalized).toBe(true);
-		expect(bundle.requiredContext.nodeSpansPresent).toBe(true);
-		expect(bundle.requiredContext.llmToolSpansPresent).toBe(true);
-		expect(bundle.requiredContext.agentIdentityComplete).toBe(true);
-		expect(bundle.summary.traceSpanCount).toBe(4);
-		expect(bundle.llmSpans[0].modelName).toBe("deepseek");
-		expect(bundle.llmSpans[0].promptTokens).toBe(11);
-		expect(bundle.toolSpans[0].toolName).toBe("bash_run");
-		expect(loadNativeTrace).toHaveBeenCalledWith("primary123");
-		expect(getMultiTraceSpans).not.toHaveBeenCalled();
-	});
-
-	it("falls back to ClickHouse when native MLflow has no spans", async () => {
-		vi.mocked(getMlflowNativeTrace).mockResolvedValue({ trace: { spans: [] } });
-		vi.mocked(getMultiTraceLlmSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceToolSpans).mockResolvedValue([]);
-		vi.mocked(getMultiTraceSpans).mockResolvedValue([baseSpan({ traceId: "abc123" })]);
-
-		const bundle = await buildSwebenchTraceBundle({
-			runId: "run_1",
-			runInstanceId: "ri_1",
-			instanceId: "django__django-1",
-			traceIds: ["abc123"],
+			traceIds: ["abc123", "later-page-trace"],
 			canonicalTraceId: "abc123",
-			mlflowExperimentId: "6",
-			mlflowRunId: "mlrun",
 			artifactPath: "traces/django__django-1/trace-bundle.json",
+			workflowExecutionId: "exec-1",
+			page: { limit: 1, offset: 50 },
 		});
 
-		expect(bundle.backend).toBe("clickhouse_derived");
-		expect(getMultiTraceSpans).toHaveBeenCalledWith(["abc123"]);
+		expect(bundle.traceSpans).toHaveLength(1);
+		expect(bundle.truncated).toBe(true);
+		expect(decodeTraceBundleCursor(bundle.nextCursor)).toBe(51);
+		expect(bundle.auxiliaryTraces).toEqual([
+			{ traceId: "later-page-trace", status: "unknown" },
+		]);
+		expect(bundle.requiredContext.auxiliaryTracesMissing).toBe(0);
+		expect(bundle.requiredContext.auxiliaryTracesUnknown).toBe(1);
+		expect(bundle.warnings).toContain("ClickHouse LLM span query failed: llm view unavailable");
+		expect(getMultiTraceSpanSummaries).toHaveBeenCalledWith(
+			["abc123", "later-page-trace"],
+			expect.objectContaining({ limit: 1, offset: 50 }),
+		);
 	});
 });

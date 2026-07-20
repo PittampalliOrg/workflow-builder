@@ -64,4 +64,42 @@ describe("evaluation graders", () => {
 		expect(result.skipped).toBe(true);
 		expect(result.error).toContain("external model-grading worker");
 	});
+
+	it("keeps legacy mlflow_judge definitions as a provider-neutral judge alias", () => {
+		for (const type of ["llm_judge", "mlflow_judge"] as const) {
+			const grader = validateGraderDefinition({
+				name: "Correctness judge",
+				type,
+				config: { model: "judge-default", prompt: "Judge {{actual}}" },
+			});
+			const result = runGrader(grader, {
+				input: {},
+				expectedOutput: "yes",
+				generatedOutput: "yes",
+			});
+
+			expect(grader.type).toBe(type);
+			expect(result).toMatchObject({
+				type,
+				skipped: true,
+				error: "llm_judge requires async runner",
+			});
+		}
+	});
+
+	it("keeps one canonical judge threshold across the definition and config", () => {
+		const grader = validateGraderDefinition({
+			name: "Correctness judge",
+			type: "llm_judge",
+			passThreshold: 0.7,
+			config: {
+				model: "kimi-k3",
+				prompt: "Judge {{actual}}",
+				passThreshold: 0.2,
+			},
+		});
+
+		expect(grader.passThreshold).toBe(0.7);
+		expect(grader.config.passThreshold).toBe(0.7);
+	});
 });

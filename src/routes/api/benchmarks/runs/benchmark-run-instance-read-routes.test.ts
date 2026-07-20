@@ -10,22 +10,61 @@ const workflowDataMock = vi.hoisted(() => ({
 const benchmarkRunInstanceDetailMock = vi.hoisted(() => ({
 	getDetail: vi.fn(),
 }));
+const benchmarkRouteOperationsMock = vi.hoisted(() => ({
+	loadTraceBundle: vi.fn(),
+}));
 
 vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		benchmarkRunInstanceDetail: benchmarkRunInstanceDetailMock,
+		benchmarkRouteOperations: benchmarkRouteOperationsMock,
 		workflowData: workflowDataMock,
 	}),
 }));
 
 import { GET as getRunInstanceDetail } from "./[runId]/instances/[instanceId]/+server";
 import { GET as getScores } from "./[runId]/instances/[instanceId]/scores/+server";
+import { GET as getSpans } from "./[runId]/instances/[instanceId]/spans/+server";
 
 describe("benchmark run-instance read routes", () => {
 	beforeEach(() => {
 		benchmarkRunInstanceDetailMock.getDetail.mockReset();
+		benchmarkRouteOperationsMock.loadTraceBundle.mockReset();
 		workflowDataMock.getBenchmarkRunInstanceDetail.mockReset();
 		workflowDataMock.listBenchmarkRunInstanceScores.mockReset();
+	});
+
+	it("forwards a bounded trace page through the application port", async () => {
+		benchmarkRouteOperationsMock.loadTraceBundle.mockResolvedValue({
+			traceIds: [],
+			traceSpans: [],
+			llmSpans: [],
+			toolSpans: [],
+			truncated: false,
+			nextCursor: null,
+		});
+		const response = (await getSpans({
+			params: { runId: "run-1", instanceId: "sympy__sympy-20590" },
+			locals: { session: { userId: "user-1", projectId: "project-1" } },
+			url: new URL(
+				"https://workflow-builder.test/api/benchmarks/runs/run-1/instances/i/spans?limit=25&cursor=opaque&startedAt=2026-07-09T15%3A27%3A14.000Z&completedAt=2026-07-09T15%3A28%3A14.000Z",
+			),
+		} as never)) as Response;
+
+		expect(response.status).toBe(200);
+		expect(benchmarkRouteOperationsMock.loadTraceBundle).toHaveBeenCalledWith({
+			runId: "run-1",
+			instanceId: "sympy__sympy-20590",
+			projectId: "project-1",
+			options: {
+				limit: 25,
+				cursor: "opaque",
+				timeWindow: {
+					startedAt: "2026-07-09T15:27:14.000Z",
+					completedAt: "2026-07-09T15:28:14.000Z",
+				},
+			},
+		});
 	});
 
 	it("loads run-instance detail through the application service", async () => {

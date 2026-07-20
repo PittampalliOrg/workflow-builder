@@ -35,6 +35,13 @@
 	// Mirror OpenAI's grader catalog. "live" = backend runner exists today.
 	const tiles: Tile[] = [
 		{
+			type: 'llm_judge',
+			title: 'Kimi K3 judge',
+			desc: 'Score each output against an editable rubric with Kimi K3.',
+			icon: Sparkles,
+			live: true
+		},
+		{
 			type: 'score_model',
 			mode: 'labeler',
 			title: 'Model labeler',

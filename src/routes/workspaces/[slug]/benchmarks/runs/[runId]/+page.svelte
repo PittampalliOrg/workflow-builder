@@ -332,7 +332,7 @@
 					{/if}
 				</div>
 			</div>
-			{#if run.coordinatorExecutionId || run.evaluatorJobName || run.predictionsPath || run.mlflowRunId}
+			{#if run.coordinatorExecutionId || run.evaluatorJobName || run.predictionsPath}
 				<div class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-muted/20 px-3 py-2 text-[11px]">
 					{#if run.coordinatorExecutionId}
 						<a
@@ -357,11 +357,6 @@
 					{#if run.predictionsPath}
 						<span class="break-all text-muted-foreground">
 							predictions <span class="font-mono">{run.predictionsPath}</span>
-						</span>
-					{/if}
-					{#if run.mlflowRunId}
-						<span class="break-all text-muted-foreground">
-							mlflow <span class="font-mono">{run.mlflowRunId}</span>
 						</span>
 					{/if}
 				</div>

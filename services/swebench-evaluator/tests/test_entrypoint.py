@@ -146,9 +146,7 @@ def test_post_results_retries_transient_bff_failure(monkeypatch):
     entrypoint.post_results("run_1", [{"instance_id": "i1", "resolved": True}])
 
     assert len(calls) == 2
-    assert calls[0]["json"] == {
-        "results": [{"instance_id": "i1", "resolved": True}]
-    }
+    assert calls[0]["json"] == {"results": [{"instance_id": "i1", "resolved": True}]}
 
 
 def test_parse_instance_image_map_requires_every_selected_instance():
@@ -403,23 +401,19 @@ def test_wait_for_next_taskrun_records_disappeared_taskrun(monkeypatch):
     assert condition["reason"] == "TaskRunNotFound"
 
 
-def test_post_terminal_results_posts_before_best_effort_mlflow(monkeypatch, tmp_path):
+def test_post_terminal_results_persists_native_results(monkeypatch, tmp_path):
     entrypoint = load_entrypoint()
     calls: list[str] = []
     results = [{"instance_id": "i1", "status": "error"}]
 
-    monkeypatch.setattr(entrypoint, "collect_results", lambda *_args, **_kwargs: results)
+    monkeypatch.setattr(
+        entrypoint, "collect_results", lambda *_args, **_kwargs: results
+    )
     monkeypatch.setattr(
         entrypoint,
         "post_results",
         lambda *_args, **_kwargs: calls.append("post_results"),
     )
-    monkeypatch.setattr(
-        entrypoint,
-        "log_mlflow_evaluation",
-        lambda *_args, **_kwargs: calls.append("mlflow"),
-    )
-
     code = entrypoint._post_terminal_results(
         "run_1",
         ["i1"],
@@ -430,7 +424,7 @@ def test_post_terminal_results_posts_before_best_effort_mlflow(monkeypatch, tmp_
     )
 
     assert code == 1
-    assert calls == ["post_results", "mlflow"]
+    assert calls == ["post_results"]
 
 
 def test_collect_results_preserves_stage_failure_when_report_missing(tmp_path):

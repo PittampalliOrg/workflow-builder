@@ -12,7 +12,12 @@ import {
 	getDaprSidecarUrl,
 } from "$lib/server/dapr-client";
 import { wakeAgentRuntime } from "$lib/server/kube/client";
+import type { EvaluationJudge } from "$lib/server/application/evaluation-judge";
 import type { GraderContext, GraderDefinition, GraderResult } from "./graders";
+
+export type AsyncGraderDependencies = {
+	judge?: EvaluationJudge;
+};
 
 /**
  * Execute a grader that needs an external service. Falls back to a "skipped"
@@ -21,6 +26,7 @@ import type { GraderContext, GraderDefinition, GraderResult } from "./graders";
 export async function runGraderAsync(
 	grader: GraderDefinition,
 	context: GraderContext,
+	dependencies: AsyncGraderDependencies = {},
 ): Promise<GraderResult> {
 	try {
 		switch (grader.type) {
@@ -37,11 +43,9 @@ export async function runGraderAsync(
 					return await runEndpointGrader(grader, context);
 				}
 				break;
+			case "llm_judge":
 			case "mlflow_judge":
-				// Phase 3c of plan research-the-most-popular-stateful-hinton.md.
-				// Dispatches to the orchestrator's /api/v2/observability/judge
-				// endpoint which wraps mlflow.genai.judges.llm_judge(...).
-				return await runMlflowJudgeGrader(grader, context);
+				return await runLlmJudgeGrader(grader, context, dependencies.judge);
 			default:
 				break;
 		}
@@ -437,36 +441,31 @@ async function runEndpointGrader(
 }
 
 /* -------------------------------------------------------------------------- */
-/* mlflow_judge — LLM-as-a-judge via mlflow.genai.judges.llm_judge            */
+/* llm_judge — provider-neutral LLM-as-a-judge                                */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Run a `mlflow_judge` grader. Phase 3c of plan
- * research-the-most-popular-stateful-hinton.md. Posts to the
- * orchestrator's /api/v2/observability/judge endpoint which calls
- * `mlflow.genai.judges.llm_judge(model=..., prompt=..., ...)`.
+ * Run an `llm_judge` grader through the application-owned judge use case.
+ * `mlflow_judge` remains an accepted saved-definition alias.
  *
  * Expected grader.config:
- *   - model: str (e.g. "anthropic:claude-opus-4-7" or a route name)
+ *   - model: legacy display-only value; physical routing is owned by composition
  *   - prompt: str — rubric / instructions; supports {{input}}, {{expected}},
  *     {{actual}} template variables resolved against context
  *   - passThreshold (optional, default 0.5): float
  */
-async function runMlflowJudgeGrader(
+async function runLlmJudgeGrader(
 	grader: GraderDefinition,
 	context: GraderContext,
+	judge: EvaluationJudge | undefined,
 ): Promise<GraderResult> {
-	const model = String(grader.config.model ?? "").trim();
 	const promptTemplate = String(grader.config.prompt ?? "").trim();
-	if (!model) return skipped(grader, "mlflow_judge: missing config.model");
-	if (!promptTemplate) return skipped(grader, "mlflow_judge: missing config.prompt");
+	if (!promptTemplate) return skipped(grader, "llm_judge: missing config.prompt");
+	if (!judge) return failed(grader, "llm_judge: evaluation judge is not configured");
+	if (!judge.isAvailable()) return failed(grader, "llm_judge: evaluation judge is unavailable");
 
 	const passThreshold =
-		typeof grader.passThreshold === "number"
-			? grader.passThreshold
-			: typeof grader.config.passThreshold === "number"
-				? (grader.config.passThreshold as number)
-				: 0.5;
+		typeof grader.passThreshold === "number" ? grader.passThreshold : 0.5;
 
 	const variables: Record<string, unknown> = {
 		input: stringifyForTemplate(context.input),
@@ -476,68 +475,26 @@ async function runMlflowJudgeGrader(
 	};
 	const prompt = renderTemplate(promptTemplate, variables);
 
-	const orchestratorUrl = (env.WORKFLOW_ORCHESTRATOR_URL ?? "").trim() || "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080";
-	const url = `${orchestratorUrl}/api/v2/observability/judge`;
-	const body = {
-		model,
-		prompt,
-		name: grader.name,
-		metadata: {
-			grader_id: grader.id ?? null,
-			eval_grader_type: "mlflow_judge",
-		},
-	};
-
-	let response: Response;
 	try {
-		response = await daprFetch(url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+		const result = await judge.judge({ prompt, name: grader.name });
+		return {
+			id: grader.id,
+			name: grader.name,
+			type: grader.type,
+			score: result.score,
+			passed: result.score >= passThreshold,
+			details: {
+				model: result.model,
+				rationale: result.rationale,
+				passThreshold,
+				raw: result.raw,
+				evalGraderType: "llm_judge",
+				legacyGraderType: grader.type === "mlflow_judge" ? grader.type : null,
+			},
+		};
 	} catch (err) {
-		return {
-			id: grader.id,
-			name: grader.name,
-			type: grader.type,
-			score: 0,
-			passed: false,
-			error: err instanceof Error ? err.message : String(err),
-		};
+		return failed(grader, err instanceof Error ? err.message : String(err));
 	}
-
-	if (!response.ok) {
-		const text = await response.text().catch(() => "");
-		return {
-			id: grader.id,
-			name: grader.name,
-			type: grader.type,
-			score: 0,
-			passed: false,
-			error: `orchestrator returned ${response.status}: ${text.slice(0, 300)}`,
-		};
-	}
-
-	const payload = (await response.json()) as {
-		score?: number | null;
-		rationale?: string | null;
-		raw?: unknown;
-	};
-	const score = typeof payload.score === "number" ? payload.score : null;
-
-	return {
-		id: grader.id,
-		name: grader.name,
-		type: grader.type,
-		score,
-		passed: typeof score === "number" ? score >= passThreshold : false,
-		details: {
-			model,
-			rationale: payload.rationale ?? null,
-			passThreshold,
-			raw: payload.raw ?? null,
-		},
-	};
 }
 
 function stringifyForTemplate(value: unknown): string {
@@ -562,6 +519,17 @@ function skipped(grader: GraderDefinition, error: string): GraderResult {
 		score: null,
 		passed: false,
 		skipped: true,
+		error,
+	};
+}
+
+function failed(grader: GraderDefinition, error: string): GraderResult {
+	return {
+		id: grader.id,
+		name: grader.name,
+		type: grader.type,
+		score: 0,
+		passed: false,
 		error,
 	};
 }

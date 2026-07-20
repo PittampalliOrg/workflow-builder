@@ -4,7 +4,6 @@ import {
 	markBenchmarkRunStatus,
 	recomputeRunSummary,
 } from "$lib/server/application/adapters/benchmark-service";
-import { syncBenchmarkInstanceMlflow } from "$lib/server/application/adapters/benchmark-mlflow";
 import { daprFetch } from "$lib/server/dapr-client";
 import type {
 	BenchmarkEvaluationEventNotifier,
@@ -31,27 +30,13 @@ export class LegacyBenchmarkRunLifecycleAdapter implements BenchmarkRunLifecycle
 	}
 }
 
-export class LegacyBenchmarkEvaluationTelemetryAdapter
+export class NativeBenchmarkEvaluationTelemetryAdapter
 	implements BenchmarkEvaluationTelemetryPort
 {
-	syncEvaluationResults(input: { runId: string; instanceIds: string[] }): void {
-		const uniqueInstanceIds = [...new Set(input.instanceIds)];
-		if (uniqueInstanceIds.length === 0) return;
-		void (async () => {
-			for (const instanceId of uniqueInstanceIds) {
-				try {
-					await syncBenchmarkInstanceMlflow({
-						runId: input.runId,
-						instanceId,
-					});
-				} catch (err) {
-					console.warn(
-						`SWE-bench MLflow evaluation sync failed for ${input.runId}/${instanceId}:`,
-						err,
-					);
-				}
-			}
-		})();
+	syncEvaluationResults(_input: { runId: string; instanceIds: string[] }): void {
+		// The repository batch update and summary recomputation are authoritative.
+		// Request and workflow instrumentation cover this boundary, so no second
+		// evaluation tracking projection is required here.
 	}
 }
 

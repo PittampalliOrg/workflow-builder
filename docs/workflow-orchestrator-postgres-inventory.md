@@ -1420,18 +1420,11 @@ Auth session token verification, refresh, and session materialization now live
 in `src/lib/server/application/adapters/auth-session.ts`; the legacy
 `src/lib/server/auth.ts` module is a DB-free compatibility wrapper and JWT
 issuing is isolated in `src/lib/server/auth-jwt.ts`.
-Benchmark MLflow sync/link/proxy helpers now live in
-`src/lib/server/application/adapters/benchmark-mlflow.ts`; the legacy
-`src/lib/server/benchmarks/mlflow.ts` module is a compatibility re-export with
-no direct DB, Drizzle, or schema imports. This keeps the remaining active MLflow
-coupling quarantined as adapter/telemetry cleanup while OTel lineage remains the
-preferred forward path.
-Legacy MLflow lifecycle helpers now live in
-`src/lib/server/application/adapters/mlflow-lifecycle.ts`; the legacy
-`src/lib/server/observability/mlflow-lifecycle.ts` module is a compatibility
-re-export with no direct DB, Drizzle, or schema imports. This does not broaden
-MLflow usage; it keeps the gated legacy lifecycle persistence behind the adapter
-boundary while OTel lineage remains the forward path.
+Benchmark MLflow sync, proxy, artifact, and lifecycle adapters have been retired.
+Benchmark traces now read bounded OTel evidence from ClickHouse, while native
+Postgres benchmark rows remain authoritative for evaluation results. Historical
+MLflow-named database and API fields remain read-compatible during the data
+contract migration but no longer activate an MLflow runtime integration.
 Environment image build, dynamic SWE-bench environment, and build-activity
 projection helpers now live in
 `src/lib/server/application/adapters/environment-image-builds.ts`; the legacy

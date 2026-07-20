@@ -96,4 +96,17 @@ describe("getApplicationAdapters", () => {
 		expect(source).toContain("getLifecycleCoordinatorOwners()");
 		expect(source).not.toContain("RepositorySessionGoalStore");
 	});
+
+	it("composes evaluation grading through the Kimi-backed judge service", () => {
+		const source = readFileSync(
+			join(dirname(fileURLToPath(import.meta.url)), "index.ts"),
+			"utf8",
+		);
+
+		expect(source).toContain("new ApplicationEvaluationJudgeService(");
+		expect(source).toContain("{ modelName: KIMI_K3_MODEL }");
+		expect(source).toContain("new LegacyEvaluationRunLaunchAdapter(evaluationJudge)");
+		expect(source).toContain("new LegacyEvaluationRunRepository(evaluationJudge)");
+		expect(source).toContain("new LegacyEvaluationRunItemRepository(modelCompletion, evaluationJudge)");
+	});
 });

@@ -68,7 +68,7 @@ import {
 import { KubernetesAgentRuntimeWarmPoolClient } from "$lib/server/application/adapters/agent-runtime-control";
 import {
   DaprBenchmarkEvaluationEventNotifier,
-  LegacyBenchmarkEvaluationTelemetryAdapter,
+  NativeBenchmarkEvaluationTelemetryAdapter,
   LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
@@ -287,7 +287,10 @@ import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/applicatio
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { ConfiguredPublicApplicationUrlAdapter } from "$lib/server/application/adapters/public-application-url";
-import { KimiK3ModelCompletionAdapter } from "$lib/server/application/adapters/model-completion-kimi";
+import {
+  KIMI_K3_MODEL,
+  KimiK3ModelCompletionAdapter,
+} from "$lib/server/application/adapters/model-completion-kimi";
 import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
@@ -581,6 +584,7 @@ import { ApplicationWorkflowMcpPrincipalService } from "$lib/server/application/
 import { ApplicationInternalWorkflowPrincipalService } from "$lib/server/application/internal-workflow-principal";
 import { ApplicationTeamActionAuthorizationService } from "$lib/server/application/team-action-authorization";
 import { ApplicationModelCompletionService } from "$lib/server/application/model-completion";
+import { ApplicationEvaluationJudgeService } from "$lib/server/application/evaluation-judge";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
 import { costFor, formatCurrency } from "$lib/server/pricing/model-pricing";
 import {
@@ -658,6 +662,10 @@ export function getApplicationAdapters(
   });
   const modelCompletion = new ApplicationModelCompletionService(
     modelCompletionAdapter,
+  );
+  const evaluationJudge = new ApplicationEvaluationJudgeService(
+    modelCompletion,
+    { modelName: KIMI_K3_MODEL },
   );
 
   let database: ReturnType<typeof requirePostgresDb> | undefined;
@@ -1377,7 +1385,7 @@ export function getApplicationAdapters(
       }));
   const getEvaluationRunLaunch = () =>
     (evaluationRunLaunch ??= new ApplicationEvaluationRunLaunchService(
-      new LegacyEvaluationRunLaunchAdapter(),
+      new LegacyEvaluationRunLaunchAdapter(evaluationJudge),
       deploymentCapabilities,
     ));
   const getEvaluationDefinitions = () =>
@@ -1391,11 +1399,11 @@ export function getApplicationAdapters(
     ));
   const getEvaluationRuns = () =>
     (evaluationRuns ??= new ApplicationEvaluationRunService(
-      new LegacyEvaluationRunRepository(),
+      new LegacyEvaluationRunRepository(evaluationJudge),
     ));
   const getEvaluationRunItems = () =>
     (evaluationRunItems ??= new ApplicationEvaluationRunItemService(
-      new LegacyEvaluationRunItemRepository(modelCompletion),
+      new LegacyEvaluationRunItemRepository(modelCompletion, evaluationJudge),
     ));
   const getEvaluationTemplates = () =>
     (evaluationTemplates ??= new ApplicationEvaluationTemplateService({
@@ -2780,7 +2788,7 @@ export function getApplicationAdapters(
       benchmarkEvaluationResults: getBenchmarkEvaluationResults(),
       benchmarkRunLifecycle: new LegacyBenchmarkRunLifecycleAdapter(),
       benchmarkEvaluationTelemetry:
-        new LegacyBenchmarkEvaluationTelemetryAdapter(),
+        new NativeBenchmarkEvaluationTelemetryAdapter(),
       benchmarkEvaluationEvents: new DaprBenchmarkEvaluationEventNotifier(),
       benchmarkBrowser: getBenchmarkBrowser(),
       benchmarkDatasetPromotions: getBenchmarkDatasetPromotions(),

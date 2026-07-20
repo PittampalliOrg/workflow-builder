@@ -5,6 +5,8 @@ export const EVALUATION_GRADER_TYPES = [
 	"python",
 	"multi",
 	"external_harness",
+	"llm_judge",
+	// Backward-compatible saved-definition alias. New definitions use llm_judge.
 	"mlflow_judge",
 ] as const;
 
@@ -70,13 +72,26 @@ export function validateGraderDefinition(
 			? raw.name.trim()
 			: defaultGraderName(type, index);
 	const config = validateGraderConfig(type, raw.config);
+	const judgeThreshold =
+		type === "llm_judge" || type === "mlflow_judge"
+			? clampNumber(config.passThreshold, 0, 1, 0.5)
+			: 1;
+	const passThreshold = clampNumber(
+		raw.passThreshold,
+		0,
+		1,
+		judgeThreshold,
+	);
+	if (type === "llm_judge" || type === "mlflow_judge") {
+		config.passThreshold = passThreshold;
+	}
 	return {
 		id: typeof raw.id === "string" ? raw.id : undefined,
 		name,
 		type,
 		config,
 		weight: clampNumber(raw.weight, 1, 100, 1),
-		passThreshold: clampNumber(raw.passThreshold, 0, 1, 1),
+		passThreshold,
 		enabled: raw.enabled !== false,
 	};
 }
@@ -158,10 +173,10 @@ export function validateGraderConfig(
 				passPath: readString(config.passPath, "resolved"),
 				scorePath: readString(config.scorePath, "score"),
 			};
+		case "llm_judge":
 		case "mlflow_judge":
-			// Phase 3c of plan research-the-most-popular-stateful-hinton.md.
-			// Dispatched async via runGraderAsync → runMlflowJudgeGrader →
-			// orchestrator /api/v2/observability/judge → mlflow.genai.judges.llm_judge.
+			// mlflow_judge is a read-compatible alias for the provider-neutral
+			// judge endpoint. No MLflow client or tracking store is involved.
 			return {
 				...config,
 				model: readString(config.model, ""),
@@ -192,8 +207,9 @@ export function runGrader(
 				return runMultiGrader(grader, context);
 			case "external_harness":
 				return runExternalHarness(grader, context);
+			case "llm_judge":
 			case "mlflow_judge":
-				// mlflow_judge is async-only — sync runGrader can't reach
+				// Model judges are async-only because the sync runner cannot reach
 				// the orchestrator. Return a "skipped" sentinel so the
 				// async runGraderAsync path picks it up instead.
 				return {
@@ -203,7 +219,7 @@ export function runGrader(
 					score: null,
 					passed: false,
 					skipped: true,
-					error: "mlflow_judge requires async runner",
+					error: "llm_judge requires async runner",
 				};
 		}
 	} catch (err) {
@@ -228,16 +244,22 @@ export function runGrader(
 export async function runGraderAsync(
 	grader: GraderDefinition,
 	context: GraderContext,
+	dependencies: import("./grader-runners").AsyncGraderDependencies = {},
 ): Promise<GraderResult> {
+	if (grader.type === "multi") {
+		return runMultiGraderAsync(grader, context, dependencies);
+	}
 	const needsAsync =
 		grader.type === "score_model" ||
+		grader.type === "llm_judge" ||
+		grader.type === "mlflow_judge" ||
 		grader.type === "python" ||
 		(grader.type === "external_harness" &&
 			typeof grader.config.url === "string" &&
 			(grader.config.url as string).trim().length > 0);
 	if (!needsAsync) return runGrader(grader, context);
 	const runners = await import("./grader-runners");
-	const result = await runners.runGraderAsync(grader, context);
+	const result = await runners.runGraderAsync(grader, context, dependencies);
 	if (result.skipped && result.error === "async runner declined; use sync runGrader") {
 		return runGrader(grader, context);
 	}
@@ -371,6 +393,26 @@ function runMultiGrader(
 	const children = (grader.config.graders as GraderDefinition[]).map((child) =>
 		runGrader(child, context),
 	);
+	return aggregateMultiGrader(grader, children);
+}
+
+async function runMultiGraderAsync(
+	grader: GraderDefinition,
+	context: GraderContext,
+	dependencies: import("./grader-runners").AsyncGraderDependencies,
+): Promise<GraderResult> {
+	const children = await Promise.all(
+		(grader.config.graders as GraderDefinition[]).map((child) =>
+			runGraderAsync(child, context, dependencies),
+		),
+	);
+	return aggregateMultiGrader(grader, children);
+}
+
+function aggregateMultiGrader(
+	grader: GraderDefinition,
+	children: GraderResult[],
+): GraderResult {
 	const aggregation = readString(grader.config.aggregation, "average");
 	const scored = children.filter((child) => typeof child.score === "number");
 	const score =

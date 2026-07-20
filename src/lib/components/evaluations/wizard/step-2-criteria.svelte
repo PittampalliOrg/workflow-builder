@@ -5,6 +5,7 @@
 	import GraderPickerDialog from './grader-picker-dialog.svelte';
 	import StringCheckForm from './string-check-form.svelte';
 	import TextSimilarityForm from './text-similarity-form.svelte';
+	import LlmJudgeForm from './llm-judge-form.svelte';
 	import ModelLabelerForm from './model-labeler-form.svelte';
 	import ModelScorerForm from './model-scorer-form.svelte';
 	import PythonGraderForm from './python-grader-form.svelte';
@@ -29,6 +30,13 @@
 			};
 		if (type === 'text_similarity')
 			return { method: 'jaccard', threshold: 0.8, targetPath: 'generatedOutput', referencePath: 'expectedOutput' };
+		if (type === 'llm_judge')
+			return {
+				model: 'kimi-k3',
+				prompt:
+					'Evaluate the actual output for correctness and completeness relative to the input and expected output.\n\nInput:\n{{input}}\n\nExpected output:\n{{expected}}\n\nActual output:\n{{actual}}',
+				passThreshold: 0.5
+			};
 		if (type === 'score_model' && mode === 'scorer')
 			return {
 				mode: 'scorer',
@@ -60,6 +68,7 @@
 	function defaultName(type: GraderType, mode?: 'labeler' | 'scorer'): string {
 		if (type === 'string_check') return 'String check grader';
 		if (type === 'text_similarity') return 'Text similarity';
+		if (type === 'llm_judge') return 'Kimi K3 judge';
 		if (type === 'score_model') return mode === 'scorer' ? 'Model scorer' : 'Model labeler';
 		if (type === 'python') return 'Python grader';
 		if (type === 'endpoint') return 'Endpoint grader';
@@ -73,7 +82,7 @@
 			name: defaultName(type, mode),
 			type,
 			config: defaultConfigFor(type, mode),
-			passThreshold: 1,
+			passThreshold: type === 'llm_judge' ? 0.5 : 1,
 			weight: 1,
 			enabled: true
 		});
@@ -89,6 +98,8 @@
 				return 'String check';
 			case 'text_similarity':
 				return 'Text similarity';
+			case 'llm_judge':
+				return 'Kimi K3 judge';
 			case 'score_model':
 				return 'Model grader';
 			case 'python':
@@ -140,6 +151,8 @@
 						<StringCheckForm grader={c} onChange={patchCriterion} />
 					{:else if c.type === 'text_similarity'}
 						<TextSimilarityForm grader={c} onChange={patchCriterion} />
+					{:else if c.type === 'llm_judge'}
+						<LlmJudgeForm grader={c} onChange={patchCriterion} />
 					{:else if c.type === 'score_model' && c.config.mode === 'scorer'}
 						<ModelScorerForm grader={c} onChange={patchCriterion} />
 					{:else if c.type === 'score_model'}

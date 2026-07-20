@@ -27,6 +27,7 @@ import { getRemovedSw10AgentCallsError } from "$lib/server/workflows/sw10-agent-
 import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-validation";
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import type { ModelCompletionPort } from "$lib/server/application/ports";
+import type { EvaluationJudge } from "$lib/server/application/evaluation-judge";
 import { validateTriggerModel } from "$lib/server/workflows/model-validation";
 import { applyWorkflowInputDefaults } from "$lib/utils/workflow-input-config";
 import {
@@ -1333,7 +1334,10 @@ export async function getEvaluationRunItem(
 	return row ? serializeRunItem(row.item) : null;
 }
 
-export async function createEvaluationRun(input: CreateEvaluationRunInput) {
+export async function createEvaluationRun(
+	input: CreateEvaluationRunInput,
+	judge?: EvaluationJudge,
+) {
 	const database = requireDb();
 	const [evaluation] = await database
 		.select()
@@ -1424,7 +1428,7 @@ export async function createEvaluationRun(input: CreateEvaluationRunInput) {
 	});
 
 	if (input.autoGrade !== false && subjectType === "imported_outputs") {
-		await gradeEvaluationRunById(run.id);
+		await gradeEvaluationRunById(run.id, judge);
 	}
 	return getEvaluationRun(input.projectId, run.id);
 }
@@ -1452,9 +1456,13 @@ function buildEvaluationRunExecutionConfig(
 	};
 }
 
-export async function gradeEvaluationRun(projectId: string, runId: string) {
+export async function gradeEvaluationRun(
+	projectId: string,
+	runId: string,
+	judge?: EvaluationJudge,
+) {
 	const run = await requireRunForProject(projectId, runId);
-	await gradeEvaluationRunById(run.id);
+	await gradeEvaluationRunById(run.id, judge);
 	return getEvaluationRun(projectId, run.id);
 }
 
@@ -1609,14 +1617,17 @@ export async function markEvaluationRunStatus(
 	return updated ?? null;
 }
 
-export async function updateEvaluationRunItemOutput(params: {
-	runId: string;
-	itemId: string;
-	generatedOutput: unknown;
-	usage?: Record<string, unknown>;
-	traceIds?: string[];
-	autoGrade?: boolean;
-}) {
+export async function updateEvaluationRunItemOutput(
+	params: {
+		runId: string;
+		itemId: string;
+		generatedOutput: unknown;
+		usage?: Record<string, unknown>;
+		traceIds?: string[];
+		autoGrade?: boolean;
+	},
+	judge?: EvaluationJudge,
+) {
 	const database = requireDb();
 	const [item] = await database
 		.update(evaluationRunItems)
@@ -1636,7 +1647,7 @@ export async function updateEvaluationRunItemOutput(params: {
 		.returning();
 	if (!item) return null;
 	if (params.autoGrade !== false) {
-		const graded = await gradeEvaluationRunItemById(item.id);
+		const graded = await gradeEvaluationRunItemById(item.id, judge);
 		await completeEvaluationRunIfReady(params.runId);
 		return graded ?? item;
 	}
@@ -1644,10 +1655,13 @@ export async function updateEvaluationRunItemOutput(params: {
 	return item;
 }
 
-export async function syncEvaluationRunItemFromExecution(params: {
-	runId: string;
-	itemId: string;
-}) {
+export async function syncEvaluationRunItemFromExecution(
+	params: {
+		runId: string;
+		itemId: string;
+	},
+	judge?: EvaluationJudge,
+) {
 	const database = requireDb();
 	const [row] = await database
 		.select({
@@ -1736,7 +1750,7 @@ export async function syncEvaluationRunItemFromExecution(params: {
 			})
 			.where(eq(evaluationRunItems.id, row.item.id))
 			.returning();
-		const graded = await gradeEvaluationRunItemById(row.item.id);
+		const graded = await gradeEvaluationRunItemById(row.item.id, judge);
 		await completeEvaluationRunIfReady(params.runId);
 		return graded ?? updated ?? row.item;
 	}
@@ -2208,7 +2222,7 @@ export async function completeEvaluationRunIfReady(runId: string) {
 	return markEvaluationRunStatus(runId, "completed", { summary, error: null });
 }
 
-async function gradeEvaluationRunById(runId: string) {
+async function gradeEvaluationRunById(runId: string, judge?: EvaluationJudge) {
 	const database = requireDb();
 	const [run] = await database
 		.select()
@@ -2246,13 +2260,13 @@ async function gradeEvaluationRunById(runId: string) {
 				.where(eq(evaluationRunItems.id, item.id));
 			continue;
 		}
-		await gradeLoadedEvaluationRunItem(item, activeGraders);
+		await gradeLoadedEvaluationRunItem(item, activeGraders, judge);
 	}
 	const summary = await recomputeEvaluationRunSummary(runId);
 	await markEvaluationRunStatus(runId, "completed", { summary, error: null });
 }
 
-async function gradeEvaluationRunItemById(itemId: string) {
+async function gradeEvaluationRunItemById(itemId: string, judge?: EvaluationJudge) {
 	const database = requireDb();
 	const [row] = await database
 		.select({
@@ -2288,7 +2302,7 @@ async function gradeEvaluationRunItemById(itemId: string) {
 		await recomputeEvaluationRunSummary(row.run.id);
 		return updated ?? row.item;
 	}
-	const updated = await gradeLoadedEvaluationRunItem(row.item, activeGraders);
+	const updated = await gradeLoadedEvaluationRunItem(row.item, activeGraders, judge);
 	await recomputeEvaluationRunSummary(row.run.id);
 	return updated;
 }
@@ -2306,6 +2320,7 @@ async function loadActiveGraders(evaluationId: string) {
 async function gradeLoadedEvaluationRunItem(
 	item: typeof evaluationRunItems.$inferSelect,
 	activeGraders: Array<typeof evaluationGraders.$inferSelect>,
+	judge?: EvaluationJudge,
 ) {
 	const database = requireDb();
 	const infrastructureError = detectCodeEvalInfrastructureFailure(
@@ -2345,6 +2360,7 @@ async function gradeLoadedEvaluationRunItem(
 					expectedOutput: item.expectedOutput,
 					generatedOutput: item.generatedOutput,
 				},
+				{ judge },
 			),
 		),
 	);
