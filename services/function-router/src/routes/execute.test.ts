@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   bindDevPreviewExecutionId,
+  buildBrowserStartPreviewProxyRequest,
   buildDevPreviewBuildPayload,
   buildPreviewAcceptancePayload,
   buildWorkspaceCommandPayload,
   classifyDevPreviewProxyResponse,
   dispatchErrorPayload,
+  executeBrowserStartPreviewAction,
   resolveWorkspaceUtilityTimeoutMs,
 } from "./execute.js";
 
@@ -371,6 +373,103 @@ describe("workspace command routing", () => {
       command: "pwd",
       cwd: "/sandbox/app",
     });
+  });
+});
+
+describe("browser preview application routing", () => {
+  it("binds preview authority to db_execution_id and forwards only start options", () => {
+    expect(
+      buildBrowserStartPreviewProxyRequest({
+        actionInput: {
+          workspaceRef: "caller-workspace",
+          sandboxName: "caller-sandbox",
+          rootPath: "/caller/root",
+          previewId: "preview-1",
+          repoPath: "/sandbox/app",
+          baseUrl: "http://127.0.0.1:3009",
+          timeoutSeconds: 120,
+        },
+        dbExecutionId: "exec-1",
+        nodeId: "preview",
+      }),
+    ).toEqual({
+      ok: true,
+      request: {
+        executionId: "exec-1",
+        path: "/api/internal/workflows/executions/exec-1/sandbox-preview",
+        body: {
+          previewId: "preview-1",
+          repoPath: "/sandbox/app",
+          installCommand: undefined,
+          devServerCommand: undefined,
+          baseUrl: "http://127.0.0.1:3009",
+          timeoutSeconds: 120,
+        },
+      },
+    });
+    expect(
+      buildBrowserStartPreviewProxyRequest({
+        actionInput: { executionId: "forged-exec" },
+        dbExecutionId: null,
+        nodeId: "preview",
+      }),
+    ).toMatchObject({ ok: false, error: expect.stringContaining("trusted") });
+  });
+
+  it("returns canonical proxy URLs and strips runtime-local addresses", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        success: true,
+        executionId: "exec-1",
+        previewId: "preview-1",
+        workspaceRef: "workspace-1",
+        proxyUrl:
+          "https://workflow.example/api/workflows/executions/exec-1/sandbox-preview/preview-1/",
+        pageUrl:
+          "https://workflow.example/workspaces/wf/workflows/runtime-preview/exec-1?previewId=preview-1",
+        baseUrl: "http://127.0.0.1:43127",
+        proxyPath: "/api/workspaces/preview/preview-1/",
+        status: "running",
+      }),
+    );
+
+    const response = await executeBrowserStartPreviewAction(
+      {
+        actionInput: {
+          previewId: "preview-1",
+          repoPath: "/sandbox/app",
+          baseUrl: "http://127.0.0.1:3009",
+        },
+        dbExecutionId: "exec-1",
+        nodeId: "preview",
+      },
+      {
+        fetchImpl: fetchImpl as typeof fetch,
+        previewActionToken: "purpose-token",
+        workflowBuilderUrl: "http://workflow-builder:3000",
+      },
+    );
+
+    expect(response.success).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://workflow-builder:3000/api/internal/workflows/executions/exec-1/sandbox-preview",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "X-Preview-Action-Token": "purpose-token",
+        }),
+      }),
+    );
+    expect(response.data).toMatchObject({
+      previewId: "preview-1",
+      proxyUrl:
+        "https://workflow.example/api/workflows/executions/exec-1/sandbox-preview/preview-1/",
+      requestedBaseUrl: "http://127.0.0.1:3009",
+    });
+    expect(response.data).not.toHaveProperty("baseUrl");
+    expect(response.data).not.toHaveProperty("proxyPath");
+    expect(response.data).not.toHaveProperty("result.baseUrl");
+    expect(response.data).not.toHaveProperty("result.proxyPath");
   });
 });
 

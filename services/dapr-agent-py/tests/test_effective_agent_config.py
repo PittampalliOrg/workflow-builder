@@ -14,10 +14,41 @@ if root not in sys.path:
 from src.effective_agent_config import (  # noqa: E402
     build_effective_agent_config,
     effective_audit_fields,
+    is_kimi_k3_runtime_context,
     resolve_llm_component,
     resolve_llm_metadata,
     runtime_context_audit_cache_fields,
 )
+
+
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        (
+            {
+                "effectiveAgentConfig": {
+                    "llm": {
+                        "llmComponent": "llm-kimi-k3",
+                        "providerModel": "kimi-k3",
+                    }
+                }
+            },
+            True,
+        ),
+        ({"llmComponent": "llm-kimi-k3"}, True),
+        ({"llmComponent": "llm-anthropic-opus"}, False),
+        (
+            {
+                "llmComponent": "llm-kimi-k3",
+                "providerModel": "unexpected-model",
+            },
+            False,
+        ),
+        ({}, False),
+    ],
+)
+def test_kimi_media_reference_policy(context: dict, expected: bool) -> None:
+    assert is_kimi_k3_runtime_context(context) is expected
 
 
 def test_config_hash_is_stable_for_semantically_identical_config() -> None:

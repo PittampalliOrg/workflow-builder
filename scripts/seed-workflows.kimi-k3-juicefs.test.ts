@@ -21,6 +21,17 @@ function builderSeed(text: string): string {
 	return remainder.slice(0, end.index);
 }
 
+function artifactReviewerSeed(text: string): string {
+	const start = text.indexOf('slug: "kimi-k3-artifact-vision-reviewer-agent"');
+	if (start < 0) throw new Error("Kimi K3 artifact reviewer seed is missing");
+	const remainder = text.slice(start);
+	const end = remainder.match(/\n\s*\}\);/);
+	if (end?.index === undefined) {
+		throw new Error("Kimi K3 artifact reviewer seed is incomplete");
+	}
+	return remainder.slice(0, end.index);
+}
+
 describe("Kimi K3 JuiceFS builder seed", () => {
 	it("persists the model contract and dedicated runtime isolation", () => {
 		const seed = builderSeed(source);
@@ -37,9 +48,8 @@ describe("Kimi K3 JuiceFS builder seed", () => {
 	});
 
 	it("includes runtime isolation in the persisted version config and config hash", () => {
-		expect(source).toContain(
-			'...(opts.runtimeIsolation\n\t\t\t? { runtimeIsolation: opts.runtimeIsolation }',
-		);
+		expect(source).toContain("...(opts.runtimeIsolation");
+		expect(source).toContain("{ runtimeIsolation: opts.runtimeIsolation }");
 		expect(source).toContain(".update(JSON.stringify(config))");
 	});
 
@@ -54,5 +64,33 @@ describe("Kimi K3 JuiceFS builder seed", () => {
 	it("does not reseed the retired GLM-named identity", () => {
 		expect(source).not.toContain("glm-juicefs-builder-agent");
 		expect(bundle).not.toContain("glm-juicefs-builder-agent");
+	});
+});
+
+describe("Kimi K3 artifact vision reviewer seed", () => {
+	it.each([source, bundle])(
+		"persists the K3 contract and least-privilege native-image tools",
+		(text) => {
+			const seed = artifactReviewerSeed(text);
+			for (const field of [
+				'slug: "kimi-k3-artifact-vision-reviewer-agent"',
+				'runtime: "dapr-agent-py"',
+				'modelSpec: "kimi/kimi-k3"',
+				'reasoningEffort: "max"',
+				'runtimeIsolation: "dedicated"',
+				'"debug_workflow_execution"',
+				'"trace_get_browser_screenshot"',
+				'"trace_debug_workflow_execution"',
+				'"trace_trace_get_browser_screenshot"',
+			]) {
+				expect(seed).toContain(field);
+			}
+			expect(seed).not.toContain("browser_agent_browser_");
+			expect(seed).not.toContain('"Bash"');
+		},
+	);
+
+	it("persists sorted allowed tools in the version config hash", () => {
+		expect(source).toContain("{ allowedTools: [...opts.allowedTools].sort() }");
 	});
 });

@@ -704,6 +704,246 @@ async function executeSessionSpawn(
   }
 }
 
+type BrowserStartPreviewProxyRequest = Readonly<{
+  executionId: string;
+  path: string;
+  body: Record<string, unknown>;
+}>;
+
+type BrowserStartPreviewRequestResult =
+  | Readonly<{ ok: true; request: BrowserStartPreviewProxyRequest }>
+  | Readonly<{ ok: false; error: string }>;
+
+export function buildBrowserStartPreviewProxyRequest(input: {
+  actionInput: Record<string, unknown>;
+  dbExecutionId: string | null | undefined;
+  nodeId: string;
+}): BrowserStartPreviewRequestResult {
+  const executionId = optionalStringInput(input.dbExecutionId);
+  if (!executionId) {
+    return {
+      ok: false,
+      error:
+        "browser/start-preview: missing trusted db_execution_id context; caller-supplied execution IDs are not accepted.",
+    };
+  }
+
+  let args: Record<string, unknown>;
+  try {
+    ({ args } = parseMastraToolInput(input.actionInput, "start-preview"));
+  } catch (cause) {
+    return {
+      ok: false,
+      error:
+        cause instanceof Error
+          ? `browser/start-preview: ${cause.message}`
+          : "browser/start-preview: invalid action input",
+    };
+  }
+
+  const previewId =
+    optionalStringInput(args.previewId) ??
+    (input.nodeId ? `${executionId}-${input.nodeId}` : undefined) ??
+    optionalStringInput(args.workspaceRef);
+
+  return {
+    ok: true,
+    request: {
+      executionId,
+      path: `/api/internal/workflows/executions/${encodeURIComponent(executionId)}/sandbox-preview`,
+      body: {
+        previewId,
+        repoPath: args.repoPath,
+        installCommand: args.installCommand,
+        devServerCommand: args.devServerCommand,
+        baseUrl: args.baseUrl,
+        timeoutSeconds: args.timeoutSeconds,
+      },
+    },
+  };
+}
+
+function canonicalBrowserPreviewResult(
+  value: Record<string, unknown>,
+  executionId: string,
+  actionInput: Record<string, unknown>,
+): Record<string, unknown> {
+  const previewId = optionalStringInput(value.previewId);
+  const proxyUrl = optionalStringInput(value.proxyUrl);
+  const pageUrl = optionalStringInput(value.pageUrl);
+  if (!previewId || !proxyUrl || !pageUrl) {
+    throw new Error(
+      "browser/start-preview: preview service did not return canonical previewId, proxyUrl, and pageUrl",
+    );
+  }
+  let parsedProxyUrl: URL;
+  try {
+    parsedProxyUrl = new URL(proxyUrl);
+  } catch {
+    throw new Error(
+      "browser/start-preview: preview service returned a non-canonical execution proxy URL",
+    );
+  }
+  const expectedPath = `/api/workflows/executions/${encodeURIComponent(executionId)}/sandbox-preview/${encodeURIComponent(previewId)}/`;
+  if (
+    (parsedProxyUrl.protocol !== "http:" &&
+      parsedProxyUrl.protocol !== "https:") ||
+    parsedProxyUrl.pathname !== expectedPath
+  ) {
+    throw new Error(
+      "browser/start-preview: preview service returned a non-canonical execution proxy URL",
+    );
+  }
+
+  let args: Record<string, unknown> = {};
+  try {
+    ({ args } = parseMastraToolInput(actionInput, "start-preview"));
+  } catch {
+    // The request builder already validated this input.
+  }
+  const copyString = (key: string) => {
+    const text = optionalStringInput(value[key]);
+    return text ? { [key]: text } : {};
+  };
+  return {
+    success: true,
+    executionId,
+    previewId,
+    proxyUrl,
+    pageUrl,
+    ...copyString("workspaceRef"),
+    ...copyString("sandboxName"),
+    ...copyString("rootPath"),
+    ...copyString("workingDir"),
+    ...copyString("provider"),
+    ...copyString("status"),
+    ...copyString("startedAt"),
+    ...copyString("workingDirectory"),
+    ...copyString("resolvedAppPath"),
+    ...copyString("appPathSource"),
+    ...(isPlainObject(value.sandbox) ? { sandbox: value.sandbox } : {}),
+    ...(optionalStringInput(args.repoPath)
+      ? { requestedRepoPath: optionalStringInput(args.repoPath) }
+      : {}),
+    ...(optionalStringInput(args.baseUrl)
+      ? { requestedBaseUrl: optionalStringInput(args.baseUrl) }
+      : {}),
+    ...(optionalStringInput(args.devServerCommand)
+      ? {
+          requestedDevServerCommand: optionalStringInput(
+            args.devServerCommand,
+          ),
+        }
+      : {}),
+    ...(optionalStringInput(args.installCommand)
+      ? { requestedInstallCommand: optionalStringInput(args.installCommand) }
+      : {}),
+  };
+}
+
+export async function executeBrowserStartPreviewAction(
+  input: {
+    actionInput: Record<string, unknown>;
+    dbExecutionId: string | null | undefined;
+    nodeId: string;
+  },
+  options: Readonly<{
+    fetchImpl?: typeof fetch;
+    previewActionToken?: string;
+    workflowBuilderUrl?: string;
+    timeoutMs?: number;
+  }> = {},
+): Promise<ExecuteResponse> {
+  const started = Date.now();
+  const built = buildBrowserStartPreviewProxyRequest(input);
+  if (!built.ok) {
+    return {
+      success: false,
+      data: {},
+      error: built.error,
+      errorClass: "permanent",
+      duration_ms: Date.now() - started,
+    };
+  }
+  const previewActionToken =
+    options.previewActionToken ?? PREVIEW_ACTION_INTERNAL_TOKEN;
+  if (!previewActionToken) {
+    return {
+      success: false,
+      data: {},
+      error:
+        "browser/start-preview: PREVIEW_ACTION_INTERNAL_TOKEN is not configured",
+      errorClass: "permanent",
+      duration_ms: Date.now() - started,
+    };
+  }
+
+  try {
+    const { args } = parseMastraToolInput(input.actionInput, "start-preview");
+    const response = await (options.fetchImpl ?? fetch)(
+      `${options.workflowBuilderUrl ?? WORKFLOW_BUILDER_URL}${built.request.path}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": previewActionToken,
+        },
+        body: JSON.stringify(built.request.body),
+        signal: AbortSignal.timeout(
+          options.timeoutMs ??
+            resolveWorkspaceUtilityTimeoutMs({
+              toolId: "start-preview",
+              timeoutMs: args.timeoutMs,
+              commandTimeoutMs: undefined,
+            }) + BROWSER_CAPTURE_OVERHEAD_MS,
+        ),
+      },
+    );
+    const parsed = parseJsonResponse(await response.text());
+    const data = isPlainObject(parsed) ? parsed : {};
+    if (!response.ok || data.success === false) {
+      return {
+        success: false,
+        data,
+        error:
+          typeof data.error === "string"
+            ? data.error
+            : `browser/start-preview failed (${response.status})`,
+        errorClass: [408, 425, 429, 502, 503, 504].includes(response.status)
+          ? "retryable"
+          : "permanent",
+        responseStatus: response.status,
+        duration_ms: Date.now() - started,
+      };
+    }
+
+    const result = canonicalBrowserPreviewResult(
+      data,
+      built.request.executionId,
+      input.actionInput,
+    );
+    return {
+      success: true,
+      data: { toolId: "start-preview", result, ...result },
+      responseStatus: response.status,
+      duration_ms: Date.now() - started,
+    };
+  } catch (cause) {
+    return {
+      success: false,
+      data: {},
+      error: cause instanceof Error ? cause.message : String(cause),
+      errorClass:
+        cause instanceof TypeError ||
+        (cause instanceof Error && cause.name === "TimeoutError")
+          ? "retryable"
+          : "permanent",
+      responseStatus: 0,
+      duration_ms: Date.now() - started,
+    };
+  }
+}
+
 export const PREVIEW_DEVELOPMENT_ACTION_SLUGS = [
 	"preview/environment-launch",
 	"preview/environment-status",
@@ -2389,6 +2629,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 			return reply.status(200).send(previewDevelopmentResponse);
 		}
 
+    if (functionSlug === "browser/start-preview") {
+      const previewResponse = await executeBrowserStartPreviewAction({
+        actionInput: body.input as Record<string, unknown>,
+        dbExecutionId: body.db_execution_id,
+        nodeId: body.node_id,
+      });
+      // Keep application-level retryability in the durable action envelope.
+      return reply.status(200).send(previewResponse);
+    }
+
     // dev/preview (+ dev/preview-teardown + dev/preview-snapshot) proxy to the BFF
     // per-run dev-server Sandbox endpoint (not a Knative service / registry entry).
     if (
@@ -2653,8 +2903,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               pluginId === "browser" && toolId === "capture-flow";
             const isBrowserValidate =
               pluginId === "browser" && toolId === "validate";
-            const isBrowserStartPreview =
-              pluginId === "browser" && toolId === "start-preview";
             const isBrowserStopPreview =
               pluginId === "browser" && toolId === "stop-preview";
             const isWorkspaceUtility =
@@ -2673,7 +2921,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               isBrowserMaterializeChangeArtifact ||
               isBrowserCaptureFlow ||
               isBrowserValidate ||
-              isBrowserStartPreview ||
               isBrowserStopPreview;
             requestTimeoutMs = isBuiltinRuntime
               ? isWorkspaceUtility || isBrowserUtility
@@ -2682,9 +2929,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     timeoutMs: args.timeoutMs,
                     commandTimeoutMs: args.commandTimeoutMs,
                   }) +
-                  (isBrowserCaptureFlow ||
-                  isBrowserValidate ||
-                  isBrowserStartPreview
+                  (isBrowserCaptureFlow || isBrowserValidate
                     ? BROWSER_CAPTURE_OVERHEAD_MS
                     : 0)
                 : resolveAgentHttpTimeoutMs(args.timeoutMinutes)
@@ -2768,7 +3013,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               isBrowserCleanup ||
               isBrowserMaterializeChangeArtifact ||
               isBrowserCaptureFlow ||
-              isBrowserStartPreview ||
               isBrowserStopPreview
                 ? await resolveOpenFunctionUrl("workspace-runtime")
                 : undefined;
@@ -3269,34 +3513,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeId: browserNodeId,
                 nodeName: browserNodeName,
               });
-            } else if (isBrowserStartPreview) {
-              targetUrl = `${functionUrl}/api/workspaces/preview/start`;
-              const previewId =
-                typeof args.previewId === "string" &&
-                args.previewId.trim().length > 0
-                  ? args.previewId.trim()
-                  : browserNodeId && workspaceExecutionId
-                    ? `${workspaceExecutionId}-${browserNodeId}`
-                    : args.workspaceRef;
-              requestBody = JSON.stringify({
-                executionId: workspaceExecutionId,
-                dbExecutionId: browserDbExecutionId,
-                workspaceRef: args.workspaceRef,
-                sandboxName: args.sandboxName,
-                rootPath: args.rootPath,
-                workingDir: args.workingDir ?? args.workingDirectory,
-                provider: args.provider,
-                previewId,
-                repoPath: args.repoPath,
-                installCommand: args.installCommand,
-                devServerCommand: args.devServerCommand,
-                baseUrl: args.baseUrl,
-                timeoutSeconds: args.timeoutSeconds,
-                keepAlive: args.keepAlive,
-                workflowId: browserWorkflowId,
-                nodeId: browserNodeId,
-                nodeName: browserNodeName,
-              });
             } else if (isBrowserStopPreview) {
               targetUrl = `${functionUrl}/api/workspaces/preview/stop`;
               const previewId =
@@ -3415,34 +3631,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               parsed && typeof parsed === "object"
                 ? (parsed as MastraToolResponse)
                 : undefined;
-            const parsedWithPreviewRequest =
-              isBrowserStartPreview && parsed && typeof parsed === "object"
-                ? {
-                    ...(parsed as Record<string, unknown>),
-                    requestedRepoPath:
-                      typeof args.repoPath === "string"
-                        ? args.repoPath.trim()
-                        : undefined,
-                    requestedBaseUrl:
-                      typeof args.baseUrl === "string"
-                        ? args.baseUrl.trim()
-                        : undefined,
-                    requestedDevServerCommand:
-                      typeof args.devServerCommand === "string"
-                        ? args.devServerCommand.trim()
-                        : undefined,
-                    requestedInstallCommand:
-                      typeof args.installCommand === "string"
-                        ? args.installCommand.trim()
-                        : undefined,
-                  }
-                : parsed;
-            let resolvedMastra =
-              isBrowserStartPreview &&
-              parsedWithPreviewRequest &&
-              typeof parsedWithPreviewRequest === "object"
-                ? (parsedWithPreviewRequest as MastraToolResponse)
-                : parsedMastra;
+            let resolvedMastra = parsedMastra;
             if (
               isAgentRun &&
               resolvedMastra?.success === false &&
@@ -3475,13 +3664,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 isBrowserMaterializeChangeArtifact ||
                 isBrowserCaptureFlow ||
                 isBrowserValidate ||
-                isBrowserStartPreview ||
                 isBrowserStopPreview)
             ) {
               resolvedMastra = {
                 success: true,
-                result: parsedWithPreviewRequest,
-                ...(parsedWithPreviewRequest as Record<string, unknown>),
+                result: parsed,
+                ...(parsed as Record<string, unknown>),
               } as MastraToolResponse;
             }
 

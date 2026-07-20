@@ -770,7 +770,6 @@ function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
     with: {
       body: {
         input: {
-          workspaceRef: "",
           previewId: "",
           repoPath: "",
           installCommand: "",
@@ -828,42 +827,15 @@ function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
       fields: null,
       tags: ["browser", "preview", "openshell", "sandbox"],
       doc:
-        "Snapshots the workspace from an OpenShell sandbox, auto-detects the app directory unless repoPath is set, installs dependencies, starts a local server, and returns preview metadata.",
+        "Resolves the retained sandbox from the trusted workflow execution, starts its app server, and returns canonical execution-scoped proxy and preview-page URLs.",
       inputSchema: {
         type: "object",
-        required: ["workspaceRef"],
         properties: {
-          workspaceRef: {
-            type: "string",
-            title: "Workspace Ref",
-            description:
-              "Workspace reference from a prior workspace/profile or durable/run step, for example ${ .workspace_profile.workspaceRef }.",
-          },
           previewId: {
             type: "string",
             title: "Preview ID",
             description:
               "Optional stable preview identifier. Defaults to the workflow execution and node when omitted.",
-          },
-          sandboxName: {
-            type: "string",
-            title: "Sandbox Name",
-            description:
-              "Optional OpenShell sandbox name. Needed only when restarting a preview after runtime memory was lost.",
-          },
-          rootPath: {
-            type: "string",
-            title: "Sandbox Root Path",
-            default: "/sandbox",
-            description:
-              "Root path inside the sandbox. Defaults to /sandbox.",
-          },
-          workingDir: {
-            type: "string",
-            title: "Working Directory",
-            default: "/sandbox",
-            description:
-              "Working directory inside the sandbox. Usually /sandbox or the app root.",
           },
           repoPath: {
             type: "string",
@@ -917,12 +889,21 @@ function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
       },
       outputSchema: {
         type: "object",
+        required: ["success", "executionId", "previewId", "proxyUrl", "pageUrl"],
         properties: {
           success: { type: "boolean" },
+          executionId: { type: "string" },
           previewId: { type: "string" },
           workspaceRef: { type: "string" },
-          proxyPath: { type: "string" },
-          baseUrl: { type: "string" },
+          proxyUrl: {
+            type: "string",
+            description:
+              "Canonical execution-scoped URL for browser automation and direct app access.",
+          },
+          pageUrl: {
+            type: "string",
+            description: "Canonical Workflow Builder preview-page URL.",
+          },
           requestedRepoPath: { type: "string" },
           requestedBaseUrl: { type: "string" },
           requestedDevServerCommand: { type: "string" },

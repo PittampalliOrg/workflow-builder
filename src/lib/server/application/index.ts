@@ -286,6 +286,7 @@ import { LegacyPromotionStateGateway } from "$lib/server/application/adapters/gi
 import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
+import { ConfiguredPublicApplicationUrlAdapter } from "$lib/server/application/adapters/public-application-url";
 import { WorkflowTriggerLifecycleAdapter } from "$lib/server/application/adapters/workflow-trigger-lifecycle";
 import { getEventBusAdapter } from "$lib/server/application/event-bus";
 import { ApplicationAgentRuntimeControlService } from "$lib/server/application/agent-runtime-control";
@@ -2724,6 +2725,7 @@ export function getApplicationAdapters(
   const getSandboxPreview = () =>
     (sandboxPreview ??= new ApplicationSandboxPreviewService({
       preview: new LegacySandboxPreviewGatewayPort(getWorkflowData()),
+      publicApplicationUrl: new ConfiguredPublicApplicationUrlAdapter(),
       workflowData: getWorkflowData(),
     }));
   const getSessionCommands = () =>

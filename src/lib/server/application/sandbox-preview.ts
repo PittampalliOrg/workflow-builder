@@ -1,4 +1,5 @@
 import type {
+	PublicApplicationUrlPort,
 	SandboxPreviewGatewayPort,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
@@ -49,6 +50,7 @@ export class ApplicationSandboxPreviewService {
 	constructor(
 		private readonly deps: {
 			preview: SandboxPreviewGatewayPort;
+			publicApplicationUrl: PublicApplicationUrlPort;
 			workflowData: Pick<WorkflowDataService, "getExecutionWorkspaceRoute">;
 		},
 	) {}
@@ -106,9 +108,10 @@ export class ApplicationSandboxPreviewService {
 			});
 		}
 
-		const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(input.executionId)}/sandbox-preview/${encodeURIComponent(previewId)}`;
+		const runtimePreviewId = readNonEmptyString(result.previewId) || previewId;
+		const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(input.executionId)}/sandbox-preview/${encodeURIComponent(runtimePreviewId)}`;
 		const pageSearchParams = new URLSearchParams();
-		pageSearchParams.set("previewId", previewId);
+		pageSearchParams.set("previewId", runtimePreviewId);
 		if (payload.repoPath) pageSearchParams.set("repoPath", payload.repoPath);
 		if (payload.installCommand) {
 			pageSearchParams.set("installCommand", payload.installCommand);
@@ -129,14 +132,20 @@ export class ApplicationSandboxPreviewService {
 					pageSearch,
 				)
 			: `/workflows/runtime-preview/${encodeURIComponent(input.executionId)}?${pageSearch}`;
-		const origin = publicOrigin(input.request, input.fallbackUrl);
+		const configuredOrigin = await this.deps.publicApplicationUrl.resolve({
+			request: input.request,
+			fallbackUrl: input.fallbackUrl,
+		});
+		const origin =
+			normalizeHttpOrigin(configuredOrigin) ||
+			publicOrigin(input.request, input.fallbackUrl);
 
 		return {
 			status: "ok",
 			body: {
 				success: true,
 				executionId: input.executionId,
-				previewId,
+				previewId: runtimePreviewId,
 				workspaceRef: sandbox.workspaceRef,
 				sandboxName: sandbox.sandboxName,
 				rootPath: sandbox.rootPath,
@@ -144,7 +153,7 @@ export class ApplicationSandboxPreviewService {
 				provider: sandbox.provider,
 				proxyUrl: `${origin}${proxyBasePath}/`,
 				pageUrl: `${origin}${pageBasePath}`,
-				runtime: result,
+				...publicRuntimeMetadata(result),
 			},
 		};
 	}
@@ -309,6 +318,43 @@ function publicOrigin(request: Request, fallback: URL): string {
 	const host = forwardedHost || request.headers.get("host") || fallback.host;
 	const proto = forwardedProto || fallback.protocol.replace(/:$/, "") || "https";
 	return `${proto}://${host}`;
+}
+
+function normalizeHttpOrigin(value: string | undefined): string {
+	if (!value) return "";
+	try {
+		const url = new URL(value);
+		return url.protocol === "http:" || url.protocol === "https:"
+			? url.origin
+			: "";
+	} catch {
+		return "";
+	}
+}
+
+function readNonEmptyString(value: unknown): string {
+	return typeof value === "string" ? value.trim() : "";
+}
+
+function publicRuntimeMetadata(result: Record<string, unknown>) {
+	return {
+		...(readNonEmptyString(result.status)
+			? { status: readNonEmptyString(result.status) }
+			: {}),
+		...(readNonEmptyString(result.startedAt)
+			? { startedAt: readNonEmptyString(result.startedAt) }
+			: {}),
+		...(readNonEmptyString(result.workingDirectory)
+			? { workingDirectory: readNonEmptyString(result.workingDirectory) }
+			: {}),
+		...(readNonEmptyString(result.resolvedAppPath)
+			? { resolvedAppPath: readNonEmptyString(result.resolvedAppPath) }
+			: {}),
+		...(readNonEmptyString(result.appPathSource)
+			? { appPathSource: readNonEmptyString(result.appPathSource) }
+			: {}),
+		...(isRecord(result.sandbox) ? { sandbox: result.sandbox } : {}),
+	};
 }
 
 function rewriteHtmlBody(body: string, proxyBasePath: string): string {

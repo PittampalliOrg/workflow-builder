@@ -8,14 +8,12 @@ dimensions, and delivery mode.
 
 Image bytes are returned inside the shared multimodal marker
 (src/mcp_multimodal.py) so they survive Dapr's string-only ToolMessage schema
-and are recovered as K3 image_url parts on the next turn
-(kimi_adapter._to_kimi_content_parts) — the same channel MCP screenshots
-already use. Everything downstream (telemetry redaction, output summaries, the
-12 KiB compaction exemption, history normalization) is already marker-aware,
-so no main.py changes are needed.
+and can be handled uniformly with MCP screenshots. The durable-agent activity
+boundary uploads inline images through the multimodal-media port and persists
+only the compact Kimi ``ms://`` reference. K3 recovers that reference as a
+native image_url part on the next turn.
 
-Image files only. Video would need the Moonshot file-upload service (ms://),
-which this runtime does not call yet.
+Image files only. Video upload is not implemented by the current media port.
 """
 
 from __future__ import annotations
