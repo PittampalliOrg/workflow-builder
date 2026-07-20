@@ -85,7 +85,7 @@ KIMI_BASE_URL = (
     os.environ.get("KIMI_BASE_URL", "").strip()
     or "https://api.kimi.com/coding/v1"
 ).rstrip("/")
-KIMI_DEFAULT_MODEL = os.environ.get("KIMI_DEFAULT_MODEL", "kimi-k3")
+KIMI_DEFAULT_MODEL = "kimi-k3"
 # K3 is a reasoning model — a too-small completion cap yields empty output.
 KIMI_MAX_COMPLETION_TOKENS = env_int("KIMI_MAX_COMPLETION_TOKENS", 32768)
 # When true, degrade structured output to schema-in-prompt + parse instead of

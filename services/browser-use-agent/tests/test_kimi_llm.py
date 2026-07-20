@@ -23,7 +23,8 @@ from src.kimi_llm import build_chat_model, resolve_kimi_model
         ("kimi/kimi-k3", "kimi-k3"),
         ("kimi-k3", "kimi-k3"),
         ("llm-kimi-k3", "kimi-k3"),
-        ("kimi/kimi-k3.5", "kimi-k3.5"),
+        ("kimi/kimi-k3.5", "kimi-k3"),
+        ("kimi/kimi-k2.6", "kimi-k3"),
         ("openai/gpt-5.5", "kimi-k3"),  # non-Kimi provider falls back (P1)
         ("zai/glm-5.2", "kimi-k3"),
     ],

@@ -32,9 +32,9 @@ def resolve_kimi_model(agent_config: dict[str, Any] | None) -> str:
     """Map ``agentConfig.modelSpec`` to a bare Kimi model name.
 
     Accepted spellings: ``kimi/kimi-k3`` (platform modelSpec),
-    ``llm-kimi-k3`` (Dapr component name), ``kimi-k3`` (bare). A non-Kimi
-    provider falls back to the default with a warning — P1 of this runtime is
-    Kimi-only; the multi-provider shim arrives with the adapter-layer phase.
+    ``llm-kimi-k3`` (Dapr component name), ``kimi-k3`` (bare). Any other
+    model falls back to K3 with a warning. This runtime is deliberately pinned
+    to the one Kimi model supported by the platform contract.
     """
     spec = str((agent_config or {}).get("modelSpec") or "").strip()
     if not spec:
@@ -54,7 +54,15 @@ def resolve_kimi_model(agent_config: dict[str, Any] | None) -> str:
     name = name.strip()
     if name.startswith("llm-"):
         name = name[len("llm-") :]
-    return name or KIMI_DEFAULT_MODEL
+    if name != KIMI_DEFAULT_MODEL:
+        logger.warning(
+            "[kimi-llm] modelSpec=%r requests unsupported Kimi model %r; using %s",
+            spec,
+            name,
+            KIMI_DEFAULT_MODEL,
+        )
+        return KIMI_DEFAULT_MODEL
+    return KIMI_DEFAULT_MODEL
 
 
 def build_chat_model(agent_config: dict[str, Any] | None):
