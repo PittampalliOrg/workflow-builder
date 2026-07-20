@@ -54,6 +54,10 @@ import {
 	inlineImage,
 	preserveMultimodalToolResult,
 } from "./vision-contract.mjs";
+import {
+	shouldCloseBrowserAfterCapture,
+	shouldProvisionFarmBrowser,
+} from "./browser-lane-policy.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -63,12 +67,11 @@ const BFF =
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
-// BrowserStation lanes: when a run stamps `X-Wfb-Browser-Lane: per-node`, each
-// script call (node) gets its OWN isolated browser LEASED from the
-// BrowserStation farm (KubeRay; one Chrome per worker pod) instead of sharing
-// the run's Chrome in this pod — parallel agents without co-tenant Chromes
-// here. Unset BROWSERSTATION_URL/API key ⇒ lanes still isolate (suffixed
-// session ⇒ separate LOCAL Chrome), they just don't offload to the farm.
+// BrowserStation lanes: every execution-scoped browser is leased from the
+// BrowserStation farm (KubeRay; one Chrome per worker pod), keeping Chromium
+// out of this long-lived MCP bridge. `X-Wfb-Browser-Lane: per-node` further
+// isolates concurrent script calls by node; otherwise one run shares one farm
+// browser. Unset BROWSERSTATION_URL/API key falls back to local Chrome.
 const BROWSERSTATION_URL = (process.env.BROWSERSTATION_URL || "").replace(/\/$/, "");
 const BROWSERSTATION_API_KEY = process.env.BROWSERSTATION_API_KEY || "";
 // Cold farm scale-up = pod schedule + image pull; warm worker ≈ 2s.
@@ -577,6 +580,18 @@ async function stopCapture(browserSession, reason, liveChild) {
 				console.error(`[auto-capture] har_stop failed (${reason}): ${err?.message}`);
 			}
 		}
+		if (shouldCloseBrowserAfterCapture(reason)) {
+			try {
+				await child.callTool(
+					{ name: "agent_browser_close", arguments: {} },
+					undefined,
+					{ timeout: 60000 },
+				);
+				console.error(`[browser] session closed after ${reason} cleanup`);
+			} catch (err) {
+				console.error(`[browser] close failed after ${reason}: ${err?.message}`);
+			}
+		}
 	} finally {
 		if (ephemeral) {
 			try {
@@ -814,8 +829,14 @@ app.post("/mcp", async (req, res) => {
 			? `wfb-${ctxRef.value.executionId}--${laneKey}`
 			: `wfb-${ctxRef.value.executionId}`
 		: `wfb-anon-${randomUUID().slice(0, 8)}`;
-	if (laneKey && lanesEnabled() && !lanes.has(browserSession)) {
-		// Fire the lease now (idempotent); tool calls await readiness bounded.
+	if (
+		shouldProvisionFarmBrowser({
+			executionId: ctxRef.value.executionId,
+			farmConfigured: lanesEnabled(),
+			laneExists: lanes.has(browserSession),
+		})
+	) {
+		// Fire the run or node lease now (idempotent); tool calls await readiness bounded.
 		ensureLaneBrowser(browserSession);
 	}
 	const { server, cleanup } = await makeProxy(ctxRef, browserSession);
