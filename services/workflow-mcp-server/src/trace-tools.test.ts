@@ -488,7 +488,7 @@ describe("trace tools", () => {
       principal,
       diagnostics: diagnostics({
         getSpanTree: vi.fn(async () => ({
-          roots: [{ spanId: "root", name: "workflow", children: [] }],
+          nodes: [{ spanId: "root", depth: 0, name: "workflow" }],
           renderedCount: 1,
           truncated: { spans: false, nodes: false, siblings: false },
         })),
@@ -502,7 +502,7 @@ describe("trace tools", () => {
     });
 
     expect(response.structuredContent.ok).toBe(true);
-    expect(response.structuredContent.data.roots).toHaveLength(1);
+    expect(response.structuredContent.data.nodes).toHaveLength(1);
     expect(
       response.structuredContent.nextActions.map(
         (action: { tool: string }) => action.tool,

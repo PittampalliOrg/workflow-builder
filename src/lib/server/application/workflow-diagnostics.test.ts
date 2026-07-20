@@ -542,25 +542,26 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 
 		const result = await service.getSpanTree({ execution, maxNodes: 300 });
 		const body = result.body as {
-			roots: Array<{
+			nodes: Array<{
 				spanId: string;
-				children: Array<{ name: string; status: string }>;
+				depth: number;
+				name: string;
+				status: string;
 				omittedChildren?: number;
 			}>;
 			renderedCount: number;
 			omittedSiblings: number;
 		};
-		expect(body.roots).toHaveLength(1);
-		const names = body.roots[0].children.map((node) => node.name);
+		expect(body.nodes[0]).toMatchObject({ depth: 0, spanId: 'p'.repeat(16) });
+		const children = body.nodes.filter((node) => node.depth === 1);
+		const names = children.map((node) => node.name);
 		// 3 healthy sveltekit.handle kept, 4th collapsed; the ERROR sibling always survives.
 		expect(names.filter((name) => name === 'sveltekit.handle')).toHaveLength(4);
 		expect(
-			body.roots[0].children.some(
-				(node) => node.name === 'sveltekit.handle' && node.status === 'error'
-			)
+			children.some((node) => node.name === 'sveltekit.handle' && node.status === 'error')
 		).toBe(true);
 		expect(names).toContain('call_llm');
-		expect(body.roots[0].omittedChildren).toBe(1);
+		expect(body.nodes[0].omittedChildren).toBe(1);
 		expect(body.omittedSiblings).toBe(1);
 		expect(body.renderedCount).toBe(6);
 	});

@@ -657,7 +657,7 @@ export function registerTraceTools(
 
   register(
     "trace_get_tree",
-    "Get the execution's compact span waterfall in ONE bounded read: a name/service/duration/status hierarchy across every correlated trace, with repetitive same-name siblings collapsed (omittedChildren counts) and a hard node cap. Best first structural view; drill into specific spanIds with trace_get_span / trace_get_llm_turn / trace_get_tool_calls.",
+    "Get the execution's compact span waterfall in ONE bounded read: pre-order `nodes` (parent before children) each with depth/name/service/durationMs/status — render as an indented tree. Repetitive same-name siblings are collapsed (omittedChildren counts) and the node count is capped. Best first structural view; drill into specific spanIds with trace_get_span / trace_get_llm_turn / trace_get_tool_calls.",
     {
       title: "Get Span Tree",
       inputSchema: {

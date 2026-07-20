@@ -15,7 +15,7 @@ function port(
     getSpan: vi.fn(async () => ({ span: { spanId: "span-1" } })),
     getLlmTurns: vi.fn(async () => ({ turns: [] })),
     getToolCalls: vi.fn(async () => ({ toolCalls: [] })),
-    getSpanTree: vi.fn(async () => ({ roots: [] })),
+    getSpanTree: vi.fn(async () => ({ nodes: [] })),
     searchLogs: vi.fn(async () => ({ logs: [{ body: "failed" }] })),
     getBrowserScreenshot: vi.fn(async () => ({
       contentType: "image/png",
