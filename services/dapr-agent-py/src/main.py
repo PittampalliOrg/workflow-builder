@@ -238,7 +238,9 @@ from src.kimi_adapter import (
     coerce_kimi_reasoning_message,
     install_kimi_reasoning_state_schema,
 )
-from src.adapters.kimi_files_multimodal_media import KimiFilesMultimodalMediaAdapter
+from src.adapters.kimi_files_multimodal_media import (
+    configured_kimi_files_offloader,
+)
 from src.kimi_formulas import (
     execute_formula_tool_result,
     formula_uri_for_tool,
@@ -7128,7 +7130,9 @@ agent = OpenShellDurableAgent(
     # Concurrency plan P3: inject the env-tuned WorkflowRuntime (DurableAgent
     # otherwise constructs a bare one at dapr_agents/agents/durable.py:342).
     runtime=_build_tuned_workflow_runtime(),
-    multimodal_media_offloader=KimiFilesMultimodalMediaAdapter(),
+    # The KFC endpoint accepts native base64 image parts but has no Files API.
+    # Only install the provider offloader when a distinct Files endpoint is set.
+    multimodal_media_offloader=configured_kimi_files_offloader(),
     name=AGENT_SERVICE_NAME,
     role="OpenShell Durable Coding Agent",
     goal="Help users inspect, modify, and execute code safely inside an OpenShell sandbox",

@@ -9,6 +9,7 @@ import pytest
 
 from src.adapters.kimi_files_multimodal_media import (
     KimiFilesMultimodalMediaAdapter,
+    configured_kimi_files_offloader,
 )
 
 
@@ -51,7 +52,8 @@ class _KimiFilesApi:
 @pytest.fixture(autouse=True)
 def _kimi_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KIMI_API_KEY", "secret-kimi-key")
-    monkeypatch.setenv("KIMI_BASE_URL", "https://kimi.test/v1")
+    monkeypatch.setenv("KIMI_BASE_URL", "https://api.kimi.com/coding/v1")
+    monkeypatch.setenv("KIMI_FILES_BASE_URL", "https://kimi-files.test/v1")
     monkeypatch.delenv("DAPR_AGENT_PY_KIMI_FILE_RETENTION_SECONDS", raising=False)
     monkeypatch.delenv("DAPR_AGENT_PY_KIMI_FILE_MAX_MANAGED", raising=False)
 
@@ -65,7 +67,7 @@ def test_uploads_image_with_kimi_api_key_and_purpose_image() -> None:
     assert reference.uri == "ms://uploaded-file"
     assert [request.method for request in api.requests] == ["GET", "POST"]
     upload = api.requests[1]
-    assert upload.full_url == "https://kimi.test/v1/files"
+    assert upload.full_url == "https://kimi-files.test/v1/files"
     assert upload.headers["Authorization"] == "Bearer secret-kimi-key"
     body = bytes(upload.data or b"")
     assert b'name="purpose"\r\n\r\nimage' in body
@@ -73,6 +75,19 @@ def test_uploads_image_with_kimi_api_key_and_purpose_image() -> None:
     assert b"real-pixel-bytes" in body
     digest = hashlib.sha256(b"real-pixel-bytes").hexdigest().encode("ascii")
     assert b"wfb-durable-media-" + digest + b".png" in body
+
+
+def test_kfc_chat_base_does_not_enable_files_offload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KIMI_FILES_BASE_URL", raising=False)
+
+    assert configured_kimi_files_offloader() is None
+
+    with pytest.raises(RuntimeError, match="KIMI_FILES_BASE_URL"):
+        KimiFilesMultimodalMediaAdapter(urlopen=_KimiFilesApi()).upload_image(
+            b"real-pixel-bytes", "image/png"
+        )
 
 
 def test_reuses_existing_content_addressed_file() -> None:

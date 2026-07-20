@@ -2,15 +2,14 @@
 
 browser-use's ``BaseChatModel`` is a runtime-checkable Protocol; its bundled
 ``ChatOpenAI`` speaks any OpenAI-compatible endpoint, which is exactly what
-Kimi exposes at ``https://api.moonshot.ai/v1``. This module resolves the
-platform ``agentConfig.modelSpec`` (``kimi/kimi-k3`` / ``llm-kimi-k3`` /
-``kimi-k3``) onto that client.
+Kimi-for-Coding exposes at ``https://api.kimi.com/coding/v1``. This module
+resolves the platform ``agentConfig.modelSpec`` (``kimi/kimi-k3`` /
+``llm-kimi-k3`` / ``kimi-k3``) onto that client.
 
-Note on reasoning effort: kimi-k3 currently accepts only ``"max"`` (see
-services/dapr-agent-py/src/kimi_adapter.py), and browser-use's ChatOpenAI
-``reasoning_effort`` Literal has no ``"max"`` member and only sends the field
-for models in its ``reasoning_models`` list — so we deliberately do not set
-it and rely on the provider default for K3.
+Kimi K3 calls explicitly use ``reasoning_effort="max"``. browser-use's
+``ChatOpenAI`` annotation does not yet list that value, but the dataclass does
+not enforce the annotation at runtime and forwards it for models named in
+``reasoning_models``.
 """
 
 from __future__ import annotations
@@ -33,9 +32,9 @@ def resolve_kimi_model(agent_config: dict[str, Any] | None) -> str:
     """Map ``agentConfig.modelSpec`` to a bare Kimi model name.
 
     Accepted spellings: ``kimi/kimi-k3`` (platform modelSpec),
-    ``llm-kimi-k3`` (Dapr component name), ``kimi-k3`` (bare). A non-Kimi
-    provider falls back to the default with a warning — P1 of this runtime is
-    Kimi-only; the multi-provider shim arrives with the adapter-layer phase.
+    ``llm-kimi-k3`` (Dapr component name), ``kimi-k3`` (bare). Any other
+    model falls back to K3 with a warning. This runtime is deliberately pinned
+    to the one Kimi model supported by the platform contract.
     """
     spec = str((agent_config or {}).get("modelSpec") or "").strip()
     if not spec:
@@ -55,7 +54,15 @@ def resolve_kimi_model(agent_config: dict[str, Any] | None) -> str:
     name = name.strip()
     if name.startswith("llm-"):
         name = name[len("llm-") :]
-    return name or KIMI_DEFAULT_MODEL
+    if name != KIMI_DEFAULT_MODEL:
+        logger.warning(
+            "[kimi-llm] modelSpec=%r requests unsupported Kimi model %r; using %s",
+            spec,
+            name,
+            KIMI_DEFAULT_MODEL,
+        )
+        return KIMI_DEFAULT_MODEL
+    return KIMI_DEFAULT_MODEL
 
 
 def build_chat_model(agent_config: dict[str, Any] | None):
@@ -69,8 +76,9 @@ def build_chat_model(agent_config: dict[str, Any] | None):
             "(browser-use-agent authenticates the default kimi-k3 model with it)."
         )
 
+    model = resolve_kimi_model(agent_config)
     kwargs: dict[str, Any] = {
-        "model": resolve_kimi_model(agent_config),
+        "model": model,
         "api_key": api_key,
         "base_url": KIMI_BASE_URL,
         "max_completion_tokens": KIMI_MAX_COMPLETION_TOKENS,
@@ -80,6 +88,8 @@ def build_chat_model(agent_config: dict[str, Any] | None):
         # 0.2 / 0.3.
         "temperature": 1,
         "frequency_penalty": 0,
+        "reasoning_effort": "max",
+        "reasoning_models": [model],
     }
     if SCHEMA_IN_PROMPT:
         kwargs["add_schema_to_system_prompt"] = True

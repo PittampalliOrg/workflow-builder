@@ -38,6 +38,7 @@ def _clean_formula_state(monkeypatch):
     monkeypatch.delenv("KIMI_FORMULAS", raising=False)
     monkeypatch.delenv("KIMI_FORMULA_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+    monkeypatch.setenv("KIMI_FORMULAS_BASE_URL", "https://kimi-formulas.test/v1")
     formulas.reset_formula_cache()
     yield
     formulas.reset_formula_cache()
@@ -122,11 +123,9 @@ def test_normalize_formula_uri_defaults_namespace_and_tag() -> None:
     )
 
 
-def test_configured_formula_uris_default_excludes_web_search(monkeypatch) -> None:
-    uris = formulas.configured_formula_uris()
-    assert uris == list(formulas.DEFAULT_FORMULA_URIS)
-    assert len(uris) == 11
-    assert all("web-search" not in uri for uri in uris)
+def test_configured_formula_uris_default_is_disabled() -> None:
+    assert formulas.configured_formula_uris() == []
+    assert formulas.ensure_formula_tools() == []
 
 
 def test_default_formula_uris_use_renamed_code_runner() -> None:
@@ -591,7 +590,7 @@ def test_execute_formula_tool_http_error_includes_status(monkeypatch) -> None:
     _install_formula_urlopen(
         monkeypatch,
         HTTPError(
-            "https://api.moonshot.ai/v1/formulas/moonshot/fetch:latest/fibers",
+            "https://kimi-formulas.test/v1/formulas/moonshot/fetch:latest/fibers",
             500,
             "Internal Server Error",
             None,
@@ -756,6 +755,9 @@ def test_call_kimi_chat_includes_formula_tools(monkeypatch) -> None:
 
 
 def test_call_kimi_chat_survives_formula_fetch_failure(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("KIMI_FORMULAS", "moonshot/fetch:latest")
+    monkeypatch.delenv("KIMI_FORMULAS_BASE_URL")
+
     def urlopen(req, timeout: float = 0):
         url = req.full_url
         if url.endswith("/chat/completions"):

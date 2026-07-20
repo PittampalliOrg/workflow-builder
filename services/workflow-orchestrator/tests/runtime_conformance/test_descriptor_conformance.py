@@ -196,16 +196,18 @@ def test_verified_runtimes_are_fully_consistent():
 
 
 def test_soft_checks_are_gated_on_capabilitiesVerified():
-    # browser-use declares multiProvider=true with a single provider — an
-    # ALLOWED soft inconsistency precisely because it is unverified. The gate is
-    # that flipping it to verified would surface the violation, blocking the flip.
+    # Build an intentionally inconsistent unverified descriptor. Production
+    # descriptors should not need to remain dishonest just to exercise this gate.
     bu = rr.registry.by_id("browser-use-agent")
     assert bu is not None
-    assert bu.capabilities.get("multiProvider") is True
-    assert len(bu.capabilities.get("supportedProviders") or []) == 1
-    assert descriptor_violations(bu) == []  # unverified → soft check skipped
+    inconsistent = dataclasses.replace(
+        bu,
+        capabilities={**bu.capabilities, "multiProvider": True},
+    )
+    assert len(inconsistent.capabilities.get("supportedProviders") or []) == 1
+    assert descriptor_violations(inconsistent) == []  # unverified → soft check skipped
 
-    bu_verified = dataclasses.replace(bu, capabilities_verified=True)
+    bu_verified = dataclasses.replace(inconsistent, capabilities_verified=True)
     violations = descriptor_violations(bu_verified)
     assert any("multiProvider" in v for v in violations), violations
 
