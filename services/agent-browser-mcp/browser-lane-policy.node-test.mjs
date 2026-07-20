@@ -8,6 +8,14 @@ import {
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
 
+async function waitUntil(predicate, label) {
+	const deadline = Date.now() + 2_000;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 describe("agent-browser lane policy", () => {
 	it("offloads every execution-scoped browser when BrowserStation is configured", () => {
 		assert.equal(
@@ -132,7 +140,7 @@ describe("agent-browser lane policy", () => {
 		async function closeFromSession() {
 			const claim = registry.claimClose(firstSession.context);
 			if (!claim) {
-				await registry.waitForClose(firstSession.context);
+				await registry.waitForCloseResponse(firstSession.context);
 				return "joined";
 			}
 			await finalizeBrowserClose({
@@ -157,14 +165,18 @@ describe("agent-browser lane policy", () => {
 		assert.equal(childCloseCalls, 1);
 	});
 
-	it("aborts a stalled close, settles followers, and prevents a second child close", async () => {
-		let childCloseCalls = 0;
-		let observedAbort = false;
-		let releasedAfterAbort = false;
+	it("settles timed-out callers but fences replacement until finalize and cancel drain", async () => {
+		let finishFinalization;
+		const finalizationGate = new Promise((resolve) => {
+			finishFinalization = resolve;
+		});
+		let finishCancellation;
+		const cancellationGate = new Promise((resolve) => {
+			finishCancellation = resolve;
+		});
+		const observedGenerations = [];
 		const registry = createBrowserContextRegistry({
-			releaseResources: async () => {
-				releasedAfterAbort = observedAbort;
-			},
+			createState: () => ({ touchedByOldWork: [] }),
 		});
 		const browserSession = "wfb-execution-deadline";
 		const authorizationBinding =
@@ -173,40 +185,57 @@ describe("agent-browser lane policy", () => {
 		const followerLease = registry.acquire(browserSession, authorizationBinding);
 		assert.equal(registry.commit(ownerLease), true);
 		assert.equal(registry.commit(followerLease), true);
+		const oldContext = ownerLease.context;
 		const claim = registry.claimClose(ownerLease.context);
 		assert.ok(claim);
-		const follower = (async () => {
-			assert.equal(registry.claimClose(followerLease.context), null);
-			return registry.waitForClose(followerLease.context);
-		})();
+		assert.equal(registry.claimClose(followerLease.context), null);
+		const follower = registry.waitForCloseResponse(followerLease.context);
 		const owner = finalizeBrowserClose({
 			registry,
 			context: ownerLease.context,
 			claim,
 			timeoutMs: 10,
-			abortDrainTimeoutMs: 10,
-			finalize: async (signal) => {
-				await new Promise(() => {
-					signal.addEventListener(
-						"abort",
-						() => {
-							observedAbort = true;
-						},
-						{ once: true },
-					);
-				});
+			finalize: async () => {
+				// Deliberately ignore abort to reproduce stale old-generation work.
+				await finalizationGate;
+				const visible = registry.current(browserSession);
+				observedGenerations.push(visible?.generation ?? null);
+				visible?.touchedByOldWork.push("finalize");
 			},
 			cancel: async () => {
-				childCloseCalls += 1;
+				await cancellationGate;
+				const visible = registry.current(browserSession);
+				observedGenerations.push(visible?.generation ?? null);
+				visible?.touchedByOldWork.push("cancel");
 			},
 		});
 		await assert.rejects(owner, /close finalization exceeded 10ms/);
-		assert.equal(await follower, true);
-		assert.equal(observedAbort, true);
-		assert.equal(releasedAfterAbort, true);
-		assert.equal(childCloseCalls, 1);
-		assert.equal(registry.current(browserSession), null);
-		assert.ok(registry.acquire(browserSession, authorizationBinding));
+		assert.equal(await follower, false);
+		assert.equal(registry.current(browserSession), oldContext);
+		assert.equal(registry.acquire(browserSession, authorizationBinding), null);
+
+		finishFinalization();
+		await waitUntil(
+			() => oldContext.touchedByOldWork.includes("finalize"),
+			"late finalization",
+		);
+		assert.equal(registry.current(browserSession), oldContext);
+		assert.equal(registry.acquire(browserSession, authorizationBinding), null);
+
+		finishCancellation();
+		await waitUntil(
+			() => oldContext.touchedByOldWork.includes("cancel"),
+			"late cancellation",
+		);
+		let replacementLease = null;
+		await waitUntil(() => {
+			replacementLease = registry.acquire(browserSession, authorizationBinding);
+			return Boolean(replacementLease);
+		}, "replacement admission");
+		assert.deepEqual(observedGenerations, [oldContext.generation, oldContext.generation]);
+		assert.deepEqual(oldContext.touchedByOldWork, ["finalize", "cancel"]);
+		assert.ok(replacementLease.context.generation > oldContext.generation);
+		assert.deepEqual(replacementLease.context.touchedByOldWork, []);
 	});
 
 	it("keeps a follower context current when its creator initialization fails", async () => {
@@ -341,7 +370,7 @@ describe("agent-browser lane policy", () => {
 		);
 		assert.match(
 			handler,
-			/claimClose\(browserContext\)[\s\S]*waitForClose\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*finalizeBrowserClose\(\{[\s\S]*stopCapture\([\s\S]*"close"[\s\S]*child\.callTool\(/,
+			/claimClose\(browserContext\)[\s\S]*waitForCloseResponse\(browserContext\)[\s\S]*if \(closesBrowser\) \{[\s\S]*finalizeBrowserClose\(\{[\s\S]*stopCapture\([\s\S]*"close"[\s\S]*child\.callTool\(/,
 		);
 	});
 

@@ -65,8 +65,11 @@ persists across calls within the session). On top of plain proxying it adds:
    purpose-limited assertion bound to execution, user, and project. Every
    execution-scoped MCP initialization validates it at the fixed BFF internal
    endpoint using `INTERNAL_API_TOKEN` before selecting or spawning a browser
-   lane. Every later MCP POST, GET, or DELETE revalidates that exact assertion
-   and execution at a credential-free BFF validation endpoint before dispatch.
+   lane. Every later MCP POST or GET revalidates that exact assertion and
+   execution at a credential-free BFF validation endpoint before dispatch.
+   DELETE instead requires the exact stored MCP session, execution, and
+   assertion digest so transport teardown still works after browser release or
+   live authorization revocation.
    The BFF checks live run state, active user status, current project membership,
    and credential version; lane, MCP-session, and cookie-cache reuse are bound to
    a digest of that exact assertion. On first target navigation the bridge plants

@@ -10,7 +10,11 @@ export function shouldCloseBrowserAfterCapture(reason) {
 	return reason !== "close";
 }
 
-/** Runs the one close owner's work under a deadline and always settles waiters. */
+/**
+ * Runs the one close owner's work under a response deadline. A timed-out caller
+ * and its followers settle immediately, but the old generation remains the
+ * admission fence until both finalization and cancellation have drained.
+ */
 export async function finalizeBrowserClose({
 	registry,
 	context,
@@ -18,50 +22,41 @@ export async function finalizeBrowserClose({
 	finalize,
 	timeoutMs,
 	cancel = async () => {},
-	abortDrainTimeoutMs = 5_000,
 }) {
 	if (
 		!registry?.ownsClose(context, claim) ||
+		typeof registry.fenceRelease !== "function" ||
+		typeof registry.settleCloseResponse !== "function" ||
 		typeof finalize !== "function" ||
 		typeof cancel !== "function" ||
 		!Number.isFinite(timeoutMs) ||
-		timeoutMs <= 0 ||
-		!Number.isFinite(abortDrainTimeoutMs) ||
-		abortDrainTimeoutMs <= 0
+		timeoutMs <= 0
 	) {
 		throw new Error("invalid browser close ownership or deadline");
 	}
 	const controller = new AbortController();
 	const finalization = Promise.resolve().then(() => finalize(controller.signal));
-	let timedOut = false;
 	let cancellation = Promise.resolve();
 	let timer;
 	const deadline = new Promise((_, reject) => {
 		timer = setTimeout(() => {
-			timedOut = true;
 			const error = new Error(`browser close finalization exceeded ${timeoutMs}ms`);
-			controller.abort(error);
-			cancellation = Promise.resolve()
-				.then(() => cancel(error))
-				.catch(() => {});
+			cancellation = Promise.resolve().then(() => cancel(error));
 			reject(error);
+			controller.abort(error);
 		}, timeoutMs);
 	});
+	let responseSucceeded = false;
 	try {
-		return await Promise.race([finalization, deadline]);
+		const result = await Promise.race([finalization, deadline]);
+		responseSucceeded = true;
+		return result;
 	} finally {
 		clearTimeout(timer);
-		if (timedOut) {
-			let drainTimer;
-			await Promise.race([
-				Promise.allSettled([finalization, cancellation]),
-				new Promise((resolve) => {
-					drainTimer = setTimeout(resolve, abortDrainTimeoutMs);
-				}),
-			]);
-			clearTimeout(drainTimer);
-		}
-		await registry.release(context, claim);
+		registry.settleCloseResponse(context, claim, responseSucceeded);
+		registry
+			.fenceRelease(context, claim, [finalization, cancellation])
+			.catch(() => {});
 	}
 }
 
@@ -108,9 +103,11 @@ export function createBrowserContextRegistry({
 				closing: false,
 				released: false,
 				releasePromise: null,
+				admissionFence: null,
 				closeClaim: null,
-				closePromise: null,
-				settleClose: null,
+				closeResponsePromise: null,
+				closeResponseSettled: false,
+				resolveCloseResponse: null,
 				established: false,
 				leases: new Map(),
 			};
@@ -134,9 +131,9 @@ export function createBrowserContextRegistry({
 		) {
 			return null;
 		}
-		let settleClose;
-		const closePromise = new Promise((resolve) => {
-			settleClose = resolve;
+		let resolveCloseResponse;
+		const closeResponsePromise = new Promise((resolve) => {
+			resolveCloseResponse = resolve;
 		});
 		const claim = Object.freeze({
 			browserSession: context.browserSession,
@@ -145,8 +142,8 @@ export function createBrowserContextRegistry({
 		});
 		context.closing = true;
 		context.closeClaim = claim;
-		context.closePromise = closePromise;
-		context.settleClose = settleClose;
+		context.closeResponsePromise = closeResponsePromise;
+		context.resolveCloseResponse = resolveCloseResponse;
 		return claim;
 	}
 
@@ -154,8 +151,15 @@ export function createBrowserContextRegistry({
 		return Boolean(context && claim && context.closeClaim === claim);
 	}
 
-	function waitForClose(context) {
-		return context?.closePromise ?? Promise.resolve(false);
+	function settleCloseResponse(context, claim, result) {
+		if (!ownsClose(context, claim) || context.closeResponseSettled) return false;
+		context.closeResponseSettled = true;
+		context.resolveCloseResponse?.(Boolean(result));
+		return true;
+	}
+
+	function waitForCloseResponse(context) {
+		return context?.closeResponsePromise ?? Promise.resolve(false);
 	}
 
 	function commit(lease) {
@@ -187,7 +191,7 @@ export function createBrowserContextRegistry({
 		return true;
 	}
 
-	function release(context, claim = null) {
+	function releaseNow(context, claim = null) {
 		if (!context) return Promise.resolve(false);
 		if (context.releasePromise) {
 			return ownsClose(context, claim)
@@ -201,7 +205,6 @@ export function createBrowserContextRegistry({
 		if (!context.closing) owner = claimClose(context);
 		if (!ownsClose(context, owner)) return Promise.resolve(false);
 		context.released = true;
-		entries.delete(context.browserSession);
 		let pending;
 		pending = Promise.resolve()
 			.then(() => releaseResources(context))
@@ -212,12 +215,35 @@ export function createBrowserContextRegistry({
 				}
 			});
 		context.releasePromise = pending;
+		// Publish the pending fence before removing the entry. This makes the
+		// replacement-admission invariant explicit even within this sync turn.
 		pendingReleases.set(context.browserSession, pending);
+		entries.delete(context.browserSession);
 		pending.then(
-			() => context.settleClose?.(true),
-			() => context.settleClose?.(false),
+			() => settleCloseResponse(context, owner, true),
+			() => settleCloseResponse(context, owner, false),
 		);
 		return pending;
+	}
+
+	function release(context, claim = null) {
+		if (context?.admissionFence) {
+			return ownsClose(context, claim)
+				? context.admissionFence
+				: Promise.resolve(false);
+		}
+		return releaseNow(context, claim);
+	}
+
+	function fenceRelease(context, claim, prerequisites) {
+		if (!ownsClose(context, claim) || !Array.isArray(prerequisites)) {
+			return Promise.resolve(false);
+		}
+		if (context.admissionFence) return context.admissionFence;
+		context.admissionFence = Promise.allSettled(prerequisites).then(() =>
+			releaseNow(context, claim),
+		);
+		return context.admissionFence;
 	}
 
 	async function abandon(lease) {
@@ -233,7 +259,7 @@ export function createBrowserContextRegistry({
 		context.leases.delete(lease.id);
 		if (context.established || context.leases.size > 0) return true;
 		const claim = claimClose(context);
-		return claim ? release(context, claim) : waitForClose(context);
+		return claim ? release(context, claim) : waitForCloseResponse(context);
 	}
 
 	return {
@@ -242,10 +268,12 @@ export function createBrowserContextRegistry({
 		claimClose,
 		commit,
 		detach,
+		fenceRelease,
 		isCurrent,
 		ownsClose,
 		release,
-		waitForClose,
+		settleCloseResponse,
+		waitForCloseResponse,
 		current(browserSession) {
 			return entries.get(browserSession) ?? null;
 		},

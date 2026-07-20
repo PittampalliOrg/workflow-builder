@@ -666,7 +666,7 @@ async function stopCapture(
 		? existingCloseClaim
 		: null;
 	if (!closeClaim) {
-		await browserContexts.waitForClose(browserContext);
+		await browserContexts.waitForCloseResponse(browserContext);
 		return false;
 	}
 	entry.stopped = true;
@@ -859,7 +859,7 @@ function armIdleStop(browserSession) {
 	entry.idleTimer = setTimeout(() => {
 		const closeClaim = browserContexts.claimClose(browserContext);
 		if (!closeClaim) {
-			browserContexts.waitForClose(browserContext).catch(() => {});
+			browserContexts.waitForCloseResponse(browserContext).catch(() => {});
 			return;
 		}
 		finalizeBrowserClose({
@@ -937,7 +937,7 @@ async function makeProxy(ctxRef, browserContext) {
 			)
 		) {
 			if (closesBrowser && browserContext.closing) {
-				await browserContexts.waitForClose(browserContext);
+				await browserContexts.waitForCloseResponse(browserContext);
 				return {
 					content: [
 						{
@@ -1006,7 +1006,7 @@ async function makeProxy(ctxRef, browserContext) {
 		if (closesBrowser) {
 			closeClaim = browserContexts.claimClose(browserContext);
 			if (!closeClaim) {
-				await browserContexts.waitForClose(browserContext);
+				await browserContexts.waitForCloseResponse(browserContext);
 				return {
 					content: [
 						{

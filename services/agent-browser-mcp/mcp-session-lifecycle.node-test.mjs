@@ -94,7 +94,7 @@ async function createSdkHarness() {
 			assert.equal(request.params.name, "agent_browser_close");
 			const claim = registry.claimClose(acquisition.context);
 			if (!claim) {
-				await registry.waitForClose(acquisition.context);
+				await registry.waitForCloseResponse(acquisition.context);
 				return {
 					content: [{ type: "text", text: "already closed" }],
 				};
