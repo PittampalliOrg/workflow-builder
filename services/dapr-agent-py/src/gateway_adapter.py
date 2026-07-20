@@ -49,6 +49,7 @@ from src.kimi_adapter import (
     _convert_tools_for_kimi_chat,
     _ensure_json_instruction,
     _normalize_messages_for_kimi,
+    _with_structured_output_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -482,6 +483,7 @@ def _call_gateway_chat(
     response_format: Any = None,
     tool_choice: Any = None,
     native_json_schema: dict[str, Any] | None = None,
+    structured_output_tool: bool = False,
 ) -> dict[str, Any]:
     """Issue a single request to the configured OpenAI-compatible gateway."""
 
@@ -494,6 +496,19 @@ def _call_gateway_chat(
     converted_tools = (
         _convert_tools_for_kimi_chat(tools) if is_kimi_k3 else _convert_tools(tools)
     )
+    from src.structured_output import schema_supports_structured_tool
+
+    tool_mode = (
+        is_kimi_k3
+        and response_format is None
+        and structured_output_tool
+        and schema_supports_structured_tool(native_json_schema)
+    )
+    if tool_mode:
+        assert isinstance(native_json_schema, dict)
+        converted_tools = _with_structured_output_tool(
+            converted_tools, native_json_schema
+        )
     if is_kimi_k3:
         output_cap = max_tokens or int(
             os.environ.get(
@@ -512,7 +527,10 @@ def _call_gateway_chat(
         "messages": (
             _ensure_json_instruction(messages)
             if is_kimi_k3
-            and (response_format is not None or native_json_schema is not None)
+            and (
+                response_format is not None
+                or (native_json_schema is not None and not tool_mode)
+            )
             else messages
         ),
         "stream": False,
@@ -533,7 +551,7 @@ def _call_gateway_chat(
         _apply_kimi_output_mode(
             body,
             response_format=response_format,
-            native_json_schema=native_json_schema,
+            native_json_schema=(native_json_schema if not tool_mode else None),
         )
     elif response_format is not None:
         # Generic OpenAI shim accepts response_format as JSON-object hint.
@@ -612,7 +630,10 @@ def _call_gateway_chat(
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     duration_ms = (time.monotonic() - started) * 1000.0
 
-    if (response_format is not None or native_json_schema is not None) and not content.strip():
+    if (
+        response_format is not None
+        or (native_json_schema is not None and not tool_mode)
+    ) and not content.strip():
         raise RuntimeError(
             f"OpenAI-compatible gateway model={gateway_model} returned empty content "
             "for structured response_format"
@@ -656,7 +677,10 @@ def _call_gateway_chat(
             response_format=(
                 "json_schema"
                 if is_kimi_k3
-                and (response_format is not None or native_json_schema is not None)
+                and (
+                    response_format is not None
+                    or (native_json_schema is not None and not tool_mode)
+                )
                 else "json_object"
                 if response_format is not None
                 else None
@@ -927,6 +951,11 @@ def patch_for_gateway(llm_client: Any) -> None:
             response_format=response_format,
             tool_choice=tool_choice,
             native_json_schema=native_json_schema,
+            structured_output_tool=(
+                gateway_model == "kimi-k3"
+                and response_format is None
+                and getattr(self, "_structured_output_mode", None) == "tool"
+            ),
         )
 
         if response_format is not None:

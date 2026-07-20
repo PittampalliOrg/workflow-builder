@@ -239,7 +239,72 @@ def test_kimi_k3_gateway_uses_raw_native_json_schema(monkeypatch) -> None:
     assert response_format["json_schema"]["schema"]["required"] == ["ok"]
 
 
-def test_gateway_patch_threads_kimi_raw_schema_and_reasoning_response(monkeypatch) -> None:
+def test_kimi_k3_gateway_structured_output_tool_mode_composes_tools(
+    monkeypatch,
+) -> None:
+    requests = []
+    schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    messages = [{"role": "user", "content": "Inspect, then decide."}]
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_structured",
+                        "type": "function",
+                        "function": {
+                            "name": "StructuredOutput",
+                            "arguments": '{"ok":true}',
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+    result = adapter._call_gateway_chat(
+        "llm-kimi-k3",
+        "kimi-k3",
+        messages,
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        native_json_schema=schema,
+        structured_output_tool=True,
+    )
+
+    body = json.loads(requests[0].data)
+    tools_by_name = {
+        tool["function"]["name"]: tool["function"] for tool in body["tools"]
+    }
+    assert set(tools_by_name) == {"StructuredOutput", "read_file"}
+    assert tools_by_name["StructuredOutput"]["parameters"] == schema
+    assert tools_by_name["StructuredOutput"]["strict"] is False
+    assert body["messages"] == messages
+    assert body["tool_choice"] == "auto"
+    assert body["reasoning_effort"] == "max"
+    assert "response_format" not in body
+    assert result["content"] == ""
+    assert result["tool_calls"][0]["function"]["name"] == "StructuredOutput"
+
+
+def test_gateway_patch_threads_kimi_schema_and_tool_modes(monkeypatch) -> None:
     from dapr_agents.llm.dapr import DaprChatClient
 
     schema = {
@@ -247,13 +312,13 @@ def test_gateway_patch_threads_kimi_raw_schema_and_reasoning_response(monkeypatc
         "required": ["ok"],
         "properties": {"ok": {"type": "boolean"}},
     }
-    captured = {}
+    captured = []
     monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
     monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_ADAPTER_ENABLED", "true")
     monkeypatch.setenv("DAPR_AGENT_PY_GATEWAY_KIMI", "true")
 
     def call_gateway(component, gateway_model, messages, **kwargs):
-        captured.update({
+        captured.append({
             "component": component,
             "gateway_model": gateway_model,
             "messages": messages,
@@ -278,6 +343,8 @@ def test_gateway_patch_threads_kimi_raw_schema_and_reasoning_response(monkeypatc
         client._response_json_schema = schema
         adapter.patch_for_gateway(client)
         response = client.generate([{"role": "user", "content": "Decide."}])
+        client._structured_output_mode = "tool"
+        client.generate([{"role": "user", "content": "Decide again."}])
     finally:
         DaprChatClient.generate = original_generate
         if had_patch_marker:
@@ -285,8 +352,11 @@ def test_gateway_patch_threads_kimi_raw_schema_and_reasoning_response(monkeypatc
         elif hasattr(DaprChatClient, "_gateway_patched"):
             delattr(DaprChatClient, "_gateway_patched")
 
-    assert captured["native_json_schema"] == schema
-    assert captured["gateway_model"] == "kimi-k3"
+    assert captured[0]["native_json_schema"] == schema
+    assert captured[0]["structured_output_tool"] is False
+    assert captured[0]["gateway_model"] == "kimi-k3"
+    assert captured[1]["native_json_schema"] == schema
+    assert captured[1]["structured_output_tool"] is True
     stored = response.get_message().model_dump()
     assert stored["content"] == '{"ok":true}'
     assert stored["reasoning_content"] == "The result satisfies the schema."
