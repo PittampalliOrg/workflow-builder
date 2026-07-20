@@ -58,6 +58,41 @@ transport**. Teams' only LLM- and network-dependent link is the `wfb_team`
 MCP tool lane inside the runtime — the frameworks coordinate via
 infrastructure (pub/sub) or function calls instead.
 
+## The dapr-agents examples, mapped to our platform
+
+Two reference examples make the framework's mechanics concrete:
+
+**`03-message-router-workflow`** — the `@message_router` decorator makes a
+pub/sub message *be* the workflow trigger: CloudEvent arrives → optional
+payload filter → Pydantic schema validation → optional mapper → a durable
+workflow instance is scheduled automatically; invalid messages are
+DROP-acked so topics never wedge. **Platform mapping**: the same shape as
+our event-workflow-triggers start-spine (one topic → validated →
+idempotent workflow start) and the additive pub/sub trigger recommended in
+`event-driven-invocation-and-unified-hooks.md`. We already have this
+property at the WORKFLOW layer; the adoptable idea is applying it to the
+TEAM layer — a task-assignment message that *schedules the teammate's turn*
+(validated, drop-on-invalid, at-least-once) instead of a transcript nudge
+the LLM must notice.
+
+**`04-multi-agent-workflows`** — four agents + three orchestrator modes
+(Random / RoundRobin / LLM plan-based), each agent a standing service with
+its own request topic (`fellowship.<agent>.requests`), a shared broadcast
+topic, and an agent-registry state store the orchestrator queries for
+selection; clients retry HTTP `POST /agent/run` up to 10×5s. **Platform
+mapping**: per-agent request topics ≈ our per-session raise-event lane
+(delivering into a *placement-routed* session workflow — no standing
+subscribable service needed, which is exactly why the topic model doesn't
+transplant to per-session Kueue sandboxes); the agent registry ≈ our
+runtime/agent registries; the LLM orchestrator ≈ our script lead, where
+ours is deliberately *more* deterministic. The example's client-side
+retry-against-standing-services posture is weaker than our durable
+dispatch.
+
+Net: the examples strengthen the conclusion — adopt the
+**message-triggers-execution** property for team task delivery (R3), not
+the standing-service topology.
+
 ## Recommendations (adopt the mechanics, keep the structure)
 
 - **R1 — fix the immediate bug**: the pydantic MCP toolset stall under
