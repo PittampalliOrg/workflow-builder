@@ -99,7 +99,10 @@ import {
   HmacWorkflowMcpSessionTokenAdapter,
 } from "$lib/server/application/adapters/workflow-mcp-auth";
 import {
-  JwtWorkflowTargetAuthAccessTokenIssuer,
+  EnvironmentWorkflowTargetAuthOriginProvider,
+  HmacWorkflowTargetAuthAssertionAdapter,
+  HmacWorkflowTargetAuthBindingAdapter,
+  JwtWorkflowTargetAuthCookieIssuer,
   PostgresWorkflowTargetAuthIdentityRepository,
 } from "$lib/server/application/adapters/workflow-target-auth";
 import {
@@ -1553,7 +1556,10 @@ export function getApplicationAdapters(
   const getWorkflowTargetAuth = () =>
     (workflowTargetAuth ??= new ApplicationWorkflowTargetAuthService({
       identities: new PostgresWorkflowTargetAuthIdentityRepository(),
-      tokens: new JwtWorkflowTargetAuthAccessTokenIssuer(),
+      assertions: new HmacWorkflowTargetAuthAssertionAdapter(),
+      bindings: new HmacWorkflowTargetAuthBindingAdapter(),
+      cookies: new JwtWorkflowTargetAuthCookieIssuer(),
+      origin: new EnvironmentWorkflowTargetAuthOriginProvider(),
     }));
   const getSettingsCliTokens = () =>
     (settingsCliTokens ??= new ApplicationSettingsCliTokensService({

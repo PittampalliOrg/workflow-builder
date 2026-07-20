@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowMcpPrincipal } from "./auth-context.js";
 import type { WorkflowPersistencePort } from "./ports/workflow-persistence.js";
-import { registerWorkflowTools } from "./workflow-tools.js";
+import {
+  normalizeAgentMcpServer,
+  registerWorkflowTools,
+} from "./workflow-tools.js";
 
 const principal: WorkflowMcpPrincipal = {
   authMode: "workspace_api_key",
@@ -47,6 +50,22 @@ function fakePersistence(
 }
 
 describe("workflow tools registration", () => {
+	it("normalizes MCP names and drops caller-controlled auth configuration", () => {
+		expect(
+			normalizeAgentMcpServer({
+				name: "browser-tools",
+				transport: "streamable_http",
+				url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+				target_auth_host: "Workflow-Builder.Workflow-Builder.svc.cluster.local",
+				headers: { Authorization: "Bearer must-not-persist" },
+			}),
+		).toEqual({
+			name: "browser_tools",
+			transport: "streamable_http",
+			url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+		});
+	});
+
 	it("exposes only current workflow operational tools", () => {
 		const { server, captured } = fakeServer();
     const tools = registerWorkflowTools(server as any, {

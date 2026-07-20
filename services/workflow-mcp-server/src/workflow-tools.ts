@@ -99,6 +99,24 @@ function requirePrincipal(
   return principal ?? null;
 }
 
+export function normalizeAgentMcpServer(
+	server: Record<string, unknown>,
+): Record<string, unknown> {
+	const {
+		// Browser target auth is entirely server-derived per execution. Drop both
+		// legacy host selection and arbitrary headers from this authoring surface.
+		target_auth_host: _ignoredLegacyTargetHost,
+		headers: _ignoredHeaders,
+		...rest
+	} = server;
+	const rawName = typeof rest.name === "string" ? rest.name : "";
+	const normalized: Record<string, unknown> = {
+		...rest,
+		name: rawName.replace(/[^A-Za-z0-9_]/g, "_"),
+	};
+	return normalized;
+}
+
 function resolveExecutionRef(args: {
 	execution_id?: string;
 	instance_id?: string;
@@ -297,7 +315,7 @@ export function registerWorkflowTools(
 		{
 			title: "Create Agent",
 			description:
-        "Register a new agent in the authenticated workspace so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (for example 'kimi/kimi-k3'). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Use `skills` to attach agent skills. Returns the created agent's id and slug. Ownership always comes from the authenticated MCP connection.",
+				"Register a new agent in the authenticated workspace so a workflow (or a run's opts.agent) can dispatch to it. Defaults to the non-CLI 'dapr-agent-py' runtime. Set `model` to a valid modelSpec (for example 'kimi/kimi-k3'). Grant tools by passing `mcp_servers` (each {name,url,transport:'streamable_http'|'stdio', command?, args?}); for a stdio server give command/args instead of url. Browser target authentication is bound to the execution owner and the platform's internal Workflow Builder origin at run time; callers cannot supply a host or credential. Use `skills` to attach agent skills. Returns the created agent's id and slug. Ownership always comes from the authenticated MCP connection.",
 			inputSchema: {
 				name: z.string().describe("Human-readable agent name."),
 				slug: z
@@ -339,7 +357,7 @@ export function registerWorkflowTools(
 					)
 					.optional()
 					.describe(
-						"MCP servers that provide the agent's tools. NOTE: a non-CLI agent sees each tool as `<serverName>_<toolName>` — reference tools by that prefixed name in the system prompt. Server names are normalized to [A-Za-z0-9_].",
+						"MCP servers that provide the agent's tools. NOTE: a non-CLI agent sees each tool as `<serverName>_<toolName>` — reference tools by that prefixed name in the system prompt. Server names are normalized to [A-Za-z0-9_]. Browser target authentication is server-derived and cannot be configured here.",
 					),
 				tools: z.array(z.string()).optional(),
 				skills: z.array(z.string()).optional(),
@@ -384,11 +402,7 @@ export function registerWorkflowTools(
 					// name the model sees diverge from the executor's key — the model
 					// calls it and gets "tool not found". Normalize server names to a
 					// safe charset so the tools stay callable.
-					config.mcpServers = args.mcp_servers.map((s) => {
-						const raw = typeof s.name === "string" ? s.name : "";
-						const safe = raw.replace(/[^A-Za-z0-9_]/g, "_");
-						return safe !== raw ? { ...s, name: safe } : s;
-					});
+					config.mcpServers = args.mcp_servers.map(normalizeAgentMcpServer);
 				}
 				if (args.tools) config.tools = args.tools;
 				if (args.skills) config.skills = args.skills;

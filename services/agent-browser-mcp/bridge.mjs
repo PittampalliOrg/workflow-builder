@@ -26,10 +26,10 @@
 //     do not touch it. The LLM never choreographs record_start/record_stop —
 //     models stall exactly there.
 //  3. CURATED TOOL SURFACE: the child runs with the full core,network,debug
-//     profiles (so the bridge can call capture tools), but tools/list shown to
-//     the LLM is filtered to a navigation-oriented action set with pruned
-//     schemas. 77+ tools × a dozen restore/namespace/session props each was
-//     measurable context bloat and provoked tool-choice loops.
+//     profiles (so the bridge can call capture tools), but external tools/list
+//     and tools/call are restricted to a navigation-oriented action set with
+//     pruned schemas. 77+ tools × a dozen restore/namespace/session props
+//     created measurable context bloat and provoked tool-choice loops.
 //  4. DEMO SCENES + AUTO-EDITOR: a bridge-implemented virtual tool `demo_scene`
 //     lets the agent mark scene boundaries with ONE semantic call (the bridge
 //     translates it to record_restart + metadata — no start/stop pairing).
@@ -52,12 +52,32 @@ import { renderDemo, readAndRm } from "./render.mjs";
 import {
 	DEFAULT_EXPOSED_TOOLS,
 	inlineImage,
+	isExternallyCallableTool,
 	preserveMultimodalToolResult,
+	pruneExternalToolDefinition,
+	resolveExposedTools,
+	sanitizeAllowlistedArguments,
+	sanitizeExternalToolArguments,
 } from "./vision-contract.mjs";
 import {
+	createBrowserContextRegistry,
+	finalizeBrowserClose,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
 } from "./browser-lane-policy.mjs";
+import { createMcpSessionLifecycle } from "./mcp-session-lifecycle.mjs";
+import {
+	authorizeBrowserInitialization,
+	authorizeBrowserSessionTermination,
+	createTargetAuthExchangeCache,
+	exchangeTargetAuth,
+	openedUrlMatchesTargetOrigin,
+	parseTargetAuthAssertion,
+	reauthorizeBrowserSession,
+	targetAuthCookieToolArguments,
+	targetAuthNeedsRefresh,
+	validateTargetAuth,
+} from "./target-auth-policy.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -66,6 +86,10 @@ const BFF =
 	process.env.WORKFLOW_BUILDER_URL ||
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const CLOSE_FINALIZATION_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_CLOSE_TIMEOUT_MS", 420000);
+const BFF_IO_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_BFF_IO_TIMEOUT_MS", 120000);
+const BROWSERSTATION_IO_TIMEOUT_MS = timeoutFromEnv("BROWSERSTATION_IO_TIMEOUT_MS", 30000);
+const BROWSER_PROCESS_TIMEOUT_MS = timeoutFromEnv("AGENT_BROWSER_PROCESS_TIMEOUT_MS", 60000);
 
 // BrowserStation lanes: every execution-scoped browser is leased from the
 // BrowserStation farm (KubeRay; one Chrome per worker pod), keeping Chromium
@@ -80,59 +104,18 @@ const LANE_READY_TIMEOUT_MS = Number(process.env.BROWSERSTATION_READY_TIMEOUT_MS
 // agent's MCP call doesn't hit client timeouts during farm scale-up.
 const LANE_CALL_WAIT_MS = Number(process.env.BROWSERSTATION_CALL_WAIT_MS || 45000);
 
-// Target-auth injection: authenticate the demo browser to an app the run owner
-// controls, WITHOUT the LLM typing credentials and WITHOUT the token entering
-// the trace. The run's owning session forwards, per run, on the browser MCP
-// entry:
-//   X-Wfb-Target-Auth       = "<cookieName>=<cookieValue>" (or "Bearer <token>")
-//   X-Wfb-Target-Auth-Host  = the ONE host the credential may be presented to
-// The bridge sets that cookie (via agent-browser cookies_set) the first time the
-// agent opens a page on the matching host, then re-opens so the agent sees the
-// authenticated page. HOST-SCOPING is the safety boundary: the owner credential
-// is never attached to any other origin the browser visits.
-function parseTargetAuth(headers) {
-	const raw = String(headers["x-wfb-target-auth"] || "").trim();
-	const host = String(headers["x-wfb-target-auth-host"] || "").trim().toLowerCase();
-	if (!raw || !host) return null;
-	// "Bearer <jwt>" → send as an Authorization header instead of a cookie.
-	if (/^bearer\s+/i.test(raw)) {
-		return { host, kind: "header", headerName: "Authorization", headerValue: raw };
-	}
-	const eq = raw.indexOf("=");
-	if (eq <= 0) return null;
-	return { host, kind: "cookie", cookieName: raw.slice(0, eq), cookieValue: raw.slice(eq + 1) };
-}
-
-// Tools the LLM sees in tools/list. The child still exposes everything in
-// AGENT_BROWSER_TOOLS — calls to unlisted tools pass through, this only trims
-// discovery. Empty value = expose everything unfiltered.
-const EXPOSED_TOOLS = (
-	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(",")
-)
-	.split(",")
-	.map((s) => s.trim())
-	.filter(Boolean);
-
-// Schema properties worth showing the LLM; everything else (session, namespace,
-// restore*, extraArgs, screenshotDir, …) is plumbing the bridge/child handle.
-const EXPOSED_PROPS = new Set([
-	"url",
-	"selector",
-	"text",
-	"key",
-	"value",
-	"state",
-	"path",
-	"fullPage",
-	"format",
-	"quality",
-	"direction",
-	"amount",
-	"interactive",
-	"compact",
-	"depth",
-	"timeoutMs",
-]);
+// Target-auth injection: execution config carries only a short-lived,
+// purpose-specific assertion. On first navigation the bridge exchanges that
+// assertion with the fixed BFF endpoint using INTERNAL_API_TOKEN. The BFF
+// derives the only allowed target origin and returns a short-lived owner cookie.
+// The bridge plants it HttpOnly for that exact origin and never creates a global
+// Authorization header.
+// The child keeps internal capture/state tools available to the bridge, while
+// external tools/list and tools/call are restricted to this curated subset.
+// Configuration may narrow the set but cannot add internal child tools.
+const EXPOSED_TOOLS = resolveExposedTools(
+	process.env.AGENT_BROWSER_EXPOSED_TOOLS ?? DEFAULT_EXPOSED_TOOLS.join(","),
+);
 
 // What the bridge records on its own: "video", "har", or both. Empty disables.
 const AUTO_CAPTURE = (process.env.AGENT_BROWSER_AUTO_CAPTURE ?? "video,har")
@@ -167,6 +150,9 @@ const DEMO_SCENE_TOOL = {
 		required: ["title"],
 	},
 };
+const EXPOSED_BRIDGE_TOOLS = AUTO_CAPTURE.includes("video")
+	? [DEMO_SCENE_TOOL.name]
+	: [];
 
 // Map an artifact-producing tool to how its output is persisted.
 // bucket 'screenshots' → inline <img>; bucket 'assets' kind 'video' → inline
@@ -186,6 +172,87 @@ function resultText(result) {
 		.map((c) => c.text)
 		.join("\n");
 }
+
+function browserCloseFailureResult() {
+	return {
+		content: [
+			{
+				type: "text",
+				text: "Browser close finalization reached its deadline.",
+			},
+		],
+		isError: true,
+	};
+}
+
+function browserCloseFollowerResult(closeSucceeded) {
+	if (!closeSucceeded) return browserCloseFailureResult();
+	return {
+		content: [
+			{
+				type: "text",
+				text: "Browser session was closed by another request.",
+			},
+		],
+	};
+}
+
+function timeoutFromEnv(name, fallbackMs) {
+	const value = Number(process.env[name] || fallbackMs);
+	return Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647
+		? value
+		: fallbackMs;
+}
+
+function boundedSignal(parentSignal, timeoutMs) {
+	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	return parentSignal
+		? AbortSignal.any([parentSignal, timeoutSignal])
+		: timeoutSignal;
+}
+
+async function waitWithSignal(promise, parentSignal, timeoutMs, label) {
+	const signal = boundedSignal(parentSignal, timeoutMs);
+	let onAbort;
+	try {
+		if (signal.aborted) {
+			throw parentSignal?.aborted
+				? parentSignal.reason
+				: new Error(`${label} exceeded ${timeoutMs}ms`);
+		}
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				onAbort = () =>
+					reject(
+						parentSignal?.aborted
+							? parentSignal.reason
+							: new Error(`${label} exceeded ${timeoutMs}ms`),
+					);
+				signal.addEventListener("abort", onAbort, { once: true });
+			}),
+		]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
+}
+
+async function waitWithTimeout(promise, timeoutMs, label) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)),
+					timeoutMs,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 // agent-browser echoes the saved path in its text output (e.g. "HAR saved to
 // /root/.agent-browser/tmp/har/har-….har", "Recording saved to …").
 function pathFromResult(result) {
@@ -193,7 +260,11 @@ function pathFromResult(result) {
 	return m ? m[0] : null;
 }
 
-async function persistBlob(ctx, { bucket, kind, payloadBase64, contentType, fileName }) {
+async function persistBlob(
+	ctx,
+	{ bucket, kind, payloadBase64, contentType, fileName },
+	signal,
+) {
 	if (!ctx?.executionId || !TOKEN) return;
 	const body = {
 		workflowExecutionId: ctx.executionId,
@@ -211,16 +282,18 @@ async function persistBlob(ctx, { bucket, kind, payloadBase64, contentType, file
 			method: "POST",
 			headers: { "Content-Type": "application/json", "X-Internal-Token": TOKEN },
 			body: JSON.stringify(body),
+			signal: boundedSignal(signal, BFF_IO_TIMEOUT_MS),
 		});
 		console.error(
 			`[artifact] ${fileName} (${contentType}) exec=${ctx.executionId} http=${resp.status}`,
 		);
 	} catch (err) {
+		if (signal?.aborted) throw signal.reason ?? err;
 		console.error(`[artifact] POST failed for ${fileName}: ${err?.message}`);
 	}
 }
 
-async function persistArtifact(ctx, seen, toolName, result) {
+async function persistArtifact(ctx, seen, toolName, result, signal) {
 	const spec = ARTIFACT_TOOLS[toolName];
 	if (!spec || !ctx?.executionId || !TOKEN) return;
 
@@ -240,8 +313,9 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		if (!p || seen.has(p)) return; // nothing new produced
 		seen.add(p);
 		try {
-			payloadBase64 = (await readFile(p)).toString("base64");
+			payloadBase64 = (await readFile(p, { signal })).toString("base64");
 		} catch (err) {
+			if (signal?.aborted) throw signal.reason ?? err;
 			console.error(`[artifact] read ${p} failed: ${err?.message}`);
 			return;
 		}
@@ -253,64 +327,63 @@ async function persistArtifact(ctx, seen, toolName, result) {
 		payloadBase64,
 		contentType,
 		fileName,
-	});
-}
-
-function pruneToolForLlm(tool) {
-	const schema = tool.inputSchema || {};
-	const properties = {};
-	for (const [key, value] of Object.entries(schema.properties || {})) {
-		if (EXPOSED_PROPS.has(key)) properties[key] = value;
-	}
-	const required = (schema.required || []).filter((key) => EXPOSED_PROPS.has(key));
-	return {
-		...tool,
-		inputSchema: {
-			type: "object",
-			properties,
-			...(required.length ? { required } : {}),
-		},
-	};
+	}, signal);
 }
 
 // ---------------------------------------------------------------------------
-// BrowserStation lane registry.
+// Browser context registry.
 //
-// browserSession -> { browserId, ready } where `ready` resolves true when the
-// lane's agent-browser session is attached to a leased farm browser, or false
-// when the lease failed and the lane fell back to a local Chrome. Leases are
-// released on the agent's close, the idle stop, or (best-effort) never — the
-// farm's worker idle-out is the backstop for leaks.
+// Every entry owns one stable authorization binding, cookie cache, auth state,
+// and optional BrowserStation lane. Entry-aware release prevents stale cleanup
+// from deleting a replacement that advertises the same browser-session name.
 // ---------------------------------------------------------------------------
-const lanes = new Map();
+const browserContexts = createBrowserContextRegistry({
+	createState: () => ({
+		authApplied: false,
+		exchangeCache: createTargetAuthExchangeCache(),
+		lane: null,
+	}),
+	releaseResources: releaseBrowserContextResources,
+});
 
 function lanesEnabled() {
 	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
 }
 
 function bsFetch(path, init = {}) {
+	const { signal, ...requestInit } = init;
 	return fetch(`${BROWSERSTATION_URL}${path}`, {
-		...init,
+		...requestInit,
 		headers: {
 			"X-API-Key": BROWSERSTATION_API_KEY,
 			"Content-Type": "application/json",
-			...(init.headers || {}),
+			...(requestInit.headers || {}),
 		},
+		signal: boundedSignal(signal, BROWSERSTATION_IO_TIMEOUT_MS),
 	});
 }
 
-function ensureLaneBrowser(browserSession) {
-	const existing = lanes.get(browserSession);
-	if (existing) return existing.ready;
-	const lane = { browserId: null, ready: null };
+function ensureLaneBrowser(browserContext) {
+	if (browserContext.lane) return browserContext.lane.ready;
+	const { browserSession } = browserContext;
+	const lane = { browserId: null, ready: null, controller: new AbortController() };
+	const { signal } = lane.controller;
+	browserContext.lane = lane;
 	lane.ready = (async () => {
-		const created = await bsFetch("/browsers", { method: "POST", body: "{}" });
+		const created = await bsFetch("/browsers", {
+			method: "POST",
+			body: "{}",
+			signal,
+		});
 		if (!created.ok) throw new Error(`lease HTTP ${created.status}`);
 		lane.browserId = (await created.json()).browser_id;
 		const deadline = Date.now() + LANE_READY_TIMEOUT_MS;
 		let info;
 		for (;;) {
-			const resp = await bsFetch(`/browsers/${lane.browserId}`);
+			if (!browserContexts.isCurrent(browserContext)) {
+				throw new Error("lane authorization closed during provisioning");
+			}
+			const resp = await bsFetch(`/browsers/${lane.browserId}`, { signal });
 			if (resp.ok) {
 				info = await resp.json();
 				if (info.chrome_ready && info.websocket_url) break;
@@ -320,7 +393,15 @@ function ensureLaneBrowser(browserSession) {
 				throw new Error("lease expired waiting for farm capacity");
 			}
 			if (Date.now() > deadline) throw new Error(`farm browser not ready in ${LANE_READY_TIMEOUT_MS}ms`);
-			await new Promise((r) => setTimeout(r, 3000));
+			await waitWithSignal(
+				new Promise((resolve) => setTimeout(resolve, 3000)),
+				signal,
+				4000,
+				"browser lane poll",
+			);
+		}
+		if (!browserContexts.isCurrent(browserContext)) {
+			throw new Error("lane authorization closed before attachment");
 		}
 		const ws = BROWSERSTATION_URL.replace(/^http/, "ws") + info.websocket_url;
 		await new Promise((resolve, reject) => {
@@ -328,8 +409,31 @@ function ensureLaneBrowser(browserSession) {
 				env: { ...process.env, AGENT_BROWSER_SESSION: browserSession },
 				stdio: ["ignore", "ignore", "inherit"],
 			});
-			p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`connect exit ${code}`))));
-			p.on("error", reject);
+			let settled = false;
+			let timer;
+			const onAbort = () => {
+				p.kill("SIGKILL");
+				finish(signal.reason ?? new Error("browser lane attachment aborted"));
+			};
+			const finish = (error) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal.removeEventListener("abort", onAbort);
+				error ? reject(error) : resolve();
+			};
+			timer = setTimeout(() => {
+				p.kill("SIGKILL");
+				finish(
+					new Error(`agent-browser connect exceeded ${BROWSER_PROCESS_TIMEOUT_MS}ms`),
+				);
+			}, BROWSER_PROCESS_TIMEOUT_MS);
+			p.on("exit", (code) =>
+				finish(code === 0 ? null : new Error(`connect exit ${code}`)),
+			);
+			p.on("error", finish);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
 		});
 		console.error(`[lane] ${browserSession} attached to farm browser ${lane.browserId}`);
 		return true;
@@ -347,31 +451,74 @@ function ensureLaneBrowser(browserSession) {
 		}
 		return false;
 	});
-	lanes.set(browserSession, lane);
 	return lane.ready;
 }
 
-async function releaseLaneBrowser(browserSession) {
-	const lane = lanes.get(browserSession);
+async function releaseBrowserContextResources(browserContext) {
+	browserContext.authApplied = false;
+	browserContext.exchangeCache.clear();
+	const lane = browserContext.lane;
+	browserContext.lane = null;
 	if (!lane) return;
-	lanes.delete(browserSession);
+	lane.controller.abort(new Error("browser context released"));
+	await waitWithTimeout(
+		lane.ready?.catch(() => false),
+		BROWSER_PROCESS_TIMEOUT_MS,
+		"browser lane release wait",
+	).catch(() => false);
 	if (!lane.browserId) return;
 	try {
 		await bsFetch(`/browsers/${lane.browserId}`, { method: "DELETE" });
-		console.error(`[lane] ${browserSession} released farm browser ${lane.browserId}`);
+		console.error(
+			`[lane] ${browserContext.browserSession}#${browserContext.generation} released farm browser ${lane.browserId}`,
+		);
+		lane.browserId = null;
 	} catch (err) {
-		console.error(`[lane] release failed for ${browserSession}: ${err?.message}`);
+		console.error(
+			`[lane] release failed for ${browserContext.browserSession}#${browserContext.generation}: ${err?.message}`,
+		);
 	}
 }
 
-function spawnChild(browserSession) {
+async function closeChild(child, label = "agent-browser child close") {
+	if (!child) return;
+	await waitWithTimeout(
+		Promise.resolve().then(() => child.close()),
+		BROWSER_PROCESS_TIMEOUT_MS,
+		label,
+	);
+}
+
+async function spawnChild(browserSession, signal) {
 	const childTransport = new StdioClientTransport({
 		command: "agent-browser",
 		args: ["mcp", "--tools", TOOLS],
 		env: { ...process.env, AGENT_BROWSER_SESSION: browserSession },
 	});
 	const child = new Client({ name: "agent-browser-child", version: "1.0.0" });
-	return child.connect(childTransport).then(() => child);
+	if (signal) {
+		signal.addEventListener(
+			"abort",
+			() => {
+				closeChild(child, "aborted agent-browser child close").catch(() => {});
+			},
+			{ once: true },
+		);
+	}
+	try {
+		signal?.throwIfAborted();
+		await waitWithSignal(
+			child.connect(childTransport),
+			signal,
+			BROWSER_PROCESS_TIMEOUT_MS,
+			"agent-browser child connect",
+		);
+		signal?.throwIfAborted();
+		return child;
+	} catch (error) {
+		await closeChild(child, "failed agent-browser child close").catch(() => {});
+		throw error;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -390,12 +537,14 @@ function newClipPath() {
 	return `/tmp/clip-${randomUUID().slice(0, 8)}.webm`;
 }
 
-async function startCapture(browserSession, ctx, child, openedUrl) {
+async function startCapture(browserContext, ctx, child, openedUrl) {
+	const { browserSession } = browserContext;
 	if (captures.has(browserSession)) return;
 	const pending = pendingScenes.get(browserSession);
 	pendingScenes.delete(browserSession);
 	const entry = {
 		ctx,
+		browserContext,
 		browserSession,
 		seen: new Set(),
 		clips: [], // [{path, title, caption}] — title null = not part of a demo
@@ -466,11 +615,17 @@ async function beginScene(browserSession, ctx, child, args) {
 	return `Scene ${n} started: "${title}". Perform the scene's actions now.`;
 }
 
-async function renderAndPersistDemo(entry) {
+async function renderAndPersistDemo(entry, signal) {
 	const titled = entry.clips.filter((c) => c.title);
 	try {
-		const demo = await renderDemo(titled, { site: entry.site, focus: entry.focus });
-		const buf = await readAndRm(demo.path);
+		signal?.throwIfAborted();
+		const demo = await renderDemo(
+			titled,
+			{ site: entry.site, focus: entry.focus },
+			{ signal },
+		);
+		signal?.throwIfAborted();
+		const buf = await readAndRm(demo.path, signal);
 		// Parallel lanes each render their own mini-demo; name by scene so the
 		// Browser tab distinguishes them from the run-level demo.mp4.
 		const laneSuffix = entry.browserSession?.includes("--")
@@ -486,36 +641,61 @@ async function renderAndPersistDemo(entry) {
 			payloadBase64: buf.toString("base64"),
 			contentType: "video/mp4",
 			fileName: laneSuffix ? `page-${laneSuffix}.mp4` : "demo.mp4",
-		});
+		}, signal);
 		console.error(
 			`[demo] rendered ${demo.seconds.toFixed(1)}s (${titled.length} scene(s), speedup ${demo.speedup.toFixed(2)}x) exec=${entry.ctx.executionId}`,
 		);
 	} catch (err) {
+		if (signal?.aborted) throw signal.reason ?? err;
 		console.error(`[demo] render failed (${err?.message}) — persisting raw scene clips`);
 		for (const clip of titled) {
 			try {
-				const buf = await readFile(clip.path);
+				signal?.throwIfAborted();
+				const buf = await readFile(clip.path, { signal });
 				await persistBlob(entry.ctx, {
 					bucket: "assets",
 					kind: "video",
 					payloadBase64: buf.toString("base64"),
 					contentType: "video/webm",
 					fileName: clip.path.split("/").pop(),
-				});
-			} catch {
+				}, signal);
+			} catch (error) {
+				if (signal?.aborted) throw signal.reason ?? error;
 				/* clip unreadable — skip */
 			}
 		}
 	}
 }
 
-async function stopCapture(browserSession, reason, liveChild) {
+async function stopCapture(
+	browserContext,
+	reason,
+	liveChild,
+	existingCloseClaim,
+	signal,
+) {
+	const { browserSession } = browserContext;
 	const entry = captures.get(browserSession);
-	if (!entry || entry.stopped) return;
+	if (
+		!entry ||
+		entry.stopped ||
+		entry.browserContext !== browserContext
+	) {
+		return false;
+	}
+	const closeClaim = browserContexts.ownsClose(
+		browserContext,
+		existingCloseClaim,
+	)
+		? existingCloseClaim
+		: null;
+	if (!closeClaim) {
+		await browserContexts.waitForCloseResponse(browserContext);
+		return false;
+	}
 	entry.stopped = true;
-	captures.delete(browserSession);
+	if (captures.get(browserSession) === entry) captures.delete(browserSession);
 	pendingScenes.delete(browserSession);
-	authApplied.delete(browserSession);
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
 
 	// Prefer the child that carried the triggering call (alive for the duration
@@ -525,14 +705,16 @@ async function stopCapture(browserSession, reason, liveChild) {
 	let ephemeral = null;
 	if (!child) {
 		try {
-			ephemeral = await spawnChild(browserSession);
+			signal?.throwIfAborted();
+			ephemeral = await spawnChild(browserSession, signal);
 			child = ephemeral;
 		} catch (err) {
 			console.error(`[auto-capture] stop child spawn failed (${reason}): ${err?.message}`);
-			return;
+			throw err;
 		}
 	}
 	try {
+		signal?.throwIfAborted();
 		if (entry.videoActive) {
 			entry.videoActive = false;
 			try {
@@ -541,28 +723,29 @@ async function stopCapture(browserSession, reason, liveChild) {
 				const result = await child.callTool(
 					{ name: "agent_browser_record_stop", arguments: {} },
 					undefined,
-					{ timeout: 300000 },
+					{ timeout: 300000, signal },
 				);
+				signal?.throwIfAborted();
 				const hasDemoScenes = entry.clips.some((c) => c.title);
 				if (hasDemoScenes) {
 					// When the AGENT explicitly closes, the run finalizes right after this returns —
 					// render+persist SYNCHRONOUSLY, or demo.mp4 lands after the run snapshot is frozen
-					// and the viewer must hard-refresh to see it. Idle/teardown paths have nobody
-					// waiting, so background them (don't block timers/exit).
-					if (reason === "close") {
-						console.error(`[auto-capture] video stopped (${reason}) — rendering demo inline`);
-						await renderAndPersistDemo(entry);
-					} else {
-						console.error(`[auto-capture] video stopped (${reason}) — demo render queued`);
-						renderAndPersistDemo(entry).catch((err) =>
-							console.error(`[demo] background render error: ${err?.message}`),
-						);
-					}
+					// and the viewer must hard-refresh to see it. The close deadline now also
+					// bounds idle rendering, so every path finishes before releasing the lane.
+					console.error(`[auto-capture] video stopped (${reason}) — rendering demo inline`);
+					await renderAndPersistDemo(entry, signal);
 				} else {
-					await persistArtifact(entry.ctx, entry.seen, "agent_browser_record_stop", result);
+					await persistArtifact(
+						entry.ctx,
+						entry.seen,
+						"agent_browser_record_stop",
+						result,
+						signal,
+					);
 					console.error(`[auto-capture] video stopped+persisted (${reason})`);
 				}
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[auto-capture] record_stop failed (${reason}): ${err?.message}`);
 			}
 		}
@@ -572,11 +755,19 @@ async function stopCapture(browserSession, reason, liveChild) {
 				const result = await child.callTool(
 					{ name: "agent_browser_network_har_stop", arguments: {} },
 					undefined,
-					{ timeout: 300000 },
+					{ timeout: 300000, signal },
 				);
-				await persistArtifact(entry.ctx, entry.seen, "agent_browser_network_har_stop", result);
+				signal?.throwIfAborted();
+				await persistArtifact(
+					entry.ctx,
+					entry.seen,
+					"agent_browser_network_har_stop",
+					result,
+					signal,
+				);
 				console.error(`[auto-capture] HAR stopped+persisted (${reason})`);
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[auto-capture] har_stop failed (${reason}): ${err?.message}`);
 			}
 		}
@@ -585,74 +776,102 @@ async function stopCapture(browserSession, reason, liveChild) {
 				await child.callTool(
 					{ name: "agent_browser_close", arguments: {} },
 					undefined,
-					{ timeout: 60000 },
+					{ timeout: 60000, signal },
 				);
 				console.error(`[browser] session closed after ${reason} cleanup`);
 			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? err;
 				console.error(`[browser] close failed after ${reason}: ${err?.message}`);
 			}
 		}
 	} finally {
 		if (ephemeral) {
-			try {
-				await ephemeral.close();
-			} catch {
-				/* ignore */
-			}
+			await closeChild(ephemeral, "ephemeral agent-browser child close").catch(
+				() => {},
+			);
 		}
-		// A lane whose capture ended (close/idle/teardown) is done with its
-		// leased farm browser. Idempotent; the close path also releases.
-		releaseLaneBrowser(browserSession).catch(() => {});
 	}
+	return true;
 }
 
-// browserSessions whose owner credential has already been planted.
-const authApplied = new Set();
+function targetAuthExchangeInput(browserContext, ctx) {
+	return {
+		bffUrl: BFF,
+		internalToken: TOKEN,
+		assertion: ctx?.targetAuth?.assertion,
+		executionId: ctx?.executionId,
+		authorizationBinding: browserContext.authorizationBinding,
+	};
+}
 
-/** If the run carries a target-auth credential and the just-opened URL is on the
- * permitted host, plant it (cookie or header) so subsequent navigations — incl.
- * the recorder's fresh-context record_start, which preserves cookies — are
- * authenticated. Returns true if it planted something (caller should re-open so
- * the agent sees the authenticated page). Host-scoped: the credential is never
- * set for any other origin. */
-async function applyTargetAuth(browserSession, ctx, child, openedUrl) {
-	const auth = ctx?.targetAuth;
-	if (!auth || authApplied.has(browserSession)) return false;
-	let host, hostname;
+async function resolveTargetAuth(browserContext, ctx) {
+	return browserContext.exchangeCache.resolve(
+		targetAuthExchangeInput(browserContext, ctx),
+	);
+}
+
+async function plantTargetAuthCookie(browserContext, ctx, child) {
+	const exchange = await resolveTargetAuth(browserContext, ctx);
+	if (!exchange) return null;
+	await child.callTool({
+		name: "agent_browser_cookies_set",
+		arguments: targetAuthCookieToolArguments(exchange),
+	});
+	browserContext.authApplied = true;
+	return exchange;
+}
+
+async function refreshTargetAuthCookie(browserContext, ctx, child) {
+	if (!ctx?.targetAuth) return false;
+	if (!browserContext.authApplied) return true;
 	try {
-		const u = new URL(openedUrl);
-		host = u.host.toLowerCase();
-		hostname = u.hostname.toLowerCase();
-	} catch {
-		return false;
-	}
-	// A ported auth host (host:port) matches exactly; a port-less one matches the
-	// hostname on any port (the hostname is the trust boundary — in-cluster svc
-	// DNS ports vary and a silent mismatch cost us two runs). Never any other origin.
-	const hostMatches = auth.host.includes(":") ? host === auth.host : hostname === auth.host;
-	if (!hostMatches) {
-		console.error(`[target-auth] host mismatch: opened=${host} expected=${auth.host} — credential NOT presented`);
-		return false;
-	}
-	authApplied.add(browserSession);
-	try {
-		if (auth.kind === "cookie") {
-			await child.callTool({
-				name: "agent_browser_cookies_set",
-				arguments: { name: auth.cookieName, value: auth.cookieValue, url: openedUrl },
-			});
-			console.error(`[target-auth] cookie ${auth.cookieName} set for ${host} exec=${ctx.executionId}`);
-		} else {
-			await child.callTool({
-				name: "agent_browser_set_headers",
-				arguments: { headers: { [auth.headerName]: auth.headerValue } },
-			});
-			console.error(`[target-auth] auth header set for ${host} exec=${ctx.executionId}`);
+		const existing = await browserContext.exchangeCache.peek(
+			targetAuthExchangeInput(browserContext, ctx),
+		);
+		if (!targetAuthNeedsRefresh(existing)) return true;
+		const refreshed = await plantTargetAuthCookie(browserContext, ctx, child);
+		if (refreshed) {
+			console.error(
+				`[target-auth] owner cookie refreshed for ${refreshed.targetOrigin} exec=${ctx.executionId}`,
+			);
+			return true;
 		}
-		return true;
+	} catch (err) {
+		console.error(`[target-auth] refresh failed: ${err?.message}`);
+	}
+	return false;
+}
+
+/** Plant auth before the first navigation to the exact BFF-derived origin. */
+async function prepareTargetAuth(browserContext, ctx, child, requestedUrl) {
+	if (!ctx?.targetAuth || browserContext.authApplied) return "skip";
+	const exchange = await resolveTargetAuth(browserContext, ctx);
+	if (!exchange) {
+		console.error(`[target-auth] exchange unavailable exec=${ctx.executionId ?? "-"}`);
+		return "failed";
+	}
+	if (!openedUrlMatchesTargetOrigin(requestedUrl, exchange.targetOrigin)) {
+		let openedOrigin = "invalid-url";
+		try {
+			openedOrigin = new URL(requestedUrl).origin;
+		} catch {
+			/* keep invalid-url */
+		}
+		console.error(
+			`[target-auth] origin mismatch: requested=${openedOrigin} expected=${exchange.targetOrigin} — credential NOT presented`,
+		);
+		return "skip";
+	}
+	try {
+		const planted = await plantTargetAuthCookie(browserContext, ctx, child);
+		if (!planted) return "failed";
+		console.error(
+			`[target-auth] HttpOnly owner cookie set for ${exchange.targetOrigin} exec=${ctx.executionId}`,
+		);
+		return "applied";
 	} catch (err) {
 		console.error(`[target-auth] apply failed: ${err?.message}`);
-		return false;
+		return "failed";
 	}
 }
 
@@ -660,8 +879,29 @@ function armIdleStop(browserSession) {
 	const entry = captures.get(browserSession);
 	if (!entry || !AUTO_CAPTURE_IDLE_MS) return;
 	if (entry.idleTimer) clearTimeout(entry.idleTimer);
+	const browserContext = entry.browserContext;
 	entry.idleTimer = setTimeout(() => {
-		stopCapture(browserSession, "idle").catch(() => {});
+		const closeClaim = browserContexts.claimClose(browserContext);
+		if (!closeClaim) {
+			browserContexts.waitForCloseResponse(browserContext).catch(() => {});
+			return;
+		}
+		finalizeBrowserClose({
+			registry: browserContexts,
+			context: browserContext,
+			claim: closeClaim,
+			timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
+			finalize: (signal) =>
+				stopCapture(
+					browserContext,
+					"idle",
+					undefined,
+					closeClaim,
+					signal,
+				),
+		}).catch((err) =>
+			console.error(`[auto-capture] idle finalization failed: ${err?.message}`),
+		);
 	}, AUTO_CAPTURE_IDLE_MS);
 	entry.idleTimer.unref?.();
 }
@@ -669,7 +909,8 @@ function armIdleStop(browserSession) {
 /** Build a per-connection MCP server that proxies to a fresh agent-browser child
  * (scoped to the run's browser session) and persists artifacts. `ctxRef.value`
  * is filled with the run context once the session initializes. */
-async function makeProxy(ctxRef, browserSession) {
+async function makeProxy(ctxRef, browserContext) {
+	const { browserSession } = browserContext;
 	const child = await spawnChild(browserSession);
 	const seenPaths = new Set();
 
@@ -688,19 +929,51 @@ async function makeProxy(ctxRef, browserSession) {
 			tools = tools.concat(page.tools || []);
 			cursor = page.nextCursor;
 		} while (cursor);
-		if (EXPOSED_TOOLS.length) {
-			const allow = new Set(EXPOSED_TOOLS);
-			tools = tools.filter((t) => allow.has(t.name)).map(pruneToolForLlm);
-		}
+		const allow = new Set(EXPOSED_TOOLS);
+		tools = tools
+			.filter((t) => allow.has(t.name))
+			.map(pruneExternalToolDefinition);
 		if (AUTO_CAPTURE.includes("video")) tools.push(DEMO_SCENE_TOOL);
 		return { tools };
 	});
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		const { name, arguments: args } = req.params;
+		if (!isExternallyCallableTool(name, EXPOSED_TOOLS, EXPOSED_BRIDGE_TOOLS)) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Tool "${name}" is not available through this browser bridge.`,
+					},
+				],
+				isError: true,
+			};
+		}
+		const sanitizedArgs =
+			name === DEMO_SCENE_TOOL.name
+				? sanitizeAllowlistedArguments(args, ["title", "caption", "focus"])
+				: sanitizeExternalToolArguments(name, args);
+		const closesBrowser = name === "agent_browser_close";
+		if (
+			!browserContexts.isCurrent(
+				browserContext,
+				browserContext.authorizationBinding,
+			)
+		) {
+			if (closesBrowser && browserContext.closing) {
+				const closeSucceeded =
+					await browserContexts.waitForCloseResponse(browserContext);
+				return browserCloseFollowerResult(closeSucceeded);
+			}
+			return {
+				content: [{ type: "text", text: "Browser lane authorization is closing." }],
+				isError: true,
+			};
+		}
 		// A lane still provisioning its farm browser must not let the first
 		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
 		// tell the agent to retry (cold farm scale-up can take minutes).
-		const lane = lanes.get(browserSession);
+		const lane = browserContext.lane;
 		if (lane) {
 			const ready = await Promise.race([
 				lane.ready,
@@ -718,9 +991,25 @@ async function makeProxy(ctxRef, browserSession) {
 				};
 			}
 		}
+		if (!(await refreshTargetAuthCookie(browserContext, ctxRef.value, child))) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "Browser authorization could not be refreshed; the tool was not called.",
+					},
+				],
+				isError: true,
+			};
+		}
 		if (name === DEMO_SCENE_TOOL.name) {
 			try {
-				const message = await beginScene(browserSession, ctxRef.value, child, args);
+				const message = await beginScene(
+					browserSession,
+					ctxRef.value,
+					child,
+					sanitizedArgs,
+				);
 				return { content: [{ type: "text", text: message }] };
 			} catch (err) {
 				return {
@@ -731,27 +1020,73 @@ async function makeProxy(ctxRef, browserSession) {
 		}
 		// The agent is done with the browser — capture must be finalized while
 		// the browser session still exists.
-		if (name === "agent_browser_close" && captures.has(browserSession)) {
-			await stopCapture(browserSession, "close", child);
+		let closeClaim = null;
+		if (closesBrowser) {
+			closeClaim = browserContexts.claimClose(browserContext);
+			if (!closeClaim) {
+				const closeSucceeded =
+					await browserContexts.waitForCloseResponse(browserContext);
+				return browserCloseFollowerResult(closeSucceeded);
+			}
 		}
-		let result = await child.callTool({ name, arguments: args || {} });
-		if (name === "agent_browser_close") {
-			releaseLaneBrowser(browserSession).catch(() => {});
-		}
-		// Plant the run owner's credential on the first open of the permitted
-		// host, then re-open so the agent (and the recorder) see the
-		// authenticated page. Must happen before startCapture's record_start.
 		if (
 			name === "agent_browser_open" &&
-			result?.isError !== true &&
 			ctxRef.value?.targetAuth &&
-			!authApplied.has(browserSession) &&
-			typeof args?.url === "string"
+			!browserContext.authApplied &&
+			typeof sanitizedArgs.url === "string"
 		) {
-			const planted = await applyTargetAuth(browserSession, ctxRef.value, child, args.url);
-			if (planted) {
-				result = await child.callTool({ name, arguments: args });
+			const prepared = await prepareTargetAuth(
+				browserContext,
+				ctxRef.value,
+				child,
+				sanitizedArgs.url,
+			);
+			if (prepared === "failed") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Browser authorization could not be applied; navigation was not attempted.",
+						},
+					],
+					isError: true,
+				};
 			}
+		}
+		let result;
+		if (closesBrowser) {
+			try {
+				result = await finalizeBrowserClose({
+					registry: browserContexts,
+					context: browserContext,
+					claim: closeClaim,
+					timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
+					finalize: async (signal) => {
+						if (captures.has(browserSession)) {
+							await stopCapture(
+								browserContext,
+								"close",
+								child,
+								closeClaim,
+								signal,
+							);
+						}
+						signal.throwIfAborted();
+						return child.callTool(
+							{ name, arguments: sanitizedArgs },
+							undefined,
+							{ timeout: 60000, signal },
+						);
+					},
+					cancel: () =>
+						closeChild(child, "deadline agent-browser child close"),
+				});
+			} catch (err) {
+				console.error(`[browser] close finalization failed: ${err?.message}`);
+				return browserCloseFailureResult();
+			}
+		} else {
+			result = await child.callTool({ name, arguments: sanitizedArgs });
 		}
 		if (ARTIFACT_TOOLS[name]) {
 			try {
@@ -769,10 +1104,10 @@ async function makeProxy(ctxRef, browserSession) {
 		) {
 			try {
 				await startCapture(
-					browserSession,
+					browserContext,
 					ctxRef.value,
 					child,
-					typeof args?.url === "string" ? args.url : undefined,
+				typeof sanitizedArgs.url === "string" ? sanitizedArgs.url : undefined,
 				);
 			} catch (err) {
 				console.error(`[auto-capture] start failed: ${err?.message}`);
@@ -784,11 +1119,7 @@ async function makeProxy(ctxRef, browserSession) {
 	const cleanup = async () => {
 		// Transport closes after every dapr-agent-py tool call — the run (and
 		// its capture) outlives this proxy. Just release the child process.
-		try {
-			await child.close();
-		} catch {
-			/* ignore */
-		}
+		await closeChild(child).catch(() => {});
 	};
 	return { server, cleanup };
 }
@@ -797,25 +1128,97 @@ const app = express();
 app.use(express.json({ limit: "16mb" }));
 app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
-const sessions = {}; // MCP sessionId -> { transport, cleanup }
+const sessions = new Map(); // MCP sessionId -> authorized transport context
+
+function requestHeader(req, name) {
+	const value = req.headers[name];
+	return typeof value === "string" ? value.trim() : "";
+}
+
+async function requestMatchesSessionAuthorization(req, session) {
+	const targetAuth = parseTargetAuthAssertion(req.headers);
+	return reauthorizeBrowserSession({
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth,
+		expectedExecutionId: session.executionId,
+		expectedAssertionDigest: session.assertionDigest,
+		expectedAuthorizationBinding: session.authorizationBinding,
+		browserContext: session.browserContext,
+		isBrowserContextCurrent: (browserContext, authorizationBinding) =>
+			browserContexts.isCurrent(browserContext, authorizationBinding),
+		validate: ({ assertion, executionId }) =>
+			validateTargetAuth({
+				bffUrl: BFF,
+				internalToken: TOKEN,
+				assertion,
+				executionId,
+			}),
+	});
+}
+
+function requestMatchesSessionTerminationAuthorization(req, session) {
+	return authorizeBrowserSessionTermination({
+		sessionId: requestHeader(req, "mcp-session-id"),
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth: parseTargetAuthAssertion(req.headers),
+		expectedSessionId: session.sessionId,
+		expectedExecutionId: session.executionId,
+		expectedAssertionDigest: session.assertionDigest,
+	});
+}
+
+function rejectBrowserAuthorization(res) {
+	res.status(403).json({ error: "Execution browser authorization denied" });
+}
 
 app.post("/mcp", async (req, res) => {
 	const sid = req.headers["mcp-session-id"];
-	if (typeof sid === "string" && sessions[sid]) {
-		await sessions[sid].transport.handleRequest(req, res, req.body);
+	const existingSession = typeof sid === "string" ? sessions.get(sid) : null;
+	if (existingSession) {
+		if (!(await requestMatchesSessionAuthorization(req, existingSession))) {
+			rejectBrowserAuthorization(res);
+			return;
+		}
+		if (req.body?.method === "initialize") {
+			res.status(400).json({ error: "MCP session is already initialized" });
+			return;
+		}
+		await existingSession.transport.handleRequest(req, res, req.body);
 		return;
 	}
-	// New session: the first (initialize) request carries the run headers.
+	if (req.body?.method !== "initialize") {
+		res.status(400).json({ error: "MCP initialization is required" });
+		return;
+	}
+	// Authorize before deriving an execution browser key or touching a browser.
+	// The BFF rechecks live run, owner, and project membership on every initialize.
+	const targetAuth = parseTargetAuthAssertion(req.headers);
+	const initialization = await authorizeBrowserInitialization({
+		executionId: requestHeader(req, "x-wfb-execution-id"),
+		targetAuth,
+		validate: ({ assertion, executionId }) =>
+			validateTargetAuth({
+				bffUrl: BFF,
+				internalToken: TOKEN,
+				assertion,
+				executionId,
+			}),
+	});
+	if (!initialization) {
+		rejectBrowserAuthorization(res);
+		return;
+	}
 	const ctxRef = {
 		value: {
-			executionId: req.headers["x-wfb-execution-id"] || null,
-			workflowId: req.headers["x-wfb-workflow-id"] || null,
-			nodeId: req.headers["x-wfb-node-id"] || null,
-			targetAuth: parseTargetAuth(req.headers),
+			executionId: initialization.executionId,
+			workflowId: requestHeader(req, "x-wfb-workflow-id") || null,
+			nodeId: requestHeader(req, "x-wfb-node-id") || null,
+			targetAuth: initialization.targetAuth,
+			authorizationBinding: initialization.authorizationBinding,
 		},
 	};
-	// One browser per run: every MCP connection carrying the same execution id
-	// shares Chrome; connections without a run get a throwaway browser. A
+	// One browser per run: every authorized MCP connection carrying the same
+	// execution id shares Chrome. A
 	// `X-Wfb-Browser-Lane: per-node` header instead isolates each script call
 	// (node) in its own lane — leased from the BrowserStation farm when
 	// configured, a separate local Chrome otherwise.
@@ -824,47 +1227,99 @@ app.post("/mcp", async (req, res) => {
 		laneHeader === "per-node" && ctxRef.value.executionId && ctxRef.value.nodeId
 			? String(ctxRef.value.nodeId).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "lane"
 			: null;
-	const browserSession = ctxRef.value.executionId
-		? laneKey
-			? `wfb-${ctxRef.value.executionId}--${laneKey}`
-			: `wfb-${ctxRef.value.executionId}`
-		: `wfb-anon-${randomUUID().slice(0, 8)}`;
+	const browserSession = laneKey
+		? `wfb-${ctxRef.value.executionId}--${laneKey}`
+		: `wfb-${ctxRef.value.executionId}`;
+	const acquisition = browserContexts.acquire(
+		browserSession,
+		initialization.authorizationBinding,
+	);
+	if (!acquisition) {
+		rejectBrowserAuthorization(res);
+		return;
+	}
+	const { context: browserContext } = acquisition;
 	if (
 		shouldProvisionFarmBrowser({
 			executionId: ctxRef.value.executionId,
 			farmConfigured: lanesEnabled(),
-			laneExists: lanes.has(browserSession),
+			laneExists: Boolean(browserContext.lane),
 		})
 	) {
 		// Fire the run or node lease now (idempotent); tool calls await readiness bounded.
-		ensureLaneBrowser(browserSession);
+		ensureLaneBrowser(browserContext);
 	}
-	const { server, cleanup } = await makeProxy(ctxRef, browserSession);
-	const transport = new StreamableHTTPServerTransport({
+	let proxy;
+	try {
+		proxy = await makeProxy(ctxRef, browserContext);
+	} catch (error) {
+		await browserContexts.abandon(acquisition).catch(() => {});
+		console.error(`[session] child startup failed: ${error?.message}`);
+		res.status(503).json({ error: "Browser lane unavailable" });
+		return;
+	}
+	const { server, cleanup } = proxy;
+	let transport;
+	const lifecycle = createMcpSessionLifecycle({
+		registry: browserContexts,
+		acquisition,
+		sessions,
+		cleanup,
+		getTransportSessionId: () => transport?.sessionId ?? null,
+	});
+	transport = new StreamableHTTPServerTransport({
 		sessionIdGenerator: () => randomUUID(),
 		onsessioninitialized: (newSid) => {
-			sessions[newSid] = { transport, cleanup };
+			lifecycle.initialize(newSid, {
+				transport,
+				executionId: initialization.executionId,
+				assertionDigest: initialization.assertionDigest,
+				authorizationBinding: initialization.authorizationBinding,
+				browserContext,
+			});
 			console.error(
 				`[session] ${newSid} exec=${ctxRef.value.executionId ?? "-"} browser=${browserSession} node=${ctxRef.value.nodeId ?? "-"}`,
 			);
 		},
 	});
 	transport.onclose = async () => {
-		const id = transport.sessionId;
-		if (id && sessions[id]) delete sessions[id];
-		await cleanup();
+		await lifecycle.dispose().catch(() => {});
 	};
-	await server.connect(transport);
-	await transport.handleRequest(req, res, req.body);
+	try {
+		await server.connect(transport);
+		await transport.handleRequest(req, res, req.body);
+		await lifecycle.cleanupUncommittedAfterHandle().catch(() => {});
+	} catch (error) {
+		await lifecycle.dispose().catch(() => {});
+		console.error(`[session] initialization failed: ${error?.message}`);
+		if (!res.headersSent) {
+			res.status(503).json({ error: "Browser session initialization failed" });
+		}
+	}
 });
 
 async function replay(req, res) {
 	const sid = req.headers["mcp-session-id"];
-	if (typeof sid !== "string" || !sessions[sid]) {
+	const session = typeof sid === "string" ? sessions.get(sid) : null;
+	if (!session) {
 		res.status(400).send("invalid or missing mcp-session-id");
 		return;
 	}
-	await sessions[sid].transport.handleRequest(req, res);
+	const authorized =
+		req.method === "DELETE"
+			? requestMatchesSessionTerminationAuthorization(req, session)
+			: await requestMatchesSessionAuthorization(req, session);
+	if (!authorized) {
+		rejectBrowserAuthorization(res);
+		return;
+	}
+	try {
+		await session.transport.handleRequest(req, res);
+	} finally {
+		if (req.method === "DELETE") {
+			await session.dispose().catch(() => {});
+		}
+	}
 }
 app.get("/mcp", replay);
 app.delete("/mcp", replay);

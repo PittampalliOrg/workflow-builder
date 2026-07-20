@@ -22,7 +22,7 @@ describe("Kimi K3 browser-agent migration", () => {
     expect(source).not.toContain("jsonbParameter");
   });
 
-  it("strips persistent target credentials while retaining host scope", () => {
+  it("strips all durable target auth and canonicalizes the trusted bridge URL", () => {
     const config = buildKimiK3BrowserAgentConfig(
       {
         modelSpec: "zai/glm-5.2",
@@ -35,9 +35,21 @@ describe("Kimi K3 browser-agent migration", () => {
             name: "browser",
             url: "http://agent-browser-mcp:8000/mcp",
             headers: {
+              Authorization: "Bearer legacy-owner-token",
+              "X-API-Key": "legacy-api-key",
               "X-Wfb-Target-Auth": "credential-never-hardcoded",
               "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-              "X-Non-Secret-Routing": "retain-me",
+              "X-Wfb-Browser-Target-Assertion": "stale-purpose-proof",
+              "X-Wfb-Execution-Id": "stale-execution",
+              "X-Non-Secret-Routing": "must-also-be-regenerated",
+            },
+          },
+          {
+            name: "legacy-helper",
+            url: "http://legacy-helper:8000/mcp",
+            headers: {
+              Authorization: "Bearer helper-token",
+              "X-API-Key": "helper-key",
             },
           },
         ],
@@ -54,16 +66,24 @@ describe("Kimi K3 browser-agent migration", () => {
     expect(config.mcpServers).toEqual([
       {
         name: "browser",
-        url: "http://agent-browser-mcp:8000/mcp",
-        headers: {
-          "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-          "X-Non-Secret-Routing": "retain-me",
-        },
+        url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
+      },
+      {
+        name: "legacy-helper",
+        url: "http://legacy-helper:8000/mcp",
       },
     ]);
     expect(JSON.stringify(config)).not.toContain("zai/glm-5.2");
     expect(JSON.stringify(config)).not.toContain("glm-5.2");
     expect(JSON.stringify(config)).not.toContain("credential-never-hardcoded");
+    expect(JSON.stringify(config)).not.toContain("stale-purpose-proof");
+    expect(JSON.stringify(config)).not.toContain("stale-execution");
+    expect(JSON.stringify(config)).not.toContain("workflow-builder:3000");
+    expect(JSON.stringify(config)).not.toContain("legacy-owner-token");
+    expect(JSON.stringify(config)).not.toContain("legacy-api-key");
+    expect(JSON.stringify(config)).not.toContain("helper-token");
+    expect(JSON.stringify(config)).not.toContain("helper-key");
+    expect(JSON.stringify(config)).not.toContain("X-Non-Secret-Routing");
     expect(config).not.toHaveProperty("provider");
   });
 
@@ -76,6 +96,8 @@ describe("Kimi K3 browser-agent migration", () => {
             headers: {
               "x-wfb-target-auth": "stale-lowercase-credential",
               "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
+              "X-Wfb-Browser-Target-Assertion": "stale-assertion",
+              "X-Wfb-Browser-Lane": "caller-selected-lane",
             },
           },
         ],
@@ -85,7 +107,6 @@ describe("Kimi K3 browser-agent migration", () => {
     expect(config.mcpServers).toEqual([
       expect.objectContaining({
         headers: {
-          "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
           "X-Wfb-Browser-Lane": "per-node",
         },
       }),
@@ -93,15 +114,16 @@ describe("Kimi K3 browser-agent migration", () => {
     expect(JSON.stringify(config)).not.toContain("stale-lowercase-credential");
   });
 
-  it("gives a clean install the canonical target-auth host without a credential", () => {
+  it("gives a clean install the exact trusted bridge without durable auth", () => {
     const config = buildKimiK3BrowserAgentConfig(null, { probe: false });
     expect(config.mcpServers).toEqual([
       expect.objectContaining({
-        headers: {
-          "X-Wfb-Target-Auth-Host": "workflow-builder:3000",
-        },
+        url: "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp",
       }),
     ]);
+    expect(
+      (config.mcpServers as Array<Record<string, unknown>>)[0],
+    ).not.toHaveProperty("headers");
     expect(JSON.stringify(config)).not.toContain("Bearer ");
   });
 

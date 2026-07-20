@@ -40,12 +40,14 @@ persists across calls within the session). On top of plain proxying it adds:
    session teardown). LLMs — especially smaller ones — reliably stall on choreographing
    `record_start`/`record_stop` pairs; taking capture out of the LLM's hands entirely makes
    video + HAR unconditional.
-3. **Curated tool surface.** The child runs the full `core,network,debug` profiles (the
-   bridge needs the record/HAR tools), but `tools/list` shown to the LLM is filtered to a
-   small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 19 tools) with schemas pruned
-   to the properties that matter (`url`, `selector`, `text`, `path`, …). 77 tools × a dozen
-   plumbing props each measurably degraded small-model tool choice. Calls to unlisted tools
-   still pass through — filtering only trims discovery.
+3. **Curated tool surface.** The child runs the full `core,network,debug,state` profiles (the
+   bridge needs the record/HAR/cookie tools), but both `tools/list` and `tools/call` are
+   restricted to a small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 21 tools) with
+   per-tool schemas pruned to public properties. Call arguments are rebuilt from the same
+   allowlist, so hidden child plumbing such as session, namespace, restore state, headers,
+   and output paths cannot override the bridge-owned lane. Configuration can narrow but
+   never broaden that curated set, so state tools such as `cookies_get` remain
+   bridge-internal.
 
 4. **Demo scenes + auto-editor.** A bridge-implemented virtual tool `demo_scene`
    ({title, caption, focus?}) lets the agent mark scene boundaries with ONE semantic
@@ -58,24 +60,34 @@ persists across calls within the session). On top of plain proxying it adds:
    `demo_scene`) never ships in a demo. Runs that never call `demo_scene` keep the
    plain raw session video (previous behavior).
 
-5. **Target-auth (authenticated demos of your own app).** To demo an app that
-   requires login, the run's owning session forwards two headers on the browser
-   MCP entry: `X-Wfb-Target-Auth` (`<cookieName>=<value>`, or `Bearer <token>`)
-   and `X-Wfb-Target-Auth-Host` (the one host it may be presented to). The first
-   time the agent opens a page on that host, the bridge plants the credential
-   (cookie via `cookies_set`, or an `Authorization` header) and re-opens so the
-   agent — and the recorder — see the authenticated app. The credential is
-   **host-scoped**: it is never attached to any other origin the browser visits,
-   never entered into a login form, and never passed through the LLM or the run
-   trace. Intended for apps the run owner controls; it is not a way past
-   third-party bot-detection or CAPTCHAs (those are respected, not bypassed).
+5. **Target-auth (authenticated demos of Workflow Builder).** Saved agents carry
+   no target host or credential. For an execution, the BFF stamps only a
+   purpose-limited assertion bound to execution, user, and project. Every
+   execution-scoped MCP initialization validates it at the fixed BFF internal
+   endpoint using `INTERNAL_API_TOKEN` before selecting or spawning a browser
+   lane. Every later MCP POST or GET revalidates that exact assertion and
+   execution at a credential-free BFF validation endpoint before dispatch.
+   DELETE instead requires the exact stored MCP session, execution, and
+   assertion digest so transport teardown still works after browser release or
+   live authorization revocation.
+   The BFF checks live run state, active user status, current project membership,
+   and credential version; lane, MCP-session, and cookie-cache reuse are bound to
+   a digest of that exact assertion. On first target navigation the bridge plants
+   the validated owner cookie `HttpOnly`, `SameSite=Strict`, host-only, and only
+   after an exact origin match. The assertion lasts up to one hour so K3 can
+   think before its first tool call; the 30-minute cookie is refreshed before
+   expiry, and refresh failure blocks the requested tool. No general access JWT
+   enters durable agent config, no global `Authorization` header is installed,
+   and caller-selected origins are ignored.
 
-6. **Execution-scoped browser lifecycle.** Any MCP session carrying
+6. **Execution-scoped browser lifecycle.** Any authorized MCP session carrying
    `X-Wfb-Execution-Id` leases a BrowserStation lane when the farm is configured, independent
    of the optional per-node header. Explicit `agent_browser_close` releases it immediately;
    idle auto-capture cleanup persists the pending artifacts and then closes the abandoned
    browser. This keeps browser processes isolated per workflow run and prevents Chrome
    processes from accumulating in the bridge pod.
+   Executionless MCP initialization is rejected; the bridge never creates an
+   anonymous local-Chrome session.
 
 ## Endpoint
 
@@ -92,6 +104,12 @@ persists across calls within the session). On top of plain proxying it adds:
    "transport": "streamable_http",
    "url": "http://agent-browser-mcp.workflow-builder.svc.cluster.local:8000/mcp" }]
 ```
+
+BrowserStation workers run in `ray-system`, so browser targets in another
+namespace must also use a cross-namespace service FQDN, for example
+`http://workflow-builder.workflow-builder.svc.cluster.local:3000`. That origin is
+server-owned (`WORKFLOW_BROWSER_TARGET_ORIGIN` on the BFF, with the same FQDN as
+its default); it is not part of saved agent configuration.
 
 The agent then calls `browser_agent_browser_open`, `browser_agent_browser_snapshot`, etc.
 Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's Browser tab.
@@ -112,12 +130,12 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | var | default | meaning |
 | --- | --- | --- |
 | `PORT` | `8000` | HTTP port for the MCP endpoint |
-| `AGENT_BROWSER_TOOLS` | `core,network,debug` | tool profiles the **child** runs (record/HAR live in debug/network) |
-| `AGENT_BROWSER_EXPOSED_TOOLS` | 19 curated tools | comma list shown to the LLM in `tools/list`; empty = expose everything |
+| `AGENT_BROWSER_TOOLS` | `core,network,debug,state` | child profiles; record/HAR/state are used only by bridge internals unless their tools are in the curated public set |
+| `AGENT_BROWSER_EXPOSED_TOOLS` | 21 curated tools | comma-separated subset allowed through `tools/list` and `tools/call`; empty restores the curated default |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
-| `WORKFLOW_BUILDER_URL` | in-cluster BFF | artifact sink base URL |
-| `INTERNAL_API_TOKEN` | _(unset)_ | internal token for `/api/internal/browser-artifacts` |
+| `WORKFLOW_BUILDER_URL` | in-cluster BFF | fixed artifact and target-auth exchange base URL |
+| `INTERNAL_API_TOKEN` | _(unset)_ | service token for artifact upload and target-auth exchange |
 | `AGENT_BROWSER_ENCRYPTION_KEY` | _(unset)_ | optional; encrypts saved auth state |
 | `DEMO_TARGET_SECONDS` | `75` | target length of the rendered demo video |
 | `DEMO_MAX_SPEEDUP` | `2.5` | cap on the uniform speed-up used to fit the target |

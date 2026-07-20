@@ -60,6 +60,26 @@ import { stampScriptGuardHeader } from "$lib/server/goals/mcp-wiring";
  * with the MCP connection; scoping by URL keeps the headers off every other
  * server. Same URL-scoped header pattern as stampScriptGuardHeader.
  */
+function isTrustedAgentBrowserMcpUrl(value: unknown): boolean {
+	if (typeof value !== "string") return false;
+	try {
+		const url = new URL(value);
+		return (
+			url.protocol === "http:" &&
+			url.hostname.toLowerCase() ===
+				"agent-browser-mcp.workflow-builder.svc.cluster.local" &&
+			url.port === "8000" &&
+			url.pathname === "/mcp" &&
+			!url.username &&
+			!url.password &&
+			!url.search &&
+			!url.hash
+		);
+	} catch {
+		return false;
+	}
+}
+
 function stampAgentBrowserRunHeaders(
 	servers: unknown[],
 	ctx: {
@@ -67,60 +87,54 @@ function stampAgentBrowserRunHeaders(
 		workflowId: string | null;
 		nodeId: string | null;
 	},
-	targetAccessToken: string | null,
+	targetAuthAssertion: string | null,
 ): unknown[] {
 	if (!Array.isArray(servers)) return servers;
 	return servers.map((entry) => {
 		if (!entry || typeof entry !== "object") return entry;
 		const e = entry as Record<string, unknown>;
-		const url = typeof e.url === "string" ? e.url : "";
-		if (!url.includes("agent-browser-mcp")) return entry;
 		const sourceHeaders =
 			e.headers && typeof e.headers === "object" && !Array.isArray(e.headers)
 				? (e.headers as Record<string, unknown>)
 				: {};
-		const targetHost = Object.entries(sourceHeaders).find(
-			([name, value]) =>
-				name.toLowerCase() === "x-wfb-target-auth-host" &&
-				typeof value === "string" &&
-				value.trim().length > 0,
-		)?.[1];
-		const headers = {
-			...Object.fromEntries(
-				Object.entries(sourceHeaders).filter(
-					([name]) => name.toLowerCase() !== "x-wfb-target-auth",
-				),
+			const blockedHeaders = new Set([
+				"x-wfb-target-auth",
+				"x-wfb-target-auth-host",
+				"x-wfb-browser-target-assertion",
+				"x-wfb-execution-id",
+				"x-wfb-workflow-id",
+				"x-wfb-node-id",
+			]);
+		const sanitizedHeaders = Object.fromEntries(
+			Object.entries(sourceHeaders).filter(
+				([name]) => !blockedHeaders.has(name.toLowerCase()),
 			),
-      ...(ctx.executionId ? { "X-Wfb-Execution-Id": ctx.executionId } : {}),
+		);
+		if (!isTrustedAgentBrowserMcpUrl(e.url)) {
+			return Object.keys(sanitizedHeaders).length === Object.keys(sourceHeaders).length
+				? entry
+				: { ...e, headers: sanitizedHeaders };
+		}
+		const headers = {
+			...sanitizedHeaders,
+			...(ctx.executionId ? { "X-Wfb-Execution-Id": ctx.executionId } : {}),
 			...(ctx.workflowId ? { "X-Wfb-Workflow-Id": ctx.workflowId } : {}),
 			...(ctx.nodeId ? { "X-Wfb-Node-Id": ctx.nodeId } : {}),
-			...(typeof targetHost === "string" && targetAccessToken
-				? { "X-Wfb-Target-Auth": `Bearer ${targetAccessToken}` }
+			...(targetAuthAssertion
+				? {
+						"X-Wfb-Browser-Target-Assertion": targetAuthAssertion,
+					}
 				: {}),
 		};
 		return { ...e, headers };
 	});
 }
 
-function hasAgentBrowserTargetAuthHost(servers: unknown[]): boolean {
+function hasAgentBrowserServer(servers: unknown[]): boolean {
 	return servers.some((entry) => {
 		if (!entry || typeof entry !== "object") return false;
 		const server = entry as Record<string, unknown>;
-		if (
-			typeof server.url !== "string" ||
-			!server.url.includes("agent-browser-mcp") ||
-			!server.headers ||
-			typeof server.headers !== "object" ||
-			Array.isArray(server.headers)
-		) {
-			return false;
-		}
-		return Object.entries(server.headers as Record<string, unknown>).some(
-			([name, value]) =>
-				name.toLowerCase() === "x-wfb-target-auth-host" &&
-				typeof value === "string" &&
-				value.trim().length > 0,
-		);
+		return isTrustedAgentBrowserMcpUrl(server.url);
 	});
 }
 export const POST: RequestHandler = async ({ request }) => {
@@ -583,9 +597,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			),
 		} as AgentConfig;
 	}
-	// Give agent-browser this run's artifact identity, while always deleting any
-	// persisted target credential before config/version persistence. A fresh JWT
-	// is added only to the execution config below.
+	// Give agent-browser this run's artifact identity, while always deleting
+	// legacy target hosts, raw credentials, and prior assertions before
+	// config/version persistence. Only a purpose-limited assertion is added to
+	// the execution config below; the browser bridge exchanges it just in time.
 	dispatchAgentConfig = {
 		...dispatchAgentConfig,
 		mcpServers: stampAgentBrowserRunHeaders(
@@ -597,22 +612,19 @@ export const POST: RequestHandler = async ({ request }) => {
 	let executionDispatchAgentConfig = dispatchAgentConfig;
 	const dispatchMcpServers =
 		(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [];
-	if (
-		workflowExecutionId &&
-		hasAgentBrowserTargetAuthHost(dispatchMcpServers)
-	) {
-		const targetAccessToken = await workflowTargetAuth.mintAccessToken({
+	if (workflowExecutionId && hasAgentBrowserServer(dispatchMcpServers)) {
+		const targetAuthAssertion = await workflowTargetAuth.mintAssertion({
 			executionId: workflowExecutionId,
 			expectedUserId: userId,
 			expectedProjectId: projectId,
 		});
-		if (targetAccessToken) {
+		if (targetAuthAssertion) {
 			executionDispatchAgentConfig = {
 				...dispatchAgentConfig,
 				mcpServers: stampAgentBrowserRunHeaders(
 					dispatchMcpServers,
 					{ executionId: workflowExecutionId, workflowId, nodeId },
-					targetAccessToken,
+					targetAuthAssertion,
 				),
 			} as AgentConfig;
 		}
