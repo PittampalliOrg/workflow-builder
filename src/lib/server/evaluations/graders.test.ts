@@ -64,4 +64,26 @@ describe("evaluation graders", () => {
 		expect(result.skipped).toBe(true);
 		expect(result.error).toContain("external model-grading worker");
 	});
+
+	it("keeps legacy mlflow_judge definitions as a provider-neutral judge alias", () => {
+		for (const type of ["llm_judge", "mlflow_judge"] as const) {
+			const grader = validateGraderDefinition({
+				name: "Correctness judge",
+				type,
+				config: { model: "judge-default", prompt: "Judge {{actual}}" },
+			});
+			const result = runGrader(grader, {
+				input: {},
+				expectedOutput: "yes",
+				generatedOutput: "yes",
+			});
+
+			expect(grader.type).toBe(type);
+			expect(result).toMatchObject({
+				type,
+				skipped: true,
+				error: "llm_judge requires async runner",
+			});
+		}
+	});
 });

@@ -17,19 +17,6 @@ import type {
 	ObservabilityToolSpan,
 	ObservabilityTraceSpan,
 } from "$lib/types/observability";
-import {
-	denormalizeMlflowTraceId,
-	downloadMlflowJsonArtifact,
-	ensureBenchmarkInstanceMlflowRun,
-	getMlflowNativeTrace,
-	logBatch,
-	logMlflowJsonArtifact,
-	normalizeMlflowTraceId,
-	publicMlflowTracesUrl,
-	publicWorkflowBuilderTraceUrl,
-} from "$lib/server/application/adapters/benchmark-mlflow";
-import type { MlflowNativeTrace, MlflowNativeTraceSpan, MlflowTag } from "$lib/server/application/adapters/benchmark-mlflow";
-
 export type SwebenchTraceBundleBackend =
 	| "mlflow_artifact"
 	| "mlflow_native"
@@ -100,8 +87,9 @@ type RawBuildInput = {
 	instanceId: string;
 	traceIds: string[];
 	canonicalTraceId: string | null;
-	mlflowExperimentId: string | null;
-	mlflowRunId: string | null;
+	/** Read-compatible fields accepted from older callers; no longer queried. */
+	mlflowExperimentId?: string | null;
+	mlflowRunId?: string | null;
 	artifactPath: string;
 	workflowExecutionId?: string | null;
 	workflowNodeSpans?: ObservabilityTraceSpan[];
@@ -132,11 +120,9 @@ export async function loadSwebenchTraceBundle(params: {
 	const [row] = await database
 		.select({
 			runId: benchmarkRuns.id,
-			mlflowExperimentId: benchmarkRuns.mlflowExperimentId,
 			runInstanceId: benchmarkRunInstances.id,
 			instanceId: benchmarkRunInstances.instanceId,
 			traceIds: benchmarkRunInstances.traceIds,
-			mlflowRunId: benchmarkRunInstances.mlflowRunId,
 			workflowExecutionId: benchmarkRunInstances.workflowExecutionId,
 			primaryTraceId: workflowExecutions.primaryTraceId,
 		})
@@ -177,263 +163,14 @@ export async function loadSwebenchTraceBundle(params: {
 		instanceId: row.instanceId,
 		traceIds,
 		canonicalTraceId,
-		mlflowExperimentId: row.mlflowExperimentId,
-		mlflowRunId: row.mlflowRunId,
 		artifactPath,
 		workflowExecutionId: row.workflowExecutionId,
 		workflowNodeSpans,
 	};
 
-	const preferArtifact = params.options?.preferArtifact ?? true;
-	const repairArtifact = params.options?.repairArtifact ?? true;
 	const warnings: string[] = [];
-
-	if (preferArtifact && row.mlflowRunId) {
-		try {
-			const artifact = await downloadMlflowJsonArtifact<SwebenchTraceBundle>(
-				row.mlflowRunId,
-				artifactPath,
-			);
-			let artifactFound = false;
-			if (artifact) {
-				artifactFound = true;
-				const artifactBackend = artifact.backend;
-				if (!repairArtifact || artifactBackend === "mlflow_native") {
-					return normalizeArtifactBundle(artifact, artifactPath, canonicalTraceId);
-				}
-				warnings.push(
-					`MLflow artifact ${artifactPath} used ${artifactBackend}; rebuilt from native MLflow traces`,
-				);
-			}
-			if (!artifactFound) {
-				warnings.push(`MLflow artifact ${artifactPath} was missing; rebuilt from trace backends`);
-			}
-		} catch (err) {
-			warnings.push(`MLflow artifact read failed; rebuilt from trace backends: ${errorMessage(err)}`);
-		}
-	}
-
-	const bundle = await buildSwebenchTraceBundle(base, warnings);
-	if (repairArtifact && (bundle.traceIds.length > 0 || bundle.traceSpans.length > 0)) {
-		await logTraceBundleArtifact(params.runId, params.instanceId, bundle);
-	}
-	return bundle;
-}
-
-function normalizeArtifactBundle(
-	artifact: SwebenchTraceBundle,
-	artifactPath: string,
-	canonicalTraceId: string | null,
-): SwebenchTraceBundle {
-	return {
-		...artifact,
-		backend: "mlflow_artifact",
-		artifactPath,
-		canonicalTraceId:
-			artifact.canonicalTraceId ??
-			canonicalTraceId ??
-			artifact.traceIds?.[0] ??
-			null,
-		auxiliaryTraces:
-			artifact.auxiliaryTraces ??
-			(artifact.traceIds ?? [])
-				.filter((traceId) => traceId !== (artifact.canonicalTraceId ?? canonicalTraceId))
-				.map((traceId) => ({ traceId, status: "missing" as const })),
-		requiredContext:
-			artifact.requiredContext ??
-			defaultRequiredContext(
-				artifact.traceSpans ?? [],
-				artifact.llmSpans ?? [],
-				artifact.toolSpans ?? [],
-				artifact.canonicalTraceId ?? canonicalTraceId ?? null,
-			),
-		groups: artifact.groups ?? groupTraceSpans(artifact.traceSpans ?? []),
-		warnings: sanitizedTraceBundleWarnings(artifact),
-	};
-}
-
-export function sanitizedTraceBundleWarnings(bundle: Pick<SwebenchTraceBundle, "warnings" | "backend" | "source">): string[] {
-	const warnings = bundle.warnings ?? [];
-	const sourceKind = bundle.source?.kind ?? bundle.backend;
-	if (sourceKind !== "mlflow_native") return warnings;
-	return warnings.filter((warning) => !isTransientArtifactRepairWarning(warning));
-}
-
-function isTransientArtifactRepairWarning(warning: string): boolean {
-	return (
-		/^MLflow artifact .+ used .+; rebuilt from native MLflow traces$/.test(warning) ||
-		/^MLflow artifact .+ was missing; rebuilt from trace backends$/.test(warning) ||
-		warning.startsWith("MLflow artifact read failed; rebuilt from trace backends:")
-	);
-}
-
-export async function materializeSwebenchTraceBundle(params: {
-	runId: string;
-	instanceId: string;
-}): Promise<SwebenchTraceBundle | null> {
-	const bundle = await loadSwebenchTraceBundle({
-		...params,
-		options: { preferArtifact: false, repairArtifact: true },
-	});
-	return bundle;
-}
-
-export async function logTraceBundleArtifact(
-	runId: string,
-	instanceId: string,
-	bundle: SwebenchTraceBundle,
-): Promise<void> {
-	let mlflowRunId: string | null = null;
-	try {
-		mlflowRunId =
-			bundle.source.mlflowRunId ??
-			(await ensureBenchmarkInstanceMlflowRun({ runId, instanceId }));
-		if (!mlflowRunId) return;
-		await logTraceBundleTags(mlflowRunId, bundle);
-		await logParentTraceSummaryTags(runId, bundle);
-	} catch (err) {
-		console.warn(
-			`[mlflow] failed to log trace bundle tags ${runId}/${instanceId}:`,
-			errorMessage(err),
-		);
-	}
-
-	if (!mlflowRunId) return;
-	try {
-		await logMlflowJsonArtifact({
-			runId: mlflowRunId,
-			artifactPath: bundle.artifactPath,
-			value: {
-				...bundle,
-				backend: bundle.backend === "none" ? "none" : bundle.backend,
-				warnings: sanitizedTraceBundleWarnings(bundle),
-			},
-		});
-	} catch (err) {
-		console.warn(
-			`[mlflow] failed to log trace bundle artifact ${runId}/${instanceId}:`,
-			errorMessage(err),
-		);
-	}
-}
-
-export async function logBenchmarkTraceSummaryArtifact(runId: string): Promise<void> {
-	if (!db) return;
-	const database = db;
-	const [run] = await database
-		.select({ mlflowRunId: benchmarkRuns.mlflowRunId })
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, runId))
-		.limit(1);
-	if (!run?.mlflowRunId) return;
-	const rows = await database
-		.select({
-			instanceId: benchmarkRunInstances.instanceId,
-			status: benchmarkRunInstances.status,
-			inferenceStatus: benchmarkRunInstances.inferenceStatus,
-			evaluationStatus: benchmarkRunInstances.evaluationStatus,
-			traceIds: benchmarkRunInstances.traceIds,
-		})
-		.from(benchmarkRunInstances)
-		.where(eq(benchmarkRunInstances.runId, runId));
-	const summary = {
-		version: 1,
-		runId,
-		generatedAt: new Date().toISOString(),
-		instances: rows.map((row) => {
-			const traceIds = normalizeTraceIds(row.traceIds);
-			return {
-				instanceId: row.instanceId,
-				status: row.status,
-				inferenceStatus: row.inferenceStatus,
-				evaluationStatus: row.evaluationStatus,
-				traceCount: traceIds.length,
-				artifactPath: safeSwebenchTraceArtifactPath(row.instanceId),
-			};
-		}),
-	};
-	try {
-		await logMlflowJsonArtifact({
-			runId: run.mlflowRunId,
-			artifactPath: "traces/summary.json",
-			value: summary,
-		});
-	} catch (err) {
-		console.warn(`[mlflow] failed to log trace summary ${runId}:`, errorMessage(err));
-	}
-}
-
-async function logTraceBundleTags(
-	mlflowRunId: string,
-	bundle: SwebenchTraceBundle,
-): Promise<void> {
-	await logBatch(mlflowRunId, {
-		tags: compactTags([
-			{ key: "workflow_builder.trace_bundle_path", value: bundle.artifactPath },
-			{ key: "workflow_builder.trace_backend", value: "mlflow_artifact" },
-			{ key: "workflow_builder.trace_count", value: String(bundle.traceIds.length) },
-			{ key: "workflow_builder.first_trace_id", value: bundle.canonicalTraceId ?? bundle.traceIds[0] ?? "" },
-			{
-				key: "workflow_builder.trace_url",
-				value:
-					publicWorkflowBuilderTraceUrl(bundle.canonicalTraceId ?? bundle.traceIds[0]) ??
-					bundle.mlflowTracesUrl ??
-					"",
-			},
-			{
-				key: "workflow_builder.trace_span_count",
-				value: String(bundle.summary.traceSpanCount),
-			},
-			{
-				key: "workflow_builder.llm_span_count",
-				value: String(bundle.summary.llmSpanCount),
-			},
-			{
-				key: "workflow_builder.tool_span_count",
-				value: String(bundle.summary.toolSpanCount),
-			},
-		]),
-	});
-}
-
-async function logParentTraceSummaryTags(
-	runId: string,
-	bundle: SwebenchTraceBundle,
-): Promise<void> {
-	if (!db) return;
-	const database = db;
-	const [run] = await database
-		.select({ mlflowRunId: benchmarkRuns.mlflowRunId })
-		.from(benchmarkRuns)
-		.where(eq(benchmarkRuns.id, runId))
-		.limit(1);
-	if (!run?.mlflowRunId) return;
-
-	const rows = await database
-		.select({ traceIds: benchmarkRunInstances.traceIds })
-		.from(benchmarkRunInstances)
-		.where(eq(benchmarkRunInstances.runId, runId));
-	const traceIds = new Set<string>(bundle.traceIds);
-	for (const row of rows) {
-		for (const traceId of normalizeTraceIds(row.traceIds)) {
-			traceIds.add(traceId);
-		}
-	}
-	const firstTraceId = traceIds.values().next().value as string | undefined;
-	await logBatch(run.mlflowRunId, {
-		tags: compactTags([
-			{ key: "workflow_builder.trace_count", value: String(traceIds.size) },
-			{ key: "workflow_builder.first_trace_id", value: firstTraceId ?? "" },
-			{
-				key: "workflow_builder.trace_url",
-				value: publicWorkflowBuilderTraceUrl(firstTraceId) ?? "",
-			},
-			{
-				key: "workflow_builder.latest_trace_bundle_path",
-				value: bundle.artifactPath,
-			},
-		]),
-	});
+	void params.options;
+	return buildSwebenchTraceBundle(base, warnings);
 }
 
 async function loadWorkflowNodeTraceSpans(input: {
@@ -606,16 +343,11 @@ function safeSyntheticId(value: string): string {
 	);
 }
 
-function compactTags(tags: MlflowTag[]): MlflowTag[] {
-	return tags.filter((tag) => tag.value.trim().length > 0);
-}
-
 export async function buildSwebenchTraceBundleFromClickHouse(
 	input: RawBuildInput,
 	warnings: string[] = [],
 ): Promise<SwebenchTraceBundle> {
-	const mlflowTracesUrl = publicMlflowTracesUrl(
-		input.mlflowExperimentId,
+	const mlflowTracesUrl = publicTraceUrl(
 		input.canonicalTraceId ?? input.traceIds[0],
 	);
 	if (input.traceIds.length === 0) {
@@ -697,72 +429,7 @@ export async function buildSwebenchTraceBundle(
 	input: RawBuildInput,
 	warnings: string[] = [],
 ): Promise<SwebenchTraceBundle> {
-	const native = await buildSwebenchTraceBundleFromMlflowNative(input, warnings);
-	if (native.summary.traceSpanCount > 0 && native.backend !== "workflow_logs") return native;
 	return buildSwebenchTraceBundleFromClickHouse(input, warnings);
-}
-
-export async function buildSwebenchTraceBundleFromMlflowNative(
-	input: RawBuildInput,
-	warnings: string[] = [],
-	loadNativeTrace: (traceId: string) => Promise<MlflowNativeTrace | null> = getMlflowNativeTrace,
-): Promise<SwebenchTraceBundle> {
-	const mlflowTracesUrl = publicMlflowTracesUrl(
-		input.mlflowExperimentId,
-		input.canonicalTraceId ?? input.traceIds[0],
-	);
-	if (input.traceIds.length === 0) {
-		if (input.workflowNodeSpans?.length) {
-			warnings.push("No agent trace ids were recorded; showing workflow node spans from workflow_execution_logs");
-		}
-		return createBundle(input, {
-			backend: input.workflowNodeSpans?.length ? "workflow_logs" : "none",
-			mlflowTracesUrl,
-			traceSpans: input.workflowNodeSpans ?? [],
-			llmSpans: [],
-			toolSpans: [],
-			warnings,
-			derivedLlmSpanCount: 0,
-			derivedToolSpanCount: 0,
-		});
-	}
-
-	const traceSpans: ObservabilityTraceSpan[] = [];
-	for (const traceId of input.traceIds) {
-		try {
-			const native = await loadNativeTrace(traceId);
-			if (!native?.trace?.spans?.length) continue;
-			traceSpans.push(...normalizeMlflowNativeTraceSpans(native, traceId));
-		} catch (err) {
-			warnings.push(`MLflow native trace read failed for ${traceId}: ${errorMessage(err)}`);
-		}
-	}
-	const mergedTraceSpans = mergeTraceSpans(traceSpans, input.workflowNodeSpans ?? []);
-	const normalized = normalizeRawTraceSpans(traceSpans);
-	return createBundle(input, {
-		backend: traceSpans.length > 0 ? "mlflow_native" : input.workflowNodeSpans?.length ? "workflow_logs" : "none",
-		mlflowTracesUrl,
-		traceSpans: mergedTraceSpans,
-		llmSpans: normalized.llmSpans,
-		toolSpans: normalized.toolSpans,
-		warnings,
-		derivedLlmSpanCount: normalized.llmSpans.length,
-		derivedToolSpanCount: normalized.toolSpans.length,
-	});
-}
-
-export function normalizeMlflowNativeTraceSpans(
-	native: MlflowNativeTrace,
-	requestedTraceId: string,
-): ObservabilityTraceSpan[] {
-	const traceInfoId = native.trace?.trace_info?.trace_id;
-	const bundleTraceId =
-		normalizeBundleTraceId(requestedTraceId) ??
-		denormalizeMlflowTraceId(traceInfoId) ??
-		String(traceInfoId ?? requestedTraceId);
-	return (native.trace?.spans ?? []).map((span) =>
-		normalizeMlflowNativeTraceSpan(span, bundleTraceId),
-	);
 }
 
 export function normalizeRawTraceSpans(traceSpans: ObservabilityTraceSpan[]): {
@@ -903,7 +570,7 @@ function createBundle(
 		source: {
 			kind: values.backend,
 			generatedAt: new Date().toISOString(),
-			mlflowRunId: input.mlflowRunId,
+			mlflowRunId: null,
 			derivedLlmSpanCount: values.derivedLlmSpanCount,
 			derivedToolSpanCount: values.derivedToolSpanCount,
 			rawTraceSpanCount: values.traceSpans.length,
@@ -998,99 +665,21 @@ function defaultRequiredContext(
 	};
 }
 
-function normalizeMlflowNativeTraceSpan(
-	span: MlflowNativeTraceSpan,
-	traceId: string,
-): ObservabilityTraceSpan {
-	const attributes = mlflowAttributesToRecord(span.attributes ?? []);
-	const startMs = nanosToMillis(span.start_time_unix_nano);
-	const endMs = nanosToMillis(span.end_time_unix_nano);
-	const duration = startMs != null && endMs != null ? Math.max(0, endMs - startMs) : 0;
-	const statusCode = span.status?.code ?? null;
-	const statusMessage = span.status?.message ?? undefined;
-	return {
-		traceId,
-		spanId: span.span_id ?? `${span.name ?? "span"}:${String(span.start_time_unix_nano ?? "")}`,
-		parentSpanId: span.parent_id ?? span.parent_span_id ?? null,
-		operationName: span.name ?? "(unknown span)",
-		serviceName:
-			firstString(attributes, [
-				"service.name",
-				"service_name",
-				"telemetry.sdk.name",
-				"agent.app_id",
-				"agent.name",
-			]) ?? "mlflow",
-		startTime: startMs != null ? new Date(startMs).toISOString() : new Date(0).toISOString(),
-		duration,
-		status: statusCode === "STATUS_CODE_ERROR" ? "error" : "ok",
-		statusCode: statusCode ?? undefined,
-		statusMessage,
-		spanKind: firstString(attributes, ["span.kind"]) ?? undefined,
-		attributes,
-		resourceAttributes: {},
-		depth: 0,
-	};
-}
-
 function normalizeBundleTraceId(value: string): string | null {
-	const trimmed = value.trim();
+	const trimmed = value.trim().toLowerCase();
 	if (!trimmed) return null;
-	return normalizeMlflowTraceId(trimmed)?.slice(3) ?? trimmed;
+	const traceparent = trimmed.match(/^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$/);
+	if (traceparent && !/^0+$/.test(traceparent[1])) return traceparent[1];
+	const normalized = trimmed.startsWith("tr-") ? trimmed.slice(3) : trimmed;
+	if (/^[a-f0-9]{32}$/.test(normalized) && !/^0+$/.test(normalized)) return normalized;
+	return value.trim() || null;
 }
 
-function nanosToMillis(value: unknown): number | null {
-	const n =
-		typeof value === "number"
-			? value
-			: typeof value === "string" && value.trim()
-				? Number(value)
-				: NaN;
-	if (!Number.isFinite(n)) return null;
-	return n / 1_000_000;
+function publicTraceUrl(traceId: string | null | undefined): string | null {
+	const normalized = traceId ? normalizeBundleTraceId(traceId) : null;
+	return normalized ? `/observability/${encodeURIComponent(normalized)}` : null;
 }
 
-function mlflowAttributesToRecord(
-	attributes: Array<{ key?: string; value?: unknown }>,
-): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
-	for (const attr of attributes) {
-		if (!attr.key) continue;
-		out[attr.key] = mlflowAttributeValue(attr.value);
-	}
-	return out;
-}
-
-function mlflowAttributeValue(value: unknown): unknown {
-	if (!isRecord(value)) return value;
-	if ("string_value" in value) return value.string_value;
-	if ("int_value" in value) {
-		const n = Number(value.int_value);
-		return Number.isFinite(n) ? n : value.int_value;
-	}
-	if ("double_value" in value) {
-		const n = Number(value.double_value);
-		return Number.isFinite(n) ? n : value.double_value;
-	}
-	if ("bool_value" in value) return Boolean(value.bool_value);
-	if ("bytes_value" in value) return value.bytes_value;
-	if (isRecord(value.array_value)) {
-		const items = value.array_value.values;
-		return Array.isArray(items) ? items.map(mlflowAttributeValue) : [];
-	}
-	if (isRecord(value.kvlist_value)) {
-		const items = value.kvlist_value.values;
-		if (!Array.isArray(items)) return {};
-		const out: Record<string, unknown> = {};
-		for (const item of items) {
-			if (isRecord(item) && typeof item.key === "string") {
-				out[item.key] = mlflowAttributeValue(item.value);
-			}
-		}
-		return out;
-	}
-	return value;
-}
 
 function normalizeRawLlmSpan(
 	span: ObservabilityTraceSpan,

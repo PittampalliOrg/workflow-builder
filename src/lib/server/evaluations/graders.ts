@@ -5,6 +5,8 @@ export const EVALUATION_GRADER_TYPES = [
 	"python",
 	"multi",
 	"external_harness",
+	"llm_judge",
+	// Backward-compatible saved-definition alias. New definitions use llm_judge.
 	"mlflow_judge",
 ] as const;
 
@@ -158,10 +160,10 @@ export function validateGraderConfig(
 				passPath: readString(config.passPath, "resolved"),
 				scorePath: readString(config.scorePath, "score"),
 			};
+		case "llm_judge":
 		case "mlflow_judge":
-			// Phase 3c of plan research-the-most-popular-stateful-hinton.md.
-			// Dispatched async via runGraderAsync → runMlflowJudgeGrader →
-			// orchestrator /api/v2/observability/judge → mlflow.genai.judges.llm_judge.
+			// mlflow_judge is a read-compatible alias for the provider-neutral
+			// judge endpoint. No MLflow client or tracking store is involved.
 			return {
 				...config,
 				model: readString(config.model, ""),
@@ -192,8 +194,9 @@ export function runGrader(
 				return runMultiGrader(grader, context);
 			case "external_harness":
 				return runExternalHarness(grader, context);
+			case "llm_judge":
 			case "mlflow_judge":
-				// mlflow_judge is async-only — sync runGrader can't reach
+				// Model judges are async-only because the sync runner cannot reach
 				// the orchestrator. Return a "skipped" sentinel so the
 				// async runGraderAsync path picks it up instead.
 				return {
@@ -203,7 +206,7 @@ export function runGrader(
 					score: null,
 					passed: false,
 					skipped: true,
-					error: "mlflow_judge requires async runner",
+					error: "llm_judge requires async runner",
 				};
 		}
 	} catch (err) {
@@ -231,6 +234,8 @@ export async function runGraderAsync(
 ): Promise<GraderResult> {
 	const needsAsync =
 		grader.type === "score_model" ||
+		grader.type === "llm_judge" ||
+		grader.type === "mlflow_judge" ||
 		grader.type === "python" ||
 		(grader.type === "external_harness" &&
 			typeof grader.config.url === "string" &&

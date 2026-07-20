@@ -1,5 +1,3 @@
-import { env as privateEnv } from "$env/dynamic/private";
-import { env as publicEnv } from "$env/dynamic/public";
 import type { BenchmarkRunInstanceDetailMlflowLinks } from "$lib/server/application/benchmark-run-instance-detail";
 
 export class EnvBenchmarkRunInstanceMlflowLinks
@@ -9,17 +7,8 @@ export class EnvBenchmarkRunInstanceMlflowLinks
 		experimentId: string | null | undefined;
 		runId: string | null | undefined;
 	}): string | null {
-		const base = (
-			publicEnv.PUBLIC_MLFLOW_URL ??
-			privateEnv.PUBLIC_MLFLOW_URL ??
-			""
-		)
-			.trim()
-			.replace(/\/+$/, "");
-		if (!base || !input.experimentId || !input.runId) return null;
-		return `${base}/#/experiments/${encodeURIComponent(
-			input.experimentId,
-		)}/runs/${encodeURIComponent(input.runId)}`;
+		void input;
+		return null;
 	}
 
 	tracesUrl(input: {

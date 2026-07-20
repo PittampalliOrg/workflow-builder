@@ -37,7 +37,6 @@ const ADAPTER_IMPORT_ALLOWLIST = [
 	"^src/lib/server/agents/registry\\.ts$",
 	"^src/lib/server/auth\\.ts$",
 	"^src/lib/server/benchmarks/capacity-diagnostics\\.ts$",
-	"^src/lib/server/benchmarks/mlflow\\.ts$",
 	"^src/lib/server/benchmarks/resource-leases\\.ts$",
 	"^src/lib/server/benchmarks/score-runner\\.ts$",
 	"^src/lib/server/benchmarks/service\\.ts$",

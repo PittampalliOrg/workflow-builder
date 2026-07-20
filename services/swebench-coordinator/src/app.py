@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import pathlib
-import re
-import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -98,7 +96,9 @@ def _init_otel() -> None:
         return
     try:
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
@@ -106,7 +106,9 @@ def _init_otel() -> None:
 
         provider = TracerProvider(resource=Resource.create(_otel_resource_attributes()))
         provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint)))
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=_otel_trace_endpoint(endpoint))
+            )
         )
         trace.set_tracer_provider(provider)
         RequestsInstrumentor().instrument()
@@ -156,7 +158,6 @@ SWEBENCH_TEKTON_KUEUE_QUEUE_NAME = os.environ.get(
 SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS = os.environ.get(
     "SWEBENCH_TEKTON_KUEUE_PRIORITY_CLASS", ""
 )
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
 EVALUATION_RESULTS_EVENT = "swebench.evaluation.results"
 EVALUATION_FAILED_EVENT = "swebench.evaluation.failed"
 EVALUATION_POLL_SECONDS = int(os.environ.get("SWEBENCH_EVALUATION_POLL_SECONDS", "60"))
@@ -169,8 +170,7 @@ RUN_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 INSTANCE_TERMINAL_STATUSES = {"resolved", "failed", "error", "timeout", "cancelled"}
 ACTIVE_EVALUATION_STATUSES = {"queued", "inferencing", "inferred", "evaluating"}
 SWEBENCH_COORDINATOR_APP_ID = (
-    os.environ.get("APP_ID", "swebench-coordinator").strip()
-    or "swebench-coordinator"
+    os.environ.get("APP_ID", "swebench-coordinator").strip() or "swebench-coordinator"
 )
 REGISTERED_COORDINATOR_WORKFLOWS = {
     "swebench_environment_preflight_workflow",
@@ -240,7 +240,7 @@ EVALUATOR_RESOURCE_PROFILES: dict[str, dict[str, dict[str, dict[str, str]]]] = {
     # The evaluator is a thin PipelineRun dispatcher (no docker-in-docker
     # anymore) — per-instance grading happens in dedicated TaskRun pods. The
     # dispatcher container only needs enough headroom for the kubernetes
-    # client + watch loop + a handful of MLflow logs.
+    # client, watch loop, and native result callbacks.
     "standard": {
         "evaluator": {
             "requests": {"cpu": "50m", "memory": "128Mi"},
@@ -314,7 +314,9 @@ def _bff(
             timeout=timeout,
         )
         if res.status_code >= 400:
-            set_span_io(_sp, "output", {"status": res.status_code, "error": res.text[:800]})
+            set_span_io(
+                _sp, "output", {"status": res.status_code, "error": res.text[:800]}
+            )
             raise RuntimeError(
                 f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
             )
@@ -335,7 +337,9 @@ def _bff_text(method: str, path: str, *, timeout: int = 60) -> str:
             timeout=timeout,
         )
         if res.status_code >= 400:
-            set_span_io(_sp, "output", {"status": res.status_code, "error": res.text[:800]})
+            set_span_io(
+                _sp, "output", {"status": res.status_code, "error": res.text[:800]}
+            )
             raise RuntimeError(
                 f"BFF {method} {path} failed ({res.status_code}): {res.text[:800]}"
             )
@@ -576,7 +580,9 @@ def _activity_with_content_io(fn: Any) -> Any:
 
     @wraps(fn)
     def wrapped(*args: Any, **kwargs: Any):
-        data = args[1] if len(args) > 1 else kwargs.get("data", kwargs.get("input_data"))
+        data = (
+            args[1] if len(args) > 1 else kwargs.get("data", kwargs.get("input_data"))
+        )
         set_current_span_io("input", data)
         try:
             result = fn(*args, **kwargs)
@@ -595,1087 +601,15 @@ def _activity_with_content_io(fn: Any) -> Any:
     return wrapped
 
 
-def _mlflow_enabled() -> bool:
-    enabled = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
-    if enabled in {"0", "false", "no", "off"}:
-        return False
-    return bool(MLFLOW_TRACKING_URI)
-
-
-def _mlflow_artifact_timeout_seconds() -> float:
-    raw = os.environ.get("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "").strip()
-    if not raw:
-        raw = os.environ.get("MLFLOW_HTTP_REQUEST_TIMEOUT", "10").strip()
-    try:
-        return max(0.1, min(60.0, float(raw)))
-    except ValueError:
-        return 10.0
-
-
-def _mlflow_log_artifact_sync(
-    run_id: Any, path: pathlib.Path, artifact_path: str
-) -> None:
-    import mlflow
-
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    with mlflow.start_run(run_id=run_id):
-        mlflow.log_artifact(str(path), artifact_path=artifact_path)
-
-
-def _mlflow_log_artifact(
-    run_id: Any,
-    path: pathlib.Path,
-    artifact_path: str,
-    *,
-    wait_for_completion: bool = True,
-) -> None:
-    if (
-        not _mlflow_enabled()
-        or not isinstance(run_id, str)
-        or not run_id
-        or not path.exists()
-    ):
-        return
-    timeout_seconds = _mlflow_artifact_timeout_seconds()
-    done = threading.Event()
-    error: list[BaseException] = []
-
-    def _target() -> None:
-        try:
-            _mlflow_log_artifact_sync(run_id, path, artifact_path)
-        except BaseException as exc:  # noqa: BLE001 - best-effort background upload
-            error.append(exc)
-        finally:
-            done.set()
-
-    thread = threading.Thread(
-        target=_target,
-        name=f"mlflow-artifact-{path.name}",
-        daemon=True,
-    )
-    thread.start()
-    if not wait_for_completion:
-        return
-    if not done.wait(timeout_seconds):
-        logger.warning(
-            "Best-effort MLflow artifact log timed out after %.1fs for %s",
-            timeout_seconds,
-            path,
-        )
-        return
-    if error:
-        logger.warning("Best-effort MLflow artifact log failed for %s: %s", path, error[0])
-
-
-
-def _mlflow_log_text(
-    run_id: Any,
-    text: Any,
-    file_path: pathlib.Path,
-    artifact_path: str,
-    *,
-    wait_for_completion: bool = True,
-) -> None:
-    if not _mlflow_enabled() or not isinstance(text, str) or not text:
-        return
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(text, encoding="utf-8")
-    _mlflow_log_artifact(
-        run_id,
-        file_path,
-        artifact_path,
-        wait_for_completion=wait_for_completion,
-    )
-
-
-def _write_jsonl_preview_artifact(jsonl_path: pathlib.Path) -> pathlib.Path | None:
-    if not jsonl_path.exists():
-        return None
-    rows: list[Any] = []
-    try:
-        for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-    except Exception as exc:
-        logger.warning("Failed to build JSONL preview artifact for %s: %s", jsonl_path, exc)
-        return None
-    preview_path = jsonl_path.with_suffix(".preview.json")
-    preview_path.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return preview_path
-
-
-def _mlflow_instance_run_map(run: dict[str, Any]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for instance in run.get("instances") or []:
-        if not isinstance(instance, dict):
-            continue
-        instance_id = instance.get("instanceId")
-        mlflow_run_id = instance.get("mlflowRunId")
-        if (
-            isinstance(instance_id, str)
-            and isinstance(mlflow_run_id, str)
-            and mlflow_run_id
-        ):
-            out[instance_id] = mlflow_run_id
-    return out
-
-
-def _mlflow_genai_eval_enabled() -> bool:
-    if not _mlflow_enabled():
-        return False
-    enabled = (
-        os.environ.get("SWEBENCH_MLFLOW_GENAI_EVAL_ENABLED", "true")
-        .strip()
-        .lower()
-    )
-    return enabled not in {"0", "false", "no", "off"}
-
-
-def _mlflow_eval_timeout_seconds() -> float:
-    raw = os.environ.get("SWEBENCH_MLFLOW_EVAL_TIMEOUT_SECONDS", "180").strip()
-    try:
-        return max(1.0, min(1800.0, float(raw)))
-    except ValueError:
-        return 180.0
-
-
-def _normalize_mlflow_trace_id(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip().lower()
-    if not raw:
-        return None
-    match = re.match(r"^00-([a-f0-9]{32})-[a-f0-9]{16}-[a-f0-9]{2}$", raw)
-    if match:
-        return f"tr-{match.group(1)}"
-    trace_hex = raw[3:] if raw.startswith("tr-") else raw
-    if re.match(r"^[a-f0-9]{32}$", trace_hex) and trace_hex != "0" * 32:
-        return f"tr-{trace_hex}"
-    return None
-
-
-def _mlflow_eval_trace_ids(data: list[dict[str, Any]]) -> list[str]:
-    seen: set[str] = set()
-    trace_ids: list[str] = []
-    for row in data:
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        outputs = row.get("outputs") if isinstance(row.get("outputs"), dict) else {}
-        candidates: list[Any] = [
-            metadata.get("mlflow_trace_id"),
-            outputs.get("mlflow_trace_id"),
-        ]
-        if isinstance(outputs.get("trace_ids"), list):
-            candidates.extend(outputs["trace_ids"])
-        for candidate in candidates:
-            trace_id = _normalize_mlflow_trace_id(candidate)
-            if trace_id and trace_id not in seen:
-                seen.add(trace_id)
-                trace_ids.append(trace_id)
-    return trace_ids
-
-
-def _mlflow_eval_trace_row_lookup(
-    data: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    rows: dict[str, dict[str, Any]] = {}
-    for row in data:
-        if not isinstance(row, dict):
-            continue
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        outputs = row.get("outputs") if isinstance(row.get("outputs"), dict) else {}
-        candidates: list[Any] = [
-            metadata.get("mlflow_trace_id"),
-            outputs.get("mlflow_trace_id"),
-        ]
-        if isinstance(outputs.get("trace_ids"), list):
-            candidates.extend(outputs["trace_ids"])
-        for candidate in candidates:
-            trace_id = _normalize_mlflow_trace_id(candidate)
-            if trace_id and trace_id not in rows:
-                rows[trace_id] = row
-    return rows
-
-
-def _mlflow_trace_request_id(trace: Any) -> str | None:
-    def read(value: Any, key: str) -> Any:
-        if isinstance(value, dict):
-            return value.get(key)
-        get = getattr(value, "get", None)
-        if callable(get):
-            try:
-                return get(key)
-            except Exception:
-                return None
-        return getattr(value, key, None)
-
-    candidates: list[Any] = []
-    for key in ("request_id", "trace_id", "trace.request_id"):
-        candidates.append(read(trace, key))
-    info = read(trace, "info")
-    if info is not None:
-        for key in ("request_id", "trace_id"):
-            candidates.append(read(info, key))
-    for candidate in candidates:
-        trace_id = _normalize_mlflow_trace_id(candidate)
-        if trace_id:
-            return trace_id
-    return None
-
-
-def _mlflow_eval_row_for_trace(
-    trace: Any,
-    row_by_trace_id: dict[str, dict[str, Any]],
-    summary: dict[str, Any],
-) -> dict[str, Any] | None:
-    trace_id = _mlflow_trace_request_id(trace)
-    if trace_id and trace_id in row_by_trace_id:
-        return row_by_trace_id[trace_id]
-    missing = summary.setdefault("missingNativeTraceRowIds", [])
-    if isinstance(missing, list):
-        missing_id = trace_id or "<unknown>"
-        if missing_id not in missing:
-            missing.append(missing_id)
-    summary["missingNativeTraceRowCount"] = (
-        len(missing) if isinstance(missing, list) else 1
-    )
-    return None
-
-
-def _mlflow_trace_tag_value(value: Any, max_length: int = 250) -> str:
-    text = "" if value is None else str(value)
-    return text[:max_length]
-
-
-def _mlflow_benchmark_comparison_tags(run: dict[str, Any]) -> dict[str, str]:
-    raw_tags = run.get("tags") if isinstance(run.get("tags"), list) else []
-    normalized: list[str] = []
-    seen: set[str] = set()
-    out: dict[str, str] = {}
-    for item in raw_tags:
-        if not isinstance(item, str):
-            continue
-        tag = item.strip().lower()[:64]
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        normalized.append(tag)
-        suffix = re.sub(r"[^a-z0-9_.-]+", "_", tag).strip("_")[:80]
-        if suffix:
-            out[f"workflow_builder.benchmark_tag.{suffix}"] = "true"
-    if normalized:
-        out["workflow_builder.benchmark_tags"] = ",".join(normalized)
-    return out
-
-
-def _mlflow_link_traces_to_runs(
-    client: Any,
-    trace_ids: list[str],
-    run_ids: list[str],
-    summary: dict[str, Any],
-    *,
-    summary_prefix: str = "linkedEvalTrace",
-) -> None:
-    normalized_trace_ids: list[str] = []
-    seen_trace_ids: set[str] = set()
-    for trace_id in trace_ids:
-        normalized = _normalize_mlflow_trace_id(trace_id)
-        if normalized and normalized not in seen_trace_ids:
-            seen_trace_ids.add(normalized)
-            normalized_trace_ids.append(normalized)
-    normalized_run_ids = [
-        str(run_id).strip()
-        for run_id in run_ids
-        if isinstance(run_id, str) and run_id.strip()
-    ]
-    if not normalized_trace_ids or not normalized_run_ids:
-        return
-
-    linked_run_ids: list[str] = []
-    errors: list[str] = []
-    for run_id in normalized_run_ids:
-        try:
-            for start in range(0, len(normalized_trace_ids), 100):
-                batch = normalized_trace_ids[start : start + 100]
-                try:
-                    client.link_traces_to_run(trace_ids=batch, run_id=run_id)
-                except Exception:
-                    _mlflow_link_traces_to_run_rest(batch, run_id)
-            linked_run_ids.append(run_id)
-        except Exception as exc:  # noqa: BLE001 - optional MLflow association path
-            errors.append(f"{run_id}: {exc}")
-
-    if linked_run_ids:
-        existing_run_ids = summary.get(f"{summary_prefix}RunIds")
-        all_run_ids = (
-            list(existing_run_ids) if isinstance(existing_run_ids, list) else []
-        )
-        for run_id in linked_run_ids:
-            if run_id not in all_run_ids:
-                all_run_ids.append(run_id)
-        existing_trace_ids = summary.get(f"{summary_prefix}Ids")
-        all_trace_ids = (
-            list(existing_trace_ids) if isinstance(existing_trace_ids, list) else []
-        )
-        for trace_id in normalized_trace_ids:
-            if trace_id not in all_trace_ids:
-                all_trace_ids.append(trace_id)
-        summary[f"{summary_prefix}RunIds"] = all_run_ids
-        summary[f"{summary_prefix}Ids"] = all_trace_ids
-    if errors:
-        summary[f"{summary_prefix}Errors"] = errors[:5]
-
-
-def _mlflow_link_traces_to_run_rest(trace_ids: list[str], run_id: str) -> None:
-    tracking_uri = str(MLFLOW_TRACKING_URI or "").rstrip("/")
-    if not tracking_uri:
-        raise RuntimeError("MLFLOW_TRACKING_URI is not configured")
-    response = requests.post(
-        f"{tracking_uri}/api/2.0/mlflow/traces/link-to-run",
-        json={"trace_ids": trace_ids, "run_id": run_id},
-        timeout=10,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"MLflow trace link REST failed: HTTP {response.status_code} {response.text[:300]}"
-        )
-
-
-def _mlflow_dataframe_empty(value: Any) -> bool:
-    if value is None:
-        return True
-    empty = getattr(value, "empty", None)
-    if isinstance(empty, bool):
-        return empty
-    try:
-        return len(value) == 0
-    except Exception:
-        return False
-
-
-def _mlflow_eval_search_experiment_ids(
-    mlflow_module: Any,
-    parent_experiment_id: str,
-    run: dict[str, Any],
-    summary: dict[str, Any],
-) -> list[str]:
-    experiment_ids: list[str] = []
-
-    def add(value: Any) -> None:
-        if value is None:
-            return
-        experiment_id = str(value).strip()
-        if experiment_id and experiment_id not in experiment_ids:
-            experiment_ids.append(experiment_id)
-
-    add(parent_experiment_id)
-    add(run.get("mlflowTraceExperimentId"))
-
-    trace_experiment_name = str(run.get("mlflowTraceExperimentName") or "").strip()
-    if trace_experiment_name:
-        try:
-            experiment = mlflow_module.get_experiment_by_name(trace_experiment_name)
-            add(getattr(experiment, "experiment_id", None))
-        except Exception as exc:  # noqa: BLE001 - MLflow client differences
-            summary["mlflowTraceExperimentLookupError"] = str(exc)
-
-    summary["nativeTraceSearchExperimentIds"] = experiment_ids
-    return experiment_ids
-
-
-def _mlflow_search_traces(
-    mlflow_module: Any,
-    experiment_ids: list[str],
-    filter_string: str,
-    *,
-    include_spans: bool | None = None,
-) -> Any:
-    kwargs: dict[str, Any] = {
-        "locations": experiment_ids,
-        "filter_string": filter_string,
-    }
-    if include_spans is not None:
-        kwargs["include_spans"] = include_spans
-    try:
-        return mlflow_module.search_traces(**kwargs)
-    except TypeError as exc:
-        if "locations" not in str(exc):
-            raise
-        kwargs.pop("locations", None)
-        kwargs["experiment_ids"] = experiment_ids
-        return mlflow_module.search_traces(**kwargs)
-
-
-def _search_mlflow_eval_traces(
-    mlflow_module: Any,
-    experiment_id: str,
-    run: dict[str, Any],
-    data: list[dict[str, Any]],
-    summary: dict[str, Any],
-) -> Any | None:
-    trace_ids = _mlflow_eval_trace_ids(data)
-    summary["nativeTraceIds"] = trace_ids
-    if not trace_ids:
-        summary["mlflowGenaiEvaluateSkippedReason"] = "missing-native-trace-ids"
-        return None
-
-    experiment_ids = _mlflow_eval_search_experiment_ids(
-        mlflow_module, experiment_id, run, summary
-    )
-    if not experiment_ids:
-        summary["mlflowGenaiEvaluateSkippedReason"] = "missing-trace-experiment"
-        return None
-
-    frames: list[Any] = []
-    filters: list[tuple[str, str]] = list(
-        (f"{field} = '{trace_id}'", trace_id)
-        for trace_id in trace_ids
-        for field in ("request_id", "trace.request_id")
-    )
-
-    errors: list[str] = []
-    found_trace_ids: set[str] = set()
-    for filter_string, trace_id in filters:
-        if trace_id and trace_id in found_trace_ids:
-            continue
-        try:
-            traces = _mlflow_search_traces(
-                mlflow_module,
-                experiment_ids,
-                filter_string,
-                include_spans=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - search syntax differs by MLflow version
-            errors.append(f"{filter_string}: {exc}")
-            continue
-        if not _mlflow_dataframe_empty(traces):
-            frames.append(traces)
-            found_trace_ids.add(trace_id)
-
-    if not frames:
-        summary["nativeTraceCount"] = 0
-        summary["mlflowTraceSearchErrors"] = errors[:5]
-        summary["mlflowGenaiEvaluateSkippedReason"] = "native-traces-not-found"
-        return None
-
-    summary["nativeTraceCount"] = len(frames)
-    if len(frames) == 1:
-        return frames[0]
-    try:
-        import pandas as pd  # type: ignore[import-not-found]
-
-        merged = pd.concat(frames, ignore_index=True)
-        if "trace_id" in merged:
-            merged = merged.drop_duplicates(subset=["trace_id"])
-        return merged
-    except Exception:
-        return frames[0]
-
-
-def _mlflow_create_eval_trace_proxies(
-    mlflow_module: Any,
-    client: Any,
-    experiment_id: str,
-    parent_run_id: str,
-    eval_run_id: str,
-    data: list[dict[str, Any]],
-    row_by_trace_id: dict[str, dict[str, Any]],
-    summary: dict[str, Any],
-) -> Any | None:
-    source_trace_ids = _mlflow_eval_trace_ids(data)
-    if not source_trace_ids:
-        return None
-
-    proxy_trace_ids: list[str] = []
-    proxy_frames: list[Any] = []
-    errors: list[str] = []
-    for source_trace_id in source_trace_ids:
-        row = row_by_trace_id.get(source_trace_id)
-        if row is None:
-            continue
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        outputs = row.get("outputs") if isinstance(row.get("outputs"), dict) else {}
-        inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
-        instance_id = str(metadata.get("instance_id") or source_trace_id)
-        try:
-            root_span = client.start_trace(
-                name=f"swebench-eval/{instance_id}",
-                span_type="CHAIN",
-                inputs={
-                    "source_mlflow_trace_id": source_trace_id,
-                    "problem": inputs.get("problem_statement") or "",
-                    "repo": inputs.get("repo") or "",
-                    "base_commit": inputs.get("base_commit") or "",
-                },
-                attributes={
-                    "workflow_builder.source_mlflow_trace_id": source_trace_id,
-                    "workflow_builder.benchmark_run_id": metadata.get("run_id") or "",
-                    "workflow_builder.run_instance_id": metadata.get("run_instance_id")
-                    or "",
-                    "workflow_builder.instance_id": instance_id,
-                    "workflow_builder.source_mlflow_run_id": metadata.get("mlflow_run_id")
-                    or "",
-                },
-                tags={
-                    "workflow_builder.kind": "swebench_eval_trace_proxy",
-                    "workflow_builder.source_mlflow_trace_id": _mlflow_trace_tag_value(
-                        source_trace_id
-                    ),
-                    "workflow_builder.benchmark_run_id": _mlflow_trace_tag_value(
-                        metadata.get("run_id")
-                    ),
-                    "workflow_builder.run_instance_id": _mlflow_trace_tag_value(
-                        metadata.get("run_instance_id")
-                    ),
-                    "workflow_builder.instance_id": _mlflow_trace_tag_value(instance_id),
-                },
-                experiment_id=experiment_id,
-            )
-            proxy_trace_id = _normalize_mlflow_trace_id(root_span.trace_id)
-            if not proxy_trace_id:
-                raise RuntimeError("MLflow returned an invalid proxy trace id")
-            client.end_trace(
-                proxy_trace_id,
-                outputs={
-                    "source_mlflow_trace_id": source_trace_id,
-                    "status": outputs.get("status"),
-                    "evaluation_status": outputs.get("evaluation_status"),
-                    "patch_present": bool(
-                        isinstance(outputs.get("model_patch"), str)
-                        and outputs.get("model_patch").strip()
-                    ),
-                },
-                status="OK",
-            )
-            flush_traces = getattr(mlflow_module, "flush_trace_async_logging", None)
-            if callable(flush_traces):
-                flush_traces()
-            _mlflow_link_traces_to_runs(
-                client,
-                [proxy_trace_id],
-                [eval_run_id, parent_run_id],
-                summary,
-                summary_prefix="linkedEvalProxyTrace",
-            )
-            row_by_trace_id[proxy_trace_id] = row
-            proxy_trace_ids.append(proxy_trace_id)
-            traces = None
-            for _attempt in range(5):
-                traces = _mlflow_search_traces(
-                    mlflow_module,
-                    [experiment_id],
-                    f"request_id = '{proxy_trace_id}'",
-                    include_spans=True,
-                )
-                if not _mlflow_dataframe_empty(traces):
-                    break
-                time.sleep(0.5)
-            if not _mlflow_dataframe_empty(traces):
-                proxy_frames.append(traces)
-        except Exception as exc:  # noqa: BLE001 - proxy traces are optional projection
-            errors.append(f"{source_trace_id}: {exc}")
-
-    if proxy_trace_ids:
-        summary["evalProxyTraceIds"] = proxy_trace_ids
-        summary["evalProxyTraceExperimentId"] = experiment_id
-    if errors:
-        summary["evalProxyTraceErrors"] = errors[:5]
-    if not proxy_frames:
-        return None
-    if len(proxy_frames) == 1:
-        return proxy_frames[0]
-    try:
-        import pandas as pd  # type: ignore[import-not-found]
-
-        merged = pd.concat(proxy_frames, ignore_index=True)
-        if "trace_id" in merged:
-            merged = merged.drop_duplicates(subset=["trace_id"])
-        return merged
-    except Exception:
-        return proxy_frames[0]
-
-
-def _read_trace_bundle_from_disk(run_id: str, instance_id: str) -> dict[str, Any] | None:
-    path = (
-        ARTIFACT_ROOT
-        / run_id
-        / "traces"
-        / _safe_artifact_name(instance_id)
-        / "trace-bundle.json"
-    )
-    if not path.exists():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except Exception as exc:
-        logger.warning("Failed to read trace bundle %s: %s", path, exc)
-        return None
-
-
-def _mlflow_eval_input_row(
-    run: dict[str, Any], instance: dict[str, Any]
-) -> dict[str, Any]:
-    instance_id = str(instance.get("instanceId") or instance.get("instance_id") or "")
-    test_metadata = instance.get("testMetadata")
-    if not isinstance(test_metadata, dict):
-        test_metadata = {}
-    inference_environment = instance.get("inferenceEnvironment")
-    if not isinstance(inference_environment, dict):
-        inference_environment = {}
-    trace_bundle = _read_trace_bundle_from_disk(str(run.get("id") or ""), instance_id)
-    trace_ids = (
-        instance.get("traceIds") if isinstance(instance.get("traceIds"), list) else []
-    )
-    mlflow_trace_id = _normalize_mlflow_trace_id(instance.get("mlflowTraceId"))
-    if not mlflow_trace_id:
-        for trace_id in trace_ids:
-            mlflow_trace_id = _normalize_mlflow_trace_id(trace_id)
-            if mlflow_trace_id:
-                break
-    harness_result = instance.get("harnessResult")
-    if not isinstance(harness_result, dict):
-        harness_result = {}
-    model_patch = instance.get("modelPatch")
-    if not isinstance(model_patch, str):
-        model_patch = ""
-    return {
-        "inputs": {
-            "problem_statement": instance.get("problemStatement") or "",
-            "repo": instance.get("repo") or "",
-            "base_commit": instance.get("baseCommit") or "",
-            "hints": test_metadata.get("hints_text") or test_metadata.get("hints") or "",
-            "environment": inference_environment,
-        },
-        "outputs": {
-            "model_patch": model_patch,
-            "status": instance.get("status"),
-            "evaluation_status": instance.get("evaluationStatus"),
-            "harness_result": harness_result,
-            "trace_bundle": trace_bundle,
-            "trace_ids": trace_ids,
-            "mlflow_trace_id": mlflow_trace_id,
-        },
-        "expectations": {
-            "resolved": instance.get("status") == "resolved",
-            "FAIL_TO_PASS": test_metadata.get("FAIL_TO_PASS")
-            or test_metadata.get("fail_to_pass")
-            or [],
-            "PASS_TO_PASS": test_metadata.get("PASS_TO_PASS")
-            or test_metadata.get("pass_to_pass")
-            or [],
-            "has_internal_gold_patch": bool(test_metadata.get("patch")),
-        },
-        "metadata": {
-            "run_id": run.get("id"),
-            "run_instance_id": instance.get("id"),
-            "instance_id": instance_id,
-            "mlflow_trace_id": mlflow_trace_id,
-            "mlflow_dataset_id": instance.get("mlflowDatasetId")
-            or run.get("mlflowDatasetId"),
-            "mlflow_dataset_record_id": instance.get("mlflowDatasetRecordId"),
-            "suite": run.get("suiteSlug"),
-            "dataset": run.get("datasetName"),
-            "agent_id": run.get("agentId"),
-            "agent_version": run.get("agentVersion"),
-            "agent_runtime": run.get("agentRuntimeAppId"),
-            "model": run.get("modelNameOrPath"),
-            "benchmark_tags": run.get("tags") if isinstance(run.get("tags"), list) else [],
-            "session_id": instance.get("sessionId"),
-            "workflow_execution_id": instance.get("workflowExecutionId"),
-            "mlflow_run_id": instance.get("mlflowRunId"),
-        },
-    }
-
-
-def _patch_files(patch: str) -> list[str]:
-    files: list[str] = []
-    for match in re.finditer(r"^diff --git a/(.*?) b/(.*?)$", patch, re.MULTILINE):
-        files.append(match.group(2))
-    return files
-
-
-def _contains_environment_mutation(text: str) -> bool:
-    patterns = [
-        r"\bpip\s+install\b",
-        r"\bconda\s+(install|env|create)\b",
-        r"\bpython\s+setup\.py\s+build_ext\b",
-        r"\bgit\s+stash\b",
-        r"\bgit\s+reset\b",
-        r"\bgit\s+clean\b",
-    ]
-    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
-
-
-def _row_scorer_values(row: dict[str, Any]) -> dict[str, bool]:
-    outputs = row.get("outputs") if isinstance(row.get("outputs"), dict) else {}
-    patch = (
-        outputs.get("model_patch")
-        if isinstance(outputs.get("model_patch"), str)
-        else ""
-    )
-    files = _patch_files(patch)
-    trace_bundle = (
-        outputs.get("trace_bundle")
-        if isinstance(outputs.get("trace_bundle"), dict)
-        else {}
-    )
-    required_context = (
-        trace_bundle.get("requiredContext")
-        if isinstance(trace_bundle.get("requiredContext"), dict)
-        else {}
-    )
-    trace_text = json.dumps(trace_bundle, sort_keys=True) if trace_bundle else ""
-    non_impl_patterns = (
-        "test/",
-        "tests/",
-        "testing/",
-        "docs/",
-        "doc/",
-        ".github/",
-        "fixtures/",
-        "benchmark",
-    )
-    impl_files = [
-        path
-        for path in files
-        if not path.endswith((".md", ".rst", ".txt", ".yml", ".yaml", ".json"))
-        and not path.startswith(non_impl_patterns)
-        and "/tests/" not in path
-        and "/test/" not in path
-        and "/fixtures/" not in path
-    ]
-    diff_stat_mentions = len(
-        re.findall(r"git\s+diff\s+--stat", trace_text, re.IGNORECASE)
-    )
-    later_validation_mentions = len(
-        re.findall(
-            r"(pytest|tox|unittest|npm\s+test|mvn\s+test|cargo\s+test)",
-            trace_text,
-            re.IGNORECASE,
-        )
-    )
-    return {
-        "swebench_harness_resolved": outputs.get("status") == "resolved",
-        "patch_present_and_well_formed": bool(patch.strip())
-        and outputs.get("evaluation_status") != "empty_patch"
-        and (not patch.strip().startswith("diff --git") or len(files) > 0),
-        "implementation_only_patch": len(impl_files) > 0,
-        "no_environment_mutation": not _contains_environment_mutation(patch)
-        and not _contains_environment_mutation(trace_text),
-        "trace_health": bool(
-            required_context.get("rootPresent")
-            and required_context.get("statusFinalized")
-            and required_context.get("llmToolSpansPresent")
-        )
-        if required_context
-        else bool(outputs.get("trace_ids")),
-        "agent_efficiency": len(
-            re.findall(
-                r"(build_ext|conda|pip\s+install|apt-get|apk\s+add)",
-                trace_text,
-                re.IGNORECASE,
-            )
-        )
-        <= 3,
-        "diff_stop_compliance": not (
-            diff_stat_mentions > 0 and later_validation_mentions > 2
-        ),
-    }
-
-
-def _summarize_mlflow_eval_rows(data: list[dict[str, Any]]) -> dict[str, Any]:
-    scorer_names = [
-        "swebench_harness_resolved",
-        "patch_present_and_well_formed",
-        "implementation_only_patch",
-        "no_environment_mutation",
-        "trace_health",
-        "agent_efficiency",
-        "diff_stop_compliance",
-    ]
-    counts = {name: 0 for name in scorer_names}
-    row_scores: list[dict[str, Any]] = []
-    for row in data:
-        scores = _row_scorer_values(row)
-        for name, value in scores.items():
-            if value:
-                counts[name] += 1
-        row_scores.append(
-            {
-                "instanceId": (row.get("metadata") or {}).get("instance_id")
-                if isinstance(row.get("metadata"), dict)
-                else None,
-                "scores": scores,
-            }
-        )
-    total = len(data)
-    return {
-        "version": 1,
-        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "rowCount": total,
-        "scorers": {
-            name: {
-                "passing": counts[name],
-                "failing": max(0, total - counts[name]),
-                "mean": (counts[name] / total) if total else 0,
-            }
-            for name in scorer_names
-        },
-        "rows": row_scores,
-    }
-
-
-def _mlflow_genai_evaluate_sync(
-    parent_run_id: str,
-    run: dict[str, Any],
-    data: list[dict[str, Any]],
-    summary: dict[str, Any],
-) -> str:
-    # The coordinator itself runs with OTLP env configured so Dapr workflow logs can
-    # forward normally. Post-hoc MLflow eval traces must be written directly to
-    # the parent run experiment, otherwise MLflow's OTLP exporter sends proxy
-    # traces to the trace experiment and the evaluation run cannot display them.
-    os.environ["MLFLOW_ENABLE_OTLP_EXPORTER"] = "false"
-    import mlflow
-    from mlflow.genai import scorer
-
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    client = mlflow.tracking.MlflowClient()
-    parent = client.get_run(parent_run_id)
-    experiment_id = parent.info.experiment_id
-    try:
-        mlflow.set_experiment(experiment_id=experiment_id)
-    except Exception as exc:  # noqa: BLE001 - start_run still uses explicit experiment_id
-        summary["mlflowSetExperimentError"] = str(exc)
-    row_by_trace_id = _mlflow_eval_trace_row_lookup(data)
-    summary["nativeTraceRowIds"] = sorted(row_by_trace_id.keys())
-
-    def score_row_for_trace(trace: Any, scorer_name: str) -> bool:
-        row = _mlflow_eval_row_for_trace(trace, row_by_trace_id, summary)
-        if row is None:
-            return False
-        if scorer_name == "trace_health":
-            return True
-        return _row_scorer_values(row)[scorer_name]
-
-    @scorer
-    def swebench_harness_resolved(outputs=None, trace=None):
-        return score_row_for_trace(trace, "swebench_harness_resolved")
-
-    @scorer
-    def patch_present_and_well_formed(outputs=None, trace=None):
-        return score_row_for_trace(trace, "patch_present_and_well_formed")
-
-    @scorer
-    def implementation_only_patch(outputs=None, trace=None):
-        return score_row_for_trace(trace, "implementation_only_patch")
-
-    @scorer
-    def no_environment_mutation(outputs=None, trace=None):
-        return score_row_for_trace(trace, "no_environment_mutation")
-
-    @scorer
-    def trace_health(outputs=None, trace=None):
-        return score_row_for_trace(trace, "trace_health")
-
-    @scorer
-    def agent_efficiency(outputs=None, trace=None):
-        return score_row_for_trace(trace, "agent_efficiency")
-
-    @scorer
-    def diff_stop_compliance(outputs=None, trace=None):
-        return score_row_for_trace(trace, "diff_stop_compliance")
-
-    with mlflow.start_run(
-        experiment_id=experiment_id,
-        run_name=f"swebench-mlflow-eval/{str(run.get('id') or '')[:12]}",
-        tags={
-            "mlflow.parentRunId": parent_run_id,
-            "workflow_builder.kind": "swebench_mlflow_eval",
-            "workflow_builder.benchmark_run_id": str(run.get("id") or ""),
-            "swebench.suite": str(run.get("suiteSlug") or ""),
-            "agent.id": str(run.get("agentId") or ""),
-            "agent.version": str(run.get("agentVersion") or ""),
-            "agent.runtime": str(run.get("agentRuntimeAppId") or ""),
-            "model.name_or_path": str(run.get("modelNameOrPath") or ""),
-            **_mlflow_benchmark_comparison_tags(run),
-        },
-    ) as eval_run:
-        eval_run_id = eval_run.info.run_id
-        try:
-            eval_data = _search_mlflow_eval_traces(
-                mlflow, experiment_id, run, data, summary
-            )
-            if eval_data is None:
-                mlflow.set_tag(
-                    "workflow_builder.mlflow_genai_evaluate_skipped_reason",
-                    str(summary.get("mlflowGenaiEvaluateSkippedReason") or "no-native-traces"),
-                )
-            else:
-                source_trace_ids = _mlflow_eval_trace_ids(data)
-                _mlflow_link_traces_to_runs(
-                    client,
-                    source_trace_ids,
-                    [eval_run_id, parent_run_id],
-                    summary,
-                    summary_prefix="linkedNativeTrace",
-                )
-                proxy_eval_data = _mlflow_create_eval_trace_proxies(
-                    mlflow,
-                    client,
-                    experiment_id,
-                    parent_run_id,
-                    eval_run_id,
-                    data,
-                    row_by_trace_id,
-                    summary,
-                )
-                if proxy_eval_data is not None:
-                    eval_data = proxy_eval_data
-                mlflow.genai.evaluate(
-                    data=eval_data,
-                    scorers=[
-                        swebench_harness_resolved,
-                        patch_present_and_well_formed,
-                        implementation_only_patch,
-                        no_environment_mutation,
-                        trace_health,
-                        agent_efficiency,
-                        diff_stop_compliance,
-                    ],
-                )
-        except Exception as exc:
-            # Keep the MLflow projection recoverable when the optional GenAI
-            # evaluator cannot score a row, for example while traces are still
-            # propagating to the tracking store.
-            logger.warning("MLflow GenAI evaluation call failed: %s", exc)
-            summary["mlflowGenaiEvaluateError"] = str(exc)
-            mlflow.set_tag("workflow_builder.mlflow_genai_evaluate_error", str(exc))
-        mlflow.log_dict(summary, "swebench/mlflow-eval-summary.json")
-        for name, value in summary.get("scorers", {}).items():
-            if isinstance(value, dict):
-                mlflow.log_metric(f"{name}_mean", float(value.get("mean") or 0))
-
-    with mlflow.start_run(run_id=parent_run_id):
-        mlflow.set_tag("workflow_builder.mlflow_eval_run_id", eval_run_id)
-        mlflow.log_dict(summary, "swebench/mlflow-eval-summary.json")
-        for name, value in summary.get("scorers", {}).items():
-            if isinstance(value, dict):
-                mlflow.log_metric(
-                    f"mlflow_eval_{name}_mean", float(value.get("mean") or 0)
-                )
-    return eval_run_id
-
-
 def _run_mlflow_swebench_eval(ctx, data: dict[str, Any]) -> dict[str, Any]:
-    run_id = data["runId"]
-    if not _mlflow_genai_eval_enabled():
-        return {"success": True, "skipped": True, "reason": "mlflow-genai-eval-disabled"}
-    try:
-        run = _load_run(run_id)
-        parent_run_id = run.get("mlflowRunId")
-        if not isinstance(parent_run_id, str) or not parent_run_id:
-            return {"success": True, "skipped": True, "reason": "missing-parent-mlflow-run"}
-        instances = run.get("instances") if isinstance(run.get("instances"), list) else []
-        rows = [
-            _mlflow_eval_input_row(run, instance)
-            for instance in instances
-            if isinstance(instance, dict) and instance.get("status") in INSTANCE_TERMINAL_STATUSES
-        ]
-        if not rows:
-            return {"success": True, "skipped": True, "reason": "no-terminal-instances"}
-
-        input_path = ARTIFACT_ROOT / run_id / "mlflow-eval-input.jsonl"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_path.write_text(
-            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
-            encoding="utf-8",
-        )
-        _mlflow_log_artifact(parent_run_id, input_path, "swebench")
-
-        summary = _summarize_mlflow_eval_rows(rows)
-        summary["runId"] = run_id
-        summary_path = ARTIFACT_ROOT / run_id / "mlflow-eval-summary.json"
-        summary_path.write_text(
-            json.dumps(summary, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        _mlflow_log_artifact(parent_run_id, summary_path, "swebench")
-
-        result: dict[str, Any] = {}
-        done = threading.Event()
-        error: list[BaseException] = []
-
-        def _target() -> None:
-            try:
-                eval_run_id = _mlflow_genai_evaluate_sync(parent_run_id, run, rows, summary)
-                summary["mlflowEvalRunId"] = eval_run_id
-                result["mlflowEvalRunId"] = eval_run_id
-            except BaseException as exc:  # noqa: BLE001 - best-effort projection
-                error.append(exc)
-            finally:
-                done.set()
-
-        thread = threading.Thread(
-            target=_target,
-            name=f"mlflow-swebench-eval-{run_id}",
-            daemon=True,
-        )
-        thread.start()
-        if not done.wait(_mlflow_eval_timeout_seconds()):
-            logger.warning(
-                "Best-effort MLflow GenAI evaluation timed out for %s", run_id
-            )
-            return {
-                "success": True,
-                "skipped": True,
-                "reason": "mlflow-genai-eval-timeout",
-                "summary": summary,
-            }
-        if error:
-            logger.warning(
-                "Best-effort MLflow GenAI evaluation failed for %s: %s",
-                run_id,
-                error[0],
-            )
-            return {
-                "success": True,
-                "skipped": True,
-                "reason": "mlflow-genai-eval-failed",
-                "error": str(error[0]),
-                "summary": summary,
-            }
-        if result.get("mlflowEvalRunId"):
-            summary["mlflowEvalRunId"] = result["mlflowEvalRunId"]
-            try:
-                _bff_with_retry(
-                    "POST",
-                    f"/api/internal/benchmarks/runs/{run_id}/mlflow-evaluation",
-                    json_body={
-                        "mlflowEvalRunId": result["mlflowEvalRunId"],
-                        "summary": summary,
-                    },
-                    timeout=30,
-                    attempts=3,
-                    delay_seconds=5,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to persist MLflow eval summary for %s: %s", run_id, exc
-                )
-        return {"success": True, **result, "summary": summary}
-    except Exception as exc:
-        logger.warning(
-            "Best-effort MLflow SWE-bench eval activity failed for %s: %s",
-            run_id,
-            exc,
-        )
-        return {
-            "success": True,
-            "skipped": True,
-            "reason": "activity-failed",
-            "error": str(exc),
-        }
+    """Replay-safe compatibility activity for retired MLflow evaluation."""
+    _ = ctx
+    return {
+        "success": True,
+        "skipped": True,
+        "reason": "native-evaluation-results-authoritative",
+        "runId": data["runId"],
+    }
 
 
 def _child_otel_env(client: Any, run_id: str) -> list[Any]:
@@ -1690,7 +624,9 @@ def _child_otel_env(client: Any, run_id: str) -> list[Any]:
         if value:
             env.append(client.V1EnvVar(name=name, value=value))
     resource_attributes = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").strip()
-    extra_attributes = f"benchmark.run_id={run_id},workflow_builder.benchmark_run_id={run_id}"
+    extra_attributes = (
+        f"benchmark.run_id={run_id},workflow_builder.benchmark_run_id={run_id}"
+    )
     env.append(
         client.V1EnvVar(
             name="OTEL_RESOURCE_ATTRIBUTES",
@@ -1968,7 +904,6 @@ def _start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _admit_and_start_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
-    run_id = data["runId"]
     instance_id = data["instanceId"]
     admission = _acquire_instance_leases(ctx, data)
     if not isinstance(admission, dict) or not admission.get("admitted"):
@@ -1999,22 +934,6 @@ def _sync_instance(ctx, data: dict[str, Any]) -> dict[str, Any]:
     )
     instance = response.get("instance") if isinstance(response, dict) else None
     if isinstance(instance, dict):
-        patch = instance.get("modelPatch")
-        mlflow_run_id = instance.get("mlflowRunId")
-        patch_path = (
-            ARTIFACT_ROOT
-            / run_id
-            / "patches"
-            / f"{_safe_artifact_name(instance_id)}.patch"
-        )
-        _mlflow_log_text(
-            mlflow_run_id,
-            patch,
-            patch_path,
-            "patches",
-            wait_for_completion=False,
-        )
-    if isinstance(instance, dict):
         return {"success": True, "instance": _compact_instance_for_workflow(instance)}
     return _compact_bff_response(response)
 
@@ -2028,7 +947,8 @@ def _mark_instance_inference_failure(ctx, data: dict[str, Any]) -> dict[str, Any
             f"/api/internal/benchmarks/runs/{run_id}/instances/{instance_id}/inference-failure",
             json_body={
                 "status": data.get("status") or "error",
-                "error": data.get("error") or "Inference failed before patch extraction",
+                "error": data.get("error")
+                or "Inference failed before patch extraction",
             },
             timeout=60,
         )
@@ -2074,10 +994,6 @@ def _write_predictions(ctx, data: dict[str, Any]) -> dict[str, Any]:
             f"/api/internal/benchmarks/runs/{run['id']}/predictions-artifact",
             json_body={"path": str(path)},
         )
-    _mlflow_log_artifact(run.get("mlflowRunId"), path, "swebench")
-    preview_path = _write_jsonl_preview_artifact(path)
-    if preview_path is not None:
-        _mlflow_log_artifact(run.get("mlflowRunId"), preview_path, "swebench")
     return {
         "path": str(path),
         "artifactPath": "predictions.jsonl",
@@ -2109,27 +1025,6 @@ def _write_evaluation_dataset(ctx, data: dict[str, Any]) -> dict[str, Any]:
             f"/api/internal/benchmarks/runs/{run_id}/dataset-artifact",
             json_body={"path": str(path)},
         )
-    if _mlflow_enabled():
-        try:
-            refreshed_run = _load_run(run_id)
-            _mlflow_log_artifact(refreshed_run.get("mlflowRunId"), path, "swebench")
-        except Exception as exc:
-            logger.warning(
-                "Best-effort MLflow dataset artifact lookup failed for %s: %s",
-                run_id,
-                exc,
-            )
-    preview_path = _write_jsonl_preview_artifact(path)
-    if preview_path is not None and _mlflow_enabled():
-        try:
-            refreshed_run = _load_run(run_id)
-            _mlflow_log_artifact(refreshed_run.get("mlflowRunId"), preview_path, "swebench")
-        except Exception as exc:
-            logger.warning(
-                "Best-effort MLflow dataset preview artifact lookup failed for %s: %s",
-                run_id,
-                exc,
-            )
     return {
         "path": str(path),
         "artifactPath": "dataset.jsonl",
@@ -2244,7 +1139,9 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
     evaluation_max_parallel = _evaluation_max_parallel(run)
     requested_evaluation_max_parallel = _requested_evaluation_max_parallel(run)
     evaluation_capacity = _capacity_snapshot(run).get("evaluatorCapacity") or {}
-    evaluation_capacity_reason = _capacity_snapshot(run).get("evaluationConcurrencyReason")
+    evaluation_capacity_reason = _capacity_snapshot(run).get(
+        "evaluationConcurrencyReason"
+    )
     job_deadline_seconds = _evaluation_deadline_seconds(
         instance_count=len(instance_ids),
         evaluation_max_parallel=evaluation_max_parallel,
@@ -2292,22 +1189,9 @@ def _ensure_evaluator_job(ctx, data: dict[str, Any]) -> dict[str, Any]:
                 value=json.dumps(instance_image_map, sort_keys=True),
             ),
             client.V1EnvVar(name="WORKFLOW_BUILDER_URL", value=WORKFLOW_BUILDER_URL),
-            client.V1EnvVar(
-                name="MLFLOW_ENABLED", value=os.environ.get("MLFLOW_ENABLED", "true")
-            ),
-            client.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_TRACKING_URI),
-            client.V1EnvVar(
-                name="MLFLOW_HTTP_REQUEST_TIMEOUT",
-                value=os.environ.get("MLFLOW_HTTP_REQUEST_TIMEOUT", "10"),
-            ),
-            client.V1EnvVar(
-                name="MLFLOW_RUN_ID", value=str(run.get("mlflowRunId") or "")
-            ),
             client.V1EnvVar(name="SWEBENCH_EVALUATOR_IMAGE", value=EVALUATOR_IMAGE),
-            client.V1EnvVar(name="SWEBENCH_EVALUATOR_TASK_IMAGE", value=EVALUATOR_IMAGE),
             client.V1EnvVar(
-                name="MLFLOW_INSTANCE_RUNS_JSON",
-                value=json.dumps(_mlflow_instance_run_map(run), sort_keys=True),
+                name="SWEBENCH_EVALUATOR_TASK_IMAGE", value=EVALUATOR_IMAGE
             ),
             *_child_otel_env(client, run["id"]),
             client.V1EnvVar(
@@ -2849,9 +1733,7 @@ def _preflight_workflow_id(run_id: str) -> str:
 
 def _registered_child_workflow_name(name: str) -> str:
     if name not in REGISTERED_COORDINATOR_WORKFLOWS:
-        raise RuntimeError(
-            f"unregistered SWE-bench child workflow target: {name}"
-        )
+        raise RuntimeError(f"unregistered SWE-bench child workflow target: {name}")
     return name
 
 
@@ -2901,7 +1783,12 @@ def _selected_run_instances(run: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         repo = instance.get("repo")
         base_commit = instance.get("baseCommit")
-        if not isinstance(repo, str) or not repo or not isinstance(base_commit, str) or not base_commit:
+        if (
+            not isinstance(repo, str)
+            or not repo
+            or not isinstance(base_commit, str)
+            or not base_commit
+        ):
             missing.append(str(instance_id))
             continue
         selected.append(
@@ -2954,7 +1841,11 @@ def _validated_environment(
         sandbox_image = (
             environment.get("sandboxImage") if isinstance(environment, dict) else None
         )
-        if isinstance(environment, dict) and isinstance(sandbox_image, str) and sandbox_image:
+        if (
+            isinstance(environment, dict)
+            and isinstance(sandbox_image, str)
+            and sandbox_image
+        ):
             return environment
         raise RuntimeError(
             f"SWE-bench preflight validated {instance_id} without a sandbox image"
@@ -3088,7 +1979,9 @@ def swebench_environment_preflight_workflow(
                 1,
                 min(
                     PREFLIGHT_POLL_SECONDS,
-                    int((preflight_deadline - ctx.current_utc_datetime).total_seconds()),
+                    int(
+                        (preflight_deadline - ctx.current_utc_datetime).total_seconds()
+                    ),
                 ),
             )
         yield ctx.create_timer(timedelta(seconds=wait_seconds))
@@ -3301,7 +2194,11 @@ def swebench_evaluation_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, An
                 )
                 if isinstance(timeout_result, dict):
                     return {**timeout_result, "deleteResult": delete_result}
-                return {"success": True, "timeout": timeout_result, "deleteResult": delete_result}
+                return {
+                    "success": True,
+                    "timeout": timeout_result,
+                    "deleteResult": delete_result,
+                }
 
             wait_seconds = max(
                 1,
@@ -3468,7 +2365,9 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                     )
                     if not admission.get("admitted"):
                         reason = admission.get("reason") or "admission_failed"
-                        if isinstance(reason, str) and reason.startswith("benchmark_run_"):
+                        if isinstance(reason, str) and reason.startswith(
+                            "benchmark_run_"
+                        ):
                             raise RuntimeError(
                                 f"SWE-bench run stopped before admitting {instance_id}: {reason}"
                             )
@@ -3532,7 +2431,8 @@ def swebench_run_workflow(ctx: wf.DaprWorkflowContext, data: dict[str, Any]):
                                 "instanceId": instance_id,
                                 "holderId": admission.get("holderId"),
                                 "phase": "inference",
-                                "reason": reason or "benchmark instance start retryable",
+                                "reason": reason
+                                or "benchmark instance start retryable",
                             },
                         )
                         continue
@@ -3815,7 +2715,9 @@ def cancel_benchmark_run(
     run_id: str, request: Request, body: CancelRunRequest = CancelRunRequest()
 ):
     _require_internal(request)
-    set_current_span_io("input", {"runId": run_id, "body": _dump_model(body) if body else {}})
+    set_current_span_io(
+        "input", {"runId": run_id, "body": _dump_model(body) if body else {}}
+    )
     run_instance_id = _run_workflow_id(run_id)
     preflight_instance_id = _preflight_workflow_id(run_id)
     evaluation_instance_id = _evaluator_workflow_id(run_id)

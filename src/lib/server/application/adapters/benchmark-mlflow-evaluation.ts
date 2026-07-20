@@ -5,17 +5,12 @@ import type {
 	BenchmarkMlflowEvaluationRecord,
 	BenchmarkMlflowEvaluationRepository,
 } from "$lib/server/application/benchmark-mlflow-evaluation";
-import { syncBenchmarkRunMlflow } from "$lib/server/application/adapters/benchmark-mlflow";
 
 type Database = typeof defaultDb;
 
 function requireDb(database: Database = defaultDb): NonNullable<Database> {
 	if (!database) throw new Error("Database not configured");
 	return database;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 export class PostgresBenchmarkMlflowEvaluationRepository
@@ -30,29 +25,15 @@ export class PostgresBenchmarkMlflowEvaluationRepository
 	}): Promise<BenchmarkMlflowEvaluationRecord | null> {
 		const database = requireDb(this.database);
 		const [run] = await database
-			.select({ summary: benchmarkRuns.summary })
+			.select({ id: benchmarkRuns.id })
 			.from(benchmarkRuns)
 			.where(eq(benchmarkRuns.id, input.runId))
 			.limit(1);
 		if (!run) return null;
-		const existingSummary = isRecord(run.summary) ? run.summary : {};
-		const mlflowEvaluation = isRecord(input.summary) ? input.summary : {};
-		await database
-			.update(benchmarkRuns)
-			.set({
-				summary: {
-					...existingSummary,
-					mlflowEvalRunId: input.mlflowEvalRunId,
-					mlflowEvaluation: {
-						...mlflowEvaluation,
-						mlflowEvalRunId: input.mlflowEvalRunId,
-					},
-				},
-				mlflowEvalRunId: input.mlflowEvalRunId,
-				updatedAt: new Date(),
-			})
-			.where(eq(benchmarkRuns.id, input.runId));
-		await syncBenchmarkRunMlflow(input.runId);
+		// Old coordinator histories may still POST this callback. Accept it after
+		// verifying the run, but do not create a second evaluation projection;
+		// native benchmark result rows and summaries are already authoritative.
+		void input.summary;
 		return { mlflowEvalRunId: input.mlflowEvalRunId };
 	}
 }

@@ -14,7 +14,6 @@ dependencies = [
     # apiserver, breaking evaluator-Job creation in _ensure_evaluator_job. 35.x
     # works against k8s 1.36 apiservers. Same fix as sandbox-execution-api (PR #20).
     "kubernetes>=31.0.0,<36",
-    "mlflow==3.10.1",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",

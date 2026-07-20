@@ -4,7 +4,6 @@ import importlib.util
 import json
 import sys
 import types
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -134,273 +133,6 @@ def test_otel_tracing_respects_sdk_disabled(monkeypatch):
     assert app._otel_ready is False
 
 
-def test_mlflow_trace_id_normalization(monkeypatch):
-    app = load_app(monkeypatch)
-
-    assert (
-        app._normalize_mlflow_trace_id("abcdefabcdefabcdefabcdefabcdefab")
-        == "tr-abcdefabcdefabcdefabcdefabcdefab"
-    )
-    assert (
-        app._normalize_mlflow_trace_id("tr-ABCDEFABCDEFABCDEFABCDEFABCDEFAB")
-        == "tr-abcdefabcdefabcdefabcdefabcdefab"
-    )
-    assert (
-        app._normalize_mlflow_trace_id(
-            "00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01"
-        )
-        == "tr-abcdefabcdefabcdefabcdefabcdefab"
-    )
-    assert app._normalize_mlflow_trace_id("0" * 32) is None
-
-
-def test_mlflow_eval_prefers_native_trace_search(monkeypatch):
-    app = load_app(monkeypatch)
-    searched: list[dict[str, object]] = []
-
-    class FakeFrame:
-        empty = False
-
-        def __len__(self):
-            return 1
-
-    class FakeEmptyFrame:
-        empty = True
-
-        def __len__(self):
-            return 0
-
-    class FakeMlflow:
-        def get_experiment_by_name(self, name):
-            assert name == "workflow-builder/ryzen/traces"
-            return types.SimpleNamespace(experiment_id="trace-exp-1")
-
-        def search_traces(self, *, locations, filter_string, include_spans=None):
-            assert locations == ["1", "trace-exp-1"]
-            assert include_spans is True
-            searched.append({"locations": locations, "filter": filter_string})
-            if "abcdefabcdefabcdefabcdefabcdefab" in filter_string:
-                return FakeFrame()
-            raise AssertionError("unexpected trace filter")
-
-    summary: dict[str, object] = {}
-    traces = app._search_mlflow_eval_traces(
-        FakeMlflow(),
-        "1",
-        {"id": "run_1", "mlflowTraceExperimentName": "workflow-builder/ryzen/traces"},
-        [
-            {
-                "outputs": {
-                    "mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab",
-                    "trace_ids": [],
-                },
-                "metadata": {"instance_id": "i1"},
-            }
-        ],
-        summary,
-    )
-
-    assert traces is not None
-    assert searched
-    assert all("tags." not in str(entry["filter"]) for entry in searched)
-    assert summary["nativeTraceIds"] == ["tr-abcdefabcdefabcdefabcdefabcdefab"]
-    assert summary["nativeTraceCount"] == 1
-
-
-def test_mlflow_eval_trace_search_falls_back_to_experiment_ids(monkeypatch):
-    app = load_app(monkeypatch)
-    calls: list[dict[str, object]] = []
-
-    class FakeFrame:
-        empty = False
-
-    class FakeMlflow:
-        def get_experiment_by_name(self, _name):
-            return None
-
-        def search_traces(self, **kwargs):
-            calls.append(kwargs)
-            if "locations" in kwargs:
-                raise TypeError("search_traces() got an unexpected keyword argument 'locations'")
-            assert kwargs["experiment_ids"] == ["parent-exp"]
-            assert kwargs["filter_string"] == "request_id = 'tr-abcdefabcdefabcdefabcdefabcdefab'"
-            assert kwargs["include_spans"] is True
-            return FakeFrame()
-
-    summary: dict[str, object] = {}
-    traces = app._search_mlflow_eval_traces(
-        FakeMlflow(),
-        "parent-exp",
-        {"id": "run_1"},
-        [
-            {
-                "outputs": {"mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab"},
-                "metadata": {"instance_id": "i1"},
-            }
-        ],
-        summary,
-    )
-
-    assert traces is not None
-    assert "locations" in calls[0]
-    assert "experiment_ids" in calls[1]
-
-
-def test_mlflow_eval_trace_row_lookup_restores_swebench_row(monkeypatch):
-    app = load_app(monkeypatch)
-    row = {
-        "outputs": {
-            "status": "resolved",
-            "evaluation_status": "resolved",
-            "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
-            "mlflow_trace_id": "tr-abcdefabcdefabcdefabcdefabcdefab",
-        },
-        "metadata": {"instance_id": "sympy__sympy-20590"},
-    }
-    lookup = app._mlflow_eval_trace_row_lookup([row])
-    summary: dict[str, object] = {}
-
-    trace = types.SimpleNamespace(
-        info=types.SimpleNamespace(request_id="tr-abcdefabcdefabcdefabcdefabcdefab")
-    )
-    resolved = app._mlflow_eval_row_for_trace(trace, lookup, summary)
-
-    assert resolved is row
-    assert app._row_scorer_values(resolved)["swebench_harness_resolved"] is True
-    assert app._row_scorer_values(resolved)["patch_present_and_well_formed"] is True
-
-
-def test_mlflow_eval_missing_trace_row_mapping_is_recorded(monkeypatch):
-    app = load_app(monkeypatch)
-    summary: dict[str, object] = {}
-
-    trace = {"request_id": "tr-deadbeefdeadbeefdeadbeefdeadbeef"}
-    resolved = app._mlflow_eval_row_for_trace(trace, {}, summary)
-
-    assert resolved is None
-    assert summary["missingNativeTraceRowIds"] == [
-        "tr-deadbeefdeadbeefdeadbeefdeadbeef"
-    ]
-    assert summary["missingNativeTraceRowCount"] == 1
-
-
-def test_mlflow_eval_proxy_trace_is_created_and_linked(monkeypatch):
-    app = load_app(monkeypatch)
-    source_trace_id = "tr-abcdefabcdefabcdefabcdefabcdefab"
-    proxy_trace_id = "tr-fedcbafedcbafedcbafedcbafedcbafe"
-    row = {
-        "inputs": {
-            "problem_statement": "Fix it",
-            "repo": "sympy/sympy",
-            "base_commit": "abc",
-        },
-        "outputs": {
-            "status": "resolved",
-            "evaluation_status": "resolved",
-            "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
-            "mlflow_trace_id": source_trace_id,
-        },
-        "metadata": {
-            "run_id": "run_1",
-            "run_instance_id": "ri_1",
-            "instance_id": "sympy__sympy-20590",
-            "mlflow_run_id": "child_run_1",
-        },
-    }
-    linked: list[tuple[tuple[str, ...], str]] = []
-    ended: list[str] = []
-
-    class FakeFrame:
-        empty = False
-
-        def __len__(self):
-            return 1
-
-    class FakeMlflow:
-        def flush_trace_async_logging(self):
-            pass
-
-        def search_traces(self, *, locations, filter_string, include_spans=None):
-            assert locations == ["8"]
-            assert filter_string == f"request_id = '{proxy_trace_id}'"
-            assert include_spans is True
-            return FakeFrame()
-
-    class FakeClient:
-        def start_trace(self, **kwargs):
-            assert kwargs["experiment_id"] == "8"
-            assert kwargs["tags"]["workflow_builder.source_mlflow_trace_id"] == source_trace_id
-            return types.SimpleNamespace(trace_id=proxy_trace_id)
-
-        def end_trace(self, trace_id, **_kwargs):
-            ended.append(trace_id)
-
-        def link_traces_to_run(self, *, trace_ids, run_id):
-            linked.append((tuple(trace_ids), run_id))
-
-    summary: dict[str, object] = {}
-    lookup = app._mlflow_eval_trace_row_lookup([row])
-
-    frame = app._mlflow_create_eval_trace_proxies(
-        FakeMlflow(),
-        FakeClient(),
-        "8",
-        "parent_run_1",
-        "eval_run_1",
-        [row],
-        lookup,
-        summary,
-    )
-
-    assert frame is not None
-    assert ended == [proxy_trace_id]
-    assert lookup[proxy_trace_id] is row
-    assert (tuple([proxy_trace_id]), "eval_run_1") in linked
-    assert (tuple([proxy_trace_id]), "parent_run_1") in linked
-    assert summary["evalProxyTraceIds"] == [proxy_trace_id]
-
-
-def test_mlflow_trace_link_uses_rest_fallback(monkeypatch):
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.test")
-    app = load_app(monkeypatch)
-    app.MLFLOW_TRACKING_URI = "http://mlflow.test"
-    posts: list[tuple[str, dict[str, object], int]] = []
-
-    class FakeResponse:
-        status_code = 200
-        text = "{}"
-
-    def fake_post(url, json=None, timeout=10):
-        posts.append((url, json, timeout))
-        return FakeResponse()
-
-    class FakeClient:
-        def link_traces_to_run(self, **_kwargs):
-            raise AttributeError("link_traces_to_run unavailable")
-
-    monkeypatch.setattr(app.requests, "post", fake_post, raising=False)
-    summary: dict[str, object] = {}
-
-    app._mlflow_link_traces_to_runs(
-        FakeClient(),
-        ["tr-abcdefabcdefabcdefabcdefabcdefab"],
-        ["run_1"],
-        summary,
-    )
-
-    assert posts == [
-        (
-            "http://mlflow.test/api/2.0/mlflow/traces/link-to-run",
-            {
-                "trace_ids": ["tr-abcdefabcdefabcdefabcdefabcdefab"],
-                "run_id": "run_1",
-            },
-            10,
-        )
-    ]
-    assert summary["linkedEvalTraceRunIds"] == ["run_1"]
-
-
 def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     app = load_app(monkeypatch)
     app.INTERNAL_API_TOKEN = "token"
@@ -420,7 +152,9 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
         "set_current_span_io",
         lambda prefix, value: stamped.append((prefix, value)),
     )
-    monkeypatch.setattr(app, "_delete_evaluator_job", lambda *_args, **_kwargs: {"success": True})
+    monkeypatch.setattr(
+        app, "_delete_evaluator_job", lambda *_args, **_kwargs: {"success": True}
+    )
     monkeypatch.setattr(
         app,
         "_mark_run_status",
@@ -434,12 +168,14 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     monkeypatch.setattr(
         app,
         "_retry_run_terminal_cleanup",
-        lambda _ctx, data: terminal_cleanups.append(data)
-        or {
-            "success": True,
-            "background": True,
-            "run": {"id": data["runId"], "status": "cancelled"},
-        },
+        lambda _ctx, data: (
+            terminal_cleanups.append(data)
+            or {
+                "success": True,
+                "background": True,
+                "run": {"id": data["runId"], "status": "cancelled"},
+            }
+        ),
     )
     monkeypatch.setattr(
         app,
@@ -461,8 +197,14 @@ def test_cancel_benchmark_run_terminates_child_instance_workflows(monkeypatch):
     terminated_ids = [item[0] for item in terminated]
     assert "swebench-run-run_1" in terminated_ids
     assert "swebench-eval-run_1" in terminated_ids
-    assert app._child_instance_workflow_id("run_1", "django__django-12754") in terminated_ids
-    assert app._child_instance_workflow_id("run_1", "django__django-12965") in terminated_ids
+    assert (
+        app._child_instance_workflow_id("run_1", "django__django-12754")
+        in terminated_ids
+    )
+    assert (
+        app._child_instance_workflow_id("run_1", "django__django-12965")
+        in terminated_ids
+    )
     assert result["childTermination"]["selectedInstanceCount"] == 2
     assert result["childTermination"]["workflowExecutionCount"] == 2
     assert result["childTermination"]["terminated"] == 2
@@ -770,15 +512,21 @@ def test_evaluation_workflow_deletes_job_after_terminal_progress(monkeypatch):
         "_run_mlflow_swebench_eval",
         {"runId": "run_1"},
     )
+    compatibility_result = {
+        "success": True,
+        "skipped": True,
+        "reason": "native-evaluation-results-authoritative",
+        "runId": "run_1",
+    }
     try:
-        workflow.send({"success": True, "mlflowEvalRunId": "eval_run_1"})
+        workflow.send(compatibility_result)
     except StopIteration as stop:
         assert stop.value == {
             "success": True,
             "jobName": "swebench-eval-run_1",
             "progress": terminal_progress,
             "deleteResult": {"success": True, "deleted": True},
-            "mlflowEvaluation": {"success": True, "mlflowEvalRunId": "eval_run_1"},
+            "mlflowEvaluation": compatibility_result,
         }
     else:
         raise AssertionError("expected evaluation workflow to complete")
@@ -932,7 +680,6 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc")
-    monkeypatch.setenv("MLFLOW_ENABLED", "false")
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
     requests = []
@@ -940,17 +687,19 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
     monkeypatch.setattr(
         app,
         "_bff_text",
-        lambda method, path, timeout=60: requests.append((method, path, timeout))
-        or '{"instance_id":"sympy__sympy-20590"}\n',
+        lambda method, path, timeout=60: (
+            requests.append((method, path, timeout))
+            or '{"instance_id":"sympy__sympy-20590"}\n'
+        ),
     )
     posted = {}
     monkeypatch.setattr(
         app,
         "_bff",
-        lambda method, path, json_body=None, timeout=60: posted.update(
-            {"method": method, "path": path, "json": json_body}
-        )
-        or {"success": True},
+        lambda method, path, json_body=None, timeout=60: (
+            posted.update({"method": method, "path": path, "json": json_body})
+            or {"success": True}
+        ),
     )
 
     result = app._write_evaluation_dataset(None, {"runId": "run_1"})
@@ -966,29 +715,16 @@ def test_write_evaluation_dataset_uses_bff_jsonl_and_records_artifact(
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "dataset.jsonl")}
 
 
-def test_write_jsonl_preview_artifact_creates_json_array(monkeypatch, tmp_path):
-    app = load_app(monkeypatch)
-    jsonl_path = tmp_path / "dataset.jsonl"
-    jsonl_path.write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
-
-    preview_path = app._write_jsonl_preview_artifact(jsonl_path)
-
-    assert preview_path == tmp_path / "dataset.preview.json"
-    assert json.loads(preview_path.read_text(encoding="utf-8")) == [{"a": 1}, {"b": 2}]
-
-
 def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("SWEBENCH_EVALUATOR_ARTIFACT_MODE", "pvc")
     app = load_app(monkeypatch)
     monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
-    monkeypatch.setattr(app, "_mlflow_log_artifact", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         app,
         "_load_run",
         lambda _run_id: {
             "id": "run_1",
             "modelNameOrPath": "agent-v1",
-            "mlflowRunId": "mlflow_1",
             "instances": [
                 {
                     "instanceId": "sympy__sympy-20590",
@@ -1007,10 +743,10 @@ def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tm
     monkeypatch.setattr(
         app,
         "_bff",
-        lambda method, path, json_body=None, timeout=60: posted.update(
-            {"method": method, "path": path, "json": json_body}
-        )
-        or {"success": True},
+        lambda method, path, json_body=None, timeout=60: (
+            posted.update({"method": method, "path": path, "json": json_body})
+            or {"success": True}
+        ),
     )
 
     result = app._write_predictions(None, {"runId": "run_1"})
@@ -1029,59 +765,6 @@ def test_write_predictions_keeps_only_official_prediction_fields(monkeypatch, tm
     assert posted["path"] == "/api/internal/benchmarks/runs/run_1/predictions-artifact"
     assert posted["json"] == {"path": str(tmp_path / "run_1" / "predictions.jsonl")}
     assert result["bytes"] > 0
-
-
-def test_mlflow_artifact_logging_has_hard_timeout(monkeypatch, tmp_path):
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.example")
-    monkeypatch.setenv("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "0.1")
-    app = load_app(monkeypatch)
-    artifact = tmp_path / "predictions.jsonl"
-    artifact.write_text("{}", encoding="utf-8")
-
-    def slow_upload(*_args, **_kwargs):
-        time.sleep(5)
-
-    monkeypatch.setattr(app, "_mlflow_log_artifact_sync", slow_upload)
-
-    started = time.monotonic()
-    app._mlflow_log_artifact("mlflow_run", artifact, "swebench")
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 1
-
-
-def test_sync_instance_does_not_wait_for_patch_artifact_upload(monkeypatch, tmp_path):
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow.example")
-    monkeypatch.setenv("MLFLOW_ARTIFACT_TIMEOUT_SECONDS", "5")
-    app = load_app(monkeypatch)
-    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
-    monkeypatch.setattr(
-        app,
-        "_bff_with_retry",
-        lambda *_args, **_kwargs: {
-            "instance": {
-                "instanceId": "sympy__sympy-20590",
-                "status": "inferred",
-                "mlflowRunId": "mlflow_1",
-                "modelPatch": "diff --git a/file.py b/file.py\n",
-            },
-        },
-    )
-
-    def slow_upload(*_args, **_kwargs):
-        time.sleep(2)
-
-    monkeypatch.setattr(app, "_mlflow_log_artifact_sync", slow_upload)
-
-    started = time.monotonic()
-    result = app._sync_instance(
-        None, {"runId": "run_1", "instanceId": "sympy__sympy-20590"}
-    )
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 1
-    assert result["instance"]["status"] == "inferred"
-    assert (tmp_path / "run_1" / "patches" / "sympy__sympy-20590.patch").exists()
 
 
 def test_load_run_activity_returns_compact_workflow_payload(monkeypatch):
@@ -1134,22 +817,8 @@ def test_load_run_activity_returns_compact_workflow_payload(monkeypatch):
     assert len(encoded) < 5_000
 
 
-def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_path):
+def test_sync_instance_returns_compact_native_payload(monkeypatch):
     app = load_app(monkeypatch)
-    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
-    logged = {}
-    monkeypatch.setattr(
-        app,
-        "_mlflow_log_text",
-        lambda run_id, text, file_path, artifact_path, **_kwargs: logged.update(
-            {
-                "runId": run_id,
-                "text": text,
-                "filePath": file_path,
-                "artifactPath": artifact_path,
-            }
-        ),
-    )
     monkeypatch.setattr(
         app,
         "_bff_with_retry",
@@ -1158,7 +827,6 @@ def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_p
             "instance": {
                 "instanceId": "sympy__sympy-20590",
                 "status": "inferred",
-                "mlflowRunId": "mlflow_1",
                 "modelPatch": "diff --git a/file.py b/file.py\n" + ("+" * 100_000),
                 "harnessResult": {"stdout": "x" * 100_000},
             },
@@ -1169,135 +837,10 @@ def test_sync_instance_logs_patch_but_returns_compact_payload(monkeypatch, tmp_p
         None, {"runId": "run_1", "instanceId": "sympy__sympy-20590"}
     )
 
-    assert logged["runId"] == "mlflow_1"
-    assert logged["artifactPath"] == "patches"
     assert result["instance"]["status"] == "inferred"
     assert "modelPatch" not in result["instance"]
     assert "harnessResult" not in result["instance"]
     assert len(json.dumps(result)) < 1_000
-
-
-def test_mlflow_eval_summary_scores_completed_rows(monkeypatch):
-    app = load_app(monkeypatch)
-
-    summary = app._summarize_mlflow_eval_rows(
-        [
-            {
-                "outputs": {
-                    "status": "resolved",
-                    "evaluation_status": "resolved",
-                    "model_patch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
-                    "trace_ids": ["trace_1"],
-                },
-                "metadata": {"instance_id": "sympy__sympy-20590"},
-            },
-            {
-                "outputs": {
-                    "status": "failed",
-                    "evaluation_status": "empty_patch",
-                    "model_patch": "",
-                    "trace_ids": [],
-                },
-                "metadata": {"instance_id": "django__django-1"},
-            },
-        ]
-    )
-
-    assert summary["rowCount"] == 2
-    assert summary["scorers"]["swebench_harness_resolved"]["passing"] == 1
-    assert summary["scorers"]["patch_present_and_well_formed"]["passing"] == 1
-    assert summary["scorers"]["trace_health"]["passing"] == 1
-
-
-def test_mlflow_benchmark_comparison_tags_are_queryable(monkeypatch):
-    app = load_app(monkeypatch)
-
-    assert app._mlflow_benchmark_comparison_tags(
-        {
-            "tags": [
-                "experiment-2026-05",
-                "mcp.ablation",
-                "baseline/control",
-                "EXPERIMENT-2026-05",
-            ]
-        }
-    ) == {
-        "workflow_builder.benchmark_tags": (
-            "experiment-2026-05,mcp.ablation,baseline/control"
-        ),
-        "workflow_builder.benchmark_tag.experiment-2026-05": "true",
-        "workflow_builder.benchmark_tag.mcp.ablation": "true",
-        "workflow_builder.benchmark_tag.baseline_control": "true",
-    }
-
-
-def test_run_mlflow_swebench_eval_persists_eval_projection(monkeypatch, tmp_path):
-    monkeypatch.setenv("MLFLOW_ENABLED", "true")
-    app = load_app(monkeypatch)
-    app.MLFLOW_TRACKING_URI = "http://mlflow.test"
-    monkeypatch.setattr(app, "ARTIFACT_ROOT", tmp_path)
-    monkeypatch.setattr(app, "_mlflow_log_artifact", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        app,
-        "_mlflow_genai_evaluate_sync",
-        lambda parent_run_id, run, rows, summary: "eval_run_1",
-    )
-    posted = {}
-    monkeypatch.setattr(
-        app,
-        "_bff_with_retry",
-        lambda method, path, json_body=None, **_kwargs: posted.update(
-            {"method": method, "path": path, "json": json_body}
-        )
-        or {"success": True},
-    )
-    monkeypatch.setattr(
-        app,
-        "_load_run",
-        lambda _run_id: {
-            "id": "run_1",
-            "suiteSlug": "SWE-bench_Verified",
-            "datasetName": "princeton-nlp/SWE-bench_Verified",
-            "agentId": "agent_1",
-            "agentVersion": 3,
-            "agentRuntimeAppId": "agent-runtime-agent-1",
-            "modelNameOrPath": "model",
-            "mlflowRunId": "parent_run_1",
-            "tags": ["experiment-2026-05", "baseline"],
-            "instances": [
-                {
-                    "id": "ri_1",
-                    "instanceId": "sympy__sympy-20590",
-                    "status": "resolved",
-                    "evaluationStatus": "resolved",
-                    "repo": "sympy/sympy",
-                    "baseCommit": "abc",
-                    "problemStatement": "Fix it",
-                    "testMetadata": {"FAIL_TO_PASS": ["test_a"]},
-                    "modelPatch": "diff --git a/sympy/core.py b/sympy/core.py\n+change\n",
-                    "traceIds": ["trace_1"],
-                    "mlflowRunId": "child_run_1",
-                }
-            ],
-        },
-    )
-
-    result = app._run_mlflow_swebench_eval(None, {"runId": "run_1"})
-
-    assert result["success"] is True
-    assert result["mlflowEvalRunId"] == "eval_run_1"
-    assert (tmp_path / "run_1" / "mlflow-eval-input.jsonl").exists()
-    assert (tmp_path / "run_1" / "mlflow-eval-summary.json").exists()
-    input_rows = [
-        json.loads(line)
-        for line in (tmp_path / "run_1" / "mlflow-eval-input.jsonl").read_text().splitlines()
-    ]
-    assert input_rows[0]["metadata"]["benchmark_tags"] == [
-        "experiment-2026-05",
-        "baseline",
-    ]
-    assert posted["path"] == "/api/internal/benchmarks/runs/run_1/mlflow-evaluation"
-    assert posted["json"]["mlflowEvalRunId"] == "eval_run_1"
 
 
 def test_load_evaluation_progress_does_not_return_full_run(monkeypatch):
@@ -1354,10 +897,12 @@ def test_mark_evaluation_timeout_only_marks_active_rows(monkeypatch):
     monkeypatch.setattr(
         app,
         "_bff",
-        lambda method, path, json_body=None, timeout=60: posted.update(
-            {"method": method, "path": path, "json": json_body, "timeout": timeout}
-        )
-        or {"success": True},
+        lambda method, path, json_body=None, timeout=60: (
+            posted.update(
+                {"method": method, "path": path, "json": json_body, "timeout": timeout}
+            )
+            or {"success": True}
+        ),
     )
 
     result = app._mark_evaluation_timeout(None, {"runId": "run_1", "jobName": "job-1"})
@@ -1739,7 +1284,11 @@ def test_run_workflow_releases_lease_when_start_skips_instance(monkeypatch):
         {"runId": "run_1", "instanceId": "django__django-12754"},
     )
     assert workflow.send(
-        {"success": True, "skipped": True, "reason": "benchmark_instance_start_superseded"}
+        {
+            "success": True,
+            "skipped": True,
+            "reason": "benchmark_instance_start_superseded",
+        }
     ) == (
         "activity",
         "_release_instance_leases",
@@ -1917,8 +1466,7 @@ def test_run_workflow_waits_on_openshell_sandbox_admission_before_child(monkeypa
         }
     ) == ("timer", 12)
     assert not any(
-        call[0] == "activity" and call[1] == "_start_instance"
-        for call in ctx.calls
+        call[0] == "activity" and call[1] == "_start_instance" for call in ctx.calls
     )
     assert workflow.send(None) == (
         "activity",
@@ -2241,7 +1789,11 @@ def test_evaluation_event_stamps_http_io(monkeypatch):
 def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):
     app = load_app(monkeypatch)
     stamped: list[tuple[str, object]] = []
-    monkeypatch.setattr(app, "set_current_span_io", lambda prefix, value: stamped.append((prefix, value)))
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
 
     def activity(_ctx, data):
         return {"ok": True, "token": "server-secret", "echo": data["command"]}
@@ -2263,7 +1815,11 @@ def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):
 def test_activity_wrapper_stamps_error_output(monkeypatch):
     app = load_app(monkeypatch)
     stamped: list[tuple[str, object]] = []
-    monkeypatch.setattr(app, "set_current_span_io", lambda prefix, value: stamped.append((prefix, value)))
+    monkeypatch.setattr(
+        app,
+        "set_current_span_io",
+        lambda prefix, value: stamped.append((prefix, value)),
+    )
 
     def activity(_ctx, _data):
         raise RuntimeError("failed")

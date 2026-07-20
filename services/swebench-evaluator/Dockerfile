@@ -16,7 +16,6 @@ RUN apt-get update \
 # apt/pip inside every prepare/finalize pod.
 RUN pip install --no-cache-dir \
 	"kubernetes>=29.0.0" \
-	mlflow==3.10.1 \
 	requests \
 	"${SWEBENCH_PACKAGE_REF}"
 

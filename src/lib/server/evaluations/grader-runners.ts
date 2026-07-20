@@ -37,11 +37,9 @@ export async function runGraderAsync(
 					return await runEndpointGrader(grader, context);
 				}
 				break;
+			case "llm_judge":
 			case "mlflow_judge":
-				// Phase 3c of plan research-the-most-popular-stateful-hinton.md.
-				// Dispatches to the orchestrator's /api/v2/observability/judge
-				// endpoint which wraps mlflow.genai.judges.llm_judge(...).
-				return await runMlflowJudgeGrader(grader, context);
+				return await runLlmJudgeGrader(grader, context);
 			default:
 				break;
 		}
@@ -437,14 +435,12 @@ async function runEndpointGrader(
 }
 
 /* -------------------------------------------------------------------------- */
-/* mlflow_judge — LLM-as-a-judge via mlflow.genai.judges.llm_judge            */
+/* llm_judge — provider-neutral LLM-as-a-judge                                */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Run a `mlflow_judge` grader. Phase 3c of plan
- * research-the-most-popular-stateful-hinton.md. Posts to the
- * orchestrator's /api/v2/observability/judge endpoint which calls
- * `mlflow.genai.judges.llm_judge(model=..., prompt=..., ...)`.
+ * Run an `llm_judge` grader through the provider-neutral orchestrator endpoint.
+ * `mlflow_judge` remains an accepted saved-definition alias.
  *
  * Expected grader.config:
  *   - model: str (e.g. "anthropic:claude-opus-4-7" or a route name)
@@ -452,14 +448,14 @@ async function runEndpointGrader(
  *     {{actual}} template variables resolved against context
  *   - passThreshold (optional, default 0.5): float
  */
-async function runMlflowJudgeGrader(
+async function runLlmJudgeGrader(
 	grader: GraderDefinition,
 	context: GraderContext,
 ): Promise<GraderResult> {
 	const model = String(grader.config.model ?? "").trim();
 	const promptTemplate = String(grader.config.prompt ?? "").trim();
-	if (!model) return skipped(grader, "mlflow_judge: missing config.model");
-	if (!promptTemplate) return skipped(grader, "mlflow_judge: missing config.prompt");
+	if (!model) return skipped(grader, "llm_judge: missing config.model");
+	if (!promptTemplate) return skipped(grader, "llm_judge: missing config.prompt");
 
 	const passThreshold =
 		typeof grader.passThreshold === "number"
@@ -484,7 +480,8 @@ async function runMlflowJudgeGrader(
 		name: grader.name,
 		metadata: {
 			grader_id: grader.id ?? null,
-			eval_grader_type: "mlflow_judge",
+			eval_grader_type: "llm_judge",
+			legacy_grader_type: grader.type === "mlflow_judge" ? grader.type : null,
 		},
 	};
 

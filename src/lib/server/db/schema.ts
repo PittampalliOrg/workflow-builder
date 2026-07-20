@@ -4273,6 +4273,7 @@ export type EvaluationGraderType =
   | "python"
   | "multi"
   | "external_harness"
+  | "llm_judge"
   | "mlflow_judge";
 
 export type EvaluationRunStatus =

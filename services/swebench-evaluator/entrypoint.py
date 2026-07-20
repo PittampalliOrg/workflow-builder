@@ -49,7 +49,9 @@ def main() -> int:
     )
     timeout_seconds = evaluation_timeout_seconds()
     max_parallel = evaluation_max_parallel()
-    requested_max_parallel = os.environ.get("SWEBENCH_EVAL_REQUESTED_MAX_PARALLEL", "").strip()
+    requested_max_parallel = os.environ.get(
+        "SWEBENCH_EVAL_REQUESTED_MAX_PARALLEL", ""
+    ).strip()
     capacity_reason = os.environ.get("SWEBENCH_EVAL_CAPACITY_REASON", "").strip()
     print(
         "[swebench-evaluator] concurrency "
@@ -125,17 +127,13 @@ def main() -> int:
             f"{fin_name}: {taskrun_failure_reason(fin_final[fin_name])}"
         )
     succeeded = not failure_messages
-    failure_message = "; ".join(failure_messages)[:500] if failure_messages else None
 
     # finalize already POSTed graded results to the BFF in the proper shape;
     # the dispatcher's collect_results would re-POST raw harness reports that
     # the BFF can't decode without a flatten step. Skip the dispatcher POST
-    # and only do MLflow logging here (which lives outside the TaskRun).
+    # because the BFF-native result rows are the authoritative evaluation output.
     if artifact_mode == "object":
         materialize_reports_from_bff(run_id, instance_ids, artifacts_root)
-    run_dir = artifacts_root / run_id
-    results = collect_results(run_dir, instance_ids)
-    log_mlflow_evaluation(run_id, results, log_dir, failure_message)
     return 0 if succeeded else 1
 
 
@@ -155,7 +153,7 @@ def _post_terminal_results(
         missing_report_error=error,
     )
     post_results(run_id, results, error=error)
-    log_mlflow_evaluation(run_id, results, log_dir, error)
+    _ = log_dir
     return 0 if succeeded else 1
 
 
@@ -205,7 +203,9 @@ def prepare_task(instance_ids: list[str]) -> int:
             preds_path = workspace_path
 
     if object_mode:
-        download_task_artifact(run_id, "predictions.jsonl", out_dir / "predictions.jsonl")
+        download_task_artifact(
+            run_id, "predictions.jsonl", out_dir / "predictions.jsonl"
+        )
         download_task_artifact(run_id, "dataset.jsonl", out_dir / "dataset.jsonl")
         preds_path = str(out_dir / "predictions.jsonl")
 
@@ -463,7 +463,9 @@ def finalize_task(instance_ids: list[str]) -> int:
         "total_instances": len(instance_ids),
         "submitted_instances": len(instance_ids),
         "completed_instances": sum(
-            1 for result in results if result.get("status") in {"resolved", "unresolved"}
+            1
+            for result in results
+            if result.get("status") in {"resolved", "unresolved"}
         ),
         "resolved_instances": summary["resolved"],
         "unresolved_instances": summary["unresolved"],
@@ -571,7 +573,9 @@ def write_instance_report(
     run_id: str, instance_id: str, inst_dir: pathlib.Path, report: dict[str, Any]
 ) -> None:
     report_path = inst_dir / "report.json"
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+    )
     upload_task_artifact(
         run_id,
         f"{instance_id}/report.json",
@@ -622,7 +626,9 @@ def terminal_harness_report(
     if report_path.exists():
         try:
             existing = json.loads(report_path.read_text(encoding="utf-8"))
-            inst_report = existing.get(instance_id) if isinstance(existing, dict) else None
+            inst_report = (
+                existing.get(instance_id) if isinstance(existing, dict) else None
+            )
             if not isinstance(inst_report, dict) and isinstance(existing, dict):
                 first = next(iter(existing.values()), None)
                 inst_report = first if isinstance(first, dict) else None
@@ -835,7 +841,9 @@ def artifact_api_headers(content_type: str | None = None) -> dict[str, str]:
     return headers
 
 
-def download_bff_artifact(run_id: str, artifact_path: str, destination: pathlib.Path) -> bool:
+def download_bff_artifact(
+    run_id: str, artifact_path: str, destination: pathlib.Path
+) -> bool:
     url = artifact_api_url(run_id, artifact_path)
     token = os.environ.get("INTERNAL_API_TOKEN", "")
     if not url or not token:
@@ -854,7 +862,9 @@ def materialize_reports_from_bff(
 ) -> None:
     run_dir = artifacts_root / run_id
     for iid in instance_ids:
-        download_bff_artifact(run_id, f"{iid}/report.json", run_dir / iid / "report.json")
+        download_bff_artifact(
+            run_id, f"{iid}/report.json", run_dir / iid / "report.json"
+        )
     download_bff_artifact(run_id, "run-report.json", run_dir / "run-report.json")
 
 
@@ -1020,8 +1030,12 @@ def taskrun_execution_spec() -> dict[str, Any]:
     ]
     pod_template: dict[str, Any] = {}
     if pull_secret_names:
-        pod_template["imagePullSecrets"] = [{"name": name} for name in pull_secret_names]
-    pod_priority_class = os.environ.get("SWEBENCH_TEKTON_POD_PRIORITY_CLASS", "").strip()
+        pod_template["imagePullSecrets"] = [
+            {"name": name} for name in pull_secret_names
+        ]
+    pod_priority_class = os.environ.get(
+        "SWEBENCH_TEKTON_POD_PRIORITY_CLASS", ""
+    ).strip()
     if pod_priority_class:
         pod_template["priorityClassName"] = pod_priority_class
     if pod_template:
@@ -1471,108 +1485,6 @@ def evaluation_timeout_seconds() -> int:
     return max(60, value)
 
 
-def mlflow_enabled() -> bool:
-    enabled = os.environ.get("MLFLOW_ENABLED", "").strip().lower()
-    if enabled in {"0", "false", "no", "off"}:
-        return False
-    return bool(os.environ.get("MLFLOW_TRACKING_URI", "").strip())
-
-
-def log_mlflow_evaluation(
-    run_id: str,
-    results: list[dict[str, Any]],
-    log_dir: pathlib.Path,
-    error: str | None,
-) -> None:
-    if not mlflow_enabled():
-        return
-    parent_run_id = os.environ.get("MLFLOW_RUN_ID", "").strip()
-    if not parent_run_id:
-        return
-    try:
-        import mlflow
-
-        mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"].strip())
-        with mlflow.start_run(run_id=parent_run_id):
-            mlflow.set_tag(
-                "workflow_builder.evaluator_job_name",
-                os.environ.get("SWEBENCH_EVALUATOR_JOB_NAME", ""),
-            )
-            mlflow.set_tag("workflow_builder.evaluator_error", error or "")
-            mlflow.log_metric("harness_result_count", len(results))
-            mlflow.log_metric(
-                "harness_resolved_count",
-                sum(1 for r in results if r.get("resolved") is True),
-            )
-            mlflow.log_metric(
-                "harness_unresolved_count",
-                sum(1 for r in results if r.get("status") in {"failed", "unresolved"}),
-            )
-            mlflow.log_metric(
-                "harness_empty_patch_count",
-                sum(1 for r in results if r.get("status") == "empty_patch"),
-            )
-            mlflow.log_metric(
-                "harness_error_count",
-                sum(1 for r in results if r.get("status") == "error"),
-            )
-            mlflow.log_metric(
-                "harness_timeout_count",
-                sum(1 for r in results if r.get("status") == "timeout"),
-            )
-            for artifact in sorted(log_dir.rglob("*.json")):
-                mlflow.log_artifact(str(artifact), artifact_path="harness/results")
-        instance_runs = mlflow_instance_run_map()
-        for result in results:
-            instance_id = result.get("instance_id") or result.get("instanceId")
-            if not isinstance(instance_id, str):
-                continue
-            instance_run_id = instance_runs.get(instance_id)
-            if not instance_run_id:
-                continue
-            with mlflow.start_run(run_id=instance_run_id):
-                status = str(result.get("status") or "")
-                mlflow.set_tag("swebench.evaluation_status", status)
-                mlflow.set_tag(
-                    "workflow_builder.logs_path", result.get("logs_path") or ""
-                )
-                mlflow.set_tag(
-                    "workflow_builder.evaluation_error", result.get("error") or ""
-                )
-                mlflow.log_metric(
-                    "swebench_resolved", 1 if result.get("resolved") is True else 0
-                )
-                mlflow.log_metric(
-                    "swebench_empty_patch", 1 if status == "empty_patch" else 0
-                )
-                mlflow.log_metric("swebench_timeout", 1 if status == "timeout" else 0)
-                mlflow.log_metric("swebench_error", 1 if status == "error" else 0)
-                harness_result = result.get("harness_result") or result.get(
-                    "harnessResult"
-                )
-                if isinstance(harness_result, dict):
-                    mlflow.log_dict(harness_result, "harness/result.json")
-    except Exception as exc:
-        print(f"[mlflow] best-effort evaluation logging failed: {exc}", file=sys.stderr)
-
-
-def mlflow_instance_run_map() -> dict[str, str]:
-    raw = os.environ.get("MLFLOW_INSTANCE_RUNS_JSON", "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {
-        str(key): value
-        for key, value in parsed.items()
-        if isinstance(value, str) and value
-    }
-
-
 def post_results(
     run_id: str, results: list[dict[str, Any]], error: str | None = None
 ) -> None:
@@ -1586,7 +1498,9 @@ def post_results(
         body["jobName"] = job_name
     if error:
         body["error"] = error
-    attempts = bounded_int_env("SWEBENCH_BFF_MAX_RETRIES", default=6, minimum=1, maximum=20)
+    attempts = bounded_int_env(
+        "SWEBENCH_BFF_MAX_RETRIES", default=6, minimum=1, maximum=20
+    )
     delay_seconds = bounded_float_env(
         "SWEBENCH_BFF_RETRY_DELAY_SECONDS", default=10.0, minimum=0.1, maximum=120.0
     )

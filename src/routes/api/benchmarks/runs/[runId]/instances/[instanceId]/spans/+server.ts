@@ -2,8 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 
-// MLflow-first span drilldown for the run-instance drawer. ClickHouse remains
-// the repair/source fallback when the per-instance artifact is missing.
+// ClickHouse-backed span drilldown for the run-instance drawer.
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.session?.userId) return error(401, "Authentication required");
 	if (!locals.session.projectId) return error(404, "Run not found");

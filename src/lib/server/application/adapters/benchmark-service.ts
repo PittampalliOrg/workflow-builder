@@ -131,17 +131,6 @@ import {
 } from "$lib/server/benchmarks/inference-environments";
 import { buildStableWorkspaceRef } from "$lib/server/benchmarks/workspace-ref";
 import {
-	ensureBenchmarkInstanceMlflowRun,
-	ensureBenchmarkMlflowRun,
-	publicMlflowRunUrl,
-	syncBenchmarkInstanceMlflow,
-	syncBenchmarkRunMlflow,
-} from "$lib/server/application/adapters/benchmark-mlflow";
-import {
-	logBenchmarkTraceSummaryArtifact,
-	materializeSwebenchTraceBundle,
-} from "$lib/server/application/adapters/benchmark-trace-bundle";
-import {
 	releaseBenchmarkResourceLeases,
 	releaseBenchmarkResourceLeasesForRun,
 } from "$lib/server/application/adapters/benchmark-resource-leases";
@@ -240,45 +229,6 @@ export function benchmarkLaunchPreflightError(params: {
 		return "SWE-bench Kueue preflight blocked launch because no schedulable sandbox worker capacity is available; check ResourceFlavor node labels and worker readiness";
 	}
 	return null;
-}
-
-function ensureBenchmarkInstanceMlflowRunInBackground(params: {
-	runId: string;
-	instanceId: string;
-}): void {
-	void ensureBenchmarkInstanceMlflowRun(params).catch((err) => {
-		console.warn(
-			`[mlflow] failed to create benchmark instance MLflow run ${params.runId}/${params.instanceId}:`,
-			err instanceof Error ? err.message : err,
-		);
-	});
-}
-
-async function syncBenchmarkInstanceMlflowAndTraceBundle(params: {
-	runId: string;
-	instanceId: string;
-}): Promise<void> {
-	await syncBenchmarkInstanceMlflow(params);
-	try {
-		await materializeSwebenchTraceBundle(params);
-	} catch (err) {
-		console.warn(
-			`[trace-bundle] failed to materialize ${params.runId}/${params.instanceId}:`,
-			err instanceof Error ? err.message : err,
-		);
-	}
-}
-
-function syncBenchmarkInstanceMlflowAndTraceBundleInBackground(params: {
-	runId: string;
-	instanceId: string;
-}): void {
-	void syncBenchmarkInstanceMlflowAndTraceBundle(params).catch((err) => {
-		console.warn(
-			`[trace-bundle] background materialize failed ${params.runId}/${params.instanceId}:`,
-			err instanceof Error ? err.message : err,
-		);
-	});
 }
 
 const DURABLE_RUNTIME_MISSING_STATUS = "__missing__";
@@ -1414,7 +1364,6 @@ export async function createBenchmarkRun(input: CreateBenchmarkRunInput) {
 		return run;
 	});
 
-	await ensureBenchmarkMlflowRun(created.id);
 	return created;
 }
 
@@ -1511,10 +1460,7 @@ export async function getBenchmarkRun(projectId: string, runId: string) {
 				mlflowTraceId: runInstance.mlflowTraceId,
 				mlflowDatasetId: runInstance.mlflowDatasetId,
 				mlflowDatasetRecordId: runInstance.mlflowDatasetRecordId,
-				mlflowUrl: publicMlflowRunUrl(
-					row.run.mlflowExperimentId,
-					runInstance.mlflowRunId,
-				),
+				mlflowUrl: null,
 				sandboxName: runInstance.sandboxName,
 				workspaceRef: runInstance.workspaceRef,
 				traceIds: runInstance.traceIds,
@@ -1712,8 +1658,6 @@ function scheduleCompletedBenchmarkRunPostprocessing(params: {
 			);
 		}
 		await recomputeRunSummary(params.runId);
-		await syncBenchmarkRunMlflow(params.runId, { terminate: true });
-		await logBenchmarkTraceSummaryArtifact(params.runId);
 	})();
 	if (params.mode !== "background") return task;
 	void task.catch((err) => {
@@ -1906,14 +1850,6 @@ export async function markBenchmarkRunStatus(
 					] satisfies BenchmarkRunInstanceStatus[]),
 				),
 			);
-	}
-	if (updated && !(status === "completed" && options.terminalCleanup === "background")) {
-		await syncBenchmarkRunMlflow(runId, {
-			terminate: status === "completed" || status === "failed" || status === "cancelled",
-		});
-		if (status === "completed" || status === "failed" || status === "cancelled") {
-			await logBenchmarkTraceSummaryArtifact(runId);
-		}
 	}
 	return updated ?? null;
 }
@@ -3731,11 +3667,6 @@ export async function recomputeRunSummary(runId: string) {
 		);
 	}
 
-	await syncBenchmarkRunMlflow(runId);
-	if (run[0]?.status && BENCHMARK_RUN_TERMINAL_STATUSES.has(run[0].status)) {
-		await logBenchmarkTraceSummaryArtifact(runId);
-	}
-
 	return summary;
 }
 
@@ -3978,7 +3909,6 @@ export async function startBenchmarkInstanceWorkflow(params: {
 	if (dispatchBackend !== "host") {
 		await assertBenchmarkOrchestratorReady();
 	}
-	ensureBenchmarkInstanceMlflowRunInBackground(params);
 	const executionIr = scriptBuild
 		? {
 				engine: "dynamic-script" as const,
@@ -4984,12 +4914,6 @@ export async function syncBenchmarkInstanceFromExecution(params: {
 		}
 	}
 	await recomputeRunSummary(params.runId);
-	if (updated) {
-		syncBenchmarkInstanceMlflowAndTraceBundleInBackground({
-			runId: params.runId,
-			instanceId: params.instanceId,
-		});
-	}
 	return updated ?? null;
 }
 
@@ -5253,12 +5177,6 @@ async function timeoutBenchmarkInstanceIfStalled(
 		});
 	}
 	await recomputeRunSummary(runInstance.runId);
-	if (updated) {
-		await syncBenchmarkInstanceMlflowAndTraceBundle({
-			runId: runInstance.runId,
-			instanceId: runInstance.instanceId,
-		});
-	}
 	return updated ?? null;
 }
 
@@ -5588,12 +5506,6 @@ export async function markBenchmarkInstanceInferenceFailure(params: {
 		});
 	}
 	await recomputeRunSummary(params.runId);
-	if (updated) {
-		syncBenchmarkInstanceMlflowAndTraceBundleInBackground({
-			runId: params.runId,
-			instanceId: params.instanceId,
-		});
-	}
 	return updated ?? null;
 }
 
@@ -5664,10 +5576,6 @@ export async function terminateBenchmarkRunInstance(params: {
 		reason,
 	});
 	await recomputeRunSummary(params.runId);
-	await syncBenchmarkInstanceMlflowAndTraceBundle({
-		runId: params.runId,
-		instanceId: params.instanceId,
-	});
 	return {
 		instance: updated,
 		cleanupConfirmed: true,
@@ -5695,7 +5603,6 @@ export async function upsertPredictionsArtifact(
 		.update(benchmarkRuns)
 		.set({ predictionsPath, updatedAt: new Date() })
 		.where(eq(benchmarkRuns.id, runId));
-	await syncBenchmarkRunMlflow(runId);
 }
 
 export async function buildSwebenchDatasetJsonlForRunById(runId: string): Promise<string> {
@@ -5718,7 +5625,6 @@ export async function upsertEvaluationDatasetArtifact(
 		sha256: sha256(jsonl),
 		metadata: { source: "workflow-builder-db" },
 	});
-	await syncBenchmarkRunMlflow(runId);
 }
 
 async function buildPredictionsJsonlForRunById(runId: string): Promise<string> {
@@ -6812,8 +6718,8 @@ function serializeRunSummary(row: {
 		mlflowRunId: row.run.mlflowRunId,
 		mlflowDatasetId: row.run.mlflowDatasetId,
 		mlflowEvalRunId: row.run.mlflowEvalRunId,
-		mlflowTraceExperimentName: env.MLFLOW_TRACE_EXPERIMENT_NAME ?? null,
-		mlflowUrl: publicMlflowRunUrl(row.run.mlflowExperimentId, row.run.mlflowRunId),
+		mlflowTraceExperimentName: null,
+		mlflowUrl: null,
 		summary: row.run.summary,
 		tags: Array.isArray(row.run.tags) ? row.run.tags : [],
 		error: row.run.error,

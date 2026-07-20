@@ -68,7 +68,7 @@ import {
 import { KubernetesAgentRuntimeWarmPoolClient } from "$lib/server/application/adapters/agent-runtime-control";
 import {
   DaprBenchmarkEvaluationEventNotifier,
-  LegacyBenchmarkEvaluationTelemetryAdapter,
+  NativeBenchmarkEvaluationTelemetryAdapter,
   LegacyBenchmarkRunLifecycleAdapter,
 } from "$lib/server/application/adapters/benchmark-evaluation-results";
 import {
@@ -2780,7 +2780,7 @@ export function getApplicationAdapters(
       benchmarkEvaluationResults: getBenchmarkEvaluationResults(),
       benchmarkRunLifecycle: new LegacyBenchmarkRunLifecycleAdapter(),
       benchmarkEvaluationTelemetry:
-        new LegacyBenchmarkEvaluationTelemetryAdapter(),
+        new NativeBenchmarkEvaluationTelemetryAdapter(),
       benchmarkEvaluationEvents: new DaprBenchmarkEvaluationEventNotifier(),
       benchmarkBrowser: getBenchmarkBrowser(),
       benchmarkDatasetPromotions: getBenchmarkDatasetPromotions(),
