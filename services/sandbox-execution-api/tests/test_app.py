@@ -542,6 +542,7 @@ def test_agent_workflow_host_sandbox_stamps_traceparent_via_downward_api() -> No
     env_by_name = {e["name"]: e for e in container["env"]}
     assert "WORKFLOW_BUILDER_TRACEPARENT" in env_by_name
     assert "WORKFLOW_BUILDER_BAGGAGE" in env_by_name
+    assert "MLFLOW_TRACE_EXPERIMENT_ID" not in env_by_name
     field_ref = env_by_name["WORKFLOW_BUILDER_TRACEPARENT"]["valueFrom"]["fieldRef"]
     assert field_ref["fieldPath"] == (
         "metadata.annotations['workflow-builder.cnoe.io/traceparent']"

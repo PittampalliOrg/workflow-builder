@@ -135,9 +135,9 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
 def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     attrs: dict[str, Any] = dict(get_telemetry_attributes())
     attrs["span.type"] = span_type
-    attrs["mlflow.spanType"] = {
+    attrs["openinference.span.kind"] = {
         "interaction": "AGENT",
-        "llm_request": "CHAT_MODEL",
+        "llm_request": "LLM",
         "tool": "TOOL",
         "tool.blocked_on_user": "TOOL",
         "tool.execution": "TOOL",
@@ -154,6 +154,7 @@ def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[st
 # ---------------------------------------------------------------------------
 # interaction
 # ---------------------------------------------------------------------------
+
 
 def start_interaction_span(user_prompt: str) -> Any:
     """Start `claude_code.interaction`, the root user-turn span.
@@ -180,13 +181,6 @@ def start_interaction_span(user_prompt: str) -> Any:
 
     span = tracer.start_span("claude_code.interaction", attributes=attrs)
     beta.add_interaction_attributes(span, user_prompt)
-
-    # Promote curated attributes to MLflow trace tags so search filters
-    # like `tag.session.id = '...'` work. Phase 1 of plan
-    # research-the-most-popular-stateful-hinton.md. Best-effort: silent
-    # no-op when mlflow isn't initialised.
-    from .dapr_attributes import set_mlflow_trace_tags, trace_tags_from_attrs
-    set_mlflow_trace_tags(trace_tags_from_attrs(attrs))
 
     handle = _SpanHandle(
         span=span,
@@ -217,13 +211,7 @@ def end_interaction_span() -> None:
 
 
 def current_interaction_span() -> Any:
-    """Return the active `claude_code.interaction` OTel span, or None.
-
-    Used by Phase 2b cleanup: when `mlflow.anthropic.autolog()` covers
-    the LLM call's own span, prompt-cache breadcrumbs that used to ride
-    on `claude_code.llm_request` migrate UP to the per-turn interaction
-    span (whose lifetime spans the entire turn including retries).
-    """
+    """Return the active `claude_code.interaction` OTel span, or None."""
     handle = _interaction_ctx.get()
     if handle is None or handle.ended:
         return None
@@ -233,6 +221,7 @@ def current_interaction_span() -> Any:
 # ---------------------------------------------------------------------------
 # llm_request
 # ---------------------------------------------------------------------------
+
 
 def start_llm_request_span(
     model: str,
@@ -256,7 +245,9 @@ def start_llm_request_span(
         "llm_request",
         {
             "model": model,
-            "llm_request.context": "interaction" if interaction_handle else "standalone",
+            "llm_request.context": "interaction"
+            if interaction_handle
+            else "standalone",
             "speed": "fast" if fast_mode else "normal",
         },
     )
@@ -354,6 +345,7 @@ def end_llm_request_span(
 # tool + tool.execution + tool.blocked_on_user
 # ---------------------------------------------------------------------------
 
+
 def start_tool_span(
     tool_name: str,
     *,
@@ -377,9 +369,7 @@ def start_tool_span(
         if interaction_handle is not None
         else otel_context.get_current()
     )
-    span = tracer.start_span(
-        "claude_code.tool", attributes=attrs, context=parent_ctx
-    )
+    span = tracer.start_span("claude_code.tool", attributes=attrs, context=parent_ctx)
     if tool_input:
         beta.add_tool_input_attributes(span, tool_name, tool_input)
 
@@ -524,7 +514,7 @@ def end_tool_execution_span(
         # Truncate to keep span attribute size bounded — same convention as
         # system_prompt_preview (500 chars). Larger payloads can still be
         # reconstructed from the underlying tool result; this is the at-a-
-        # glance preview surfaced in MLflow Traces / Phoenix.
+        # glance preview surfaced in trace inspection tools.
         end_attrs["tool_output_preview"] = tool_output[:8000]
         end_attrs["tool_output_length"] = len(tool_output)
     try:
@@ -539,6 +529,7 @@ def end_tool_execution_span(
 # ---------------------------------------------------------------------------
 # hook (beta only, like TS)
 # ---------------------------------------------------------------------------
+
 
 def start_hook_span(
     hook_event: str,
@@ -570,9 +561,7 @@ def start_hook_span(
         if parent_handle is not None
         else otel_context.get_current()
     )
-    span = tracer.start_span(
-        "claude_code.hook", attributes=attrs, context=parent_ctx
-    )
+    span = tracer.start_span("claude_code.hook", attributes=attrs, context=parent_ctx)
     handle = _SpanHandle(
         span=span,
         start_time_ns=time.time_ns(),

@@ -25,9 +25,8 @@ from __future__ import annotations
 # --- OTEL bootstrap MUST be first import work --------------------------------
 # Mirrors `services/dapr-agent-py/src/main.py:59` — the providers module
 # attaches the inbound trace context from `WORKFLOW_BUILDER_TRACEPARENT` env,
-# wires MLflow as a secondary span destination, and installs the OTLP
-# exporters. Subsequent imports (Diagrid, ADK, MCP) emit spans against this
-# provider automatically.
+# and installs the OTLP exporters. Subsequent imports (Diagrid, ADK, MCP) emit
+# spans against this provider automatically.
 from src.telemetry import init_telemetry
 
 init_telemetry()

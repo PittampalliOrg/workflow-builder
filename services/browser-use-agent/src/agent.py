@@ -9,7 +9,7 @@ framework does not ship: the ``session_workflow`` wrapper the orchestrator's
 This is a deliberately minimal port of dapr-agent-py's session_workflow —
 same input shape, same ``session.status_*`` event vocabulary, same
 ``autoTerminateAfterEndTurn`` one-shot semantics, same terminal-control-event
-handling — without the OpenShell/MLflow/instruction-bundle/compaction layers
+handling without the OpenShell/instruction-bundle/compaction layers
 that don't apply to a browser agent (those arrive with later phases if
 needed).
 """

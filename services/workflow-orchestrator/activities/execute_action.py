@@ -221,7 +221,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "action.type": action_type,
     }
 
-    # Mirror onto the durabletask outer span so MLflow / ClickHouse can
+    # Mirror onto the durabletask outer span so ClickHouse and trace tooling can
     # filter by workflow.id / action.type / node.id without parsing the
     # inner `activity.execute_action` manual span. Also adds richer
     # function-router routing context for debugging.

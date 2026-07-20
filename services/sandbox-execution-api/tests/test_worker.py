@@ -152,6 +152,24 @@ def test_workflow_start_stagger_is_deterministic(monkeypatch) -> None:
     assert 0 <= first <= 120
 
 
+def test_workflow_baggage_ignores_retired_mlflow_context() -> None:
+    baggage = worker._workflow_baggage(
+        {
+            "workflowExecutionId": "exec_1",
+            "workflowId": "workflow_1",
+            "mlflowContext": {
+                "experimentId": "experiment_1",
+                "runId": "run_1",
+                "parentRunId": "parent_1",
+            },
+        }
+    )
+
+    assert "mlflow" not in baggage.lower()
+    assert "workflow.execution.id=exec_1" in baggage
+    assert "workflow.id=workflow_1" in baggage
+
+
 def test_run_applies_workflow_start_stagger_before_start(monkeypatch, tmp_path) -> None:
     payload = {
         "executionId": "hexec_1",
