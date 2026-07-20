@@ -711,8 +711,9 @@ def test_manifests_are_constant_derived_owned_and_digest_pinned() -> None:
     )
     for name in canonical_identity_names:
         assert f"- name: {name}\n" not in workflow_builder_patch
-        assert f"- name: {name}\n" in sandbox_execution_api_patch
-    assert "valueFrom: null" not in workflow_builder_patch
+        assert f"- name: {name}\n" not in sandbox_execution_api_patch
+    for runtime_patch in (workflow_builder_patch, sandbox_execution_api_patch):
+        assert "valueFrom: null" not in runtime_patch
     assert (
         '- name: PREVIEW_HOST_RUNTIMES_DISABLED\n              value: "true"'
         in workflow_builder_patch
