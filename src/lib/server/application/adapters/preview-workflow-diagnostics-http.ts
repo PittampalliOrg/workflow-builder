@@ -17,11 +17,13 @@ import {
 	localPreviewControlIdentity
 } from '$lib/server/preview-control-capability';
 import { PreviewRuntimeIdentityChangedError } from '$lib/server/application/ports';
+import { WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS } from '$lib/server/application/ports/workflow-diagnostics';
 import { buildRunDigest } from '$lib/server/observability/run-digest';
 import type {
 	ObservabilityExecutionEvidence,
 	ObservabilityLlmSpan,
 	ObservabilityLogEntry,
+	ObservabilityToolSpan,
 	ObservabilityTraceSpan
 } from '$lib/types/observability';
 
@@ -434,5 +436,49 @@ export class HttpPreviewWorkflowDiagnosticsReadAdapter implements WorkflowDiagno
 			throw new PreviewWorkflowDiagnosticsTransportError('preview diagnostics logs are invalid');
 		}
 		return result as ObservabilityLogEntry[];
+	}
+
+	// The two methods below COMPOSE existing preview-control-plane ops instead
+	// of adding new wire operations — already-provisioned previews keep working
+	// without a control-plane upgrade.
+
+	async loadSpanSummaries(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		limit: number
+	): Promise<{ spans: ObservabilityTraceSpan[]; truncated: boolean }> {
+		const spans = await this.searchSpans(execution, traceIds, {
+			limit,
+			offset: 0
+		});
+		return { spans, truncated: spans.length >= limit };
+	}
+
+	async searchToolSpans(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		query: Parameters<WorkflowDiagnosticsReadPort['searchToolSpans']>[2]
+	): Promise<ObservabilityToolSpan[]> {
+		const evidence = await this.loadInvestigationEvidence(execution, {
+			categories: ['toolSpans'],
+			serviceNames: [],
+			limits: {
+				spans: 1,
+				logs: 1,
+				llmSpans: 1,
+				toolSpans: WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS.toolSpans
+			}
+		});
+		const spanId = query.spanId?.trim();
+		const sessionId = query.sessionId?.trim();
+		const toolName = query.toolName?.trim();
+		const filtered = evidence.toolSpans.filter(
+			(call) =>
+				(!spanId || call.spanId === spanId) &&
+				(!sessionId || call.sessionId === sessionId) &&
+				(!toolName || call.toolName === toolName) &&
+				(!query.errorsOnly || call.statusCode === 'Error')
+		);
+		return filtered.slice(query.offset, query.offset + query.limit);
 	}
 }
