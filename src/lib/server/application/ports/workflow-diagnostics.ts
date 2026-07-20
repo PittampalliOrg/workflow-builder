@@ -1,5 +1,8 @@
 import type { WorkflowExecutionRecord } from './executions';
 import type {
+	ObservabilityExecutionEvidence,
+	ObservabilityExecutionEvidenceCategory,
+	ObservabilityExecutionEvidenceLimits,
 	ObservabilityLlmSpan,
 	ObservabilityLogEntry,
 	ObservabilityTraceSpan
@@ -49,10 +52,43 @@ export type WorkflowDiagnosticsTraceResolution = {
 	warnings: string[];
 };
 
+export type WorkflowDiagnosticsEvidenceRequest = Readonly<{
+	categories: ObservabilityExecutionEvidenceCategory[];
+	serviceNames: string[];
+	limits: ObservabilityExecutionEvidenceLimits;
+}>;
+
+export type WorkflowDiagnosticsEvidenceRequestInput = Readonly<{
+	categories?: ObservabilityExecutionEvidenceCategory[];
+	serviceNames?: string[];
+	limits?: Partial<ObservabilityExecutionEvidenceLimits>;
+}>;
+
+export const WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES = [
+	'spans',
+	'logs',
+	'llmSpans',
+	'toolSpans'
+] as const satisfies readonly ObservabilityExecutionEvidenceCategory[];
+
+export const WORKFLOW_DIAGNOSTICS_DEFAULT_EVIDENCE_LIMITS = Object.freeze({
+	spans: 200,
+	logs: 200,
+	llmSpans: 50,
+	toolSpans: 200
+}) satisfies ObservabilityExecutionEvidenceLimits;
+
+export const WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS =
+	WORKFLOW_DIAGNOSTICS_DEFAULT_EVIDENCE_LIMITS;
+
 /** Outbound telemetry boundary used by execution-scoped diagnostic queries. */
 export interface WorkflowDiagnosticsReadPort {
 	isConfigured(): boolean;
 	loadDigest(execution: WorkflowDiagnosticsExecution): Promise<WorkflowDiagnosticsDigestRead>;
+	loadInvestigationEvidence(
+		execution: WorkflowDiagnosticsExecution,
+		request: WorkflowDiagnosticsEvidenceRequest
+	): Promise<ObservabilityExecutionEvidence>;
 	resolveTraceIds(
 		execution: WorkflowDiagnosticsExecution
 	): Promise<WorkflowDiagnosticsTraceResolution>;

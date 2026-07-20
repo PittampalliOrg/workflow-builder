@@ -8,6 +8,11 @@ import type {
 	PreviewWorkflowDiagnosticsWorkspaceAuthorizationPort,
 	WorkflowDiagnosticsExecution
 } from '$lib/server/application/ports';
+import {
+	WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES,
+	WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS
+} from '$lib/server/application/ports/workflow-diagnostics';
+import type { ObservabilityExecutionEvidenceCategory } from '$lib/types/observability';
 import { validatePreviewControlIdentity } from '$lib/server/application/preview-control-identity';
 
 export type PreviewWorkflowDiagnosticsErrorCode =
@@ -98,6 +103,66 @@ function traceIds(value: unknown): string[] {
 	return sanitized;
 }
 
+function evidenceCategories(value: unknown): ObservabilityExecutionEvidenceCategory[] {
+	if (!Array.isArray(value) || value.length > WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES.length) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'evidence categories are invalid');
+	}
+	const allowed = new Set<string>(WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES);
+	if (value.some((category) => typeof category !== 'string' || !allowed.has(category))) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'evidence categories are invalid');
+	}
+	const categories = [...new Set(value)] as ObservabilityExecutionEvidenceCategory[];
+	if (categories.length !== value.length) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'evidence categories are invalid');
+	}
+	return categories;
+}
+
+function evidenceServiceNames(value: unknown): string[] {
+	if (!Array.isArray(value) || value.length > 20) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'serviceNames are invalid');
+	}
+	const names = value.map((name) => optionalText(name, 'serviceName', 160));
+	if (names.some((name) => !name) || new Set(names).size !== names.length) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'serviceNames are invalid');
+	}
+	return names as string[];
+}
+
+function evidenceLimits(value: unknown) {
+	const limits = record(value);
+	exactKeys(limits, WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES);
+	if (Object.keys(limits).length !== WORKFLOW_DIAGNOSTICS_EVIDENCE_CATEGORIES.length) {
+		throw new PreviewWorkflowDiagnosticsError('invalid-request', 'evidence limits are invalid');
+	}
+	return {
+		spans: integer(
+			limits.spans,
+			'span evidence limit',
+			1,
+			WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS.spans
+		),
+		logs: integer(
+			limits.logs,
+			'log evidence limit',
+			1,
+			WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS.logs
+		),
+		llmSpans: integer(
+			limits.llmSpans,
+			'LLM evidence limit',
+			1,
+			WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS.llmSpans
+		),
+		toolSpans: integer(
+			limits.toolSpans,
+			'tool evidence limit',
+			1,
+			WORKFLOW_DIAGNOSTICS_MAX_EVIDENCE_LIMITS.toolSpans
+		)
+	};
+}
+
 /** Physical application boundary for preview-safe deep diagnostic reads. */
 export class ApplicationPreviewWorkflowDiagnosticsBrokerService {
 	constructor(private readonly deps: BrokerDeps) {}
@@ -167,6 +232,19 @@ export class ApplicationPreviewWorkflowDiagnosticsBrokerService {
 				const request = record(command.request);
 				exactKeys(request, []);
 				return this.deps.queries.loadDigestTelemetry({ identity, execution });
+			}
+			case 'investigation-evidence': {
+				const request = record(command.request);
+				exactKeys(request, ['categories', 'serviceNames', 'limits']);
+				return this.deps.queries.loadInvestigationEvidence({
+					identity,
+					execution,
+					request: {
+						categories: evidenceCategories(request.categories),
+						serviceNames: evidenceServiceNames(request.serviceNames),
+						limits: evidenceLimits(request.limits)
+					}
+				});
 			}
 			case 'resolve-trace-ids': {
 				const request = record(command.request);

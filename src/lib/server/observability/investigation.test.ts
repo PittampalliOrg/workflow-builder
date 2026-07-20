@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ObservabilityTraceSpan } from '$lib/types/observability';
+import type {
+	ObservabilityTraceSpan,
+	ObservabilityWorkflowStep
+} from '$lib/types/observability';
 
 const mocks = vi.hoisted(() => ({
 	getSessionTraceSpanSummaries: vi.fn(),
@@ -35,6 +38,7 @@ vi.mock('$lib/server/observability/goal-flow', () => ({
 
 import {
 	buildExecutionInvestigation,
+	buildExecutionInvestigationFromEvidence,
 	buildSessionInvestigation
 } from './investigation';
 
@@ -44,7 +48,7 @@ const workflowReader = {
 		sessionId: 'session-1'
 	})),
 	getWorkflowSteps: vi.fn(async () => ({
-		steps: [],
+		steps: [] as ObservabilityWorkflowStep[],
 		status: 'success',
 		startedAt: '2026-07-09T15:27:14.000Z',
 		completedAt: '2026-07-09T15:27:15.000Z'
@@ -221,6 +225,85 @@ describe('observability investigation trace backend degradation', () => {
 			expect.objectContaining({
 				id: 'issue-trace-backend-unavailable-execution-exec-1',
 				label: expect.stringContaining('spans: query timeout')
+			})
+		);
+	});
+
+	it('projects only bounded execution evidence and surfaces adapter warnings', async () => {
+		const payload = await buildExecutionInvestigationFromEvidence(
+			'exec-1',
+			{
+				traceIds: ['c4235a0ea97132eba9adfa3bfbc3ff23'],
+				traceSpans: [traceSpan(), traceSpan({ traceId: 'd'.repeat(32), spanId: 'span-2' })],
+				logs: [],
+				llmSpans: [],
+				toolSpans: [],
+				truncated: { spans: true, logs: false, llmSpans: false, toolSpans: false },
+				rowTruncated: { spans: true, logs: false, llmSpans: false, toolSpans: false },
+				contentTruncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+				limits: { spans: 1, logs: 1, llmSpans: 1, toolSpans: 1 },
+				degradedSources: [],
+				warnings: ['Trace spans were limited to 1 row']
+			},
+			{ workflowReader }
+		);
+
+		expect(payload.traceSpans).toHaveLength(1);
+		expect(payload.traceSpans[0]?.traceId).toBe('c4235a0ea97132eba9adfa3bfbc3ff23');
+		expect(payload.issues).toContainEqual(
+			expect.objectContaining({
+				id: 'issue-trace-backend-unavailable-execution-exec-1',
+				label: 'Trace spans were limited to 1 row'
+			})
+		);
+	});
+
+	it('bounds and redacts workflow-step content before building the browser payload', async () => {
+		workflowReader.getWorkflowSteps.mockResolvedValueOnce({
+			steps: Array.from({ length: 201 }, (_, index) => ({
+				id: `step-${index}`,
+				stepName: `step-${index}`,
+				label: `Step ${index}`,
+				actionType: 'script',
+				status: 'success' as const,
+				input: { api_key: 'step-secret', payload: 'i'.repeat(5_000) },
+				output: { access_token: 'output-secret', payload: 'o'.repeat(10_000) },
+				error: null,
+				durationMs: 1,
+				startedAt: '2026-07-09T15:27:14.000Z',
+				completedAt: '2026-07-09T15:27:14.001Z'
+			})),
+			status: 'success',
+			startedAt: '2026-07-09T15:27:14.000Z',
+			completedAt: '2026-07-09T15:27:15.000Z'
+		});
+
+		const payload = await buildExecutionInvestigationFromEvidence(
+			'exec-1',
+			{
+				traceIds: ['c4235a0ea97132eba9adfa3bfbc3ff23'],
+				traceSpans: [traceSpan()],
+				logs: [],
+				llmSpans: [],
+				toolSpans: [],
+				truncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+				rowTruncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+				contentTruncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+				limits: { spans: 200, logs: 100, llmSpans: 20, toolSpans: 50 },
+				degradedSources: [],
+				warnings: []
+			},
+			{ workflowReader }
+		);
+
+		expect(payload.workflowSteps).toHaveLength(200);
+		expect(Buffer.byteLength(JSON.stringify(payload.workflowSteps[0]?.input), 'utf8')).toBeLessThanOrEqual(2_000);
+		expect(Buffer.byteLength(JSON.stringify(payload.workflowSteps[0]?.output), 'utf8')).toBeLessThanOrEqual(4_000);
+		expect(JSON.stringify(payload)).not.toContain('step-secret');
+		expect(JSON.stringify(payload)).not.toContain('output-secret');
+		expect(payload.issues).toContainEqual(
+			expect.objectContaining({
+				label: expect.stringContaining('Workflow steps were limited to 200 rows')
 			})
 		);
 	});

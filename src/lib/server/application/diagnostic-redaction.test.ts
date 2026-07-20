@@ -4,16 +4,60 @@ import { boundDiagnosticEvidence, redactDiagnosticEvidence } from './diagnostic-
 describe('redactDiagnosticEvidence', () => {
 	it('redacts nested secret keys and credentials embedded in free text', () => {
 		const value = redactDiagnosticEvidence({
-			headers: { Authorization: 'Bearer header-secret', 'X-Connection-External-Id': 'conn-1' },
-			message: 'request failed: Authorization: Bearer eyJhbGci.abc.def api_key=sk-live-123',
+			headers: {
+				Authorization: 'Bearer header-secret',
+				'X-Api-Key': 'api-key-secret',
+				'X-Internal-Token': 'internal-token-secret',
+				'X-Connection-External-Id': 'conn-1'
+			},
+			message:
+				'request failed: Authorization: Bearer eyJhbGci.abc.def api_key=sk-live-123 KIMI_API_KEY=kimi-live-456',
 			turns: [{ content: 'password: hunter2' }]
 		});
 
 		expect(value.headers.Authorization).toBe('[REDACTED]');
+		expect(value.headers['X-Api-Key']).toBe('[REDACTED]');
+		expect(value.headers['X-Internal-Token']).toBe('[REDACTED]');
 		expect(value.headers['X-Connection-External-Id']).toBe('conn-1');
 		expect(value.message).toContain('Authorization: [REDACTED]');
 		expect(value.message).toContain('api_key=[REDACTED]');
+		expect(value.message).toContain('KIMI_API_KEY=[REDACTED]');
+		expect(value.message).not.toContain('kimi-live-456');
 		expect(value.turns[0].content).toBe('password=[REDACTED]');
+	});
+
+	it('preserves token usage metrics while redacting singular credential tokens', () => {
+		const value = redactDiagnosticEvidence({
+			tokens: 42,
+			promptTokens: 12,
+			completion_tokens: 20,
+			totalTokens: 32,
+			reasoningTokens: 7,
+			cacheReadInputTokens: 100,
+			tokenBudget: 1_000_000,
+			token_count: 32,
+			max_tokens: 4096,
+			token: 'opaque-secret',
+			apiToken: 'api-secret',
+			access_token: 'access-secret',
+			sessionToken: 'session-secret'
+		});
+
+		expect(value).toMatchObject({
+			tokens: 42,
+			promptTokens: 12,
+			completion_tokens: 20,
+			totalTokens: 32,
+			reasoningTokens: 7,
+			cacheReadInputTokens: 100,
+			tokenBudget: 1_000_000,
+			token_count: 32,
+			max_tokens: 4096,
+			token: '[REDACTED]',
+			apiToken: '[REDACTED]',
+			access_token: '[REDACTED]',
+			sessionToken: '[REDACTED]'
+		});
 	});
 
 	it('redacts basic auth, cookies, and URL userinfo from free text', () => {

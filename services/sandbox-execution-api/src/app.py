@@ -319,11 +319,10 @@ class ExecutionClassConfig(BaseModel):
     syncSidecarImage: str | None = None
     serviceWorkdir: str = "/app"
     serviceHealthPath: str = "/"
-    # envFrom sources (configMapRef/secretRef) applied verbatim to the dev
-    # container — lets a functional preview reuse the prod app's config + secrets
-    # (e.g. workflow-builder-secrets carrying DATABASE_URL) without copying
-    # plaintext into the Sandbox CR. Per-service envFrom is normally supplied on
-    # the request (from the dev-preview registry), not the shared class.
+    # Class-wide envFrom sources (configMapRef/secretRef) appended after the
+    # request's service-specific sources. A later duplicate source wins, allowing
+    # preview-wide configuration to override the reused prod app config without
+    # copying plaintext into the Sandbox CR.
     serviceEnvFrom: list[dict[str, Any]] | None = None
     # Git-synced image-pins ConfigMap (workflow-builder-image-pins) mounted as a
     # DIRECTORY at /etc/workflow-builder/image-pins on the dev container (files
@@ -4438,9 +4437,34 @@ def build_dev_preview_sandbox_manifest(
                 by_name[entry["name"]] = entry
         env = list(by_name.values())
     # envFrom (configMapRef/secretRef) for a functional preview that reuses the
-    # prod app's config + secrets. Explicit `env` (above) overrides envFrom, so a
-    # per-preview DATABASE_URL passed via request.env wins over the shared secret.
-    env_from = list(request.envFrom or class_config.serviceEnvFrom or [])
+    # prod app's config + secrets. Request sources carry the service-specific
+    # baseline; class sources are additive and intentionally land last so a
+    # preview-wide source can override baseline keys. Deduplicate by Kubernetes
+    # source identity while preserving the later declaration.
+    combined_env_from = list(request.envFrom or []) + list(
+        class_config.serviceEnvFrom or []
+    )
+    seen_env_from: set[tuple[str, str, str]] = set()
+    env_from_reversed: list[dict[str, Any]] = []
+    for entry in reversed(combined_env_from):
+        ref_kind = ""
+        ref_name = ""
+        for candidate in ("configMapRef", "secretRef"):
+            ref = entry.get(candidate)
+            if isinstance(ref, dict) and isinstance(ref.get("name"), str):
+                ref_kind = candidate
+                ref_name = ref["name"]
+                break
+        key = (
+            str(entry.get("prefix") or ""),
+            ref_kind or "raw",
+            ref_name or json.dumps(entry, sort_keys=True, separators=(",", ":")),
+        )
+        if key in seen_env_from:
+            continue
+        seen_env_from.add(key)
+        env_from_reversed.append(dict(entry))
+    env_from = list(reversed(env_from_reversed))
     container: dict[str, Any] = {
         "name": "dev",
         "image": image,

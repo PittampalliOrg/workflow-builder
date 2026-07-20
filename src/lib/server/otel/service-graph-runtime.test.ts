@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ObservabilityExecutionEvidence } from '$lib/types/observability';
 
 const clickhouseMocks = vi.hoisted(() => ({
 	queryClickHouse: vi.fn(),
@@ -70,6 +71,37 @@ function buildDynamicScriptGraph(row: ServiceGraphExecutionContext) {
 		execution: row,
 		scriptCalls
 	});
+}
+
+function brokeredEvidence(): ObservabilityExecutionEvidence {
+	return {
+		traceIds: [TRACE_ID],
+		traceSpans: [
+			{
+				traceId: TRACE_ID,
+				spanId: 'span-plan',
+				parentSpanId: null,
+				operationName: 'agent plan',
+				serviceName: 'dapr-agent-py',
+				startTime: '2026-07-16T07:55:36.083Z',
+				duration: 125,
+				status: 'ok',
+				statusCode: 'Ok',
+				spanKind: 'Internal',
+				attributes: { 'session.id': 'session-plan' },
+				depth: 0
+			}
+		],
+		logs: [],
+		llmSpans: [],
+		toolSpans: [],
+		truncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+		rowTruncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+		contentTruncated: { spans: false, logs: false, llmSpans: false, toolSpans: false },
+		limits: { spans: 200, logs: 200, llmSpans: 50, toolSpans: 200 },
+		degradedSources: [],
+		warnings: []
+	};
 }
 
 describe('service graph runtime loading', () => {
@@ -185,5 +217,26 @@ describe('service graph runtime loading', () => {
 				'LLM usage unavailable; token and cost metrics omitted'
 			]
 		});
+	});
+
+	it('uses brokered execution evidence without querying ClickHouse', async () => {
+		const row = execution();
+		const graph = await buildServiceGraph({
+			query: {
+				mode: 'step',
+				scope: 'execution',
+				executionId: row.id,
+				windowSeconds: 3600
+			},
+			execution: row,
+			scriptCalls,
+			executionEvidence: brokeredEvidence()
+		});
+
+		expect(graph.nodes.find((node) => node.id === 'plan')?.red.p95).toBe(125);
+		expect(graph.meta).toMatchObject({ spanCount: 1, traceCount: 1, degraded: undefined });
+		expect(clickhouseMocks.queryClickHouse).not.toHaveBeenCalled();
+		expect(clickhouseMocks.getMultiTraceSpanSummaries).not.toHaveBeenCalled();
+		expect(clickhouseMocks.getMultiTraceGraphLlmSpans).not.toHaveBeenCalled();
 	});
 });

@@ -404,9 +404,9 @@
 		{/if}
 	</div>
 
-	{#if payload?.meta.degraded}
-		<div class="border-t bg-destructive/10 px-4 py-2 text-xs text-destructive">
-			Telemetry store unavailable — graph may be incomplete. {payload.meta.warnings.join(' · ')}
+	{#if payload?.meta.warnings.length}
+		<div class="border-t {payload.meta.degraded ? 'bg-destructive/10 text-destructive' : 'bg-amber-500/10 text-amber-700 dark:text-amber-200'} px-4 py-2 text-xs" role="status">
+			{payload.meta.degraded ? 'Telemetry is partially unavailable.' : 'Graph evidence is partial.'} {payload.meta.warnings.join(' · ')}
 		</div>
 	{/if}
 	{#if payload && graphError}

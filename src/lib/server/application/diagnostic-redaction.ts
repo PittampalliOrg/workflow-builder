@@ -4,12 +4,48 @@ const AUTHORIZATION_HEADER_PATTERN =
 const COOKIE_HEADER_PATTERN = /\b(cookie|set-cookie)\s*:\s*[^\r\n]+/gi;
 const URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi;
 const ASSIGNMENT_PATTERN =
-	/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|session[_ -]?token|password|passwd|secret)\s*[:=]\s*["']?[^\s,"'}]+["']?/gi;
+	/\b([a-z_][a-z0-9_.-]{0,127})\s*[:=]\s*["']?([^\s,"'}]+)["']?/gi;
 const IMAGE_DATA_URI_PATTERN = /data:image\/[^,\s]+;base64,[a-z0-9+\/_=-]+/gi;
 const SERIALIZED_PAYLOAD_BASE64_PATTERN =
 	/(\\?"payload[_-]?base64\\?"\s*:\s*\\?")[a-z0-9+\/_=-]*(\\?")?/gi;
-const SECRET_KEY_PATTERN =
-	/(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key|payload[_-]?base64)/i;
+const EXACT_SECRET_KEYS = new Set([
+	'auth',
+	'authentication',
+	'authorization',
+	'authorizationheader',
+	'authheader',
+	'bearer',
+	'cookie',
+	'cookieheader',
+	'credentials',
+	'proxyauthorization',
+	'secret',
+	'secrets',
+	'setcookie'
+]);
+const SECRET_KEY_SUFFIXES = [
+	'accesstoken',
+	'apikey',
+	'authtoken',
+	'bearertoken',
+	'clientsecret',
+	'credential',
+	'credentials',
+	'password',
+	'passwd',
+	'payloadbase64',
+	'privatekey',
+	'refreshtoken',
+	'secret',
+	'sessiontoken',
+	'token'
+] as const;
+
+function isSecretKey(key: string): boolean {
+	const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+	if (EXACT_SECRET_KEYS.has(normalized)) return true;
+	return SECRET_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
 
 function redactText(value: string): string {
 	return value
@@ -17,13 +53,19 @@ function redactText(value: string): string {
 		.replace(AUTHORIZATION_HEADER_PATTERN, '$1: [REDACTED]')
 		.replace(COOKIE_HEADER_PATTERN, '$1: [REDACTED]')
 		.replace(BEARER_PATTERN, 'Bearer [REDACTED]')
-		.replace(ASSIGNMENT_PATTERN, (_match, label: string) => `${label}=[REDACTED]`)
-		.replace(IMAGE_DATA_URI_PATTERN, '[REDACTED image data URI]')
 		.replace(
 			SERIALIZED_PAYLOAD_BASE64_PATTERN,
 			(_match, prefix: string, closingQuote: string | undefined) =>
 				`${prefix}[REDACTED]${closingQuote ?? ''}`
-		);
+		)
+		.replace(
+			ASSIGNMENT_PATTERN,
+			(match, key: string, assignedValue: string) =>
+				isSecretKey(key) && assignedValue !== '[REDACTED]'
+					? `${key}=[REDACTED]`
+					: match
+		)
+		.replace(IMAGE_DATA_URI_PATTERN, '[REDACTED image data URI]');
 }
 
 function redactStrings(value: unknown, depth = 0): unknown {
@@ -34,7 +76,7 @@ function redactStrings(value: unknown, depth = 0): unknown {
 		return Object.fromEntries(
 			Object.entries(value as Record<string, unknown>).map(([key, child]) => [
 				key,
-				SECRET_KEY_PATTERN.test(key) ? '[REDACTED]' : redactStrings(child, depth + 1)
+				isSecretKey(key) ? '[REDACTED]' : redactStrings(child, depth + 1)
 			])
 		);
 	}

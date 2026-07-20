@@ -41,6 +41,7 @@ const EXECUTION_KEYS = [
 ] as const;
 const OPERATIONS = new Set<PreviewWorkflowDiagnosticsOperation>([
 	'digest-telemetry',
+	'investigation-evidence',
 	'resolve-trace-ids',
 	'search-spans',
 	'get-span',

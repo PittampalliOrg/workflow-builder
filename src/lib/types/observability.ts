@@ -181,6 +181,30 @@ export interface ObservabilityTraceSpan {
 	depth: number;
 }
 
+export type ObservabilityExecutionEvidenceCategory = 'spans' | 'logs' | 'llmSpans' | 'toolSpans';
+
+export type ObservabilityExecutionEvidenceLimits = Readonly<{
+	spans: number;
+	logs: number;
+	llmSpans: number;
+	toolSpans: number;
+}>;
+
+/** Bounded telemetry owned by the diagnostics adapter for one workflow execution. */
+export interface ObservabilityExecutionEvidence {
+	traceIds: string[];
+	traceSpans: ObservabilityTraceSpan[];
+	logs: ObservabilityLogEntry[];
+	llmSpans: ObservabilityLlmSpan[];
+	toolSpans: ObservabilityToolSpan[];
+	truncated: Record<ObservabilityExecutionEvidenceCategory, boolean>;
+	rowTruncated: Record<ObservabilityExecutionEvidenceCategory, boolean>;
+	contentTruncated: Record<ObservabilityExecutionEvidenceCategory, boolean>;
+	limits: ObservabilityExecutionEvidenceLimits;
+	degradedSources: Array<'correlation' | ObservabilityExecutionEvidenceCategory>;
+	warnings: string[];
+}
+
 export interface ObservabilityWorkflowStep {
 	id: string;
 	stepName: string;
@@ -394,4 +418,13 @@ export interface ObservabilityInvestigationPayload {
 	workflowTimeline: ObservabilityWorkflowTimelineItem[];
 	events: ObservabilityInvestigationEvent[];
 	issues: ObservabilityIssueMarker[];
+	evidenceCoverage?: {
+		spans: {
+			loaded: number;
+			rowTruncated: boolean;
+			contentTruncated: boolean;
+			nextCursor: string | null;
+		};
+		warnings: string[];
+	};
 }

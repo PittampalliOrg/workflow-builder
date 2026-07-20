@@ -13,7 +13,12 @@ describe("observability service graph route", () => {
 		expect(source).toContain("getApplicationAdapters");
 		expect(source).toContain("getObservabilityServiceGraphContext");
 		expect(source).toContain("listObservabilityServiceGraphStepLogs");
+		expect(source).toContain("workflowDiagnostics.getInvestigationEvidence");
+		expect(source).toContain("executionEvidence");
+		expect(source).toContain("redactDiagnosticEvidence(payload)");
+		expect(source).toContain("'cache-control': 'no-store'");
 		expect(source).not.toContain("$lib/server/db");
+		expect(source).not.toContain("$lib/server/otel/clickhouse");
 		expect(source).not.toContain("$lib/server/db/schema");
 		expect(source).not.toContain("drizzle-orm");
 		expect(source).not.toContain("isResourceInScope");

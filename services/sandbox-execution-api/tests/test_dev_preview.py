@@ -219,6 +219,64 @@ def test_manifest_defaults_service_label_to_workflow_builder() -> None:
     assert labels["dev-preview-service"] == "workflow-builder"
 
 
+def test_manifest_merges_request_and_class_service_env_from() -> None:
+    manifest = build_dev_preview_sandbox_manifest(
+        DevPreviewRequest(
+            executionId="exec-1",
+            service="workflow-builder",
+            envFrom=[
+                {
+                    "configMapRef": {
+                        "name": "workflow-builder-otel-config",
+                        "optional": True,
+                    }
+                },
+                {"secretRef": {"name": "workflow-builder-secrets"}},
+            ],
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="",
+            serviceEnvFrom=[
+                {
+                    "secretRef": {
+                        "name": "workflow-builder-secrets",
+                        "optional": True,
+                    }
+                },
+                {
+                    "configMapRef": {
+                        "name": "preview-observability",
+                        "optional": True,
+                    }
+                },
+            ],
+        ),
+    )
+
+    env_from = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["envFrom"]
+    assert env_from == [
+        {
+            "configMapRef": {
+                "name": "workflow-builder-otel-config",
+                "optional": True,
+            }
+        },
+        {
+            "secretRef": {
+                "name": "workflow-builder-secrets",
+                "optional": True,
+            }
+        },
+        {
+            "configMapRef": {
+                "name": "preview-observability",
+                "optional": True,
+            }
+        },
+    ]
+
+
 def test_manifest_omits_shadow_env_when_disabled() -> None:
     manifest = build_dev_preview_sandbox_manifest(
         DevPreviewRequest(

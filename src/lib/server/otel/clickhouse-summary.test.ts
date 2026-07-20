@@ -18,7 +18,9 @@ import {
 	getTraceSpanDetailForTraces,
 	searchTraceLlmSpans,
 	searchTraceLogs,
-	searchTraceSpans
+	searchTraceSpanSummaries,
+	searchTraceSpans,
+	searchTraceToolSpans
 } from './clickhouse';
 
 const TRACE_ID = 'c4235a0ea97132eba9adfa3bfbc3ff23';
@@ -205,9 +207,9 @@ describe('compact ClickHouse trace span loading', () => {
 					CacheCreationInputTokens: 15,
 					ReasoningTokens: 10,
 					StatusCode: 'Ok',
-					InputMessagesTruncated: 0,
-					OutputMessagesTruncated: 0,
-					InvocationParametersTruncated: 0
+					InputMessagesTruncated: '0',
+					OutputMessagesTruncated: '1',
+					InvocationParametersTruncated: '0'
 				}
 			])
 		);
@@ -216,7 +218,9 @@ describe('compact ClickHouse trace span loading', () => {
 			workflowExecutionId: 'exec-1',
 			sessionId: 'session-1',
 			limit: 11,
-			offset: 20
+			offset: 20,
+			startedAt: '2026-07-09T15:27:14.000Z',
+			completedAt: '2026-07-09T15:27:15.000Z'
 		});
 
 		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
@@ -227,11 +231,43 @@ describe('compact ClickHouse trace span loading', () => {
 		expect(sql).toContain('ReasoningTokens');
 		expect(sql).toContain('LIMIT 11');
 		expect(sql).toContain('OFFSET 20');
-		expect(turns[0]).toMatchObject({
+			expect(turns[0]).toMatchObject({
 			cacheReadInputTokens: 60,
 			cacheCreationInputTokens: 15,
-			reasoningTokens: 10
+			reasoningTokens: 10,
+			inputMessagesTruncated: false,
+			outputMessagesTruncated: true,
+			invocationParametersTruncated: false
 		});
+	});
+
+	it('time-fences every execution-scoped span, log, LLM, and tool query', async () => {
+		fetchMock.mockImplementation(async () => jsonEachRow([]));
+		const window = {
+			startedAt: '2026-07-09T15:27:14.000Z',
+			completedAt: '2026-07-09T15:27:15.000Z'
+		};
+
+		await getTraceSpanDetailForTraces([TRACE_ID], '0000000000000001', window);
+		await searchTraceSpanSummaries([TRACE_ID], { ...window, limit: 10 });
+		await searchTraceLogs([TRACE_ID], { ...window, limit: 10 });
+		await searchTraceLlmSpans([TRACE_ID], {
+			...window,
+			workflowExecutionId: 'execution-1',
+			limit: 10
+		});
+		await searchTraceToolSpans([TRACE_ID], {
+			...window,
+			workflowExecutionId: 'execution-1',
+			limit: 10
+		});
+
+		expect(fetchMock).toHaveBeenCalledTimes(5);
+		for (const call of fetchMock.mock.calls) {
+			const sql = String(call[1]?.body ?? '');
+			expect(sql).toContain("Timestamp >= '2026-07-09 15:27:09.000'");
+			expect(sql).toContain("Timestamp <= '2026-07-09 15:27:25.000'");
+		}
 	});
 
 	it('loads run-digest LLM totals without transcript columns and reports truncation', async () => {
@@ -301,9 +337,14 @@ describe('compact ClickHouse trace span loading', () => {
 			limit: 1,
 			traceResourceScope: resourceScope
 		});
+		await searchTraceToolSpans([TRACE_ID], {
+			workflowExecutionId: 'execution-1',
+			limit: 10,
+			traceResourceScope: resourceScope
+		});
 		await getMultiTraceDigestLlmSpans([TRACE_ID], {}, 10, resourceScope);
 
-		expect(fetchMock).toHaveBeenCalledTimes(6);
+		expect(fetchMock).toHaveBeenCalledTimes(7);
 		for (const call of fetchMock.mock.calls) {
 			const sql = String(call[1]?.body ?? '');
 			for (const [key, value] of Object.entries(resourceScope)) {
@@ -312,7 +353,7 @@ describe('compact ClickHouse trace span loading', () => {
 				);
 			}
 		}
-		for (const index of [4, 5]) {
+		for (const index of [4, 5, 6]) {
 			const sql = String(fetchMock.mock.calls[index]?.[1]?.body ?? '');
 			expect(sql).toContain('(TraceId, SpanId) IN');
 			expect(sql).toContain('FROM otel.otel_traces');

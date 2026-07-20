@@ -15,9 +15,11 @@ import {
 	sanitizeTraceIds,
 	searchTraceLlmSpans,
 	searchTraceLogs,
-	searchTraceSpans,
+	searchTraceSpanSummaries,
+	searchTraceToolSpans,
 	type TraceResourceScope
 } from '$lib/server/otel/clickhouse';
+import { collectWorkflowDiagnosticsEvidence } from './workflow-diagnostics-evidence';
 
 const MAX_TRACE_IDS = 200;
 const DIGEST_SPAN_LIMIT = Math.min(
@@ -208,18 +210,76 @@ export class ClickHousePreviewWorkflowDiagnosticsQueryAdapter
 		};
 	}
 
+	loadInvestigationEvidence(
+		input: Parameters<PreviewWorkflowDiagnosticsQueryPort['loadInvestigationEvidence']>[0]
+	) {
+		const scope = exactTupleScope(input.identity);
+		const window = {
+			startedAt: input.execution.startedAt,
+			completedAt: input.execution.completedAt
+		};
+		const serviceNames =
+			input.request.serviceNames.length > 0 ? input.request.serviceNames : undefined;
+		return collectWorkflowDiagnosticsEvidence({
+			execution: input.execution,
+			request: input.request,
+			resolveTraceIds: () => this.resolveTraceIds(input),
+			queries: {
+				spans: async (traceIds, limit) =>
+					(
+						await getMultiTraceSpanSummaries(traceIds, {
+							serviceNames,
+							limit,
+							resourceScope: scope,
+							...window
+						})
+					).spans,
+				logs: (traceIds, limit) =>
+					searchTraceLogs(traceIds, {
+						serviceNames,
+						limit,
+						offset: 0,
+						resourceScope: scope,
+						...window
+					}),
+				llmSpans: (traceIds, limit) =>
+					searchTraceLlmSpans(traceIds, {
+						workflowExecutionId: input.execution.id,
+						serviceNames,
+						limit,
+						offset: 0,
+						traceResourceScope: scope,
+						...window
+					}),
+				toolSpans: (traceIds, limit) =>
+					searchTraceToolSpans(traceIds, {
+						workflowExecutionId: input.execution.id,
+						serviceNames,
+						limit,
+						offset: 0,
+						traceResourceScope: scope,
+						...window
+					})
+			}
+		});
+	}
+
 	async searchSpans(input: Parameters<PreviewWorkflowDiagnosticsQueryPort['searchSpans']>[0]) {
 		const traceIds = await this.allowedTraceIds(input);
-		return searchTraceSpans(traceIds, {
+		return searchTraceSpanSummaries(traceIds, {
 			...input.query,
-			resourceScope: exactTupleScope(input.identity)
-		});
+			resourceScope: exactTupleScope(input.identity),
+			startedAt: input.execution.startedAt,
+			completedAt: input.execution.completedAt
+		}).then((batch) => batch.spans);
 	}
 
 	async getSpan(input: Parameters<PreviewWorkflowDiagnosticsQueryPort['getSpan']>[0]) {
 		const traceIds = await this.allowedTraceIds(input);
 		return getTraceSpanDetailForTraces(traceIds, input.spanId, {
-			resourceScope: exactTupleScope(input.identity)
+			resourceScope: exactTupleScope(input.identity),
+			startedAt: input.execution.startedAt,
+			completedAt: input.execution.completedAt
 		});
 	}
 
@@ -229,7 +289,9 @@ export class ClickHousePreviewWorkflowDiagnosticsQueryAdapter
 		const traceIds = await this.allowedTraceIds(input);
 		return searchTraceLlmSpans(traceIds, {
 			...input.query,
-			traceResourceScope: exactTupleScope(input.identity)
+			traceResourceScope: exactTupleScope(input.identity),
+			startedAt: input.execution.startedAt,
+			completedAt: input.execution.completedAt
 		});
 	}
 
@@ -237,7 +299,9 @@ export class ClickHousePreviewWorkflowDiagnosticsQueryAdapter
 		const traceIds = await this.allowedTraceIds(input);
 		return searchTraceLogs(traceIds, {
 			...input.query,
-			resourceScope: exactTupleScope(input.identity)
+			resourceScope: exactTupleScope(input.identity),
+			startedAt: input.execution.startedAt,
+			completedAt: input.execution.completedAt
 		});
 	}
 }

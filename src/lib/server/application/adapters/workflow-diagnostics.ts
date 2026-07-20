@@ -11,10 +11,12 @@ import {
 	isClickHouseConfigured,
 	searchTraceLlmSpans,
 	searchTraceLogs,
-	searchTraceSpans
+	searchTraceSpanSummaries,
+	searchTraceToolSpans
 } from '$lib/server/otel/clickhouse';
 import { resolveExecutionTraceIds } from '$lib/server/otel/service-graph';
 import { buildRunDigest } from '$lib/server/observability/run-digest';
+import { collectWorkflowDiagnosticsEvidence } from './workflow-diagnostics-evidence';
 
 type WorkflowDiagnosticsAdapterDependencies = {
 	listScriptCalls(executionId: string): Promise<WorkflowDiagnosticsDigestRead['calls']>;
@@ -136,35 +138,94 @@ export class ClickHouseWorkflowDiagnosticsReadAdapter implements WorkflowDiagnos
 		return { traceIds, warnings };
 	}
 
+	loadInvestigationEvidence(
+		execution: WorkflowDiagnosticsExecution,
+		request: Parameters<WorkflowDiagnosticsReadPort['loadInvestigationEvidence']>[1]
+	) {
+		const serviceNames = request.serviceNames.length > 0 ? request.serviceNames : undefined;
+		const window = {
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		};
+		return collectWorkflowDiagnosticsEvidence({
+			execution,
+			request,
+			resolveTraceIds: () => this.resolveTraceIds(execution),
+			queries: {
+				spans: async (traceIds, limit) =>
+					(
+						await getMultiTraceSpanSummaries(traceIds, {
+							serviceNames,
+							limit,
+							...window
+						})
+					).spans,
+				logs: (traceIds, limit) =>
+					searchTraceLogs(traceIds, { serviceNames, limit, offset: 0, ...window }),
+				llmSpans: (traceIds, limit) =>
+					searchTraceLlmSpans(traceIds, {
+						workflowExecutionId: execution.id,
+						serviceNames,
+						limit,
+						offset: 0,
+						...window
+					}),
+				toolSpans: (traceIds, limit) =>
+					searchTraceToolSpans(traceIds, {
+						workflowExecutionId: execution.id,
+						serviceNames,
+						limit,
+						offset: 0,
+						...window
+					})
+			}
+		});
+	}
+
 	searchSpans(
-		_execution: WorkflowDiagnosticsExecution,
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: Parameters<WorkflowDiagnosticsReadPort['searchSpans']>[2]
 	) {
-		return searchTraceSpans(traceIds, query);
+		return searchTraceSpanSummaries(traceIds, {
+			...query,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		}).then((batch) => batch.spans);
 	}
 
 	getSpan(
-		_execution: WorkflowDiagnosticsExecution,
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		spanId: string
 	) {
-		return getTraceSpanDetailForTraces(traceIds, spanId);
+		return getTraceSpanDetailForTraces(traceIds, spanId, {
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		});
 	}
 
 	searchLlmSpans(
-		_execution: WorkflowDiagnosticsExecution,
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: Parameters<WorkflowDiagnosticsReadPort['searchLlmSpans']>[2]
 	) {
-		return searchTraceLlmSpans(traceIds, query);
+		return searchTraceLlmSpans(traceIds, {
+			...query,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		});
 	}
 
 	searchLogs(
-		_execution: WorkflowDiagnosticsExecution,
+		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
 		query: Parameters<WorkflowDiagnosticsReadPort['searchLogs']>[2]
 	) {
-		return searchTraceLogs(traceIds, query);
+		return searchTraceLogs(traceIds, {
+			...query,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt
+		});
 	}
 }

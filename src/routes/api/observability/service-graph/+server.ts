@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getApplicationAdapters } from '$lib/server/application';
+import { redactDiagnosticEvidence } from '$lib/server/application/diagnostic-redaction';
 import { buildServiceGraph } from '$lib/server/otel/service-graph';
 import {
 	SERVICE_GRAPH_WINDOWS,
@@ -55,6 +56,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!context) {
 		return error(404, scope === 'execution' ? 'Execution not found' : 'Workflow not found');
 	}
+	const executionEvidence =
+		scope === 'execution' && context.execution
+			? await application.workflowDiagnostics.getInvestigationEvidence({
+					execution: context.execution,
+					request: {
+						categories: ['spans', 'llmSpans'],
+						limits: { spans: 200, llmSpans: 20 }
+					}
+				})
+			: undefined;
 
 	const query: ServiceGraphQuery = {
 		mode,
@@ -102,7 +113,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		execution: context.execution,
 		workflow: context.workflow,
 		stepLogs: stepLogs ?? undefined,
-		scriptCalls
+		scriptCalls,
+		executionEvidence
 	});
-	return json(payload);
+	return json(redactDiagnosticEvidence(payload), {
+		headers: { 'cache-control': 'no-store' }
+	});
 };

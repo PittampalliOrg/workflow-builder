@@ -90,4 +90,51 @@ describe("filterInvestigationToSelection", () => {
 		expect(scoped.traceSpans[0].attributes?.["input.value"]).toContain("workspace/command");
 		expect(scoped.traceSpans[1].attributes?.["input.value"]).toContain("pwd");
 	});
+
+	it("preserves global trace-backend warnings while filtering unrelated evidence", () => {
+		const source = payload([
+			span("selected", null, "agent-runtime", "agent.run"),
+			span("other", null, "postgres", "SELECT"),
+		]);
+		source.issues = [
+			{
+				id: "issue-trace-backend-unavailable-execution-exec-1",
+				label: "Trace spans were limited to 200 rows",
+				severity: "warning",
+				timestamp: "2026-05-22T11:00:00.000Z",
+				serviceName: "otel-clickhouse",
+			},
+			{
+				id: "issue-other",
+				label: "Other service failed",
+				severity: "error",
+				timestamp: "2026-05-22T11:00:00.000Z",
+				spanId: "other",
+				serviceName: "postgres",
+			},
+		];
+		source.events = source.issues.map((issue) => ({
+			id: issue.id,
+			type: "issue_marker" as const,
+			timestamp: issue.timestamp,
+			title: issue.label,
+			serviceName: issue.serviceName ?? null,
+			severity: issue.severity,
+			spanId: issue.spanId ?? null,
+			tags: ["issue"],
+		}));
+
+		const scoped = filterInvestigationToSelection(source, {
+			kind: "node",
+			id: "agent-runtime",
+			nodeKind: "service",
+		});
+
+		expect(scoped.issues.map((issue) => issue.id)).toEqual([
+			"issue-trace-backend-unavailable-execution-exec-1",
+		]);
+		expect(scoped.events.map((event) => event.id)).toEqual([
+			"issue-trace-backend-unavailable-execution-exec-1",
+		]);
+	});
 });

@@ -1,8 +1,10 @@
 import type {
+	WorkflowDiagnosticsEvidenceRequest,
 	WorkflowDiagnosticsExecution,
 	WorkflowDiagnosticsTraceResolution
 } from './workflow-diagnostics';
 import type {
+	ObservabilityExecutionEvidence,
 	ObservabilityLlmSpan,
 	ObservabilityLogEntry,
 	ObservabilityTraceSpan
@@ -11,6 +13,7 @@ import type { PreviewControlIdentity } from './preview-control';
 
 export type PreviewWorkflowDiagnosticsOperation =
 	| 'digest-telemetry'
+	| 'investigation-evidence'
 	| 'resolve-trace-ids'
 	| 'search-spans'
 	| 'get-span'
@@ -73,6 +76,13 @@ export interface PreviewWorkflowDiagnosticsQueryPort {
 		identity: PreviewControlIdentity;
 		execution: WorkflowDiagnosticsExecution;
 	}>): Promise<PreviewWorkflowDiagnosticsDigestTelemetry>;
+	loadInvestigationEvidence(
+		input: Readonly<{
+			identity: PreviewControlIdentity;
+			execution: WorkflowDiagnosticsExecution;
+			request: WorkflowDiagnosticsEvidenceRequest;
+		}>
+	): Promise<ObservabilityExecutionEvidence>;
 	resolveTraceIds(input: Readonly<{
 		identity: PreviewControlIdentity;
 		execution: WorkflowDiagnosticsExecution;
@@ -117,6 +127,7 @@ export interface PreviewWorkflowDiagnosticsQueryPort {
 
 export type PreviewWorkflowDiagnosticsBrokerResult =
 	| PreviewWorkflowDiagnosticsDigestTelemetry
+	| ObservabilityExecutionEvidence
 	| WorkflowDiagnosticsTraceResolution
 	| ObservabilityTraceSpan[]
 	| ObservabilityTraceSpan
