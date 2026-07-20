@@ -1,20 +1,32 @@
-"""Harness capability → durable-tool extraction.
+"""Harness capability → durable-tool + hook extraction.
 
-pydantic-ai-harness capabilities (FileSystem, Shell, RepoContext, MCP) are
-designed to plug into ``Agent(capabilities=[...])``. This runtime drives its
-own Dapr workflow loop instead, so we extract each capability's TOOLSET via
-the public ``AbstractCapability.get_toolset()`` seam and route durable
-``execute_tool`` activities through it. Capability ``get_instructions()``
-contributions are folded into the system prompt.
+pydantic-ai-harness capabilities are designed to plug into
+``Agent(capabilities=[...])``. This runtime drives its own Dapr workflow
+loop instead, so we consume capabilities through the seams that map onto
+our activities:
 
-The router is rebuilt from the (serializable) agentConfig inside each
-activity, so a retried activity on a fresh process reconstructs identical
-tools deterministically.
+- ``get_toolset()``   → tools offered in call_llm, executed in execute_tool
+- ``get_instructions()`` → system-prompt bootstrap (call_llm, iteration 0)
+- ``before/wrap/after_model_request`` → hosted around ``model.request()``
+  INSIDE the call_llm activity (compaction, guards, planning)
+- ``after_tool_execute`` → hosted INSIDE the execute_tool activity
+  (overflowing tool output)
+
+Run-graph seams (``wrap_run``/node hooks/event streams) have nothing to
+attach to here — the Dapr workflow is the run loop (see
+docs/pydantic-ai-agent.md).
+
+Routers are cached per (workspace, config-hash) at process level: one pod
+serves one session, so capability state (the overflow LocalFileStore,
+future Memory backends) stays coherent across activities and retries while
+construction remains deterministic from the serializable agentConfig.
 """
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -22,19 +34,37 @@ from typing import Any
 from pydantic_ai._run_context import RunContext
 from pydantic_ai.usage import RunUsage
 
-from src.config import SHELL_TIMEOUT_SECONDS, WORKSPACE_ROOT
+from src.config import (
+    CLAMP_MAX_PART_CHARS,
+    COMPACTION_ENABLED,
+    COMPACTION_KEEP_MESSAGES,
+    COMPACTION_MAX_MESSAGES,
+    OVERFLOW_ENABLED,
+    SHELL_TIMEOUT_SECONDS,
+    WORKSPACE_ROOT,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _run_context() -> RunContext:
-    """Minimal RunContext for toolset get_tools/call_tool outside Agent.run."""
-    return RunContext(deps=None, model=None, usage=RunUsage())
+def _run_context(messages: list[Any] | None = None, model: Any = None) -> RunContext:
+    """Minimal RunContext for capability seams outside Agent.run."""
+    ctx = RunContext(deps=None, model=model, usage=RunUsage())
+    if messages is not None:
+        try:
+            ctx = RunContext(deps=None, model=model, usage=RunUsage(), messages=messages)
+        except TypeError:
+            pass
+    return ctx
 
 
 def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
-    """FileSystem + Shell (pod-local, rooted at WORKSPACE_ROOT), RepoContext,
-    and MCP capabilities from agentConfig.mcpServers (streamable_http only)."""
+    """Tool + hook capabilities, in application order.
+
+    Order matters for the model-request hook chain: clamp oversized parts
+    first, then window the history. List order stands in for upstream's
+    ``get_ordering`` sort (documented simplification).
+    """
     from pydantic_ai_harness import FileSystem, Shell
 
     cfg = agent_config or {}
@@ -71,11 +101,47 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[toolsets] MCP capability for %s failed: %s", url, exc)
 
+    if OVERFLOW_ENABLED:
+        try:
+            from pydantic_ai_harness.overflowing_tool_output import (
+                LocalFileStore,
+                OverflowingToolOutput,
+            )
+
+            # File-backed spill under the workspace: survives process
+            # restarts and is readable by read_tool_result from any later
+            # activity on this pod.
+            capabilities.append(
+                OverflowingToolOutput(store=LocalFileStore(base_dir=root / ".overflow"))
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[toolsets] OverflowingToolOutput unavailable: %s", exc)
+
+    if COMPACTION_ENABLED:
+        try:
+            from pydantic_ai_harness.compaction import (
+                ClampOversizedMessages,
+                SlidingWindow,
+            )
+
+            capabilities.append(
+                ClampOversizedMessages(max_part_chars=CLAMP_MAX_PART_CHARS)
+            )
+            capabilities.append(
+                SlidingWindow(
+                    max_messages=COMPACTION_MAX_MESSAGES,
+                    keep_messages=COMPACTION_KEEP_MESSAGES,
+                    preserve_first_user_message=True,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[toolsets] compaction capabilities unavailable: %s", exc)
+
     return capabilities
 
 
 class ToolRouter:
-    """Name→toolset routing over the capabilities' extracted toolsets."""
+    """Name→toolset routing + hook-chain application over the capabilities."""
 
     def __init__(self, agent_config: dict[str, Any] | None) -> None:
         self._capabilities = build_capabilities(agent_config)
@@ -91,8 +157,11 @@ class ToolRouter:
             if toolset is not None:
                 self._toolsets.append(toolset)
 
+    # ------------------------------------------------------------------
+    # Tool routing
+    # ------------------------------------------------------------------
+
     async def tools(self) -> dict[str, tuple[Any, Any]]:
-        """{tool_name: (owning_toolset, ToolsetTool)} across all toolsets."""
         ctx = _run_context()
         combined: dict[str, tuple[Any, Any]] = {}
         for toolset in self._toolsets:
@@ -118,7 +187,6 @@ class ToolRouter:
         return await toolset.call_tool(name, dict(args or {}), _run_context(), tool)
 
     async def instructions(self) -> str:
-        """Concatenated capability instruction contributions (RepoContext etc.)."""
         parts: list[str] = []
         ctx = _run_context()
         for cap in self._capabilities:
@@ -126,9 +194,23 @@ class ToolRouter:
             if getter is None:
                 continue
             try:
-                value = getter(ctx)
+                value = getter()
+                if callable(value):
+                    value = value(ctx)
                 if inspect.isawaitable(value):
                     value = await value
+            except TypeError:
+                try:
+                    value = getter(ctx)
+                    if inspect.isawaitable(value):
+                        value = await value
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[toolsets] instructions from %s skipped: %s",
+                        type(cap).__name__,
+                        exc,
+                    )
+                    continue
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "[toolsets] instructions from %s skipped: %s",
@@ -139,3 +221,126 @@ class ToolRouter:
             if value:
                 parts.append(str(value))
         return "\n\n".join(parts).strip()
+
+    # ------------------------------------------------------------------
+    # Hook chains (hosted inside the durable activities)
+    # ------------------------------------------------------------------
+
+    async def _maybe_await(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    async def apply_before_model_request(self, request_context: Any) -> Any:
+        """Chain each capability's before_model_request over the request
+        context (compaction lives here). Fail-soft per capability."""
+        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+        for cap in self._capabilities:
+            hook = getattr(cap, "before_model_request", None)
+            if hook is None:
+                continue
+            try:
+                result = await self._maybe_await(hook(ctx, request_context))
+                if result is not None:
+                    request_context = result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[hooks] before_model_request %s failed (skipped): %s",
+                    type(cap).__name__,
+                    exc,
+                )
+        return request_context
+
+    async def apply_model_request(self, request_context: Any, base_handler) -> Any:
+        """Fold wrap_model_request chain around the base model call."""
+        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+        handler = base_handler
+        for cap in reversed(self._capabilities):
+            wrap = getattr(cap, "wrap_model_request", None)
+            if wrap is None:
+                continue
+            inner = handler
+
+            def make_handler(cap=cap, wrap=wrap, inner=inner):
+                async def wrapped(rc):
+                    return await self._maybe_await(
+                        wrap(ctx, request_context=rc, handler=inner)
+                    )
+
+                return wrapped
+
+            handler = make_handler()
+        return await handler(request_context)
+
+    async def apply_after_model_request(self, request_context: Any, response: Any) -> Any:
+        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+        for cap in self._capabilities:
+            hook = getattr(cap, "after_model_request", None)
+            if hook is None:
+                continue
+            try:
+                result = await self._maybe_await(
+                    hook(ctx, request_context=request_context, response=response)
+                )
+                if result is not None:
+                    response = result
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[hooks] after_model_request %s failed (skipped): %s",
+                    type(cap).__name__,
+                    exc,
+                )
+        return response
+
+    async def apply_after_tool_execute(
+        self, *, call: Any, tool_def: Any, args: dict[str, Any], result: Any
+    ) -> Any:
+        """Chain after_tool_execute (overflow spill/truncate lives here)."""
+        ctx = _run_context()
+        for cap in self._capabilities:
+            hook = getattr(cap, "after_tool_execute", None)
+            if hook is None:
+                continue
+            try:
+                transformed = await self._maybe_await(
+                    hook(ctx, call=call, tool_def=tool_def, args=args, result=result)
+                )
+                if transformed is not None:
+                    result = transformed
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[hooks] after_tool_execute %s failed (skipped): %s",
+                    type(cap).__name__,
+                    exc,
+                )
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Process-level router cache (one pod == one session)
+# ---------------------------------------------------------------------------
+
+_ROUTERS: dict[str, ToolRouter] = {}
+
+
+def _config_key(agent_config: dict[str, Any] | None) -> str:
+    relevant = {
+        "workspace": WORKSPACE_ROOT,
+        "mcpServers": (agent_config or {}).get("mcpServers") or [],
+    }
+    return hashlib.sha256(
+        json.dumps(relevant, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
+def get_router(agent_config: dict[str, Any] | None) -> ToolRouter:
+    """Cached ToolRouter so capability state (overflow store, future memory)
+    is shared across activities on this pod. Construction stays deterministic
+    from the serializable agentConfig, so a fresh process rebuilds an
+    equivalent router on retry."""
+    key = _config_key(agent_config)
+    router = _ROUTERS.get(key)
+    if router is None:
+        router = ToolRouter(agent_config)
+        _ROUTERS[key] = router
+    return router

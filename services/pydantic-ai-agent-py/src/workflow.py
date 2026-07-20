@@ -46,7 +46,7 @@ from src.messages_io import (
     user_request,
 )
 from src.session_native import terminal_stop_reason_from_events
-from src.toolsets import ToolRouter
+from src.toolsets import get_router
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     )
 
     async def run() -> dict:
-        router = ToolRouter(agent_cfg)
+        router = get_router(agent_cfg)
         messages = load_messages(payload.get("messages"))
         task = str(payload.get("task") or "")
         if task:
@@ -205,14 +205,33 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             else:
                 messages.append(user_request(task))
 
-        from pydantic_ai.models import ModelRequestParameters
+        from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 
         params = ModelRequestParameters(
             function_tools=await router.tool_defs(),
             allow_text_output=True,
         )
         model = build_model()
-        response = await model.request(messages, build_model_settings(), params)
+        request_context = ModelRequestContext(
+            model=model,
+            messages=messages,
+            model_settings=build_model_settings(),
+            model_request_parameters=params,
+        )
+        # Capability hook chain, hosted inside this durable activity:
+        # before_model_request (clamp → sliding-window compaction) transforms
+        # the DURABLE history — whatever the model sees is what this activity
+        # returns, so replay stays consistent and history stays bounded.
+        request_context = await router.apply_before_model_request(request_context)
+
+        async def base_handler(rc):
+            return await model.request(
+                rc.messages, rc.model_settings, rc.model_request_parameters
+            )
+
+        response = await router.apply_model_request(request_context, base_handler)
+        response = await router.apply_after_model_request(request_context, response)
+        messages = list(request_context.messages)
         messages.append(response)
 
         text = response_text(response)
@@ -303,9 +322,25 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         )
 
     async def run() -> tuple[str, str | None]:
-        router = ToolRouter(agent_cfg)
+        router = get_router(agent_cfg)
         try:
             result = await router.call(name, args)
+            # Capability after_tool_execute chain (OverflowingToolOutput
+            # spills big results to <workspace>/.overflow and truncates the
+            # in-history copy; the read_tool_result tool fetches the rest).
+            try:
+                from pydantic_ai.messages import ToolCallPart
+
+                tools = await router.tools()
+                tool_def = tools[name][1].tool_def if name in tools else None
+                call_part = ToolCallPart(
+                    tool_name=name, args=dict(args or {}), tool_call_id=tool_call_id
+                )
+                result = await router.apply_after_tool_execute(
+                    call=call_part, tool_def=tool_def, args=dict(args or {}), result=result
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[execute-tool] after_tool_execute chain failed: %s", exc)
             return (result if isinstance(result, str) else str(result)), None
         except Exception as exc:  # noqa: BLE001
             logger.warning("[execute-tool] %s failed: %s", name, exc)
