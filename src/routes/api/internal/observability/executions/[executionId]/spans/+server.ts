@@ -14,11 +14,13 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 	if (!guard.ok) return guard.res;
 	const query = (url.searchParams.get('query') ?? '').toLowerCase();
 	const errorsOnly = url.searchParams.get('errorsOnly') === 'true';
+	const service = url.searchParams.get('service')?.trim() || undefined;
 	const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 40));
 	const cursorScope = pageCursorScope('spans', {
 		executionId: guard.execution.id,
 		query,
 		errorsOnly,
+		service: service ?? null,
 		limit
 	});
 	const offset = decodePageCursor(url.searchParams.get('cursor'), cursorScope);
@@ -27,6 +29,7 @@ export const GET: RequestHandler = async ({ params, request, url }) => {
 		execution: guard.execution,
 		query,
 		errorsOnly,
+		service,
 		limit,
 		offset,
 		encodeCursor: (nextOffset) => encodePageCursor(nextOffset, cursorScope)

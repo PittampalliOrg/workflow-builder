@@ -5,6 +5,7 @@ import type {
 	ObservabilityExecutionEvidenceLimits,
 	ObservabilityLlmSpan,
 	ObservabilityLogEntry,
+	ObservabilityToolSpan,
 	ObservabilityTraceSpan
 } from '$lib/types/observability';
 import type { RunDigest } from '$lib/types/run-digest';
@@ -95,8 +96,32 @@ export interface WorkflowDiagnosticsReadPort {
 	searchSpans(
 		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],
-		query: { query?: string; errorsOnly?: boolean; limit: number; offset: number }
+		query: {
+			query?: string;
+			errorsOnly?: boolean;
+			serviceNames?: string[];
+			limit: number;
+			offset: number;
+		}
 	): Promise<ObservabilityTraceSpan[]>;
+	loadSpanSummaries(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		limit: number
+	): Promise<{ spans: ObservabilityTraceSpan[]; truncated: boolean }>;
+	searchToolSpans(
+		execution: WorkflowDiagnosticsExecution,
+		traceIds: string[],
+		query: {
+			workflowExecutionId: string;
+			spanId?: string;
+			sessionId?: string;
+			toolName?: string;
+			errorsOnly?: boolean;
+			limit: number;
+			offset: number;
+		}
+	): Promise<ObservabilityToolSpan[]>;
 	getSpan(
 		execution: WorkflowDiagnosticsExecution,
 		traceIds: string[],

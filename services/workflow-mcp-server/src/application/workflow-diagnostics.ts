@@ -2,6 +2,7 @@ import type {
   TraceLlmTurnQuery,
   TraceLogQuery,
   TraceSpanQuery,
+  TraceToolCallQuery,
   WorkflowDiagnosticsPort,
   WorkflowExecutionListQuery,
 } from "../ports/workflow-diagnostics.js";
@@ -47,6 +48,8 @@ export interface WorkflowDiagnosticsUseCases {
   searchSpans(executionId: string, query: TraceSpanQuery): Promise<unknown>;
   getSpan(executionId: string, spanId: string): Promise<unknown>;
   getLlmTurns(executionId: string, query: TraceLlmTurnQuery): Promise<unknown>;
+  getToolCalls(executionId: string, query: TraceToolCallQuery): Promise<unknown>;
+  getSpanTree(executionId: string, maxNodes?: number): Promise<unknown>;
   searchLogs(executionId: string, query: TraceLogQuery): Promise<unknown>;
   getBrowserScreenshot(
     executionId: string,
@@ -164,6 +167,14 @@ export class ApplicationWorkflowDiagnosticsService implements WorkflowDiagnostic
 
   getLlmTurns(executionId: string, query: TraceLlmTurnQuery): Promise<unknown> {
     return this.diagnostics.getLlmTurns(executionId, query);
+  }
+
+  getToolCalls(executionId: string, query: TraceToolCallQuery): Promise<unknown> {
+    return this.diagnostics.getToolCalls(executionId, query);
+  }
+
+  getSpanTree(executionId: string, maxNodes?: number): Promise<unknown> {
+    return this.diagnostics.getSpanTree(executionId, maxNodes);
   }
 
   searchLogs(executionId: string, query: TraceLogQuery): Promise<unknown> {

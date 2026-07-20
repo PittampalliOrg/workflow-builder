@@ -53,6 +53,8 @@ function diagnostics(
     searchSpans: vi.fn(async () => ({ spans: [{ spanId: "span-1" }] })),
     getSpan: vi.fn(async () => ({ span: { spanId: "span-1" } })),
     getLlmTurns: vi.fn(async () => ({ turns: [] })),
+    getToolCalls: vi.fn(async () => ({ toolCalls: [] })),
+    getSpanTree: vi.fn(async () => ({ roots: [] })),
     searchLogs: vi.fn(async () => ({ logs: [] })),
     getBrowserScreenshot: vi.fn(async () => ({
       storageRef: "screenshots/frame.png",
@@ -111,6 +113,8 @@ describe("trace tools", () => {
       "trace_search_spans",
       "trace_get_span",
       "trace_get_llm_turn",
+      "trace_get_tree",
+      "trace_get_tool_calls",
       "trace_get_logs",
       "trace_get_browser_screenshot",
     ]);
@@ -187,6 +191,10 @@ describe("trace tools", () => {
       data: { evidenceCoverage: { overview: "available" } },
       nextActions: [
         {
+          tool: "trace_get_tree",
+          arguments: { executionId: "execution-1" },
+        },
+        {
           tool: "trace_get_span",
           arguments: { executionId: "execution-1", spanId: "span-1" },
         },
@@ -244,7 +252,13 @@ describe("trace tools", () => {
     const response = await tool?.handler({ executionId: "execution-1" });
 
     expect(response.structuredContent.data.errorSpans.spans).toHaveLength(1);
-    expect(response.structuredContent.nextActions).toEqual([]);
+    // The structural tree suggestion is unconditional; no ERROR drills for a
+    // clean successful run.
+    expect(
+      response.structuredContent.nextActions.map(
+        (action: { tool: string }) => action.tool,
+      ),
+    ).toEqual(["trace_get_tree"]);
   });
 
   it("still promotes error evidence when a successful run digest reports an issue", async () => {
@@ -278,7 +292,7 @@ describe("trace tools", () => {
 
     const response = await tool?.handler({ executionId: "execution-1" });
 
-    expect(response.structuredContent.nextActions[0]).toMatchObject({
+    expect(response.structuredContent.nextActions[1]).toMatchObject({
       tool: "trace_get_span",
       arguments: {
         executionId: "execution-1",
@@ -464,8 +478,71 @@ describe("trace tools", () => {
     ).toEqual(["trace_get_span", "trace_get_llm_turn"]);
     expect(llmResponse.structuredContent.nextActions[1].arguments).toEqual({
       executionId: "execution-1",
-      sessionId: "session-llm",
-      limit: 3,
+      spanId: "llm-span",
+    });
+  });
+
+  it("returns the span tree with a tool-call drilldown suggestion", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        getSpanTree: vi.fn(async () => ({
+          roots: [{ spanId: "root", name: "workflow", children: [] }],
+          renderedCount: 1,
+          truncated: { spans: false, nodes: false, siblings: false },
+        })),
+      }),
+    });
+    const tool = captured.find((entry) => entry.name === "trace_get_tree");
+
+    const response = await tool?.handler({
+      executionId: "execution-1",
+      maxNodes: 100,
+    });
+
+    expect(response.structuredContent.ok).toBe(true);
+    expect(response.structuredContent.data.roots).toHaveLength(1);
+    expect(
+      response.structuredContent.nextActions.map(
+        (action: { tool: string }) => action.tool,
+      ),
+    ).toContain("trace_get_tool_calls");
+  });
+
+  it("pages tool calls and correlates a failing call with logs", async () => {
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, {
+      principal,
+      diagnostics: diagnostics({
+        getToolCalls: vi.fn(async () => ({
+          toolCalls: [
+            { spanId: "tool-span-1", toolName: "run_command", status: "Error" },
+          ],
+          page: { limit: 20, count: 1, truncated: true, nextCursor: "cur-2" },
+        })),
+      }),
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "trace_get_tool_calls",
+    );
+
+    const response = await tool?.handler({
+      executionId: "execution-1",
+      errorsOnly: true,
+    });
+
+    const actions = response.structuredContent.nextActions as Array<{
+      tool: string;
+      arguments: Record<string, unknown>;
+    }>;
+    expect(actions[0]).toMatchObject({
+      tool: "trace_get_logs",
+      arguments: { executionId: "execution-1", spanId: "tool-span-1" },
+    });
+    expect(actions[1]).toMatchObject({
+      tool: "trace_get_tool_calls",
+      arguments: { executionId: "execution-1", cursor: "cur-2" },
     });
   });
 
@@ -553,10 +630,12 @@ describe("trace tools", () => {
         (action: { tool: string }) => action.tool,
       ),
     ).toEqual(["trace_get_logs", "trace_get_llm_turn"]);
+    // spanId is preferred even when the span carries a session.id attribute:
+    // daprd/collector-stamped session ids are k8s-label-sanitized (lowercased,
+    // truncated) and never match the curated obs.llm_spans SessionId values.
     expect(llmResponse.structuredContent.nextActions[1].arguments).toEqual({
       executionId: "execution-1",
-      sessionId: "session-model",
-      limit: 3,
+      spanId: "model-span",
     });
   });
 

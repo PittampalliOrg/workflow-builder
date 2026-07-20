@@ -1027,6 +1027,10 @@ export async function searchTraceToolSpans(
 	traceIds: string[],
 	opts: TraceTimeWindow & {
 		workflowExecutionId: string;
+		spanId?: string;
+		sessionId?: string;
+		toolName?: string;
+		errorsOnly?: boolean;
 		serviceNames?: string[];
 		limit?: number;
 		offset?: number;
@@ -1038,6 +1042,19 @@ export async function searchTraceToolSpans(
 	const workflowExecutionId = opts.workflowExecutionId.trim();
 	if (!workflowExecutionId) return [];
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	const extraClauses: string[] = [];
+	if (opts.spanId?.trim()) {
+		extraClauses.push(`AND SpanId = '${escapeClickHouseString(opts.spanId.trim())}'`);
+	}
+	if (opts.sessionId?.trim()) {
+		extraClauses.push(`AND SessionId = '${escapeClickHouseString(opts.sessionId.trim())}'`);
+	}
+	if (opts.toolName?.trim()) {
+		extraClauses.push(`AND ToolName = '${escapeClickHouseString(opts.toolName.trim())}'`);
+	}
+	if (opts.errorsOnly) {
+		extraClauses.push(`AND StatusCode = 'Error'`);
+	}
 	const limit = Math.min(201, Math.max(1, opts.limit ?? 51));
 	const offset = Math.max(0, opts.offset ?? 0);
 	const rows = await queryClickHouse(`
@@ -1061,6 +1078,7 @@ export async function searchTraceToolSpans(
 		  AND WorkflowExecutionId = '${escapeClickHouseString(workflowExecutionId)}'
 		  AND ToolName != ''
 		  AND (ToolArguments != '{}' OR ToolResult != '{}')
+		${extraClauses.join('\n		')}
 		${serviceNameClause(opts.serviceNames)}
 		${llmTraceResourceScopeSuffix(opts.traceResourceScope, opts)}
 		${traceTimeWindowClause(opts)}
