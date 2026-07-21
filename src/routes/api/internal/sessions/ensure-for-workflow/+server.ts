@@ -36,7 +36,10 @@ import {
 	runtimeHasNativeGoalHarness,
 	runtimeUsesSharedWorkspace,
 } from "$lib/server/sessions/runtime-target";
-import { stampScriptGuardHeader } from "$lib/server/goals/mcp-wiring";
+import {
+	stampScriptGuardHeader,
+	stampWorkflowMcpSessionAuth,
+} from "$lib/server/goals/mcp-wiring";
 
 /**
  * Internal endpoint called by the workflow-orchestrator `spawn_session_for_workflow`
@@ -657,9 +660,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			null,
 		),
 	} as AgentConfig;
-	let executionDispatchAgentConfig = dispatchAgentConfig;
 	const dispatchMcpServers =
 		(dispatchAgentConfig as { mcpServers?: unknown[] }).mcpServers ?? [];
+	const authenticatedMcpServers = stampWorkflowMcpSessionAuth(
+		dispatchMcpServers,
+		sessionId,
+		workflowMcpSessionToken,
+	);
+	let executionDispatchAgentConfig = {
+		...dispatchAgentConfig,
+		mcpServers: authenticatedMcpServers,
+	} as AgentConfig;
 	if (workflowExecutionId && hasAgentBrowserServer(dispatchMcpServers)) {
 		const targetAuthAssertion = await workflowTargetAuth.mintAssertion({
 			executionId: workflowExecutionId,
@@ -668,9 +679,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 		if (targetAuthAssertion) {
 			executionDispatchAgentConfig = {
-				...dispatchAgentConfig,
+				...executionDispatchAgentConfig,
 				mcpServers: stampAgentBrowserRunHeaders(
-					dispatchMcpServers,
+					authenticatedMcpServers,
 					{ executionId: workflowExecutionId, workflowId, nodeId },
 					targetAuthAssertion,
 				),

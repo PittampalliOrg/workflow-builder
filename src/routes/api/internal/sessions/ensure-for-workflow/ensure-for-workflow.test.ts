@@ -27,7 +27,9 @@ const mocks = vi.hoisted(() => {
 			};
 		}),
 		workflowData: {
-			getWorkflowByRef: vi.fn(async () => null),
+			getWorkflowByRef: vi.fn(
+				async (): Promise<Record<string, unknown> | null> => null,
+			),
 			getWorkflowExecutionSessionOwnerContext: vi.fn(async () => null),
 			checkBenchmarkSessionProvisioningGate: vi.fn(async () => ({
 				ok: true,
@@ -122,6 +124,7 @@ const mocks = vi.hoisted(() => {
 			resolveWorkflowSessionAgent: vi.fn(
 				async (input: {
 					publishedAgent: { agentId: string; agentVersion: number } | null;
+					agentConfig?: AgentConfig;
 				}) =>
 					input.publishedAgent
 						? {
@@ -637,6 +640,60 @@ describe("dynamic-script spawn MCP wiring", () => {
 		mocks.workflowTargetAuth.mintAssertion.mockReset();
 		mocks.workflowTargetAuth.mintAssertion.mockResolvedValue(
 			"wfb_browser_auth_v1.signed.proof",
+		);
+	});
+
+	it("adds signed session auth only to the explicit Workflow MCP connection", async () => {
+		mocks.workflowData.getWorkflowByRef.mockResolvedValueOnce({
+			engineType: "dynamic-script",
+		});
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "openai",
+			token: "unused",
+			body: {
+				workflowExecutionId: "execution-1",
+				agentConfig: {
+					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+					mcpServers: [
+						{
+							name: "trace",
+							url: "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp",
+							headers: {
+									"x-wfb-session-id": "caller-session",
+									"x-wfb-session-token": "caller-token",
+							},
+						},
+						{
+							name: "lookalike",
+							url: "https://workflow-mcp-server.example.test/mcp",
+						},
+					],
+				},
+			},
+		});
+
+		const persistedCall = mocks.sessionCommands.resolveWorkflowSessionAgent.mock.calls.at(
+			-1,
+		)?.[0] as unknown as {
+				agentConfig: { mcpServers: Array<Record<string, unknown>> };
+			};
+		expect(JSON.stringify(persistedCall.agentConfig)).not.toContain(
+			"signed-workflow-mcp-session",
+		);
+
+		const childConfig = (payload.childInput as Record<string, unknown>)
+			.agentConfig as { mcpServers: Array<Record<string, unknown>> };
+		expect(childConfig.mcpServers[0]).toMatchObject({
+			headers: {
+				"X-Wfb-Session-Id": "sess-dapr-agent-py",
+				"X-Wfb-Session-Token": "signed-workflow-mcp-session",
+				"X-Wfb-Script-Depth": "1",
+			},
+		});
+		expect(JSON.stringify(childConfig.mcpServers[1])).not.toContain(
+			"signed-workflow-mcp-session",
 		);
 	});
 

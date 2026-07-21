@@ -30,6 +30,18 @@ export function validateInternalToken(request: Request): boolean {
   return !!token && token === expected;
 }
 
+/** Purpose-bound credential accepted only by the Drasi observation/incident routes. */
+export function validateDrasiIncidentIngestToken(request: Request): boolean {
+  const expected = env.DRASI_INCIDENT_INGEST_TOKEN?.trim();
+  const authorization = request.headers.get("authorization")?.trim() || "";
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  const token = request.headers.get("x-drasi-incident-token")?.trim() || bearer;
+  if (!expected || !token) return false;
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const tokenDigest = createHash("sha256").update(token).digest();
+  return timingSafeEqual(expectedDigest, tokenDigest);
+}
+
 /**
  * Throw a 401 if the request doesn't carry a valid INTERNAL_API_TOKEN.
  * Convenience wrapper for SvelteKit request handlers on /api/internal/*

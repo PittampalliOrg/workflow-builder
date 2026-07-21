@@ -1,4 +1,4 @@
-import { and, asc, desc, gt, gte, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ne, sql as drizzleSql } from "drizzle-orm";
 
 import type {
 	GitOpsActivityEventListOptions,
@@ -16,6 +16,7 @@ import {
 
 type Database = typeof defaultDb;
 type SqlClient = typeof defaultSql;
+const INTERNAL_DRASI_CURRENT_SOURCE = "drasi-kubernetes-observer-current";
 
 function requireDb(database: Database): Database {
 	if (!database) throw new Error("Database not configured");
@@ -58,15 +59,33 @@ export class PostgresGitOpsActivityEventStore
 					raw: drizzleSql`excluded.raw`,
 					updatedAt: values.updatedAt,
 				},
+				setWhere: drizzleSql`${gitopsActivityEvents.source} <> ${INTERNAL_DRASI_CURRENT_SOURCE} OR excluded.observed_at >= ${gitopsActivityEvents.observedAt}`,
 			})
 			.returning();
-		return rowToEvent(row);
+		if (row) return rowToEvent(row);
+
+		// A stale current-state observation is an accepted no-op. PostgreSQL does
+		// not return the retained row when ON CONFLICT's WHERE clause rejects the
+		// update, so load it explicitly and let transition-history ingestion
+		// continue instead of surfacing a false 502.
+		const [retained] = await database
+			.select()
+			.from(gitopsActivityEvents)
+			.where(eq(gitopsActivityEvents.eventId, event.eventId))
+			.limit(1);
+		if (!retained) throw new Error("activity event conflict retained no row");
+		return rowToEvent(retained);
 	}
 
 	async list(options: GitOpsActivityEventListOptions = {}) {
 		const database = requireDb(this.database);
 		const limit = clampGitOpsActivityEventLimit(options.limit);
-		const conditions = [];
+		// Drasi's stable current-state rows are a CDC projection, not activity
+		// history. The paired transition row is the single event exposed through
+		// the REST/SSE activity surface.
+		const conditions = [
+			ne(gitopsActivityEvents.source, INTERNAL_DRASI_CURRENT_SOURCE),
+		];
 		if (Number.isFinite(options.afterSequence ?? NaN)) {
 			conditions.push(
 				gt(gitopsActivityEvents.sequence, Number(options.afterSequence)),
