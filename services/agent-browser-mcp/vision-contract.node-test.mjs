@@ -63,6 +63,15 @@ describe("agent-browser vision contract", () => {
 			{ url: "https://example.test" },
 		);
 		assert.deepEqual(
+			sanitizeExternalToolArguments("agent_browser_fill", {
+				selector: "e53",
+				text: "kimi/kimi-k3",
+				value: "must-not-replace-child-contract",
+				session: "other-lane",
+			}),
+			{ selector: "e53", text: "kimi/kimi-k3" },
+		);
+		assert.deepEqual(
 			sanitizeExternalToolArguments("agent_browser_screenshot", {
 				fullPage: true,
 				format: "png",
@@ -97,6 +106,28 @@ describe("agent-browser vision contract", () => {
 			type: "object",
 			properties: { url: { type: "string" } },
 			required: ["url"],
+			additionalProperties: false,
+		});
+
+		const fill = pruneExternalToolDefinition({
+			name: "agent_browser_fill",
+			inputSchema: {
+				type: "object",
+				properties: {
+					selector: { type: "string" },
+					text: { type: "string" },
+					session: { type: "string" },
+				},
+				required: ["selector", "text", "session"],
+			},
+		});
+		assert.deepEqual(fill.inputSchema, {
+			type: "object",
+			properties: {
+				selector: { type: "string" },
+				text: { type: "string" },
+			},
+			required: ["selector", "text"],
 			additionalProperties: false,
 		});
 	});
