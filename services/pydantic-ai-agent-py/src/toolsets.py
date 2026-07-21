@@ -30,9 +30,9 @@ import inspect
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic_ai._run_context import RunContext
 from pydantic_ai.toolsets import AbstractToolset
@@ -43,8 +43,10 @@ from src.config import (
     COMPACTION_ENABLED,
     COMPACTION_KEEP_MESSAGES,
     COMPACTION_MAX_MESSAGES,
+    MCP_CALL_TIMEOUT_SECONDS,
     MCP_FAIL_CACHE_SECONDS,
-    MCP_TIMEOUT_SECONDS,
+    MCP_LIST_TIMEOUT_SECONDS,
+    MCP_READ_TIMEOUT_SECONDS,
     MCP_TOOLS_CACHE_SECONDS,
     OVERFLOW_ENABLED,
     REPO_INVENTORY_TOOL_ENABLED,
@@ -67,9 +69,15 @@ _TOOL_NAME_ALIASES = {
 class _McpCapabilityBinding:
     capability: Any
     allowed_tools: set[str] | None
+    capability_factory: Callable[[], Any] | None = None
 
     def get_toolset(self) -> Any:
         return self.capability.get_toolset()
+
+    def fresh_toolset(self) -> Any:
+        if self.capability_factory is None:
+            return None
+        return self.capability_factory().get_toolset()
 
 
 def _normalize_tool_names(value: Any) -> set[str]:
@@ -224,16 +232,46 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
         )
         try:
             from pydantic_ai.capabilities import MCP
+            from pydantic_ai.mcp import MCPToolset
 
-            kwargs: dict[str, Any] = {}
-            if headers:
-                kwargs["headers"] = headers
-            if isinstance(auth_token, str) and auth_token.strip():
-                kwargs["authorization_token"] = auth_token.strip()
+            normalized_token = (
+                auth_token.strip()
+                if isinstance(auth_token, str) and auth_token.strip()
+                else None
+            )
+
+            def capability_factory(
+                *,
+                server_url: str = str(url),
+                server_headers: dict[str, str] | None = headers,
+                authorization_token: str | None = normalized_token,
+            ) -> Any:
+                local_headers = dict(server_headers or {})
+                if authorization_token:
+                    local_headers["Authorization"] = authorization_token
+                # Keep the FastMCP read deadline just inside the outer
+                # durable-activity guard. Its 300s default can otherwise
+                # preempt server-owned operations such as browser capture
+                # finalization, which is intentionally bounded at 420s.
+                local = MCPToolset(
+                    server_url,
+                    headers=local_headers or None,
+                    include_instructions=True,
+                    read_timeout=float(MCP_READ_TIMEOUT_SECONDS),
+                )
+                return MCP(
+                    server_url,
+                    local=local,
+                    headers=server_headers,
+                    authorization_token=authorization_token,
+                )
+
+            capability = capability_factory()
             capabilities.append(
                 _McpCapabilityBinding(
-                    capability=MCP(url, **kwargs),
+                    capability=capability,
                     allowed_tools=_mcp_tool_allowlist(server),
+                    capability_factory=capability_factory,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -291,6 +329,12 @@ class ToolRouter:
         # per-call timeout upstream) can never wedge a durable activity.
         self._network_toolsets: set[int] = set()
         self._toolset_allowlists: dict[int, set[str] | None] = {}
+        self._network_toolset_factories: dict[int, Callable[[], Any]] = {}
+        # Execution routes captured when tools are advertised to the model.
+        # Activities use these bindings directly: route lookup must not re-list
+        # unrelated MCP servers, especially after a long reasoning turn lets a
+        # discovery cache expire.
+        self._tool_routes: dict[str, tuple[Any, Any]] = {}
         # Harness support tools are implementation infrastructure. In
         # particular, read_tool_result must remain available whenever overflow
         # is enabled or the model can receive a spill pointer it cannot follow.
@@ -331,6 +375,11 @@ class ToolRouter:
                         if isinstance(cap, _McpCapabilityBinding)
                         else None
                     )
+                    if (
+                        isinstance(cap, _McpCapabilityBinding)
+                        and cap.capability_factory is not None
+                    ):
+                        self._network_toolset_factories[id(toolset)] = cap.fresh_toolset
 
     # ------------------------------------------------------------------
     # Tool routing
@@ -340,7 +389,7 @@ class ToolRouter:
         """get_tools on one toolset, timeout-guarded for network toolsets."""
         coro = toolset.get_tools(ctx)
         if id(toolset) in self._network_toolsets:
-            return await asyncio.wait_for(coro, timeout=MCP_TIMEOUT_SECONDS)
+            return await asyncio.wait_for(coro, timeout=MCP_LIST_TIMEOUT_SECONDS)
         return await coro
 
     def _tool_allowed(self, toolset: Any, name: str) -> bool:
@@ -397,11 +446,17 @@ class ToolRouter:
                     "[toolsets] %s.get_tools timed out after %ss — MCP tools "
                     "unavailable (skipping this server for %ss)",
                     type(toolset).__name__,
-                    MCP_TIMEOUT_SECONDS,
+                    MCP_LIST_TIMEOUT_SECONDS,
                     MCP_FAIL_CACHE_SECONDS,
                 )
+                replacement = (
+                    self._replace_network_toolset(toolset) if is_network else None
+                )
                 if is_network:
-                    self._mcp_fail_until[id(toolset)] = now + MCP_FAIL_CACHE_SECONDS
+                    failed_id = (
+                        id(replacement) if replacement is not None else id(toolset)
+                    )
+                    self._mcp_fail_until[failed_id] = now + MCP_FAIL_CACHE_SECONDS
                 continue
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -410,8 +465,17 @@ class ToolRouter:
                     exc,
                     MCP_FAIL_CACHE_SECONDS,
                 )
+                disconnected = "client is not connected" in str(exc).lower()
+                replacement = (
+                    self._replace_network_toolset(toolset)
+                    if is_network and disconnected
+                    else None
+                )
                 if is_network:
-                    self._mcp_fail_until[id(toolset)] = now + MCP_FAIL_CACHE_SECONDS
+                    failed_id = (
+                        id(replacement) if replacement is not None else id(toolset)
+                    )
+                    self._mcp_fail_until[failed_id] = now + MCP_FAIL_CACHE_SECONDS
                 continue
             if is_network:
                 self._mcp_tools_cache[id(toolset)] = (
@@ -422,21 +486,149 @@ class ToolRouter:
             for name, tool in tools.items():
                 if self._tool_allowed(toolset, name):
                     self._register_tool(combined, name, toolset, tool)
+        # This advertisement is authoritative for the next model response.
+        # Replace, rather than extend, execution routes so removed MCP tools
+        # cannot survive a refreshed listing as stale non-sequential routes.
+        self._tool_routes = dict(combined)
         return combined
 
+    async def tool_defs_with_execution(self) -> tuple[list[Any], set[str]]:
+        """Return definitions and tools that require ordered execution.
+
+        MCP clients carry transport-session state and cannot be shared safely
+        by the separate event loops used by concurrent durable activities.
+        The workflow uses the returned names as barriers while leaving local
+        tools eligible for parallel fan-out.
+        """
+        tools = await self.tools()
+        definitions = []
+        sequential = set()
+        for name, (toolset, tool) in tools.items():
+            tool_def = tool.tool_def
+            is_network = id(toolset) in self._network_toolsets
+            if is_network and not tool_def.sequential:
+                tool_def = replace(tool_def, sequential=True)
+            if is_network or tool_def.sequential:
+                sequential.add(name)
+            definitions.append(tool_def)
+        return definitions, sequential
+
     async def tool_defs(self) -> list[Any]:
-        return [tool.tool_def for _, tool in (await self.tools()).values()]
+        definitions, _ = await self.tool_defs_with_execution()
+        return definitions
+
+    def _replace_network_toolset(self, toolset: Any) -> Any | None:
+        """Replace one unusable MCP client without disturbing other servers."""
+        toolset_id = id(toolset)
+        factory = self._network_toolset_factories.get(toolset_id)
+        if factory is None:
+            return None
+        try:
+            replacement = factory()
+            index = next(
+                index
+                for index, candidate in enumerate(self._toolsets)
+                if candidate is toolset
+            )
+        except (Exception, StopIteration) as exc:  # noqa: BLE001
+            logger.warning(
+                "[toolsets] failed to rebuild disconnected MCP toolset: %s", exc
+            )
+            return None
+        if replacement is None:
+            return None
+
+        allowlist = self._toolset_allowlists.pop(toolset_id, None)
+        self._toolsets[index] = replacement
+        self._network_toolsets.discard(toolset_id)
+        self._network_toolsets.add(id(replacement))
+        self._toolset_allowlists[id(replacement)] = allowlist
+        self._network_toolset_factories.pop(toolset_id, None)
+        self._network_toolset_factories[id(replacement)] = factory
+        self._mcp_tools_cache.pop(toolset_id, None)
+        self._mcp_fail_until.pop(toolset_id, None)
+        self._tool_routes = {
+            name: binding
+            for name, binding in self._tool_routes.items()
+            if binding[0] is not toolset
+        }
+        return replacement
+
+    async def _resolve_tool(self, name: str) -> tuple[Any, Any] | None:
+        """Resolve one execution route without global MCP discovery when known."""
+        cached_route = self._tool_routes.get(name)
+        if cached_route is not None:
+            return cached_route
+
+        # A fresh process may reconstruct the router between call_llm and the
+        # durable tool activity. Resolve local capabilities first and never
+        # involve network toolsets for a known local name.
+        local_matches: dict[str, tuple[Any, Any]] = {}
+        ctx = _run_context()
+        for toolset in self._toolsets:
+            if id(toolset) in self._network_toolsets:
+                continue
+            try:
+                local_tools = await self._get_tools(toolset, ctx)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[toolsets] local get_tools failed on %s: %s",
+                    type(toolset).__name__,
+                    exc,
+                )
+                continue
+            tool = local_tools.get(name)
+            if tool is not None and self._tool_allowed(toolset, name):
+                self._register_tool(local_matches, name, toolset, tool)
+        local_route = local_matches.get(name)
+        if local_route is not None:
+            self._tool_routes[name] = local_route
+            return local_route
+
+        # An expired listing is still the route that was advertised to the
+        # model. It is valid for executing that emitted call and avoids a new
+        # global handshake solely because the TTL elapsed during reasoning.
+        for toolset in self._toolsets:
+            if id(toolset) not in self._network_toolsets:
+                continue
+            cached_listing = self._mcp_tools_cache.get(id(toolset))
+            if cached_listing is None:
+                continue
+            tool = cached_listing[1].get(name)
+            if tool is not None and self._tool_allowed(toolset, name):
+                route = (toolset, tool)
+                self._tool_routes[name] = route
+                return route
+
+        # Unknown network tools after process reconstruction require a fresh
+        # advertisement pass. This is the exceptional fallback, not the normal
+        # execute_tool path.
+        return (await self.tools()).get(name)
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
-        tools = await self.tools()
-        if name not in tools:
-            raise KeyError(f"unknown tool {name!r}; available: {sorted(tools)}")
-        toolset, tool = tools[name]
+        route = await self._resolve_tool(name)
+        if route is None:
+            raise KeyError(
+                f"unknown tool {name!r}; available: {sorted(self._tool_routes)}"
+            )
+        toolset, tool = route
         coro = toolset.call_tool(name, dict(args or {}), _run_context(), tool)
         # Timeout-guard network (MCP) tool calls; local FS/Shell tools run
         # unbounded (Shell has its own per-command timeout).
         if id(toolset) in self._network_toolsets:
-            return await asyncio.wait_for(coro, timeout=MCP_TIMEOUT_SECONDS)
+            try:
+                return await asyncio.wait_for(coro, timeout=MCP_CALL_TIMEOUT_SECONDS)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # wait_for cancels the in-flight FastMCP context. A cancelled
+                # client's transport can remain disconnected after unwinding,
+                # so the next durable retry needs a fresh client for only this
+                # server binding.
+                self._replace_network_toolset(toolset)
+                raise
+            except Exception as exc:
+                if "client is not connected" in str(exc).lower():
+                    self._replace_network_toolset(toolset)
+                raise
         return await coro
 
     async def instructions(self) -> str:

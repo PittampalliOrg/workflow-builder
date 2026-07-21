@@ -111,6 +111,65 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     assert type(reloaded[-1]).__name__ == "ModelResponse"
 
 
+def test_call_llm_marks_mcp_tool_calls_for_sequential_execution(monkeypatch, workspace):
+    from pydantic_ai.messages import ToolCallPart
+    from pydantic_ai.tools import ToolDefinition
+
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(
+        captured,
+        [
+            [
+                ToolCallPart(
+                    tool_name="read_file",
+                    args={"path": "index.html"},
+                    tool_call_id="local-1",
+                ),
+                ToolCallPart(
+                    tool_name="browser_screenshot",
+                    args={},
+                    tool_call_id="mcp-1",
+                ),
+            ]
+        ],
+    )
+
+    class FakeRouter:
+        async def instructions(self):
+            return ""
+
+        async def tool_defs_with_execution(self):
+            definitions = [
+                ToolDefinition(
+                    name=name,
+                    description=name,
+                    parameters_json_schema={"type": "object"},
+                )
+                for name in ("read_file", "browser_screenshot")
+            ]
+            return definitions, {"browser_screenshot"}
+
+        async def apply_before_model_request(self, request_context):
+            return request_context
+
+        async def apply_model_request(self, request_context, handler):
+            return await handler(request_context)
+
+        async def apply_after_model_request(self, _request_context, response):
+            return response
+
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+    monkeypatch.setattr(wfmod, "get_router", lambda _config: FakeRouter())
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "inspect", "messages": [], "context": {}, "iteration": 0},
+    )
+
+    assert "sequential" not in out["toolCalls"][0]
+    assert out["toolCalls"][1]["sequential"] is True
+
+
 def test_call_llm_continues_existing_history(monkeypatch, workspace):
     from pydantic_ai.messages import ModelRequest, TextPart, UserPromptPart
 

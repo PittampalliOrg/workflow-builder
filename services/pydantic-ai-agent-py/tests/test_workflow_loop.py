@@ -2,8 +2,9 @@
 
 The workflow generator is driven manually with a fake context so the tests
 assert the exact durable-activity choreography: one call_llm activity per
-LLM message, one execute_tool activity per tool call (when_all fan-out),
-a retry policy on every activity, and cancellation short-circuiting.
+LLM message, one execute_tool activity per tool call, local-tool when_all
+fan-out, MCP barriers, a retry policy on every activity, and cancellation
+short-circuiting.
 """
 
 from __future__ import annotations
@@ -108,6 +109,64 @@ def test_tool_calls_fan_out_as_separate_activities():
     assert len(appended) == 2
     # the bootstrap task is consumed after iteration 0
     assert second_llm_input["task"] is None
+    assert result["success"] is True and result["content"] == "done"
+
+
+def test_mcp_calls_are_ordered_barriers_around_local_fan_out():
+    ctx = FakeCtx()
+    gen = agent_workflow(ctx, {"task": "inspect page", "context": {}})
+    calls = [
+        {"toolName": "read_file", "toolCallId": "l1", "args": {}},
+        {"toolName": "find_files", "toolCallId": "l2", "args": {}},
+        {
+            "toolName": "browser_open",
+            "toolCallId": "m1",
+            "args": {},
+            "sequential": True,
+        },
+        {"toolName": "search_files", "toolCallId": "l3", "args": {}},
+        {"toolName": "read_file", "toolCallId": "l4", "args": {}},
+        {
+            "toolName": "browser_screenshot",
+            "toolCallId": "m2",
+            "args": {},
+            "sequential": True,
+        },
+    ]
+    results = {
+        call["toolCallId"]: {"message": {"kind": "request", "id": call["toolCallId"]}}
+        for call in calls
+    }
+    yielded, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=calls),
+            [results["l1"], results["l2"]],
+            results["m1"],
+            [results["l3"], results["l4"]],
+            results["m2"],
+            {"cancelled": False},
+            llm_response(text="done"),
+        ],
+    )
+
+    assert yielded[2][0] == "when_all"
+    assert len(yielded[2][1]) == 2
+    assert yielded[3][0:2] == ("activity", execute_tool)
+    assert yielded[4][0] == "when_all"
+    assert len(yielded[4][1]) == 2
+    assert yielded[5][0:2] == ("activity", execute_tool)
+
+    second_llm = [call[1] for call in ctx.calls if call[0] is call_llm][1]
+    assert [message.get("id") for message in second_llm["messages"][1:]] == [
+        "l1",
+        "l2",
+        "m1",
+        "l3",
+        "l4",
+        "m2",
+    ]
     assert result["success"] is True and result["content"] == "done"
 
 
