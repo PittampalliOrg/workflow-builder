@@ -19,25 +19,37 @@ CONTRACT = "a" * 64
 OTHER_CONTRACT = "b" * 64
 HOLDER = "00000000-0000-4000-8000-000000000001"
 OTHER_HOLDER = "00000000-0000-4000-8000-000000000002"
+TOKEN_ONE = "token_one_abcdefghijklmnopqrstuvwxyz012345"
+TOKEN_TWO = "token_two_abcdefghijklmnopqrstuvwxyz012345"
 
 
 class LeaseAdmissionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.now = 100.0
-        self.service = BrowserService(monotonic=lambda: self.now)
+        self.tokens = iter((TOKEN_ONE, TOKEN_TWO))
+        self.service = BrowserService(
+            monotonic=lambda: self.now,
+            token_factory=lambda: next(self.tokens),
+        )
         self.service._actor_creation_times = {}
 
     async def test_fence_renews_for_exact_owner_and_expires_fail_open(self):
-        status = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30)
+        status = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30, None)
         self.assertFalse(status.accepting_new_leases)
         self.assertEqual(CONTRACT, status.contract_sha256)
         self.assertEqual(30, status.expires_in_seconds)
+        self.assertEqual(TOKEN_ONE, status.lease_token)
 
         self.now += 10
-        renewed = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30)
+        renewed = await self.service.begin_lease_admission(
+            CONTRACT, HOLDER, 30, TOKEN_ONE
+        )
         self.assertEqual(30, renewed.expires_in_seconds)
+        self.assertEqual(TOKEN_ONE, renewed.lease_token)
         with self.assertRaises(LeaseAdmissionConflictError):
-            await self.service.begin_lease_admission(OTHER_CONTRACT, OTHER_HOLDER, 30)
+            await self.service.begin_lease_admission(
+                OTHER_CONTRACT, OTHER_HOLDER, 30, None
+            )
 
         self.now += 31
         expired = await self.service.lease_admission_status()
@@ -46,18 +58,38 @@ class LeaseAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(expired.expires_in_seconds)
 
     async def test_only_exact_owner_can_release_a_live_fence(self):
-        await self.service.begin_lease_admission(CONTRACT, HOLDER, 30)
+        lease = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30, None)
         with self.assertRaises(LeaseAdmissionConflictError):
-            await self.service.end_lease_admission(CONTRACT, OTHER_HOLDER)
+            await self.service.end_lease_admission(
+                CONTRACT, OTHER_HOLDER, lease.lease_token
+            )
         self.assertFalse(
             (await self.service.lease_admission_status()).accepting_new_leases
         )
 
-        await self.service.end_lease_admission(CONTRACT, HOLDER)
+        await self.service.end_lease_admission(CONTRACT, HOLDER, lease.lease_token)
         self.assertTrue(
             (await self.service.lease_admission_status()).accepting_new_leases
         )
-        await self.service.end_lease_admission(CONTRACT, HOLDER)
+        await self.service.end_lease_admission(CONTRACT, HOLDER, lease.lease_token)
+
+    async def test_expired_generation_cannot_release_same_owner_reacquisition(self):
+        first = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30, None)
+        self.now += 31
+        with self.assertRaises(LeaseAdmissionConflictError):
+            await self.service.begin_lease_admission(
+                CONTRACT, HOLDER, 30, first.lease_token
+            )
+
+        second = await self.service.begin_lease_admission(CONTRACT, HOLDER, 30, None)
+        self.assertNotEqual(first.lease_token, second.lease_token)
+        with self.assertRaises(LeaseAdmissionConflictError):
+            await self.service.end_lease_admission(CONTRACT, HOLDER, first.lease_token)
+        status = await self.service.lease_admission_status()
+        self.assertFalse(status.accepting_new_leases)
+        self.assertEqual(CONTRACT, status.contract_sha256)
+        self.assertNotIn("lease_token", status.model_dump())
+        await self.service.end_lease_admission(CONTRACT, HOLDER, second.lease_token)
 
     async def test_fence_ack_waits_for_prior_create_and_blocks_later_create(self):
         create_started = Event()
@@ -78,7 +110,7 @@ class LeaseAdmissionTests(unittest.IsolatedAsyncioTestCase):
             creating = asyncio.create_task(self.service.create_browser())
             self.assertTrue(await asyncio.to_thread(create_started.wait, 1))
             fencing = asyncio.create_task(
-                self.service.begin_lease_admission(CONTRACT, HOLDER, 30)
+                self.service.begin_lease_admission(CONTRACT, HOLDER, 30, None)
             )
             await asyncio.sleep(0.01)
             self.assertFalse(fencing.done())
@@ -118,6 +150,17 @@ class LeaseAdmissionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 "expected", await routes.verify_rollout_api_key("expected")
             )
+
+    async def test_non_ascii_api_keys_are_rejected_instead_of_raising_type_error(self):
+        with patch.object(routes, "API_KEY", "expected"):
+            with self.assertRaises(HTTPException) as browser_error:
+                await routes.verify_api_key("éxpected")
+            self.assertEqual(401, browser_error.exception.status_code)
+
+        with patch.object(routes, "ROLLOUT_API_KEY", "expected"):
+            with self.assertRaises(HTTPException) as rollout_error:
+                await routes.verify_rollout_api_key("éxpected")
+            self.assertEqual(401, rollout_error.exception.status_code)
 
 
 if __name__ == "__main__":

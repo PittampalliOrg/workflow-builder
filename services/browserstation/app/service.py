@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import os
+import secrets
 import time
-from typing import Optional
+from typing import Callable, Optional
 import uuid
 from urllib.parse import urlsplit
 
@@ -25,6 +26,7 @@ from app.models import (
     BrowserList,
     BrowserStatus,
     Health,
+    LeaseAdmissionLease,
     LeaseAdmissionStatus,
 )
 from app.websocket_transport import (
@@ -109,11 +111,18 @@ class BrowserService:
     # newer schemas can preserve exact age when start_time_ms is available.
     _actor_creation_times: dict[ActorIdentity, float] = {}
 
-    def __init__(self, *, monotonic=time.monotonic):
+    def __init__(
+        self,
+        *,
+        monotonic=time.monotonic,
+        token_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
+    ):
         self._monotonic = monotonic
+        self._token_factory = token_factory
         self._lease_admission_lock = asyncio.Lock()
         self._lease_admission_contract_sha256: Optional[str] = None
         self._lease_admission_holder_uid: Optional[str] = None
+        self._lease_admission_token: Optional[str] = None
         self._lease_admission_expires_at = 0.0
 
     def _lease_admission_status_locked(self) -> LeaseAdmissionStatus:
@@ -122,6 +131,7 @@ class BrowserService:
         if remaining <= 0:
             self._lease_admission_contract_sha256 = None
             self._lease_admission_holder_uid = None
+            self._lease_admission_token = None
             self._lease_admission_expires_at = 0.0
             return LeaseAdmissionStatus(accepting_new_leases=True)
         return LeaseAdmissionStatus(
@@ -135,23 +145,40 @@ class BrowserService:
             return self._lease_admission_status_locked()
 
     async def begin_lease_admission(
-        self, contract_sha256: str, holder_uid: str, ttl_seconds: int
-    ) -> LeaseAdmissionStatus:
+        self,
+        contract_sha256: str,
+        holder_uid: str,
+        ttl_seconds: int,
+        lease_token: Optional[str],
+    ) -> LeaseAdmissionLease:
         async with self._lease_admission_lock:
             status = self._lease_admission_status_locked()
-            if not status.accepting_new_leases and (
+            if status.accepting_new_leases:
+                if lease_token is not None:
+                    raise LeaseAdmissionConflictError(
+                        "lease admission token is expired or unknown"
+                    )
+                lease_token = self._token_factory()
+                self._lease_admission_contract_sha256 = contract_sha256
+                self._lease_admission_holder_uid = holder_uid
+                self._lease_admission_token = lease_token
+            elif (
                 self._lease_admission_contract_sha256 != contract_sha256
                 or self._lease_admission_holder_uid != holder_uid
+                or self._lease_admission_token != lease_token
             ):
                 raise LeaseAdmissionConflictError(
-                    "lease admission is held by another rollout"
+                    "lease admission is held by another rollout generation"
                 )
-            self._lease_admission_contract_sha256 = contract_sha256
-            self._lease_admission_holder_uid = holder_uid
             self._lease_admission_expires_at = self._monotonic() + ttl_seconds
-            return self._lease_admission_status_locked()
+            renewed = self._lease_admission_status_locked()
+            return LeaseAdmissionLease(
+                **renewed.model_dump(), lease_token=self._lease_admission_token
+            )
 
-    async def end_lease_admission(self, contract_sha256: str, holder_uid: str) -> None:
+    async def end_lease_admission(
+        self, contract_sha256: str, holder_uid: str, lease_token: str
+    ) -> None:
         async with self._lease_admission_lock:
             status = self._lease_admission_status_locked()
             if status.accepting_new_leases:
@@ -159,12 +186,14 @@ class BrowserService:
             if (
                 self._lease_admission_contract_sha256 != contract_sha256
                 or self._lease_admission_holder_uid != holder_uid
+                or self._lease_admission_token != lease_token
             ):
                 raise LeaseAdmissionConflictError(
-                    "lease admission is held by another rollout"
+                    "lease admission is held by another rollout generation"
                 )
             self._lease_admission_contract_sha256 = None
             self._lease_admission_holder_uid = None
+            self._lease_admission_token = None
             self._lease_admission_expires_at = 0.0
 
     async def _find_actor(self, browser_id: str):
