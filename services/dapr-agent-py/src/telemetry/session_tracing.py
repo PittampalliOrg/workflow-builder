@@ -27,20 +27,13 @@ from typing import Any
 
 from . import beta
 from .attributes import get_telemetry_attributes
+from .content_sanitizer import (
+    sanitize_content_for_telemetry,
+    sanitize_text_for_telemetry,
+)
 from .providers import get_tracer
 
 logger = logging.getLogger(__name__)
-
-_SENSITIVE_KEY_PARTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "bearer",
-    "client_secret",
-    "password",
-    "secret",
-)
-_SENSITIVE_KEY_EXACT = {"access_token", "auth_token", "refresh_token", "token"}
 
 
 @dataclass
@@ -49,6 +42,7 @@ class _SpanHandle:
     start_time_ns: int
     start_monotonic: float
     attributes: dict[str, Any] = field(default_factory=dict)
+    canonical_llm_span: Any | None = None
     token: contextvars.Token | None = None  # reset token for ctx var
     ended: bool = False
 
@@ -128,25 +122,42 @@ def _extract_ids_from_span(span: Any) -> tuple[str | None, str | None]:
 
 def _redact_for_span(value: Any) -> Any:
     """Best-effort recursive redaction before copying content into span attrs."""
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            key_norm = key_text.replace("-", "_").lower()
-            if (
-                key_norm in _SENSITIVE_KEY_EXACT
-                or key_norm.endswith("_token")
-                or any(part in key_norm for part in _SENSITIVE_KEY_PARTS)
-            ):
-                redacted[key_text] = "[REDACTED]"
+    return sanitize_content_for_telemetry(value)
+
+
+def _is_canonical_llm_span(span: Any) -> bool:
+    """Return true for the ambient Dapr call_llm activity LLM span."""
+    try:
+        if span is None or not span.is_recording():
+            return False
+        context = span.get_span_context()
+        if context is None or not context.is_valid:
+            return False
+        attributes = getattr(span, "attributes", {}) or {}
+        kind = str(attributes.get("openinference.span.kind") or "").upper()
+        name = str(getattr(span, "name", "") or "")
+        return kind == "LLM" and "call_llm" in name
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _sanitize_existing_span_attributes(span: Any) -> None:
+    """Rewrite content already recorded by upstream instrumentation."""
+    if span is None:
+        return
+    try:
+        attributes = dict(getattr(span, "attributes", {}) or {})
+        for key, value in attributes.items():
+            if isinstance(value, str):
+                safe_value = sanitize_text_for_telemetry(value)
+            elif isinstance(value, (list, tuple)):
+                safe_value = sanitize_content_for_telemetry(value)
             else:
-                redacted[key_text] = _redact_for_span(item)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_for_span(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_for_span(item) for item in value]
-    return value
+                continue
+            if safe_value != value:
+                span.set_attribute(key, safe_value)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sanitize existing span attributes failed: %s", exc)
 
 
 def _safe_json_loads(value: str | None) -> Any:
@@ -274,7 +285,7 @@ def _build_attrs(span_type: str, extra: dict[str, Any] | None = None) -> dict[st
         for k, v in extra.items():
             if v is None:
                 continue
-            attrs[k] = v
+            attrs[k] = sanitize_content_for_telemetry(v)
     return attrs
 
 
@@ -295,7 +306,11 @@ def start_interaction_span(user_prompt: str) -> Any:
 
     from .events import is_user_prompt_logging_enabled
 
-    prompt_to_log = user_prompt if is_user_prompt_logging_enabled() else "<REDACTED>"
+    prompt_to_log = (
+        sanitize_text_for_telemetry(user_prompt)
+        if is_user_prompt_logging_enabled()
+        else "<REDACTED>"
+    )
     _interaction_sequence += 1
     attrs = _build_attrs(
         "interaction",
@@ -375,6 +390,9 @@ def start_llm_request_span(
     from opentelemetry import trace as otel_trace
 
     interaction_handle = _interaction_ctx.get()
+    ambient_span = otel_trace.get_current_span()
+    canonical_llm_span = ambient_span if _is_canonical_llm_span(ambient_span) else None
+    _sanitize_existing_span_attributes(canonical_llm_span)
     attrs = _build_attrs(
         "llm_request",
         {
@@ -383,29 +401,37 @@ def start_llm_request_span(
             if interaction_handle
             else "standalone",
             "speed": "fast" if fast_mode else "normal",
+            # The Dapr call_llm activity is the canonical provider turn when it
+            # exists. Keep this helper span in the waterfall without creating a
+            # second obs.llm_spans row for the same request.
+            "openinference.span.kind": "CHAIN"
+            if canonical_llm_span is not None
+            else "LLM",
         },
     )
     if query_source:
         attrs["query_source"] = query_source
 
-    parent_ctx = (
-        otel_trace.set_span_in_context(interaction_handle.span)
-        if interaction_handle is not None
-        else _fallback_parent_ctx()
-    )
+    if canonical_llm_span is not None:
+        parent_ctx = otel_trace.set_span_in_context(canonical_llm_span)
+    elif interaction_handle is not None:
+        parent_ctx = otel_trace.set_span_in_context(interaction_handle.span)
+    else:
+        parent_ctx = _fallback_parent_ctx()
     span = tracer.start_span(
         "claude_code.llm_request", attributes=attrs, context=parent_ctx
     )
 
+    content_span = canonical_llm_span or span
     beta.add_llm_request_attributes(
-        span,
+        content_span,
         system_prompt=system_prompt,
         query_source=query_source,
         tools_json=tools_json,
         messages_for_api=messages_for_api,
     )
     _set_io_value(
-        span,
+        content_span,
         "input",
         {
             "model": model,
@@ -415,20 +441,17 @@ def start_llm_request_span(
             "tools": _safe_json_loads(tools_json),
         },
     )
-    # The obs.llm_spans materialized view reads the OpenInference LLM-kind span
-    # (the call_llm WorkflowActivity span — the CURRENT span here), not this
-    # child claude_code.llm_request span. Set the messages on both so the
-    # curated LLM table + agent-conversation-view populate.
-    _set_oi_content_attr(span, "llm.input_messages", messages_for_api)
-    _set_oi_content_attr(
-        otel_trace.get_current_span(), "llm.input_messages", messages_for_api
-    )
+    # Exactly one span owns OpenInference LLM content: the ambient Dapr call_llm
+    # activity in normal workflow execution, or this helper span for standalone
+    # calls that have no canonical activity.
+    _set_oi_content_attr(content_span, "llm.input_messages", messages_for_api)
 
     handle = _SpanHandle(
         span=span,
         start_time_ns=time.time_ns(),
         start_monotonic=time.monotonic(),
         attributes=attrs,
+        canonical_llm_span=canonical_llm_span,
     )
     _explicit_spans[_span_id(span)] = handle
     return span
@@ -479,13 +502,23 @@ def end_llm_request_span(
     if ttft_ms is not None:
         end_attrs["ttft_ms"] = ttft_ms
 
+    content_span = handle.canonical_llm_span or span
+    content_end_attrs: dict[str, Any] = {}
     beta.add_llm_response_attributes(
-        end_attrs,
+        content_end_attrs,
         model_output=model_output,
         thinking_output=thinking_output,
     )
+    if handle.canonical_llm_span is None:
+        end_attrs.update(content_end_attrs)
+    else:
+        try:
+            for key, value in content_end_attrs.items():
+                content_span.set_attribute(key, sanitize_content_for_telemetry(value))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("set canonical LLM response attributes failed: %s", exc)
     _set_io_value(
-        span,
+        content_span,
         "output",
         {
             "success": success,
@@ -504,19 +537,12 @@ def end_llm_request_span(
     _output_messages = (
         [{"role": "assistant", "content": model_output}] if model_output else None
     )
-    _set_oi_content_attr(span, "llm.output_messages", _output_messages)
-    try:
-        from opentelemetry import trace as _ot
-
-        _set_oi_content_attr(
-            _ot.get_current_span(), "llm.output_messages", _output_messages
-        )
-    except Exception:
-        pass
+    _set_oi_content_attr(content_span, "llm.output_messages", _output_messages)
+    _sanitize_existing_span_attributes(handle.canonical_llm_span)
 
     try:
         for k, v in end_attrs.items():
-            span.set_attribute(k, v)
+            span.set_attribute(k, sanitize_content_for_telemetry(v))
         span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_llm_request_span: %s", exc)
@@ -620,7 +646,7 @@ def end_tool_span(
         end_attrs["result_tokens"] = result_tokens
     try:
         for k, v in end_attrs.items():
-            handle.span.set_attribute(k, v)
+            handle.span.set_attribute(k, sanitize_content_for_telemetry(v))
         handle.span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_tool_span: %s", exc)
@@ -677,7 +703,7 @@ def end_tool_blocked_on_user_span(
         end_attrs["source"] = source
     try:
         for k, v in end_attrs.items():
-            span.set_attribute(k, v)
+            span.set_attribute(k, sanitize_content_for_telemetry(v))
         span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_tool_blocked_on_user_span: %s", exc)
@@ -733,12 +759,14 @@ def end_tool_execution_span(
         # system_prompt_preview (500 chars). Larger payloads can still be
         # reconstructed from the underlying tool result; this is the at-a-
         # glance preview surfaced by the ClickHouse trace views.
-        end_attrs["tool_output_preview"] = tool_output[:8000]
+        end_attrs["tool_output_preview"] = sanitize_text_for_telemetry(
+            tool_output[:8000]
+        )
         end_attrs["tool_output_length"] = len(tool_output)
         _set_io_value(span, "output", {"tool_output": tool_output})
     try:
         for k, v in end_attrs.items():
-            span.set_attribute(k, v)
+            span.set_attribute(k, sanitize_content_for_telemetry(v))
         span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_tool_execution_span: %s", exc)
@@ -814,7 +842,7 @@ def end_hook_span(
         end_attrs["num_cancelled"] = num_cancelled
     try:
         for k, v in end_attrs.items():
-            span.set_attribute(k, v)
+            span.set_attribute(k, sanitize_content_for_telemetry(v))
         span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_hook_span: %s", exc)

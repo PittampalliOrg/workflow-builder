@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .attributes import get_telemetry_attributes
+from .content_sanitizer import sanitize_content_for_telemetry
 from .providers import get_event_logger
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,12 @@ def log_otel_event(event_name: str, metadata: dict[str, Any] | None = None) -> N
         for k, v in metadata.items():
             if v is None:
                 continue
-            attrs[k] = v if isinstance(v, (str, bool, int, float)) else str(v)
+            safe_value = sanitize_content_for_telemetry(v)
+            attrs[k] = (
+                safe_value
+                if isinstance(safe_value, (str, bool, int, float))
+                else str(safe_value)
+            )
 
     try:
         from opentelemetry._logs import LogRecord, SeverityNumber
