@@ -278,46 +278,34 @@ mkdir -p "${appPath}"`,
 );
 requireCommand("OpenShell destination preparation", prepareDestination);
 
-await action(
-  "workspace/write_file",
+const materialized = await action(
+  "workspace/materialize-files",
   {
     workspaceRef,
-    path: `${appPath}/index.html`,
-    content: indexHtml,
-    timeoutMs: 60000,
+    files: [
+      { path: `${appPath}/index.html`, content: indexHtml },
+      { path: `${appPath}/styles.css`, content: stylesCss },
+      { path: `${appPath}/script.js`, content: scriptJs },
+      { path: `${appPath}/README.md`, content: readmeMd },
+    ],
+    timeoutMs: 120000,
   },
-  { label: "materialize_pydantic_index", phase: "Materialize" },
-);
-await action(
-  "workspace/write_file",
   {
-    workspaceRef,
-    path: `${appPath}/styles.css`,
-    content: stylesCss,
-    timeoutMs: 60000,
+    label: "materialize_pydantic_app",
+    phase: "Materialize",
+    allowFailure: true,
   },
-  { label: "materialize_pydantic_styles", phase: "Materialize" },
 );
-await action(
-  "workspace/write_file",
-  {
-    workspaceRef,
-    path: `${appPath}/script.js`,
-    content: scriptJs,
-    timeoutMs: 60000,
-  },
-  { label: "materialize_pydantic_script", phase: "Materialize" },
-);
-await action(
-  "workspace/write_file",
-  {
-    workspaceRef,
-    path: `${appPath}/README.md`,
-    content: readmeMd,
-    timeoutMs: 60000,
-  },
-  { label: "materialize_pydantic_readme", phase: "Materialize" },
-);
+const materializedData = payload(materialized);
+if (
+  materializedData.success !== true ||
+  !Array.isArray(materializedData.files) ||
+  materializedData.files.length !== 4
+) {
+  throw new Error(
+    `OpenShell app materialization failed: ${JSON.stringify(materializedData).slice(0, 2000)}`,
+  );
+}
 
 const materializedGate = await action(
   "workspace/command",

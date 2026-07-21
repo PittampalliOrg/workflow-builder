@@ -6,10 +6,13 @@ import {
   buildDevPreviewBuildPayload,
   buildPreviewAcceptancePayload,
   buildWorkspaceCommandPayload,
+  buildWorkspaceMaterializeFilesPayload,
   classifyDevPreviewProxyResponse,
   dispatchErrorPayload,
   executeBrowserStartPreviewAction,
   resolveWorkspaceUtilityTimeoutMs,
+  workspaceMaterializeInputForSpan,
+  workspaceMaterializedFilesFromResponse,
 } from "./execute.js";
 
 describe("dev preview execution binding", () => {
@@ -373,6 +376,278 @@ describe("workspace command routing", () => {
       command: "pwd",
       cwd: "/sandbox/app",
     });
+  });
+});
+
+describe("workspace materialize-files routing", () => {
+  const context = {
+    executionId: "dapr-instance-1",
+    dbExecutionId: "db-exec-1",
+    workflowId: "workflow-1",
+    nodeId: "materialize",
+    nodeName: "materialize",
+  };
+
+  it("encodes a bounded text batch for the OpenShell materializer", () => {
+    const payload = buildWorkspaceMaterializeFilesPayload({
+      ...context,
+      toolId: "materialize-files",
+      args: {
+        workspaceRef: "workspace-1",
+        timeoutMs: 120000,
+        files: [
+          { path: "/sandbox/app/index.html", content: "<p>piñata</p>" },
+          { path: "/sandbox/app/run.sh", content: "echo ok\n", mode: 0o755 },
+        ],
+      },
+    });
+
+    expect(payload).toMatchObject({
+      executionId: "dapr-instance-1",
+      dbExecutionId: "db-exec-1",
+      workspaceRef: "workspace-1",
+      timeoutMs: 120000,
+      workflowId: "workflow-1",
+      nodeId: "materialize",
+      nodeName: "materialize",
+      files: [
+        {
+          path: "/sandbox/app/index.html",
+          contentB64: Buffer.from("<p>piñata</p>", "utf8").toString("base64"),
+        },
+        {
+          path: "/sandbox/app/run.sh",
+          contentB64: Buffer.from("echo ok\n", "utf8").toString("base64"),
+          mode: 0o755,
+        },
+      ],
+    });
+    expect(JSON.stringify(payload)).not.toContain("piñata");
+    expect(JSON.stringify(payload)).not.toContain('"content"');
+  });
+
+  it("traces file metadata and digests without source or encoded bodies", () => {
+    const traceInput = workspaceMaterializeInputForSpan(
+      "workspace/materialize-files",
+      {
+        toolId: "materialize-files",
+        workspaceRef: "workspace-1",
+        files: [
+          { path: "/sandbox/app/index.html", content: "private source" },
+          {
+            path: "/sandbox/app/logo.png",
+            contentB64: Buffer.from("private image").toString("base64"),
+          },
+        ],
+      },
+    );
+
+    expect(traceInput).toMatchObject({
+      toolId: "materialize-files",
+      workspaceRef: "workspace-1",
+      fileCount: 2,
+      files: [
+        {
+          path: "/sandbox/app/index.html",
+          contentBytes: 14,
+          contentEncoding: "utf8",
+        },
+        {
+          path: "/sandbox/app/logo.png",
+          contentEncoding: "base64",
+        },
+      ],
+    });
+    const serialized = JSON.stringify(traceInput);
+    expect(serialized).not.toContain("private source");
+    expect(serialized).not.toContain(
+      Buffer.from("private image").toString("base64"),
+    );
+    expect(
+      workspaceMaterializeInputForSpan("mastra/run-tool", {
+        toolId: "write_file",
+        content: "not a workspace materializer",
+      }),
+    ).toEqual({
+      toolId: "write_file",
+      content: "not a workspace materializer",
+    });
+  });
+
+  it("keeps workspace/write_file as a one-file compatibility alias", () => {
+    const payload = buildWorkspaceMaterializeFilesPayload({
+      ...context,
+      toolId: "write_file",
+      args: {
+        workspaceRef: "workspace-1",
+        path: "/sandbox/app/index.html",
+        content: "hello",
+      },
+    });
+
+    expect(payload.files).toEqual([
+      {
+        path: "/sandbox/app/index.html",
+        contentB64: Buffer.from("hello", "utf8").toString("base64"),
+      },
+    ]);
+  });
+
+  it.each([
+    "/../../workspace/runtime.py",
+    "/tmp/runtime.py",
+    "/sandbox/app/../runtime.py",
+    "/sandbox//app/index.html",
+    "/sandbox/app/./index.html",
+    " /sandbox/app/index.html",
+  ])("rejects non-normalized materialization path %s", (path) => {
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [{ path, content: "blocked" }],
+        },
+      }),
+    ).toThrow("normalized absolute path");
+  });
+
+  it("rejects malformed base64 and oversized file content", () => {
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [
+            { path: "/sandbox/app/index.html", contentB64: "not base64!" },
+          ],
+        },
+      }),
+    ).toThrow("canonical base64");
+
+    const boundaryContent = Buffer.alloc(4 * 1024 * 1024).toString("base64");
+    expect(
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [
+            {
+              path: "/sandbox/app/boundary.bin",
+              contentB64: boundaryContent,
+            },
+          ],
+        },
+      }).files,
+    ).toEqual([
+      {
+        path: "/sandbox/app/boundary.bin",
+        contentB64: boundaryContent,
+      },
+    ]);
+
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [
+            {
+              path: "/sandbox/app/large.bin",
+              contentB64: Buffer.alloc(4 * 1024 * 1024 + 1).toString("base64"),
+            },
+          ],
+        },
+      }),
+    ).toThrow("4 MiB limit");
+  });
+
+  it("rejects batches over the aggregate decoded-byte limit", () => {
+    const boundaryContent = Buffer.alloc(4 * 1024 * 1024).toString("base64");
+    expect(
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [
+            { path: "/sandbox/app/first.bin", contentB64: boundaryContent },
+            { path: "/sandbox/app/second.bin", contentB64: boundaryContent },
+          ],
+        },
+      }).files,
+    ).toHaveLength(2);
+
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: Array.from({ length: 3 }, (_, index) => ({
+            path: `/sandbox/app/file-${index}.bin`,
+            contentB64: boundaryContent,
+          })),
+        },
+      }),
+    ).toThrow("8 MiB aggregate limit");
+  });
+
+  it("requires workspace authority and non-overlapping destinations", () => {
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          files: [{ path: "/sandbox/app/index.html", content: "missing ref" }],
+        },
+      }),
+    ).toThrow("requires workspaceRef");
+
+    expect(() =>
+      buildWorkspaceMaterializeFilesPayload({
+        ...context,
+        toolId: "materialize-files",
+        args: {
+          workspaceRef: "workspace-1",
+          files: [
+            { path: "/sandbox/app", content: "file" },
+            { path: "/sandbox/app/index.html", content: "overlap" },
+          ],
+        },
+      }),
+    ).toThrow("overlaps another destination");
+  });
+
+  it("exposes a flat files list while preserving the standard result envelope", () => {
+    expect(
+      workspaceMaterializedFilesFromResponse({
+        success: true,
+        files: ["/sandbox/app/index.html"],
+      }),
+    ).toEqual(["/sandbox/app/index.html"]);
+    expect(
+      workspaceMaterializedFilesFromResponse({
+        success: true,
+        result: { files: ["/sandbox/app/legacy.html"] },
+      }),
+    ).toEqual(["/sandbox/app/legacy.html"]);
+  });
+
+  it("dispatches both slugs to the supported OpenShell endpoint", () => {
+    const source = readFileSync(new URL("./execute.ts", import.meta.url), "utf8");
+    expect(source).toContain(
+      '(toolId === "materialize-files" || toolId === "write_file")',
+    );
+    expect(source).toContain(
+      'targetUrl = `${functionUrl}/api/workspaces/materialize-files`',
+    );
+    expect(source).toContain("files: isWorkspaceMaterializeFiles");
+    expect(source).toContain("traceRequestPayload");
   });
 });
 

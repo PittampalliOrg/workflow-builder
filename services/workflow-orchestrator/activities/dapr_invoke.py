@@ -24,7 +24,12 @@ def _set_span_attrs(span, attributes: dict | None) -> None:
             pass
 
 
-def _dapr_invoke_span(app_id: str, method_name: str, payload: dict):
+def _dapr_invoke_span(
+    app_id: str,
+    method_name: str,
+    payload: dict,
+    trace_payload: dict | None = None,
+):
     try:
         from opentelemetry import trace
 
@@ -42,7 +47,7 @@ def _dapr_invoke_span(app_id: str, method_name: str, payload: dict):
                     {
                         "app_id": app_id,
                         "method": method_name,
-                        "body": payload,
+                        "body": trace_payload if trace_payload is not None else payload,
                     },
                 ),
             },
@@ -59,6 +64,7 @@ def dapr_invoke(
     *,
     timeout: int = 300,
     metadata: dict[str, str] | None = None,
+    trace_payload: dict | None = None,
 ) -> tuple[int, dict, str]:
     """Invoke a Dapr service method, returning (status_code, json_body, raw_text).
 
@@ -66,7 +72,7 @@ def dapr_invoke(
     are normalized to (500, {"error": msg}, msg). Callers that need to
     distinguish timeouts can pattern-match on the error string.
     """
-    span = _dapr_invoke_span(app_id, method_name, payload)
+    span = _dapr_invoke_span(app_id, method_name, payload, trace_payload)
     dapr_metadata = (
         tuple((str(k), str(v)) for k, v in metadata.items() if v)
         if isinstance(metadata, dict)

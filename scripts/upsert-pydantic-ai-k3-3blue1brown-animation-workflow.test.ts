@@ -106,7 +106,11 @@ describe("fresh Pydantic AI K3 animation workflow upsert", () => {
     expect(spec.script.match(/readFile: `\$\{sourceAppPath\}\//g)).toHaveLength(
       4,
     );
-    expect(spec.script.match(/"workspace\/write_file"/g)).toHaveLength(4);
+    expect(spec.script.match(/"workspace\/materialize-files"/g)).toHaveLength(
+      1,
+    );
+    expect(spec.script).not.toContain('"workspace/write_file"');
+    expect(spec.script.match(/path: `\$\{appPath\}\//g)).toHaveLength(4);
     expect(spec.script).toContain(
       'sourceAppPath = "/sandbox/work/pydantic-ai-k3-math-animation"',
     );
@@ -125,6 +129,7 @@ describe("fresh Pydantic AI K3 animation workflow upsert", () => {
     expect(spec.script).toContain('"browser/validate"');
     expect(spec.script).toContain('"browser/start-preview"');
     expect(spec.script).toContain('label: "validate_materialized_app"');
+    expect(spec.script).toContain('label: "materialize_pydantic_app"');
 
     expect(spec.script).not.toContain("kimi-k3-dynamic-animation-builder");
     expect(spec.script).not.toContain('name: "kimi-k3-dynamic-animation"');
