@@ -111,10 +111,31 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
                 server.get("name") or server.get("server_name"),
             )
             continue
+        # Per-server HTTP headers carry the AUTHORIZATION context the endpoint
+        # needs — critically the `X-Wfb-Team-*` role assertion that
+        # workflow-mcp-server requires before it exposes the team tools
+        # (claim_task/update_task/…). Dropping them silently downgrades the
+        # server to non-team scope, so a teammate never sees update_task and
+        # can only NARRATE completion (observed: team turns never converge).
+        # AP piece servers likewise need their connection/auth headers.
+        raw_headers = server.get("headers")
+        headers = (
+            {str(k): str(v) for k, v in raw_headers.items()}
+            if isinstance(raw_headers, dict) and raw_headers
+            else None
+        )
+        auth_token = server.get("authorizationToken") or server.get(
+            "authorization_token"
+        )
         try:
             from pydantic_ai.capabilities import MCP
 
-            capabilities.append(MCP(url))
+            kwargs: dict[str, Any] = {}
+            if headers:
+                kwargs["headers"] = headers
+            if isinstance(auth_token, str) and auth_token.strip():
+                kwargs["authorization_token"] = auth_token.strip()
+            capabilities.append(MCP(url, **kwargs))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[toolsets] MCP capability for %s failed: %s", url, exc)
 

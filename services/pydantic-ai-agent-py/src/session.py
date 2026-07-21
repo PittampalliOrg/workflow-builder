@@ -29,6 +29,38 @@ from src.workflow import agent_workflow
 logger = logging.getLogger(__name__)
 
 
+def _stamp_workflow_mcp_session_token(
+    agent_cfg: dict[str, Any], session_id: str, token: str
+) -> None:
+    """Stamp X-Wfb-Session-Token + X-Wfb-Session-Id onto the workflow-mcp-server
+    MCP entry in place.
+
+    workflow-mcp-server hosts the team tools and only exposes them when the
+    request carries the signed session credential (unlike the `X-Wfb-Team-*`
+    headers, which grant no capability on the current server). The token is a
+    top-level dispatch field, not an MCP header, so we fold it into the entry's
+    headers here — once per session, before the router hashes/caches the config
+    — and toolsets.py forwards those headers into the pydantic-ai MCP client.
+    """
+    if not token or not session_id:
+        return
+    servers = agent_cfg.get("mcpServers")
+    if not isinstance(servers, list):
+        return
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        url = str(server.get("url") or server.get("serverUrl") or "")
+        if "workflow-mcp-server" not in url:
+            continue
+        headers = server.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
+            server["headers"] = headers
+        headers.setdefault("X-Wfb-Session-Token", token)
+        headers.setdefault("X-Wfb-Session-Id", session_id)
+
+
 def _coerce_agent_config(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)
@@ -106,6 +138,16 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
         raise RuntimeError("session_workflow requires sessionId")
 
     agent_cfg = _coerce_agent_config(message.get("agentConfig"))
+    # BFF-signed platform credential (top-level dispatch field, NOT an MCP
+    # header): workflow-mcp-server only exposes the team tools
+    # (claim_task/update_task/…) when the MCP request carries
+    # X-Wfb-Session-Token + X-Wfb-Session-Id. Thread it into the agent context
+    # so call_llm can stamp it onto the workflow-mcp-server MCP entry.
+    workflow_mcp_session_token = str(message.get("workflowMcpSessionToken") or "")
+    if workflow_mcp_session_token:
+        _stamp_workflow_mcp_session_token(
+            agent_cfg, session_id, workflow_mcp_session_token
+        )
     vault_ids = message.get("vaultIds") or []
     db_execution_id = str(message.get("dbExecutionId") or "")
     workflow_instance_id = session_workflow_instance_id(
@@ -229,6 +271,7 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                 "workflowInstanceId": workflow_instance_id,
                 "cancellationScopeId": agent_turn_instance_id,
                 "dbExecutionId": db_execution_id,
+                "workflowMcpSessionToken": workflow_mcp_session_token,
             },
         }
 

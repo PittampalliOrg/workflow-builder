@@ -309,3 +309,57 @@ def test_repo_inventory_tool_disabled_by_default(monkeypatch, tmp_path):
     assert "inventory_agent_context" not in tools
     instructions = aio.run(router.instructions())
     assert "translate" not in instructions
+
+
+def test_stamp_workflow_mcp_session_token_targets_only_workflow_mcp():
+    from src.session import _stamp_workflow_mcp_session_token
+
+    cfg = {
+        "mcpServers": [
+            {"name": "wfb_team", "url": "http://workflow-mcp-server.ns.svc:3200/mcp",
+             "headers": {"X-Wfb-Team-Id": "team-1"}},
+            {"name": "gh", "url": "http://ap-github-service.ns.svc/mcp"},
+        ]
+    }
+    _stamp_workflow_mcp_session_token(cfg, "sesn_1", "signed.jwt.token")
+    team = cfg["mcpServers"][0]["headers"]
+    assert team["X-Wfb-Session-Token"] == "signed.jwt.token"
+    assert team["X-Wfb-Session-Id"] == "sesn_1"
+    assert team["X-Wfb-Team-Id"] == "team-1"  # preserved
+    # non-workflow-mcp servers are untouched
+    assert "headers" not in cfg["mcpServers"][1]
+
+
+def test_stamp_workflow_mcp_session_token_noops_without_token():
+    from src.session import _stamp_workflow_mcp_session_token
+
+    cfg = {"mcpServers": [{"url": "http://workflow-mcp-server.x/mcp"}]}
+    _stamp_workflow_mcp_session_token(cfg, "sesn_1", "")
+    assert "headers" not in cfg["mcpServers"][0]
+
+
+def test_mcp_capability_forwards_headers(monkeypatch, tmp_path):
+    import src.toolsets as toolsets_mod
+    from src.toolsets import build_capabilities
+
+    monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    caps = build_capabilities(
+        {
+            "mcpServers": [
+                {
+                    "url": "http://workflow-mcp-server.ns.svc:3200/mcp",
+                    "transport": "streamable_http",
+                    "headers": {
+                        "X-Wfb-Session-Token": "tok",
+                        "X-Wfb-Session-Id": "sesn_1",
+                    },
+                }
+            ]
+        }
+    )
+    mcp_caps = [c for c in caps if type(c).__name__ == "MCP"]
+    assert len(mcp_caps) == 1
+    assert mcp_caps[0].headers == {
+        "X-Wfb-Session-Token": "tok",
+        "X-Wfb-Session-Id": "sesn_1",
+    }
