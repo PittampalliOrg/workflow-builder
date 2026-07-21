@@ -69,6 +69,24 @@ minimum CMA vocabulary unconditionally (`session.status_*` + `agent.message` /
 (`message_delta`, `agent.llm_usage`, `agent.context_usage`, `hook.decision`) only
 when `capabilities.incrementalEvents` is `true`.
 
+### 5. Lifecycle control
+Every dedicated runtime host MUST expose this application-port contract on its
+HTTP listener:
+
+- `GET /api/v2/agent-runs/{instanceId}/status?summary=true` is read-only and
+  returns a normalized `runtimeStatus` (plus `runtime_status` for compatibility).
+- A missing instance returns HTTP 404 with the exact detail `Agent run not found`.
+- `POST .../terminate`, `POST .../pause`, `POST .../resume`, and
+  `DELETE /api/v2/agent-runs/{instanceId}` delegate to the local Dapr Workflow
+  client.
+- Repeated terminate/delete requests are idempotent when the instance is already
+  gone.
+
+The BFF lifecycle adapter selects transport (shared Dapr invocation or a linked
+per-session Sandbox endpoint); it does not implement runtime-specific status
+semantics. Read-only status probes never wake a suspended Sandbox. Control
+operations may wake it before invoking this contract.
+
 ## The registry
 
 Canonical: **`services/shared/runtime-registry.json`**. The generated copies

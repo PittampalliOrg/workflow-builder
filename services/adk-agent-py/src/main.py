@@ -37,6 +37,7 @@ import os  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import Any  # noqa: E402
 
+from dapr.ext.workflow import DaprWorkflowClient  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from google.protobuf import wrappers_pb2  # noqa: E402
 
@@ -51,7 +52,9 @@ from src.adapters.gemini_thought_signatures import (  # noqa: E402
 )
 from src.adapters.gemini_model import build_default_model  # noqa: E402
 from src.adapters.mcp_translation import build_mcp_toolsets  # noqa: E402
+from src.constants import AGENT_SLUG  # noqa: E402
 from src.runner.compose import build_runner, register_session_workflow  # noqa: E402
+from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
 from src.runtime_config import get_runtime_config_snapshot  # noqa: E402
 from src.session_config import external_control_event_as_user_event  # noqa: E402
 from src.tools import all_adk_tools  # noqa: E402
@@ -114,6 +117,19 @@ def healthz() -> dict[str, str]:
 @app.get("/readyz")
 def readyz() -> dict[str, object]:
     return {"status": "ok", "running": _runner.is_running}
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, Any]:
+    try:
+        return resolve_agent_run_status(
+            instance_id,
+            summary=summary,
+            app_id=AGENT_SLUG,
+            client_factory=DaprWorkflowClient,
+        )
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/internal/runtime/instances/{instance_id}/config")
@@ -188,3 +204,79 @@ def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"RaiseEvent failed: {exc}")
 
     return {"ok": True}
+
+
+def _agent_run_already_gone(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "no such instance" in message
+        or "not found" in message
+        or "does not exist" in message
+        or "no workflow" in message
+    )
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/terminate")
+def terminate_agent_run(
+    instance_id: str, body: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    try:
+        DaprWorkflowClient().terminate_workflow(instance_id=instance_id)
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:  # noqa: BLE001
+        if _agent_run_already_gone(exc):
+            logger.info(
+                "[agent-runs] terminate skipped for %s: already gone", instance_id
+            )
+            return {"success": True, "instanceId": instance_id, "alreadyGone": True}
+        logger.error("[agent-runs] terminate failed for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/pause")
+def pause_agent_run(instance_id: str) -> dict[str, Any]:
+    try:
+        DaprWorkflowClient().pause_workflow(instance_id=instance_id)
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[agent-runs] pause failed for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/resume")
+def resume_agent_run(instance_id: str) -> dict[str, Any]:
+    try:
+        DaprWorkflowClient().resume_workflow(instance_id=instance_id)
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[agent-runs] resume failed for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/v2/agent-runs/{instance_id}")
+def purge_agent_run(
+    instance_id: str, force: bool = False, recursive: bool = False
+) -> dict[str, Any]:
+    try:
+        DaprWorkflowClient().purge_workflow(instance_id=instance_id)
+        return {
+            "success": True,
+            "instanceId": instance_id,
+            "force": force,
+            "recursive": recursive,
+            "purgeAccepted": True,
+            "isComplete": True,
+        }
+    except Exception as exc:  # noqa: BLE001
+        if _agent_run_already_gone(exc):
+            logger.info("[agent-runs] purge skipped for %s: already gone", instance_id)
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "force": force,
+                "recursive": recursive,
+                "alreadyGone": True,
+                "isComplete": True,
+            }
+        logger.error("[agent-runs] purge failed for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))

@@ -15,6 +15,7 @@ from src.cancellation import (
     check_cancellation_activity,
 )
 from src.claude_sdk_runner import run_claude_sdk_turn_activity
+from src.run_status import AgentRunNotFoundError, resolve_agent_run_status
 from src.session_config import (
     TERMINAL_CONTROL_EVENT_TYPES,
     external_control_event_as_user_event,
@@ -56,6 +57,19 @@ def healthz() -> dict[str, str]:
 @app.get("/readyz")
 def readyz() -> dict[str, object]:
     return {"status": "ok", "running": _runtime_running}
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, Any]:
+    try:
+        return resolve_agent_run_status(
+            instance_id,
+            summary=summary,
+            app_id=os.environ.get("AGENT_SERVICE_NAME", "claude-agent-py"),
+            client_factory=DaprWorkflowClient,
+        )
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def _taskhub_call(method: str, request: Any) -> Any:
@@ -165,7 +179,7 @@ def terminate_agent_run(
 @app.post("/api/v2/agent-runs/{instance_id}/pause")
 def pause_agent_run(instance_id: str) -> dict[str, Any]:
     try:
-        DaprWorkflowClient().suspend_workflow(instance_id=instance_id)
+        DaprWorkflowClient().pause_workflow(instance_id=instance_id)
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:  # noqa: BLE001
         logger.error("[agent-runs] pause failed for %s: %s", instance_id, exc)

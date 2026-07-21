@@ -50,6 +50,7 @@ from src.runtime_config import (
     record_runtime_config_activity,
     summarize_declared_tools,
 )
+from src.session_config import apply_session_control_events, session_event_batch
 
 logger = logging.getLogger(__name__)
 
@@ -409,29 +410,44 @@ def session_workflow_factory(
                 # (initial seed OR a user_message we just pushed in the previous loop).
                 needs_user_event = not (message_history and message_history[-1].get("role") == "user")
                 if needs_user_event:
-                    user_event = yield ctx.wait_for_external_event("session.user_events")
-                    if not isinstance(user_event, dict):
+                    payload = yield ctx.wait_for_external_event("session.user_events")
+                    events = session_event_batch(payload)
+                    if not events:
                         # Malformed event — terminate cleanly.
                         break
-                    event_type = user_event.get("type") or ""
-                    if event_type == "session.terminate":
+                    agent_config, events, _ = apply_session_control_events(
+                        agent_config, events
+                    )
+                    terminate_requested = False
+                    next_user_messages: list[dict[str, Any]] = []
+                    for user_event in events:
+                        event_type = user_event.get("type") or ""
+                        if event_type in {"session.terminate", "user.interrupt"}:
+                            terminate_requested = True
+                            break
+                        if event_type == "session.update_agent_config":
+                            new_cfg = user_event.get("agentConfig") or {}
+                            if isinstance(new_cfg, dict):
+                                agent_config = {**agent_config, **new_cfg}
+                            continue
+                        # Default: treat as user message.
+                        content = (
+                            user_event.get("content") or user_event.get("message") or ""
+                        )
+                        if content:
+                            next_user_messages.append(
+                                {
+                                    "role": "user",
+                                    "content": content,
+                                    "tool_calls": [],
+                                    "tool_results": [],
+                                }
+                            )
+                    if terminate_requested:
                         break
-                    if event_type == "session.update_agent_config":
-                        new_cfg = user_event.get("agentConfig") or {}
-                        if isinstance(new_cfg, dict):
-                            agent_config = {**agent_config, **new_cfg}
+                    if not next_user_messages:
                         continue
-                    # Default: treat as user message.
-                    content = (
-                        user_event.get("content")
-                        or user_event.get("message")
-                        or ""
-                    )
-                    if not content:
-                        continue
-                    message_history.append(
-                        {"role": "user", "content": content, "tool_calls": [], "tool_results": []}
-                    )
+                    message_history.extend(next_user_messages)
 
                 turn_index += 1
 
