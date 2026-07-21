@@ -1421,7 +1421,7 @@ def test_pydantic_agent_host_gets_durable_scratch_pvc() -> None:
     sandbox_volume = next(v for v in volumes if v["name"] == "sandbox")
     # /sandbox rides the per-sandbox durable scratch PVC, not an emptyDir.
     assert sandbox_volume["persistentVolumeClaim"]["claimName"] == (
-        "pyd-scratch-sess-pyd-1"
+        "pyd-scratch-agent-session-pyd1"
     )
     assert "emptyDir" not in sandbox_volume
     mounts = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["volumeMounts"]
