@@ -1,8 +1,9 @@
 FROM docker.io/rayproject/ray:2.47.1-cpu
 
-RUN pip install --no-cache-dir "fastapi[standard]" websockets httpx uvicorn
-
 WORKDIR /opt/app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --requirement requirements.txt
 
 COPY app/ ./app/
 

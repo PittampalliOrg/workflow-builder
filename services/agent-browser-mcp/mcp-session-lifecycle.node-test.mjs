@@ -3,17 +3,25 @@ import { afterEach, describe, it } from "node:test";
 import express from "express";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createBrowserContextRegistry, finalizeBrowserClose } from "./browser-lane-policy.mjs";
+import {
+	CallToolRequestSchema,
+	ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import {
+	createBrowserContextRegistry,
+	finalizeBrowserClose,
+} from "./browser-lane-policy.mjs";
 import { createMcpSessionLifecycle } from "./mcp-session-lifecycle.mjs";
 import {
+	authorizeBrowserSessionPostCloseToolsList,
 	authorizeBrowserSessionTermination,
 	targetAuthAssertionDigest,
 } from "./target-auth-policy.mjs";
 
 const ASSERTION = "wfb_browser_auth_v1.test-browser-target-assertion";
 const EXECUTION_ID = "execution-1";
-const AUTHORIZATION_BINDING = "wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const AUTHORIZATION_BINDING =
+	"wfb_browser_binding_v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PROTOCOL_VERSION = "2025-06-18";
 const servers = [];
 
@@ -55,7 +63,8 @@ function requestHeaders(extra = {}) {
 async function waitFor(predicate, label) {
 	const deadline = Date.now() + 2_000;
 	while (!predicate()) {
-		if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+		if (Date.now() >= deadline)
+			throw new Error(`timed out waiting for ${label}`);
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 }
@@ -69,15 +78,58 @@ async function createSdkHarness() {
 	const app = express();
 	app.use(express.json());
 
+	function exactSessionCapability(req, session) {
+		return {
+			sessionId: req.headers["mcp-session-id"],
+			executionId: req.headers["x-wfb-execution-id"],
+			targetAuth: {
+				assertion: req.headers["x-wfb-browser-target-assertion"],
+			},
+			expectedSessionId: session.sessionId,
+			expectedExecutionId: session.executionId,
+			expectedAssertionDigest: session.assertionDigest,
+		};
+	}
+
 	app.post("/mcp", async (req, res) => {
 		const existingSessionId = req.headers["mcp-session-id"];
-		const existing = typeof existingSessionId === "string" ? sessions.get(existingSessionId) : null;
+		const existing =
+			typeof existingSessionId === "string"
+				? sessions.get(existingSessionId)
+				: null;
 		if (existing) {
+			const exactCapability = exactSessionCapability(req, existing);
+			const currentlyAuthorized =
+				registry.isCurrent(
+					existing.browserContext,
+					existing.authorizationBinding,
+				) && authorizeBrowserSessionTermination(exactCapability);
+			const postCloseSchemaRefresh = authorizeBrowserSessionPostCloseToolsList({
+				...exactCapability,
+				method: req.body?.method,
+				schemaRefreshAvailable: existing.postCloseSchemaRefreshAvailable,
+				browserContext: existing.browserContext,
+			});
+			if (!currentlyAuthorized && !postCloseSchemaRefresh) {
+				res.status(403).send("forbidden");
+				return;
+			}
+			if (postCloseSchemaRefresh) {
+				// Claim before dispatch so concurrent refreshes cannot both pass.
+				existing.postCloseSchemaRefreshAvailable = false;
+			}
 			await existing.transport.handleRequest(req, res, req.body);
 			return;
 		}
+		if (req.body?.method !== "initialize") {
+			res.status(400).send("initialization required");
+			return;
+		}
 
-		const acquisition = registry.acquire(`wfb-${EXECUTION_ID}`, AUTHORIZATION_BINDING);
+		const acquisition = registry.acquire(
+			`wfb-${EXECUTION_ID}`,
+			AUTHORIZATION_BINDING,
+		);
 		assert.ok(acquisition);
 		acquisitions.push(acquisition);
 		if (req.headers["x-test-close-before-commit"] === "true") {
@@ -110,6 +162,15 @@ async function createSdkHarness() {
 			});
 			return { content: [{ type: "text", text: "closed" }] };
 		});
+		server.setRequestHandler(ListToolsRequestSchema, async () => ({
+			tools: [
+				{
+					name: "agent_browser_close",
+					description: "Close the browser.",
+					inputSchema: { type: "object", properties: {} },
+				},
+			],
+		}));
 
 		let transport;
 		const lifecycle = createMcpSessionLifecycle({
@@ -130,6 +191,7 @@ async function createSdkHarness() {
 					assertionDigest: targetAuthAssertionDigest(ASSERTION),
 					authorizationBinding: AUTHORIZATION_BINDING,
 					browserContext: acquisition.context,
+					postCloseSchemaRefreshAvailable: true,
 				});
 			},
 		});
@@ -146,21 +208,15 @@ async function createSdkHarness() {
 
 	app.delete("/mcp", async (req, res) => {
 		const sessionId = req.headers["mcp-session-id"];
-		const session = typeof sessionId === "string" ? sessions.get(sessionId) : null;
+		const session =
+			typeof sessionId === "string" ? sessions.get(sessionId) : null;
 		if (!session) {
 			res.status(400).send("invalid session");
 			return;
 		}
-		const authorized = authorizeBrowserSessionTermination({
-			sessionId,
-			executionId: req.headers["x-wfb-execution-id"],
-			targetAuth: {
-				assertion: req.headers["x-wfb-browser-target-assertion"],
-			},
-			expectedSessionId: session.sessionId,
-			expectedExecutionId: session.executionId,
-			expectedAssertionDigest: session.assertionDigest,
-		});
+		const authorized = authorizeBrowserSessionTermination(
+			exactSessionCapability(req, session),
+		);
 		if (!authorized) {
 			res.status(403).send("forbidden");
 			return;
@@ -213,7 +269,7 @@ describe("MCP session lifecycle", () => {
 		assert.equal(cleanupCalls, 1);
 	});
 
-	it("terminates a closed browser session with its exact local capability", async () => {
+	it("allows one post-close schema refresh before exact-capability termination", async () => {
 		const harness = await createSdkHarness();
 		const initialized = await fetch(`${harness.baseUrl}/mcp`, {
 			method: "POST",
@@ -244,6 +300,74 @@ describe("MCP session lifecycle", () => {
 		assert.equal(closed.status, 200);
 		assert.equal(harness.childCloseCalls, 1);
 		assert.equal(harness.registry.current(`wfb-${EXECUTION_ID}`), null);
+
+		const deniedToolCall = await fetch(`${harness.baseUrl}/mcp`, {
+			method: "POST",
+			headers: requestHeaders({
+				"mcp-session-id": sessionId,
+				"mcp-protocol-version": PROTOCOL_VERSION,
+			}),
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: { name: "agent_browser_close", arguments: {} },
+			}),
+		});
+		await deniedToolCall.text();
+		assert.equal(deniedToolCall.status, 403);
+
+		for (const headers of [
+			{ "x-wfb-execution-id": "execution-2" },
+			{ "x-wfb-browser-target-assertion": `${ASSERTION}-attacker` },
+		]) {
+			const deniedRefresh = await fetch(`${harness.baseUrl}/mcp`, {
+				method: "POST",
+				headers: requestHeaders({
+					"mcp-session-id": sessionId,
+					"mcp-protocol-version": PROTOCOL_VERSION,
+					...headers,
+				}),
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 4,
+					method: "tools/list",
+				}),
+			});
+			await deniedRefresh.text();
+			assert.equal(deniedRefresh.status, 403);
+		}
+
+		const schemaRefresh = await fetch(`${harness.baseUrl}/mcp`, {
+			method: "POST",
+			headers: requestHeaders({
+				"mcp-session-id": sessionId,
+				"mcp-protocol-version": PROTOCOL_VERSION,
+			}),
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 5,
+				method: "tools/list",
+			}),
+		});
+		assert.equal(schemaRefresh.status, 200);
+		assert.match(await schemaRefresh.text(), /agent_browser_close/);
+
+		const replayedRefresh = await fetch(`${harness.baseUrl}/mcp`, {
+			method: "POST",
+			headers: requestHeaders({
+				"mcp-session-id": sessionId,
+				"mcp-protocol-version": PROTOCOL_VERSION,
+			}),
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 6,
+				method: "tools/list",
+			}),
+		});
+		await replayedRefresh.text();
+		assert.equal(replayedRefresh.status, 403);
+		assert.equal(harness.sessions.size, 1);
 
 		const attacker = await fetch(`${harness.baseUrl}/mcp`, {
 			method: "DELETE",

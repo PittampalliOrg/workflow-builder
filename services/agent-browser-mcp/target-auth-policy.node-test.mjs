@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
+  authorizeBrowserSessionPostCloseToolsList,
   authorizeBrowserSessionTermination,
   authorizeBrowserInitialization,
   createTargetAuthExchangeCache,
@@ -438,6 +439,77 @@ test("authorizes termination for only the exact local MCP capability", () => {
     }),
     false,
   );
+});
+
+test("authorizes one exact post-close tools/list schema refresh", () => {
+  const browserContext = {
+    closing: true,
+    closeResponseSettled: true,
+    released: true,
+  };
+  const input = {
+    method: "tools/list",
+    schemaRefreshAvailable: true,
+    browserContext,
+    sessionId: "mcp-session-1",
+    executionId: "execution-1",
+    targetAuth: { assertion },
+    expectedSessionId: "mcp-session-1",
+    expectedExecutionId: "execution-1",
+    expectedAssertionDigest: targetAuthAssertionDigest(assertion),
+  };
+
+  assert.equal(authorizeBrowserSessionPostCloseToolsList(input), true);
+  assert.equal(
+    authorizeBrowserSessionPostCloseToolsList({
+      ...input,
+      schemaRefreshAvailable: false,
+    }),
+    false,
+  );
+  for (const method of [
+    "tools/call",
+    "initialize",
+    "ping",
+    "notifications/initialized",
+  ]) {
+    assert.equal(
+      authorizeBrowserSessionPostCloseToolsList({ ...input, method }),
+      false,
+      method,
+    );
+  }
+});
+
+test("denies post-close schema refresh outside the exact closed session capability", () => {
+  const input = {
+    method: "tools/list",
+    schemaRefreshAvailable: true,
+    browserContext: { closing: true, closeResponseSettled: true },
+    sessionId: "mcp-session-1",
+    executionId: "execution-1",
+    targetAuth: { assertion },
+    expectedSessionId: "mcp-session-1",
+    expectedExecutionId: "execution-1",
+    expectedAssertionDigest: targetAuthAssertionDigest(assertion),
+  };
+  const denied = [
+    { browserContext: { closing: false, closeResponseSettled: true } },
+    { browserContext: { closing: true, closeResponseSettled: false } },
+    { browserContext: null },
+    { sessionId: "mcp-session-2" },
+    { executionId: "execution-2" },
+    { targetAuth: { assertion: rotatedAssertion } },
+    { targetAuth: null },
+  ];
+
+  for (const override of denied) {
+    assert.equal(
+      authorizeBrowserSessionPostCloseToolsList({ ...input, ...override }),
+      false,
+      JSON.stringify(override),
+    );
+  }
 });
 
 test("validates against the fixed BFF without returning a credential", async () => {

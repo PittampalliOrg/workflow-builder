@@ -47,7 +47,27 @@ function isSecretKey(key: string): boolean {
 	return SECRET_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
-function redactText(value: string): string {
+function hasSecretAssignmentKey(value: string): boolean {
+	for (const match of value.matchAll(/(?:\\?["'])?([a-z_][a-z0-9_.-]{0,127})(?:\\?["'])?\s*[:=]/gi)) {
+		if (isSecretKey(match[1])) return true;
+	}
+	return false;
+}
+
+function redactSerializedJson(value: string, depth: number): string | null {
+	if (depth > 12) return '[redaction-depth-exceeded]';
+	const trimmed = value.trim();
+	if (!(trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('"'))) return null;
+	try {
+		return JSON.stringify(redactStrings(JSON.parse(trimmed), depth + 1));
+	} catch {
+		return hasSecretAssignmentKey(trimmed) ? '[REDACTED malformed JSON]' : null;
+	}
+}
+
+function redactText(value: string, depth: number): string {
+	const serialized = redactSerializedJson(value, depth);
+	if (serialized !== null) return serialized;
 	return value
 		.replace(URL_USERINFO_PATTERN, '$1[REDACTED]@')
 		.replace(AUTHORIZATION_HEADER_PATTERN, '$1: [REDACTED]')
@@ -70,7 +90,7 @@ function redactText(value: string): string {
 
 function redactStrings(value: unknown, depth = 0): unknown {
 	if (depth > 12) return '[redaction-depth-exceeded]';
-	if (typeof value === 'string') return redactText(value);
+	if (typeof value === 'string') return redactText(value, depth);
 	if (Array.isArray(value)) return value.map((item) => redactStrings(item, depth + 1));
 	if (value && typeof value === 'object') {
 		return Object.fromEntries(

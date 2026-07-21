@@ -103,9 +103,56 @@ describe('redactDiagnosticEvidence', () => {
 		expect(value.serialized).toContain('screenshots/frame.png');
 		expect(value.serialized).toContain('"payloadBase64":"[REDACTED]"');
 		expect(value.doublySerialized).toContain('payload_base64\\\":\\\"[REDACTED]');
-		expect(value.truncated).toBe('{"payloadBase64":"[REDACTED]');
+		expect(value.truncated).toBe('[REDACTED malformed JSON]');
 		expect(value.dataUri).toBe('[REDACTED image data URI]');
 		expect(JSON.stringify(value)).not.toContain(pixels);
+	});
+
+	it('recursively redacts secret keys inside JSON-encoded trace attributes', () => {
+		const sessionToken = 'signed-workflow-session-token';
+		const bearerToken = 'nested-bearer-token';
+		const accessToken = 'doubly-encoded-access-token';
+		const truncatedToken = 'truncated-signed-session-token';
+		const commaToken = 'part-one,part-two';
+		const objectToken = 'nested-object-token';
+		const value = redactDiagnosticEvidence({
+			'input.value': JSON.stringify({
+				workflowMcpSessionToken: sessionToken,
+				nested: {
+					headers: { Authorization: `Bearer ${bearerToken}` },
+					usage: { promptTokens: 12, reasoningTokens: 3 }
+				}
+			}),
+			doublySerialized: JSON.stringify(
+				JSON.stringify({ access_token: accessToken, status: 'ready' })
+			),
+			truncated: `{"workflowMcpSessionToken":"${truncatedToken}`,
+			escapedTruncated: `"{\\"access_token\\":\\"${accessToken}`,
+			commaTruncated: `{"workflowMcpSessionToken":"${commaToken}`,
+			objectTruncated: `{"workflowMcpSessionToken":{"raw":"${objectToken}`
+		});
+		const input = JSON.parse(value['input.value']);
+		const nested = JSON.parse(JSON.parse(value.doublySerialized));
+		const serialized = JSON.stringify(value);
+
+		expect(input).toMatchObject({
+			workflowMcpSessionToken: '[REDACTED]',
+			nested: {
+				headers: { Authorization: '[REDACTED]' },
+				usage: { promptTokens: 12, reasoningTokens: 3 }
+			}
+		});
+		expect(nested).toEqual({ access_token: '[REDACTED]', status: 'ready' });
+		expect(value.truncated).toBe('[REDACTED malformed JSON]');
+		expect(value.escapedTruncated).toBe('[REDACTED malformed JSON]');
+		expect(value.commaTruncated).toBe('[REDACTED malformed JSON]');
+		expect(value.objectTruncated).toBe('[REDACTED malformed JSON]');
+		expect(serialized).not.toContain(sessionToken);
+		expect(serialized).not.toContain(bearerToken);
+		expect(serialized).not.toContain(accessToken);
+		expect(serialized).not.toContain(truncatedToken);
+		expect(serialized).not.toContain(commaToken);
+		expect(serialized).not.toContain(objectToken);
 	});
 
 	it('caps nested evidence without losing the surrounding shape', () => {

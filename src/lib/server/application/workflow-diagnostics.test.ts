@@ -459,6 +459,46 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 		expect(serialized).not.toContain(pixels);
 	});
 
+	it('removes signed session credentials from JSON-encoded exact span attributes', async () => {
+		const sessionToken = 'signed-workflow-session-token';
+		const truncatedToken = 'truncated-workflow-session-token';
+		const commaToken = 'part-one,part-two';
+		const objectToken = 'nested-object-token';
+		vi.mocked(reads.getSpan).mockResolvedValue({
+			...traceSpan(),
+			attributes: {
+				'input.value': JSON.stringify({
+					workflowMcpSessionToken: sessionToken,
+					runtimeConfig: { model: 'kimi/kimi-k3', reasoningEffort: 'max' }
+				}),
+				'input.truncated': `{"workflowMcpSessionToken":"${truncatedToken}`,
+				'input.comma': `{"workflowMcpSessionToken":"${commaToken}`,
+				'input.object': `{"workflowMcpSessionToken":{"raw":"${objectToken}`
+			}
+		} as never);
+
+		const result = await service.getSpan({
+			execution,
+			spanId: '1'.padStart(16, '0')
+		});
+		const body = result.body as {
+			span: { attributes: Record<string, string> };
+		};
+		const input = JSON.parse(body.span.attributes['input.value']);
+
+		expect(input).toEqual({
+			workflowMcpSessionToken: '[REDACTED]',
+			runtimeConfig: { model: 'kimi/kimi-k3', reasoningEffort: 'max' }
+		});
+		expect(body.span.attributes['input.truncated']).toBe('[REDACTED malformed JSON]');
+		expect(body.span.attributes['input.comma']).toBe('[REDACTED malformed JSON]');
+		expect(body.span.attributes['input.object']).toBe('[REDACTED malformed JSON]');
+		expect(JSON.stringify(result.body)).not.toContain(sessionToken);
+		expect(JSON.stringify(result.body)).not.toContain(truncatedToken);
+		expect(JSON.stringify(result.body)).not.toContain(commaToken);
+		expect(JSON.stringify(result.body)).not.toContain(objectToken);
+	});
+
 	it('does not touch telemetry storage when ClickHouse is unavailable', async () => {
 		vi.mocked(reads.isConfigured).mockReturnValue(false);
 

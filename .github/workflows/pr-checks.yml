@@ -119,3 +119,47 @@ jobs:
       - name: Run orchestrator tests
         working-directory: services/workflow-orchestrator
         run: uv run pytest tests/ -q
+
+  agent-browser-mcp-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install agent-browser MCP dependencies
+        working-directory: services/agent-browser-mcp
+        run: npm ci
+
+      - name: Run agent-browser MCP tests
+        working-directory: services/agent-browser-mcp
+        run: npm test
+
+  browserstation-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install BrowserStation runtime dependencies
+        working-directory: services/browserstation
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Smoke BrowserStation runtime dependency imports
+        working-directory: services/browserstation
+        run: python -c 'import fastapi, httpx, ray, uvicorn, websockets; assert ray.__version__ == "2.47.1"'
+
+      - name: Run BrowserStation transport tests
+        working-directory: services/browserstation
+        run: python -m unittest discover -s tests -p 'test_*.py'
