@@ -49,6 +49,48 @@ DEFAULT_MAX_ITERATIONS = env_int("PYDANTIC_AI_MAX_ITERATIONS", 40)
 # Pod-local workspace the harness FileSystem/Shell capabilities are rooted at.
 WORKSPACE_ROOT = os.environ.get("PYDANTIC_AI_WORKSPACE_ROOT", "/sandbox")
 SHELL_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_SHELL_TIMEOUT_SECONDS", 120)
+
+
+def env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+# Glob names scrubbed from the Shell subprocess's INHERITED env (via
+# `denied_env_patterns` — keeps PATH/HOME, strips only matches), so an
+# agent-run command (e.g. `env`, `echo $KIMI_API_KEY`) can't exfiltrate the
+# pod's credentials. Provider prefixes + the platform secrets the harness
+# default list omits (KIMI/ANTHROPIC model auth, internal token, AP
+# encryption key, JWT signer, DB URL). `*_API_KEY` catches every provider
+# key generically. Override with a comma-separated env list.
+SHELL_DENIED_ENV_PATTERNS = env_list(
+    "PYDANTIC_AI_SHELL_DENIED_ENV_PATTERNS",
+    [
+        "*_API_KEY",
+        "*_SECRET",
+        "*_SECRET_KEY",
+        "KIMI_*",
+        "ANTHROPIC_*",
+        "OPENAI_*",
+        "DEEPSEEK_*",
+        "ZAI_*",
+        "GLM_*",
+        "MOONSHOT_*",
+        "GATEWAY_*",
+        "GOOGLE_*",
+        "GEMINI_*",
+        "NVIDIA_*",
+        "TOGETHER_*",
+        "ALIBABA_*",
+        "INTERNAL_API_TOKEN",
+        "AP_ENCRYPTION_KEY",
+        "JWT_SIGNING_KEY",
+        "DATABASE_URL",
+        "*_DATABASE_URL",
+    ],
+)
 # Cap tool outputs mirrored into durable history / session events. Full
 # outputs stay in the tool's own return to the model for the current turn.
 TOOL_RESULT_MAX_CHARS = env_int("PYDANTIC_AI_TOOL_RESULT_MAX_CHARS", 8000)

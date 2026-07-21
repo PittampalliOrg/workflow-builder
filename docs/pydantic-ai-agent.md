@@ -162,6 +162,23 @@ envFrom branch, next to the always-mounted `dapr-agent-py-config` +
 `dapr-agent-py-secrets` (KIMI_API_KEY). `ANTHROPIC_API_KEY` is not read by
 this service and must never be added to its env.
 
+## Shell credential scrubbing
+
+The harness `Shell` capability runs with `denied_env_patterns`
+(`SHELL_DENIED_ENV_PATTERNS`, override via
+`PYDANTIC_AI_SHELL_DENIED_ENV_PATTERNS`) so an agent-run command cannot read
+the pod's secrets out of the environment: `*_API_KEY` / `KIMI_*` /
+`ANTHROPIC_*` / provider prefixes / `INTERNAL_API_TOKEN` / `AP_ENCRYPTION_KEY`
+/ `JWT_SIGNING_KEY` / `*_DATABASE_URL` are stripped from the subprocess's
+INHERITED env (glob match), while `PATH`/`HOME`/non-secret vars survive so
+commands still resolve. This scrubs at the subprocess boundary — defense in
+depth under the platform "keys must never leak" invariant — not a substitute
+for pod-level isolation. Shell also exposes background-process tools
+(`start_command`/`check_command`/`stop_command`) automatically for
+dev-server / watcher workflows. Command allow/deny filtering is best-effort
+(an agent can defeat it via `bash -c`); real command safety stays at the
+per-session sandbox boundary.
+
 ## Durable per-sandbox scratch (/sandbox on a PVC)
 
 The pod's `/sandbox` workspace rides a small per-sandbox **RWO PVC** instead of

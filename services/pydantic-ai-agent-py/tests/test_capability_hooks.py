@@ -363,3 +363,35 @@ def test_mcp_capability_forwards_headers(monkeypatch, tmp_path):
         "X-Wfb-Session-Token": "tok",
         "X-Wfb-Session-Id": "sesn_1",
     }
+
+
+def test_shell_scrubs_credentials_but_keeps_path(monkeypatch, tmp_path):
+    """A shell command must not read the pod's KIMI_API_KEY / internal token,
+    but PATH (inherited) must survive so commands still run."""
+    import asyncio as aio
+
+    import src.toolsets as toolsets_mod
+    from src.toolsets import build_capabilities
+
+    monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-secret")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-secret")
+    monkeypatch.setenv("HARMLESS_VAR", "keepme")
+
+    caps = build_capabilities({})
+    shell = next(c for c in caps if type(c).__name__ == "Shell")
+    toolset = shell.get_toolset()
+
+    out = aio.run(
+        toolset.run_command(
+            "printenv KIMI_API_KEY || echo ABSENT; "
+            "printenv INTERNAL_API_TOKEN || echo ABSENT2; "
+            "printenv HARMLESS_VAR; "
+            'test -n "$PATH" && echo PATH_OK'
+        )
+    )
+    assert "sk-kimi-secret" not in out
+    assert "internal-secret" not in out
+    assert "ABSENT" in out and "ABSENT2" in out
+    assert "keepme" in out
+    assert "PATH_OK" in out
