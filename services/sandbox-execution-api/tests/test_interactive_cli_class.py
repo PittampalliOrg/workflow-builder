@@ -215,8 +215,10 @@ def test_transcript_store_adds_pvc_volume_mount_and_env() -> None:
     pod_spec = manifest["spec"]["podTemplate"]["spec"]
     container = pod_spec["containers"][0]
     vol = next(v for v in pod_spec["volumes"] if v["name"] == "cli-transcripts")
-    # The per-session PVC name keys on the session id (unique per attempt).
-    assert vol["persistentVolumeClaim"]["claimName"] == "cli-tx-sw-session-cli-1"
+    # The PVC object keys on the immutable agent-host generation.
+    assert vol["persistentVolumeClaim"]["claimName"] == (
+        "cli-tx-agent-session-cli123"
+    )
     mount = next(
         m for m in container["volumeMounts"] if m["name"] == "cli-transcripts"
     )
@@ -252,9 +254,9 @@ def test_ensure_transcript_volume_retain_preserves_data() -> None:
         _interactive_cli_transcript_class(),
         namespace="workflow-builder",
     )
-    assert name == "cli-tx-s2"
+    assert name == "cli-tx-agent-session-cli123"
     pv = next(b for kind, b in ((c[0], c[-1]) for c in created) if kind == "pv")
-    assert pv["spec"]["csi"]["volumeHandle"] == "cli-tx-s2"
+    assert pv["spec"]["csi"]["volumeHandle"] == "cli-tx-agent-session-cli123"
     # Retain (NOT Delete): the driver rmr's the subPath on a Delete-reclaim PV
     # removal, which would wipe the durable conversation when the PVC is GC'd.
     assert pv["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
@@ -295,8 +297,10 @@ def test_ensure_transcript_volume_rebinds_released_pv_on_conflict() -> None:
         _interactive_cli_transcript_class(),
         namespace="workflow-builder",
     )
-    assert name == "cli-tx-s9"
-    assert patched == [("cli-tx-s9", {"spec": {"claimRef": None}})]
+    assert name == "cli-tx-agent-session-cli123"
+    assert patched == [
+        ("cli-tx-agent-session-cli123", {"spec": {"claimRef": None}})
+    ]
 
 
 def test_default_class_manifest_is_unchanged_by_new_optional_fields() -> None:
@@ -416,7 +420,19 @@ def test_bind_cred_secret_owner_uses_sandbox_create_response_uid() -> None:
         namespace="workflow-builder",
         secret_name="agent-host-cred-agent-session-cli123",
         sandbox_name="agent-host-agent-session-cli123",
-        sandbox={"metadata": {"uid": "uid-123"}},
+        generation="agent-session-cli123",
+        sandbox={
+            "metadata": {
+                "name": "agent-host-agent-session-cli123",
+                "uid": "uid-123",
+                "labels": {"agent-app-id": "agent-session-cli123"},
+                "annotations": {
+                    app_module.AGENT_HOST_GENERATION_ANNOTATION: (
+                        "agent-session-cli123"
+                    )
+                },
+            }
+        },
     )
 
     assert len(core.patched) == 1
@@ -438,7 +454,16 @@ def test_bind_cred_secret_owner_fetches_cr_uid_on_adopt_path() -> None:
     core = _FakeCore()
     custom = SimpleNamespace(
         get_namespaced_custom_object=lambda **_kwargs: {
-            "metadata": {"uid": "uid-existing"}
+            "metadata": {
+                "name": "agent-host-agent-session-cli123",
+                "uid": "uid-existing",
+                "labels": {"agent-app-id": "agent-session-cli123"},
+                "annotations": {
+                    app_module.AGENT_HOST_GENERATION_ANNOTATION: (
+                        "agent-session-cli123"
+                    )
+                },
+            }
         }
     )
     app_module._bind_agent_host_cred_secret_owner(
@@ -447,6 +472,7 @@ def test_bind_cred_secret_owner_fetches_cr_uid_on_adopt_path() -> None:
         namespace="workflow-builder",
         secret_name="agent-host-cred-agent-session-cli123",
         sandbox_name="agent-host-agent-session-cli123",
+        generation="agent-session-cli123",
         sandbox=None,
     )
 

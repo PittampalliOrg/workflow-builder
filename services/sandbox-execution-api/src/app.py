@@ -244,7 +244,7 @@ class ExecutionClassConfig(BaseModel):
     agentHostUserHome: str | None = None
     # Per-session durable transcript store (interactive-cli runtime family).
     # When transcriptStoreCsiDriver is set, the create handler provisions a
-    # static per-session PV+PVC (CSI subPath = the conversation key) and the
+    # static per-generation PV+PVC (CSI subPath = the conversation key) and the
     # builder mounts it at transcriptStoreMountPath. cli-agent-py symlinks the
     # CLI's transcript dir into the mount, so ONLY the conversation transcript
     # persists (Postgres-backed JuiceFS); credentials/onboarding state stay on
@@ -269,7 +269,7 @@ class ExecutionClassConfig(BaseModel):
     # /sandbox itself): the CLI keeps its credential/config dirs under /sandbox
     # (CLAUDE_CONFIG_DIR=/sandbox/.claude, CODEX_HOME=/sandbox/.codex) on the
     # per-pod emptyDir, so only the build dir is shared. RWX + Retain like the
-    # transcript store; PV/PVC named per-session, CSI subPath = the shared key.
+    # transcript store; PV/PVC named per generation, CSI subPath = the shared key.
     sharedWorkspaceStoreCsiDriver: str | None = None
     sharedWorkspaceStoreSecretName: str | None = None
     sharedWorkspaceStoreSecretNamespace: str | None = None
@@ -340,6 +340,11 @@ class AgentWorkflowHostRequest(BaseModel):
     instanceId: str | None = None
     executionClass: str = Field(default="benchmark-fast")
     timeoutSeconds: int | None = Field(default=None, ge=60, le=86400)
+    # Optional create-to-activation safety window. A provisional host is born
+    # with a short controller-enforced shutdownTime and becomes persistent (or
+    # receives its final finite timeout) only after the owning lease is
+    # durably published and the internal activation endpoint succeeds.
+    provisionalTimeoutSeconds: int | None = Field(default=None, ge=60, le=3600)
     agentImage: str | None = None
     waitReadySeconds: int = Field(default=0, ge=0, le=300)
     # Maps to kueue.x-k8s.io/priority-class on the pod template. Recognized
@@ -363,6 +368,11 @@ class AgentWorkflowHostRequest(BaseModel):
     # When set, a read-only PV/PVC of that subPath is mounted and an init container
     # copies it into the (fresh) shared workspace once, if the shared workspace is empty.
     seedWorkspaceFrom: str | None = None
+
+
+class AgentWorkflowHostActivationRequest(BaseModel):
+    sandboxName: str = Field(min_length=1, max_length=63)
+    generation: str = Field(min_length=1, max_length=63)
 
 
 class DevPreviewRequest(BaseModel):
@@ -627,18 +637,22 @@ def _agent_host_shutdown_buffer_seconds() -> int:
     return max(0, min(86400, value))
 
 
+def _agent_host_shutdown_time_after(seconds: int) -> str:
+    return (
+        (datetime.now(UTC) + timedelta(seconds=seconds))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def _agent_host_shutdown_time(request: AgentWorkflowHostRequest) -> str | None:
     if request.timeoutSeconds is None:
         return None
     shutdown_after_seconds = (
         request.timeoutSeconds + _agent_host_shutdown_buffer_seconds()
     )
-    return (
-        (datetime.now(UTC) + timedelta(seconds=shutdown_after_seconds))
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return _agent_host_shutdown_time_after(shutdown_after_seconds)
 
 
 def _job_ttl_seconds(class_config: ExecutionClassConfig) -> int:
@@ -2265,6 +2279,68 @@ def _ensure_agent_host_cred_secret(
     return secret_name
 
 
+def _agent_host_sandbox_uid(
+    custom: Any,
+    *,
+    namespace: str,
+    sandbox_name: str,
+    generation: str,
+    sandbox: dict[str, Any] | None,
+) -> str | None:
+    """Return the UID only for the exact Sandbox generation being bound.
+
+    A create response is preferred, but an adoption path fetches the exact CR.
+    Pre-upgrade, non-provisional hosts are accepted when their exact name and
+    agent-app-id label match; a provisional or explicitly generated host must
+    carry the immutable generation annotation.
+    """
+
+    def _uid_if_exact(candidate: Any) -> str | None:
+        if not isinstance(candidate, dict):
+            return None
+        metadata = candidate.get("metadata") or {}
+        if metadata.get("name") != sandbox_name:
+            return None
+        labels = metadata.get("labels") or {}
+        if labels.get("agent-app-id") != _safe_name(generation, max_length=63):
+            return None
+        annotations = metadata.get("annotations") or {}
+        observed_generation = annotations.get(AGENT_HOST_GENERATION_ANNOTATION)
+        lifecycle = annotations.get(AGENT_HOST_LIFECYCLE_ANNOTATION)
+        if observed_generation != generation:
+            if observed_generation is not None or lifecycle is not None:
+                return None
+        uid = metadata.get("uid")
+        return uid if isinstance(uid, str) and uid else None
+
+    uid = _uid_if_exact(sandbox)
+    if uid:
+        return uid
+    try:
+        existing = custom.get_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=sandbox_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "agent-host sandbox %s read for ownerRef failed: %s",
+            sandbox_name,
+            exc,
+        )
+        return None
+    uid = _uid_if_exact(existing)
+    if not uid:
+        logger.warning(
+            "agent-host sandbox %s identity mismatch for generation %s; ownerRef skipped",
+            sandbox_name,
+            generation,
+        )
+    return uid
+
+
 def _bind_agent_host_cred_secret_owner(
     core: Any,
     custom: Any,
@@ -2272,6 +2348,7 @@ def _bind_agent_host_cred_secret_owner(
     namespace: str,
     secret_name: str,
     sandbox_name: str,
+    generation: str,
     sandbox: dict[str, Any] | None,
 ) -> None:
     """Point the credential Secret's ownerReferences at the Sandbox CR.
@@ -2281,26 +2358,13 @@ def _bind_agent_host_cred_secret_owner(
     and the CR is fetched for its uid. Best-effort: a failed bind leaves an
     unowned Secret that the next session for the same app-id overwrites.
     """
-    uid = None
-    if isinstance(sandbox, dict):
-        uid = ((sandbox.get("metadata") or {}) or {}).get("uid")
-    if not uid:
-        try:
-            existing = custom.get_namespaced_custom_object(
-                group="agents.x-k8s.io",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="sandboxes",
-                name=sandbox_name,
-            )
-            uid = ((existing or {}).get("metadata", {}) or {}).get("uid")
-        except Exception as exc:
-            logger.warning(
-                "agent-host cred secret %s: sandbox %s read for ownerRef failed: %s",
-                secret_name,
-                sandbox_name,
-                exc,
-            )
+    uid = _agent_host_sandbox_uid(
+        custom,
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        generation=generation,
+        sandbox=sandbox,
+    )
     if not uid:
         logger.warning(
             "agent-host cred secret %s: no sandbox uid for %s; secret left unowned",
@@ -2550,10 +2614,12 @@ def _cli_transcript_conversation_key(request: AgentWorkflowHostRequest) -> str:
     return (request.resumeFromSessionId or request.sessionId or "").strip()
 
 
-def _cli_transcript_resource_name(session_id: str) -> str:
+def _cli_transcript_resource_name(agent_app_id: str) -> str:
     # `cli-tx-` prefix guarantees the name never matches the driver's
     # `pvc-<uuid>` dynamic-PV regex, so DeleteVolume stays a data-safe no-op.
-    return _safe_resource_name(f"cli-tx-{session_id}", max_length=63)
+    # agentAppId is the immutable provisioning generation, keeping a late
+    # request from binding or mutating a newer generation's Kubernetes object.
+    return _safe_resource_name(f"cli-tx-{agent_app_id}", max_length=63)
 
 
 def _cli_transcript_claim_name(
@@ -2565,7 +2631,7 @@ def _cli_transcript_claim_name(
             _cli_transcript_conversation_key(request), field="conversation key"
         )
         return _preview_storage_pvc_name("transcript", logical_key)
-    return _cli_transcript_resource_name(request.sessionId)
+    return _cli_transcript_resource_name(request.agentAppId)
 
 
 def _ensure_cli_transcript_volume(
@@ -2575,7 +2641,7 @@ def _ensure_cli_transcript_volume(
     *,
     namespace: str,
 ) -> str | None:
-    """Provision the per-session static PV + PVC for the durable transcript.
+    """Provision the per-generation static PV + PVC for the durable transcript.
 
     Called BEFORE the Sandbox CR so the pod never races a missing PVC. The PV is
     static (custom volumeHandle) with reclaim **Retain**: deleting the PVC (on
@@ -2606,9 +2672,9 @@ def _ensure_cli_transcript_volume(
             logical_key=logical_key,
             capacity=class_config.transcriptStoreCapacity,
         )
-    # PV/PVC are named per-session (unique per attempt) while the CSI subPath is
-    # the conversation key, so a resume gets a fresh PV bound to the SAME data.
-    name = _cli_transcript_resource_name(request.sessionId)
+    # PV/PVC are named per provisioning generation while the CSI subPath is the
+    # conversation key, so a resume gets a fresh PV bound to the SAME data.
+    name = _cli_transcript_resource_name(request.agentAppId)
     secret_namespace = class_config.transcriptStoreSecretNamespace or namespace
     labels = {
         "app": "cli-transcript",
@@ -2698,6 +2764,7 @@ def _bind_cli_transcript_pvc_owner(
     namespace: str,
     pvc_name: str,
     sandbox_name: str,
+    generation: str,
     sandbox: dict[str, Any] | None,
 ) -> None:
     """ownerRef the transcript PVC at the Sandbox CR so it GCs with the pod.
@@ -2709,26 +2776,13 @@ def _bind_cli_transcript_pvc_owner(
         # Dynamic preview PVCs persist for resume within the environment and are
         # reclaimed with the host-enforced per-preview scope on teardown.
         return
-    uid = None
-    if isinstance(sandbox, dict):
-        uid = ((sandbox.get("metadata") or {}) or {}).get("uid")
-    if not uid:
-        try:
-            existing = custom.get_namespaced_custom_object(
-                group="agents.x-k8s.io",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="sandboxes",
-                name=sandbox_name,
-            )
-            uid = ((existing or {}).get("metadata", {}) or {}).get("uid")
-        except Exception as exc:
-            logger.warning(
-                "cli-transcript pvc %s: sandbox %s read for ownerRef failed: %s",
-                pvc_name,
-                sandbox_name,
-                exc,
-            )
+    uid = _agent_host_sandbox_uid(
+        custom,
+        namespace=namespace,
+        sandbox_name=sandbox_name,
+        generation=generation,
+        sandbox=sandbox,
+    )
     if not uid:
         logger.warning(
             "cli-transcript pvc %s: no sandbox uid for %s; pvc left unowned",
@@ -2782,7 +2836,7 @@ def _pydantic_scratch_enabled(image: str) -> bool:
 
 
 def _pydantic_scratch_claim_name(request: AgentWorkflowHostRequest) -> str:
-    return _safe_resource_name(f"pyd-scratch-{request.sessionId}", max_length=63)
+    return _safe_resource_name(f"pyd-scratch-{request.agentAppId}", max_length=63)
 
 
 def _ensure_pydantic_scratch_pvc(
@@ -2815,6 +2869,7 @@ def _ensure_pydantic_scratch_pvc(
             "namespace": namespace,
             "labels": {
                 "app": "pydantic-ai-scratch",
+                "agent-app-id": _safe_name(request.agentAppId, max_length=63),
                 "workflow-builder.cnoe.io/session-id": _safe_name(
                     request.sessionId, max_length=63
                 ),
@@ -2834,10 +2889,10 @@ def _cli_shared_workspace_enabled(class_config: ExecutionClassConfig) -> bool:
     return bool(class_config.sharedWorkspaceStoreCsiDriver)
 
 
-def _cli_shared_workspace_resource_name(session_id: str) -> str:
+def _cli_shared_workspace_resource_name(agent_app_id: str) -> str:
     # `cli-ws-` prefix keeps the name off the driver's `pvc-<uuid>` dynamic-PV
     # regex, so DeleteVolume stays a data-safe no-op (same as cli-tx-).
-    return _safe_resource_name(f"cli-ws-{session_id}", max_length=63)
+    return _safe_resource_name(f"cli-ws-{agent_app_id}", max_length=63)
 
 
 def _cli_shared_workspace_claim_name(
@@ -2849,7 +2904,7 @@ def _cli_shared_workspace_claim_name(
             request.sharedWorkspaceKey, field="shared workspace key"
         )
         return _preview_storage_pvc_name("workspace", logical_key)
-    return _cli_shared_workspace_resource_name(request.sessionId)
+    return _cli_shared_workspace_resource_name(request.agentAppId)
 
 
 def _ensure_cli_shared_workspace_volume(
@@ -2865,7 +2920,7 @@ def _ensure_cli_shared_workspace_volume(
     reclaim **Retain**, RWX), but the CSI `subPath` is the SHARED key
     (`request.sharedWorkspaceKey`, e.g. the workflow execution / workspaceRef) so
     every CLI pod of one workflow run binds the SAME Postgres-backed subtree and
-    sees the SAME files. PV/PVC are named per-session (unique per pod) and
+    sees the SAME files. PV/PVC are named per generation (unique per pod) and
     ownerRef'd to the pod's Sandbox; the data persists across pod GC via
     Retain + the shared subPath in Postgres. Idempotent (409 = already there).
     """
@@ -2887,7 +2942,7 @@ def _ensure_cli_shared_workspace_volume(
             logical_key=logical_key,
             capacity=class_config.sharedWorkspaceStoreCapacity,
         )
-    name = _cli_shared_workspace_resource_name(request.sessionId)
+    name = _cli_shared_workspace_resource_name(request.agentAppId)
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     labels = {
         "app": "cli-shared-workspace",
@@ -3059,10 +3114,11 @@ def _ensure_cli_seed_workspace_volume(
             capacity=class_config.sharedWorkspaceStoreCapacity,
             create=False,
         )
-    name = f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
+    name = _safe_resource_name(f"cli-seed-{request.agentAppId}", max_length=63)
     secret_namespace = class_config.sharedWorkspaceStoreSecretNamespace or namespace
     labels = {
         "app": "cli-seed-workspace",
+        "agent-app-id": _safe_name(request.agentAppId, max_length=63),
         "workflow-builder.cnoe.io/session-id": _safe_name(
             request.sessionId, max_length=63
         ),
@@ -3139,7 +3195,7 @@ def _cli_seed_workspace_claim_name(
             request.seedWorkspaceFrom, field="seed workspace key"
         )
         return _preview_storage_pvc_name("workspace", logical_key)
-    return f"cli-seed-{_safe_name(request.sessionId, max_length=55)}"
+    return _safe_resource_name(f"cli-seed-{request.agentAppId}", max_length=63)
 
 
 TRACEPARENT_ANNOTATION = "workflow-builder.cnoe.io/traceparent"
@@ -3149,6 +3205,17 @@ BAGGAGE_ANNOTATION = "workflow-builder.cnoe.io/baggage"
 # a create-409 can distinguish adopt-same-run from a stale name reused by a
 # different run (delete + recreate, no inherited pod state).
 OWNER_RUN_ID_ANNOTATION = "agents.workflow-builder.cnoe.io/owner-run-id"
+AGENT_HOST_GENERATION_ANNOTATION = "agents.workflow-builder.cnoe.io/generation"
+AGENT_HOST_LIFECYCLE_ANNOTATION = "agents.workflow-builder.cnoe.io/lifecycle"
+AGENT_HOST_FINAL_TIMEOUT_ANNOTATION = (
+    "agents.workflow-builder.cnoe.io/final-timeout-seconds"
+)
+AGENT_HOST_FINAL_PERSISTENT_ANNOTATION = (
+    "agents.workflow-builder.cnoe.io/final-persistent"
+)
+AGENT_HOST_ACTIVATED_AT_ANNOTATION = (
+    "agents.workflow-builder.cnoe.io/activated-at"
+)
 
 
 def _agent_host_owner_run_id(request: AgentWorkflowHostRequest) -> str:
@@ -3628,8 +3695,13 @@ def build_agent_workflow_host_sandbox_manifest(
         # Must exceed shutdownTime (timeoutSeconds + shutdown buffer): a smaller
         # deadline hard-killed the pod (phase=Failed/DeadlineExceeded) 20 min
         # before the controller's graceful Delete for every agent-host sandbox.
+        # A provisional pod can spend its entire provisioning window waiting for
+        # durable publication before activation starts the final timeout, so the
+        # kubelet backstop includes both windows. Persistent final hosts omit the
+        # deadline even when they begin provisionally.
         pod_spec["activeDeadlineSeconds"] = (
-            request.timeoutSeconds
+            (request.provisionalTimeoutSeconds or 0)
+            + request.timeoutSeconds
             + _agent_host_shutdown_buffer_seconds()
             + AGENT_HOST_POD_DEADLINE_MARGIN_SECONDS
         )
@@ -3746,6 +3818,16 @@ def build_agent_workflow_host_sandbox_manifest(
     sandbox_metadata["annotations"] = {
         **(sandbox_metadata_annotations or {}),
         OWNER_RUN_ID_ANNOTATION: _agent_host_owner_run_id(request),
+        AGENT_HOST_GENERATION_ANNOTATION: request.agentAppId,
+        AGENT_HOST_LIFECYCLE_ANNOTATION: (
+            "provisional" if request.provisionalTimeoutSeconds is not None else "active"
+        ),
+        AGENT_HOST_FINAL_TIMEOUT_ANNOTATION: (
+            str(request.timeoutSeconds) if request.timeoutSeconds is not None else ""
+        ),
+        AGENT_HOST_FINAL_PERSISTENT_ANNOTATION: (
+            "true" if request.timeoutSeconds is None else "false"
+        ),
     }
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
@@ -3757,7 +3839,11 @@ def build_agent_workflow_host_sandbox_manifest(
             "spec": pod_spec,
         },
     }
-    shutdown_time = _agent_host_shutdown_time(request)
+    shutdown_time = (
+        _agent_host_shutdown_time_after(request.provisionalTimeoutSeconds)
+        if request.provisionalTimeoutSeconds is not None
+        else _agent_host_shutdown_time(request)
+    )
     if shutdown_time:
         sandbox_spec["shutdownPolicy"] = "Delete"
         sandbox_spec["shutdownTime"] = shutdown_time
@@ -5398,6 +5484,7 @@ def submit_agent_workflow_host(
                 namespace=namespace,
                 secret_name=cred_secret_name,
                 sandbox_name=sandbox_name,
+                generation=body.agentAppId,
                 sandbox=created_sandbox,
             )
         if transcript_pvc_name:
@@ -5407,6 +5494,7 @@ def submit_agent_workflow_host(
                 namespace=namespace,
                 pvc_name=transcript_pvc_name,
                 sandbox_name=sandbox_name,
+                generation=body.agentAppId,
                 sandbox=created_sandbox,
             )
         if shared_workspace_pvc_name:
@@ -5418,6 +5506,7 @@ def submit_agent_workflow_host(
                 namespace=namespace,
                 pvc_name=shared_workspace_pvc_name,
                 sandbox_name=sandbox_name,
+                generation=body.agentAppId,
                 sandbox=created_sandbox,
             )
         if seed_workspace_pvc_name:
@@ -5429,6 +5518,7 @@ def submit_agent_workflow_host(
                 namespace=namespace,
                 pvc_name=seed_workspace_pvc_name,
                 sandbox_name=sandbox_name,
+                generation=body.agentAppId,
                 sandbox=created_sandbox,
             )
         if pydantic_scratch_pvc_name:
@@ -5440,6 +5530,7 @@ def submit_agent_workflow_host(
                 namespace=namespace,
                 pvc_name=pydantic_scratch_pvc_name,
                 sandbox_name=sandbox_name,
+                generation=body.agentAppId,
                 sandbox=created_sandbox,
             )
         readiness = _wait_for_agent_host_ready(
@@ -5465,6 +5556,7 @@ def submit_agent_workflow_host(
         provisioning_phase = "queued"
     response = {
         "agentAppId": body.agentAppId,
+        "generation": body.agentAppId,
         "sessionId": body.sessionId,
         "sandboxName": sandbox_name,
         # Back-compat: callers (BFF, orchestrator) still read `jobName` until
@@ -5474,6 +5566,7 @@ def submit_agent_workflow_host(
         # Additive: distinguishes Kueue-queued/unscheduled (`queued`) from
         # scheduled-but-booting (`starting`) and Ready (`ready`).
         "phase": provisioning_phase,
+        "provisional": body.provisionalTimeoutSeconds is not None,
         "executionClass": body.executionClass,
         "localQueue": class_config.localQueue,
         "runtimeClassName": class_config.runtimeClassName,
@@ -5493,6 +5586,225 @@ def submit_agent_workflow_host(
 # Canonical Dapr-app-id shape for agent hosts (agent-session-<sha20> and the
 # benchmark stable app ids): lowercase DNS-label, no leading/trailing dash.
 _AGENT_APP_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+@app.post("/api/v1/agent-workflow-hosts/{agent_app_id}/activate")
+def activate_agent_workflow_host(
+    request: Request,
+    agent_app_id: str,
+    body: AgentWorkflowHostActivationRequest,
+) -> dict[str, Any]:
+    """Promote one exact provisional generation to its requested final lifetime.
+
+    The caller must present the deterministic Sandbox name and repeat the
+    immutable app-id generation. The stored annotations are the authority for
+    final timeout versus persistence, which makes activation retries
+    idempotent and prevents them from extending an already-active host.
+    """
+
+    _require_internal(request)
+    if not _AGENT_APP_ID_PATTERN.fullmatch(agent_app_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid agent app id",
+        )
+    sandbox_name = _agent_host_sandbox_name(agent_app_id)
+    if body.generation != agent_app_id or body.sandboxName != sandbox_name:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent-host activation identity mismatch",
+        )
+
+    namespace = _agent_workflow_host_namespace()
+    custom = _load_k8s_custom_objects_client()
+
+    def _read() -> dict[str, Any]:
+        try:
+            observed = custom.get_namespaced_custom_object(
+                group="agents.x-k8s.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="sandboxes",
+                name=sandbox_name,
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="agent workflow host not found",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="agent-host lookup failed",
+            ) from exc
+        if not isinstance(observed, dict):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="agent-host lookup returned an invalid object",
+            )
+        return observed
+
+    observed = _read()
+    metadata = observed.get("metadata") or {}
+    labels = metadata.get("labels") or {}
+    annotations = metadata.get("annotations") or {}
+    if (
+        metadata.get("name") != sandbox_name
+        or labels.get("agent-app-id")
+        != _safe_name(agent_app_id, max_length=63)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent-host activation Sandbox identity mismatch",
+        )
+
+    lifecycle = annotations.get(AGENT_HOST_LIFECYCLE_ANNOTATION)
+    observed_generation = annotations.get(AGENT_HOST_GENERATION_ANNOTATION)
+    # Rollout compatibility: pre-upgrade hosts were born active and have no
+    # generation/lifecycle annotations. Exact Sandbox name + app-id label are
+    # sufficient for a no-op acknowledgement, but they can never enter the
+    # provisional activation path.
+    if lifecycle is None and observed_generation is None:
+        response = {
+            "agentAppId": agent_app_id,
+            "sandboxName": sandbox_name,
+            "generation": agent_app_id,
+            "outcome": "already-active",
+            "legacy": True,
+        }
+        set_current_span_io("output", response)
+        return response
+    if observed_generation != agent_app_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent-host activation generation mismatch",
+        )
+    if lifecycle == "active":
+        response = {
+            "agentAppId": agent_app_id,
+            "sandboxName": sandbox_name,
+            "generation": agent_app_id,
+            "outcome": "already-active",
+            "legacy": False,
+        }
+        set_current_span_io("output", response)
+        return response
+    if lifecycle != "provisional":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent-host activation lifecycle mismatch",
+        )
+
+    persistent_raw = annotations.get(AGENT_HOST_FINAL_PERSISTENT_ANNOTATION)
+    timeout_raw = annotations.get(AGENT_HOST_FINAL_TIMEOUT_ANNOTATION)
+    if persistent_raw not in {"true", "false"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="agent-host final persistence annotation is invalid",
+        )
+    persistent = persistent_raw == "true"
+    final_timeout: int | None = None
+    if persistent:
+        if timeout_raw not in {None, ""}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="persistent agent-host carries a finite timeout",
+            )
+    else:
+        try:
+            final_timeout = int(timeout_raw or "")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent-host final timeout annotation is invalid",
+            ) from exc
+        if not 60 <= final_timeout <= 86400:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="agent-host final timeout annotation is out of bounds",
+            )
+
+    activated_at = (
+        datetime.now(UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    spec_patch: dict[str, Any]
+    final_shutdown_time: str | None
+    if persistent:
+        final_shutdown_time = None
+        spec_patch = {"shutdownPolicy": None, "shutdownTime": None}
+    else:
+        assert final_timeout is not None
+        final_shutdown_time = _agent_host_shutdown_time_after(
+            final_timeout + _agent_host_shutdown_buffer_seconds()
+        )
+        spec_patch = {
+            "shutdownPolicy": "Delete",
+            "shutdownTime": final_shutdown_time,
+        }
+    metadata_patch: dict[str, Any] = {
+        "annotations": {
+            AGENT_HOST_LIFECYCLE_ANNOTATION: "active",
+            AGENT_HOST_ACTIVATED_AT_ANNOTATION: activated_at,
+        }
+    }
+    resource_version = metadata.get("resourceVersion")
+    if not isinstance(resource_version, str) or not resource_version:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="agent-host activation cannot establish object version",
+        )
+    # Make delete/recreate between verification and patch conflict instead of
+    # activating a replacement object with the same DNS name.
+    metadata_patch["resourceVersion"] = resource_version
+    try:
+        custom.patch_namespaced_custom_object(
+            group="agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxes",
+            name=sandbox_name,
+            body={"metadata": metadata_patch, "spec": spec_patch},
+        )
+    except Exception as exc:
+        if getattr(exc, "status", None) == 409:
+            current = _read()
+            current_annotations = (
+                ((current.get("metadata") or {}).get("annotations") or {})
+            )
+            if (
+                current_annotations.get(AGENT_HOST_GENERATION_ANNOTATION)
+                == agent_app_id
+                and current_annotations.get(AGENT_HOST_LIFECYCLE_ANNOTATION)
+                == "active"
+            ):
+                response = {
+                    "agentAppId": agent_app_id,
+                    "sandboxName": sandbox_name,
+                    "generation": agent_app_id,
+                    "outcome": "already-active",
+                    "legacy": False,
+                }
+                set_current_span_io("output", response)
+                return response
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="agent-host activation patch failed",
+        ) from exc
+
+    response = {
+        "agentAppId": agent_app_id,
+        "sandboxName": sandbox_name,
+        "generation": agent_app_id,
+        "outcome": "activated",
+        "legacy": False,
+        "persistent": persistent,
+        "shutdownTime": final_shutdown_time,
+    }
+    set_current_span_io("output", response)
+    return response
 
 
 @app.delete("/api/v1/agent-workflow-hosts/{agent_app_id}")
