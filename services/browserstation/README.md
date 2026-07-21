@@ -16,6 +16,7 @@ browser admission. The token is never included in public health output.
 
 Fence mutation and browser creation share one `asyncio.Lock`. A successful PUT
 therefore proves that earlier create calls have finished and later creates will
-receive a retryable `503` until release or expiry. DELETE with the same contract
-and holder releases the fence. `BROWSERSTATION_ROLLOUT_API_KEY` authenticates
-these internal operations and defaults to `BROWSERSTATION_API_KEY`.
+receive a retryable `503` until release or expiry. DELETE with the same
+contract, holder, and server-issued lease token releases the fence.
+`BROWSERSTATION_ROLLOUT_API_KEY` authenticates these internal operations and
+defaults to `BROWSERSTATION_API_KEY`.
