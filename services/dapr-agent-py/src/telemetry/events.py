@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .attributes import get_telemetry_attributes
-from .content_sanitizer import sanitize_content_for_telemetry
+from .content_sanitizer import (
+    sanitize_content_for_telemetry,
+    sanitize_text_for_telemetry,
+)
 from .providers import get_event_logger
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,32 @@ def set_prompt_id(prompt_id: str | None) -> None:
 
 def get_prompt_id() -> str:
     return getattr(_prompt_id_ctx, "value", "") or ""
+
+
+def emit_user_prompt_event(span: Any, prompt: str) -> None:
+    """Emit the prompt log and its span-event mirror from one safe envelope."""
+    event_attrs: dict[str, Any] = {
+        "prompt_length": len(prompt),
+        "prompt": (
+            sanitize_text_for_telemetry(prompt)
+            if is_user_prompt_logging_enabled()
+            else "<REDACTED>"
+        ),
+    }
+    log_otel_event("user_prompt", event_attrs)
+    if span is None:
+        return
+    try:
+        span.add_event(
+            "claude_code.user_prompt",
+            attributes={
+                key: str(value)
+                for key, value in event_attrs.items()
+                if value is not None
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def log_otel_event(event_name: str, metadata: dict[str, Any] | None = None) -> None:

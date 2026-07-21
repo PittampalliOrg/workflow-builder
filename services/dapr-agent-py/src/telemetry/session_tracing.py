@@ -223,7 +223,12 @@ def _set_oi_content_attr(span, attr_base, value):
 
 def get_span_trace_context(span: Any) -> tuple[str | None, str | None]:
     """Return (trace_id_hex, span_id_hex) for a specific span."""
-    return _extract_ids_from_span(span)
+    handle = _explicit_spans.get(_span_id(span)) if span is not None else None
+    return _extract_ids_from_span(
+        handle.canonical_llm_span
+        if handle is not None and handle.canonical_llm_span is not None
+        else span
+    )
 
 
 def get_current_trace_context() -> tuple[str | None, str | None]:
@@ -238,8 +243,9 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
       1. Innermost tool handle (_tool_ctx)
       2. The most-recently-started unended span in _explicit_spans
          (covers claude_code.llm_request / hook / tool.execution)
-      3. Interaction handle (_interaction_ctx)
-      4. OTEL current span fallback (works if caller wraps in `use_span`)
+      3. Current canonical call_llm span (works if caller wraps in `use_span`)
+      4. Interaction handle (_interaction_ctx)
+      5. Any other OTEL current span fallback
     """
     handle = _tool_ctx.get()
     if handle is not None:
@@ -254,18 +260,26 @@ def get_current_trace_context() -> tuple[str | None, str | None]:
             default=None,
         )
         if latest is not None:
-            tid, sid = _extract_ids_from_span(latest.span)
+            tid, sid = _extract_ids_from_span(latest.canonical_llm_span or latest.span)
             if tid:
                 return tid, sid
+    try:
+        from opentelemetry import trace as otel_trace
+
+        ambient_span = otel_trace.get_current_span()
+        if _is_canonical_llm_span(ambient_span):
+            tid, sid = _extract_ids_from_span(ambient_span)
+            if tid:
+                return tid, sid
+    except Exception:  # noqa: BLE001
+        ambient_span = None
     handle = _interaction_ctx.get()
     if handle is not None:
         tid, sid = _extract_ids_from_span(handle.span)
         if tid:
             return tid, sid
     try:
-        from opentelemetry import trace as otel_trace
-
-        return _extract_ids_from_span(otel_trace.get_current_span())
+        return _extract_ids_from_span(ambient_span or otel_trace.get_current_span())
     except Exception:  # noqa: BLE001
         return None, None
 

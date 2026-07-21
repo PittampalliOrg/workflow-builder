@@ -337,7 +337,9 @@ describe("trace tools", () => {
         })),
       }),
     });
-    const tool = captured.find((entry) => entry.name === "trace_search_spans");
+    const tool = captured.find(
+      (entry) => entry.name === "trace_search_spans",
+    );
 
     const response = await tool?.handler({ executionId: "execution-1" });
 
@@ -562,9 +564,7 @@ describe("trace tools", () => {
         })),
       }),
     });
-    const tool = captured.find(
-      (entry) => entry.name === "trace_search_spans",
-    );
+    const tool = captured.find((entry) => entry.name === "trace_search_spans");
 
     const response = await tool?.handler({ executionId: "execution-1" });
 
@@ -572,6 +572,49 @@ describe("trace tools", () => {
       tool: "trace_get_llm_turn",
       arguments: { executionId: "execution-1", spanId: "llm-span" },
     });
+  });
+
+  it("does not advertise curated LLM turns for an explicit CHAIN helper span", async () => {
+    const chainSpan = {
+      spanId: "llm-helper-span",
+      name: "claude_code.llm_request",
+      service: "dapr-agent-py",
+      attributes: {
+        "openinference.span.kind": "CHAIN",
+        "llm.model_name": "kimi-k3",
+        "gen_ai.request.model": "kimi-k3",
+      },
+    };
+    const useCases = diagnostics({
+      searchSpans: vi.fn(async () => ({ spans: [chainSpan] })),
+      getSpan: vi.fn(async () => ({ span: chainSpan })),
+    });
+    const { server, captured } = fakeServer();
+    registerTraceTools(server as any, { principal, diagnostics: useCases });
+
+    const searchTool = captured.find(
+      (entry) => entry.name === "trace_search_spans",
+    );
+    const searchResponse = await searchTool?.handler({
+      executionId: "execution-1",
+    });
+    expect(
+      searchResponse.structuredContent.nextActions.map(
+        (action: { tool: string }) => action.tool,
+      ),
+    ).toEqual(["trace_get_span"]);
+
+    const spanTool = captured.find((entry) => entry.name === "trace_get_span");
+    const spanResponse = await spanTool?.handler({
+      executionId: "execution-1",
+      spanId: "llm-helper-span",
+    });
+    expect(
+      spanResponse.structuredContent.nextActions.map(
+        (action: { tool: string }) => action.tool,
+      ),
+    ).toEqual(["trace_get_logs"]);
+    expect(useCases.getLlmTurns).not.toHaveBeenCalled();
   });
 
   it("only proposes LLM drill-down from LLM-related span detail", async () => {

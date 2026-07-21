@@ -21,6 +21,8 @@ import os
 from typing import Any
 from collections.abc import Iterator
 
+from .sanitizing_exporter import SanitizingLogExporter, SanitizingSpanExporter
+
 logger = logging.getLogger(__name__)
 
 _TRACER_SCOPE = "com.anthropic.claude_code.tracing"
@@ -105,7 +107,9 @@ def init_telemetry() -> bool:
         tp = TracerProvider(resource=resource)
         tp.add_span_processor(
             BatchSpanProcessor(
-                OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"),
+                SanitizingSpanExporter(
+                    OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
+                ),
                 max_queue_size=bsp_queue,
                 max_export_batch_size=bsp_batch,
                 schedule_delay_millis=bsp_delay,
@@ -133,7 +137,9 @@ def init_telemetry() -> bool:
         # --- Logger ---
         lp = LoggerProvider(resource=resource)
         lp.add_log_record_processor(
-            BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs"))
+            BatchLogRecordProcessor(
+                SanitizingLogExporter(OTLPLogExporter(endpoint=f"{endpoint}/v1/logs"))
+            )
         )
         set_logger_provider(lp)
         _logger_provider = lp
