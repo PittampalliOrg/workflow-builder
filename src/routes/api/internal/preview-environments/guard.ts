@@ -18,6 +18,7 @@ import {
   PreviewEnvironmentDesiredStateError,
   PreviewEnvironmentDesiredStateOwnershipError,
   PreviewRuntimeIdentityChangedError,
+  PreviewTraceQueryTimeoutError,
 } from "$lib/server/application/ports";
 import { resolveInternalWorkflowPrincipal } from "../workflow-mcp-principal";
 
@@ -42,9 +43,10 @@ function errorResponse(
   code: string,
   message: string,
   headers?: Record<string, string>,
+  details?: Record<string, unknown>,
 ): Response {
   return json(
-    { error: { code, message } },
+    { error: { code, message, ...(details ? { details } : {}) } },
     { status, ...(headers ? { headers } : {}) },
   );
 }
@@ -152,6 +154,15 @@ export function previewMcpError(cause: unknown): Response {
       cause.code === "invalid-request" ? 400 : 409,
       `preview_trace_${cause.code.replaceAll("-", "_")}`,
       cause.message,
+    );
+  }
+  if (cause instanceof PreviewTraceQueryTimeoutError) {
+    return errorResponse(
+      504,
+      cause.code,
+      cause.message,
+      { "retry-after": "1" },
+      { range: cause.range, retryRange: cause.retryRange },
     );
   }
   if (

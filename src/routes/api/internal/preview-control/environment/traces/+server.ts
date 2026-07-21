@@ -8,7 +8,10 @@ import {
   PreviewTraceQueryError,
   PreviewTraceQueryUnavailableError,
 } from "$lib/server/application/preview-traces";
-import type { PreviewControlIdentity } from "$lib/server/application/ports";
+import {
+  PreviewTraceQueryTimeoutError,
+  type PreviewControlIdentity,
+} from "$lib/server/application/ports";
 import {
   requirePreviewControlCapability,
   validatePreviewControlBrokerToken,
@@ -132,6 +135,17 @@ export const POST: RequestHandler = async ({ request }) => {
       return json(
         { ok: false, error: cause.message, code: cause.code },
         { status },
+      );
+    }
+    if (cause instanceof PreviewTraceQueryTimeoutError) {
+      return json(
+        {
+          ok: false,
+          error: cause.message,
+          code: cause.code,
+          details: { range: cause.range, retryRange: cause.retryRange },
+        },
+        { status: 504, headers: { "retry-after": "1" } },
       );
     }
     if (cause instanceof PreviewTraceQueryUnavailableError) {

@@ -5,9 +5,14 @@ import type {
 } from "$lib/server/application/ports";
 import {
   ClickHousePreviewTraceQueryAdapter,
+  DEFAULT_PREVIEW_TRACE_BROKER_TIMEOUT_MS,
+  DEFAULT_PREVIEW_TRACE_QUERY_TIMEOUT_MS,
   HttpPreviewTraceQueryAdapter,
 } from "$lib/server/application/adapters/preview-traces";
-import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
+import {
+  PreviewRuntimeIdentityChangedError,
+  PreviewTraceQueryTimeoutError,
+} from "$lib/server/application/ports";
 
 const identity: PreviewControlIdentity = {
   previewName: "feature-one",
@@ -27,9 +32,11 @@ const query: PreviewTraceQuery = {
 describe("preview trace query adapters", () => {
   it("includes every tuple attribute in every ClickHouse query", async () => {
     const sql: string[] = [];
+    const options: Array<{ timeoutMs?: number } | undefined> = [];
     const adapter = new ClickHousePreviewTraceQueryAdapter(
-      async (statement) => {
+      async (statement, queryOptions) => {
         sql.push(statement);
+        options.push(queryOptions);
         return [];
       },
       () => new Date("2026-07-13T12:00:00.000Z"),
@@ -38,6 +45,10 @@ describe("preview trace query adapters", () => {
     await adapter.query({ identity, query });
 
     expect(sql).toHaveLength(2);
+    expect(options).toEqual([
+      { timeoutMs: DEFAULT_PREVIEW_TRACE_QUERY_TIMEOUT_MS },
+      { timeoutMs: DEFAULT_PREVIEW_TRACE_QUERY_TIMEOUT_MS },
+    ]);
     for (const statement of sql) {
       expect(statement).toContain(
         "ResourceAttributes['deployment.environment'] = 'dev-preview'",
@@ -60,6 +71,40 @@ describe("preview trace query adapters", () => {
     }
   });
 
+  it("uses one trace-table scan and filters complete trace aggregates with HAVING", async () => {
+    const sql: string[] = [];
+    const adapter = new ClickHousePreviewTraceQueryAdapter(async (statement) => {
+      sql.push(statement);
+      return [];
+    });
+
+    await adapter.query({
+      identity,
+      query: {
+        ...query,
+        service: "workflow-builder",
+        search: "can't render",
+        status: "error",
+      },
+    });
+
+    const traceSql = sql[0] ?? "";
+    expect(traceSql.match(/FROM otel\.otel_traces/g)).toHaveLength(1);
+    expect(traceSql).not.toContain("TraceId IN");
+    expect(traceSql).toContain(
+      "countIf(ServiceName = 'workflow-builder') > 0",
+    );
+    expect(traceSql).toContain(
+      "countIf(positionCaseInsensitive(TraceId, 'can''t render') > 0 OR",
+    );
+    expect(traceSql).toContain("GROUP BY TraceId");
+    expect(traceSql).toContain("HAVING countIf(");
+    expect(traceSql).toContain("AND HasError = 1");
+    expect(traceSql.indexOf("GROUP BY TraceId")).toBeLessThan(
+      traceSql.indexOf("HAVING countIf("),
+    );
+  });
+
   it("supports the full seven-day preview retention window", async () => {
     const sql: string[] = [];
     const adapter = new ClickHousePreviewTraceQueryAdapter(async (statement) => {
@@ -73,6 +118,29 @@ describe("preview trace query adapters", () => {
     expect(sql.every((statement) => statement.includes("INTERVAL 7 DAY"))).toBe(
       true,
     );
+  });
+
+  it("maps a physical query budget expiry to the typed retry contract", async () => {
+    const timeout = Object.assign(new Error("query exceeded budget"), {
+      name: "TimeoutError",
+    });
+    const adapter = new ClickHousePreviewTraceQueryAdapter(
+      async () => {
+        throw timeout;
+      },
+      undefined,
+      { timeoutMs: 4_321 },
+    );
+
+    await expect(
+      adapter.query({ identity, query: { ...query, range: "24h" } }),
+    ).rejects.toMatchObject({
+      name: "PreviewTraceQueryTimeoutError",
+      code: "preview_trace_timeout",
+      range: "24h",
+      retryRange: "6h",
+      timeoutMs: 4_321,
+    } satisfies Partial<PreviewTraceQueryTimeoutError>);
   });
 
   it("uses the tuple leaf and rejects a mismatched broker receipt", async () => {
@@ -137,5 +205,71 @@ describe("preview trace query adapters", () => {
     await expect(adapter.query({ identity, query })).rejects.toBeInstanceOf(
       PreviewRuntimeIdentityChangedError,
     );
+  });
+
+  it("preserves the physical timeout contract across the broker transport", async () => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const adapter = new HttpPreviewTraceQueryAdapter({
+      baseUrl: () => "http://preview-control-broker:3000",
+      credential: () => ({
+        header: "X-Preview-Control-Capability",
+        token: "d".repeat(64),
+      }),
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              code: "preview_trace_timeout",
+              error: "bounded trace query timed out",
+              details: { range: "7d", retryRange: "24h" },
+            }),
+            { status: 504, headers: { "content-type": "application/json" } },
+          ),
+      ) as typeof fetch,
+    });
+
+    expect(DEFAULT_PREVIEW_TRACE_BROKER_TIMEOUT_MS).toBe(18_000);
+    await expect(adapter.query({ identity, query })).rejects.toMatchObject({
+      code: "preview_trace_timeout",
+      range: "7d",
+      retryRange: "24h",
+      timeoutMs: null,
+    } satisfies Partial<PreviewTraceQueryTimeoutError>);
+    expect(timeout).toHaveBeenCalledWith(18_000);
+    timeout.mockRestore();
+  });
+
+  it("maps an abort while consuming broker response bytes to a typed timeout", async () => {
+    const adapter = new HttpPreviewTraceQueryAdapter({
+      baseUrl: () => "http://preview-control-broker:3000",
+      credential: () => ({
+        header: "X-Preview-Control-Capability",
+        token: "d".repeat(64),
+      }),
+      fetch: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            text: async () => {
+              throw Object.assign(new Error("response body aborted"), {
+                name: "AbortError",
+              });
+            },
+          }) as unknown as Response,
+      ) as typeof fetch,
+      timeoutMs: 4_321,
+    });
+
+    await expect(adapter.query({ identity, query })).rejects.toMatchObject({
+      name: "PreviewTraceQueryTimeoutError",
+      code: "preview_trace_timeout",
+      range: "1h",
+      retryRange: "15m",
+      timeoutMs: 4_321,
+    } satisfies Partial<PreviewTraceQueryTimeoutError>);
   });
 });

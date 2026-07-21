@@ -226,6 +226,9 @@ identity from another.
 - **Preview evidence is partial**: honor `refreshAfterMs`, then repeat
   `debug_preview_environment`. A generation-fence warning means the preview
   changed while evidence was collected; refresh status before taking action.
+- **Preview trace query timed out**: follow the returned
+  `query_preview_traces` next action. It preserves the service, status, text,
+  and limit filters while reducing only the time range.
 - **Session-only tool has no context**: set an actual Workflow Builder session
   ID explicitly for goal or explicit lineage work. Workflow CRUD, execution
   inspection, script execution, and trace debugging should continue to work

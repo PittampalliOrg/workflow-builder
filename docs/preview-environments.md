@@ -138,6 +138,20 @@ then applies the complete tuple to every span and log query. LLM rows must join
 back to a tuple-stamped trace/span pair. ClickHouse endpoints and credentials,
 workspace API keys, and Kubernetes credentials never enter the vCluster.
 
+Preview trace summaries use nested default budgets: 12 seconds for each
+physical query, 18 seconds for the broker transport, and 25 seconds for the
+Workflow MCP request. Optional service and text filters are applied with
+`HAVING countIf(...)` after full-trace aggregation, avoiding a second scan of
+the trace table for matching trace IDs. A `preview_trace_timeout` response
+includes only the attempted range and a narrower retry range; Workflow MCP
+turns that contract into a follow-up `query_preview_traces` action.
+
+The durable hub-observability follow-up is a materialized
+`obs.preview_trace_spans` projection keyed by the immutable preview tuple,
+timestamp, and trace ID, following the existing `obs.llm_spans` and
+`obs.tool_spans` ownership pattern. That hub schema migration is intentionally
+outside this dev-only application repair.
+
 Archive files are stored on the host under
 `preview-archive:<preview-name>`. Promoted source is already durable in GitHub
 and is not copied again. Active or incomplete generations remain visible as

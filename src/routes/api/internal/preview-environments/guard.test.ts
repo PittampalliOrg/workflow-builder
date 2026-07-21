@@ -33,7 +33,8 @@ vi.mock("../workflow-mcp-principal", () => ({
   resolveInternalWorkflowPrincipal: mocks.resolveInternalWorkflowPrincipal,
 }));
 
-import { guardPreviewMcp } from "./guard";
+import { PreviewTraceQueryTimeoutError } from "$lib/server/application/ports";
+import { guardPreviewMcp, previewMcpError } from "./guard";
 
 function request(): Request {
   return new Request("http://localhost/api/internal/preview-environments", {
@@ -116,5 +117,23 @@ describe("Workflow MCP preview route guard", () => {
     expect(result.ok).toBe(false);
     expect(!result.ok && result.response.status).toBe(403);
     expect(mocks.isPlatformAdmin).toHaveBeenCalledWith("user-1");
+  });
+
+  it("maps a trace timeout without leaking adapter details", async () => {
+    const response = previewMcpError(
+      new PreviewTraceQueryTimeoutError("7d", 12_000),
+    );
+
+    expect(response.status).toBe(504);
+    expect(response.headers.get("retry-after")).toBe("1");
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: {
+        code: "preview_trace_timeout",
+        details: { range: "7d", retryRange: "24h" },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("12000");
+    expect(JSON.stringify(body)).not.toContain("ClickHouse");
   });
 });

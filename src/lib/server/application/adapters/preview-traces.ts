@@ -5,7 +5,11 @@ import type {
   PreviewTraceQueryPort,
   PreviewTraceQueryReceipt,
 } from "$lib/server/application/ports";
-import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
+import {
+  narrowerPreviewTraceRange,
+  PreviewRuntimeIdentityChangedError,
+  PreviewTraceQueryTimeoutError,
+} from "$lib/server/application/ports";
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
 import {
   localPreviewControlCapability,
@@ -18,8 +22,14 @@ import {
 } from "$lib/server/otel/clickhouse";
 import type { PreviewTraceSummary } from "$lib/types/dev-previews";
 
-type ClickHouseQuery = (sql: string) => Promise<Record<string, unknown>[]>;
+type ClickHouseQuery = (
+  sql: string,
+  options?: { timeoutMs?: number },
+) => Promise<Record<string, unknown>[]>;
 type Credential = Readonly<{ header: string; token: string }>;
+
+export const DEFAULT_PREVIEW_TRACE_QUERY_TIMEOUT_MS = 12_000;
+export const DEFAULT_PREVIEW_TRACE_BROKER_TIMEOUT_MS = 18_000;
 
 const INTERVALS: Readonly<Record<PreviewTraceQuery["range"], string>> = {
   "15m": "15 MINUTE",
@@ -31,6 +41,39 @@ const INTERVALS: Readonly<Record<PreviewTraceQuery["range"], string>> = {
 const TOKEN = /^[0-9a-f]{64}$/;
 const TRACE_ID = /^[0-9a-f]{16,64}$/i;
 const MAX_RESPONSE_BYTES = 512 * 1024;
+const TRACE_RANGES = new Set<PreviewTraceQuery["range"]>([
+  "15m",
+  "1h",
+  "6h",
+  "24h",
+  "7d",
+]);
+
+function boundedTimeout(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.trunc(parsed)));
+}
+
+function timeoutCause(cause: unknown): boolean {
+  return (
+    cause instanceof PreviewTraceQueryTimeoutError ||
+    (cause instanceof Error &&
+      (cause.name === "TimeoutError" || cause.name === "AbortError"))
+  );
+}
+
+function traceRange(value: unknown): PreviewTraceQuery["range"] | null {
+  return typeof value === "string" &&
+    TRACE_RANGES.has(value as PreviewTraceQuery["range"])
+    ? (value as PreviewTraceQuery["range"])
+    : null;
+}
 
 function sameIdentity(
   left: PreviewControlIdentity,
@@ -96,10 +139,22 @@ function traceSummary(
 
 /** Physical adapter. Every SQL statement includes all five immutable tuple attributes. */
 export class ClickHousePreviewTraceQueryAdapter implements PreviewTraceQueryPort {
+  private readonly timeoutMs: number;
+
   constructor(
     private readonly queryImpl: ClickHouseQuery = queryClickHouse,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+    options: Readonly<{ timeoutMs?: number }> = {},
+  ) {
+    this.timeoutMs = boundedTimeout(
+      options.timeoutMs ??
+        env.PREVIEW_TRACE_QUERY_TIMEOUT_MS ??
+        process.env.PREVIEW_TRACE_QUERY_TIMEOUT_MS,
+      DEFAULT_PREVIEW_TRACE_QUERY_TIMEOUT_MS,
+      1_000,
+      60_000,
+    );
+  }
 
   async query(
     input: Readonly<{
@@ -110,26 +165,23 @@ export class ClickHousePreviewTraceQueryAdapter implements PreviewTraceQueryPort
     const identity = validatePreviewControlIdentity(input.identity);
     const interval = INTERVALS[input.query.range];
     const tuple = exactTupleClauses(identity, interval);
-    const matching = [...tuple];
+    const having: string[] = [];
     if (input.query.service) {
-      matching.push(
-        `ServiceName = '${escapeClickHouseString(input.query.service)}'`,
+      having.push(
+        `countIf(ServiceName = '${escapeClickHouseString(input.query.service)}') > 0`,
       );
     }
     if (input.query.search) {
       const search = escapeClickHouseString(input.query.search);
-      matching.push(
-        `(positionCaseInsensitive(TraceId, '${search}') > 0 OR ` +
+      having.push(
+        `countIf(positionCaseInsensitive(TraceId, '${search}') > 0 OR ` +
           `positionCaseInsensitive(SpanName, '${search}') > 0 OR ` +
-          `positionCaseInsensitive(ServiceName, '${search}') > 0)`,
+          `positionCaseInsensitive(ServiceName, '${search}') > 0) > 0`,
       );
     }
-    const having =
-      input.query.status === "error"
-        ? "HAVING HasError = 1"
-        : input.query.status === "ok"
-          ? "HAVING HasError = 0"
-          : "";
+    if (input.query.status === "error") having.push("HasError = 1");
+    if (input.query.status === "ok") having.push("HasError = 0");
+    const havingSql = having.length > 0 ? `HAVING ${having.join(" AND ")}` : "";
     const traceSql = `
       SELECT
         TraceId,
@@ -142,13 +194,8 @@ export class ClickHousePreviewTraceQueryAdapter implements PreviewTraceQueryPort
         maxIf(1, positionCaseInsensitive(toString(StatusCode), 'error') > 0) AS HasError
       FROM ${CLICKHOUSE_DB}.otel_traces
       WHERE ${tuple.join(" AND ")}
-        AND TraceId IN (
-          SELECT DISTINCT TraceId
-          FROM ${CLICKHOUSE_DB}.otel_traces
-          WHERE ${matching.join(" AND ")}
-        )
       GROUP BY TraceId
-      ${having}
+      ${havingSql}
       ORDER BY StartTime DESC
       LIMIT ${input.query.limit}
     `;
@@ -159,10 +206,23 @@ export class ClickHousePreviewTraceQueryAdapter implements PreviewTraceQueryPort
       ORDER BY ServiceName
       LIMIT 200
     `;
-    const [traceRows, serviceRows] = await Promise.all([
-      this.queryImpl(traceSql),
-      this.queryImpl(serviceSql),
-    ]);
+    let traceRows: Record<string, unknown>[];
+    let serviceRows: Record<string, unknown>[];
+    try {
+      [traceRows, serviceRows] = await Promise.all([
+        this.queryImpl(traceSql, { timeoutMs: this.timeoutMs }),
+        this.queryImpl(serviceSql, { timeoutMs: this.timeoutMs }),
+      ]);
+    } catch (cause) {
+      if (cause instanceof PreviewTraceQueryTimeoutError) throw cause;
+      if (timeoutCause(cause)) {
+        throw new PreviewTraceQueryTimeoutError(
+          input.query.range,
+          this.timeoutMs,
+        );
+      }
+      throw cause;
+    }
     return Object.freeze({
       identity,
       traces: traceRows
@@ -267,9 +327,18 @@ function parseTrace(value: unknown): PreviewTraceSummary {
 /** Candidate/control-plane adapter to the physical tuple-authenticated broker route. */
 export class HttpPreviewTraceQueryAdapter implements PreviewTraceQueryPort {
   private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly timeoutMs: number;
 
   constructor(private readonly options: HttpPreviewTraceQueryOptions = {}) {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.timeoutMs = boundedTimeout(
+      options.timeoutMs ??
+        env.PREVIEW_TRACE_BROKER_TIMEOUT_MS ??
+        process.env.PREVIEW_TRACE_BROKER_TIMEOUT_MS,
+      DEFAULT_PREVIEW_TRACE_BROKER_TIMEOUT_MS,
+      1_000,
+      60_000,
+    );
   }
 
   async query(
@@ -292,25 +361,53 @@ export class HttpPreviewTraceQueryAdapter implements PreviewTraceQueryPort {
         "preview trace broker URL is not configured",
       );
     const credential = (this.options.credential ?? defaultCredential)(identity);
-    const response = await this.fetchImpl(
-      `${baseUrl}/api/internal/preview-control/environment/traces`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [credential.header]: credential.token,
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${baseUrl}/api/internal/preview-control/environment/traces`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            [credential.header]: credential.token,
+          },
+          body: JSON.stringify({ identity, query: input.query }),
+          signal: AbortSignal.timeout(this.timeoutMs),
         },
-        body: JSON.stringify({ identity, query: input.query }),
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 30_000),
-      },
-    );
+      );
+    } catch (cause) {
+      if (timeoutCause(cause)) {
+        throw new PreviewTraceQueryTimeoutError(
+          input.query.range,
+          this.timeoutMs,
+        );
+      }
+      throw new PreviewTraceTransportError(
+        `preview trace broker is unavailable: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+      );
+    }
     const contentLength = Number(response.headers.get("content-length") ?? "0");
     if (contentLength > MAX_RESPONSE_BYTES) {
       throw new PreviewTraceTransportError(
         "preview trace broker response is too large",
       );
     }
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      if (timeoutCause(cause)) {
+        throw new PreviewTraceQueryTimeoutError(
+          input.query.range,
+          this.timeoutMs,
+        );
+      }
+      throw new PreviewTraceTransportError(
+        "preview trace broker response could not be read",
+      );
+    }
     if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
       throw new PreviewTraceTransportError(
         "preview trace broker response is too large",
@@ -326,6 +423,16 @@ export class HttpPreviewTraceQueryAdapter implements PreviewTraceQueryPort {
     }
     if (!response.ok) {
       const code = typeof body?.code === "string" ? body.code : null;
+      if (response.status === 504 && code === "preview_trace_timeout") {
+        const details = record(body?.details);
+        const range = traceRange(details?.range) ?? input.query.range;
+        const retryRangeValue = details?.retryRange;
+        const retryRange =
+          retryRangeValue === null
+            ? null
+            : traceRange(retryRangeValue) ?? narrowerPreviewTraceRange(range);
+        throw new PreviewTraceQueryTimeoutError(range, null, retryRange);
+      }
       if (
         (response.status === 409 && code === "contract-mismatch") ||
         (response.status === 404 && code === "not-found")

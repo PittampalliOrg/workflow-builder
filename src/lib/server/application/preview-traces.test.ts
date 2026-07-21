@@ -3,6 +3,7 @@ import type {
   PreviewControlIdentity,
   PreviewTraceQueryPort,
 } from "$lib/server/application/ports";
+import { PreviewTraceQueryTimeoutError } from "$lib/server/application/ports";
 import type { VclusterPreviewRecord } from "$lib/types/dev-previews";
 import {
   ApplicationPreviewTraceBrokerService,
@@ -110,6 +111,26 @@ describe("preview trace query application boundary", () => {
     ).rejects.toMatchObject({ code: "contract-mismatch" });
   });
 
+  it("preserves a typed timeout across the user-facing application boundary", async () => {
+    const timeout = new PreviewTraceQueryTimeoutError("24h", 12_000);
+    const service = new ApplicationPreviewTraceService({
+      access: { authorize: vi.fn(async () => ({ preview })) } as never,
+      traces: {
+        query: vi.fn(async () => {
+          throw timeout;
+        }),
+      },
+    });
+
+    await expect(
+      service.list({
+        name: identity.previewName,
+        actorUserId: "user-1",
+        query: { range: "24h" },
+      }),
+    ).rejects.toBe(timeout);
+  });
+
   it("keeps physical source authority ahead of the telemetry adapter", async () => {
     const order: string[] = [];
     const authority = {
@@ -137,5 +158,21 @@ describe("preview trace query application boundary", () => {
     await broker.list({ identity, query: {} });
 
     expect(order).toEqual(["authority", "query"]);
+  });
+
+  it("preserves a typed timeout across the physical broker use case", async () => {
+    const timeout = new PreviewTraceQueryTimeoutError("7d", 12_000);
+    const broker = new ApplicationPreviewTraceBrokerService({
+      authority: { authorizeTraceTuple: vi.fn(async () => ({})) } as never,
+      traces: {
+        query: vi.fn(async () => {
+          throw timeout;
+        }),
+      },
+    });
+
+    await expect(broker.list({ identity, query: { range: "7d" } })).rejects.toBe(
+      timeout,
+    );
   });
 });

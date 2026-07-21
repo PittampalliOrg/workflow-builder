@@ -6,11 +6,15 @@ import {
   hasWorkflowMcpScope,
   type WorkflowMcpPrincipal,
 } from "./auth-context.js";
-import { PreviewEnvironmentsHttpError } from "./adapters/http-preview-environments.js";
 import {
   diagnosticEnvelopeTraceMetadata,
   setSpanOutput,
 } from "./observability/content.js";
+import {
+  narrowerPreviewTraceRange,
+  parsePreviewTraceRange,
+  PreviewEnvironmentRequestError,
+} from "./ports/preview-environments.js";
 import type { RegisteredTool } from "./workflow-tools.js";
 
 type NextAction = {
@@ -102,6 +106,29 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function timeoutRetryRange(
+  cause: unknown,
+  requestedRange: unknown,
+): ReturnType<typeof parsePreviewTraceRange> {
+  if (
+    !(cause instanceof PreviewEnvironmentRequestError) ||
+    cause.code !== "preview_trace_timeout" ||
+    !cause.retryable
+  ) {
+    return null;
+  }
+  const details = record(cause.details);
+  if (details?.retryRange === null) return null;
+  return (
+    parsePreviewTraceRange(details?.retryRange) ??
+    narrowerPreviewTraceRange(
+      parsePreviewTraceRange(details?.range) ??
+        parsePreviewTraceRange(requestedRange) ??
+        "1h",
+    )
+  );
+}
+
 function response(tool: string, envelope: PreviewToolEnvelope) {
   setSpanOutput(diagnosticEnvelopeTraceMetadata(envelope, tool));
   return {
@@ -133,13 +160,16 @@ function success(
   });
 }
 
-function failure(tool: string, cause: unknown) {
+function failure(
+  tool: string,
+  cause: unknown,
+  nextActions: NextAction[] = [],
+) {
   const error =
-    cause instanceof PreviewEnvironmentsHttpError
+    cause instanceof PreviewEnvironmentRequestError
       ? cause
-      : new PreviewEnvironmentsHttpError(
+      : new PreviewEnvironmentRequestError(
           cause instanceof Error ? cause.message : String(cause),
-          500,
           "preview_management_failed",
           false,
         );
@@ -159,7 +189,7 @@ function failure(tool: string, cause: unknown) {
         message: error.message,
         retryable: error.retryable,
       },
-      nextActions: [],
+      nextActions,
     }),
     isError: true,
   };
@@ -302,15 +332,36 @@ export function registerPreviewEnvironmentTools(
       const { name, ...query } = args;
       try {
         const data = await context.previews.debug(name, query);
+        const timeoutRetry =
+          data.traceFailure?.code === "preview_trace_timeout" &&
+          data.traceFailure.retryable
+            ? data.traceFailure.retryRange
+            : null;
+        const nextActions: NextAction[] = timeoutRetry
+          ? [
+              {
+                tool: "query_preview_traces",
+                arguments: { name, ...query, range: timeoutRetry },
+                reason: "Retry the same bounded query over a narrower range.",
+              },
+            ]
+          : data.evidenceCoverage.traces === "available"
+            ? [
+                {
+                  tool: "query_preview_traces",
+                  arguments: {
+                    name,
+                    status: "error",
+                    range: "1h",
+                    limit: 50,
+                  },
+                  reason: "Drill into recent error traces with explicit filters.",
+                },
+              ]
+            : [];
         return success("debug_preview_environment", data, {
           telemetry: data.telemetry,
-          nextActions: [
-            {
-              tool: "query_preview_traces",
-              arguments: { name, status: "error", range: "1h", limit: 50 },
-              reason: "Drill into recent error traces with explicit filters.",
-            },
-          ],
+          nextActions,
         });
       } catch (cause) {
         return failure("debug_preview_environment", cause);
@@ -344,7 +395,21 @@ export function registerPreviewEnvironmentTools(
           },
         );
       } catch (cause) {
-        return failure("query_preview_traces", cause);
+        const retryRange = timeoutRetryRange(cause, query.range);
+        return failure(
+          "query_preview_traces",
+          cause,
+          retryRange
+            ? [
+                {
+                  tool: "query_preview_traces",
+                  arguments: { name, ...query, range: retryRange },
+                  reason:
+                    "Retry the same bounded query over a narrower range.",
+                },
+              ]
+            : [],
+        );
       }
     },
   );
@@ -486,9 +551,8 @@ export function registerPreviewEnvironmentTools(
         const data = await context.previews.getTeardownStatus(ticket);
         const phase = teardownPhase(data);
         if (phase !== "pending" && phase !== "complete") {
-          throw new PreviewEnvironmentsHttpError(
+          throw new PreviewEnvironmentRequestError(
             `Preview teardown returned unsupported phase '${phase}'`,
-            409,
             "preview_teardown_contract_mismatch",
             false,
             undefined,

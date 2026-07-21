@@ -1,14 +1,32 @@
 import type { DiagnosticTelemetry } from "./diagnostic-telemetry.js";
-import type {
-  PreviewEnvironmentLaunchInput,
-  PreviewEnvironmentSummary,
-  PreviewEnvironmentsPort,
-  PreviewTeardownInput,
-  PreviewTeardownTicket,
-  PreviewTraceQuery,
+import {
+  narrowerPreviewTraceRange,
+  parsePreviewTraceRange,
+  PreviewEnvironmentRequestError,
+  type PreviewEnvironmentLaunchInput,
+  type PreviewEnvironmentSummary,
+  type PreviewEnvironmentsPort,
+  type PreviewTeardownInput,
+  type PreviewTeardownTicket,
+  type PreviewTraceQuery,
+  type PreviewTraceRange,
 } from "../ports/preview-environments.js";
 
 type EvidenceCoverage = "available" | "unavailable";
+
+export type PreviewTraceDiagnosticFailure =
+  | Readonly<{
+      code: "preview_trace_timeout";
+      retryable: boolean;
+      range: PreviewTraceRange;
+      retryRange: PreviewTraceRange | null;
+      retryAfterMs?: number;
+    }>
+  | Readonly<{
+      code: "preview_trace_unavailable";
+      retryable: boolean;
+      retryAfterMs?: number;
+    }>;
 
 export type PreviewEnvironmentDiagnostic = {
   preview: PreviewEnvironmentSummary;
@@ -16,6 +34,7 @@ export type PreviewEnvironmentDiagnostic = {
   traces: unknown[] | null;
   traceServices: string[];
   traceObservedAt: string | null;
+  traceFailure: PreviewTraceDiagnosticFailure | null;
   generationStable: boolean;
   evidenceCoverage: {
     preview: "available";
@@ -95,6 +114,65 @@ function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function retryAfterMs(reason: unknown): number | undefined {
+  return reason instanceof PreviewEnvironmentRequestError &&
+    typeof reason.retryAfterMs === "number" &&
+    Number.isFinite(reason.retryAfterMs) &&
+    reason.retryAfterMs > 0
+    ? Math.trunc(reason.retryAfterMs)
+    : undefined;
+}
+
+function previewTraceFailure(
+  reason: unknown,
+  query: PreviewTraceQuery,
+): PreviewTraceDiagnosticFailure {
+  const retryAfter = retryAfterMs(reason);
+  if (
+    reason instanceof PreviewEnvironmentRequestError &&
+    reason.code === "preview_trace_timeout"
+  ) {
+    const details = record(reason.details);
+    const range =
+      parsePreviewTraceRange(details?.range) ?? query.range ?? "1h";
+    const retryRange =
+      details?.retryRange === null
+        ? null
+        : parsePreviewTraceRange(details?.retryRange) ??
+          narrowerPreviewTraceRange(range);
+    return {
+      code: "preview_trace_timeout",
+      retryable: reason.retryable,
+      range,
+      retryRange,
+      ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }),
+    };
+  }
+  return {
+    code: "preview_trace_unavailable",
+    retryable:
+      reason instanceof PreviewEnvironmentRequestError
+        ? reason.retryable
+        : false,
+    ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }),
+  };
+}
+
+function previewTraceWarning(failure: PreviewTraceDiagnosticFailure): string {
+  if (failure.code !== "preview_trace_timeout") {
+    return "traces: Preview trace evidence is unavailable.";
+  }
+  return failure.retryRange
+    ? `traces: Preview trace query timed out for range ${failure.range}; retry with range ${failure.retryRange}.`
+    : `traces: Preview trace query timed out for range ${failure.range}.`;
+}
+
 function transitionPhase(phase: string): boolean {
   return [
     "pending",
@@ -141,12 +219,14 @@ export class ApplicationPreviewEnvironmentService implements PreviewEnvironmentU
     // settled; otherwise it cannot fence a delete/recreate during collection.
     const [after] = await Promise.allSettled([this.previews.get(name)]);
     const warnings: string[] = [];
+    const traceFailure =
+      traces.status === "rejected"
+        ? previewTraceFailure(traces.reason, query)
+        : null;
     if (runtime.status === "rejected") {
       warnings.push(`runtime: ${message(runtime.reason)}`);
     }
-    if (traces.status === "rejected") {
-      warnings.push(`traces: ${message(traces.reason)}`);
-    }
+    if (traceFailure) warnings.push(previewTraceWarning(traceFailure));
     if (after.status === "rejected") {
       warnings.push(`generation fence: ${message(after.reason)}`);
     }
@@ -181,6 +261,7 @@ export class ApplicationPreviewEnvironmentService implements PreviewEnvironmentU
       traces: traceValue?.traces ?? null,
       traceServices: traceValue?.services ?? [],
       traceObservedAt: traceValue?.observedAt ?? null,
+      traceFailure,
       generationStable,
       evidenceCoverage: {
         preview: "available",
