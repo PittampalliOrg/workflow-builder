@@ -26,7 +26,7 @@ const EXTERNAL_TOOL_ARGUMENT_KEYS = Object.freeze({
 	agent_browser_open: ["url"],
 	agent_browser_snapshot: ["interactive", "compact", "depth"],
 	agent_browser_click: ["selector"],
-	agent_browser_fill: ["selector", "value"],
+	agent_browser_fill: ["selector", "text"],
 	agent_browser_type: ["selector", "text"],
 	agent_browser_press: ["key"],
 	agent_browser_hover: ["selector"],
