@@ -19,6 +19,11 @@ import re
 import threading
 from typing import Any
 
+from .content_sanitizer import (
+    sanitize_content_for_telemetry,
+    sanitize_text_for_telemetry,
+)
+
 MAX_CONTENT_SIZE = 60 * 1024  # 60KB — matches TS
 
 _seen_hashes: set[str] = set()
@@ -46,7 +51,10 @@ def is_beta_tracing_enabled() -> bool:
     return _is_env_truthy(os.environ.get("ENABLE_BETA_TRACING_DETAILED"))
 
 
-def truncate_content(content: str, max_size: int = MAX_CONTENT_SIZE) -> tuple[str, bool]:
+def truncate_content(
+    content: str, max_size: int = MAX_CONTENT_SIZE
+) -> tuple[str, bool]:
+    content = sanitize_text_for_telemetry(content)
     if len(content) <= max_size:
         return content, False
     return (
@@ -95,7 +103,8 @@ def add_interaction_attributes(span: Any, user_prompt: str) -> None:
     """Equivalent of TS `addBetaInteractionAttributes`."""
     if not is_beta_tracing_enabled() or span is None:
         return
-    content, truncated = truncate_content(f"[USER PROMPT]\n{user_prompt}")
+    safe_prompt = sanitize_text_for_telemetry(user_prompt)
+    content, truncated = truncate_content(f"[USER PROMPT]\n{safe_prompt}")
     span.set_attribute("new_context", content)
     if truncated:
         span.set_attribute("new_context_truncated", True)
@@ -125,7 +134,9 @@ def add_llm_request_attributes(
     if system_prompt:
         prompt_hash = hash_system_prompt(system_prompt)
         span.set_attribute("system_prompt_hash", prompt_hash)
-        span.set_attribute("system_prompt_preview", system_prompt[:500])
+        span.set_attribute(
+            "system_prompt_preview", sanitize_text_for_telemetry(system_prompt[:500])
+        )
         span.set_attribute("system_prompt_length", len(system_prompt))
         if _remember_hash_once(prompt_hash):
             content, truncated = truncate_content(system_prompt)
@@ -140,7 +151,9 @@ def add_llm_request_attributes(
             try:
                 span.add_event(
                     "claude_code.system_prompt",
-                    attributes={k: str(v) for k, v in event_attrs.items() if v is not None},
+                    attributes={
+                        k: str(v) for k, v in event_attrs.items() if v is not None
+                    },
                 )
             except Exception:
                 pass
@@ -153,7 +166,9 @@ def add_llm_request_attributes(
                 for tool in tools_array:
                     if not isinstance(tool, dict):
                         continue
-                    tool_str = json.dumps(tool, sort_keys=True)
+                    tool_str = json.dumps(
+                        sanitize_content_for_telemetry(tool), sort_keys=True
+                    )
                     th = hash_tool_schema(tool_str)
                     name = tool.get("name")
                     if not isinstance(name, str):
@@ -189,7 +204,11 @@ def add_llm_request_attributes(
                         try:
                             span.add_event(
                                 "claude_code.tool",
-                                attributes={k: str(v) for k, v in event_attrs.items() if v is not None},
+                                attributes={
+                                    k: str(v)
+                                    for k, v in event_attrs.items()
+                                    if v is not None
+                                },
                             )
                         except Exception:
                             pass
@@ -231,26 +250,32 @@ def _apply_new_context(
     for msg in new_messages:
         content = msg.get("content")
         if isinstance(content, str):
-            reminder = extract_system_reminder(content)
+            safe_content = sanitize_text_for_telemetry(content)
+            reminder = extract_system_reminder(safe_content)
             if reminder is not None:
                 system_reminders.append(reminder)
             else:
-                context_parts.append(f"[USER]\n{content}")
+                context_parts.append(f"[USER]\n{safe_content}")
         elif isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 btype = block.get("type")
                 if btype == "text" and isinstance(block.get("text"), str):
-                    reminder = extract_system_reminder(block["text"])
+                    safe_text = sanitize_text_for_telemetry(block["text"])
+                    reminder = extract_system_reminder(safe_text)
                     if reminder is not None:
                         system_reminders.append(reminder)
                     else:
-                        context_parts.append(f"[USER]\n{block['text']}")
+                        context_parts.append(f"[USER]\n{safe_text}")
                 elif btype == "tool_result":
                     raw = block.get("content")
                     result_content = (
-                        raw if isinstance(raw, str) else json.dumps(raw, default=str)
+                        sanitize_text_for_telemetry(raw)
+                        if isinstance(raw, str)
+                        else json.dumps(
+                            sanitize_content_for_telemetry(raw), default=str
+                        )
                     )
                     reminder = extract_system_reminder(result_content)
                     tool_use_id = block.get("tool_use_id", "")
@@ -305,15 +330,14 @@ def add_llm_response_attributes(
         end_attrs["response.thinking_output"] = content
         if truncated:
             end_attrs["response.thinking_output_truncated"] = True
-            end_attrs["response.thinking_output_original_length"] = len(
-                thinking_output
-            )
+            end_attrs["response.thinking_output_original_length"] = len(thinking_output)
 
 
 def add_tool_input_attributes(span: Any, tool_name: str, tool_input: str) -> None:
     if not is_beta_tracing_enabled() or span is None:
         return
-    content, truncated = truncate_content(f"[TOOL INPUT: {tool_name}]\n{tool_input}")
+    safe_input = sanitize_text_for_telemetry(tool_input)
+    content, truncated = truncate_content(f"[TOOL INPUT: {tool_name}]\n{safe_input}")
     span.set_attribute("tool_input", content)
     if truncated:
         span.set_attribute("tool_input_truncated", True)
@@ -325,7 +349,8 @@ def add_tool_result_attributes(
 ) -> None:
     if not is_beta_tracing_enabled():
         return
-    content, truncated = truncate_content(f"[TOOL RESULT: {tool_name}]\n{tool_result}")
+    safe_result = sanitize_text_for_telemetry(tool_result)
+    content, truncated = truncate_content(f"[TOOL RESULT: {tool_name}]\n{safe_result}")
     end_attrs["new_context"] = content
     if truncated:
         end_attrs["new_context_truncated"] = True

@@ -9,10 +9,11 @@ emits the names and shapes external dashboards expect.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
-import json
+from urllib.parse import parse_qs, unquote, urlsplit
 
 root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
@@ -79,6 +80,10 @@ def _find_span(exporter, name):
         if s.name == name:
             return s
     return None
+
+
+def _serialized_span_attributes(span):
+    return json.dumps(dict(span.attributes), default=str, sort_keys=True)
 
 
 def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
@@ -233,6 +238,38 @@ def test_user_prompt_logged_when_env_truthy(telemetry_with_in_memory, monkeypatc
 
     interaction = _find_span(exporter, "claude_code.interaction")
     assert interaction.attributes["user_prompt"] == "top secret prompt"
+
+
+def test_user_prompt_span_event_sanitizes_enabled_prompt_content(
+    telemetry_with_in_memory, monkeypatch
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("OTEL_LOG_USER_PROMPTS", "1")
+
+    from src.telemetry import emit_user_prompt_event
+    from src.telemetry.providers import get_tracer
+
+    payload = "c2NyZWVuc2hvdC1ieXRlcw=="
+    prompt = (
+        f"inspect data:image/png;base64,{payload} "
+        "at https://artifacts.example/frame.png?access_token=prompt-token "
+        "Authorization: Bearer prompt-bearer"
+    )
+    span = get_tracer().start_span("test.user_prompt")
+    emit_user_prompt_event(span, prompt)
+    span.end()
+
+    exported = _find_span(exporter, "test.user_prompt")
+    event = next(
+        item for item in exported.events if item.name == "claude_code.user_prompt"
+    )
+    safe_prompt = event.attributes["prompt"]
+    assert payload not in safe_prompt
+    assert "data:image" not in safe_prompt
+    assert "prompt-token" not in safe_prompt
+    assert "prompt-bearer" not in safe_prompt
+    assert "REDACTED_INLINE_MEDIA" in safe_prompt
+    assert "artifacts.example/frame.png" in safe_prompt
 
 
 def test_metric_counters(telemetry_with_in_memory):
@@ -408,6 +445,385 @@ def test_beta_tracing_aliases_llm_and_tool_content_for_service_graph(
     assert json.loads(tool_span.attributes["output.value"])["result"] == {
         "stdout": "hi"
     }
+
+
+def test_inline_media_is_redacted_and_artifact_references_are_retained():
+    from src.telemetry.content_sanitizer import (
+        sanitize_content_for_telemetry,
+        sanitize_text_for_telemetry,
+    )
+
+    payload = "c2NyZWVuc2hvdC1ieXRlcw=="
+    data_uri = f"data:image/png;base64,{payload}"
+    storage_ref = "browser-artifacts/exec-1/screenshots/step-4.png"
+    media_ref = "ms://file/browser-screenshot-4"
+    value = {
+        "content": [
+            {"type": "image_url", "image_url": {"url": data_uri}},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": payload,
+                },
+            },
+        ],
+        "storageRef": storage_ref,
+        "mediaUrl": media_ref,
+    }
+
+    serialized = json.dumps(sanitize_content_for_telemetry(value), sort_keys=True)
+    embedded = sanitize_text_for_telemetry(json.dumps(value))
+
+    for safe_value in (serialized, embedded):
+        assert payload not in safe_value
+        assert "data:image" not in safe_value
+        assert "REDACTED_INLINE_MEDIA" in safe_value
+        assert "mime=image/png" in safe_value
+        assert "mime=image/jpeg" in safe_value
+        assert storage_ref in safe_value
+        assert media_ref in safe_value
+
+
+def test_nested_openai_audio_and_analogous_media_payloads_are_redacted():
+    from src.telemetry.content_sanitizer import sanitize_content_for_telemetry
+
+    payload = "YXVkaW8tYnl0ZXM="
+    value = {
+        "content": [
+            {
+                "type": "input_audio",
+                "input_audio": {"data": payload, "format": "wav"},
+            },
+            {"audio": {"data": payload, "format": "mp3"}},
+            {"input_video": {"data": payload, "format": "mp4"}},
+        ]
+    }
+
+    serialized = json.dumps(sanitize_content_for_telemetry(value), sort_keys=True)
+
+    assert payload not in serialized
+    assert serialized.count("REDACTED_INLINE_MEDIA") == 3
+    assert "mime=audio/wav" in serialized
+    assert "mime=audio/mpeg" in serialized
+    assert "mime=video/mp4" in serialized
+
+
+def test_tokens_signed_urls_userinfo_and_bearer_text_are_safely_redacted():
+    from src.telemetry.content_sanitizer import (
+        sanitize_content_for_telemetry,
+        sanitize_text_for_telemetry,
+    )
+
+    signed_url = (
+        "https://artifact-user:artifact-password@artifacts.example/"
+        "runs/exec-1/frame.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&"
+        "X-Amz-Credential=secret-credential&X-Amz-Signature=secret-signature&"
+        "X-Amz-Security-Token=secret-security-token&access_token=secret-token&"
+        "response-content-type=image%2Fpng#frame"
+    )
+    value = {
+        "accessToken": "camel-access-token",
+        "refreshToken": "camel-refresh-token",
+        "authToken": "camel-auth-token",
+        "artifactUrl": signed_url,
+        "message": "Authorization: Bearer secret-bearer",
+    }
+
+    safe = sanitize_content_for_telemetry(value)
+    safe_url = urlsplit(safe["artifactUrl"])
+    query = parse_qs(safe_url.query)
+
+    assert safe["accessToken"] == "[REDACTED]"
+    assert safe["refreshToken"] == "[REDACTED]"
+    assert safe["authToken"] == "[REDACTED]"
+    assert safe["message"] == "Authorization: Bearer [REDACTED]"
+    assert safe_url.scheme == "https"
+    assert safe_url.hostname == "artifacts.example"
+    assert safe_url.path == "/runs/exec-1/frame.png"
+    assert safe_url.fragment == "frame"
+    assert unquote(safe_url.username or "") == "[REDACTED]"
+    assert safe_url.password is None
+    assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+    assert query["response-content-type"] == ["image/png"]
+    for key in (
+        "X-Amz-Credential",
+        "X-Amz-Signature",
+        "X-Amz-Security-Token",
+        "access_token",
+    ):
+        assert query[key] == ["[REDACTED]"]
+
+    safe_text = sanitize_text_for_telemetry(
+        f"download={signed_url} Authorization: Bearer another-secret"
+    )
+    for secret in (
+        "artifact-user",
+        "artifact-password",
+        "secret-credential",
+        "secret-signature",
+        "secret-security-token",
+        "secret-token",
+        "another-secret",
+    ):
+        assert secret not in safe_text
+    assert "artifacts.example" in safe_text
+    assert "/runs/exec-1/frame.png" in safe_text
+
+
+def test_malformed_signed_urls_fail_closed_without_destroying_url_identity():
+    from src.telemetry.content_sanitizer import sanitize_text_for_telemetry
+
+    safe = sanitize_text_for_telemetry(
+        "http://artifact-user:artifact-password@x:abc/frame.png?token=secret-token"
+    )
+
+    assert "artifact-user" not in safe
+    assert "artifact-password" not in safe
+    assert "secret-token" not in safe
+    assert "x:abc/frame.png" in safe
+    assert "token=" in safe
+
+
+def test_json_schema_property_names_are_preserved_while_runtime_values_are_redacted():
+    from src.telemetry.content_sanitizer import sanitize_content_for_telemetry
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "accessToken": {
+                "type": "string",
+                "description": "Access token",
+                "default": "actual-default-token",
+                "examples": ["actual-example-token"],
+            },
+            "password": {
+                "type": "string",
+                "minLength": 8,
+                "const": "actual-password",
+                "enum": ["actual-password", "other-password"],
+            },
+            "nested": {
+                "type": "object",
+                "properties": {"authToken": {"type": "string"}},
+            },
+        },
+        "required": ["accessToken", "password"],
+    }
+
+    safe_schema = sanitize_content_for_telemetry(schema)
+    assert set(safe_schema["properties"]) == {"accessToken", "password", "nested"}
+    assert safe_schema["properties"]["accessToken"]["type"] == "string"
+    assert safe_schema["properties"]["accessToken"]["description"] == "Access token"
+    assert safe_schema["properties"]["accessToken"]["default"] == "[REDACTED]"
+    assert safe_schema["properties"]["accessToken"]["examples"] == ["[REDACTED]"]
+    assert safe_schema["properties"]["password"]["const"] == "[REDACTED]"
+    assert safe_schema["properties"]["password"]["enum"] == [
+        "[REDACTED]",
+        "[REDACTED]",
+    ]
+    assert safe_schema["properties"]["nested"] == schema["properties"]["nested"]
+    assert safe_schema["required"] == ["accessToken", "password"]
+    assert sanitize_content_for_telemetry(
+        {"properties": {"accessToken": "actual-token"}}
+    ) == {"properties": {"accessToken": "[REDACTED]"}}
+    for runtime_payload in (
+        {"type": "object", "properties": {"accessToken": "typed-runtime-token"}},
+        {"schema": {"properties": {"accessToken": "schema-runtime-token"}}},
+        {"parameters": {"properties": {"accessToken": "parameters-runtime-token"}}},
+    ):
+        assert "runtime-token" not in json.dumps(
+            sanitize_content_for_telemetry(runtime_payload)
+        )
+    disguised_runtime = {
+        "type": "object",
+        "properties": {
+            "accessToken": {"type": "string", "value": "disguised-runtime-token"}
+        },
+    }
+    assert "disguised-runtime-token" not in json.dumps(
+        sanitize_content_for_telemetry(disguised_runtime)
+    )
+    assert sanitize_content_for_telemetry(
+        {
+            "accessToken": "runtime-access-token",
+            "password": "runtime-password",
+            "authToken": "runtime-auth-token",
+        }
+    ) == {
+        "accessToken": "[REDACTED]",
+        "password": "[REDACTED]",
+        "authToken": "[REDACTED]",
+    }
+
+
+def test_ambient_call_llm_is_the_only_llm_content_span(
+    monkeypatch, telemetry_with_in_memory
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("ENABLE_BETA_TRACING_DETAILED", "1")
+
+    from src.telemetry import (
+        end_llm_request_span,
+        get_span_trace_context,
+        start_llm_request_span,
+    )
+    from src.telemetry.providers import get_tracer
+    from src.telemetry.session_tracing import get_current_trace_context
+
+    payload = "c2NyZWVuc2hvdC1ieXRlcw=="
+    data_uri = f"data:image/png;base64,{payload}"
+    storage_ref = "browser-artifacts/exec-1/screenshots/step-4.png"
+    media_ref = "ms://file/browser-screenshot-4"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect this browser screenshot."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": data_uri,
+                        "storageRef": storage_ref,
+                        "mediaUrl": media_ref,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "type": "image",
+                            "mimeType": "image/jpeg",
+                            "data": payload,
+                            "storageRef": storage_ref,
+                        }
+                    ),
+                },
+            ],
+        }
+    ]
+    tracer = get_tracer()
+    raw_activity_input = json.dumps({"messages": messages})
+
+    with tracer.start_as_current_span(
+        "WorkflowActivity.dapr.agents.dapr-agent-py.call_llm",
+        attributes={
+            "openinference.span.kind": "LLM",
+            "input.value": raw_activity_input,
+        },
+    ) as activity:
+        child = start_llm_request_span(
+            "kimi-k3",
+            query_source="test.canonical-media",
+            messages_for_api=messages,
+        )
+        canonical_context = (
+            f"{activity.get_span_context().trace_id:032x}",
+            f"{activity.get_span_context().span_id:016x}",
+        )
+        assert get_span_trace_context(child) == canonical_context
+        assert get_current_trace_context() == canonical_context
+        end_llm_request_span(
+            child,
+            success=True,
+            model_output="Screenshot inspected.",
+        )
+        # Kimi usage is published after the helper child closes but while the
+        # upstream Dapr call_llm activity remains current.
+        assert get_current_trace_context() == canonical_context
+
+    spans = exporter.get_finished_spans()
+    activity_span = next(span for span in spans if span.name == activity.name)
+    child_span = next(span for span in spans if span.name == "claude_code.llm_request")
+    llm_spans = [
+        span
+        for span in spans
+        if span.attributes.get("openinference.span.kind") == "LLM"
+    ]
+
+    assert llm_spans == [activity_span]
+    assert child_span.attributes["openinference.span.kind"] == "CHAIN"
+    assert child_span.parent.span_id == activity_span.context.span_id
+    assert "llm.input_messages" in activity_span.attributes
+    assert "llm.output_messages" in activity_span.attributes
+    assert "input.value" in activity_span.attributes
+    assert "output.value" in activity_span.attributes
+    assert "llm.input_messages" not in child_span.attributes
+    assert "llm.output_messages" not in child_span.attributes
+    assert "input.value" not in child_span.attributes
+    assert "output.value" not in child_span.attributes
+    assert "new_context" not in child_span.attributes
+
+    all_attributes = "\n".join(_serialized_span_attributes(span) for span in spans)
+    assert payload not in all_attributes
+    assert "data:image" not in all_attributes
+    assert "REDACTED_INLINE_MEDIA" in all_attributes
+    assert storage_ref in all_attributes
+    assert media_ref in all_attributes
+
+
+def test_standalone_llm_request_remains_the_canonical_fallback(
+    monkeypatch, telemetry_with_in_memory
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("ENABLE_BETA_TRACING_DETAILED", "1")
+
+    from src.telemetry import end_llm_request_span, start_llm_request_span
+
+    messages = [{"role": "user", "content": "hello"}]
+    child = start_llm_request_span(
+        "kimi-k3",
+        query_source="test.standalone",
+        messages_for_api=messages,
+    )
+    end_llm_request_span(child, success=True, model_output="hello")
+
+    spans = exporter.get_finished_spans()
+    llm_spans = [
+        span
+        for span in spans
+        if span.attributes.get("openinference.span.kind") == "LLM"
+    ]
+
+    assert len(llm_spans) == 1
+    assert llm_spans[0].name == "claude_code.llm_request"
+    assert json.loads(llm_spans[0].attributes["llm.input_messages"]) == messages
+    assert json.loads(llm_spans[0].attributes["llm.output_messages"]) == [
+        {"role": "assistant", "content": "hello"}
+    ]
+
+
+def test_beta_tool_content_sanitizes_embedded_media_and_keeps_evidence_refs(
+    monkeypatch, telemetry_with_in_memory
+):
+    exporter, _ = telemetry_with_in_memory
+    monkeypatch.setenv("ENABLE_BETA_TRACING_DETAILED", "1")
+
+    from src.telemetry import end_tool_span, start_tool_span
+
+    payload = "c2NyZWVuc2hvdC1ieXRlcw=="
+    storage_ref = "browser-artifacts/exec-2/screenshots/step-1.png"
+    tool_content = json.dumps(
+        {
+            "screenshot": {
+                "type": "image",
+                "mimeType": "image/png",
+                "data": payload,
+            },
+            "storageRef": storage_ref,
+        }
+    )
+
+    start_tool_span("browser_screenshot", tool_input=tool_content)
+    end_tool_span(tool_result=tool_content)
+
+    tool_span = _find_span(exporter, "claude_code.tool")
+    attributes = _serialized_span_attributes(tool_span)
+    assert payload not in attributes
+    assert "data:image" not in attributes
+    assert "REDACTED_INLINE_MEDIA" in attributes
+    assert storage_ref in attributes
 
 
 def test_state_tracing_redacts_content_before_serialization():

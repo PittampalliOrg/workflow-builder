@@ -16,7 +16,7 @@ from .beta import (
     is_beta_tracing_enabled,
     truncate_content,
 )
-from .events import log_otel_event
+from .events import emit_user_prompt_event, log_otel_event
 from .metrics import (
     record_active_time,
     record_code_edit_decision,
@@ -25,7 +25,12 @@ from .metrics import (
     record_session_start,
     record_tokens,
 )
-from .providers import flush_telemetry, init_telemetry, is_telemetry_ready, shutdown_telemetry
+from .providers import (
+    flush_telemetry,
+    init_telemetry,
+    is_telemetry_ready,
+    shutdown_telemetry,
+)
 from .session_tracing import (
     current_interaction_span,
     end_hook_span,
@@ -76,6 +81,7 @@ __all__ = [
     "record_active_time",
     # events
     "log_otel_event",
+    "emit_user_prompt_event",
     # beta
     "is_beta_tracing_enabled",
     "truncate_content",

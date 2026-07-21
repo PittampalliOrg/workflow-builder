@@ -22,29 +22,19 @@ import functools
 import json
 import logging
 import os
-import re
 from typing import Any
 
 from .beta import _is_env_truthy, is_beta_tracing_enabled, truncate_content
+from .content_sanitizer import (
+    sanitize_content_for_telemetry,
+    sanitize_text_for_telemetry,
+)
 from .providers import get_tracer
 
 logger = logging.getLogger(__name__)
 
 # Tracks which state ops have logged their first-invocation diagnostic.
 _fired_ops: set[str] = set()
-_REDACTED = "[REDACTED]"
-_MAX_REDACT_DEPTH = 12
-_SENSITIVE_KEY_PARTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "bearer",
-    "client_secret",
-    "password",
-    "secret",
-)
-_SENSITIVE_KEY_EXACT = {"access_token", "auth_token", "refresh_token", "token"}
-_SENSITIVE_KEY_RE = re.compile(r"(x-api-key|private[_-]?key|session[_-]?token)", re.IGNORECASE)
 _MISSING = object()
 
 
@@ -63,30 +53,11 @@ def _to_json(value: Any) -> str:
             value = value.model_dump()
         return json.dumps(_redact_for_span(value), default=str)
     except Exception:
-        return str(value)
+        return sanitize_text_for_telemetry(str(value))
 
 
 def _redact_for_span(value: Any, depth: int = 0) -> Any:
-    if depth > _MAX_REDACT_DEPTH:
-        return "[redaction-depth-exceeded]"
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            key_norm = key_text.replace("-", "_").lower()
-            if (
-                key_norm in _SENSITIVE_KEY_EXACT
-                or key_norm.endswith("_token")
-                or _SENSITIVE_KEY_RE.search(key_text)
-                or any(part in key_norm for part in _SENSITIVE_KEY_PARTS)
-            ):
-                redacted[key_text] = _REDACTED
-            else:
-                redacted[key_text] = _redact_for_span(item, depth + 1)
-        return redacted
-    if isinstance(value, (list, tuple)):
-        return [_redact_for_span(item, depth + 1) for item in value]
-    return value
+    return sanitize_content_for_telemetry(value, depth=depth)
 
 
 def _set_io(span: Any, attr: str, value: Any) -> None:
@@ -143,7 +114,9 @@ def _write_value_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any
     return _MISSING
 
 
-def _write_output_payload(result: Any = None, *, error: BaseException | None = None) -> dict[str, Any]:
+def _write_output_payload(
+    result: Any = None, *, error: BaseException | None = None
+) -> dict[str, Any]:
     if error is not None:
         return {"ok": False, "error": str(error)}
     if result is None:
@@ -220,7 +193,9 @@ def instrument_state_store() -> None:
             key_label = _key_label(self, key)
             value = _write_value_from_call(args, kwargs)
             with _span(self, op, key_label) as span:
-                _set_io(span, "input.value", _write_request_payload(op, key_label, value))
+                _set_io(
+                    span, "input.value", _write_request_payload(op, key_label, value)
+                )
                 try:
                     result = orig(self, *args, **kwargs)
                 except Exception as exc:

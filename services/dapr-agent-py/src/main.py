@@ -4679,7 +4679,7 @@ class OpenShellDurableAgent(DurableAgent):
         if not ctx.is_replaying:
             try:
                 from src.telemetry import (
-                    log_otel_event,
+                    emit_user_prompt_event,
                     record_session_start,
                     set_session_context,
                     start_interaction_span,
@@ -4754,27 +4754,7 @@ class OpenShellDurableAgent(DurableAgent):
                 record_session_start()
                 # user_prompt event (mirrors TS processTextPrompt.ts call site).
                 # Content is only included when OTEL_LOG_USER_PROMPTS=1.
-                from src.telemetry.events import is_user_prompt_logging_enabled
-
-                _user_prompt_event_attrs = {
-                    "prompt_length": len(task_text),
-                    "prompt": task_text if is_user_prompt_logging_enabled() else "<REDACTED>",
-                }
-                log_otel_event("user_prompt", _user_prompt_event_attrs)
-                # Mirror the log record into a span event on the
-                # claude_code.interaction span so ClickHouse trace consumers
-                # can render the prompt inline. The log signal still ships
-                # independently.
-                if span is not None:
-                    try:
-                        span.add_event(
-                            "claude_code.user_prompt",
-                            attributes={
-                                k: str(v) for k, v in _user_prompt_event_attrs.items() if v is not None
-                            },
-                        )
-                    except Exception:
-                        pass
+                emit_user_prompt_event(span, task_text)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[telemetry] interaction start failed: %s", exc)
         workspace_ref = str(

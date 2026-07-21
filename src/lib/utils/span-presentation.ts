@@ -56,6 +56,15 @@ function hasPrefix(attrs: Record<string, unknown>, prefix: string): boolean {
 
 export function categorizeSpan(span: SpanLike): SpanCategory {
 	const a = span.attributes ?? {};
+	const oiKind =
+		typeof a['openinference.span.kind'] === 'string'
+			? a['openinference.span.kind'].trim().toUpperCase()
+			: '';
+	if (oiKind === 'LLM') return 'llm';
+	if (oiKind === 'TOOL') return 'tool';
+	// OpenInference kind is authoritative. In particular, the content-light
+	// claude_code.llm_request helper is a CHAIN and has no obs.llm_spans row.
+	if (oiKind) return oiKind === 'AGENT' ? 'workflow' : 'internal';
 	if ('gen_ai.tool.name' in a) return 'tool';
 	if (hasPrefix(a, 'gen_ai.')) return 'llm';
 	if ('db.system.name' in a || 'db.system' in a) return 'db';

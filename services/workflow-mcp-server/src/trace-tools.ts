@@ -185,10 +185,40 @@ function continuationAction(
 const LLM_SPAN_RE =
   /(^|[.:/_ -])(llm|gen[_ -]?ai|chat(?:[_ -]?completion)?|completion|invoke[_ -]?model|model[_ -]?invoke|openai|anthropic|gemini|kimi|moonshot)(?:$|[.:/_ -])/i;
 
+function declaredOpenInferenceKind(
+  span: Record<string, unknown>,
+  attributes: Record<string, unknown> | null,
+): string | null {
+  const attributeKind = attributes?.["openinference.span.kind"];
+  if (typeof attributeKind === "string" && attributeKind.trim()) {
+    return attributeKind.trim().toUpperCase();
+  }
+  const flattenedKind = span.kind;
+  if (
+    typeof flattenedKind === "string" &&
+    [
+      "AGENT",
+      "CHAIN",
+      "EMBEDDING",
+      "EVALUATOR",
+      "GUARDRAIL",
+      "LLM",
+      "RERANKER",
+      "RETRIEVER",
+      "TOOL",
+    ].includes(flattenedKind.trim().toUpperCase())
+  ) {
+    return flattenedKind.trim().toUpperCase();
+  }
+  return null;
+}
+
 function looksLlmRelated(value: unknown): boolean {
   const span = record(value);
   if (!span) return false;
   const attributes = record(span.attributes);
+  const declaredKind = declaredOpenInferenceKind(span, attributes);
+  if (declaredKind) return declaredKind === "LLM";
   if (
     attributes &&
     Object.keys(attributes).some((key) =>
