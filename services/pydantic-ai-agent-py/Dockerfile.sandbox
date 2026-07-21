@@ -1,14 +1,20 @@
-# Per-session sandbox image for the pydantic-ai-agent-py runtime (pod-local
-# workspace: harness FileSystem/Shell execute inside this container, rooted
-# at /sandbox). git/ripgrep/node for real coding-agent shell work.
+# Per-session sandbox image for the pydantic-ai-agent-py runtime. Harness
+# FileSystem/Shell execute inside this container, rooted at
+# PYDANTIC_AI_WORKSPACE_ROOT: /sandbox (durable scratch) by default, or the
+# per-execution JuiceFS shared workspace /sandbox/work when the class wires
+# one (pydantic-ai-agent-py execution class). git/ripgrep for real
+# coding-agent shell work.
 FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git curl ripgrep && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev
 COPY src/ src/
-RUN mkdir -p /sandbox /mnt/session/outputs
+RUN mkdir -p /sandbox /mnt/session/outputs && chmod 0777 /sandbox /mnt/session/outputs
 ENV AGENT_SERVICE_NAME=pydantic-ai-agent-py \
     PYDANTIC_AI_WORKSPACE_ROOT=/sandbox
 EXPOSE 8002
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]
+# Exec the venv binary directly (NOT `uv run`): the shared-workspace class
+# runs the pod as uid 10001 and `uv run` wants to re-verify/write under the
+# root-owned /app at startup.
+CMD ["/app/.venv/bin/python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]

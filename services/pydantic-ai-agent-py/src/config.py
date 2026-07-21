@@ -2,9 +2,11 @@
 
 Mirrors the dapr-agent-py / browser-use-agent conventions (state store,
 pubsub, key prefixes) so the service drops into the same Dapr Component
-scopes, plus the pydantic-ai/kimi knobs. Workspace is POD-LOCAL
-(workspaceBackend pod-local): harness FileSystem/Shell execute in this
-container's own filesystem rooted at WORKSPACE_ROOT.
+scopes, plus the pydantic-ai/kimi knobs. Harness FileSystem/Shell execute in
+this container's own filesystem rooted at WORKSPACE_ROOT — the pod-local
+durable scratch (/sandbox) by default, or the per-execution JuiceFS shared
+workspace (/sandbox/work) when the pydantic-ai-agent-py execution class
+wires one (registry workspaceBackend: juicefs-shared).
 """
 
 from __future__ import annotations

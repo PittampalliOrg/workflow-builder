@@ -162,6 +162,24 @@ envFrom branch, next to the always-mounted `dapr-agent-py-config` +
 `dapr-agent-py-secrets` (KIMI_API_KEY). `ANTHROPIC_API_KEY` is not read by
 this service and must never be added to its env.
 
+## Shared workspace (isolation:'shared' / workspaceRef)
+
+The runtime's registry descriptor is **`workspaceBackend: juicefs-shared`**
+with execution class `pydantic-ai-agent-py`: when a run wires a
+`sharedWorkspaceKey` (dynamic-script `agent(..., { isolation: 'shared' })` →
+`ws_script_<execId>`, or a `durable/run` `workspaceRef`),
+sandbox-execution-api mounts the per-EXECUTION JuiceFS subtree at
+`/sandbox/work` and the class env points `PYDANTIC_AI_WORKSPACE_ROOT` there —
+so the harness FileSystem/Shell tools operate DIRECTLY on the shared tree
+with plain file semantics (no RPC), and every agent of the run sees the same
+files. This is the same lane the CLI family and `dapr-agent-py-juicefs` use
+(same JuiceFS secret, same subPath keying), which also means pydantic nodes
+can now legally share a `workspaceRef` with those families and appear in the
+run-page Files tab. Sessions without a shared key (direct UI sessions) fall
+back to the pod-local durable-scratch `/sandbox` unchanged. The class runs
+the pod as uid/fsGroup 10001 (matching CLI writers on the shared FS); the
+image CMD execs the venv binary directly so non-root startup works.
+
 ## Shell credential scrubbing
 
 The harness `Shell` capability runs with `denied_env_patterns`
