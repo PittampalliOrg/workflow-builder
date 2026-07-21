@@ -22,6 +22,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
+from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
 
@@ -32,6 +33,7 @@ from src.config import (
     DEFAULT_MAX_ITERATIONS,
     KIMI_BASE_URL,
     KIMI_DEFAULT_MODEL,
+    KIMI_STREAMING_ENABLED,
     MEDIA_HISTORY_MAX_IMAGES,
     MEDIA_REQUEST_MAX_BYTES,
     MEDIA_REQUEST_MAX_IMAGES,
@@ -185,9 +187,13 @@ def build_model():
             "No Kimi authentication configured. Set KIMI_API_KEY "
             "(pydantic-ai-agent-py authenticates the default kimi-k3 model with it)."
         )
+    provider = OpenAIProvider(base_url=KIMI_BASE_URL, api_key=api_key)
+    # Dapr activity retries are the durable retry authority. SDK retries would
+    # multiply one failed activity into as many as nine provider requests.
+    provider.client.max_retries = 0
     return OpenAIChatModel(
         KIMI_DEFAULT_MODEL,
-        provider=OpenAIProvider(base_url=KIMI_BASE_URL, api_key=api_key),
+        provider=provider,
         profile=_kimi_model_profile,
     )
 
@@ -218,6 +224,49 @@ def build_model_settings() -> dict[str, Any]:
         timeout=float(KIMI_TIMEOUT_SECONDS),
         extra_body={"reasoning_effort": "max"},
     )
+
+
+async def request_model_response(model: Any, request_context: Any) -> Any:
+    """Return one complete response while streaming only at the HTTP boundary."""
+    async with AsyncExitStack() as stack:
+        if hasattr(model, "__aenter__") and hasattr(model, "__aexit__"):
+            await stack.enter_async_context(model)
+
+        if not KIMI_STREAMING_ENABLED or not hasattr(model, "request_stream"):
+            if KIMI_STREAMING_ENABLED:
+                logger.warning(
+                    "[call-llm] model has no request_stream; using non-streaming transport"
+                )
+            return await model.request(
+                request_context.messages,
+                request_context.model_settings,
+                request_context.model_request_parameters,
+            )
+
+        async with model.request_stream(
+            request_context.messages,
+            request_context.model_settings,
+            request_context.model_request_parameters,
+        ) as streamed:
+            # Drain every event so pydantic-ai can assemble text, preserved
+            # reasoning, fragmented tool calls, finish reason, and final usage.
+            # Individual events never cross the activity boundary.
+            async for _ in streamed:
+                pass
+            response = streamed.get()
+
+    usage = getattr(response, "usage", None)
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    if (
+        getattr(response, "state", "complete") != "complete"
+        or not getattr(response, "finish_reason", None)
+        or input_tokens + output_tokens <= 0
+    ):
+        raise RuntimeError(
+            "Kimi streaming response ended without complete terminal usage"
+        )
+    return response
 
 
 def _span_base_attrs(context: dict, iteration: int) -> dict[str, Any]:
@@ -365,10 +414,10 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         request_context = await router.apply_before_model_request(request_context)
 
         async def base_handler(rc):
-            return await model.request(
-                rc.messages, rc.model_settings, rc.model_request_parameters
-            )
+            return await request_model_response(model, rc)
 
+        if span is not None:
+            span.set_attribute("llm.streaming", KIMI_STREAMING_ENABLED)
         response = await router.apply_model_request(request_context, base_handler)
         response = await router.apply_after_model_request(request_context, response)
         input_messages = list(request_context.messages)

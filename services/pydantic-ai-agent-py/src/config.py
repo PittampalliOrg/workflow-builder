@@ -143,3 +143,7 @@ KIMI_DEFAULT_MODEL = "kimi-k3"
 # K3 max-reasoning requests can remain silent for 15-25 minutes. This is the
 # total blocking request timeout; activity retries remain the transport retry.
 KIMI_TIMEOUT_SECONDS = env_int("KIMI_TIMEOUT_SECONDS", 1800)
+# K3 thinking responses can exceed intermediary non-streaming response limits.
+# Stream on the wire, then persist only the assembled ModelResponse at the
+# existing durable activity boundary. Keep an emergency rollback knob.
+KIMI_STREAMING_ENABLED = env_bool("KIMI_STREAMING_ENABLED", True)

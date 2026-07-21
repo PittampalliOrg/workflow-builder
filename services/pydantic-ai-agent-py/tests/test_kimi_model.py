@@ -26,6 +26,7 @@ def test_build_model_is_pydantic_ai_openai_chat_model(monkeypatch):
 
     assert isinstance(model, OpenAIChatModel)
     assert model.model_name == "kimi-k3"
+    assert model.provider.client.max_retries == 0
 
 
 def test_model_settings_enforce_kimi_contract():
@@ -223,6 +224,141 @@ def test_kimi_chat_wire_sends_tool_media_as_native_image_parts():
     )
     assert image["image_url"]["url"].startswith("data:image/png;base64,")
     assert "BinaryContent" not in json.dumps(captured)
+
+
+def test_kimi_chat_stream_aggregates_reasoning_fragmented_tools_and_usage():
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ThinkingPart,
+        ToolCallPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    captured: dict = {}
+
+    def chunk(delta, finish_reason=None):
+        return {
+            "id": "cmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "kimi-k3",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
+    stream_chunks = [
+        chunk({"role": "assistant", "reasoning_content": "Think "}),
+        chunk({"reasoning_content": "hard."}),
+        chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "so-stream",
+                        "type": "function",
+                        "function": {
+                            "name": "StructuredOutput",
+                            "arguments": '{"summ',
+                        },
+                    }
+                ]
+            }
+        ),
+        chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": 'ary":"done"}'},
+                    }
+                ]
+            },
+            "tool_calls",
+        ),
+        {
+            "id": "cmpl-stream",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "kimi-k3",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 7,
+                "total_tokens": 17,
+            },
+        },
+    ]
+    stream_body = (
+        "".join(f"data: {json.dumps(item)}\n\n" for item in stream_chunks)
+        + "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=stream_body,
+        )
+
+    async def exercise():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            model = OpenAIChatModel(
+                "kimi-k3",
+                provider=OpenAIProvider(
+                    base_url="https://api.kimi.com/coding/v1",
+                    api_key="wire-test-key",
+                    http_client=http_client,
+                ),
+                profile=_kimi_model_profile,
+            )
+            params = ModelRequestParameters(
+                function_tools=[
+                    output_tool_definition(
+                        {
+                            "type": "object",
+                            "required": ["summary"],
+                            "properties": {"summary": {"type": "string"}},
+                        }
+                    )
+                ],
+                output_mode="text",
+                output_tools=[],
+                allow_text_output=True,
+            )
+            request = ModelRequest(parts=[UserPromptPart(content="finish")])
+            async with model.request_stream(
+                [request], build_model_settings(), params
+            ) as streamed:
+                async for _ in streamed:
+                    pass
+                return streamed.get()
+
+    response = asyncio.run(exercise())
+
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}
+    assert captured["reasoning_effort"] == "max"
+    assert captured["temperature"] == 1
+    assert captured["frequency_penalty"] == 0
+    thinking = next(part for part in response.parts if isinstance(part, ThinkingPart))
+    tool_call = next(part for part in response.parts if isinstance(part, ToolCallPart))
+    assert thinking.content == "Think hard."
+    assert tool_call.tool_name == "StructuredOutput"
+    assert tool_call.args_as_dict() == {"summary": "done"}
+    assert response.finish_reason == "tool_call"
+    assert response.state == "complete"
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 7
 
 
 def test_session_task_composition():

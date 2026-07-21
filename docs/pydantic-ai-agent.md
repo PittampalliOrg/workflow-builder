@@ -186,6 +186,18 @@ max reasoning (`extra_body.reasoning_effort=max`) — enforced in
 `multiProvider: false`; widening happens by adding pydantic-ai provider
 classes in `build_model()`.
 
+K3 requests stream on the HTTP connection by default
+(`KIMI_STREAMING_ENABLED=true`) because max-thinking turns can outlive an
+intermediary's non-streaming response window. The stream is fully consumed
+inside the existing `call_llm` activity and Pydantic AI assembles one final
+`ModelResponse`, including reasoning, tool calls, finish reason, and usage.
+Only that completed response crosses the Dapr boundary; token deltas are not
+journaled, written to session events, or stored as workflow data. An incomplete
+stream, missing finish reason, or missing final usage fails the activity and
+uses the existing bounded retry policy. The OpenAI SDK's internal retry count
+is zero so Dapr is the single retry authority rather than multiplying one
+activity failure into nested provider requests.
+
 ## Structured output
 
 Dynamic-script `agent(..., { schema })` calls use the same mechanism proven in
