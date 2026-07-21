@@ -130,6 +130,7 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 						FROM session_events
 						WHERE session_id = $2
 						) AS next_sequence
+						ON CONFLICT DO NOTHING
 					`,
 					params: [
 						eventId,
@@ -166,12 +167,17 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 					sessionId,
 					eventId,
 				});
-				if (!inserted)
-					throw new Error(
-						"Dapr PostgreSQL session event insert was not persisted",
+				if (inserted) {
+					await this.postAppendHook(sessionId, event.type, cleanData);
+					return inserted;
+				}
+				if (event.sourceEventId) {
+					const existing = await this.selectBySourceEventId(
+						sessionId,
+						event.sourceEventId,
 					);
-				await this.postAppendHook(sessionId, event.type, cleanData);
-				return inserted;
+					if (existing) return existing;
+				}
 			} catch (error) {
 				if (!isUniqueViolation(error)) throw error;
 				if (event.sourceEventId) {
