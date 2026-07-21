@@ -136,6 +136,9 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
 | `WORKFLOW_BUILDER_URL` | in-cluster BFF | fixed artifact and target-auth exchange base URL |
 | `INTERNAL_API_TOKEN` | _(unset)_ | service token for artifact upload and target-auth exchange |
+| `BROWSERSTATION_URL` | _(unset)_ | stable BrowserStation management URL used for readiness, cleanup, and CDP; unset disables farm lanes |
+| `BROWSERSTATION_LEASE_URL` | `BROWSERSTATION_URL` | admission URL used only for `POST /browsers`; a separate Service can stop new leases during a head rollout without interrupting existing lanes |
+| `BROWSERSTATION_API_KEY` | _(unset)_ | BrowserStation API key sent to both management and lease URLs |
 | `AGENT_BROWSER_ENCRYPTION_KEY` | _(unset)_ | optional; encrypts saved auth state |
 | `DEMO_TARGET_SECONDS` | `75` | target length of the rendered demo video |
 | `DEMO_MAX_SPEEDUP` | `2.5` | cap on the uniform speed-up used to fit the target |

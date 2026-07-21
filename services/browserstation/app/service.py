@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import secrets
 import time
+from typing import Callable, Optional
 import uuid
 from urllib.parse import urlsplit
 
@@ -18,7 +20,15 @@ from app.actor_reaper import (
     stale_actor_ages,
 )
 from app.lib import fetch_ws
-from app.models import ActorInfo, BrowserInfo, BrowserList, BrowserStatus, Health
+from app.models import (
+    ActorInfo,
+    BrowserInfo,
+    BrowserList,
+    BrowserStatus,
+    Health,
+    LeaseAdmissionLease,
+    LeaseAdmissionStatus,
+)
 from app.websocket_transport import (
     UPSTREAM_TO_CLIENT,
     relay_websocket_messages,
@@ -87,11 +97,104 @@ class BrowserActor:
         )
 
 
+class LeaseAdmissionConflictError(RuntimeError):
+    pass
+
+
+class LeaseAdmissionDrainingError(RuntimeError):
+    retry_after_seconds = 5
+
+
 class BrowserService:
     # Monotonic start estimates are reconciled against Ray's live actor list on
     # every reaper pass. Deployed Ray 2.47 uses a stable first-seen fallback;
     # newer schemas can preserve exact age when start_time_ms is available.
     _actor_creation_times: dict[ActorIdentity, float] = {}
+
+    def __init__(
+        self,
+        *,
+        monotonic=time.monotonic,
+        token_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
+    ):
+        self._monotonic = monotonic
+        self._token_factory = token_factory
+        self._lease_admission_lock = asyncio.Lock()
+        self._lease_admission_contract_sha256: Optional[str] = None
+        self._lease_admission_holder_uid: Optional[str] = None
+        self._lease_admission_token: Optional[str] = None
+        self._lease_admission_expires_at = 0.0
+
+    def _lease_admission_status_locked(self) -> LeaseAdmissionStatus:
+        now = self._monotonic()
+        remaining = self._lease_admission_expires_at - now
+        if remaining <= 0:
+            self._lease_admission_contract_sha256 = None
+            self._lease_admission_holder_uid = None
+            self._lease_admission_token = None
+            self._lease_admission_expires_at = 0.0
+            return LeaseAdmissionStatus(accepting_new_leases=True)
+        return LeaseAdmissionStatus(
+            accepting_new_leases=False,
+            contract_sha256=self._lease_admission_contract_sha256,
+            expires_in_seconds=remaining,
+        )
+
+    async def lease_admission_status(self) -> LeaseAdmissionStatus:
+        async with self._lease_admission_lock:
+            return self._lease_admission_status_locked()
+
+    async def begin_lease_admission(
+        self,
+        contract_sha256: str,
+        holder_uid: str,
+        ttl_seconds: int,
+        lease_token: Optional[str],
+    ) -> LeaseAdmissionLease:
+        async with self._lease_admission_lock:
+            status = self._lease_admission_status_locked()
+            if status.accepting_new_leases:
+                if lease_token is not None:
+                    raise LeaseAdmissionConflictError(
+                        "lease admission token is expired or unknown"
+                    )
+                lease_token = self._token_factory()
+                self._lease_admission_contract_sha256 = contract_sha256
+                self._lease_admission_holder_uid = holder_uid
+                self._lease_admission_token = lease_token
+            elif (
+                self._lease_admission_contract_sha256 != contract_sha256
+                or self._lease_admission_holder_uid != holder_uid
+                or self._lease_admission_token != lease_token
+            ):
+                raise LeaseAdmissionConflictError(
+                    "lease admission is held by another rollout generation"
+                )
+            self._lease_admission_expires_at = self._monotonic() + ttl_seconds
+            renewed = self._lease_admission_status_locked()
+            return LeaseAdmissionLease(
+                **renewed.model_dump(), lease_token=self._lease_admission_token
+            )
+
+    async def end_lease_admission(
+        self, contract_sha256: str, holder_uid: str, lease_token: str
+    ) -> None:
+        async with self._lease_admission_lock:
+            status = self._lease_admission_status_locked()
+            if status.accepting_new_leases:
+                return
+            if (
+                self._lease_admission_contract_sha256 != contract_sha256
+                or self._lease_admission_holder_uid != holder_uid
+                or self._lease_admission_token != lease_token
+            ):
+                raise LeaseAdmissionConflictError(
+                    "lease admission is held by another rollout generation"
+                )
+            self._lease_admission_contract_sha256 = None
+            self._lease_admission_holder_uid = None
+            self._lease_admission_token = None
+            self._lease_admission_expires_at = 0.0
 
     async def _find_actor(self, browser_id: str):
         actors = await asyncio.to_thread(_query_browser_actors, REAPABLE_ACTOR_STATES)
@@ -126,20 +229,26 @@ class BrowserService:
                 browsers=browser_states,
                 cluster=cluster,
                 available=available,
+                lease_admission=await self.lease_admission_status(),
             )
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"Unhealthy: {exc}") from exc
 
     async def create_browser(self):
-        browser_id = str(uuid.uuid4())
-        await asyncio.to_thread(
-            lambda: BrowserActor.options(
-                name=browser_id,
-                namespace=RAY_NAMESPACE,
-                lifetime="detached",
-            ).remote(browser_id)
-        )
-        self._actor_creation_times[(RAY_NAMESPACE, browser_id)] = time.monotonic()
+        async with self._lease_admission_lock:
+            if not self._lease_admission_status_locked().accepting_new_leases:
+                raise LeaseAdmissionDrainingError(
+                    "BrowserStation is temporarily not accepting new leases"
+                )
+            browser_id = str(uuid.uuid4())
+            await asyncio.to_thread(
+                lambda: BrowserActor.options(
+                    name=browser_id,
+                    namespace=RAY_NAMESPACE,
+                    lifetime="detached",
+                ).remote(browser_id)
+            )
+            self._actor_creation_times[(RAY_NAMESPACE, browser_id)] = time.monotonic()
         return ActorInfo(
             browser_id=browser_id,
             proxy_url=f"/ws/browsers/{browser_id}/devtools/browser",

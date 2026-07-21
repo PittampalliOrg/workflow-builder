@@ -81,6 +81,7 @@ import {
 	targetAuthNeedsRefresh,
 	validateTargetAuth,
 } from "./target-auth-policy.mjs";
+import { postBrowserLease } from "./browserstation-lease-client.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
@@ -118,11 +119,16 @@ const OPERATION_DRAIN_GRACE_MS = timeoutFromEnv(
 // BrowserStation farm (KubeRay; one Chrome per worker pod), keeping Chromium
 // out of this long-lived MCP bridge. `X-Wfb-Browser-Lane: per-node` further
 // isolates concurrent script calls by node; otherwise one run shares one farm
-// browser. Unset BROWSERSTATION_URL/API key falls back to local Chrome.
+// browser. Browser creation can use a separate admission Service so a rollout
+// can stop new leases without interrupting readiness, cleanup, or CDP traffic.
+// Unset BROWSERSTATION_URL/API key falls back to local Chrome.
 const BROWSERSTATION_URL = (process.env.BROWSERSTATION_URL || "").replace(
 	/\/$/,
 	"",
 );
+const BROWSERSTATION_LEASE_URL = (
+	process.env.BROWSERSTATION_LEASE_URL || BROWSERSTATION_URL
+).replace(/\/$/, "");
 const BROWSERSTATION_API_KEY = process.env.BROWSERSTATION_API_KEY || "";
 // Cold farm scale-up = pod schedule + image pull; warm worker ≈ 2s.
 const LANE_READY_TIMEOUT_MS = Number(
@@ -432,12 +438,14 @@ const browserContexts = createBrowserContextRegistry({
 });
 
 function lanesEnabled() {
-	return Boolean(BROWSERSTATION_URL && BROWSERSTATION_API_KEY);
+	return Boolean(
+		BROWSERSTATION_URL && BROWSERSTATION_LEASE_URL && BROWSERSTATION_API_KEY,
+	);
 }
 
-function bsFetch(path, init = {}) {
+function bsFetchAt(baseUrl, path, init = {}) {
 	const { signal, ...requestInit } = init;
-	return fetch(`${BROWSERSTATION_URL}${path}`, {
+	return fetch(`${baseUrl}${path}`, {
 		...requestInit,
 		headers: {
 			"X-API-Key": BROWSERSTATION_API_KEY,
@@ -445,6 +453,23 @@ function bsFetch(path, init = {}) {
 			...(requestInit.headers || {}),
 		},
 		signal: boundedSignal(signal, BROWSERSTATION_IO_TIMEOUT_MS),
+	});
+}
+
+function bsFetch(path, init = {}) {
+	return bsFetchAt(BROWSERSTATION_URL, path, init);
+}
+
+function bsLeaseFetch(path, init = {}) {
+	if (path !== "/browsers" || init.method !== "POST") {
+		throw new Error("BrowserStation lease client only supports POST /browsers");
+	}
+	return postBrowserLease({
+		baseUrl: BROWSERSTATION_LEASE_URL,
+		apiKey: BROWSERSTATION_API_KEY,
+		body: init.body,
+		signal: boundedSignal(init.signal, BROWSERSTATION_IO_TIMEOUT_MS),
+		timeoutMs: BROWSERSTATION_IO_TIMEOUT_MS,
 	});
 }
 
@@ -468,7 +493,7 @@ function ensureLaneBrowser(browserContext) {
 	const { signal } = lane.controller;
 	browserContext.lane = lane;
 	lane.ready = (async () => {
-		const created = await bsFetch("/browsers", {
+		const created = await bsLeaseFetch("/browsers", {
 			method: "POST",
 			body: "{}",
 			signal,

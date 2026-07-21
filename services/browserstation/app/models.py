@@ -1,7 +1,31 @@
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class LeaseAdmissionOwner(BaseModel):
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    holder_uid: UUID
+
+
+class LeaseAdmissionRequest(LeaseAdmissionOwner):
+    lease_token: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{32,128}$")
+    ttl_seconds: int = Field(default=30, ge=5, le=120)
+
+
+class LeaseAdmissionRelease(LeaseAdmissionOwner):
+    lease_token: str = Field(pattern=r"^[A-Za-z0-9_-]{32,128}$")
+
+
+class LeaseAdmissionStatus(BaseModel):
+    accepting_new_leases: bool
+    contract_sha256: Optional[str] = None
+    expires_in_seconds: Optional[float] = None
+
+
+class LeaseAdmissionLease(LeaseAdmissionStatus):
+    lease_token: str = Field(pattern=r"^[A-Za-z0-9_-]{32,128}$")
 
 
 class Health(BaseModel):
@@ -10,6 +34,7 @@ class Health(BaseModel):
     browsers: dict
     cluster: dict
     available: dict
+    lease_admission: LeaseAdmissionStatus
 
 
 class BrowserInfo(BaseModel):
