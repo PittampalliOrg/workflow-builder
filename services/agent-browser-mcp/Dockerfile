@@ -26,7 +26,7 @@ RUN npm install -g agent-browser@0.31.2
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY bridge.mjs browser-lane-policy.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
+COPY bridge.mjs browser-lane-policy.mjs browserstation-lease-client.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
 
 # Pre-download Chrome for Testing into the image (version-matched to the CLI).
 RUN agent-browser install

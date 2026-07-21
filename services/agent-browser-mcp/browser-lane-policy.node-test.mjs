@@ -656,6 +656,45 @@ describe("agent-browser lane policy", () => {
 		assert.match(dockerfile, /target-auth-policy\.mjs/);
 	});
 
+	it("splits browser admission from stable management traffic", () => {
+		const bridge = readFileSync(
+			new URL("./bridge.mjs", import.meta.url),
+			"utf8",
+		);
+		assert.match(
+			bridge,
+			/process\.env\.BROWSERSTATION_LEASE_URL \|\| BROWSERSTATION_URL/,
+		);
+		const leaseFetch = bridge.slice(
+			bridge.indexOf("function bsLeaseFetch"),
+			bridge.indexOf("async function deleteFarmBrowser"),
+		);
+		assert.match(leaseFetch, /postBrowserLease\(\{/);
+		assert.match(leaseFetch, /baseUrl: BROWSERSTATION_LEASE_URL/);
+		assert.match(leaseFetch, /init\.method !== "POST"/);
+
+		const provisioning = bridge.slice(
+			bridge.indexOf("function ensureLaneBrowser"),
+			bridge.indexOf("function runAgentBrowserConnect"),
+		);
+		assert.match(
+			provisioning,
+			/const created = await bsLeaseFetch\("\/browsers"/,
+		);
+		assert.match(
+			provisioning,
+			/const resp = await bsFetch\(`\/browsers\/\$\{lane\.browserId\}`/,
+		);
+		assert.match(
+			provisioning,
+			/BROWSERSTATION_URL\.replace\(\/\^http\/, "ws"\)/,
+		);
+		assert.match(
+			bridge,
+			/deleteFarmBrowser[\s\S]*bsFetch\(`\/browsers\/\$\{browserId\}`[\s\S]*method: "DELETE"/,
+		);
+	});
+
 	it("authorizes before selecting, provisioning, or spawning an execution lane", () => {
 		const bridge = readFileSync(
 			new URL("./bridge.mjs", import.meta.url),
