@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import builtins
 import contextlib
 import importlib.util
@@ -1267,6 +1268,92 @@ def test_execute_action_includes_otel_body_fallback(monkeypatch):
         "baggage"
     ]
     assert "x-preview-action-token" not in captured["metadata"]
+
+
+def test_execute_action_materialize_trace_uses_metadata_not_file_bodies():
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_materialize_trace_test",
+        "activities/execute_action.py",
+    )
+    encoded = base64.b64encode(b"private image").decode("ascii")
+    traced = execute_action_module.materialize_action_input_for_trace(
+        "workspace/materialize-files",
+        {
+            "workspaceRef": "workspace-1",
+            "files": [
+                {"path": "/sandbox/app/index.html", "content": "private source"},
+                {"path": "/sandbox/app/logo.png", "contentB64": encoded},
+            ],
+        },
+    )
+
+    assert traced["workspaceRef"] == "workspace-1"
+    assert traced["fileCount"] == 2
+    assert traced["files"][0]["contentBytes"] == len(b"private source")
+    assert traced["files"][1]["encodedBytes"] == len(encoded)
+    serialized = json.dumps(traced)
+    assert "private source" not in serialized
+    assert encoded not in serialized
+
+    ordinary = {"toolId": "write_file", "content": "ordinary tool input"}
+    assert (
+        execute_action_module.materialize_action_input_for_trace(
+            "mastra/run-tool", ordinary
+        )
+        == ordinary
+    )
+
+
+def test_execute_action_passes_sanitized_materialize_dapr_trace(monkeypatch):
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_materialize_dapr_trace_test",
+        "activities/execute_action.py",
+    )
+    captured = {}
+
+    def fake_dapr_invoke(_app_id, _method, payload, **kwargs):
+        captured["payload"] = payload
+        captured["trace_payload"] = kwargs.get("trace_payload")
+        return (
+            200,
+            {"success": True, "files": ["/sandbox/app/index.html"]},
+            "{}",
+        )
+
+    monkeypatch.setattr(execute_action_module, "dapr_invoke", fake_dapr_invoke)
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {
+                "id": "materialize",
+                "config": {
+                    "actionType": "workspace/materialize-files",
+                    "input": {
+                        "workspaceRef": "workspace-1",
+                        "files": [
+                            {
+                                "path": "/sandbox/app/index.html",
+                                "content": "private source",
+                            }
+                        ],
+                    },
+                },
+            },
+            "nodeOutputs": {},
+            "executionId": "dapr-exec-1",
+            "workflowId": "workflow-1",
+            "dbExecutionId": "db-exec-1",
+        },
+    )
+
+    assert result["success"] is True
+    assert (
+        captured["payload"]["input"]["files"][0]["content"]
+        == "private source"
+    )
+    traced = json.dumps(captured["trace_payload"])
+    assert "private source" not in traced
+    assert captured["trace_payload"]["input"]["fileCount"] == 1
 
 
 @pytest.mark.parametrize(
@@ -3968,6 +4055,73 @@ def test_activity_wrapper_stamps_redacted_input_and_output(monkeypatch):
         "token": "[REDACTED]",
         "echo": "run",
     }
+
+
+def test_activity_wrapper_summarizes_materialized_file_bodies(monkeypatch):
+    stamped: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        APP, "set_current_span_attrs", lambda attrs: stamped.append(attrs)
+    )
+
+    def execute_action(_ctx, data):
+        return {
+            "success": True,
+            "files": [data["node"]["data"]["config"]["input"]["files"][0]["path"]],
+        }
+
+    wrapped_action = APP._activity_with_content_io(execute_action)
+    action_input = {
+        "node": {
+            "config": {},
+            "data": {
+                "config": {
+                    "actionType": "workspace/materialize-files",
+                    "input": {
+                        "workspaceRef": "workspace-1",
+                        "files": [
+                            {
+                                "path": "/sandbox/app/index.html",
+                                "content": "private source",
+                            }
+                        ],
+                    },
+                }
+            },
+        }
+    }
+    wrapped_action(None, action_input)
+    traced_input = json.loads(stamped[0]["input.value"])
+    serialized_input = json.dumps(traced_input)
+    assert "private source" not in serialized_input
+    assert traced_input["node"]["data"]["config"]["input"]["fileCount"] == 1
+
+    stamped.clear()
+
+    def evaluate_script(_ctx, _data):
+        return {
+            "status": "need",
+            "tasks": [
+                {
+                    "actionSlug": "workspace/materialize-files",
+                    "args": {
+                        "workspaceRef": "workspace-1",
+                        "files": [
+                            {
+                                "path": "/sandbox/app/index.html",
+                                "content": "private source",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+    wrapped_evaluator = APP._activity_with_content_io(evaluate_script)
+    wrapped_evaluator(None, {"executionId": "exec-1"})
+    traced_output = json.loads(stamped[1]["output.value"])
+    serialized_output = json.dumps(traced_output)
+    assert "private source" not in serialized_output
+    assert traced_output["tasks"][0]["args"]["fileCount"] == 1
 
 
 def test_activity_wrapper_stamps_error_output(monkeypatch):

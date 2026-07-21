@@ -72,7 +72,11 @@ from workflows.wait_event_workflow import (
 )
 from activities.metadata import get_activity_metadata
 from activities.workflow_data_client import workflow_data_api_mode, workflow_data_client
-from content_tracing import io_attributes
+from content_tracing import (
+    activity_input_for_trace,
+    activity_output_for_trace,
+    io_attributes,
+)
 import workflow_data_postgres_rollback
 
 REQUESTS_TIMEOUT = getattr(requests, "Timeout", TimeoutError)
@@ -1460,7 +1464,9 @@ def _activity_with_content_io(fn: Any) -> Any:
     @wraps(fn)
     def wrapped(*args: Any, **kwargs: Any):
         data = args[1] if len(args) > 1 else kwargs.get("data", kwargs.get("input_data"))
-        set_current_span_attrs(io_attributes("input", data))
+        set_current_span_attrs(
+            io_attributes("input", activity_input_for_trace(fn.__name__, data))
+        )
         try:
             result = fn(*args, **kwargs)
         except Exception as exc:
@@ -1474,7 +1480,9 @@ def _activity_with_content_io(fn: Any) -> Any:
                 )
             )
             raise
-        set_current_span_attrs(io_attributes("output", result))
+        set_current_span_attrs(
+            io_attributes("output", activity_output_for_trace(fn.__name__, result))
+        )
         return result
 
     return wrapped

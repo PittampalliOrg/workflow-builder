@@ -42,13 +42,16 @@ class _FakeResponse:
 
 
 class _FakeDaprClient:
+    last_kwargs = None
+
     def __enter__(self):
         return self
 
     def __exit__(self, *_args):
         return None
 
-    def invoke_method(self, **_kwargs):
+    def invoke_method(self, **kwargs):
+        type(self).last_kwargs = kwargs
         return _FakeResponse()
 
 
@@ -86,3 +89,45 @@ def test_dapr_invoke_stamps_service_graph_io_attrs(monkeypatch):
         "status": 200,
         "body": {"ok": True, "token": "[REDACTED]"},
     }
+
+
+def test_dapr_invoke_uses_trace_override_without_changing_transport(monkeypatch):
+    from activities import dapr_invoke
+    from opentelemetry import trace
+
+    span = _FakeSpan()
+    _FakeDaprClient.last_kwargs = None
+    monkeypatch.setattr(dapr_invoke, "DaprClient", _FakeDaprClient)
+    monkeypatch.setattr(trace, "get_tracer", lambda _name: _FakeTracer(span))
+    monkeypatch.setenv("ENABLE_REQUEST_CONTENT_TRACING", "true")
+
+    raw_payload = {
+        "function_slug": "workspace/materialize-files",
+        "input": {
+            "files": [
+                {
+                    "path": "/sandbox/app/index.html",
+                    "content": "private source",
+                }
+            ]
+        },
+    }
+    safe_payload = {
+        "function_slug": "workspace/materialize-files",
+        "input": {
+            "fileCount": 1,
+            "files": [{"path": "/sandbox/app/index.html"}],
+        },
+    }
+    status, _, _ = dapr_invoke.dapr_invoke(
+        "function-router",
+        "execute",
+        raw_payload,
+        trace_payload=safe_payload,
+    )
+
+    assert status == 200
+    traced = json.loads(span.attributes["input.value"])
+    assert "private source" not in json.dumps(traced)
+    assert traced["body"] == safe_payload
+    assert json.loads(_FakeDaprClient.last_kwargs["data"]) == raw_payload

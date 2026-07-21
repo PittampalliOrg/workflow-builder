@@ -92,6 +92,8 @@ const DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS = 300_000;
 const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 3_600_000;
+const MAX_WORKSPACE_MATERIALIZE_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_WORKSPACE_MATERIALIZE_TOTAL_BYTES = 8 * 1024 * 1024;
 const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = Math.max(
   300_000,
   Number.parseInt(
@@ -422,14 +424,15 @@ function spanTargetsForRequest(request: FastifyRequest): Span[] {
 }
 
 function executeRequestForSpan(body: ExecuteRequest): Record<string, unknown> {
+  const functionSlug = body.function_slug ?? body.function_id ?? "";
   return {
-    function_slug: body.function_slug ?? body.function_id,
+    function_slug: functionSlug,
     execution_id: body.execution_id,
     db_execution_id: body.db_execution_id ?? undefined,
     workflow_id: body.workflow_id,
     node_id: body.node_id,
     node_name: body.node_name,
-    input: body.input,
+    input: workspaceMaterializeInputForSpan(functionSlug, body.input),
     node_outputs: body.node_outputs,
     connection_external_id: body.connection_external_id ?? undefined,
     ap_project_id: body.ap_project_id ?? undefined,
@@ -478,6 +481,7 @@ async function postJsonWithContentTrace(
   targetUrl: string,
   init: DispatchRequestInit,
   attributes: Record<string, string | number | boolean | undefined>,
+  tracePayload?: unknown,
 ): Promise<{
   httpResponse: Response;
   responseText: string;
@@ -499,7 +503,10 @@ async function postJsonWithContentTrace(
   });
 
   return await context.with(trace.setSpan(context.active(), span), async () => {
-    setSpanInputOnSpan(span, payloadForSpan(init.body));
+    setSpanInputOnSpan(
+      span,
+      tracePayload === undefined ? payloadForSpan(init.body) : tracePayload,
+    );
     const headers = mutableHeadersFrom(init.headers);
     propagation.inject(context.active(), headers);
     const spanContext = span.spanContext();
@@ -2099,6 +2106,102 @@ function parseMastraToolInput(
   return { toolId, args };
 }
 
+function materializedFileTraceMetadata(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { validShape: false };
+  }
+  const file = value as WorkspaceMaterializeFileInput;
+  const metadata: Record<string, unknown> = {
+    path: typeof file.path === "string" ? file.path : undefined,
+    mode: typeof file.mode === "number" ? file.mode : undefined,
+  };
+  if (typeof file.content === "string") {
+    const contentBytes = Buffer.byteLength(file.content, "utf8");
+    metadata.contentBytes = contentBytes;
+    if (contentBytes <= MAX_WORKSPACE_MATERIALIZE_FILE_BYTES) {
+      metadata.contentSha256 = createHash("sha256")
+        .update(file.content, "utf8")
+        .digest("hex");
+    } else {
+      metadata.digestOmitted = "oversized";
+    }
+    metadata.contentEncoding = "utf8";
+  } else if (typeof file.contentB64 === "string") {
+    const encodedBytes = Buffer.byteLength(file.contentB64, "utf8");
+    metadata.encodedBytes = encodedBytes;
+    if (
+      encodedBytes <=
+      Math.ceil(MAX_WORKSPACE_MATERIALIZE_FILE_BYTES / 3) * 4
+    ) {
+      metadata.encodedSha256 = createHash("sha256")
+        .update(file.contentB64, "utf8")
+        .digest("hex");
+    } else {
+      metadata.digestOmitted = "oversized";
+    }
+    metadata.contentEncoding = "base64";
+  } else {
+    metadata.contentEncoding = "missing";
+  }
+  return metadata;
+}
+
+function workspaceMaterializeArgsForSpan(
+  toolId: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceFiles =
+    toolId === "write_file"
+      ? [
+          {
+            path: args.path,
+            content: args.content,
+            contentB64: args.contentB64,
+            mode: args.mode,
+          },
+        ]
+      : Array.isArray(args.files)
+        ? args.files
+        : [];
+  return {
+    toolId,
+    workspaceRef: args.workspaceRef,
+    timeoutMs: args.timeoutMs,
+    fileCount: sourceFiles.length,
+    files: sourceFiles.map(materializedFileTraceMetadata),
+  };
+}
+
+export function workspaceMaterializeInputForSpan(
+  functionSlug: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const configuredToolId =
+    typeof input.toolId === "string" ? input.toolId.trim() : "";
+  const fallbackToolId = functionSlug.split("/")[1] ?? "";
+  const toolId = configuredToolId || fallbackToolId;
+  const isMaterializeAction =
+    functionSlug.startsWith("workspace/") &&
+    (toolId === "materialize-files" || toolId === "write_file");
+  if (!isMaterializeAction) return input;
+
+  if (typeof input.argsJson === "string") {
+    try {
+      const parsed = JSON.parse(input.argsJson) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return workspaceMaterializeArgsForSpan(
+          toolId,
+          parsed as Record<string, unknown>,
+        );
+      }
+    } catch {
+      return { toolId, payload: "[unparseable materialize arguments]" };
+    }
+  }
+
+  return workspaceMaterializeArgsForSpan(toolId, input);
+}
+
 function optionalStringInput(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -2142,6 +2245,210 @@ export function buildWorkspaceCommandPayload({
     nodeId,
     nodeName,
   };
+}
+
+type WorkspaceMaterializeFilesPayloadOptions = {
+  args: Record<string, unknown>;
+  toolId: string;
+  executionId: string;
+  dbExecutionId?: string | null;
+  workflowId: string;
+  nodeId: string;
+  nodeName: string;
+};
+
+type WorkspaceMaterializeFileInput = {
+  path?: unknown;
+  content?: unknown;
+  contentB64?: unknown;
+  mode?: unknown;
+};
+
+function encodeWorkspaceMaterializeFile(
+  value: WorkspaceMaterializeFileInput,
+  index: number,
+): {
+  file: { path: string; contentB64: string; mode?: number };
+  decodedBytes: number;
+} {
+  const rawPath = typeof value.path === "string" ? value.path : "";
+  const path = rawPath.trim();
+  const pathSegments = path.split("/").slice(1);
+  if (
+    path !== rawPath ||
+    !path.startsWith("/") ||
+    !path.startsWith("/sandbox/") ||
+    path.length > 4096 ||
+    pathSegments.length === 0 ||
+    pathSegments.some(
+      (segment) => segment === "" || segment === "." || segment === "..",
+    ) ||
+    /[\0\r\n]/.test(path)
+  ) {
+    throw new Error(
+      `workspace materialized file ${index} must have a normalized absolute path`,
+    );
+  }
+
+  const hasText = typeof value.content === "string";
+  const hasEncoded = typeof value.contentB64 === "string";
+  if (hasText === hasEncoded) {
+    throw new Error(
+      `workspace materialized file ${index} must provide exactly one of content or contentB64`,
+    );
+  }
+
+  const textContent = hasText ? (value.content as string) : undefined;
+  const encodedContent = hasEncoded ? String(value.contentB64) : undefined;
+  const maxEncodedBytes =
+    Math.ceil(MAX_WORKSPACE_MATERIALIZE_FILE_BYTES / 3) * 4;
+  if (
+    (textContent !== undefined &&
+      Buffer.byteLength(textContent, "utf8") >
+        MAX_WORKSPACE_MATERIALIZE_FILE_BYTES) ||
+    (encodedContent !== undefined && encodedContent.length > maxEncodedBytes)
+  ) {
+    throw new Error(
+      `workspace materialized file ${index} exceeds the 4 MiB limit`,
+    );
+  }
+  const contentB64 =
+    encodedContent ?? Buffer.from(textContent ?? "", "utf8").toString("base64");
+  const firstPadding = contentB64.indexOf("=");
+  const hasValidBase64Shape =
+    contentB64.length % 4 === 0 &&
+    !/[^A-Za-z0-9+/=]/.test(contentB64) &&
+    (firstPadding === -1 ||
+      (firstPadding >= contentB64.length - 2 &&
+        !contentB64.slice(firstPadding).replaceAll("=", "")));
+  const content = Buffer.from(contentB64, "base64");
+  if (
+    !hasText &&
+    (!hasValidBase64Shape || content.toString("base64") !== contentB64)
+  ) {
+    throw new Error(
+      `workspace materialized file ${index} contentB64 must be canonical base64`,
+    );
+  }
+  if (content.byteLength > MAX_WORKSPACE_MATERIALIZE_FILE_BYTES) {
+    throw new Error(
+      `workspace materialized file ${index} exceeds the 4 MiB limit`,
+    );
+  }
+  const mode = value.mode;
+  if (
+    mode !== undefined &&
+    (!Number.isInteger(mode) || Number(mode) < 0 || Number(mode) > 0o7777)
+  ) {
+    throw new Error(
+      `workspace materialized file ${index} mode must be an integer between 0 and 4095`,
+    );
+  }
+
+  return {
+    file: {
+      path,
+      contentB64,
+      ...(mode === undefined ? {} : { mode: Number(mode) }),
+    },
+    decodedBytes: content.byteLength,
+  };
+}
+
+export function buildWorkspaceMaterializeFilesPayload({
+  args,
+  toolId,
+  executionId,
+  dbExecutionId,
+  workflowId,
+  nodeId,
+  nodeName,
+}: WorkspaceMaterializeFilesPayloadOptions): Record<string, unknown> {
+  const workspaceRef =
+    typeof args.workspaceRef === "string" ? args.workspaceRef.trim() : "";
+  if (!workspaceRef) {
+    throw new Error("workspace/materialize-files requires workspaceRef");
+  }
+  const sourceFiles =
+    toolId === "write_file"
+      ? [
+          {
+            path: args.path,
+            content: args.content,
+            contentB64: args.contentB64,
+            mode: args.mode,
+          },
+        ]
+      : args.files;
+  if (!Array.isArray(sourceFiles) || sourceFiles.length === 0) {
+    throw new Error("workspace/materialize-files requires at least one file");
+  }
+  if (sourceFiles.length > 64) {
+    throw new Error("workspace/materialize-files accepts at most 64 files");
+  }
+
+  let totalDecodedBytes = 0;
+  const files = sourceFiles.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`workspace materialized file ${index} must be an object`);
+    }
+    const encoded = encodeWorkspaceMaterializeFile(
+      value as WorkspaceMaterializeFileInput,
+      index,
+    );
+    totalDecodedBytes += encoded.decodedBytes;
+    if (totalDecodedBytes > MAX_WORKSPACE_MATERIALIZE_TOTAL_BYTES) {
+      throw new Error(
+        "workspace/materialize-files exceeds the 8 MiB aggregate limit",
+      );
+    }
+    return encoded.file;
+  });
+  for (let index = 0; index < files.length; index += 1) {
+    for (let otherIndex = 0; otherIndex < index; otherIndex += 1) {
+      const path = files[index].path;
+      const otherPath = files[otherIndex].path;
+      if (
+        path === otherPath ||
+        path.startsWith(`${otherPath}/`) ||
+        otherPath.startsWith(`${path}/`)
+      ) {
+        throw new Error(
+          `workspace materialized file ${index} overlaps another destination`,
+        );
+      }
+    }
+  }
+
+  return {
+    executionId,
+    dbExecutionId: dbExecutionId ?? undefined,
+    workspaceRef,
+    files,
+    timeoutMs: args.timeoutMs,
+    workflowId,
+    nodeId,
+    nodeName,
+  };
+}
+
+export function workspaceMaterializedFilesFromResponse(
+  value: unknown,
+): unknown[] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const response = value as Record<string, unknown>;
+  if (Array.isArray(response.files)) return response.files;
+  if (
+    response.result &&
+    typeof response.result === "object" &&
+    !Array.isArray(response.result) &&
+    Array.isArray((response.result as Record<string, unknown>).files)
+  ) {
+    return (response.result as Record<string, unknown>).files as unknown[];
+  }
+  return undefined;
 }
 
 function parseBooleanInput(value: unknown): boolean | undefined {
@@ -2720,7 +3027,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           nodeName: body.node_name,
           nodeType: "action",
           actionType: functionSlug,
-          input: body.input,
+          input: requestPayload.input,
         });
       } catch (logError) {
         console.error(
@@ -2779,6 +3086,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           let executionStartTime = Date.now();
           let targetUrl = functionUrl;
           let requestBody = "";
+          let traceRequestPayload: unknown;
 
           try {
             const { toolId, args } = parseMastraToolInput(
@@ -2883,6 +3191,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               pluginId === "workspace" && toolId === "publish-gitea";
             const isWorkspaceCommand =
               pluginId === "workspace" && toolId === "command";
+            const isWorkspaceMaterializeFiles =
+              pluginId === "workspace" &&
+              (toolId === "materialize-files" || toolId === "write_file");
             const isWorkspaceFile =
               pluginId === "workspace" && toolId === "file";
             const isWorkspaceCleanup =
@@ -2910,6 +3221,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               isWorkspaceClone ||
               isWorkspacePublishGitea ||
               isWorkspaceCommand ||
+              isWorkspaceMaterializeFiles ||
               isWorkspaceFile ||
               isWorkspaceCleanup ||
               isWorkspaceCreatePullRequest;
@@ -3353,6 +3665,22 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   nodeName: body.node_name,
                 }),
               );
+            } else if (isWorkspaceMaterializeFiles) {
+              targetUrl = `${functionUrl}/api/workspaces/materialize-files`;
+              const materializePayload = buildWorkspaceMaterializeFilesPayload({
+                args,
+                toolId,
+                executionId: workspaceExecutionId,
+                dbExecutionId: body.db_execution_id,
+                workflowId: body.workflow_id,
+                nodeId: body.node_id,
+                nodeName: body.node_name,
+              });
+              requestBody = JSON.stringify(materializePayload);
+              traceRequestPayload = workspaceMaterializeArgsForSpan(
+                "materialize-files",
+                materializePayload,
+              );
             } else if (isWorkspaceFile) {
               targetUrl = `${functionUrl}/api/workspaces/file`;
               requestBody = JSON.stringify({
@@ -3615,6 +3943,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   "workflow.execution.id":
                     body.db_execution_id ?? body.execution_id,
                 },
+                traceRequestPayload,
               );
               httpResponse = tracedResponse.httpResponse;
               responseText = tracedResponse.responseText;
@@ -3827,6 +4156,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                           ? ((resolvedMastra as Record<string, unknown>)
                               .rootPath as string)
                           : undefined,
+                      files: isWorkspaceMaterializeFiles
+                        ? workspaceMaterializedFilesFromResponse(resolvedMastra)
+                        : undefined,
                       backend:
                         typeof (resolvedMastra as Record<string, unknown>)
                           .backend === "string"

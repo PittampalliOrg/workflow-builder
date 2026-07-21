@@ -21,6 +21,7 @@ safe if a payload ever carries a token.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -42,6 +43,168 @@ _REDACT_KEY_RE = re.compile(
 
 _REDACTED = "[REDACTED]"
 _MAX_REDACT_DEPTH = 12
+_MATERIALIZE_ACTIONS = {
+    "workspace/materialize-files",
+    "workspace/write_file",
+}
+
+
+def _materialized_file_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"validShape": False}
+    metadata: dict[str, Any] = {
+        "path": value.get("path") if isinstance(value.get("path"), str) else None,
+        "mode": value.get("mode") if isinstance(value.get("mode"), int) else None,
+    }
+    content = value.get("content")
+    content_b64 = value.get("contentB64")
+    if isinstance(content, str):
+        metadata["contentEncoding"] = "utf8"
+        metadata["contentCharacters"] = len(content)
+        if len(content) <= 1024 * 1024:
+            encoded = content.encode("utf-8")
+            metadata["contentBytes"] = len(encoded)
+            metadata["contentSha256"] = hashlib.sha256(encoded).hexdigest()
+        else:
+            metadata["digestOmitted"] = "oversized"
+    elif isinstance(content_b64, str):
+        metadata["contentEncoding"] = "base64"
+        metadata["encodedCharacters"] = len(content_b64)
+        if content_b64.isascii() and len(content_b64) <= 6 * 1024 * 1024:
+            metadata["encodedBytes"] = len(content_b64)
+            metadata["encodedSha256"] = hashlib.sha256(
+                content_b64.encode("ascii")
+            ).hexdigest()
+        else:
+            metadata["digestOmitted"] = "oversized-or-non-ascii"
+    else:
+        metadata["contentEncoding"] = "missing"
+    return metadata
+
+
+def materialize_action_input_for_trace(action_type: str, action_input: Any) -> Any:
+    """Replace materialized file bodies with path, size, and digest metadata."""
+    if action_type not in _MATERIALIZE_ACTIONS:
+        return action_input
+    if not isinstance(action_input, dict):
+        return {"payload": "[invalid materialize arguments]"}
+
+    tool_id = str(action_input.get("toolId") or action_type.split("/", 1)[1])
+    args: Any = action_input
+    args_json = action_input.get("argsJson")
+    if isinstance(args_json, str):
+        try:
+            args = json.loads(args_json)
+        except (TypeError, ValueError):
+            return {
+                "toolId": tool_id,
+                "payload": "[unparseable materialize arguments]",
+            }
+    if not isinstance(args, dict):
+        return {"toolId": tool_id, "payload": "[invalid materialize arguments]"}
+
+    raw_files = (
+        [
+            {
+                "path": args.get("path"),
+                "content": args.get("content"),
+                "contentB64": args.get("contentB64"),
+                "mode": args.get("mode"),
+            }
+        ]
+        if tool_id == "write_file"
+        else args.get("files")
+    )
+    files = raw_files if isinstance(raw_files, list) else []
+    return {
+        "toolId": tool_id,
+        "workspaceRef": args.get("workspaceRef"),
+        "timeoutMs": args.get("timeoutMs"),
+        "fileCount": len(files),
+        "files": [_materialized_file_metadata(item) for item in files],
+    }
+
+
+def activity_input_for_trace(activity_name: str, data: Any) -> Any:
+    """Return an activity input with materialization bodies summarized."""
+    if activity_name != "execute_action" or not isinstance(data, dict):
+        return data
+    node = data.get("node")
+    if not isinstance(node, dict):
+        return data
+
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else None
+    config = node.get("config")
+    nested_config = node_data.get("config") if node_data else None
+    active_config = config if isinstance(config, dict) and config else nested_config
+    if not isinstance(active_config, dict):
+        return data
+    action_type = str(active_config.get("actionType") or "")
+    if action_type not in _MATERIALIZE_ACTIONS:
+        return data
+
+    safe = dict(data)
+    safe_node = dict(node)
+    safe_config = dict(active_config)
+    safe_config["input"] = materialize_action_input_for_trace(
+        action_type,
+        active_config.get("input"),
+    )
+    if isinstance(config, dict) and config:
+        safe_node["config"] = safe_config
+    else:
+        safe_node_data = dict(node_data or {})
+        safe_node_data["config"] = safe_config
+        safe_node["data"] = safe_node_data
+    safe["node"] = safe_node
+    return safe
+
+
+def activity_output_for_trace(activity_name: str, result: Any) -> Any:
+    """Return an activity output with evaluator task file bodies summarized."""
+    if activity_name != "evaluate_script" or not isinstance(result, dict):
+        return result
+    tasks = result.get("tasks")
+    if not isinstance(tasks, list):
+        return result
+
+    safe_tasks: list[Any] = []
+    changed = False
+    for task in tasks:
+        if not isinstance(task, dict):
+            safe_tasks.append(task)
+            continue
+        action_type = str(task.get("actionSlug") or "")
+        if action_type not in _MATERIALIZE_ACTIONS:
+            safe_tasks.append(task)
+            continue
+        safe_task = dict(task)
+        safe_task["args"] = materialize_action_input_for_trace(
+            action_type,
+            task.get("args"),
+        )
+        safe_tasks.append(safe_task)
+        changed = True
+    if not changed:
+        return result
+    safe = dict(result)
+    safe["tasks"] = safe_tasks
+    return safe
+
+
+def function_router_request_for_trace(payload: Any) -> Any:
+    """Summarize materialized file bodies in a function-router request."""
+    if not isinstance(payload, dict):
+        return payload
+    action_type = str(payload.get("function_slug") or "")
+    if action_type not in _MATERIALIZE_ACTIONS:
+        return payload
+    safe = dict(payload)
+    safe["input"] = materialize_action_input_for_trace(
+        action_type,
+        payload.get("input"),
+    )
+    return safe
 
 
 def _is_truthy(value: str | None) -> bool:
