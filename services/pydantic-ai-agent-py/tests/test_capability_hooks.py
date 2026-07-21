@@ -292,3 +292,20 @@ def test_mcp_listing_negative_and_positive_cache(monkeypatch, tmp_path):
     tools = aio.run(router.tools())
     assert "remote_tool" in tools
     assert flaky.list_calls == 2
+
+
+def test_repo_inventory_tool_disabled_by_default(monkeypatch, tmp_path):
+    """The harness inventory hint reads as a standing mission ("...so you can
+    read and translate it") and hijacked vague turns — tool + hint stay off
+    unless PYDANTIC_AI_REPO_INVENTORY_TOOL opts in."""
+    import asyncio as aio
+
+    import src.toolsets as toolsets_mod
+    from src.toolsets import ToolRouter
+
+    monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    router = ToolRouter({})
+    tools = aio.run(router.tools())
+    assert "inventory_agent_context" not in tools
+    instructions = aio.run(router.instructions())
+    assert "translate" not in instructions

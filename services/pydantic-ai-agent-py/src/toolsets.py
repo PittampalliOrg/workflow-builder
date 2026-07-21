@@ -45,6 +45,7 @@ from src.config import (
     MCP_TIMEOUT_SECONDS,
     MCP_TOOLS_CACHE_SECONDS,
     OVERFLOW_ENABLED,
+    REPO_INVENTORY_TOOL_ENABLED,
     SHELL_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
 )
@@ -84,7 +85,18 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
     try:
         from pydantic_ai_harness.context import RepoContext
 
-        capabilities.append(RepoContext(workspace_dir=root))
+        # expose_inventory_tool default-off: the harness pairs the tool with a
+        # system-prompt hint ("map the repo's coding-assistant setup ... so you
+        # can read and translate it") that Kimi treats as a STANDING MISSION —
+        # observed burning entire turns scaffolding/"translating" config dirs
+        # instead of the actual task (and one wasted tool call in every run).
+        # Walk-up CLAUDE.md/AGENTS.md autoload (the valuable part) stays on.
+        capabilities.append(
+            RepoContext(
+                workspace_dir=root,
+                expose_inventory_tool=REPO_INVENTORY_TOOL_ENABLED,
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[toolsets] RepoContext unavailable: %s", exc)
 
