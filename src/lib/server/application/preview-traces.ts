@@ -1,5 +1,8 @@
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
-import { PreviewRuntimeIdentityChangedError } from "$lib/server/application/ports";
+import {
+  PreviewRuntimeIdentityChangedError,
+  PreviewTraceQueryTimeoutError,
+} from "$lib/server/application/ports";
 import type {
   PreviewAccessPolicyPort,
   PreviewControlIdentity,
@@ -181,6 +184,7 @@ export class ApplicationPreviewTraceService {
     } catch (cause) {
       if (
         cause instanceof PreviewTraceQueryError ||
+        cause instanceof PreviewTraceQueryTimeoutError ||
         cause instanceof PreviewRuntimeIdentityChangedError
       )
         throw cause;
@@ -217,6 +221,7 @@ export class ApplicationPreviewTraceBrokerService {
     } catch (cause) {
       if (
         cause instanceof PreviewTraceQueryError ||
+        cause instanceof PreviewTraceQueryTimeoutError ||
         cause instanceof PreviewRuntimeIdentityChangedError
       )
         throw cause;

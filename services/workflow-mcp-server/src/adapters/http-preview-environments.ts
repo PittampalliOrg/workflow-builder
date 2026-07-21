@@ -9,6 +9,7 @@ import type {
 
 const DEFAULT_WORKFLOW_BUILDER_URL =
   "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
+export const DEFAULT_PREVIEW_ENVIRONMENT_REQUEST_TIMEOUT_MS = 25_000;
 
 export class PreviewEnvironmentsHttpError extends Error {
   constructor(
@@ -55,6 +56,12 @@ function responseError(
     (typeof root?.code === "string" && root.code) ||
     `preview_http_${status}`;
   const retryAfterSeconds = retryAfter == null ? NaN : Number(retryAfter);
+  const details =
+    error?.details !== undefined
+      ? error.details
+      : root?.teardown === undefined
+        ? undefined
+        : { teardown: root.teardown, ticket: root.ticket };
   return new PreviewEnvironmentsHttpError(
     message,
     status,
@@ -63,9 +70,7 @@ function responseError(
     Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
       ? retryAfterSeconds * 1000
       : undefined,
-    root?.teardown === undefined
-      ? undefined
-      : { teardown: root.teardown, ticket: root.ticket },
+    details,
   );
 }
 
@@ -93,7 +98,8 @@ export class HttpPreviewEnvironmentsAdapter implements PreviewEnvironmentsPort {
     ).replace(/\/$/, "");
     this.internalApiToken =
       options.internalApiToken ?? process.env.INTERNAL_API_TOKEN ?? "";
-    this.timeoutMs = options.timeoutMs ?? 20_000;
+    this.timeoutMs =
+      options.timeoutMs ?? DEFAULT_PREVIEW_ENVIRONMENT_REQUEST_TIMEOUT_MS;
   }
 
   list(): ReturnType<PreviewEnvironmentsPort["list"]> {

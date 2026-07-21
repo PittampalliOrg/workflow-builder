@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowMcpPrincipal } from "../auth-context.js";
 import {
+  DEFAULT_PREVIEW_ENVIRONMENT_REQUEST_TIMEOUT_MS,
   HttpPreviewEnvironmentsAdapter,
   PreviewEnvironmentsHttpError,
 } from "./http-preview-environments.js";
@@ -51,6 +52,23 @@ describe("HttpPreviewEnvironmentsAdapter", () => {
     expect(JSON.stringify(init.headers)).not.toContain("project-1");
     expect(JSON.stringify(init.headers)).not.toContain("user-1");
     expect(JSON.stringify(init.headers)).not.toContain("Authorization");
+  });
+
+  it("keeps the MCP transport outside the broker timeout budget", async () => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const adapter = new HttpPreviewEnvironmentsAdapter({
+      principal,
+      fetchImpl: vi.fn(async () => response(200, { previews: [] })) as any,
+      workflowBuilderUrl: "http://bff",
+      internalApiToken: "internal-token",
+    });
+
+    await adapter.list();
+
+    expect(DEFAULT_PREVIEW_ENVIRONMENT_REQUEST_TIMEOUT_MS).toBe(25_000);
+    expect(timeout).toHaveBeenCalledWith(25_000);
+    timeout.mockRestore();
   });
 
   it("encodes names and bounded 7d trace filters", async () => {
@@ -128,6 +146,36 @@ describe("HttpPreviewEnvironmentsAdapter", () => {
       message: "offline",
       retryable: true,
       retryAfterMs: 5_000,
+    } satisfies Partial<PreviewEnvironmentsHttpError>);
+  });
+
+  it("preserves the bounded trace retry contract from the BFF", async () => {
+    const adapter = new HttpPreviewEnvironmentsAdapter({
+      principal,
+      fetchImpl: vi.fn(async () =>
+        response(
+          504,
+          {
+            error: {
+              code: "preview_trace_timeout",
+              message: "trace evidence timed out",
+              details: { range: "24h", retryRange: "6h" },
+            },
+          },
+          "1",
+        ),
+      ) as any,
+      workflowBuilderUrl: "http://bff",
+      internalApiToken: "internal-token",
+    });
+
+    await expect(
+      adapter.queryTraces("preview-one", { range: "24h" }),
+    ).rejects.toMatchObject({
+      status: 504,
+      code: "preview_trace_timeout",
+      retryAfterMs: 1_000,
+      details: { range: "24h", retryRange: "6h" },
     } satisfies Partial<PreviewEnvironmentsHttpError>);
   });
 

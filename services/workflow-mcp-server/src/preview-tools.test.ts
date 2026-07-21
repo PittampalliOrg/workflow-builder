@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreviewEnvironmentUseCases } from "./application/preview-environments.js";
 import type { WorkflowMcpPrincipal } from "./auth-context.js";
+import { PreviewEnvironmentsHttpError } from "./adapters/http-preview-environments.js";
 import { registerPreviewEnvironmentTools } from "./preview-tools.js";
 
 const { setSpanOutputMock } = vi.hoisted(() => ({
@@ -218,6 +219,96 @@ describe("preview environment tools", () => {
     expect(previews.queryTraces).toHaveBeenCalledWith("preview-one", {
       range: "7d",
       limit: 100,
+    });
+  });
+
+  it("turns a typed trace timeout into a narrower retry with the same filters", async () => {
+    const previews = useCases({
+      queryTraces: vi.fn(async () => {
+        throw new PreviewEnvironmentsHttpError(
+          "trace evidence timed out",
+          504,
+          "preview_trace_timeout",
+          true,
+          1_000,
+          { range: "24h", retryRange: "6h" },
+        );
+      }),
+    });
+    const { server, captured } = fakeServer();
+    registerPreviewEnvironmentTools(server as any, {
+      principal: principal(["workflow:read"]),
+      previews,
+    });
+    const tool = captured.find((entry) => entry.name === "query_preview_traces");
+
+    const result = await tool?.handler({
+      name: "preview-one",
+      range: "24h",
+      status: "error",
+      service: "workflow-builder",
+      limit: 50,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "preview_trace_timeout", retryable: true },
+      telemetry: { state: "unavailable", refreshAfterMs: 1_000 },
+      nextActions: [
+        {
+          tool: "query_preview_traces",
+          arguments: {
+            name: "preview-one",
+            range: "6h",
+            status: "error",
+            service: "workflow-builder",
+            limit: 50,
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain(
+      "ClickHouse",
+    );
+  });
+
+  it("narrows the follow-up range when debug trace evidence is unavailable", async () => {
+    const previews = useCases({
+      debug: vi.fn(async () => ({
+        preview: { name: "preview-one", phase: "ready" } as any,
+        runtime: { services: [] },
+        traces: null,
+        traceServices: [],
+        traceObservedAt: null,
+        generationStable: true,
+        evidenceCoverage: {
+          preview: "available" as const,
+          runtime: "available" as const,
+          traces: "unavailable" as const,
+        },
+        telemetry: {
+          state: "partial" as const,
+          isFinal: false,
+          warnings: ["traces: trace evidence timed out"],
+          refreshAfterMs: 5_000,
+        },
+      })),
+    });
+    const { server, captured } = fakeServer();
+    registerPreviewEnvironmentTools(server as any, {
+      principal: principal(["workflow:read"]),
+      previews,
+    });
+    const tool = captured.find(
+      (entry) => entry.name === "debug_preview_environment",
+    );
+
+    const result = await tool?.handler({ name: "preview-one", range: "24h" });
+
+    expect(result.structuredContent.nextActions[0]).toMatchObject({
+      tool: "query_preview_traces",
+      arguments: { name: "preview-one", range: "6h" },
     });
   });
 

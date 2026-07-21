@@ -19,6 +19,17 @@ type NextAction = {
   reason: string;
 };
 
+type PreviewTraceRange = "15m" | "1h" | "6h" | "24h" | "7d";
+
+const NARROWER_TRACE_RANGE: Readonly<
+  Partial<Record<PreviewTraceRange, PreviewTraceRange>>
+> = Object.freeze({
+  "7d": "24h",
+  "24h": "6h",
+  "6h": "1h",
+  "1h": "15m",
+});
+
 type PreviewToolEnvelope = {
   ok: boolean;
   observedAt: string;
@@ -102,6 +113,39 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function traceRange(value: unknown): PreviewTraceRange | null {
+  return value === "15m" ||
+    value === "1h" ||
+    value === "6h" ||
+    value === "24h" ||
+    value === "7d"
+    ? value
+    : null;
+}
+
+function narrowerTraceRange(range: PreviewTraceRange): PreviewTraceRange | null {
+  return NARROWER_TRACE_RANGE[range] ?? null;
+}
+
+function timeoutRetryRange(
+  cause: unknown,
+  requestedRange: unknown,
+): PreviewTraceRange | null {
+  if (
+    !(cause instanceof PreviewEnvironmentsHttpError) ||
+    cause.code !== "preview_trace_timeout"
+  ) {
+    return null;
+  }
+  const details = record(cause.details);
+  return (
+    traceRange(details?.retryRange) ??
+    narrowerTraceRange(
+      traceRange(details?.range) ?? traceRange(requestedRange) ?? "1h",
+    )
+  );
+}
+
 function response(tool: string, envelope: PreviewToolEnvelope) {
   setSpanOutput(diagnosticEnvelopeTraceMetadata(envelope, tool));
   return {
@@ -133,7 +177,11 @@ function success(
   });
 }
 
-function failure(tool: string, cause: unknown) {
+function failure(
+  tool: string,
+  cause: unknown,
+  nextActions: NextAction[] = [],
+) {
   const error =
     cause instanceof PreviewEnvironmentsHttpError
       ? cause
@@ -159,7 +207,7 @@ function failure(tool: string, cause: unknown) {
         message: error.message,
         retryable: error.retryable,
       },
-      nextActions: [],
+      nextActions,
     }),
     isError: true,
   };
@@ -302,13 +350,26 @@ export function registerPreviewEnvironmentTools(
       const { name, ...query } = args;
       try {
         const data = await context.previews.debug(name, query);
+        const requestedRange = traceRange(query.range) ?? "1h";
+        const traceRangeForNextAction =
+          data.evidenceCoverage.traces === "unavailable"
+            ? narrowerTraceRange(requestedRange) ?? requestedRange
+            : "1h";
         return success("debug_preview_environment", data, {
           telemetry: data.telemetry,
           nextActions: [
             {
               tool: "query_preview_traces",
-              arguments: { name, status: "error", range: "1h", limit: 50 },
-              reason: "Drill into recent error traces with explicit filters.",
+              arguments: {
+                name,
+                status: "error",
+                range: traceRangeForNextAction,
+                limit: 50,
+              },
+              reason:
+                data.evidenceCoverage.traces === "unavailable"
+                  ? "Retry trace evidence over a narrower range."
+                  : "Drill into recent error traces with explicit filters.",
             },
           ],
         });
@@ -344,7 +405,21 @@ export function registerPreviewEnvironmentTools(
           },
         );
       } catch (cause) {
-        return failure("query_preview_traces", cause);
+        const retryRange = timeoutRetryRange(cause, query.range);
+        return failure(
+          "query_preview_traces",
+          cause,
+          retryRange
+            ? [
+                {
+                  tool: "query_preview_traces",
+                  arguments: { name, ...query, range: retryRange },
+                  reason:
+                    "Retry the same bounded query over a narrower range.",
+                },
+              ]
+            : [],
+        );
       }
     },
   );

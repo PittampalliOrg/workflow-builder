@@ -17,6 +17,7 @@ vi.mock("$lib/server/application", () => ({
 }));
 
 import { POST } from "./+server";
+import { PreviewTraceQueryTimeoutError } from "$lib/server/application/ports";
 
 const identity = {
   previewName: "feature-one",
@@ -103,5 +104,23 @@ describe("physical preview trace route", () => {
 
     expect(response.status).toBe(404);
     expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("returns a typed timeout with a narrower-range retry contract", async () => {
+    mocks.list.mockRejectedValueOnce(
+      new PreviewTraceQueryTimeoutError("24h", 12_000),
+    );
+
+    const response = (await POST(
+      event({ identity, query: { range: "24h" } }) as never,
+    )) as Response;
+
+    expect(response.status).toBe(504);
+    expect(response.headers.get("retry-after")).toBe("1");
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      code: "preview_trace_timeout",
+      details: { range: "24h", retryRange: "6h" },
+    });
   });
 });
