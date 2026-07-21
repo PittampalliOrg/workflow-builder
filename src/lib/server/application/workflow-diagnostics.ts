@@ -18,6 +18,7 @@ import {
 	boundDiagnosticEvidence,
 	redactDiagnosticEvidence
 } from '$lib/server/application/diagnostic-redaction';
+import { isExpectedKubernetesNotFound } from '$lib/server/observability/span-error-policy';
 
 export type WorkflowDiagnosticsQueryResponse = {
 	body: Record<string, unknown>;
@@ -304,13 +305,16 @@ export class ApplicationWorkflowDiagnosticsQueryService {
 			};
 		}
 		const service = input.service?.trim();
-		const matches = await this.reads.searchSpans(execution, traceIds, {
+		const rawMatches = await this.reads.searchSpans(execution, traceIds, {
 			query: input.query,
 			errorsOnly: input.errorsOnly,
 			...(service ? { serviceNames: [service] } : {}),
 			limit: limit + 1,
 			offset
 		});
+		const matches = input.errorsOnly
+			? rawMatches.filter((span) => !isExpectedKubernetesNotFound(span))
+			: rawMatches;
 		const hasMore = matches.length > limit;
 		const rows = matches.slice(0, limit).map((span) => {
 			const statusMessage = boundDiagnosticEvidence(span.statusMessage ?? null, 2_000);

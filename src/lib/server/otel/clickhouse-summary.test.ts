@@ -317,11 +317,35 @@ describe('compact ClickHouse trace span loading', () => {
 		const spanSql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
 		const logSql = String(fetchMock.mock.calls[1]?.[1]?.body ?? '');
 		expect(spanSql).toContain("StatusCode = 'Error'");
+		expect(spanSql).toContain("ServiceName = 'workflow-builder'");
+		expect(spanSql).toContain('sandboxwarmpools');
+		expect(spanSql).toContain('sandboxtemplates');
+		expect(spanSql).toContain('services/agent-runtime-');
 		expect(spanSql).toContain('LIMIT 21');
 		expect(spanSql).toContain('OFFSET 40');
 		expect(logSql).toContain("positionCaseInsensitive(Body, 'timeout')");
 		expect(logSql).toContain('LIMIT 41');
 		expect(logSql).toContain('OFFSET 80');
+	});
+
+	it('keeps expected Kubernetes absence spans out of paged error summaries', async () => {
+		fetchMock.mockResolvedValueOnce(jsonEachRow([]));
+
+		await searchTraceSpanSummaries([TRACE_ID], {
+			errorsOnly: true,
+			limit: 20,
+			offset: 0
+		});
+
+		const sql = String(fetchMock.mock.calls[0]?.[1]?.body ?? '');
+		expect(sql).toContain("StatusCode = 'Error'");
+		expect(sql).toContain("NOT (");
+		expect(sql).toContain("ServiceName = 'workflow-builder'");
+		expect(sql).toContain("upper(");
+		expect(sql).toContain("= '404'");
+		expect(sql).toContain('sandboxwarmpools');
+		expect(sql).toContain('sandboxtemplates');
+		expect(sql).toContain('services/agent-runtime-');
 	});
 
 	it('applies every immutable preview tuple field to span, log, and LLM reads', async () => {

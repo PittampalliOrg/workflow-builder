@@ -43,6 +43,7 @@ class _SpanHandle:
     start_monotonic: float
     attributes: dict[str, Any] = field(default_factory=dict)
     canonical_llm_span: Any | None = None
+    canonical_tool_span: Any | None = None
     token: contextvars.Token | None = None  # reset token for ctx var
     ended: bool = False
 
@@ -598,20 +599,21 @@ def start_tool_span(
             "input",
             {"tool_name": tool_name, "input": _safe_json_loads(tool_input)},
         )
-    # Tag the CURRENT span (the run_tool WorkflowActivity span) with the
-    # OpenInference TOOL convention so the obs.tool_spans materialized view
-    # picks it up — the claude_code.tool child span above has no
-    # openinference.span.kind, so the MV ignores it (mirror of the LLM fix).
-    # kind + name are metadata (always set); arguments are content-gated.
+    # Tag the CURRENT span (the run_tool WorkflowActivity span) as the canonical
+    # OpenInference TOOL row. The helper child does not own tool.name/result, so
+    # curated tool queries ignore it. Kind + name are metadata (always set);
+    # arguments are content-gated.
+    canonical_tool_span = None
     try:
         _activity = otel_trace.get_current_span()
-        if _activity is not None:
+        if _activity is not None and _activity.is_recording():
             _activity.set_attribute("openinference.span.kind", "TOOL")
             _activity.set_attribute("tool.name", tool_name)
             if tool_input:
                 _set_oi_content_attr(
                     _activity, "tool.arguments", _safe_json_loads(tool_input)
                 )
+            canonical_tool_span = _activity
     except Exception as exc:  # noqa: BLE001
         logger.debug("tool activity TOOL-tag failed: %s", exc)
 
@@ -620,6 +622,7 @@ def start_tool_span(
         start_time_ns=time.time_ns(),
         start_monotonic=time.monotonic(),
         attributes=attrs,
+        canonical_tool_span=canonical_tool_span,
     )
     handle.token = _tool_ctx.set(handle)
     return span
@@ -629,6 +632,8 @@ def end_tool_span(
     *,
     tool_result: str | None = None,
     result_tokens: int | None = None,
+    success: bool | None = None,
+    error: str | None = None,
 ) -> None:
     handle = _tool_ctx.get()
     if handle is None or handle.ended:
@@ -646,21 +651,32 @@ def end_tool_span(
                 "result": _safe_json_loads(tool_result),
             },
         )
-        try:
-            from opentelemetry import trace as _ot_t
-
-            _activity = _ot_t.get_current_span()
-            if _activity is not None:
-                _set_oi_content_attr(
-                    _activity, "tool.result", _safe_json_loads(tool_result)
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("tool activity result-tag failed: %s", exc)
+        if handle.canonical_tool_span is not None:
+            _set_oi_content_attr(
+                handle.canonical_tool_span,
+                "tool.result",
+                _safe_json_loads(tool_result),
+            )
     if result_tokens is not None:
         end_attrs["result_tokens"] = result_tokens
+    if success is not None:
+        end_attrs["success"] = success
+    safe_error = sanitize_text_for_telemetry(error[:1000]) if error else None
+    if safe_error is not None:
+        end_attrs["error"] = safe_error
     try:
         for k, v in end_attrs.items():
             handle.span.set_attribute(k, sanitize_content_for_telemetry(v))
+        if success is False:
+            from opentelemetry.trace import Status, StatusCode
+
+            status = Status(StatusCode.ERROR, safe_error)
+            handle.span.set_status(status)
+            if handle.canonical_tool_span is not None:
+                handle.canonical_tool_span.set_status(status)
+                handle.canonical_tool_span.set_attribute("success", False)
+                if safe_error is not None:
+                    handle.canonical_tool_span.set_attribute("error", safe_error)
         handle.span.end()
     except Exception as exc:  # noqa: BLE001
         logger.warning("end_tool_span: %s", exc)
