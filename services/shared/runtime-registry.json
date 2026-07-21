@@ -221,7 +221,7 @@
     },
     {
       "id": "pydantic-ai-agent-py",
-      "_comment": "Pydantic AI 2.x + pydantic-ai-harness coding agent on the Diagrid python-ai durable pattern: EVERY LLM message is a call_llm activity and EVERY tool call its own execute_tool activity (when_all fan-out) — hence per-activity durability. Tools = harness FileSystem/Shell/RepoContext (+ MCP streamable_http from agentConfig.mcpServers) executing POD-LOCAL at /sandbox. Kimi-only v1 (kimi-k3 via pydantic-ai OpenAIChatModel). See services/pydantic-ai-agent-py/ + docs/pydantic-ai-agent.md.",
+      "_comment": "Pydantic AI 2.x + pydantic-ai-harness coding agent on the Diagrid python-ai durable pattern: EVERY LLM message is a call_llm activity and EVERY tool call its own execute_tool activity (when_all fan-out) — hence per-activity durability. Tools = harness FileSystem/Shell/RepoContext (+ MCP streamable_http from agentConfig.mcpServers) executing IN-POD, rooted at the per-EXECUTION JuiceFS shared workspace (/sandbox/work via sharedWorkspaceKey, class pydantic-ai-agent-py) when the run wires one — dynamic-script isolation:'shared' and durable/run workspaceRef land every agent of a run on ONE tree — else the pod-local durable scratch. Kimi-only v1 (kimi-k3 via pydantic-ai OpenAIChatModel). See services/pydantic-ai-agent-py/ + docs/pydantic-ai-agent.md.",
       "appIdConfigKey": "PYDANTIC_AI_AGENT_PY_APP_ID",
       "instancePrefix": "durable-pydantic",
       "family": "durable-session",
@@ -232,7 +232,7 @@
       "capabilitiesVerified": false,
       "capabilities": {
         "durabilityGranularity": "per-activity",
-        "workspaceBackend": "pod-local",
+        "workspaceBackend": "juicefs-shared",
         "workflowDispatch": "auto-turn",
         "retryMaxAttempts": 3,
         "durableTurnTimer": false,
@@ -255,7 +255,8 @@
         "supportedProviders": [
           "kimi"
         ]
-      }
+      },
+      "executionClass": "pydantic-ai-agent-py"
     },
     {
       "id": "claude-code-cli",
