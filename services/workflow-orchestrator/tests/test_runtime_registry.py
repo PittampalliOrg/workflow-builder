@@ -216,6 +216,13 @@ def test_registry_ids_match_legacy_target_set():
     assert sorted(runtime_registry.registry.ids()) == sorted(_reference_targets())
 
 
+def test_orchestrator_registry_copy_matches_canonical():
+    canonical = ROOT.parent / "shared" / "runtime-registry.json"
+    local_copy = ROOT / "core" / "runtime_registry.json"
+
+    assert local_copy.read_bytes() == canonical.read_bytes()
+
+
 def test_benchmark_runtimes():
     ids = {d.id for d in runtime_registry.registry.list_benchmark_runtimes()}
     assert ids == {
@@ -239,11 +246,20 @@ def test_descriptor_capabilities_present_and_typed():
     dapr = runtime_registry.registry.by_id("dapr-agent-py")
     assert dapr.capabilities["durabilityGranularity"] == "per-activity"
     assert dapr.capabilities["multiProvider"] is True
+    assert dapr.capabilities["structuredOutputMode"] == "tool"
+    assert dapr.capabilities["structuredOutputJsonSchemaDraft"] == "2020-12"
+    # Pydantic declares the same wire contract, but conformance remains unverified.
+    pydantic = runtime_registry.registry.by_id("pydantic-ai-agent-py")
+    assert pydantic.capabilities["structuredOutputMode"] == "tool"
+    assert pydantic.capabilities["structuredOutputJsonSchemaDraft"] == "2020-12"
+    assert pydantic.capabilities_verified is False
     # claude-agent-py: per-turn, MCP wired in Phase 0, Anthropic-only, unverified.
     claude = runtime_registry.registry.by_id("claude-agent-py")
     assert claude.capabilities["durabilityGranularity"] == "per-turn"
     assert claude.capabilities["supportsMcp"] is True
     assert claude.capabilities["supportedProviders"] == ["anthropic"]
+    assert "structuredOutputMode" not in claude.capabilities
+    assert "structuredOutputJsonSchemaDraft" not in claude.capabilities
     assert claude.capabilities_verified is False
 
 

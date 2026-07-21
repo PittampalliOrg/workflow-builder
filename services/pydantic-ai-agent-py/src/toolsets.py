@@ -30,10 +30,12 @@ import inspect
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic_ai._run_context import RunContext
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.usage import RunUsage
 
 from src.config import (
@@ -53,13 +55,92 @@ from src.config import (
 
 logger = logging.getLogger(__name__)
 
+_TOOL_NAME_ALIASES = {
+    "execute_command": "run_command",
+    "list_files": "list_directory",
+    "glob_files": "find_files",
+    "grep_search": "search_files",
+}
+
+
+@dataclass(frozen=True)
+class _McpCapabilityBinding:
+    capability: Any
+    allowed_tools: set[str] | None
+
+    def get_toolset(self) -> Any:
+        return self.capability.get_toolset()
+
+
+def _normalize_tool_names(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    names = {
+        str(item).strip()
+        for item in value
+        if isinstance(item, str) and str(item).strip()
+    }
+    return names | {
+        alias
+        for configured_name in names
+        if (alias := _TOOL_NAME_ALIASES.get(configured_name)) is not None
+    }
+
+
+def _runtime_tool_ceiling(
+    agent_config: dict[str, Any] | None,
+) -> set[str] | None:
+    """Return the explicit runtime-wide ceiling, preserving an empty list."""
+    config = agent_config or {}
+    if "allowedTools" not in config:
+        return None
+    return _normalize_tool_names(config.get("allowedTools"))
+
+
+def _configured_local_tool_allowlist(
+    agent_config: dict[str, Any] | None,
+) -> set[str] | None:
+    """Return the saved local-tool selection without constraining MCP tools."""
+    config = agent_config or {}
+
+    configured = False
+    names: set[str] = set()
+    for key in ("tools", "builtinTools"):
+        if key not in config:
+            continue
+        configured = True
+        value = config.get(key)
+        if not isinstance(value, list):
+            return set()
+        names.update(_normalize_tool_names(value))
+    if not configured:
+        return None
+    return names
+
+
+def _mcp_tool_allowlist(server: dict[str, Any]) -> set[str] | None:
+    for key in ("allowedTools", "allowed_tools"):
+        if key not in server:
+            continue
+        value = server.get(key)
+        if not isinstance(value, list):
+            return set()
+        return {
+            str(item).strip()
+            for item in value
+            if isinstance(item, str) and str(item).strip()
+        }
+    return None
+
 
 def _run_context(messages: list[Any] | None = None, model: Any = None) -> RunContext:
     """Minimal RunContext for capability seams outside Agent.run."""
     ctx = RunContext(deps=None, model=model, usage=RunUsage())
     if messages is not None:
         try:
-            ctx = RunContext(deps=None, model=model, usage=RunUsage(), messages=messages)
+            ctx = RunContext(
+                deps=None, model=model, usage=RunUsage(), messages=messages
+            )
         except TypeError:
             pass
     return ctx
@@ -90,6 +171,11 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
             denied_env_patterns=SHELL_DENIED_ENV_PATTERNS,
         ),
     ]
+
+    from src.composition import workspace_image_port
+    from src.media_tools import build_media_toolset
+
+    capabilities.append(build_media_toolset(workspace_image_port(str(root))))
 
     try:
         from pydantic_ai_harness.context import RepoContext
@@ -144,7 +230,12 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
                 kwargs["headers"] = headers
             if isinstance(auth_token, str) and auth_token.strip():
                 kwargs["authorization_token"] = auth_token.strip()
-            capabilities.append(MCP(url, **kwargs))
+            capabilities.append(
+                _McpCapabilityBinding(
+                    capability=MCP(url, **kwargs),
+                    allowed_tools=_mcp_tool_allowlist(server),
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[toolsets] MCP capability for %s failed: %s", url, exc)
 
@@ -192,11 +283,18 @@ class ToolRouter:
 
     def __init__(self, agent_config: dict[str, Any] | None) -> None:
         self._capabilities = build_capabilities(agent_config)
+        self._runtime_tool_ceiling = _runtime_tool_ceiling(agent_config)
+        self._local_tool_allowlist = _configured_local_tool_allowlist(agent_config)
         self._toolsets: list[Any] = []
         # Toolsets whose get_tools/call_tool cross the network (MCP): guard
         # them with a timeout so a stalled streamable-HTTP session (no
         # per-call timeout upstream) can never wedge a durable activity.
         self._network_toolsets: set[int] = set()
+        self._toolset_allowlists: dict[int, set[str] | None] = {}
+        # Harness support tools are implementation infrastructure. In
+        # particular, read_tool_result must remain available whenever overflow
+        # is enabled or the model can receive a spill pointer it cannot follow.
+        self._support_toolsets: set[int] = set()
         # Per-toolset MCP LISTING caches. Every durable activity re-enters the
         # router, and re-listing every MCP server per activity is O(servers ×
         # activities) network handshakes — with several wired servers (auto
@@ -208,18 +306,31 @@ class ToolRouter:
         self._mcp_tools_cache: dict[int, tuple[float, dict[str, Any]]] = {}
         self._mcp_fail_until: dict[int, float] = {}
         for cap in self._capabilities:
-            is_mcp = type(cap).__name__ == "MCP" or "mcp" in type(cap).__module__.lower()
-            try:
-                toolset = cap.get_toolset()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[toolsets] %s.get_toolset failed: %s", type(cap).__name__, exc
-                )
-                continue
+            is_mcp = isinstance(cap, _McpCapabilityBinding) or (
+                type(cap).__name__ == "MCP" or "mcp" in type(cap).__module__.lower()
+            )
+            is_support = type(cap).__name__ == "OverflowingToolOutput"
+            if isinstance(cap, AbstractToolset):
+                toolset = cap
+            else:
+                try:
+                    toolset = cap.get_toolset()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[toolsets] %s.get_toolset failed: %s", type(cap).__name__, exc
+                    )
+                    continue
             if toolset is not None:
                 self._toolsets.append(toolset)
+                if is_support:
+                    self._support_toolsets.add(id(toolset))
                 if is_mcp:
                     self._network_toolsets.add(id(toolset))
+                    self._toolset_allowlists[id(toolset)] = (
+                        cap.allowed_tools
+                        if isinstance(cap, _McpCapabilityBinding)
+                        else None
+                    )
 
     # ------------------------------------------------------------------
     # Tool routing
@@ -232,6 +343,37 @@ class ToolRouter:
             return await asyncio.wait_for(coro, timeout=MCP_TIMEOUT_SECONDS)
         return await coro
 
+    def _tool_allowed(self, toolset: Any, name: str) -> bool:
+        toolset_id = id(toolset)
+        if toolset_id in self._support_toolsets:
+            return True
+        if (
+            self._runtime_tool_ceiling is not None
+            and name not in self._runtime_tool_ceiling
+        ):
+            return False
+        if (
+            toolset_id not in self._network_toolsets
+            and self._local_tool_allowlist is not None
+            and name not in self._local_tool_allowlist
+        ):
+            return False
+        server_allowlist = self._toolset_allowlists.get(toolset_id)
+        return server_allowlist is None or name in server_allowlist
+
+    def _register_tool(
+        self,
+        combined: dict[str, tuple[Any, Any]],
+        name: str,
+        toolset: Any,
+        tool: Any,
+    ) -> None:
+        binding = (toolset, tool)
+        if id(toolset) in self._support_toolsets:
+            combined[name] = binding
+        else:
+            combined.setdefault(name, binding)
+
     async def tools(self) -> dict[str, tuple[Any, Any]]:
         ctx = _run_context()
         now = time.monotonic()
@@ -242,7 +384,8 @@ class ToolRouter:
                 cached = self._mcp_tools_cache.get(id(toolset))
                 if cached and cached[0] > now:
                     for name, tool in cached[1].items():
-                        combined.setdefault(name, (toolset, tool))
+                        if self._tool_allowed(toolset, name):
+                            self._register_tool(combined, name, toolset, tool)
                     continue
                 fail_until = self._mcp_fail_until.get(id(toolset), 0.0)
                 if fail_until > now:
@@ -277,7 +420,8 @@ class ToolRouter:
                 )
                 self._mcp_fail_until.pop(id(toolset), None)
             for name, tool in tools.items():
-                combined.setdefault(name, (toolset, tool))
+                if self._tool_allowed(toolset, name):
+                    self._register_tool(combined, name, toolset, tool)
         return combined
 
     async def tool_defs(self) -> list[Any]:
@@ -343,7 +487,9 @@ class ToolRouter:
     async def apply_before_model_request(self, request_context: Any) -> Any:
         """Chain each capability's before_model_request over the request
         context (compaction lives here). Fail-soft per capability."""
-        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+        ctx = _run_context(
+            messages=request_context.messages, model=request_context.model
+        )
         for cap in self._capabilities:
             hook = getattr(cap, "before_model_request", None)
             if hook is None:
@@ -362,7 +508,9 @@ class ToolRouter:
 
     async def apply_model_request(self, request_context: Any, base_handler) -> Any:
         """Fold wrap_model_request chain around the base model call."""
-        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+        ctx = _run_context(
+            messages=request_context.messages, model=request_context.model
+        )
         handler = base_handler
         for cap in reversed(self._capabilities):
             wrap = getattr(cap, "wrap_model_request", None)
@@ -381,8 +529,12 @@ class ToolRouter:
             handler = make_handler()
         return await handler(request_context)
 
-    async def apply_after_model_request(self, request_context: Any, response: Any) -> Any:
-        ctx = _run_context(messages=request_context.messages, model=request_context.model)
+    async def apply_after_model_request(
+        self, request_context: Any, response: Any
+    ) -> Any:
+        ctx = _run_context(
+            messages=request_context.messages, model=request_context.model
+        )
         for cap in self._capabilities:
             hook = getattr(cap, "after_model_request", None)
             if hook is None:
@@ -433,9 +585,18 @@ _ROUTERS: dict[str, ToolRouter] = {}
 
 
 def _config_key(agent_config: dict[str, Any] | None) -> str:
+    config = agent_config or {}
     relevant = {
         "workspace": WORKSPACE_ROOT,
-        "mcpServers": (agent_config or {}).get("mcpServers") or [],
+        "mcpServers": config.get("mcpServers") or [],
+        # Session control events can narrow tools between turns. Preserve
+        # presence and empty lists so a router built under an older ceiling is
+        # never reused after a hot policy update.
+        "toolPolicy": {
+            key: config[key]
+            for key in ("tools", "allowedTools", "builtinTools")
+            if key in config
+        },
     }
     return hashlib.sha256(
         json.dumps(relevant, sort_keys=True, default=str).encode()

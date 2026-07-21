@@ -9,6 +9,8 @@ part kinds), not a hand-rolled reimplementation.
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from typing import Any
 
 from pydantic_ai.messages import (
@@ -21,9 +23,14 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
+    is_multi_modal_content,
 )
 
 from src.config import TOOL_RESULT_MAX_CHARS
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant {value}")
 
 
 def dump_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
@@ -58,17 +65,69 @@ def tool_return_message(
     tool_name: str, tool_call_id: str, content: Any
 ) -> ModelRequest:
     """One serialized-able ModelRequest carrying a single ToolReturnPart."""
-    if not isinstance(content, str):
-        content = str(content)
+    if isinstance(content, str):
+        content = truncate(content)
+    elif isinstance(content, list):
+        content = [
+            item
+            if is_multi_modal_content(item) or not isinstance(item, str)
+            else truncate(item)
+            for item in content
+        ]
     return ModelRequest(
         parts=[
             ToolReturnPart(
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
-                content=truncate(content),
+                content=content,
             )
         ]
     )
+
+
+def tool_result_display_text(content: Any) -> str:
+    """Return observability/UI text without embedding binary media bytes."""
+    part = ToolReturnPart(tool_name="tool", tool_call_id="display", content=content)
+    text = part.model_response_str().strip()
+    if part.files:
+        suffix = f"[{len(part.files)} media part(s) omitted]"
+        text = f"{text}\n{suffix}" if text else suffix
+    return truncate(text or "[empty tool result]")
+
+
+def tool_result_has_media(content: Any) -> bool:
+    if is_multi_modal_content(content):
+        return True
+    if isinstance(content, (list, tuple)):
+        return any(tool_result_has_media(item) for item in content)
+    return False
+
+
+def messages_have_media(messages: list[ModelMessage]) -> bool:
+    """Whether native model-span content capture would include binary media."""
+    for message in messages:
+        for part in getattr(message, "parts", None) or []:
+            if isinstance(part, ToolReturnPart) and part.files:
+                return True
+            if isinstance(part, UserPromptPart) and not isinstance(part.content, str):
+                if any(is_multi_modal_content(item) for item in part.content):
+                    return True
+    return False
+
+
+def _safe_user_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for item in content if isinstance(content, (list, tuple)) else [content]:
+        if isinstance(item, str):
+            parts.append(item)
+        elif is_multi_modal_content(item):
+            media_type = str(getattr(item, "media_type", None) or "media")
+            parts.append(f"[{media_type} omitted]")
+        else:
+            parts.append(str(item))
+    return "\n".join(parts)
 
 
 def response_text(response: ModelResponse) -> str:
@@ -81,14 +140,67 @@ def response_tool_calls(response: ModelResponse) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     for part in response.parts:
         if isinstance(part, ToolCallPart):
+            raw_args = part.args
+            args_error: str | None = None
+            if isinstance(raw_args, dict):
+                try:
+                    encoded = json.dumps(
+                        raw_args,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
+                    args = raw_args
+                    args_size = len(encoded.encode("utf-8"))
+                except (TypeError, ValueError) as exc:
+                    args = {}
+                    args_size = 0
+                    args_error = f"must be standards-compliant JSON: {exc}."
+            elif isinstance(raw_args, str):
+                args_size = len(raw_args.encode("utf-8"))
+                if not raw_args.strip():
+                    args = {}
+                    args_error = "must be a non-empty JSON object."
+                else:
+                    try:
+                        parsed = json.loads(
+                            raw_args,
+                            parse_constant=_reject_json_constant,
+                        )
+                        if not isinstance(parsed, dict):
+                            raise ValueError("must decode to a JSON object")
+                        args = parsed
+                    except (TypeError, ValueError) as exc:
+                        args = {}
+                        args_error = f"must be valid JSON object data: {exc}."
+            else:
+                args = {}
+                args_size = 0
+                args_error = "must be valid JSON object data."
             calls.append(
                 {
                     "toolName": part.tool_name,
                     "toolCallId": part.tool_call_id,
-                    "args": part.args_as_dict(),
+                    "args": args,
+                    "argsSizeBytes": args_size,
+                    **({"argsError": args_error} if args_error else {}),
                 }
             )
     return calls
+
+
+def sanitize_invalid_tool_call_args(
+    response: ModelResponse, invalid_call_ids: set[str]
+) -> ModelResponse:
+    """Replace invalid provider arguments before they enter durable history."""
+    if not invalid_call_ids:
+        return response
+    parts = [
+        replace(part, args={})
+        if isinstance(part, ToolCallPart) and str(part.tool_call_id) in invalid_call_ids
+        else part
+        for part in response.parts
+    ]
+    return replace(response, parts=parts)
 
 
 def openinference_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
@@ -103,13 +215,10 @@ def openinference_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]
             if kind == "system-prompt":
                 flat.append({"role": "system", "content": str(part.content)})
             elif kind == "user-prompt":
-                content = part.content
                 flat.append(
                     {
                         "role": "user",
-                        "content": content
-                        if isinstance(content, str)
-                        else str(content),
+                        "content": _safe_user_content(part.content),
                     }
                 )
             elif kind == "tool-return":
@@ -117,7 +226,7 @@ def openinference_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]
                     {
                         "role": "tool",
                         "name": getattr(part, "tool_name", ""),
-                        "content": str(part.content),
+                        "content": tool_result_display_text(part.content),
                     }
                 )
             elif kind == "retry-prompt":

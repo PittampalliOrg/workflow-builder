@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -52,8 +53,16 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     captured: dict[str, Any] = {}
     fake = make_fake_model(
         captured,
-        [[TextPart(content="working"),
-          ToolCallPart(tool_name="run_command", args={"command": "ls"}, tool_call_id="tc9")]],
+        [
+            [
+                TextPart(content="working"),
+                ToolCallPart(
+                    tool_name="run_command",
+                    args={"command": "ls"},
+                    tool_call_id="tc9",
+                ),
+            ]
+        ],
     )
     monkeypatch.setattr(wfmod, "build_model", lambda: fake)
 
@@ -83,13 +92,19 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     # bootstrap: system prompt + user task in the first request
     first = captured["messages"][0]
     kinds = [type(p).__name__ for p in first.parts]
-    assert kinds[0] == "SystemPromptPart" and "You are a test agent." in first.parts[0].content
+    assert (
+        kinds[0] == "SystemPromptPart"
+        and "You are a test agent." in first.parts[0].content
+    )
     assert kinds[-1] == "UserPromptPart"
 
     # response appended + tool calls extracted
-    assert out["toolCalls"] == [
-        {"toolName": "run_command", "toolCallId": "tc9", "args": {"command": "ls"}}
-    ]
+    assert out["toolCalls"][0] == {
+        "toolName": "run_command",
+        "toolCallId": "tc9",
+        "args": {"command": "ls"},
+        "argsSizeBytes": len(json.dumps({"command": "ls"}).encode("utf-8")),
+    }
     assert out["text"] == "working"
     reloaded = load_messages(out["messages"])
     assert type(reloaded[-1]).__name__ == "ModelResponse"
@@ -111,6 +126,91 @@ def test_call_llm_continues_existing_history(monkeypatch, workspace):
     assert len(captured["messages"]) == 1
     assert out["text"] == "final answer"
     assert out["toolCalls"] == []
+
+
+def test_call_llm_exposes_dapr_style_structured_output_function(monkeypatch, workspace):
+    from pydantic_ai.messages import ToolCallPart
+
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(
+        captured,
+        [
+            [
+                ToolCallPart(
+                    tool_name="StructuredOutput",
+                    args={"summary": "done"},
+                    tool_call_id="so1",
+                )
+            ]
+        ],
+    )
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {
+            "task": "finish the work",
+            "messages": [],
+            "context": {
+                "agentConfig": {
+                    "structuredOutputMode": "tool",
+                    "responseJsonSchema": {
+                        "type": "object",
+                        "required": ["summary"],
+                        "properties": {"summary": {"type": "string"}},
+                    },
+                }
+            },
+            "iteration": 0,
+        },
+    )
+
+    params = captured["params"]
+    assert params.output_mode == "text"
+    assert params.allow_text_output is True
+    assert params.output_tools == []
+    structured = next(
+        tool for tool in params.function_tools if tool.name == "StructuredOutput"
+    )
+    assert structured.kind == "function"
+    assert structured.parameters_json_schema == {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {"summary": {"type": "string"}},
+    }
+    assert out["toolCalls"][0]["toolName"] == "StructuredOutput"
+
+
+def test_call_llm_sanitizes_malformed_tool_arguments_before_history(
+    monkeypatch, workspace
+):
+    from pydantic_ai.messages import ToolCallPart
+
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(
+        captured,
+        [
+            [
+                ToolCallPart(
+                    tool_name="run_command",
+                    args="{not-json",
+                    tool_call_id="bad1",
+                )
+            ]
+        ],
+    )
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "run it", "messages": [], "context": {}, "iteration": 0},
+    )
+
+    call = out["toolCalls"][0]
+    assert call["args"] == {}
+    assert "valid JSON object" in call["argsError"]
+    reloaded = load_messages(out["messages"])
+    assert reloaded[-1].parts[0].args == {}
 
 
 def test_execute_tool_runs_real_harness_tools(workspace):
@@ -163,13 +263,58 @@ def test_execute_tool_unknown_tool_returns_error_message(workspace):
     assert "failed" in str(part.content).lower()
 
 
+def test_execute_tool_validates_structured_output(workspace):
+    context = {
+        "agentConfig": {
+            "structuredOutputMode": "tool",
+            "responseJsonSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string", "minLength": 1}},
+            },
+        }
+    }
+    invalid = execute_tool(
+        FakeActivityCtx(),
+        {
+            "call": {
+                "toolName": "StructuredOutput",
+                "toolCallId": "so-bad",
+                "args": {},
+            },
+            "context": context,
+            "iteration": 0,
+        },
+    )
+    assert invalid["structuredOutput"] is None
+    invalid_part = load_messages([invalid["message"]])[0].parts[0]
+    assert "required property" in str(invalid_part.content)
+
+    valid = execute_tool(
+        FakeActivityCtx(),
+        {
+            "call": {
+                "toolName": "StructuredOutput",
+                "toolCallId": "so-good",
+                "args": {"summary": "done"},
+            },
+            "context": context,
+            "iteration": 1,
+        },
+    )
+    assert valid["structuredOutput"] == '{"summary": "done"}'
+
+
 def test_check_cancellation_activity(monkeypatch):
     monkeypatch.setattr(
         wfmod,
         "read_cancellation_request",
-        lambda scope: {"type": "session.terminate", "reason": "stop now"}
-        if scope == "cancelled-scope"
-        else None,
+        lambda scope: (
+            {"type": "session.terminate", "reason": "stop now"}
+            if scope == "cancelled-scope"
+            else None
+        ),
     )
     hit = check_cancellation(FakeActivityCtx(), {"scopeId": "cancelled-scope"})
     assert hit == {

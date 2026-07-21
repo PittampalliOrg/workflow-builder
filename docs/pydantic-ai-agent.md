@@ -34,29 +34,81 @@ session_workflow (platform contract wrapper, literal name)
 
 ## Deltas from the Diagrid reference
 
-| Diagrid python-ai | This runtime | Why |
-|---|---|---|
+| Diagrid python-ai                                                     | This runtime                                                     | Why                                                                |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------ |
 | Raw `openai.chat.completions` in the activity, model as a bare string | pydantic-ai `OpenAIChatModel`/`OpenAIProvider` + `ModelSettings` | keeps provider flexibility, usage accounting, native message types |
-| Hand-rolled `Message` dataclasses | native `ModelMessage` + `ModelMessagesTypeAdapter` | faithful pydantic-ai history, no re-implementation drift |
-| Tools = plain callables introspected off the Agent | **harness capabilities → `get_toolset()`** (see below) | first-class coding-agent tool surface |
-| No cancellation, no platform events | `check_cancellation` activity + CMA session-event mirroring | platform lifecycle + observability contract |
-| `runner.run_async` embedded host | platform `session_workflow` + `/internal/sessions/spawn` bridge | `durable/run` dispatch parity |
+| Hand-rolled `Message` dataclasses                                     | native `ModelMessage` + `ModelMessagesTypeAdapter`               | faithful pydantic-ai history, no re-implementation drift           |
+| Tools = plain callables introspected off the Agent                    | **harness capabilities → `get_toolset()`** (see below)           | first-class coding-agent tool surface                              |
+| No cancellation, no platform events                                   | `check_cancellation` activity + CMA session-event mirroring      | platform lifecycle + observability contract                        |
+| `runner.run_async` embedded host                                      | platform `session_workflow` + `/internal/sessions/spawn` bridge  | `durable/run` dispatch parity                                      |
 
 ## Tools: pydantic-ai-harness capabilities
 
 Capabilities are extracted through the public `AbstractCapability.get_toolset()`
 seam (`src/toolsets.py`) and routed by name in the `execute_tool` activity:
 
-- **FileSystem** (rooted at `PYDANTIC_AI_WORKSPACE_ROOT`, default `/sandbox`,
-  **pod-local** — `workspaceBackend: pod-local` like claude-agent-py/adk):
+- **FileSystem** (rooted at `PYDANTIC_AI_WORKSPACE_ROOT`, default `/sandbox`;
+  dynamic-script calls with `isolation: 'shared'` mount their JuiceFS execution
+  workspace at `/sandbox/work`):
   `read_file, write_file, edit_file, list_directory, search_files, find_files,
-  create_directory, file_info` — mirrors dapr-agent-py's file builtins.
+create_directory, file_info` — mirrors dapr-agent-py's file builtins.
 - **Shell** (same root): `run_command, start_command, check_command,
-  stop_command` — mirrors `execute_command`.
+stop_command` — mirrors `execute_command`.
 - **RepoContext**: CLAUDE.md/AGENTS.md instructions folded into the system
   prompt (instruction contributor; may also expose an inventory tool).
 - **MCP**: `agentConfig.mcpServers` entries with `streamable_http` URLs are
   wired via the core `MCP` capability; stdio servers are skipped in v1.
+- **ReadMediaFile**: reads png/jpeg/webp/gif files from the workspace and
+  returns Pydantic AI `BinaryContent`, including overview downsampling and
+  optional full-resolution crops. It is the image-verification path for Kimi
+  K3 and also shares the same result handling as image-returning MCP tools.
+
+`builtinTools` and `tools` form the saved agent's configured **local** tool set;
+they do not hide tools from attached MCP servers. Node/session narrowing is
+stamped into runtime-only `allowedTools`, which is an exact cross-source ceiling
+and takes precedence even when it is empty. Per-server
+`mcpServers[].allowedTools` is an additional MCP intersection. These ceilings
+apply to model advertisement, cached MCP listings, and execution routing. The
+Harness-owned `read_tool_result` support tool remains available when overflow is
+enabled so a spill pointer can always be retrieved.
+
+### Durable media
+
+Pydantic AI already converts MCP image results to native `BinaryContent`; the
+runtime must not stringify that value. Before an `execute_tool` activity
+returns, the Harness media adapter stores every binary part once under
+`<workspace>/.pydantic-ai/media` and replaces it with a compact
+`media+sha256://` marker. `call_llm` restores the bytes only inside the model
+activity, where `OpenAIChatModel` sends K3 a structured `image_url` data URI.
+Every image from the current, not-yet-observed tool batch is restored. On later
+turns, only the latest three previously seen visual results are restored by
+default; older results become a short reminder and can be re-read from the
+workspace or reacquired from their originating MCP tool. It externalizes the
+history again before crossing the Dapr boundary.
+
+The model-request admission budget defaults to eight images and 32 MiB across
+both unseen and retained media. An image beyond either bound becomes an
+explicit tool-result error asking the model to reacquire it in a later turn;
+it is never silently dropped or appended to an oversized provider request.
+
+This keeps pixels out of workflow state, session events, and content-bearing
+OTel spans. Multimodal results bypass `OverflowingToolOutput`, whose text/JSON
+spill path would otherwise replace large screenshots before externalization.
+The adapter externalizes typed `BinaryContent` only, escapes colliding ordinary
+tool JSON, and verifies each blob against its `media+sha256` digest on restore.
+The current DiskMediaStore lives in the shared workspace so retries can restore
+it; digest failure is fatal rather than allowing modified pixels to replay.
+The registry advertises the narrower contract implemented today:
+`userInputModalities: [text]`, `toolResultModalities: [text, image]`,
+`supportsReadMediaFile: true`, `supportsMediaExternalization: true`, and
+`durableMediaMode: content-addressed`. Direct user-uploaded image turns are not
+claimed until the session event path preserves non-text blocks.
+
+Video remains deliberately disabled. K3 expects a provider Files API
+reference for video, while the configured Kimi-for-Coding endpoint provides
+chat but no compatible Files endpoint. Do not inline or frame-extract video
+implicitly; add a separate media-store adapter when that provider contract is
+available.
 
 ### Capability hooks (compatibility with Dapr durability)
 
@@ -64,13 +116,13 @@ Because the **Dapr workflow is the run loop** (not pydantic-ai's graph), a
 harness capability is compatible iff every seam it uses maps onto one of our
 two activities. The rule and the seam-by-seam verdicts:
 
-| Capability seam | Hosted in | Durable? |
-|---|---|---|
-| `get_toolset` / `prepare_tools` | tools offered in `call_llm`, run in `execute_tool` | ✅ per-activity |
-| `get_instructions` | system-prompt bootstrap in `call_llm` | ✅ recorded in history |
-| `before/wrap/after_model_request` | around `model.request()` in `call_llm` | ✅ — the transformed history is the activity's RETURN value |
-| `after_tool_execute` | around the tool result in `execute_tool` | ✅ result is the activity's return |
-| `wrap_run` / `before_run` / `after_run` / node & event-stream hooks | — | ❌ no pydantic-ai run to attach to |
+| Capability seam                                                     | Hosted in                                          | Durable?                                                    |
+| ------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------- |
+| `get_toolset` / `prepare_tools`                                     | tools offered in `call_llm`, run in `execute_tool` | ✅ per-activity                                             |
+| `get_instructions`                                                  | system-prompt bootstrap in `call_llm`              | ✅ recorded in history                                      |
+| `before/wrap/after_model_request`                                   | around `model.request()` in `call_llm`             | ✅ — the transformed history is the activity's RETURN value |
+| `after_tool_execute`                                                | around the tool result in `execute_tool`           | ✅ result is the activity's return                          |
+| `wrap_run` / `before_run` / `after_run` / node & event-stream hooks | —                                                  | ❌ no pydantic-ai run to attach to                          |
 
 `src/toolsets.py::ToolRouter` hosts the `before/wrap/after_model_request`
 chains inside `call_llm` and the `after_tool_execute` chain inside
@@ -79,6 +131,7 @@ activity **returns**, so Dapr replay and the durable history stay consistent
 and bounded.
 
 **Enabled in v1** (env-gated, on by default):
+
 - **OverflowingToolOutput** (`after_tool_execute`, `get_toolset`): large tool
   results spill to a `LocalFileStore` under `<workspace>/.overflow` and are
   truncated in-history; the model fetches the rest via the injected
@@ -133,6 +186,31 @@ max reasoning (`extra_body.reasoning_effort=max`) — enforced in
 `multiProvider: false`; widening happens by adding pydantic-ai provider
 classes in `build_model()`.
 
+## Structured output
+
+Dynamic-script `agent(..., { schema })` calls use the same mechanism proven in
+`dapr-agent-py`: the adapter adds an ordinary synthetic `StructuredOutput`
+function tool whose parameters are the caller's raw JSON Schema. Pydantic AI's
+public `ToolDefinition(kind="function")` and model transport carry it to Kimi;
+this is deliberately not Pydantic AI's high-level Tool Output mode. Text and
+normal coding tools remain enabled, so the wire request uses
+`tool_choice=auto` and K3 can finish filesystem, shell, or MCP work before it
+submits the final result.
+
+Kimi K3 also supports strict `response_format=json_schema`, and Pydantic AI can
+force a native output tool. Neither fits this durable coding loop: a live probe
+combining response format with required coding tools returned schema content
+without executing the tools, while `Agent.run()` would move loop ownership out
+of the per-model-call and per-tool-call Dapr activities.
+
+`execute_tool` validates `StructuredOutput` arguments with a fail-closed Draft
+2020-12 validator. Invalid calls become bounded, model-visible tool errors;
+valid calls become canonical JSON and end the local session. Plain-text
+finishes are corrected in-loop, also with a bounded budget. Exhaustion and
+configuration errors cross into the dynamic-script journal as typed terminal
+failures, so the journal does not multiply the runtime's retry budget. The
+journal still performs the platform's final schema validation.
+
 ## Platform contract (ported from browser-use-agent / dapr-agent-py)
 
 `session_workflow` (literal name) accepts the BFF childInput shape and emits
@@ -153,7 +231,7 @@ the byte-identical vendored `src/event_publisher.py`. Endpoints:
 Descriptor in `services/shared/runtime-registry.json` (copies regenerated ONLY
 via `scripts/sync-runtime-registry.mjs`): `family: durable-session`,
 `durabilityGranularity: per-activity`, `workflowDispatch: auto-turn`,
-`ownsSandbox: true`, `workspaceBackend: pod-local`, `imageEnvKey:
+`ownsSandbox: true`, `workspaceBackend: juicefs-shared`, `imageEnvKey:
 AGENT_RUNTIME_PYDANTIC_DEFAULT_IMAGE`, `instancePrefix: durable-pydantic`.
 Dispatch is registry-driven (per-session ephemeral Kueue sandbox pods, same
 lane as adk-agent-py — no routing code changes); the per-session pod gets
@@ -217,7 +295,7 @@ direct-PVC+ownerRef lane — see `docs/agent-sandbox-v0.5.0-upgrade-evaluation.m
   storage-class env at a network-attached class (e.g. a JuiceFS SC) if
   cross-node reschedule matters more than local-disk speed.
 - Workspace semantics stay `pod-local` in the runtime registry — the scratch
-  changes the volume's *lifetime*, not its sharing domain.
+  changes the volume's _lifetime_, not its sharing domain.
 
 ## Gotchas (live-verified during bring-up)
 

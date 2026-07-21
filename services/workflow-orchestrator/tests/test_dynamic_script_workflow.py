@@ -1360,7 +1360,7 @@ def test_kill_switch_off_disables_native_structured(monkeypatch):
     assert "responseJsonSchema" not in cfg
 
 
-def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
+def test_native_structured_excludes_unsupported_runtime(monkeypatch):
     import workflows.script_agent_dispatch as d
 
     monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
@@ -1369,6 +1369,55 @@ def test_native_structured_gated_to_dapr_agent_py(monkeypatch):
     cfg = d._build_agent_config({"schema": schema}, {"model": "zai/glm-5.2"}, "claude-agent-py", {})
     assert "responseJsonSchema" not in cfg
     assert "modelSpec" not in cfg
+
+
+def test_native_structured_support_is_registry_driven(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    class FutureRuntime:
+        capabilities = {
+            "structuredOutputMode": "tool",
+            "structuredOutputJsonSchemaDraft": "2020-12",
+        }
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.setattr(
+        d.runtime_registry.registry,
+        "by_id",
+        lambda runtime_id: FutureRuntime() if runtime_id == "future-runtime" else None,
+    )
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    cfg = d._build_agent_config(
+        {"schema": schema, "model": "kimi/kimi-k3"},
+        {},
+        "future-runtime",
+        {},
+    )
+
+    assert cfg["responseJsonSchema"] == schema
+    assert cfg["structuredOutputMode"] == "tool"
+
+
+def test_pydantic_runtime_gets_kimi_structured_output_tool(monkeypatch):
+    import workflows.script_agent_dispatch as d
+
+    monkeypatch.delenv("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", raising=False)
+    monkeypatch.delenv("DYNAMIC_SCRIPT_STRUCTURED_TOOL", raising=False)
+    schema = {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {"summary": {"type": "string"}},
+    }
+    cfg = d._build_agent_config(
+        {"schema": schema, "model": "kimi/kimi-k3"},
+        {},
+        "pydantic-ai-agent-py",
+        {},
+    )
+
+    assert cfg["modelSpec"] == "kimi/kimi-k3"
+    assert cfg["responseJsonSchema"] == schema
+    assert cfg["structuredOutputMode"] == "tool"
 
 
 @pytest.mark.parametrize(

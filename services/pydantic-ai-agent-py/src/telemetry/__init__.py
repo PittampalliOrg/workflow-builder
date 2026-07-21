@@ -54,7 +54,7 @@ _tracer_provider: Any = None
 _meter_provider: Any = None
 _logger_provider: Any = None
 _inbound_context: Any = None
-_instrumentation_settings: Any = None
+_instrumentation_settings: dict[bool, Any] = {}
 
 
 def _endpoint() -> str:
@@ -156,9 +156,7 @@ def init_telemetry() -> bool:
             )
             set_logger_provider(_logger_provider)
             logging.getLogger().addHandler(
-                LoggingHandler(
-                    level=logging.INFO, logger_provider=_logger_provider
-                )
+                LoggingHandler(level=logging.INFO, logger_provider=_logger_provider)
             )
 
             atexit.register(shutdown_telemetry)
@@ -233,7 +231,7 @@ def activity_span(name: str, attributes: dict[str, Any] | None = None) -> Iterat
         yield span
 
 
-def instrument_model(model: Any) -> Any:
+def instrument_model(model: Any, *, include_content: bool | None = None) -> Any:
     """Wrap a pydantic-ai model with its native OTel instrumentation."""
     global _instrumentation_settings
     if not _enabled:
@@ -244,11 +242,16 @@ def instrument_model(model: Any) -> Any:
             InstrumentedModel,
         )
 
-        if _instrumentation_settings is None:
-            _instrumentation_settings = InstrumentationSettings(
-                include_content=content_capture_enabled(),
-            )
-        return InstrumentedModel(model, _instrumentation_settings)
+        capture = (
+            content_capture_enabled()
+            if include_content is None
+            else bool(include_content and content_capture_enabled())
+        )
+        settings = _instrumentation_settings.get(capture)
+        if settings is None:
+            settings = InstrumentationSettings(include_content=capture)
+            _instrumentation_settings[capture] = settings
+        return InstrumentedModel(model, settings)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[otel] model instrumentation unavailable: %s", exc)
         return model

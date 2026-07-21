@@ -1,4 +1,5 @@
 import {
+	getRuntimeDescriptor,
 	listRuntimes,
 	type RuntimeCliAuth,
 } from "$lib/server/agents/runtime-registry";
@@ -27,5 +28,19 @@ export class LocalRuntimeRegistryReader implements RuntimeRegistryReader {
 					toCliAuthReadModel(runtime.cliAuth as RuntimeCliAuth),
 				]),
 		);
+	}
+
+	async getStructuredOutputCapability(runtimeId: string) {
+		const capabilities = getRuntimeDescriptor(runtimeId)?.capabilities;
+		if (
+			capabilities?.structuredOutputMode !== "tool" ||
+			capabilities.structuredOutputJsonSchemaDraft !== "2020-12"
+		) {
+			return null;
+		}
+		return {
+			mode: capabilities.structuredOutputMode,
+			jsonSchemaDraft: capabilities.structuredOutputJsonSchemaDraft,
+		} as const;
 	}
 }

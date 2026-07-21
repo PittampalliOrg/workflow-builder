@@ -96,6 +96,14 @@ SHELL_DENIED_ENV_PATTERNS = env_list(
 # Cap tool outputs mirrored into durable history / session events. Full
 # outputs stay in the tool's own return to the model for the current turn.
 TOOL_RESULT_MAX_CHARS = env_int("PYDANTIC_AI_TOOL_RESULT_MAX_CHARS", 8000)
+# All not-yet-observed visual results are eligible for their first model turn;
+# later turns keep only the latest seen images. MCP media can be reacquired by
+# invoking its originating tool rather than reading a workspace path.
+MEDIA_HISTORY_MAX_IMAGES = env_int("PYDANTIC_AI_MEDIA_HISTORY_MAX_IMAGES", 3)
+MEDIA_REQUEST_MAX_IMAGES = env_int("PYDANTIC_AI_MEDIA_REQUEST_MAX_IMAGES", 8)
+MEDIA_REQUEST_MAX_BYTES = env_int(
+    "PYDANTIC_AI_MEDIA_REQUEST_MAX_BYTES", 32 * 1024 * 1024
+)
 
 # ---------------------------------------------------------------------------
 # Harness hook capabilities (hosted inside the durable activities)
@@ -132,4 +140,6 @@ KIMI_BASE_URL = (
     os.environ.get("KIMI_BASE_URL", "").strip() or "https://api.kimi.com/coding/v1"
 ).rstrip("/")
 KIMI_DEFAULT_MODEL = "kimi-k3"
-KIMI_TIMEOUT_SECONDS = env_int("KIMI_TIMEOUT_SECONDS", 300)
+# K3 max-reasoning requests can remain silent for 15-25 minutes. This is the
+# total blocking request timeout; activity retries remain the transport retry.
+KIMI_TIMEOUT_SECONDS = env_int("KIMI_TIMEOUT_SECONDS", 1800)

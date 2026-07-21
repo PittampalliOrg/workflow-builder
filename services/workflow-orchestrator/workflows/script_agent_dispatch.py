@@ -27,6 +27,7 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
+from core import runtime_registry
 from workflows.session_host_wait import spawn_session_with_host_wait
 from workflows.action_runner_workflow import action_runner_workflow
 from workflows.wait_event_workflow import wait_event_workflow
@@ -112,6 +113,20 @@ def _native_structured_enabled() -> bool:
     """Kill-switch for provider-native structured output (default ON)."""
     raw = os.environ.get("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", "true").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+def _runtime_supports_native_structured_output(runtime_id: str) -> bool:
+    """Read structured-output support from the canonical runtime descriptor."""
+    descriptor = runtime_registry.registry.by_id(
+        runtime_id or runtime_registry.registry.default_runtime_id
+    )
+    if descriptor is None:
+        return False
+    capabilities = descriptor.capabilities
+    return (
+        capabilities.get("structuredOutputMode") == "tool"
+        and capabilities.get("structuredOutputJsonSchemaDraft") == "2020-12"
+    )
 
 
 def _structured_model() -> str:
@@ -203,9 +218,13 @@ def _build_agent_config(
     schema = opts.get("schema") if isinstance(opts.get("schema"), dict) else None
     native_structured = (
         schema is not None
-        and agent_runtime == "dapr-agent-py"
+        and _runtime_supports_native_structured_output(agent_runtime)
         and _native_structured_enabled()
     )
+    # For opts.agent, this is only the caller's provisional runtime. The BFF
+    # resolves the saved agent atomically and re-gates tool mode against that
+    # resolved runtime before it creates the session; unsupported mismatches
+    # are refused instead of inheriting this override.
     cli_structured = (
         schema is not None
         and _is_cli_structured_runtime(agent_runtime)

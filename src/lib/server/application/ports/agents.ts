@@ -244,10 +244,18 @@ export type PeerAgentDispatchContext = {
 	registryTeam: string | null;
 };
 
+export type RuntimeStructuredOutputCapability = {
+	mode: "tool";
+	jsonSchemaDraft: "2020-12";
+};
+
 export interface RuntimeRegistryReader {
 	listSessionRuntimeCliAuth(): Promise<
 		Record<string, SessionRuntimeCliAuthReadModel>
 	>;
+	getStructuredOutputCapability(
+		runtimeId: string,
+	): Promise<RuntimeStructuredOutputCapability | null>;
 }
 
 export interface PeerAgentResolver {

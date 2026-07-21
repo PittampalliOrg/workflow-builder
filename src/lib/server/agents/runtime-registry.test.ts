@@ -111,6 +111,28 @@ describe("runtime registry — readers", () => {
 		const dapr = getRuntimeDescriptor("dapr-agent-py");
 		expect(dapr?.capabilities.durabilityGranularity).toBe("per-activity");
 		expect(dapr?.capabilities.multiProvider).toBe(true);
+		expect(dapr?.capabilities.structuredOutputMode).toBe("tool");
+		expect(dapr?.capabilities.structuredOutputJsonSchemaDraft).toBe("2020-12");
+		const pydantic = getRuntimeDescriptor("pydantic-ai-agent-py");
+		expect(pydantic?.capabilities.structuredOutputMode).toBe("tool");
+		expect(pydantic?.capabilities.structuredOutputJsonSchemaDraft).toBe(
+			"2020-12",
+		);
+		expect(pydantic?.capabilities.userInputModalities).toEqual(["text"]);
+		expect(pydantic?.capabilities.toolResultModalities).toEqual([
+			"text",
+			"image",
+		]);
+		expect(pydantic?.capabilities.supportsReadMediaFile).toBe(true);
+		expect(pydantic?.capabilities.supportsMediaExternalization).toBe(true);
+		expect(pydantic?.capabilities.durableMediaMode).toBe(
+			"content-addressed",
+		);
+		expect(pydantic?.capabilitiesVerified).toBe(false);
+		expect(claude?.capabilities.structuredOutputMode).toBeUndefined();
+		expect(
+			claude?.capabilities.structuredOutputJsonSchemaDraft,
+		).toBeUndefined();
 		expect(getRuntimeDescriptor("codex-cli")?.capabilities.supportsHooks).toBe(true);
 		expect(getRuntimeDescriptor("agy-cli")?.capabilities.supportsHooks).toBe(true);
 	});
