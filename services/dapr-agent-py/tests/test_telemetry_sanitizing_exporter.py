@@ -113,6 +113,51 @@ def test_dapr_activity_post_return_output_is_sanitized_before_export():
     assert "camel-auth-token" not in exported
 
 
+def test_dapr_activity_tool_failure_stays_error_after_wrapper_marks_return_ok():
+    from dapr_agents.observability.wrappers.workflow_task import (
+        WorkflowActivityRegistrationWrapper,
+    )
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+    from opentelemetry.trace import Status, StatusCode
+
+    from src.telemetry.sanitizing_exporter import SanitizingSpanExporter
+
+    delegate = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(SanitizingSpanExporter(delegate)))
+    tracer = provider.get_tracer("test.tool-status-exporter")
+
+    class TestAgent:
+        name = "test-agent"
+
+        def run_tool(self, _ctx, _request):
+            span = trace.get_current_span()
+            span.set_attribute("openinference.span.kind", "TOOL")
+            span.set_attribute("tool.name", "browser_open")
+            span.set_attribute("success", False)
+            span.set_attribute("error", "browser worker is still provisioning")
+            span.set_status(Status(StatusCode.ERROR, "browser worker is still provisioning"))
+            return {"isError": True, "content": [{"type": "text", "text": "retry"}]}
+
+    wrapped = WorkflowActivityRegistrationWrapper(tracer)._wrap_activity(
+        TestAgent().run_tool
+    )
+    result = wrapped(None, {"name": "browser_open"})
+
+    assert result["isError"] is True
+    spans = delegate.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.status.description == "browser worker is still provisioning"
+    assert span.attributes["success"] is False
+
+
 def test_exporter_default_string_fallback_is_sanitized_again():
     from opentelemetry.sdk.trace import ReadableSpan
 
