@@ -19,6 +19,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Any
 
+from dapr.ext.workflow import DaprWorkflowClient
 from fastapi import FastAPI, HTTPException
 from google.protobuf import wrappers_pb2
 
@@ -51,6 +52,7 @@ from src.config import (
 )
 from src.event_publisher import publish_session_event, set_incremental_tier_enabled
 from src.executor import BrowserUseExecutor, _session_cancel_state_key
+from src.run_status import AgentRunNotFoundError, resolve_agent_run_status
 from src.session_config import (
     TERMINAL_CONTROL_EVENT_TYPES,
     external_control_event_as_user_event,
@@ -230,6 +232,19 @@ def healthz() -> dict:
 @app.get("/readyz")
 def readyz() -> dict:
     return {"ok": True, "service": AGENT_SERVICE_NAME}
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict:
+    try:
+        return resolve_agent_run_status(
+            instance_id,
+            summary=summary,
+            app_id=AGENT_SERVICE_NAME,
+            client_factory=DaprWorkflowClient,
+        )
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/internal/sessions/spawn")

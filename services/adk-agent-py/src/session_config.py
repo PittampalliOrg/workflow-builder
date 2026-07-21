@@ -12,6 +12,20 @@ CONTROL_EVENT_TYPES = {
     LEGACY_SET_MODEL_EVENT,
     LEGACY_SET_PERMISSION_MODE_EVENT,
 }
+TERMINAL_CONTROL_EVENT_TYPES = {
+    "session.terminate",
+    "user.interrupt",
+}
+
+
+def session_event_batch(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return []
+    events = payload.get("events")
+    if isinstance(events, list):
+        return [dict(event) for event in events if isinstance(event, Mapping)]
+    return [dict(payload)]
+
 
 _STRING_FIELDS = {
     "modelSpec",
@@ -217,7 +231,10 @@ def external_control_event_as_user_event(
     payload: Any,
 ) -> tuple[str, Any]:
     """Map direct control external events onto the session.user_events lane."""
-    if event_name not in CONTROL_EVENT_TYPES:
+    if (
+        event_name not in CONTROL_EVENT_TYPES
+        and event_name not in TERMINAL_CONTROL_EVENT_TYPES
+    ):
         return event_name, payload
     event: dict[str, Any] = {"type": event_name}
     if isinstance(payload, Mapping):

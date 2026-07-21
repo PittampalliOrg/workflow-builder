@@ -48,6 +48,7 @@ from google.protobuf import wrappers_pb2  # noqa: E402
 
 from src.config import AGENT_SERVICE_NAME, AGENT_STATE_STORE, WORKSPACE_ROOT  # noqa: E402
 from src.event_publisher import set_incremental_tier_enabled  # noqa: E402
+from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
 from src.session import session_workflow  # noqa: E402
 from src.session_config import (  # noqa: E402
     TERMINAL_CONTROL_EVENT_TYPES,
@@ -206,6 +207,26 @@ def get_instance(instance_id: str) -> dict:
         "serialized_input": state.serialized_input,
         "serialized_output": state.serialized_output,
     }
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict:
+    """Return the platform-wide durable runtime status contract.
+
+    Lifecycle callers use this endpoint for every runtime. Per-session Sandbox
+    hosts are reached directly on their app port, so the Pydantic runtime must
+    expose the same route as dapr-agent-py rather than relying on Dapr service
+    invocation to translate its legacy ``/agent/instances`` endpoint.
+    """
+    try:
+        return resolve_agent_run_status(
+            instance_id,
+            summary=summary,
+            app_id=AGENT_SERVICE_NAME,
+            client_factory=wf.DaprWorkflowClient,
+        )
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/internal/sessions/spawn")

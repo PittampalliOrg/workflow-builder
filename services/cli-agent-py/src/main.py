@@ -9,6 +9,7 @@ bridge. Everything is on port 8002
 
 Endpoint surface (parity with claude-agent-py where applicable):
   GET  /healthz, GET /readyz (readyz reports herdr as disabled when configured)
+  GET  /api/v2/agent-runs/{id}/status
   POST /internal/sessions/spawn          {instanceId, payload}
   POST /internal/sessions/raise-event    {instanceId, eventName, payload}
   POST /internal/workspace/command       {command, env?, cwd?}  (X-Internal-Token)
@@ -99,6 +100,7 @@ from src.browser_video_sync import sync_browser_video_activity  # noqa: E402
 from src.workspace_diff_sync import sync_workspace_diff_activity  # noqa: E402
 from src.workspace_diff_sync import sync_source_bundle_activity  # noqa: E402
 from src.output_sync import sync_output_activity  # noqa: E402
+from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
 from src.seed import seed_session_activity  # noqa: E402
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
@@ -180,6 +182,19 @@ async def readyz() -> Any:
     ready = _runtime_running and herdr_ok is not False
     body = {"status": "ok" if ready else "unavailable", "running": _runtime_running, "herdr": herdr_ok}
     return JSONResponse(body, status_code=200 if ready else 503)
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str, summary: bool = False) -> dict[str, Any]:
+    try:
+        return resolve_agent_run_status(
+            instance_id,
+            summary=summary,
+            app_id=os.environ.get("AGENT_SERVICE_NAME", "cli-agent-py"),
+            client_factory=DaprWorkflowClient,
+        )
+    except AgentRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
