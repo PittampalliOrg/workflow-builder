@@ -8,6 +8,8 @@ import {
 	resolveBrowserCloseChild,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
+	waitForBrowserLaneCallReadiness,
+	waitForBrowserOperation,
 } from "./browser-lane-policy.mjs";
 
 async function waitUntil(predicate, label) {
@@ -20,6 +22,44 @@ async function waitUntil(predicate, label) {
 }
 
 describe("agent-browser lane policy", () => {
+	it("uses a referenced deadline and leaves a timed-out lane reusable", async () => {
+		let resolveReady;
+		const ready = new Promise((resolve) => {
+			resolveReady = resolve;
+		});
+		const controller = new AbortController();
+		const startedAt = Date.now();
+		const pending = await waitForBrowserLaneCallReadiness({
+			ready,
+			signal: controller.signal,
+			timeoutMs: 20,
+		});
+		assert.equal(pending.state, "pending");
+		assert.ok(Date.now() - startedAt >= 15);
+		assert.equal(controller.signal.aborted, false);
+
+		resolveReady(true);
+		const retry = await waitForBrowserLaneCallReadiness({
+			ready,
+			signal: controller.signal,
+			timeoutMs: 100,
+		});
+		assert.equal(retry.state, "ready");
+	});
+
+	it("cancels browser operation waits from their parent signal", async () => {
+		const controller = new AbortController();
+		const reason = new Error("browser generation closed");
+		const waiting = waitForBrowserOperation(
+			new Promise(() => {}),
+			controller.signal,
+			1_000,
+			"test browser operation",
+		);
+		controller.abort(reason);
+		await assert.rejects(waiting, reason);
+	});
+
 	it("offloads every execution-scoped browser when BrowserStation is configured", () => {
 		assert.equal(
 			shouldProvisionFarmBrowser({
@@ -828,7 +868,7 @@ describe("agent-browser lane policy", () => {
 		assert.ok(refreshAt < forwardAt);
 		assert.match(
 			handler.slice(sanitizeAt, forwardAt),
-			/ready !== true[\s\S]*lane is unavailable[\s\S]*await attachLaneBrowser[\s\S]*could not reconnect to its assigned lane/,
+			/waitForBrowserLaneCallReadiness[\s\S]*readiness\.state !== "ready"[\s\S]*lane is unavailable[\s\S]*await attachLaneBrowser[\s\S]*could not reconnect to its assigned lane/,
 		);
 		assert.match(
 			handler.slice(prepareAt, forwardAt),
@@ -841,6 +881,36 @@ describe("agent-browser lane policy", () => {
 		assert.match(
 			handler.slice(forwardAt),
 			/timeout: BROWSER_TOOL_CALL_TIMEOUT_MS/,
+		);
+	});
+
+	it("wires the tested cold-start deadline before lane attachment and forwarding", () => {
+		const bridge = readFileSync(
+			new URL("./bridge.mjs", import.meta.url),
+			"utf8",
+		);
+		const handler = bridge.slice(
+			bridge.indexOf("server.setRequestHandler(CallToolRequestSchema"),
+			bridge.indexOf("const cleanup = async"),
+		);
+		const readinessAt = handler.indexOf(
+			"await waitForBrowserLaneCallReadiness({",
+		);
+		const pendingAt = handler.indexOf('readiness.state === "pending"');
+		const attachAt = handler.indexOf("await attachLaneBrowser(");
+		const forwardedAt = handler.indexOf(
+			'logLaneCallTransition(browserContext, name, "forwarded")',
+		);
+		const childCallAt = handler.lastIndexOf("result = await child.callTool(");
+
+		assert.ok(readinessAt >= 0);
+		assert.ok(readinessAt < pendingAt);
+		assert.ok(pendingAt < attachAt);
+		assert.ok(attachAt < forwardedAt);
+		assert.ok(forwardedAt < childCallAt);
+		assert.match(
+			handler.slice(readinessAt, attachAt),
+			/waitForBrowserLaneCallReadiness[\s\S]*timeoutMs: LANE_CALL_WAIT_MS[\s\S]*still provisioning[\s\S]*retry this exact tool call/,
 		);
 	});
 

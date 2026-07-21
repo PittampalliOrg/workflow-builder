@@ -10,6 +10,88 @@ export function shouldCloseBrowserAfterCapture(reason) {
 	return reason !== "close";
 }
 
+const BROWSER_OPERATION_TIMEOUT_CODE = "BROWSER_OPERATION_TIMEOUT";
+
+/**
+ * Wait for one browser operation with a referenced wall-clock timer and an
+ * optional parent cancellation signal. AbortSignal.timeout() uses an unref'd
+ * timer; this helper must remain mechanically bounded while the bridge is
+ * otherwise idle waiting on an MCP response.
+ */
+export async function waitForBrowserOperation(
+	promise,
+	parentSignal,
+	timeoutMs,
+	label,
+) {
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !label) {
+		throw new Error("invalid browser operation deadline");
+	}
+	let timer = null;
+	let onAbort = null;
+	const contenders = [Promise.resolve(promise)];
+	contenders.push(
+		new Promise((_, reject) => {
+			timer = setTimeout(() => {
+				const error = new Error(`${label} exceeded ${timeoutMs}ms`);
+				error.code = BROWSER_OPERATION_TIMEOUT_CODE;
+				reject(error);
+			}, timeoutMs);
+		}),
+	);
+	if (parentSignal) {
+		contenders.push(
+			new Promise((_, reject) => {
+				onAbort = () =>
+					reject(parentSignal.reason ?? new Error(`${label} was aborted`));
+				parentSignal.addEventListener("abort", onAbort, { once: true });
+				if (parentSignal.aborted) onAbort();
+			}),
+		);
+	}
+	try {
+		return await Promise.race(contenders);
+	} finally {
+		if (timer) clearTimeout(timer);
+		if (onAbort) parentSignal.removeEventListener("abort", onAbort);
+	}
+}
+
+/**
+ * Convert BrowserStation readiness into a caller-facing state without
+ * cancelling the shared execution lease when one call reaches its wait bound.
+ */
+export async function waitForBrowserLaneCallReadiness({
+	ready,
+	signal,
+	timeoutMs,
+	now = Date.now,
+}) {
+	const startedAt = now();
+	try {
+		const readyResult = await waitForBrowserOperation(
+			ready,
+			signal,
+			timeoutMs,
+			"browser lane readiness",
+		);
+		return {
+			state: readyResult === true ? "ready" : "unavailable",
+			elapsedMs: Math.max(0, now() - startedAt),
+		};
+	} catch (error) {
+		return {
+			state: signal?.aborted
+				? "aborted"
+				: error?.code === BROWSER_OPERATION_TIMEOUT_CODE
+					? "pending"
+					: "unavailable",
+			elapsedMs: Math.max(0, now() - startedAt),
+			error,
+		};
+	}
+}
+
 function browserDeleteRetryableStatus(status) {
 	return status === 408 || status === 425 || status === 429 || status >= 500;
 }

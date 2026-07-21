@@ -66,6 +66,8 @@ import {
 	resolveBrowserCloseChild,
 	shouldCloseBrowserAfterCapture,
 	shouldProvisionFarmBrowser,
+	waitForBrowserLaneCallReadiness,
+	waitForBrowserOperation,
 } from "./browser-lane-policy.mjs";
 import { createMcpSessionLifecycle } from "./mcp-session-lifecycle.mjs";
 import {
@@ -269,7 +271,7 @@ async function drainBrowserOperations(browserContext, closeClaim, signal) {
 	if (drainedDuringGrace) return;
 	const reason = new Error("browser context is closing");
 	browserContexts.abortOperations(browserContext, closeClaim, reason);
-	await waitWithSignal(
+	await waitForBrowserOperation(
 		browserContexts.waitForOperations(browserContext, closeClaim),
 		signal,
 		BROWSER_TOOL_CALL_TIMEOUT_MS,
@@ -291,30 +293,18 @@ function boundedSignal(parentSignal, timeoutMs) {
 		: timeoutSignal;
 }
 
-async function waitWithSignal(promise, parentSignal, timeoutMs, label) {
-	const signal = boundedSignal(parentSignal, timeoutMs);
-	let onAbort;
-	try {
-		if (signal.aborted) {
-			throw parentSignal?.aborted
-				? parentSignal.reason
-				: new Error(`${label} exceeded ${timeoutMs}ms`);
-		}
-		return await Promise.race([
-			promise,
-			new Promise((_, reject) => {
-				onAbort = () =>
-					reject(
-						parentSignal?.aborted
-							? parentSignal.reason
-							: new Error(`${label} exceeded ${timeoutMs}ms`),
-					);
-				signal.addEventListener("abort", onAbort, { once: true });
-			}),
-		]);
-	} finally {
-		if (onAbort) signal.removeEventListener("abort", onAbort);
-	}
+function logLaneCallTransition(browserContext, toolName, state, details = {}) {
+	console.error(
+		`[lane-call] ${JSON.stringify({
+			event: "browser_lane_call_transition",
+			state,
+			browserSession: browserContext.browserSession,
+			generation: browserContext.generation,
+			browserId: browserContext.lane?.browserId ?? null,
+			tool: toolName,
+			...details,
+		})}`,
+	);
 }
 
 async function waitWithTimeout(promise, timeoutMs, label) {
@@ -411,11 +401,11 @@ async function persistArtifact(ctx, seen, toolName, result, signal) {
 	await persistBlob(
 		ctx,
 		{
-		bucket: spec.bucket,
-		kind: spec.kind,
-		payloadBase64,
-		contentType,
-		fileName,
+			bucket: spec.bucket,
+			kind: spec.kind,
+			payloadBase64,
+			contentType,
+			fileName,
 		},
 		signal,
 	);
@@ -517,7 +507,7 @@ function ensureLaneBrowser(browserContext) {
 			}
 			if (Date.now() > deadline)
 				throw new Error(`farm browser not ready in ${LANE_READY_TIMEOUT_MS}ms`);
-			await waitWithSignal(
+			await waitForBrowserOperation(
 				new Promise((resolve) => setTimeout(resolve, 3000)),
 				signal,
 				4000,
@@ -564,36 +554,36 @@ function runAgentBrowserConnect(browserContext, lane, signal) {
 				// agent-browser recovery cannot silently launch a local Chrome.
 				AGENT_BROWSER_CDP: lane.cdpUrl,
 			},
-				stdio: ["ignore", "ignore", "inherit"],
-			});
-			let settled = false;
-			let timer;
-			const finish = (error) => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
+			stdio: ["ignore", "ignore", "inherit"],
+		});
+		let settled = false;
+		let timer;
+		const finish = (error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
-				error ? reject(error) : resolve();
-			};
+			error ? reject(error) : resolve();
+		};
 		const onAbort = () => {
 			p.kill("SIGKILL");
 			finish(signal?.reason ?? new Error("browser lane attachment aborted"));
 		};
-			timer = setTimeout(() => {
-				p.kill("SIGKILL");
-				finish(
+		timer = setTimeout(() => {
+			p.kill("SIGKILL");
+			finish(
 				new Error(
 					`agent-browser connect exceeded ${BROWSER_PROCESS_TIMEOUT_MS}ms`,
 				),
-				);
-			}, BROWSER_PROCESS_TIMEOUT_MS);
-			p.on("exit", (code) =>
-				finish(code === 0 ? null : new Error(`connect exit ${code}`)),
 			);
-			p.on("error", finish);
+		}, BROWSER_PROCESS_TIMEOUT_MS);
+		p.on("exit", (code) =>
+			finish(code === 0 ? null : new Error(`connect exit ${code}`)),
+		);
+		p.on("error", finish);
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();
-		});
+	});
 }
 
 /** Serialize and verify attachment to the execution's original farm browser. */
@@ -603,7 +593,7 @@ function attachLaneBrowser(browserContext, signal) {
 		return Promise.reject(
 			new Error("browser lane is not current or has no CDP target"),
 		);
-			}
+	}
 	if (lane.attachmentPromise) return lane.attachmentPromise;
 	const attempt = runAgentBrowserConnect(browserContext, lane, signal).then(
 		() => {
@@ -691,7 +681,7 @@ async function spawnChild(browserContext, signal) {
 	}
 	try {
 		signal?.throwIfAborted();
-		await waitWithSignal(
+		await waitForBrowserOperation(
 			child.connect(childTransport),
 			signal,
 			BROWSER_PROCESS_TIMEOUT_MS,
@@ -863,11 +853,11 @@ async function renderAndPersistDemo(entry, signal) {
 		await persistBlob(
 			entry.ctx,
 			{
-			bucket: "assets",
-			kind: "video",
-			payloadBase64: buf.toString("base64"),
-			contentType: "video/mp4",
-			fileName: laneSuffix ? `page-${laneSuffix}.mp4` : "demo.mp4",
+				bucket: "assets",
+				kind: "video",
+				payloadBase64: buf.toString("base64"),
+				contentType: "video/mp4",
+				fileName: laneSuffix ? `page-${laneSuffix}.mp4` : "demo.mp4",
 			},
 			signal,
 		);
@@ -886,11 +876,11 @@ async function renderAndPersistDemo(entry, signal) {
 				await persistBlob(
 					entry.ctx,
 					{
-					bucket: "assets",
-					kind: "video",
-					payloadBase64: buf.toString("base64"),
-					contentType: "video/webm",
-					fileName: clip.path.split("/").pop(),
+						bucket: "assets",
+						kind: "video",
+						payloadBase64: buf.toString("base64"),
+						contentType: "video/webm",
+						fileName: clip.path.split("/").pop(),
 					},
 					signal,
 				);
@@ -1056,8 +1046,8 @@ async function plantTargetAuthCookie(browserContext, ctx, child, signal) {
 	if (!exchange) return null;
 	await child.callTool(
 		{
-		name: "agent_browser_cookies_set",
-		arguments: targetAuthCookieToolArguments(exchange),
+			name: "agent_browser_cookies_set",
+			arguments: targetAuthCookieToolArguments(exchange),
 		},
 		undefined,
 		{ timeout: BROWSER_TOOL_CALL_TIMEOUT_MS, signal },
@@ -1297,136 +1287,138 @@ async function makeProxy(ctxRef, browserContext) {
 			};
 		}
 		let closeClaim = null;
-			if (closesBrowser) {
-				closeClaim = browserContexts.claimClose(browserContext);
+		if (closesBrowser) {
+			closeClaim = browserContexts.claimClose(browserContext);
 			if (!closeClaim) {
 				const closeSucceeded =
 					await browserContexts.waitForCloseResponse(browserContext);
-					return browserCloseFollowerResult(closeSucceeded);
-				}
-				if (browserContext.lane && !browserContext.lane.cdpUrl) {
-					browserContext.lane.controller.abort(
-						new Error("browser closed during farm provisioning"),
-					);
-				}
+				return browserCloseFollowerResult(closeSucceeded);
 			}
+			if (browserContext.lane && !browserContext.lane.cdpUrl) {
+				browserContext.lane.controller.abort(
+					new Error("browser closed during farm provisioning"),
+				);
+			}
+		}
 		const operation = closesBrowser
 			? null
 			: browserContexts.acquireOperation(
 					browserContext,
 					browserContext.authorizationBinding,
 				);
-			if (!closesBrowser && !operation) {
+		if (!closesBrowser && !operation) {
 			return {
 				content: [
 					{ type: "text", text: "Browser lane authorization is closing." },
 				],
 				isError: true,
-				};
-			}
-			if (operation) pauseIdleStop(browserSession);
-			try {
-		// A lane still provisioning its farm browser must not let the first
-		// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
-		// tell the agent to retry (cold farm scale-up can take minutes).
-		const lane = browserContext.lane;
+			};
+		}
+		if (operation) pauseIdleStop(browserSession);
+		try {
+			// A lane still provisioning its farm browser must not let the first
+			// tool call race ahead onto a fresh LOCAL Chrome — wait bounded, then
+			// tell the agent to retry (cold farm scale-up can take minutes).
+			const lane = browserContext.lane;
 			if (lane && !closesBrowser) {
-				let ready;
-				try {
-					ready = operation
-						? await waitWithSignal(
-								lane.ready,
-								operation.signal,
-								LANE_CALL_WAIT_MS,
-								"browser lane readiness",
-							)
-						: await Promise.race([
-				lane.ready,
-								new Promise((resolve) =>
-									setTimeout(() => resolve("pending"), LANE_CALL_WAIT_MS),
-								),
-			]);
-				} catch {
+				const coldWait = !lane.cdpUrl;
+				if (coldWait) {
+					logLaneCallTransition(browserContext, name, "waiting", {
+						timeoutMs: LANE_CALL_WAIT_MS,
+					});
+				}
+				const readiness = await waitForBrowserLaneCallReadiness({
+					ready: lane.ready,
+					signal: operation.signal,
+					timeoutMs: LANE_CALL_WAIT_MS,
+				});
+				if (coldWait || readiness.state !== "ready") {
+					logLaneCallTransition(browserContext, name, readiness.state, {
+						elapsedMs: readiness.elapsedMs,
+					});
+				}
+				if (readiness.state === "aborted") {
 					return {
 						content: [
 							{
 								type: "text",
-								text: operation?.signal.aborted
-									? "Browser lane authorization is closing."
-									: "The browser lane did not become ready; retry this tool call.",
+								text: "Browser lane authorization is closing.",
 							},
 						],
 						isError: true,
 					};
 				}
-			if (ready === "pending") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "The browser for this task is still provisioning (farm scale-up). Wait ~30 seconds and retry this exact tool call.",
-						},
-					],
-					isError: true,
-				};
-			}
-				if (ready !== true) {
-			return {
-				content: [
-					{
-						type: "text",
+				if (readiness.state === "pending") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: "The browser for this task is still provisioning (farm scale-up). Wait ~30 seconds and retry this exact tool call.",
+							},
+						],
+						isError: true,
+					};
+				}
+				if (readiness.state !== "ready") {
+					return {
+						content: [
+							{
+								type: "text",
 								text: "The execution browser lane is unavailable; the tool was not called.",
-					},
-				],
-				isError: true,
-			};
-		}
-			try {
+							},
+						],
+						isError: true,
+					};
+				}
+				try {
 					const operationSignal = AbortSignal.any([
 						lane.controller.signal,
 						operation.signal,
 					]);
 					await attachLaneBrowser(browserContext, operationSignal);
 					await ensureLaneBoundChild(operationSignal);
-			} catch (err) {
+					if (coldWait) {
+						logLaneCallTransition(browserContext, name, "bound");
+					}
+				} catch (err) {
 					console.error(
 						`[lane] ${browserSession} reattachment failed: ${err?.message}`,
 					);
-				return {
+					return {
 						content: [
 							{
 								type: "text",
 								text: "The execution browser could not reconnect to its assigned lane; the tool was not called.",
 							},
 						],
-					isError: true,
-				};
+						isError: true,
+					};
+				}
 			}
-		}
 			if (!closesBrowser) {
 				const targetOpen =
-			name === "agent_browser_open" &&
-			ctxRef.value?.targetAuth &&
+					name === "agent_browser_open" &&
+					ctxRef.value?.targetAuth &&
 					typeof sanitizedArgs.url === "string";
 				if (targetOpen) {
-			const prepared = await prepareTargetAuth(
-				browserContext,
-				ctxRef.value,
-				child,
-				sanitizedArgs.url,
+					const prepared = await prepareTargetAuth(
+						browserContext,
+						ctxRef.value,
+						child,
+						sanitizedArgs.url,
 						operation.signal,
-			);
-			if (prepared === "failed") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Browser authorization could not be applied; navigation was not attempted.",
-						},
-					],
-					isError: true,
-				};
-			}
+					);
+					if (prepared === "failed") {
+						return {
+							content: [
+								{
+									type: "text",
+									text: "Browser authorization could not be applied; navigation was not attempted.",
+								},
+							],
+							isError: true,
+						};
+					}
 				} else if (
 					!(await refreshTargetAuthCookie(
 						browserContext,
@@ -1445,7 +1437,7 @@ async function makeProxy(ctxRef, browserContext) {
 						isError: true,
 					};
 				}
-		}
+			}
 			if (name === DEMO_SCENE_TOOL.name) {
 				try {
 					const message = await beginScene(
@@ -1467,74 +1459,74 @@ async function makeProxy(ctxRef, browserContext) {
 			}
 			// The agent is done with the browser — capture must be finalized while
 			// the browser session still exists.
-		let result;
-		if (closesBrowser) {
-			try {
-				result = await finalizeBrowserClose({
-					registry: browserContexts,
-					context: browserContext,
-					claim: closeClaim,
-					timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
-					finalize: async (signal) => {
-								await drainBrowserOperations(browserContext, closeClaim, signal);
-								const closingChild = await resolveBrowserCloseChild({
-									lane: browserContext.lane,
-									localChild: child,
-									childCdpUrl,
-									waitForLaneReady: async (ready) => {
-										try {
-											return await waitWithSignal(
-												ready,
-												signal,
-												LANE_CALL_WAIT_MS,
-												"browser close lane readiness",
-											);
-										} catch (error) {
-											if (signal.aborted) throw signal.reason ?? error;
-											return false;
-										}
-									},
-									bindLaneChild: async () => {
-										const boundChild = await ensureLaneBoundChild(
+			let result;
+			if (closesBrowser) {
+				try {
+					result = await finalizeBrowserClose({
+						registry: browserContexts,
+						context: browserContext,
+						claim: closeClaim,
+						timeoutMs: CLOSE_FINALIZATION_TIMEOUT_MS,
+						finalize: async (signal) => {
+							await drainBrowserOperations(browserContext, closeClaim, signal);
+							const closingChild = await resolveBrowserCloseChild({
+								lane: browserContext.lane,
+								localChild: child,
+								childCdpUrl,
+								waitForLaneReady: async (ready) => {
+									try {
+										return await waitForBrowserOperation(
+											ready,
 											signal,
-											closeClaim,
+											LANE_CALL_WAIT_MS,
+											"browser close lane readiness",
 										);
-										return { child: boundChild, cdpUrl: childCdpUrl };
-									},
-								});
-								if (!closingChild) {
-									discardCapture(
-										browserContext,
-										"farm lane unavailable during close",
+									} catch (error) {
+										if (signal.aborted) throw signal.reason ?? error;
+										return false;
+									}
+								},
+								bindLaneChild: async () => {
+									const boundChild = await ensureLaneBoundChild(
+										signal,
+										closeClaim,
 									);
-									console.error(
-										`[browser] ${browserSession} closed before its farm lane became usable`,
-									);
-									return {
-										content: [
-											{
-												type: "text",
-												text: "Browser session closed before its farm lane became ready.",
-											},
-										],
-									};
-								}
-						if (captures.has(browserSession)) {
-							await stopCapture(
-								browserContext,
-								"close",
-										closingChild,
-								closeClaim,
-								signal,
+									return { child: boundChild, cdpUrl: childCdpUrl };
+								},
+							});
+							if (!closingChild) {
+								discardCapture(
+									browserContext,
+									"farm lane unavailable during close",
+								);
+								console.error(
+									`[browser] ${browserSession} closed before its farm lane became usable`,
+								);
+								return {
+									content: [
+										{
+											type: "text",
+											text: "Browser session closed before its farm lane became ready.",
+										},
+									],
+								};
+							}
+							if (captures.has(browserSession)) {
+								await stopCapture(
+									browserContext,
+									"close",
+									closingChild,
+									closeClaim,
+									signal,
+								);
+							}
+							signal.throwIfAborted();
+							return closingChild.callTool(
+								{ name, arguments: sanitizedArgs },
+								undefined,
+								{ timeout: 60000, signal },
 							);
-						}
-						signal.throwIfAborted();
-								return closingChild.callTool(
-							{ name, arguments: sanitizedArgs },
-							undefined,
-							{ timeout: 60000, signal },
-						);
-					},
+						},
 						cancel: (reason) => {
 							browserContexts.abortOperations(
 								browserContext,
@@ -1543,13 +1535,16 @@ async function makeProxy(ctxRef, browserContext) {
 							);
 							return closeChild(child, "deadline agent-browser child close");
 						},
-				});
-			} catch (err) {
-				console.error(`[browser] close finalization failed: ${err?.message}`);
-				return browserCloseFailureResult();
-			}
-		} else {
+					});
+				} catch (err) {
+					console.error(`[browser] close finalization failed: ${err?.message}`);
+					return browserCloseFailureResult();
+				}
+			} else {
 				try {
+					if (lane) {
+						logLaneCallTransition(browserContext, name, "forwarded");
+					}
 					result = await child.callTool(
 						{ name, arguments: sanitizedArgs },
 						undefined,
@@ -1562,9 +1557,9 @@ async function makeProxy(ctxRef, browserContext) {
 					if (lane) browserContext.authAppliedGeneration = -1;
 					throw err;
 				}
-		}
-		if (ARTIFACT_TOOLS[name]) {
-			try {
+			}
+			if (ARTIFACT_TOOLS[name]) {
+				try {
 					await persistArtifact(
 						ctxRef.value,
 						seenPaths,
@@ -1572,40 +1567,40 @@ async function makeProxy(ctxRef, browserContext) {
 						result,
 						operation?.signal,
 					);
-			} catch (err) {
-				console.error(`[artifact] persist error: ${err?.message}`);
+				} catch (err) {
+					console.error(`[artifact] persist error: ${err?.message}`);
+				}
 			}
-		}
-		if (
-			name === "agent_browser_open" &&
-			result?.isError !== true &&
-			AUTO_CAPTURE.length &&
-			!captures.has(browserSession) &&
-			canPersist()
-		) {
-			try {
-				await startCapture(
-					browserContext,
-					ctxRef.value,
-					child,
+			if (
+				name === "agent_browser_open" &&
+				result?.isError !== true &&
+				AUTO_CAPTURE.length &&
+				!captures.has(browserSession) &&
+				canPersist()
+			) {
+				try {
+					await startCapture(
+						browserContext,
+						ctxRef.value,
+						child,
 						typeof sanitizedArgs.url === "string"
 							? sanitizedArgs.url
 							: undefined,
 						operation.signal,
-				);
-			} catch (err) {
-				console.error(`[auto-capture] start failed: ${err?.message}`);
-			}
-		}
-		return preserveMultimodalToolResult(result);
-			} finally {
-				if (operation) {
-					browserContexts.releaseOperation(operation);
-					if (browserContexts.isCurrent(browserContext)) {
-						armIdleStop(browserSession);
-					}
+					);
+				} catch (err) {
+					console.error(`[auto-capture] start failed: ${err?.message}`);
 				}
 			}
+			return preserveMultimodalToolResult(result);
+		} finally {
+			if (operation) {
+				browserContexts.releaseOperation(operation);
+				if (browserContexts.isCurrent(browserContext)) {
+					armIdleStop(browserSession);
+				}
+			}
+		}
 	});
 	const cleanup = async () => {
 		// Transport closes after every dapr-agent-py tool call — the run (and
