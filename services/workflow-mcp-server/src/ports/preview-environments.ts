@@ -26,8 +26,37 @@ export type PreviewEnvironmentLaunchInput = {
   lifecycle?: "ephemeral" | "retained";
 };
 
+export type PreviewTraceRange = "15m" | "1h" | "6h" | "24h" | "7d";
+
+const NARROWER_PREVIEW_TRACE_RANGE: Readonly<
+  Partial<Record<PreviewTraceRange, PreviewTraceRange>>
+> = Object.freeze({
+  "7d": "24h",
+  "24h": "6h",
+  "6h": "1h",
+  "1h": "15m",
+});
+
+export function parsePreviewTraceRange(
+  value: unknown,
+): PreviewTraceRange | null {
+  return value === "15m" ||
+    value === "1h" ||
+    value === "6h" ||
+    value === "24h" ||
+    value === "7d"
+    ? value
+    : null;
+}
+
+export function narrowerPreviewTraceRange(
+  range: PreviewTraceRange,
+): PreviewTraceRange | null {
+  return NARROWER_PREVIEW_TRACE_RANGE[range] ?? null;
+}
+
 export type PreviewTraceQuery = {
-  range?: "15m" | "1h" | "6h" | "24h" | "7d";
+  range?: PreviewTraceRange;
   status?: "all" | "ok" | "error";
   service?: string;
   search?: string;
@@ -54,6 +83,20 @@ export type PreviewTeardownInput = {
   forceFailed?: boolean;
   discardUnarchived?: boolean;
 };
+
+/** Stable driven-port failure contract; transport details stay in the adapter. */
+export class PreviewEnvironmentRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly retryable: boolean,
+    readonly retryAfterMs?: number,
+    readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "PreviewEnvironmentRequestError";
+  }
+}
 
 /** Product-level preview operations. Cluster and telemetry credentials stay behind the BFF. */
 export interface PreviewEnvironmentsPort {

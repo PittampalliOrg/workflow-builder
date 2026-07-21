@@ -1,26 +1,27 @@
 import type { WorkflowMcpPrincipal } from "../auth-context.js";
-import type {
-  PreviewEnvironmentLaunchInput,
-  PreviewEnvironmentsPort,
-  PreviewTeardownInput,
-  PreviewTeardownTicket,
-  PreviewTraceQuery,
+import {
+  PreviewEnvironmentRequestError,
+  type PreviewEnvironmentLaunchInput,
+  type PreviewEnvironmentsPort,
+  type PreviewTeardownInput,
+  type PreviewTeardownTicket,
+  type PreviewTraceQuery,
 } from "../ports/preview-environments.js";
 
 const DEFAULT_WORKFLOW_BUILDER_URL =
   "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 export const DEFAULT_PREVIEW_ENVIRONMENT_REQUEST_TIMEOUT_MS = 25_000;
 
-export class PreviewEnvironmentsHttpError extends Error {
+export class PreviewEnvironmentsHttpError extends PreviewEnvironmentRequestError {
   constructor(
     message: string,
     readonly status: number,
-    readonly code: string,
-    readonly retryable: boolean,
-    readonly retryAfterMs?: number,
-    readonly details?: unknown,
+    code: string,
+    retryable: boolean,
+    retryAfterMs?: number,
+    details?: unknown,
   ) {
-    super(message);
+    super(message, code, retryable, retryAfterMs, details);
     this.name = "PreviewEnvironmentsHttpError";
   }
 }
@@ -80,6 +81,38 @@ function setParam(
   value: string | number | undefined,
 ): void {
   if (value !== undefined && value !== "") params.set(name, String(value));
+}
+
+function isTimeout(cause: unknown): boolean {
+  return (
+    cause instanceof Error &&
+    (cause.name === "TimeoutError" || cause.name === "AbortError")
+  );
+}
+
+function requestTransportError(
+  cause: unknown,
+  timeoutMs: number,
+  phase: "request" | "response",
+): PreviewEnvironmentsHttpError {
+  if (isTimeout(cause)) {
+    return new PreviewEnvironmentsHttpError(
+      `Preview environment request timed out after ${timeoutMs}ms`,
+      504,
+      "preview_management_timeout",
+      true,
+    );
+  }
+  return new PreviewEnvironmentsHttpError(
+    phase === "response"
+      ? "Preview environment service returned an unreadable response"
+      : "Preview environment service is unavailable",
+    phase === "response" ? 502 : 503,
+    phase === "response"
+      ? "preview_management_invalid_response"
+      : "preview_management_unavailable",
+    true,
+  );
 }
 
 /** HTTP adapter for the BFF-owned preview management and diagnostics boundary. */
@@ -189,27 +222,27 @@ export class HttpPreviewEnvironmentsAdapter implements PreviewEnvironmentsPort {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (cause) {
-      const timedOut =
-        cause instanceof Error &&
-        (cause.name === "TimeoutError" || cause.name === "AbortError");
-      throw new PreviewEnvironmentsHttpError(
-        timedOut
-          ? `Preview environment request timed out after ${this.timeoutMs}ms`
-          : `Preview environment service is unavailable: ${
-              cause instanceof Error ? cause.message : String(cause)
-            }`,
-        timedOut ? 504 : 503,
-        timedOut ? "preview_management_timeout" : "preview_management_unavailable",
-        true,
-      );
+      throw requestTransportError(cause, this.timeoutMs, "request");
     }
 
-    const body = await response.json().catch(() => null);
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (cause) {
+      throw requestTransportError(cause, this.timeoutMs, "response");
+    }
     if (!response.ok) {
       throw responseError(
         response.status,
         body,
         response.headers?.get("retry-after") ?? null,
+      );
+    }
+    if (!object(body)) {
+      throw requestTransportError(
+        new TypeError("invalid response body"),
+        this.timeoutMs,
+        "response",
       );
     }
     return body as T;

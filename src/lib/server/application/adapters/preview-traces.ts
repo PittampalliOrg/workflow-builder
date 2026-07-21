@@ -394,7 +394,20 @@ export class HttpPreviewTraceQueryAdapter implements PreviewTraceQueryPort {
         "preview trace broker response is too large",
       );
     }
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      if (timeoutCause(cause)) {
+        throw new PreviewTraceQueryTimeoutError(
+          input.query.range,
+          this.timeoutMs,
+        );
+      }
+      throw new PreviewTraceTransportError(
+        "preview trace broker response could not be read",
+      );
+    }
     if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) {
       throw new PreviewTraceTransportError(
         "preview trace broker response is too large",

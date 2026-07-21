@@ -240,4 +240,36 @@ describe("preview trace query adapters", () => {
     expect(timeout).toHaveBeenCalledWith(18_000);
     timeout.mockRestore();
   });
+
+  it("maps an abort while consuming broker response bytes to a typed timeout", async () => {
+    const adapter = new HttpPreviewTraceQueryAdapter({
+      baseUrl: () => "http://preview-control-broker:3000",
+      credential: () => ({
+        header: "X-Preview-Control-Capability",
+        token: "d".repeat(64),
+      }),
+      fetch: vi.fn(
+        async () =>
+          ({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            text: async () => {
+              throw Object.assign(new Error("response body aborted"), {
+                name: "AbortError",
+              });
+            },
+          }) as unknown as Response,
+      ) as typeof fetch,
+      timeoutMs: 4_321,
+    });
+
+    await expect(adapter.query({ identity, query })).rejects.toMatchObject({
+      name: "PreviewTraceQueryTimeoutError",
+      code: "preview_trace_timeout",
+      range: "1h",
+      retryRange: "15m",
+      timeoutMs: 4_321,
+    } satisfies Partial<PreviewTraceQueryTimeoutError>);
+  });
 });

@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  PreviewEnvironmentSummary,
-  PreviewEnvironmentsPort,
+import {
+  PreviewEnvironmentRequestError,
+  type PreviewEnvironmentSummary,
+  type PreviewEnvironmentsPort,
 } from "../ports/preview-environments.js";
 import { ApplicationPreviewEnvironmentService } from "./preview-environments.js";
 
@@ -78,6 +79,7 @@ describe("ApplicationPreviewEnvironmentService", () => {
       runtime: { services: [] },
       traces: [{ traceId: "trace-1" }],
       traceServices: ["workflow-builder"],
+      traceFailure: null,
       generationStable: true,
       evidenceCoverage: {
         preview: "available",
@@ -159,4 +161,83 @@ describe("ApplicationPreviewEnvironmentService", () => {
       ]),
     );
   });
+
+  it("carries a typed trace timeout as safe retry metadata", async () => {
+    const adapter = port({
+      queryTraces: vi.fn(async () => {
+        throw new PreviewEnvironmentRequestError(
+          "upstream detail that must not escape",
+          "preview_trace_timeout",
+          true,
+          1_000,
+          {
+            range: "24h",
+            retryRange: "6h",
+            backend: "http://observability-internal",
+          },
+        );
+      }),
+    });
+    const service = new ApplicationPreviewEnvironmentService(adapter);
+
+    const result = await service.debug("preview-one", {
+      range: "24h",
+      status: "error",
+      service: "workflow-builder",
+      search: "failed render",
+      limit: 50,
+    });
+
+    expect(result).toMatchObject({
+      traces: null,
+      traceFailure: {
+        code: "preview_trace_timeout",
+        retryable: true,
+        range: "24h",
+        retryRange: "6h",
+        retryAfterMs: 1_000,
+      },
+      evidenceCoverage: { traces: "unavailable" },
+      telemetry: {
+        state: "partial",
+        isFinal: false,
+        warnings: [
+          "traces: Preview trace query timed out for range 24h; retry with range 6h.",
+        ],
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("upstream detail");
+    expect(JSON.stringify(result)).not.toContain("observability-internal");
+  });
+
+  it(
+    "sanitizes non-timeout trace failures without inventing retry ranges",
+    async () => {
+      const adapter = port({
+        queryTraces: vi.fn(async () => {
+          throw new PreviewEnvironmentRequestError(
+            "failed to reach http://observability-internal",
+            "preview_management_unavailable",
+            true,
+            5_000,
+            { backend: "clickhouse" },
+          );
+        }),
+      });
+      const service = new ApplicationPreviewEnvironmentService(adapter);
+
+      const result = await service.debug("preview-one", { range: "24h" });
+
+      expect(result.traceFailure).toEqual({
+        code: "preview_trace_unavailable",
+        retryable: true,
+        retryAfterMs: 5_000,
+      });
+      expect(result.telemetry.warnings).toContain(
+        "traces: Preview trace evidence is unavailable.",
+      );
+      expect(JSON.stringify(result)).not.toContain("observability-internal");
+      expect(JSON.stringify(result)).not.toContain("clickhouse");
+    },
+  );
 });

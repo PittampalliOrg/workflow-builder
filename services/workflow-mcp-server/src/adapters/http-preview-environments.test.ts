@@ -215,4 +215,67 @@ describe("HttpPreviewEnvironmentsAdapter", () => {
       details: { teardown, ticket },
     } satisfies Partial<PreviewEnvironmentsHttpError>);
   });
+
+  it("maps an abort while consuming a successful response body to a timeout", async () => {
+    const fetchImpl = vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => {
+          throw Object.assign(new Error("response body aborted"), {
+            name: "AbortError",
+          });
+        },
+      }) as unknown as Response,
+    );
+    const adapter = new HttpPreviewEnvironmentsAdapter({
+      principal,
+      fetchImpl: fetchImpl as any,
+      workflowBuilderUrl: "http://bff",
+      internalApiToken: "internal-token",
+      timeoutMs: 4_321,
+    });
+
+    await expect(adapter.list()).rejects.toMatchObject({
+      name: "PreviewEnvironmentsHttpError",
+      status: 504,
+      code: "preview_management_timeout",
+      retryable: true,
+    } satisfies Partial<PreviewEnvironmentsHttpError>);
+  });
+
+  it.each([
+    ["null JSON", async () => null],
+    [
+      "malformed JSON",
+      async () => {
+        throw new SyntaxError("unexpected token");
+      },
+    ],
+  ])(
+    "rejects a successful %s body as an invalid response",
+    async (_name, json) => {
+      const adapter = new HttpPreviewEnvironmentsAdapter({
+        principal,
+        fetchImpl: vi.fn(async () =>
+          ({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json,
+          }) as unknown as Response,
+        ) as any,
+        workflowBuilderUrl: "http://bff",
+        internalApiToken: "internal-token",
+      });
+
+      await expect(adapter.list()).rejects.toMatchObject({
+        name: "PreviewEnvironmentsHttpError",
+        status: 502,
+        code: "preview_management_invalid_response",
+        retryable: true,
+      } satisfies Partial<PreviewEnvironmentsHttpError>);
+    },
+  );
 });
