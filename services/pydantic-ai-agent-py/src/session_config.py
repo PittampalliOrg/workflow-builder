@@ -48,12 +48,14 @@ _OBJECT_LIST_FIELDS = {
 _PASSTHROUGH_OBJECT_FIELDS = {
     "compaction",
 }
+_STRUCTURED_OUTPUT_FIELDS = {"structuredOutputMode", "responseJsonSchema"}
 _PATCH_FIELDS = (
     _STRING_FIELDS
     | _STRING_LIST_FIELDS
     | _NUMBER_FIELDS
     | _OBJECT_LIST_FIELDS
     | _PASSTHROUGH_OBJECT_FIELDS
+    | _STRUCTURED_OUTPUT_FIELDS
 )
 
 
@@ -123,6 +125,8 @@ def normalize_agent_config_patch(payload: Any) -> dict[str, Any]:
     for key, value in raw.items():
         if key not in _PATCH_FIELDS:
             continue
+        if key in _STRUCTURED_OUTPUT_FIELDS:
+            continue
         if key in _STRING_FIELDS:
             normalized = _string(value)
         elif key in _STRING_LIST_FIELDS:
@@ -138,15 +142,39 @@ def normalize_agent_config_patch(payload: Any) -> dict[str, Any]:
         if normalized is not None:
             patch[key] = normalized
 
+    # Structured output is one contract. Never apply a mode or schema alone,
+    # because a partial event would leave the next durable turn fail-closed.
+    schema = raw.get("responseJsonSchema")
+    has_mode = "structuredOutputMode" in raw
+    has_schema = "responseJsonSchema" in raw
+    if (
+        has_mode
+        and has_schema
+        and raw.get("structuredOutputMode") is None
+        and schema is None
+    ):
+        patch["structuredOutputMode"] = None
+        patch["responseJsonSchema"] = None
+    elif (
+        raw.get("structuredOutputMode") == "tool"
+        and isinstance(schema, Mapping)
+        and bool(schema)
+    ):
+        patch["structuredOutputMode"] = "tool"
+        patch["responseJsonSchema"] = deepcopy(dict(schema))
+
     # The runtime enforces builtin tool changes through the existing per-run
     # `tools` allowlist. Keep the UI-facing field too, but mirror it for the
     # turn runner when the caller did not provide a more explicit allowlist.
-    if (
+    if "tools" in patch and "allowedTools" not in patch:
+        patch["allowedTools"] = list(patch["tools"])
+    elif (
         "builtinTools" in patch
         and "tools" not in patch
         and "allowedTools" not in patch
     ):
         patch["tools"] = list(patch["builtinTools"])
+        patch["allowedTools"] = list(patch["builtinTools"])
 
     return patch
 
@@ -184,6 +212,11 @@ def apply_agent_config_patch(
     clean_patch = normalize_agent_config_patch({"patch": dict(patch or {})})
     changed: list[str] = []
     for key, value in clean_patch.items():
+        if key in _STRUCTURED_OUTPUT_FIELDS and value is None:
+            if key in next_config:
+                del next_config[key]
+                changed.append(key)
+            continue
         if next_config.get(key) != value:
             next_config[key] = deepcopy(value)
             changed.append(key)

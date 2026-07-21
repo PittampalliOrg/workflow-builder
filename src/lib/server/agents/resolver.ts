@@ -690,6 +690,7 @@ async function applyOverrides(
 	let next: AgentConfig = { ...config };
 	if (overrides.tools !== undefined) {
 		next.tools = overrides.tools;
+		next.allowedTools = overrides.tools;
 	}
 	if (overrides.maxTurns !== undefined) next.maxTurns = overrides.maxTurns;
 	if (overrides.timeoutMinutes !== undefined) {

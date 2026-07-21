@@ -13,6 +13,7 @@ Normalization (design §Architecture, plan §Workstream 2):
         error_code ``workflow_child_error``, result = {message} — the evaluator
         THROWS this into the script (workflow() throws, agent() nulls)
   * cancelled / success:false / exception / timeout / empty -> status ``null``
+  * schema + runtime-owned typed failure        -> status ``error`` (no outer retry)
   * schema present + valid                      -> status ``done``, result = object
   * schema present + invalid + retries < cap    -> return ``retry_structured`` +
         refresh a ``running`` row (NO terminal row) so the pump re-dispatches
@@ -36,10 +37,18 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESULT_BYTES = 256 * 1024
 _MAX_FEEDBACK_CHARS = 2000
+_MAX_REPORTED_STRUCTURED_ATTEMPTS = 1_000_000
 _DEFAULT_MAX_STRUCTURED_RETRIES = 5
 _ERROR_MAX_STRUCTURED_RETRIES = "error_max_structured_output_retries"
+_ERROR_STRUCTURED_OUTPUT_CONFIG = "structured_output_config_error"
+_ERROR_STRUCTURED_OUTPUT_RUNTIME = "structured_output_runtime_error"
 _ERROR_WORKFLOW_CHILD = "workflow_child_error"
 _ERROR_ACTION = "action_error"
+
+_TYPED_STRUCTURED_OUTPUT_FAILURE_CODES = {
+    _ERROR_MAX_STRUCTURED_RETRIES,
+    _ERROR_STRUCTURED_OUTPUT_CONFIG,
+}
 
 
 def _cap_json_result(value: Any) -> Any:
@@ -201,6 +210,54 @@ def _is_null_result(raw: Any) -> bool:
     if raw.get("error") and not raw.get("content"):
         return True
     return False
+
+
+def _typed_structured_output_failure(raw: Any) -> dict[str, Any] | None:
+    """Normalize a runtime-owned terminal structured-output failure.
+
+    Pydantic's runtime performs its own bounded correction loop. Its typed
+    failure marker must therefore remain terminal at this journal boundary;
+    returning ``retry_structured`` here would multiply the two retry budgets.
+    Unknown or malformed markers fail closed as a generic runtime error.
+    """
+    if not isinstance(raw, dict) or "structuredOutputFailure" not in raw:
+        return None
+
+    failure = raw.get("structuredOutputFailure")
+    failure = failure if isinstance(failure, dict) else {}
+
+    supplied_code = failure.get("code")
+    code = (
+        supplied_code
+        if isinstance(supplied_code, str)
+        and supplied_code in _TYPED_STRUCTURED_OUTPUT_FAILURE_CODES
+        else _ERROR_STRUCTURED_OUTPUT_RUNTIME
+    )
+
+    attempts_value = failure.get("attemptsUsed")
+    attempts = _as_int(attempts_value)
+    if attempts < 0:
+        attempts = 0
+    attempts = min(attempts, _MAX_REPORTED_STRUCTURED_ATTEMPTS)
+
+    feedback_value = failure.get("feedback")
+    feedback = feedback_value.strip() if isinstance(feedback_value, str) else ""
+    if not feedback:
+        fallback = raw.get("error")
+        feedback = fallback.strip() if isinstance(fallback, str) else ""
+    if not feedback:
+        if code == _ERROR_MAX_STRUCTURED_RETRIES:
+            feedback = "Structured output validation exhausted the runtime retry budget."
+        elif code == _ERROR_STRUCTURED_OUTPUT_CONFIG:
+            feedback = "Structured output configuration is invalid."
+        else:
+            feedback = "The agent runtime returned an invalid structured-output failure."
+
+    return {
+        "code": code,
+        "attemptsUsed": attempts,
+        "feedback": feedback[:_MAX_FEEDBACK_CHARS],
+    }
 
 
 def record_script_call_dispatch(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -530,7 +587,25 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             _persist(row)
             return {"status": "done"}
 
-        # 3. Death / cancel / failure / timeout -> null.
+        # 3. A schema-aware runtime may own the complete structured-output
+        #    correction budget. Preserve its typed terminal failure rather than
+        #    turning success:false into null (or feeding it into this journal's
+        #    independent retry loop). Schema-gating keeps prompt-only runtime
+        #    behavior unchanged.
+        typed_failure = (
+            _typed_structured_output_failure(raw) if schema is not None else None
+        )
+        if typed_failure is not None:
+            row = _base_row("error")
+            row["result"] = {
+                "message": typed_failure["feedback"],
+                "attemptsUsed": typed_failure["attemptsUsed"],
+            }
+            row["errorCode"] = typed_failure["code"]
+            _persist(row)
+            return {"status": "error", "errorCode": typed_failure["code"]}
+
+        # 4. Death / cancel / failure / timeout -> null.
         if _is_null_result(raw):
             row = _base_row("null")
             row["result"] = None
@@ -539,14 +614,14 @@ def record_script_call_result(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
         content = _extract_content(raw)
 
-        # 4. No schema -> done with the raw text.
+        # 5. No schema -> done with the raw text.
         if not schema:
             row = _base_row("done")
             row["result"] = _cap_result(content)
             _persist(row)
             return {"status": "done"}
 
-        # 5. Schema present -> extract + validate.
+        # 6. Schema present -> extract + validate.
         parsed = _first_balanced_json_object(content)
         errors: list[str]
         if parsed is None:

@@ -14,6 +14,7 @@ import pytest
 
 import src.workflow as wfmod
 from src.workflow import agent_workflow, call_llm, check_cancellation, execute_tool
+from src.structured_output import MAX_STRUCTURED_OUTPUT_NUDGES, STRUCTURED_OUTPUT_NUDGE
 
 
 class FakeCtx:
@@ -60,7 +61,7 @@ def test_single_llm_message_no_tools():
     yielded, result = drive(
         gen,
         [
-            {"cancelled": False},              # check_cancellation
+            {"cancelled": False},  # check_cancellation
             llm_response(text="hello there"),  # call_llm — final (no tool calls)
         ],
     )
@@ -84,11 +85,15 @@ def test_tool_calls_fan_out_as_separate_activities():
         gen,
         [
             {"cancelled": False},
-            llm_response(tool_calls=calls),                      # iteration 0 LLM
-            [{"message": {"kind": "request", "id": "r1"}},        # when_all results
-             {"message": {"kind": "request", "id": "r2"}}],
+            llm_response(tool_calls=calls),  # iteration 0 LLM
+            [
+                {"message": {"kind": "request", "id": "r1"}},  # when_all results
+                {"message": {"kind": "request", "id": "r2"}},
+            ],
             {"cancelled": False},
-            llm_response(text="done", messages=[{"kind": "request"}, {"kind": "response"}]),
+            llm_response(
+                text="done", messages=[{"kind": "request"}, {"kind": "response"}]
+            ),
         ],
     )
     # exactly one execute_tool activity per tool call
@@ -108,7 +113,9 @@ def test_tool_calls_fan_out_as_separate_activities():
 
 def test_cancellation_short_circuits_before_llm():
     ctx = FakeCtx()
-    gen = agent_workflow(ctx, {"task": "x", "context": {"cancellationScopeId": "scope1"}})
+    gen = agent_workflow(
+        ctx, {"task": "x", "context": {"cancellationScopeId": "scope1"}}
+    )
     yielded, result = drive(
         gen,
         [{"cancelled": True, "reason": "stop", "stop_reason": {"type": "terminated"}}],
@@ -139,6 +146,228 @@ def test_iteration_budget_exhaustion():
     assert result["success"] is False
     assert "2-iteration budget" in result["content"]
     assert len([c for c in ctx.calls if c[0] is call_llm]) == 2
+
+
+def test_structured_output_tool_finishes_with_canonical_json():
+    ctx = FakeCtx()
+    config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {"summary": {"type": "string"}},
+        },
+    }
+    call = {
+        "toolName": "StructuredOutput",
+        "toolCallId": "so1",
+        "args": {"summary": "done"},
+    }
+    gen = agent_workflow(
+        ctx,
+        {"task": "do work", "context": {"agentConfig": config}},
+    )
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=[call]),
+            [
+                {
+                    "message": {"kind": "request"},
+                    "structuredOutputAttempt": True,
+                    "structuredOutput": '{"summary": "done"}',
+                }
+            ],
+        ],
+    )
+
+    assert result["success"] is True
+    assert result["content"] == '{"summary": "done"}'
+    assert len([c for c in ctx.calls if c[0] is call_llm]) == 1
+
+
+def test_plain_text_finish_is_nudged_before_structured_output():
+    ctx = FakeCtx()
+    config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {"summary": {"type": "string"}},
+        },
+    }
+    call = {
+        "toolName": "StructuredOutput",
+        "toolCallId": "so2",
+        "args": {"summary": "done"},
+    }
+    gen = agent_workflow(
+        ctx,
+        {
+            "task": "do work",
+            "context": {"agentConfig": config},
+            "maxIterations": 2,
+        },
+    )
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(text="I am done"),
+            {"cancelled": False},
+            llm_response(tool_calls=[call], messages=[{"kind": "response"}]),
+            [
+                {
+                    "message": {"kind": "request"},
+                    "structuredOutputAttempt": True,
+                    "structuredOutput": '{"summary": "done"}',
+                }
+            ],
+        ],
+    )
+
+    second_llm = [c[1] for c in ctx.calls if c[0] is call_llm][1]
+    assert second_llm["task"] == STRUCTURED_OUTPUT_NUDGE
+    assert result["content"] == '{"summary": "done"}'
+
+
+def test_mixed_coding_and_structured_calls_defer_finalization():
+    ctx = FakeCtx()
+    config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+        },
+    }
+    mixed_calls = [
+        {
+            "toolName": "write_file",
+            "toolCallId": "write1",
+            "args": {"path": "index.html", "content": "ok"},
+        },
+        {
+            "toolName": "StructuredOutput",
+            "toolCallId": "so-early",
+            "args": {"summary": "too early"},
+        },
+    ]
+    final_call = {
+        "toolName": "StructuredOutput",
+        "toolCallId": "so-final",
+        "args": {"summary": "done"},
+    }
+    gen = agent_workflow(
+        ctx,
+        {"task": "build", "context": {"agentConfig": config}},
+    )
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=mixed_calls),
+            [
+                {"message": {"kind": "request"}, "toolSucceeded": True},
+                {
+                    "message": {"kind": "request"},
+                    "toolSucceeded": False,
+                    "structuredOutputAttempt": True,
+                    "toolError": "submit by itself",
+                },
+            ],
+            {"cancelled": False},
+            llm_response(tool_calls=[final_call]),
+            [
+                {
+                    "message": {"kind": "request"},
+                    "toolSucceeded": True,
+                    "structuredOutputAttempt": True,
+                    "structuredOutput": '{"summary": "done"}',
+                }
+            ],
+        ],
+    )
+
+    dispatched = [c[1]["call"] for c in ctx.calls if c[0] is execute_tool]
+    assert "deferStructuredOutput" not in dispatched[0]
+    assert dispatched[1]["deferStructuredOutput"] is True
+    assert result["success"] is True
+    assert result["content"] == '{"summary": "done"}'
+
+
+def test_invalid_structured_calls_exhaust_the_local_budget_terminally():
+    ctx = FakeCtx()
+    config = {
+        "structuredOutputMode": "tool",
+        "responseJsonSchema": {"type": "object"},
+    }
+    responses = []
+    for index in range(MAX_STRUCTURED_OUTPUT_NUDGES + 1):
+        responses.extend(
+            [
+                {"cancelled": False},
+                llm_response(
+                    tool_calls=[
+                        {
+                            "toolName": "StructuredOutput",
+                            "toolCallId": f"bad-{index}",
+                            "args": {},
+                        }
+                    ]
+                ),
+                [
+                    {
+                        "message": {"kind": "request"},
+                        "toolSucceeded": False,
+                        "structuredOutputAttempt": True,
+                        "toolError": "schema mismatch",
+                    }
+                ],
+            ]
+        )
+    gen = agent_workflow(
+        ctx,
+        {
+            "task": "finish",
+            "context": {"agentConfig": config},
+            "maxIterations": MAX_STRUCTURED_OUTPUT_NUDGES + 2,
+        },
+    )
+
+    _, result = drive(gen, responses)
+
+    assert result["success"] is False
+    assert result["errorCode"] == "error_max_structured_output_retries"
+    assert result["structuredOutputFailure"] == {
+        "code": "error_max_structured_output_retries",
+        "attemptsUsed": MAX_STRUCTURED_OUTPUT_NUDGES + 1,
+        "feedback": "schema mismatch",
+    }
+
+
+def test_invalid_structured_schema_returns_a_typed_configuration_failure():
+    ctx = FakeCtx()
+    gen = agent_workflow(
+        ctx,
+        {
+            "task": "finish",
+            "context": {
+                "agentConfig": {
+                    "structuredOutputMode": "tool",
+                    "responseJsonSchema": {"type": "array"},
+                }
+            },
+        },
+    )
+
+    yielded, result = drive(gen, [])
+
+    assert yielded == []
+    assert ctx.calls == []
+    assert result["success"] is False
+    assert result["errorCode"] == "structured_output_config_error"
+    assert "object-shaped" in result["content"]
 
 
 def test_retry_policy_shape():

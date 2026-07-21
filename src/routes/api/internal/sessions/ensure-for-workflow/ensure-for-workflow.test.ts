@@ -96,6 +96,14 @@ const mocks = vi.hoisted(() => {
 		capabilityBundles: {
 			flattenBundles: vi.fn(async (config: unknown) => config),
 		},
+		runtimeRegistry: {
+			getStructuredOutputCapability: vi.fn(async (runtimeId: string) =>
+				runtimeId === "dapr-agent-py" ||
+				runtimeId === "pydantic-ai-agent-py"
+					? { mode: "tool" as const, jsonSchemaDraft: "2020-12" as const }
+					: null,
+			),
+		},
 		sessionGoals: {
 			ensureWorkflowEvaluatorGoal: vi.fn(async () => ({ status: "created" })),
 		},
@@ -156,6 +164,7 @@ vi.mock("$lib/server/application", () => ({
     workflowMcpSessionTokenSigner: mocks.workflowMcpSessionTokenSigner,
 		teamStore: mocks.teamStore,
 		capabilityBundles: mocks.capabilityBundles,
+		runtimeRegistry: mocks.runtimeRegistry,
 	}),
 }));
 
@@ -954,6 +963,46 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(config.runtimeIsolation).toBe("dedicated");
 		expect(config.agentAppId).toBe("agent-runtime-kimi-k3-juicefs-builder-agent");
 		expect(childInput.sandboxName).toBe("dapr-agent-py-juicefs");
+	});
+
+	it("refuses StructuredOutput when the saved agent resolves to an unsupported runtime", async () => {
+		mocks.teamStore.resolveAgentIdBySlug.mockResolvedValue({
+			id: "unsupported-agent-id",
+		});
+		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+			config: {
+				runtime: "claude-code-cli",
+				modelSpec: "anthropic/claude-opus-4-8",
+				mcpServers: [],
+				skills: [],
+				runtimeOverridePolicy: RUNTIME_POLICY,
+			},
+			projectId: "project-1",
+			runtime: "claude-code-cli",
+			runtimeAppId: null,
+		} as never);
+
+		const payload = await callEnsureForWorkflow({
+			runtime: "dapr-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "openai",
+			token: "unused",
+			body: {
+				resolveAgentSlug: "unsupported-agent",
+				agentConfig: {
+					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+					structuredOutputMode: "tool",
+					responseJsonSchema: {
+						type: "object",
+						properties: { summary: { type: "string" } },
+					},
+				},
+			},
+		});
+
+		expect(payload).toMatchObject({ code: "agent_ref_unresolved" });
+		expect(String(payload.error)).toContain("runtime 'claude-code-cli'");
+		expect(mocks.state.hostCalls).toHaveLength(0);
 	});
 
 	it("leaves single-shot SW-1.0 spawns without MCP wiring", async () => {

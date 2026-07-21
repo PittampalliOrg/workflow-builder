@@ -761,6 +761,7 @@ export function getApplicationAdapters(
   let sessionRuntimeConfigs: DefaultSessionRuntimeConfigReader | undefined;
   let sessionRuntimeEvents: DaprSessionRuntimeEventRaiser | undefined;
   let sessionAgentConfigCommands: SessionAgentConfigCommandAdapter | undefined;
+  let runtimeRegistry: LocalRuntimeRegistryReader | undefined;
   let sessionGoalStore: PostgresSessionGoalStore | undefined;
   let peerAgentResolver: RegistryPeerAgentResolver | undefined;
   let agentSkillHydration: PostgresAgentSkillHydrationRepository | undefined;
@@ -2767,6 +2768,8 @@ export function getApplicationAdapters(
     (sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
       patches: getWorkflowData(),
     }));
+  const getRuntimeRegistry = () =>
+    (runtimeRegistry ??= new LocalRuntimeRegistryReader());
   const workflowScheduler =
     config.workflowSchedulerAdapter === "lite-stub"
       ? new LiteStubWorkflowScheduler()
@@ -2827,7 +2830,7 @@ export function getApplicationAdapters(
       sessionAgentConfigCommands: getSessionAgentConfigCommands(),
       peerAgentResolver: getPeerAgentResolver(),
       workflowAgentReads: getPeerAgentResolver(),
-      runtimeRegistry: new LocalRuntimeRegistryReader(),
+      runtimeRegistry: getRuntimeRegistry(),
       sessionExperimentAgents: getPeerAgentResolver(),
       codeCheckpoints: getCodeCheckpoints(),
       evaluationArtifacts: getEvaluationArtifacts(),
@@ -2906,6 +2909,9 @@ export function getApplicationAdapters(
     },
     get sessionAgentConfig() {
       return getSessionAgentConfig();
+    },
+    get runtimeRegistry() {
+      return getRuntimeRegistry();
     },
     get sessionGoals() {
       return getSessionGoals();

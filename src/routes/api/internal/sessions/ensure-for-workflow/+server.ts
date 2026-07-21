@@ -5,6 +5,10 @@ import type {
 	WorkflowDataService,
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
+import {
+	runtimeSupportsStructuredOutput,
+	validateDraft202012ObjectSchema,
+} from "$lib/server/application/structured-output";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import {
@@ -146,6 +150,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		promptStackCompiler,
 		workflowTargetAuth,
     workflowMcpSessionTokenSigner,
+		runtimeRegistry,
 	} = getApplicationAdapters();
 
 	const traceContext = extractTraceContext(request);
@@ -458,9 +463,17 @@ export const POST: RequestHandler = async ({ request }) => {
 				id: effectiveAgentId ?? undefined,
 				version: effectiveAgentVersion ?? undefined,
 			});
-			if (dbAgent?.config) {
-        const flattened =
-          await getApplicationAdapters().capabilityBundles.flattenBundles(
+			if (!dbAgent?.config) {
+				return json(
+					{
+						code: "agent_ref_unresolved",
+						error: `agent '${resolveAgentSlugRaw}' has no resolvable published configuration`,
+					},
+					{ status: 422 },
+				);
+			}
+			const flattened =
+				await getApplicationAdapters().capabilityBundles.flattenBundles(
 					dbAgent.config,
 					dbAgent.projectId ?? projectId,
 				);
@@ -487,6 +500,35 @@ export const POST: RequestHandler = async ({ request }) => {
 				) {
 					merged.agentAppId = dbAgent.runtimeAppId.trim();
 				}
+				if (merged.structuredOutputMode === "tool") {
+					const resolvedRuntime = String(merged.runtime || "").trim();
+					const capability =
+						await runtimeRegistry.getStructuredOutputCapability(
+							resolvedRuntime,
+						);
+					if (!runtimeSupportsStructuredOutput(capability)) {
+						return json(
+							{
+								code: "agent_ref_unresolved",
+								error: `agent '${resolveAgentSlugRaw}' resolves to runtime '${resolvedRuntime || "unknown"}', which does not support StructuredOutput with Draft 2020-12`,
+							},
+							{ status: 422 },
+						);
+					}
+					const schema = validateDraft202012ObjectSchema(
+						merged.responseJsonSchema,
+					);
+					if (!schema.ok) {
+						return json(
+							{
+								code: "agent_ref_unresolved",
+								error: schema.error,
+							},
+							{ status: 422 },
+						);
+					}
+					merged.responseJsonSchema = schema.schema;
+				}
 				agentConfig = await prepareAgentConfig(merged as AgentConfig);
 				// Re-derive config-sourced fallbacks from the now-full config so the
 				// session inherits the agent's own timeout / max-turns.
@@ -497,12 +539,18 @@ export const POST: RequestHandler = async ({ request }) => {
 					parsePositiveInteger(body.maxIterations) ??
 					parsePositiveInteger(body.maxTurns) ??
 					parsePositiveInteger(agentConfig?.maxTurns);
-			}
 		} catch (err) {
 			console.warn(
 				"[ensure-for-workflow] failed to load resolved agent config for slug",
 				resolvedAgentSlug,
 				err,
+			);
+			return json(
+				{
+					code: "agent_ref_unresolved",
+					error: `agent '${resolveAgentSlugRaw}' configuration could not be resolved`,
+				},
+				{ status: 422 },
 			);
 		}
 	}

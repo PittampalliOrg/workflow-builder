@@ -39,7 +39,7 @@ def otel_memory(monkeypatch):
     monkeypatch.setattr(telemetry, "_tracer_provider", provider)
     monkeypatch.setattr(telemetry, "_tracer", provider.get_tracer("test"))
     monkeypatch.setattr(telemetry, "_inbound_context", None)
-    monkeypatch.setattr(wfmod, "instrument_model", lambda m: m)
+    monkeypatch.setattr(wfmod, "instrument_model", lambda m, **_: m)
     yield exporter
 
 

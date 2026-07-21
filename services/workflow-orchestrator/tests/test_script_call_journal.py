@@ -72,6 +72,92 @@ def test_agent_kind_schema_validates(captured):
     assert captured[-1]["result"] == {"ok": True}
 
 
+def test_runtime_structured_exhaustion_is_terminal_and_bounded(captured):
+    schema = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    raw = {
+        "success": False,
+        "structuredOutputFailure": {
+            "code": "error_max_structured_output_retries",
+            "attemptsUsed": jc._MAX_REPORTED_STRUCTURED_ATTEMPTS + 99,
+            "feedback": "x" * (jc._MAX_FEEDBACK_CHARS + 99),
+        },
+    }
+
+    res = _record({"kind": "agent", "schema": schema, "retries": 0}, raw)
+
+    assert res == {
+        "status": "error",
+        "errorCode": "error_max_structured_output_retries",
+    }
+    assert captured[-1]["status"] == "error"
+    assert (
+        captured[-1]["result"]["attemptsUsed"]
+        == jc._MAX_REPORTED_STRUCTURED_ATTEMPTS
+    )
+    assert len(captured[-1]["result"]["message"]) == jc._MAX_FEEDBACK_CHARS
+
+
+def test_runtime_structured_config_failure_is_terminal(captured):
+    schema = {"type": "object"}
+    raw = {
+        "success": False,
+        "structuredOutputFailure": {
+            "code": "structured_output_config_error",
+            "attemptsUsed": -4,
+            "feedback": "bad schema",
+        },
+    }
+
+    res = _record({"kind": "agent", "schema": schema}, raw)
+
+    assert res == {"status": "error", "errorCode": "structured_output_config_error"}
+    assert captured[-1]["result"] == {"message": "bad schema", "attemptsUsed": 0}
+
+
+def test_unknown_runtime_structured_failure_fails_closed(captured):
+    schema = {"type": "object"}
+    raw = {
+        "success": False,
+        "error": "unsafe future failure",
+        "structuredOutputFailure": {
+            "code": "retry_this_forever",
+            "attemptsUsed": True,
+            "feedback": {"not": "text"},
+        },
+    }
+
+    res = _record({"kind": "agent", "schema": schema}, raw)
+
+    assert res == {"status": "error", "errorCode": "structured_output_runtime_error"}
+    assert captured[-1]["status"] == "error"
+    assert captured[-1]["errorCode"] == "structured_output_runtime_error"
+    assert captured[-1]["result"] == {
+        "message": "unsafe future failure",
+        "attemptsUsed": 0,
+    }
+
+
+def test_prompt_only_runtime_failure_behavior_is_unchanged(captured):
+    raw = {
+        "success": False,
+        "structuredOutputFailure": {
+            "code": "error_max_structured_output_retries",
+            "attemptsUsed": 6,
+            "feedback": "ignored without a schema",
+        },
+    }
+
+    res = _record({"kind": "agent"}, raw)
+
+    assert res == {"status": "null"}
+    assert captured[-1]["status"] == "null"
+    assert captured[-1]["result"] is None
+
+
 def test_skip(captured):
     res = _record({"kind": "agent"}, {"skipped": True})
     assert res["status"] == "skipped"

@@ -4,9 +4,14 @@ import {
 } from "$lib/agents/model-options";
 import { resolveAgentConfigMcpForProject } from "$lib/server/agents/mcp-resolution-application";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
+import {
+	runtimeSupportsStructuredOutput,
+	validateDraft202012ObjectSchema,
+} from "$lib/server/application/structured-output";
 import type { AgentSkillConfig } from "$lib/agent-skill-presets";
 import type { McpServerProfileConfig } from "$lib/server/agent-profiles";
 import type {
+	RuntimeStructuredOutputCapability,
 	SessionAgentConfigPatch,
 	SessionCommandAgent,
 } from "$lib/server/application/ports";
@@ -25,10 +30,14 @@ type SessionAgentLookup = (input: {
 	agentId: string;
 	agentVersion?: number | null;
 }) => Promise<SessionCommandAgent | null>;
+type RuntimeStructuredOutputCapabilityLookup = (
+	runtimeId: string,
+) => Promise<RuntimeStructuredOutputCapability | null>;
 
 export type RaiseSessionAgentConfigPatchDependencies = Partial<{
 	getSession: SessionLookup;
 	resolveSessionAgent: SessionAgentLookup;
+	getStructuredOutputCapability: RuntimeStructuredOutputCapabilityLookup;
 }>;
 
 async function getSessionViaWorkflowData(
@@ -46,9 +55,17 @@ async function resolveSessionAgentViaWorkflowData(input: {
 	return getApplicationAdapters().workflowData.resolveSessionAgent(input);
 }
 
+async function getStructuredOutputCapabilityViaRegistry(runtimeId: string) {
+	const { getApplicationAdapters } = await import("$lib/server/application");
+	return getApplicationAdapters().runtimeRegistry.getStructuredOutputCapability(
+		runtimeId,
+	);
+}
+
 const defaultRaiseSessionAgentConfigPatchDependencies = {
 	getSession: getSessionViaWorkflowData,
 	resolveSessionAgent: resolveSessionAgentViaWorkflowData,
+	getStructuredOutputCapability: getStructuredOutputCapabilityViaRegistry,
 } satisfies Required<RaiseSessionAgentConfigPatchDependencies>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,6 +144,52 @@ function rawPatch(value: unknown): Record<string, unknown> {
 export function normalizeSessionAgentConfigPatch(value: unknown): PatchResult {
 	const raw = rawPatch(value);
 	const patch: SessionAgentConfigPatch = {};
+	const hasStructuredOutputMode = "structuredOutputMode" in raw;
+	const hasResponseJsonSchema = "responseJsonSchema" in raw;
+
+	if (hasStructuredOutputMode || hasResponseJsonSchema) {
+		if (
+			hasStructuredOutputMode &&
+			hasResponseJsonSchema &&
+			raw.structuredOutputMode === null &&
+			raw.responseJsonSchema === null
+		) {
+			patch.structuredOutputMode = null;
+			patch.responseJsonSchema = null;
+		} else if (
+			raw.structuredOutputMode === null ||
+			raw.responseJsonSchema === null
+		) {
+			return {
+				ok: false,
+				status: 400,
+				error:
+					"structuredOutputMode and responseJsonSchema must be cleared together",
+			};
+		} else if (!hasStructuredOutputMode || !hasResponseJsonSchema) {
+			return {
+				ok: false,
+				status: 400,
+				error:
+					"structuredOutputMode and responseJsonSchema must be provided together",
+			};
+		} else if (raw.structuredOutputMode !== "tool") {
+			return {
+				ok: false,
+				status: 400,
+				error: "structuredOutputMode must be tool",
+			};
+		} else {
+			const validation = validateDraft202012ObjectSchema(
+				raw.responseJsonSchema,
+			);
+			if (!validation.ok) {
+				return { ok: false, status: 400, error: validation.error };
+			}
+			patch.structuredOutputMode = "tool";
+			patch.responseJsonSchema = validation.schema;
+		}
+	}
 
 	if ("modelSpec" in raw) {
 		const modelSpec = canonicalAgentModelSpec(stringValue(raw.modelSpec));
@@ -206,8 +269,15 @@ export function normalizeSessionAgentConfigPatch(value: unknown): PatchResult {
 		if (value !== undefined) patch[key] = value;
 	}
 
-	if (patch.builtinTools && !patch.tools && !patch.allowedTools) {
+	if ("tools" in patch && !("allowedTools" in patch)) {
+		patch.allowedTools = [...(patch.tools ?? [])];
+	} else if (
+		Array.isArray(patch.builtinTools) &&
+		!("tools" in patch) &&
+		!("allowedTools" in patch)
+	) {
 		patch.tools = [...patch.builtinTools];
+		patch.allowedTools = [...patch.builtinTools];
 	}
 
 	if (Object.keys(patch).length === 0) {
@@ -216,12 +286,16 @@ export function normalizeSessionAgentConfigPatch(value: unknown): PatchResult {
 	return { ok: true, patch };
 }
 
-async function resolveRuntimeMcpPatch(
+async function resolveRuntimePatch(
 	sessionId: string,
 	patch: SessionAgentConfigPatch,
 	dependencyOverrides: RaiseSessionAgentConfigPatchDependencies = {},
 ): Promise<PatchResult> {
-	if (!("mcpServers" in patch) && !("mcpConnectionMode" in patch)) {
+	const needsMcpResolution =
+		"mcpServers" in patch || "mcpConnectionMode" in patch;
+	const needsStructuredOutputCapability =
+		patch.structuredOutputMode === "tool";
+	if (!needsMcpResolution && !needsStructuredOutputCapability) {
 		return { ok: true, patch };
 	}
 	const deps: Required<RaiseSessionAgentConfigPatchDependencies> = {
@@ -231,6 +305,9 @@ async function resolveRuntimeMcpPatch(
 		resolveSessionAgent:
 			dependencyOverrides.resolveSessionAgent ??
 			defaultRaiseSessionAgentConfigPatchDependencies.resolveSessionAgent,
+		getStructuredOutputCapability:
+			dependencyOverrides.getStructuredOutputCapability ??
+			defaultRaiseSessionAgentConfigPatchDependencies.getStructuredOutputCapability,
 	};
 	const session = await deps.getSession(sessionId);
 	if (!session) return { ok: false, status: 404, error: "Session not found" };
@@ -244,6 +321,19 @@ async function resolveRuntimeMcpPatch(
 		...agent.config,
 		...patch,
 	};
+	const runtimeId = mergedConfig.runtime ?? agent.runtime;
+	if (needsStructuredOutputCapability) {
+		const capability = await deps.getStructuredOutputCapability(runtimeId);
+		if (!runtimeSupportsStructuredOutput(capability)) {
+			return {
+				ok: false,
+				status: 400,
+				error: `Runtime "${runtimeId}" does not support StructuredOutput with Draft 2020-12`,
+			};
+		}
+	}
+	if (!needsMcpResolution) return { ok: true, patch };
+
 	const resolutionTarget = getRuntimeDescriptor(mergedConfig.runtime ?? agent.runtime);
 	const resolved = await resolveAgentConfigMcpForProject(
 		mergedConfig,
@@ -278,7 +368,7 @@ export async function raiseSessionAgentConfigPatch(
 	const normalized = normalizeSessionAgentConfigPatch(input);
 	if (!normalized.ok) return normalized;
 
-	const resolved = await resolveRuntimeMcpPatch(
+	const resolved = await resolveRuntimePatch(
 		sessionId,
 		normalized.patch,
 		dependencyOverrides,

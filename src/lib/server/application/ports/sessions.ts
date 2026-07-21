@@ -443,6 +443,8 @@ export type SessionAgentConfigPatch = {
 	maxIterations?: number;
 	timeoutMinutes?: number;
 	temperature?: number;
+	structuredOutputMode?: "tool" | null;
+	responseJsonSchema?: Record<string, unknown> | null;
 };
 
 export type SessionAgentConfigPatchResult =

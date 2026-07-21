@@ -9,9 +9,12 @@ const source = readFileSync(
 );
 
 describe("fresh Kimi K3 animation seed", () => {
-  it("creates the new dynamic workflow without reconciling prior animation workflows", () => {
-    expect(source).toContain("KIMI_K3_ANIMATION_WORKFLOW_ID");
-    expect(source).toContain('engineType: "dynamic-script"');
+	it("creates the new dynamic workflow without reconciling prior animation workflows", () => {
+		expect(source).toContain("KIMI_K3_ANIMATION_WORKFLOW_ID");
+		expect(source).toContain("PYDANTIC_AI_K3_ANIMATION_WORKFLOW_ID");
+		expect(source).toContain("ensurePydanticAiK3AnimationAgent");
+		expect(source).toContain("buildPydanticAiK3AnimationSpec");
+		expect(source).toContain('engineType: "dynamic-script"');
     expect(source).not.toContain('"three-b-one-b-skill-animation"');
     expect(source).not.toContain('"three-b-one-b-skill-animation-cli"');
   });

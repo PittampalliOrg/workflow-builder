@@ -84,6 +84,24 @@ def test_apply_agent_config_patch_does_not_mutate_original_config() -> None:
     assert changed == ["tools"]
 
 
+def test_structured_output_patch_and_atomic_clear() -> None:
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+    enabled, enabled_keys = apply_agent_config_patch(
+        {"modelSpec": "kimi/kimi-k3"},
+        {"structuredOutputMode": "tool", "responseJsonSchema": schema},
+    )
+    assert enabled["structuredOutputMode"] == "tool"
+    assert enabled["responseJsonSchema"] == schema
+    assert enabled_keys == ["structuredOutputMode", "responseJsonSchema"]
+
+    cleared, cleared_keys = apply_agent_config_patch(
+        enabled,
+        {"structuredOutputMode": None, "responseJsonSchema": None},
+    )
+    assert cleared == {"modelSpec": "kimi/kimi-k3"}
+    assert cleared_keys == ["structuredOutputMode", "responseJsonSchema"]
+
+
 def test_external_control_event_maps_to_user_event_lane() -> None:
     event_name, payload = external_control_event_as_user_event(
         SESSION_CONFIG_UPDATE_EVENT,

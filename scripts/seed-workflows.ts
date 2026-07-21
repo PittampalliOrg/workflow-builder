@@ -5,6 +5,7 @@
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
  * - Upsert workflow aicodingagent001 (AI Coding Agent)
  * - Create the fresh kimi-k3-3blue1brown-animation dynamic-script workflow
+ * - Create the fresh pydantic-ai-k3-3blue1brown-animation dynamic-script workflow
  * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for canonical OpenShell plan/execute nodes
  *
@@ -48,6 +49,13 @@ import {
 	WORKFLOW_ID as KIMI_K3_ANIMATION_WORKFLOW_ID,
 	WORKFLOW_NAME as KIMI_K3_ANIMATION_WORKFLOW_NAME,
 } from "./upsert-kimi-k3-3blue1brown-animation-workflow";
+import {
+	buildSpec as buildPydanticAiK3AnimationSpec,
+	ensurePydanticAgent as ensurePydanticAiK3AnimationAgent,
+	WORKFLOW_DESCRIPTION as PYDANTIC_AI_K3_ANIMATION_WORKFLOW_DESCRIPTION,
+	WORKFLOW_ID as PYDANTIC_AI_K3_ANIMATION_WORKFLOW_ID,
+	WORKFLOW_NAME as PYDANTIC_AI_K3_ANIMATION_WORKFLOW_NAME,
+} from "./upsert-pydantic-ai-k3-3blue1brown-animation-workflow";
 
 const DATABASE_URL =
 	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -4545,6 +4553,27 @@ async function seedWorkflow() {
 			userId,
 			projectId,
 			spec: buildKimiK3AnimationSpec(kimiK3AnimationAgentRef),
+			nodes: [],
+			edges: [],
+			visibility: "public",
+			engineType: "dynamic-script",
+		});
+
+		const pydanticAiK3AnimationAgentRef =
+			await ensurePydanticAiK3AnimationAgent(sql, {
+				userId,
+				projectId,
+			});
+		await upsertRawWorkflow({
+			db,
+			workflowId: PYDANTIC_AI_K3_ANIMATION_WORKFLOW_ID,
+			name: PYDANTIC_AI_K3_ANIMATION_WORKFLOW_NAME,
+			description: PYDANTIC_AI_K3_ANIMATION_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: buildPydanticAiK3AnimationSpec(
+				pydanticAiK3AnimationAgentRef,
+			),
 			nodes: [],
 			edges: [],
 			visibility: "public",

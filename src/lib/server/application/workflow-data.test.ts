@@ -1088,6 +1088,7 @@ function fakeRuntimeRegistry(): RuntimeRegistryReader {
 	} satisfies Record<string, SessionRuntimeCliAuthReadModel>;
 	return {
 		listSessionRuntimeCliAuth: vi.fn(async () => cliAuthByRuntime),
+		getStructuredOutputCapability: vi.fn(async () => null),
 	};
 }
 

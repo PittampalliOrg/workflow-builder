@@ -637,6 +637,7 @@ describe("resolveSpecAgentRefs", () => {
 		const inlined = body.agentConfig as AgentConfig;
 		expect(inlined.maxTurns).toBe(5);
 		expect(inlined.tools).toEqual(["read_file"]);
+		expect(inlined.allowedTools).toEqual(["read_file"]);
 		expect(body.overrides).toBeUndefined();
 		// sandbox override merged onto env-derived policy
 		expect((body.sandboxPolicy as Record<string, unknown>).mode).toBe(

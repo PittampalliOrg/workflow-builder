@@ -32,19 +32,36 @@ from src.config import (
     DEFAULT_MAX_ITERATIONS,
     KIMI_BASE_URL,
     KIMI_DEFAULT_MODEL,
+    MEDIA_HISTORY_MAX_IMAGES,
+    MEDIA_REQUEST_MAX_BYTES,
+    MEDIA_REQUEST_MAX_IMAGES,
     KIMI_TIMEOUT_SECONDS,
+    WORKSPACE_ROOT,
 )
+from src.composition import durable_media_port
 from src.event_publisher import publish_session_event
 from src.messages_io import (
     bootstrap_request,
-    dump_messages,
-    load_messages,
+    messages_have_media,
     openinference_messages,
     response_text,
     response_tool_calls,
+    sanitize_invalid_tool_call_args,
     tool_return_message,
+    tool_result_display_text,
+    tool_result_has_media,
     truncate,
     user_request,
+)
+from src.structured_output import (
+    MAX_STRUCTURED_OUTPUT_NUDGES,
+    STRUCTURED_OUTPUT_NUDGE,
+    STRUCTURED_OUTPUT_MAX_BYTES,
+    STRUCTURED_OUTPUT_TOOL_NAME,
+    StructuredOutputConfigError,
+    configured_schema,
+    evaluate_call,
+    output_tool_definition,
 )
 from src.session_native import terminal_stop_reason_from_events
 from src.telemetry import (
@@ -68,6 +85,34 @@ RETRY_POLICY = wf.RetryPolicy(
 CALL_LLM_ACTIVITY = "call_llm"
 EXECUTE_TOOL_ACTIVITY = "execute_tool"
 CHECK_CANCELLATION_ACTIVITY = "check_cancellation"
+
+STRUCTURED_OUTPUT_EXHAUSTED = "error_max_structured_output_retries"
+STRUCTURED_OUTPUT_CONFIG_ERROR = "structured_output_config_error"
+
+
+def _structured_failure_result(
+    *,
+    messages: list[dict],
+    iterations: int,
+    attempts: int,
+    feedback: str,
+    code: str = STRUCTURED_OUTPUT_EXHAUSTED,
+) -> dict[str, Any]:
+    detail = str(feedback or "Structured output was not produced.")[:2000]
+    return {
+        "role": "assistant",
+        "content": detail,
+        "success": False,
+        "error": detail,
+        "errorCode": code,
+        "structuredOutputFailure": {
+            "code": code,
+            "attemptsUsed": attempts,
+            "feedback": detail,
+        },
+        "iterations": iterations,
+        "messages": messages,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +188,23 @@ def build_model():
     return OpenAIChatModel(
         KIMI_DEFAULT_MODEL,
         provider=OpenAIProvider(base_url=KIMI_BASE_URL, api_key=api_key),
+        profile=_kimi_model_profile,
     )
+
+
+def _kimi_model_profile(base: dict[str, Any]) -> dict[str, Any]:
+    """Keep Kimi's wire contract exact instead of applying OpenAI rewrites."""
+    return {
+        **base,
+        "json_schema_transformer": None,
+        "supports_json_schema_output": True,
+        "supports_thinking": True,
+        "thinking_always_enabled": True,
+        "openai_chat_thinking_field": "reasoning_content",
+        "openai_chat_send_back_thinking_parts": "field",
+        "openai_supports_tool_choice_required": True,
+        "openai_supports_strict_tool_definition": False,
+    }
 
 
 def build_model_settings() -> dict[str, Any]:
@@ -194,7 +255,9 @@ def check_cancellation(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     if not request:
         return {"cancelled": False}
     stop_reason = terminal_stop_reason_from_events([request]) or {"type": "terminated"}
-    reason = str(request.get("reason") or stop_reason.get("reason") or "session cancelled")
+    reason = str(
+        request.get("reason") or stop_reason.get("reason") or "session cancelled"
+    )
     return {"cancelled": True, "reason": reason, "stop_reason": stop_reason}
 
 
@@ -212,7 +275,9 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     agent_cfg = context.get("agentConfig") or {}
     iteration = int(payload.get("iteration") or 0)
     session_id = str(context.get("sessionId") or "") or None
-    scope = str(context.get("cancellationScopeId") or context.get("workflowInstanceId") or "")
+    scope = str(
+        context.get("cancellationScopeId") or context.get("workflowInstanceId") or ""
+    )
     turn_id = str(context.get("turnId") or "turn")
     logger.info(
         "[activity:%s] iteration=%d scope=%s", CALL_LLM_ACTIVITY, iteration, scope
@@ -220,7 +285,14 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
 
     async def run(span) -> dict:
         router = get_router(agent_cfg)
-        messages = load_messages(payload.get("messages"))
+        media = durable_media_port(WORKSPACE_ROOT)
+        restored = await media.restore(
+            payload.get("messages") or [],
+            max_media_items=MEDIA_HISTORY_MAX_IMAGES,
+            max_request_images=MEDIA_REQUEST_MAX_IMAGES,
+            max_request_bytes=MEDIA_REQUEST_MAX_BYTES,
+        )
+        messages = restored
         task = str(payload.get("task") or "")
         if task:
             if not messages:
@@ -239,14 +311,47 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
 
         from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
 
+        try:
+            schema = configured_schema(agent_cfg)
+        except StructuredOutputConfigError as exc:
+            durable_messages = await media.externalize(messages)
+            return {
+                "messages": durable_messages,
+                "toolCalls": [],
+                "text": "",
+                "configurationError": str(exc),
+            }
+        function_tools = await router.tool_defs()
+        if schema and any(
+            tool.name == STRUCTURED_OUTPUT_TOOL_NAME for tool in function_tools
+        ):
+            durable_messages = await media.externalize(messages)
+            return {
+                "messages": durable_messages,
+                "toolCalls": [],
+                "text": "",
+                "configurationError": (
+                    "A configured harness or MCP tool collides with the reserved "
+                    "StructuredOutput tool name."
+                ),
+            }
+        if schema:
+            function_tools = [output_tool_definition(schema), *function_tools]
         params = ModelRequestParameters(
-            function_tools=await router.tool_defs(),
+            function_tools=function_tools,
+            output_mode="text",
+            output_tools=[],
+            # Match dapr-agent-py's proven Kimi contract: normal coding tools
+            # and the synthetic result tool coexist under tool_choice=auto.
             allow_text_output=True,
         )
         # Native pydantic-ai instrumentation: the wrapped model emits the
         # GenAI-semconv `chat <model>` span (request params, messages, usage,
         # cost, token metrics) as a child of this activity's span.
-        model = instrument_model(build_model())
+        model = instrument_model(
+            build_model(),
+            include_content=not messages_have_media(messages),
+        )
         request_context = ModelRequestContext(
             model=model,
             messages=messages,
@@ -267,11 +372,25 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         response = await router.apply_model_request(request_context, base_handler)
         response = await router.apply_after_model_request(request_context, response)
         input_messages = list(request_context.messages)
-        messages = list(request_context.messages)
-        messages.append(response)
-
         text = response_text(response)
         tool_calls = response_tool_calls(response)
+        invalid_call_ids: set[str] = set()
+        for call in tool_calls:
+            if (
+                call.get("toolName") == STRUCTURED_OUTPUT_TOOL_NAME
+                and int(call.get("argsSizeBytes") or 0) > STRUCTURED_OUTPUT_MAX_BYTES
+            ):
+                call["args"] = {}
+                call["argsError"] = (
+                    f"were {int(call['argsSizeBytes'])} UTF-8 bytes; the maximum "
+                    f"is {STRUCTURED_OUTPUT_MAX_BYTES}. Return a smaller object."
+                )
+            if call.get("argsError"):
+                invalid_call_ids.add(str(call.get("toolCallId") or ""))
+        response = sanitize_invalid_tool_call_args(response, invalid_call_ids)
+        messages = list(request_context.messages)
+        messages.append(response)
+        durable_messages = await media.externalize(messages)
         usage = response.usage
 
         if span is not None:
@@ -307,7 +426,9 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
                     span.set_attribute("llm.finish_reason", str(finish))
                 if content_capture_enabled():
                     set_content_attr(
-                        span, "llm.input_messages", openinference_messages(input_messages)
+                        span,
+                        "llm.input_messages",
+                        openinference_messages(input_messages),
                     )
                     set_content_attr(
                         span, "llm.output_messages", openinference_messages([response])
@@ -353,7 +474,7 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
                 logger.debug("[call-llm] usage publish skipped: %s", exc)
 
         return {
-            "messages": dump_messages(messages),
+            "messages": durable_messages,
             "toolCalls": tool_calls,
             "text": text,
         }
@@ -380,12 +501,16 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     agent_cfg = context.get("agentConfig") or {}
     iteration = int(payload.get("iteration") or 0)
     session_id = str(context.get("sessionId") or "") or None
-    scope = str(context.get("cancellationScopeId") or context.get("workflowInstanceId") or "")
+    scope = str(
+        context.get("cancellationScopeId") or context.get("workflowInstanceId") or ""
+    )
     turn_id = str(context.get("turnId") or "turn")
 
     name = str(call.get("toolName") or "")
     tool_call_id = str(call.get("toolCallId") or "")
     args = call.get("args") or {}
+    args_error = str(call.get("argsError") or "").strip() or None
+    defer_structured = bool(call.get("deferStructuredOutput"))
     logger.info(
         "[activity:%s] tool=%s id=%s iteration=%d scope=%s",
         EXECUTE_TOOL_ACTIVITY,
@@ -394,8 +519,33 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         iteration,
         scope,
     )
+    try:
+        schema = configured_schema(agent_cfg)
+    except StructuredOutputConfigError as exc:
+        schema = None
+        configuration_error = str(exc)
+    else:
+        configuration_error = None
 
-    async def run() -> tuple[str, str | None]:
+    async def run() -> tuple[Any, str | None]:
+        if configuration_error:
+            result = f"Error: StructuredOutput configuration is invalid: {configuration_error}"
+            return result, result
+        if name == STRUCTURED_OUTPUT_TOOL_NAME and schema is not None:
+            if defer_structured:
+                result = (
+                    "Error: StructuredOutput cannot be submitted in the same "
+                    "response as coding tools. Review those tool results, then "
+                    "call StructuredOutput again by itself."
+                )
+                return result, result
+            valid, result = evaluate_call(schema, args, args_error=args_error)
+            return result, None if valid else result
+
+        if args_error:
+            result = f"Tool {name} arguments {args_error}"
+            return result, result
+
         router = get_router(agent_cfg)
         try:
             result = await router.call(name, args)
@@ -412,12 +562,21 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
                 call_part = ToolCallPart(
                     tool_name=name, args=dict(args or {}), tool_call_id=tool_call_id
                 )
-                result = await router.apply_after_tool_execute(
-                    call=call_part, tool_def=None, args=dict(args or {}), result=result
-                )
+                # OverflowingToolOutput serializes arbitrary values as JSON.
+                # Applying it to BinaryContent would replace the pixels with a
+                # text spill pointer before durable media externalization.
+                if not tool_result_has_media(result):
+                    result = await router.apply_after_tool_execute(
+                        call=call_part,
+                        tool_def=None,
+                        args=dict(args or {}),
+                        result=result,
+                    )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[execute-tool] after_tool_execute chain failed: %s", exc)
-            return (result if isinstance(result, str) else str(result)), None
+                logger.warning(
+                    "[execute-tool] after_tool_execute chain failed: %s", exc
+                )
+            return result, None
         except Exception as exc:  # noqa: BLE001
             logger.warning("[execute-tool] %s failed: %s", name, exc)
             return f"Tool {name} failed: {type(exc).__name__}: {exc}", str(exc)
@@ -445,7 +604,8 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
                     instance_id=scope,
                 )
 
-            output, error = asyncio.run(run())
+            result, error = asyncio.run(run())
+            output = tool_result_display_text(result)
 
             if span is not None:
                 if content_capture_enabled():
@@ -475,8 +635,20 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     finally:
         flush_telemetry()
 
-    message = tool_return_message(name, tool_call_id, output)
-    return {"message": dump_messages([message])[0]}
+    message = tool_return_message(name, tool_call_id, result)
+    media = durable_media_port(WORKSPACE_ROOT)
+    durable_message = asyncio.run(media.externalize([message]))[0]
+    return {
+        "message": durable_message,
+        "toolSucceeded": error is None,
+        "toolError": error,
+        "structuredOutputAttempt": (
+            name == STRUCTURED_OUTPUT_TOOL_NAME and schema is not None
+        ),
+        "structuredOutput": (
+            result if name == STRUCTURED_OUTPUT_TOOL_NAME and error is None else None
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +679,17 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
     task: str | None = str(wf_input.get("task") or "") or None
     final_text = ""
     iterations_used = 0
+    try:
+        structured_schema = configured_schema(context.get("agentConfig") or {})
+    except StructuredOutputConfigError as exc:
+        return _structured_failure_result(
+            messages=messages,
+            iterations=0,
+            attempts=0,
+            feedback=str(exc),
+            code=STRUCTURED_OUTPUT_CONFIG_ERROR,
+        )
+    structured_failures = 0
 
     for iteration in range(max_iterations):
         cancel = yield ctx.call_activity(
@@ -540,30 +723,113 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
         task = None  # consumed by the bootstrap iteration
         messages = list(llm_out.get("messages") or [])
         iterations_used = iteration + 1
+        configuration_error = str(llm_out.get("configurationError") or "").strip()
+        if configuration_error:
+            return _structured_failure_result(
+                messages=messages,
+                iterations=iterations_used,
+                attempts=structured_failures,
+                feedback=configuration_error,
+                code=STRUCTURED_OUTPUT_CONFIG_ERROR,
+            )
         tool_calls = list(llm_out.get("toolCalls") or [])
 
         if not tool_calls:
+            if structured_schema is not None:
+                structured_failures += 1
+                if structured_failures <= MAX_STRUCTURED_OUTPUT_NUDGES:
+                    task = STRUCTURED_OUTPUT_NUDGE
+                    continue
+                return _structured_failure_result(
+                    messages=messages,
+                    iterations=iterations_used,
+                    attempts=structured_failures,
+                    feedback=(
+                        "Kimi repeatedly finished without calling the required "
+                        "StructuredOutput tool."
+                    ),
+                )
             final_text = str(llm_out.get("text") or "")
             break
 
+        output_calls = (
+            [
+                call
+                for call in tool_calls
+                if call.get("toolName") == STRUCTURED_OUTPUT_TOOL_NAME
+            ]
+            if structured_schema is not None
+            else []
+        )
+        normal_calls = [
+            call
+            for call in tool_calls
+            if call.get("toolName") != STRUCTURED_OUTPUT_TOOL_NAME
+        ]
+
+        # A result generated before co-emitted coding tools have run cannot be
+        # trusted. Execute every call so Kimi receives a matching tool result,
+        # but defer StructuredOutput and require it alone on the next turn.
+        mixed_turn = bool(output_calls and normal_calls)
+        calls_to_execute = []
+        for call in tool_calls:
+            if mixed_turn and call in output_calls:
+                calls_to_execute.append({**call, "deferStructuredOutput": True})
+            else:
+                calls_to_execute.append(call)
         tool_tasks = [
             ctx.call_activity(
                 execute_tool,
                 input={"call": call, "context": context, "iteration": iteration},
                 retry_policy=RETRY_POLICY,
             )
-            for call in tool_calls
+            for call in calls_to_execute
         ]
         tool_results = yield wf.when_all(tool_tasks)
+        structured_final = None
+        structured_errors: list[str] = []
         for result in tool_results:
             message = (result or {}).get("message")
             if message:
                 messages.append(message)
+            candidate = (result or {}).get("structuredOutput")
+            if structured_final is None and isinstance(candidate, str) and candidate:
+                structured_final = candidate
+            elif (result or {}).get("structuredOutputAttempt"):
+                structured_errors.append(
+                    str(
+                        (result or {}).get("toolError")
+                        or "StructuredOutput validation failed."
+                    )[:2000]
+                )
+        if structured_final is not None:
+            final_text = structured_final
+            break
+        if output_calls:
+            structured_failures += len(output_calls)
+            if structured_failures > MAX_STRUCTURED_OUTPUT_NUDGES:
+                return _structured_failure_result(
+                    messages=messages,
+                    iterations=iterations_used,
+                    attempts=structured_failures,
+                    feedback=(
+                        structured_errors[-1]
+                        if structured_errors
+                        else "StructuredOutput finalization failed."
+                    ),
+                )
     else:
         final_text = (
             f"Stopped after reaching the {max_iterations}-iteration budget "
             "without a final answer."
         )
+        if structured_schema is not None:
+            return _structured_failure_result(
+                messages=messages,
+                iterations=iterations_used,
+                attempts=structured_failures,
+                feedback=final_text,
+            )
         return {
             "role": "assistant",
             "content": final_text,

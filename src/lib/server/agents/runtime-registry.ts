@@ -64,6 +64,20 @@ export type RuntimeCapabilities = {
 	supportsPermissionGating: boolean;
 	supportsPlugins: boolean;
 	supportsCompaction: boolean;
+	/** Final structured results can be submitted through the runtime's output tool. */
+	structuredOutputMode?: "tool";
+	/** JSON Schema dialect accepted by the structured-output validator. */
+	structuredOutputJsonSchemaDraft?: "2020-12";
+	/** Modalities accepted directly from a user turn by this runtime. */
+	userInputModalities?: Array<"text" | "image" | "video">;
+	/** Modalities a tool result can preserve as native model input. */
+	toolResultModalities?: Array<"text" | "image" | "video">;
+	/** The runtime exposes a confined ReadMediaFile image tool. */
+	supportsReadMediaFile?: boolean;
+	/** Binary media is kept out of durable workflow payloads. */
+	supportsMediaExternalization?: boolean;
+	/** How binary media is represented in durable workflow history. */
+	durableMediaMode?: "content-addressed";
 	incrementalEvents: boolean;
 	ownsSandbox: boolean;
 	requiresWarmPool: boolean;

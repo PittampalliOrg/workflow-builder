@@ -57,6 +57,17 @@ def test_router_cache_shared_across_activities(workspace):
     assert r3 is not r1
 
 
+def test_router_cache_changes_when_session_tool_policy_narrows(workspace):
+    import asyncio as aio
+
+    readable = toolsets_mod.get_router({"tools": ["read_file"]})
+    denied = toolsets_mod.get_router({"tools": []})
+
+    assert denied is not readable
+    assert set(aio.run(readable.tools())) == {"read_file", "read_tool_result"}
+    assert set(aio.run(denied.tools())) == {"read_tool_result"}
+
+
 def test_router_builds_compaction_and_overflow_capabilities(workspace):
     router = toolsets_mod.get_router({})
     names = {type(c).__name__ for c in router._capabilities}
@@ -64,6 +75,134 @@ def test_router_builds_compaction_and_overflow_capabilities(workspace):
     assert "ClampOversizedMessages" in names
     assert "SlidingWindow" in names
     assert "FileSystem" in names and "Shell" in names
+    assert "FunctionToolset" in names
+
+
+def test_router_enforces_explicit_tool_narrowing(workspace):
+    import asyncio as aio
+
+    router = toolsets_mod.ToolRouter(
+        {"tools": ["read_file"], "allowedTools": ["read_file"]}
+    )
+    assert set(aio.run(router.tools())) == {"read_file", "read_tool_result"}
+
+    router = toolsets_mod.ToolRouter({"tools": []})
+    assert set(aio.run(router.tools())) == {"read_tool_result"}
+
+    router = toolsets_mod.ToolRouter({"tools": ["execute_command"]})
+    assert set(aio.run(router.tools())) == {"run_command", "read_tool_result"}
+
+    router = toolsets_mod.ToolRouter(
+        {"tools": [], "builtinTools": ["read_file", "ReadMediaFile"]}
+    )
+    assert set(aio.run(router.tools())) == {
+        "read_file",
+        "ReadMediaFile",
+        "read_tool_result",
+    }
+
+    router = toolsets_mod.ToolRouter(
+        {
+            "tools": [],
+            "builtinTools": ["read_file", "write_file"],
+            "allowedTools": ["read_file"],
+        }
+    )
+    assert set(aio.run(router.tools())) == {"read_file", "read_tool_result"}
+
+
+def test_router_enforces_tool_narrowing_on_cached_mcp_listing(workspace):
+    import asyncio as aio
+    import time
+
+    class CachedMcpToolset:
+        pass
+
+    toolset = CachedMcpToolset()
+    router = toolsets_mod.ToolRouter(
+        {"tools": ["read_file"], "allowedTools": ["read_file"]}
+    )
+    router._toolsets = [toolset]
+    router._network_toolsets = {id(toolset)}
+    router._mcp_tools_cache = {
+        id(toolset): (
+            time.monotonic() + 60,
+            {"read_file": object(), "write_file": object()},
+        )
+    }
+
+    assert set(aio.run(router.tools())) == {"read_file"}
+
+
+def test_router_enforces_per_server_mcp_allowlist(monkeypatch, workspace):
+    import asyncio as aio
+    import pydantic_ai.capabilities as capabilities
+
+    called: list[str] = []
+
+    class FakeToolset:
+        async def get_tools(self, _ctx):
+            return {"read_issue": object(), "delete_issue": object()}
+
+        async def call_tool(self, name, _args, _ctx, _tool):
+            called.append(name)
+            return name
+
+    class FakeMCP:
+        def __init__(self, _url, **_kwargs):
+            self.toolset = FakeToolset()
+
+        def get_toolset(self):
+            return self.toolset
+
+    monkeypatch.setattr(capabilities, "MCP", FakeMCP)
+    router = toolsets_mod.ToolRouter(
+        {
+            "builtinTools": ["read_file"],
+            "tools": [],
+            "mcpServers": [
+                {
+                    "url": "https://mcp.example.test/mcp",
+                    "allowedTools": ["read_issue"],
+                }
+            ]
+        }
+    )
+
+    exposed = aio.run(router.tools())
+    assert "read_issue" in exposed
+    assert "delete_issue" not in exposed
+    assert "read_file" in exposed
+    assert "read_tool_result" in exposed
+    assert aio.run(router.call("read_issue", {})) == "read_issue"
+    with pytest.raises(KeyError, match="unknown tool"):
+        aio.run(router.call("delete_issue", {}))
+    assert called == ["read_issue"]
+
+
+def test_harness_support_tool_wins_over_mcp_name_collision(monkeypatch, workspace):
+    import asyncio as aio
+    import pydantic_ai.capabilities as capabilities
+
+    class FakeToolset:
+        async def get_tools(self, _ctx):
+            return {"read_tool_result": object(), "remote_tool": object()}
+
+    class FakeMCP:
+        def __init__(self, _url, **_kwargs):
+            self.toolset = FakeToolset()
+
+        def get_toolset(self):
+            return self.toolset
+
+    monkeypatch.setattr(capabilities, "MCP", FakeMCP)
+    router = toolsets_mod.ToolRouter(
+        {"mcpServers": [{"url": "https://mcp.example.test/mcp"}]}
+    )
+
+    exposed = aio.run(router.tools())
+    assert "remote_tool" in exposed
+    assert id(exposed["read_tool_result"][0]) in router._support_toolsets
 
 
 def test_compaction_flags_disable_capabilities(monkeypatch, tmp_path):
@@ -191,12 +330,21 @@ async def test_read_tool_result_tool_is_offered(workspace):
     assert {"read_file", "write_file", "run_command"} <= names
 
 
+async def test_read_tool_result_survives_runtime_tool_ceiling(workspace):
+    """The overflow reader is infrastructure, not an optional agent tool."""
+    router = toolsets_mod.get_router(
+        {
+            "builtinTools": ["read_file", "write_file"],
+            "allowedTools": ["read_file"],
+        }
+    )
+    assert set(await router.tools()) == {"read_file", "read_tool_result"}
+
+
 def test_execute_tool_does_not_relist_toolsets(monkeypatch, workspace):
     """Regression guard: execute_tool must NOT call router.tools() a second
     time for the after_tool_execute hook (that re-lists MCP over the network
     and can wedge the durable activity). It routes tool_def=None instead."""
-    import src.workflow as _wf
-
     calls = {"count": 0}
     real = toolsets_mod.ToolRouter.tools
 
@@ -210,7 +358,11 @@ def test_execute_tool_does_not_relist_toolsets(monkeypatch, workspace):
     out = execute_tool(
         FakeActivityCtx(),
         {
-            "call": {"toolName": "read_file", "toolCallId": "t1", "args": {"path": "f.txt"}},
+            "call": {
+                "toolName": "read_file",
+                "toolCallId": "t1",
+                "args": {"path": "f.txt"},
+            },
             "context": {},
             "iteration": 0,
         },
@@ -241,8 +393,11 @@ def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
     async def go():
         return await router.tools()
 
-    names = set(_asyncio.get_event_loop().run_until_complete(go())
-                if False else __import__("asyncio").run(go()))
+    names = set(
+        _asyncio.get_event_loop().run_until_complete(go())
+        if False
+        else __import__("asyncio").run(go())
+    )
     # local FS/Shell tools still present despite the hung MCP toolset
     assert {"read_file", "run_command"} <= names
 
@@ -316,8 +471,11 @@ def test_stamp_workflow_mcp_session_token_targets_only_workflow_mcp():
 
     cfg = {
         "mcpServers": [
-            {"name": "wfb_team", "url": "http://workflow-mcp-server.ns.svc:3200/mcp",
-             "headers": {"X-Wfb-Team-Id": "team-1"}},
+            {
+                "name": "wfb_team",
+                "url": "http://workflow-mcp-server.ns.svc:3200/mcp",
+                "headers": {"X-Wfb-Team-Id": "team-1"},
+            },
             {"name": "gh", "url": "http://ap-github-service.ns.svc/mcp"},
         ]
     }
@@ -357,7 +515,11 @@ def test_mcp_capability_forwards_headers(monkeypatch, tmp_path):
             ]
         }
     )
-    mcp_caps = [c for c in caps if type(c).__name__ == "MCP"]
+    mcp_caps = [
+        c.capability
+        for c in caps
+        if type(c).__name__ == "_McpCapabilityBinding"
+    ]
     assert len(mcp_caps) == 1
     assert mcp_caps[0].headers == {
         "X-Wfb-Session-Token": "tok",

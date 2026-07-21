@@ -254,6 +254,8 @@ export type AgentConfig = {
 
 	builtinTools: string[];
 	tools?: string[];
+	/** Runtime-only effective ceiling after a node/session tools override. */
+	allowedTools?: string[];
 	mcpConnectionMode: "project" | "explicit" | "auto";
 	mcpServers: McpServerProfileConfig[];
 	mcpConnectionWarnings?: string[];
