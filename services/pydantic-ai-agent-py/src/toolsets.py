@@ -46,6 +46,7 @@ from src.config import (
     MCP_TOOLS_CACHE_SECONDS,
     OVERFLOW_ENABLED,
     REPO_INVENTORY_TOOL_ENABLED,
+    SHELL_DENIED_ENV_PATTERNS,
     SHELL_TIMEOUT_SECONDS,
     WORKSPACE_ROOT,
 )
@@ -79,7 +80,15 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
 
     capabilities: list[Any] = [
         FileSystem(root_dir=root),
-        Shell(cwd=root, default_timeout=float(SHELL_TIMEOUT_SECONDS)),
+        # denied_env_patterns scrubs credential names from the shell
+        # subprocess's inherited env (KIMI_API_KEY, provider keys, internal
+        # token, …) so an agent command can't exfiltrate the pod's secrets.
+        # Background-process tools (start/check/stop_command) come with Shell.
+        Shell(
+            cwd=root,
+            default_timeout=float(SHELL_TIMEOUT_SECONDS),
+            denied_env_patterns=SHELL_DENIED_ENV_PATTERNS,
+        ),
     ]
 
     try:
