@@ -75,6 +75,9 @@ MCP_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_TIMEOUT_SECONDS", 30)
 # MCP LISTING caches (per pod): successes reused for the session's activities,
 # failing servers skipped without re-probing. See ToolRouter.tools().
 MCP_TOOLS_CACHE_SECONDS = env_int("PYDANTIC_AI_MCP_TOOLS_CACHE_SECONDS", 300)
+# RepoContext inventory tool (+ its "read and translate it" system-prompt hint)
+# — default OFF: the hint reads as a standing mission and hijacks vague turns.
+REPO_INVENTORY_TOOL_ENABLED = env_bool("PYDANTIC_AI_REPO_INVENTORY_TOOL", False)
 MCP_FAIL_CACHE_SECONDS = env_int("PYDANTIC_AI_MCP_FAIL_CACHE_SECONDS", 120)
 
 # ---------------------------------------------------------------------------
