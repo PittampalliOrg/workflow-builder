@@ -18,7 +18,7 @@ import {
 	boundDiagnosticEvidence,
 	redactDiagnosticEvidence
 } from '$lib/server/application/diagnostic-redaction';
-import { isExpectedKubernetesNotFound } from '$lib/server/observability/span-error-policy';
+import { isExpectedKubernetesNotFound } from '$lib/server/application/span-error-policy';
 
 export type WorkflowDiagnosticsQueryResponse = {
 	body: Record<string, unknown>;

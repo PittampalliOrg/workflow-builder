@@ -12,7 +12,7 @@ import {
 	buildStepGraphDynamicScript,
 	type ServiceGraphScriptCallRow
 } from '$lib/server/otel/service-graph';
-import { isExpectedKubernetesNotFound } from '$lib/server/observability/span-error-policy';
+import { isExpectedKubernetesNotFound } from '$lib/server/application/span-error-policy';
 import { costFor } from '$lib/server/pricing/model-pricing';
 import type {
 	RunDigest,
