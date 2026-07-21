@@ -56,6 +56,7 @@ import {
 	WORKFLOW_ID as PYDANTIC_AI_K3_ANIMATION_WORKFLOW_ID,
 	WORKFLOW_NAME as PYDANTIC_AI_K3_ANIMATION_WORKFLOW_NAME,
 } from "./upsert-pydantic-ai-k3-3blue1brown-animation-workflow";
+import PLATFORM_INCIDENT_ANALYSIS_SCRIPT from "./fixtures/dynamic-scripts/platform-incident-analysis.js?raw";
 
 const DATABASE_URL =
 	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -68,6 +69,10 @@ const AI_CODING_AGENT_WORKFLOW_ID = "aicodingagent001";
 const AI_CODING_AGENT_WORKFLOW_NAME = "AI Coding Agent";
 const AI_CODING_AGENT_WORKFLOW_DESCRIPTION =
 	"System workflow for ai/main coding sessions. Clones the selected repository into a sandbox, creates an OpenShell coding plan, waits for approval, and then executes the approved plan in the same run.";
+const PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_ID = "platform-incident-analysis";
+const PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_NAME = "platform-incident-analysis";
+const PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_DESCRIPTION =
+	"Read-only agent triage for Drasi-detected workflow stalls, session failure episodes, Sandbox/Kueue provisioning failures, and Dapr resource drift.";
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID =
 	"2mjd2mrptkf8zaxembsbp";
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_NAME =
@@ -4539,6 +4544,28 @@ async function seedWorkflow() {
 			projectId,
 			nodes: buildAiCodingAgentNodes(),
 			edges: buildAiCodingAgentEdges(),
+		});
+
+		await upsertRawWorkflow({
+			db,
+			workflowId: PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_ID,
+			name: PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_NAME,
+			description: PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			spec: {
+				engine: "dynamic-script",
+				script: PLATFORM_INCIDENT_ANALYSIS_SCRIPT,
+				meta: {
+					name: PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_NAME,
+					description: PLATFORM_INCIDENT_ANALYSIS_WORKFLOW_DESCRIPTION,
+					phases: [{ title: "Triage" }, { title: "Recommend" }],
+				},
+			},
+			nodes: [],
+			edges: [],
+			visibility: "private",
+			engineType: "dynamic-script",
 		});
 
 		const kimiK3AnimationAgentRef = await ensureKimiK3AnimationAgent(sql, {
