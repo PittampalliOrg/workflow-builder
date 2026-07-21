@@ -162,6 +162,17 @@ describe('buildRunDigest', () => {
 				}
 			}),
 			span({
+				spanId: 'session-sandbox-delete',
+				serviceName: 'workflow-builder',
+				status: 'error',
+				attributes: {
+					'http.method': 'DELETE',
+					'http.status_code': 404,
+					'http.url':
+						'https://10.96.0.1/apis/agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxes/agent-host-agent-session-b3859df99ea09c31123c'
+				}
+			}),
+			span({
 				spanId: 'warm-pool-probe',
 				serviceName: 'workflow-builder',
 				status: 'error',
