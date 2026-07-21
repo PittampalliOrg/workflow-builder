@@ -77,7 +77,7 @@ export class ApplicationTriggeredWorkflowStartService {
 				idempotent: true,
 				triggerSource: triggerId || `event:${workflowId ?? workflowName}`,
 			});
-			this.logStartResult(result, workflowId, workflowName);
+			return this.logStartResult(result, workflowId, workflowName);
 		} catch (err) {
 			this.logError(
 				"[workflow-triggers/start] unexpected error; ACK to avoid wedge",
@@ -92,15 +92,27 @@ export class ApplicationTriggeredWorkflowStartService {
 		result: WorkflowRunStartResult,
 		workflowId: string | undefined,
 		workflowName: string | undefined,
-	) {
+	): TriggeredWorkflowStartResult {
 		if (!result.ok) {
+			if ([404, 429, 503].includes(result.status)) {
+				this.logWarn(
+					"[workflow-triggers/start] start deferred; will redeliver",
+					{
+						status: result.status,
+						error: result.error,
+						workflowId,
+						workflowName,
+					},
+				);
+				return retry();
+			}
 			this.logWarn("[workflow-triggers/start] start failed; dropping message", {
 				status: result.status,
 				error: result.error,
 				workflowId,
 				workflowName,
 			});
-			return;
+			return success();
 		}
 
 		this.logInfo("[workflow-triggers/start] started", {
@@ -108,6 +120,7 @@ export class ApplicationTriggeredWorkflowStartService {
 			reused: result.reused ?? false,
 			workflowId: result.workflowId ?? workflowId,
 		});
+		return success();
 	}
 
 	private logInfo(message: string, details?: Record<string, unknown>) {

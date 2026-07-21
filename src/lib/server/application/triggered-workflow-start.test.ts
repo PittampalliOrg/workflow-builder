@@ -125,13 +125,52 @@ describe("ApplicationTriggeredWorkflowStartService", () => {
 		expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
 	});
 
-	it("ACKs start failures and unexpected errors so poison messages do not wedge pub/sub", async () => {
-		vi.mocked(runStarter.startWorkflowRun)
-			.mockResolvedValueOnce({
+	it.each([404, 429, 503])(
+		"returns RETRY for pre-execution status %i",
+		async (status) => {
+			vi.mocked(runStarter.startWorkflowRun).mockResolvedValueOnce({
 				ok: false as const,
-				status: 404,
-				error: "Workflow not found",
-			})
+				status,
+				error: "temporarily unavailable",
+			});
+
+			await expect(
+				service.handleTriggerMessage({
+					id: "ce-1",
+					data: { workflowId: "workflow-1", dedupKey: "dedup-1" },
+				}),
+			).resolves.toEqual({ daprStatus: "RETRY" });
+			expect(logger.warn).toHaveBeenCalledWith(
+				"[workflow-triggers/start] start deferred; will redeliver",
+				expect.objectContaining({ status }),
+			);
+		},
+	);
+
+	it.each([400, 409, 410, 500])(
+		"ACKs non-retryable start status %i",
+		async (status) => {
+			vi.mocked(runStarter.startWorkflowRun).mockResolvedValueOnce({
+				ok: false as const,
+				status,
+				error: "start rejected",
+			});
+
+			await expect(
+				service.handleTriggerMessage({
+					id: "ce-1",
+					data: { workflowId: "workflow-1", dedupKey: "dedup-1" },
+				}),
+			).resolves.toEqual({ daprStatus: "SUCCESS" });
+			expect(logger.warn).toHaveBeenCalledWith(
+				"[workflow-triggers/start] start failed; dropping message",
+				expect.objectContaining({ status }),
+			);
+		},
+	);
+
+	it("ACKs unexpected errors so ambiguous post-create failures do not wedge pub/sub", async () => {
+		vi.mocked(runStarter.startWorkflowRun)
 			.mockRejectedValueOnce(new Error("boom"));
 
 		await expect(
@@ -140,17 +179,7 @@ describe("ApplicationTriggeredWorkflowStartService", () => {
 				data: { workflowId: "workflow-1", dedupKey: "dedup-1" },
 			}),
 		).resolves.toEqual({ daprStatus: "SUCCESS" });
-		await expect(
-			service.handleTriggerMessage({
-				id: "ce-2",
-				data: { workflowId: "workflow-1", dedupKey: "dedup-2" },
-			}),
-		).resolves.toEqual({ daprStatus: "SUCCESS" });
 
-		expect(logger.warn).toHaveBeenCalledWith(
-			"[workflow-triggers/start] start failed; dropping message",
-			expect.objectContaining({ status: 404, error: "Workflow not found" }),
-		);
 		expect(logger.error).toHaveBeenCalledWith(
 			"[workflow-triggers/start] unexpected error; ACK to avoid wedge",
 			expect.any(Error),

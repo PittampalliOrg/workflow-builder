@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { stampScriptGuardHeader } from "./mcp-wiring";
+import {
+  stampScriptGuardHeader,
+  stampWorkflowMcpSessionAuth,
+} from "./mcp-wiring";
 
 describe("Workflow MCP header wiring", () => {
   it("stamps the script-depth guard on Workflow MCP entries only", () => {
@@ -29,5 +32,41 @@ describe("Workflow MCP header wiring", () => {
     expect("ensureGoalMcpServer" in mod).toBe(false);
     expect("GOAL_MCP_SERVER_URL" in mod).toBe(false);
     expect("stampGoalMcpSessionHeader" in mod).toBe(false);
+  });
+
+  it("stamps signed session auth only onto the exact Workflow MCP URL", () => {
+    const trusted = {
+      name: "trace",
+      url: "http://workflow-mcp-server.workflow-builder.svc.cluster.local:3200/mcp/",
+      headers: {
+        "x-wfb-session-id": "caller-session",
+        "X-WFB-SESSION-TOKEN": "caller-token",
+        "X-Existing": "kept",
+      },
+    };
+    const lookalike = {
+      name: "workflow-mcp-server",
+      url: "https://workflow-mcp-server.example.test/mcp",
+    };
+
+    const stamped = stampWorkflowMcpSessionAuth(
+      [lookalike, trusted],
+      "server-session",
+      "signed-session-token",
+    );
+
+    expect(stamped[0]).toEqual(lookalike);
+    expect(stamped[1]).toMatchObject({
+      headers: {
+        "X-Existing": "kept",
+        "X-Wfb-Session-Id": "server-session",
+        "X-Wfb-Session-Token": "signed-session-token",
+      },
+    });
+    const trustedHeaders = (
+      stamped[1] as unknown as { headers: Record<string, unknown> }
+    ).headers;
+    expect(trustedHeaders).not.toHaveProperty("x-wfb-session-id");
+    expect(trustedHeaders).not.toHaveProperty("X-WFB-SESSION-TOKEN");
   });
 });

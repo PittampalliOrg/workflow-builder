@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const privateEnv = vi.hoisted(() => ({
   INTERNAL_API_TOKEN: "shared-token",
+  DRASI_INCIDENT_INGEST_TOKEN: "drasi-token",
   PREVIEW_ACTION_INTERNAL_TOKEN: "preview-token",
   PREVIEW_CONTROL_BROKER_TOKEN: "broker-token",
   PREVIEW_ACCEPTED_IMAGE_REUSE_TOKEN: "reuse-token",
@@ -23,6 +24,7 @@ import {
   requirePreviewGovernanceDispatch,
   requirePreviewAcceptedImageReuse,
   requirePreviewControlBroker,
+  validateDrasiIncidentIngestToken,
   validateInternalToken,
   validateInternalOrPreviewControlRead,
   validatePreviewActionInternalToken,
@@ -42,6 +44,7 @@ function request(headers: Record<string, string> = {}): Request {
 describe("preview action internal authentication", () => {
   beforeEach(() => {
     privateEnv.INTERNAL_API_TOKEN = "shared-token";
+    privateEnv.DRASI_INCIDENT_INGEST_TOKEN = "drasi-token";
     privateEnv.PREVIEW_ACTION_INTERNAL_TOKEN = "preview-token";
     privateEnv.PREVIEW_CONTROL_BROKER_TOKEN = "broker-token";
     privateEnv.PREVIEW_ACCEPTED_IMAGE_REUSE_TOKEN = "reuse-token";
@@ -118,6 +121,29 @@ describe("preview action internal authentication", () => {
     } catch (cause) {
       expect((cause as { status?: number }).status).toBe(401);
     }
+  });
+
+  it("accepts only the purpose-bound Drasi credential", () => {
+    expect(
+      validateDrasiIncidentIngestToken(
+        request({ authorization: "Bearer drasi-token" }),
+      ),
+    ).toBe(true);
+    expect(
+      validateDrasiIncidentIngestToken(
+        request({ "x-drasi-incident-token": "drasi-token" }),
+      ),
+    ).toBe(true);
+    expect(
+      validateDrasiIncidentIngestToken(
+        request({ "x-internal-token": "shared-token" }),
+      ),
+    ).toBe(false);
+    expect(
+      validateDrasiIncidentIngestToken(
+        request({ authorization: "Bearer shared-token" }),
+      ),
+    ).toBe(false);
   });
 
   it("accepts only the dedicated preview action header", () => {
