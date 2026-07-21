@@ -120,10 +120,26 @@ CLAMP_MAX_PART_CHARS = env_int("PYDANTIC_AI_CLAMP_MAX_PART_CHARS", 20000)
 COMPACTION_MAX_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_MAX_MESSAGES", 120)
 COMPACTION_KEEP_MESSAGES = env_int("PYDANTIC_AI_COMPACTION_KEEP_MESSAGES", 60)
 
-# Total per-operation timeout for network (MCP) toolset get_tools/call_tool.
-# Upstream MCP ClientSession has no per-call timeout, so a stalled
-# streamable-HTTP session would otherwise wedge a durable activity forever.
-MCP_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_TIMEOUT_SECONDS", 30)
+# Outer deadline for an MCP tool call. Browser tools can own long bounded
+# operations (capture finalization is up to 420s), so dev raises the existing
+# env knob to 480s.
+MCP_CALL_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_TIMEOUT_SECONDS", 30)
+# Discovery remains short and fail-soft. A slow or broken server must not tax
+# every model turn merely because long tool calls are permitted.
+MCP_LIST_TIMEOUT_SECONDS = env_int("PYDANTIC_AI_MCP_LIST_TIMEOUT_SECONDS", 30)
+# FastMCP owns an inner read deadline. Keep it below the outer activity guard
+# so client cleanup finishes deterministically before the activity deadline.
+_MCP_READ_TIMEOUT_CEILING = max(MCP_CALL_TIMEOUT_SECONDS - 1, 1)
+MCP_READ_TIMEOUT_SECONDS = min(
+    max(
+        env_int(
+            "PYDANTIC_AI_MCP_READ_TIMEOUT_SECONDS",
+            max(MCP_CALL_TIMEOUT_SECONDS - 10, 1),
+        ),
+        1,
+    ),
+    _MCP_READ_TIMEOUT_CEILING,
+)
 # MCP LISTING caches (per pod): successes reused for the session's activities,
 # failing servers skipped without re-probing. See ToolRouter.tools().
 MCP_TOOLS_CACHE_SECONDS = env_int("PYDANTIC_AI_MCP_TOOLS_CACHE_SECONDS", 300)

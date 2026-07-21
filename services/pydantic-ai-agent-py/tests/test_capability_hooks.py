@@ -165,7 +165,7 @@ def test_router_enforces_per_server_mcp_allowlist(monkeypatch, workspace):
                     "url": "https://mcp.example.test/mcp",
                     "allowedTools": ["read_issue"],
                 }
-            ]
+            ],
         }
     )
 
@@ -342,9 +342,7 @@ async def test_read_tool_result_survives_runtime_tool_ceiling(workspace):
 
 
 def test_execute_tool_does_not_relist_toolsets(monkeypatch, workspace):
-    """Regression guard: execute_tool must NOT call router.tools() a second
-    time for the after_tool_execute hook (that re-lists MCP over the network
-    and can wedge the durable activity). It routes tool_def=None instead."""
+    """A known local execution route never invokes the global inventory."""
     calls = {"count": 0}
     real = toolsets_mod.ToolRouter.tools
 
@@ -368,8 +366,116 @@ def test_execute_tool_does_not_relist_toolsets(monkeypatch, workspace):
         },
     )
     assert load_messages([out["message"]])[0].parts[0].tool_call_id == "t1"
-    # router.call lists once; the after-hook must NOT list again.
-    assert calls["count"] == 1
+    assert calls["count"] == 0
+
+
+def test_parallel_local_calls_and_cached_mcp_route_skip_expired_listing(
+    workspace,
+):
+    import asyncio as aio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pydantic_ai.tools import ToolDefinition
+
+    def tool(name):
+        definition = ToolDefinition(
+            name=name, parameters_json_schema={"type": "object"}
+        )
+        return type("Tool", (), {"tool_def": definition})()
+
+    class LocalToolset:
+        def __init__(self):
+            self.tools = {name: tool(name) for name in ("local_one", "local_two")}
+
+        async def get_tools(self, _ctx):
+            return self.tools
+
+        async def call_tool(self, name, _args, _ctx, _tool):
+            await aio.sleep(0.01)
+            return f"{name}:ok"
+
+    class NetworkToolset:
+        def __init__(self):
+            self.list_calls = 0
+            self.allow_listing = True
+            self.remote = tool("remote_tool")
+
+        async def get_tools(self, _ctx):
+            if not self.allow_listing:
+                raise AssertionError("expired MCP listing was probed during execution")
+            self.list_calls += 1
+            return {"remote_tool": self.remote}
+
+        async def call_tool(self, name, _args, _ctx, _tool):
+            return f"{name}:ok"
+
+    local = LocalToolset()
+    network = NetworkToolset()
+    router = toolsets_mod.ToolRouter({})
+    router._toolsets = [local, network]
+    router._network_toolsets = {id(network)}
+    router._toolset_allowlists = {id(network): None}
+
+    advertised = aio.run(router.tools())
+    assert set(advertised) == {"local_one", "local_two", "remote_tool"}
+    assert network.list_calls == 1
+    _, cached_tools = router._mcp_tools_cache[id(network)]
+    router._mcp_tools_cache[id(network)] = (0.0, cached_tools)
+    network.allow_listing = False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(aio.run, router.call(name, {}))
+            for name in ("local_one", "local_two")
+        ]
+        assert [future.result() for future in futures] == [
+            "local_one:ok",
+            "local_two:ok",
+        ]
+
+    # Even without the execution-route entry, the expired advertisement cache
+    # is sufficient to route a call the model already emitted.
+    router._tool_routes.pop("remote_tool")
+    assert aio.run(router.call("remote_tool", {})) == "remote_tool:ok"
+    assert network.list_calls == 1
+
+
+def test_refreshed_mcp_advertisement_prunes_removed_execution_routes(workspace):
+    import asyncio as aio
+
+    from pydantic_ai.tools import ToolDefinition
+
+    def tool(name):
+        definition = ToolDefinition(
+            name=name, parameters_json_schema={"type": "object"}
+        )
+        return type("Tool", (), {"tool_def": definition})()
+
+    class ChangingToolset:
+        def __init__(self):
+            self.tools = {"removed_tool": tool("removed_tool")}
+
+        async def get_tools(self, _ctx):
+            return self.tools
+
+    network = ChangingToolset()
+    router = toolsets_mod.ToolRouter({})
+    router._toolsets = [network]
+    router._network_toolsets = {id(network)}
+    router._toolset_allowlists = {id(network): None}
+
+    _, sequential = aio.run(router.tool_defs_with_execution())
+    assert sequential == {"removed_tool"}
+    assert set(router._tool_routes) == {"removed_tool"}
+
+    network.tools = {"replacement_tool": tool("replacement_tool")}
+    router._mcp_tools_cache[id(network)] = (0.0, {})
+    definitions, sequential = aio.run(router.tool_defs_with_execution())
+
+    assert {definition.name for definition in definitions} == {"replacement_tool"}
+    assert all(definition.sequential for definition in definitions)
+    assert sequential == {"replacement_tool"}
+    assert set(router._tool_routes) == {"replacement_tool"}
 
 
 def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
@@ -377,7 +483,7 @@ def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
     other tools still resolve (activity never wedges)."""
     import asyncio as _asyncio
 
-    monkeypatch.setattr(toolsets_mod, "MCP_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(toolsets_mod, "MCP_LIST_TIMEOUT_SECONDS", 1)
     toolsets_mod._ROUTERS.clear()
     router = toolsets_mod.ToolRouter({})
 
@@ -400,6 +506,137 @@ def test_mcp_toolset_get_tools_timeout_is_soft(monkeypatch, workspace):
     )
     # local FS/Shell tools still present despite the hung MCP toolset
     assert {"read_file", "run_command"} <= names
+
+
+def test_timed_out_mcp_listing_rebuilds_for_the_next_probe(monkeypatch, workspace):
+    import asyncio as aio
+
+    monkeypatch.setattr(toolsets_mod, "MCP_LIST_TIMEOUT_SECONDS", 0.01)
+    router = toolsets_mod.ToolRouter({})
+    tool = type("Tool", (), {"tool_def": object()})()
+
+    class HangingToolset:
+        cancelled = False
+
+        async def get_tools(self, _ctx):
+            try:
+                await aio.sleep(60)
+            except aio.CancelledError:
+                self.cancelled = True
+                raise
+
+    class HealthyToolset:
+        list_calls = 0
+
+        async def get_tools(self, _ctx):
+            self.list_calls += 1
+            return {"remote_tool": tool}
+
+    hanging = HangingToolset()
+    healthy = HealthyToolset()
+    router._toolsets = [hanging]
+    router._network_toolsets = {id(hanging)}
+    router._toolset_allowlists = {id(hanging): None}
+    router._network_toolset_factories = {id(hanging): lambda: healthy}
+
+    assert aio.run(router.tools()) == {}
+    assert hanging.cancelled is True
+    assert router._toolsets == [healthy]
+    assert router._mcp_fail_until[id(healthy)] > 0
+    assert aio.run(router.tools()) == {}
+    assert healthy.list_calls == 0
+    router._mcp_fail_until[id(healthy)] = 0.0
+    assert set(aio.run(router.tools())) == {"remote_tool"}
+    assert healthy.list_calls == 1
+
+
+def test_tool_def_execution_metadata_honors_native_and_mcp_sequentiality(
+    workspace,
+):
+    import asyncio as aio
+
+    from pydantic_ai.tools import ToolDefinition
+
+    class Toolset:
+        def __init__(self, tools):
+            self.tools = tools
+
+        async def get_tools(self, _ctx):
+            return self.tools
+
+    def tool(name, *, sequential=False):
+        definition = ToolDefinition(
+            name=name,
+            parameters_json_schema={"type": "object"},
+            sequential=sequential,
+        )
+        return type("Tool", (), {"tool_def": definition})()
+
+    local = Toolset(
+        {
+            "local_parallel": tool("local_parallel"),
+            "local_sequential": tool("local_sequential", sequential=True),
+        }
+    )
+    network = Toolset({"remote": tool("remote")})
+    router = toolsets_mod.ToolRouter({})
+    router._toolsets = [local, network]
+    router._network_toolsets = {id(network)}
+    router._toolset_allowlists = {id(network): None}
+
+    definitions, sequential = aio.run(router.tool_defs_with_execution())
+
+    by_name = {definition.name: definition for definition in definitions}
+    assert sequential == {"local_sequential", "remote"}
+    assert by_name["local_parallel"].sequential is False
+    assert by_name["local_sequential"].sequential is True
+    assert by_name["remote"].sequential is True
+
+
+def test_timed_out_mcp_call_rebuilds_only_its_client(monkeypatch, workspace):
+    import asyncio as aio
+
+    monkeypatch.setattr(toolsets_mod, "MCP_CALL_TIMEOUT_SECONDS", 0.01)
+    router = toolsets_mod.ToolRouter({})
+
+    tool = type("Tool", (), {"tool_def": object()})()
+
+    class HangingToolset:
+        cancelled = False
+
+        async def get_tools(self, _ctx):
+            return {"remote_tool": tool}
+
+        async def call_tool(self, _name, _args, _ctx, _tool):
+            try:
+                await aio.sleep(60)
+            except aio.CancelledError:
+                self.cancelled = True
+                raise
+
+    class HealthyToolset:
+        async def get_tools(self, _ctx):
+            return {"remote_tool": tool}
+
+        async def call_tool(self, name, _args, _ctx, _tool):
+            return f"{name}:ok"
+
+    hanging = HangingToolset()
+    healthy = HealthyToolset()
+    untouched = object()
+    router._toolsets = [hanging, untouched]
+    router._network_toolsets = {id(hanging)}
+    router._toolset_allowlists = {id(hanging): None}
+    router._network_toolset_factories = {id(hanging): lambda: healthy}
+
+    with pytest.raises(aio.TimeoutError):
+        aio.run(router.call("remote_tool", {}))
+
+    assert hanging.cancelled is True
+    assert router._toolsets == [healthy, untouched]
+    assert id(hanging) not in router._network_toolsets
+    assert id(healthy) in router._network_toolsets
+    assert aio.run(router.call("remote_tool", {})) == "remote_tool:ok"
 
 
 class _FlakyToolset:
@@ -501,6 +738,8 @@ def test_mcp_capability_forwards_headers(monkeypatch, tmp_path):
     from src.toolsets import build_capabilities
 
     monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(toolsets_mod, "MCP_CALL_TIMEOUT_SECONDS", 480)
+    monkeypatch.setattr(toolsets_mod, "MCP_READ_TIMEOUT_SECONDS", 470)
     caps = build_capabilities(
         {
             "mcpServers": [
@@ -515,16 +754,16 @@ def test_mcp_capability_forwards_headers(monkeypatch, tmp_path):
             ]
         }
     )
-    mcp_caps = [
-        c.capability
-        for c in caps
-        if type(c).__name__ == "_McpCapabilityBinding"
-    ]
-    assert len(mcp_caps) == 1
-    assert mcp_caps[0].headers == {
+    bindings = [c for c in caps if type(c).__name__ == "_McpCapabilityBinding"]
+    assert len(bindings) == 1
+    assert bindings[0].capability.headers == {
         "X-Wfb-Session-Token": "tok",
         "X-Wfb-Session-Id": "sesn_1",
     }
+    read_timeout = (
+        bindings[0].get_toolset().client._session_kwargs["read_timeout_seconds"]
+    )
+    assert read_timeout.total_seconds() == 470
 
 
 def test_shell_scrubs_credentials_but_keeps_path(monkeypatch, tmp_path):

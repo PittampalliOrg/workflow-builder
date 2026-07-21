@@ -225,6 +225,7 @@ describe("DaprPostgresSessionEventLog", () => {
 			],
 		});
 		expect(client.calls[0]?.sql).toContain("pg_advisory_xact_lock");
+		expect(client.calls[0]?.sql).toContain("ON CONFLICT DO NOTHING");
 		expect(client.calls[0]?.sql).not.toContain("RETURNING");
 		expect(client.calls[1]).toMatchObject({
 			operation: "query",
@@ -242,12 +243,8 @@ describe("DaprPostgresSessionEventLog", () => {
 		);
 	});
 
-	it("returns an existing source event when a duplicate append races", async () => {
+	it("returns an existing source event without raising a duplicate insert error", async () => {
 		const client = new FakeBindingClient();
-		const duplicate = new Error(
-			'23505 duplicate key value violates unique constraint "uq_session_events_source"',
-		);
-		client.execErrors.set("session_events.insert", [duplicate]);
 		client.queryRows.set("session_events.select_by_source_event", [
 			eventRow({
 				id: "evt-existing",
@@ -275,8 +272,10 @@ describe("DaprPostgresSessionEventLog", () => {
 		});
 		expect(client.calls.map((call) => call.summary)).toEqual([
 			"session_events.insert",
+			"session_events.select_by_id",
 			"session_events.select_by_source_event",
 		]);
+		expect(client.calls[0]?.sql).toContain("ON CONFLICT DO NOTHING");
 		expect(postAppendHook).not.toHaveBeenCalled();
 	});
 });

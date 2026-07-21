@@ -331,11 +331,26 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxtemplates/agent-runtime-pool-coding'
 			}
 		};
+		const missingSessionSandbox = {
+			...traceSpan(3),
+			serviceName: 'workflow-builder',
+			operationName: 'DELETE',
+			attributes: {
+				'http.method': 'DELETE',
+				'http.status_code': 404,
+				'http.url':
+					'https://10.96.0.1/apis/agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxes/agent-host-agent-session-b3859df99ea09c31123c'
+			}
+		};
 		const actionable = {
 			...traceSpan(2),
 			statusMessage: 'MCP tool timed out'
 		};
-		vi.mocked(reads.searchSpans).mockResolvedValue([cleanupProbe, actionable] as never[]);
+		vi.mocked(reads.searchSpans).mockResolvedValue([
+			cleanupProbe,
+			missingSessionSandbox,
+			actionable
+		] as never[]);
 
 		const result = await service.searchSpans({
 			execution,

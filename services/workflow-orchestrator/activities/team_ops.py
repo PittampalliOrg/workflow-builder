@@ -3,9 +3,11 @@
 The dynamic-script `team.*` primitives dispatch here. Every op first ensures the
 script team exists (idempotent — POST /api/internal/team/ensure-script-team
 derives teamId=`team-<executionId>` and the lead anchor session), then forwards
-to the matching BFF internal team endpoint. Transport + auth mirror
-``script_journal_client`` (Dapr service-invoke by default, direct HTTP when
-``WORKFLOW_DATA_API_TRANSPORT=direct``; ``X-Internal-Token``).
+to the matching BFF internal team endpoint. Team calls use the workflow-builder
+Service directly: unlike short workflow-data requests, teammate spawn can wait
+for sandbox and runtime provisioning and must not inherit the app-wide Dapr
+service-invocation deadline. Authentication remains ``X-Internal-Token`` plus
+the server-derived system principal.
 
 Error contract (consumed by workflows/dynamic_script_workflow.py's journal +
 the evaluator's team-call resolution):
@@ -24,18 +26,18 @@ from urllib.parse import quote
 
 import requests
 
-from core.config import config
-
 
 class TeamOpsApiError(RuntimeError):
     """Transport-level failure talking to the BFF team API (retriable)."""
 
 
 def _timeout_seconds() -> float:
+    # The BFF may spend up to 900s admitting a per-session agent host. Keep a
+    # finite extra 30s for its surrounding sandbox, persistence, and HTTP work.
     try:
-        return max(0.1, float(os.environ.get("WORKFLOW_DATA_API_TIMEOUT_SECONDS", "15")))
+        return max(0.1, float(os.environ.get("TEAM_API_TIMEOUT_SECONDS", "930")))
     except ValueError:
-        return 15.0
+        return 930.0
 
 
 def _direct_base_url() -> str:
@@ -45,22 +47,8 @@ def _direct_base_url() -> str:
     ).rstrip("/")
 
 
-def _dapr_invoke_base_url() -> str:
-    app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder").strip()
-    if not app_id:
-        raise TeamOpsApiError("WORKFLOW_BUILDER_APP_ID is required for Dapr invocation")
-    return f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}/v1.0/invoke/{app_id}/method"
-
-
 def _base_url() -> str:
-    transport = str(os.environ.get("WORKFLOW_DATA_API_TRANSPORT") or "dapr").strip().lower()
-    if transport == "direct":
-        return _direct_base_url()
-    if transport == "dapr":
-        return _dapr_invoke_base_url()
-    raise TeamOpsApiError(
-        f"Unsupported WORKFLOW_DATA_API_TRANSPORT={transport!r}; use 'dapr' or 'direct'"
-    )
+    return _direct_base_url()
 
 
 def _request(

@@ -44,5 +44,13 @@ export function isExpectedKubernetesNotFound(span: ObservabilityTraceSpan): bool
 	if (method !== 'DELETE') return false;
 	if (sandboxResource) return true;
 
+	if (
+		/^\/apis\/agents\.x-k8s\.io\/v1alpha1\/namespaces\/[^/]+\/sandboxes\/[^/]+\/?$/.test(
+			path
+		)
+	) {
+		return true;
+	}
+
 	return /^\/api\/v1\/namespaces\/[^/]+\/services\/agent-runtime-[^/]+-mcp\/?$/.test(path);
 }

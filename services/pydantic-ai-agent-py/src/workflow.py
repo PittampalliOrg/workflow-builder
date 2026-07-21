@@ -1,9 +1,10 @@
 """The durable agent loop: one workflow, three activities.
 
 Diagrid python-ai pattern (diagrid/agent/pydantic_ai/workflow.py): the
-workflow yields a ``call_llm`` activity per LLM message; tool calls fan out
-as one ``execute_tool`` activity each via ``when_all``; the full message
-history crosses every boundary as serialized JSON. Unlike Diagrid's raw
+workflow yields a ``call_llm`` activity per LLM message; local tool calls fan
+out as one ``execute_tool`` activity each via ``when_all``, while stateful MCP
+calls are ordered barriers; the full message history crosses every boundary
+as serialized JSON. Unlike Diagrid's raw
 OpenAI SDK, ``call_llm`` speaks through pydantic-ai's OWN model classes
 (OpenAIChatModel + OpenAIProvider → Kimi K3), and history is pydantic-ai's
 native ``ModelMessage`` list (ModelMessagesTypeAdapter codec).
@@ -370,7 +371,7 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
                 "text": "",
                 "configurationError": str(exc),
             }
-        function_tools = await router.tool_defs()
+        function_tools, sequential_tool_names = await router.tool_defs_with_execution()
         if schema and any(
             tool.name == STRUCTURED_OUTPUT_TOOL_NAME for tool in function_tools
         ):
@@ -425,6 +426,8 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         tool_calls = response_tool_calls(response)
         invalid_call_ids: set[str] = set()
         for call in tool_calls:
+            if call.get("toolName") in sequential_tool_names:
+                call["sequential"] = True
             if (
                 call.get("toolName") == STRUCTURED_OUTPUT_TOOL_NAME
                 and int(call.get("argsSizeBytes") or 0) > STRUCTURED_OUTPUT_MAX_BYTES
@@ -826,15 +829,44 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
                 calls_to_execute.append({**call, "deferStructuredOutput": True})
             else:
                 calls_to_execute.append(call)
-        tool_tasks = [
-            ctx.call_activity(
-                execute_tool,
-                input={"call": call, "context": context, "iteration": iteration},
-                retry_policy=RETRY_POLICY,
-            )
-            for call in calls_to_execute
-        ]
-        tool_results = yield wf.when_all(tool_tasks)
+        # Each execute_tool activity owns an asyncio.run() loop. A stateful
+        # MCPToolset/FastMCP client cannot be shared by concurrent activity
+        # loops, so MCP calls are ordered barriers. Adjacent local calls retain
+        # the existing when_all fan-out.
+        tool_results = []
+        parallel_tasks = []
+        for call in calls_to_execute:
+            if call.get("sequential"):
+                if parallel_tasks:
+                    tool_results.extend((yield wf.when_all(parallel_tasks)))
+                    parallel_tasks = []
+                tool_results.append(
+                    (
+                        yield ctx.call_activity(
+                            execute_tool,
+                            input={
+                                "call": call,
+                                "context": context,
+                                "iteration": iteration,
+                            },
+                            retry_policy=RETRY_POLICY,
+                        )
+                    )
+                )
+            else:
+                parallel_tasks.append(
+                    ctx.call_activity(
+                        execute_tool,
+                        input={
+                            "call": call,
+                            "context": context,
+                            "iteration": iteration,
+                        },
+                        retry_policy=RETRY_POLICY,
+                    )
+                )
+        if parallel_tasks:
+            tool_results.extend((yield wf.when_all(parallel_tasks)))
         structured_final = None
         structured_errors: list[str] = []
         for result in tool_results:

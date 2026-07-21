@@ -307,7 +307,6 @@ def test_execute_team_op_4xx_is_deterministic_failure(monkeypatch):
         return FakeResponse(404, {"message": "no agent 'nope' in this project"})
 
     monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
-    monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "direct")
     monkeypatch.setattr(team_ops.requests, "request", fake_request)
 
     out = team_ops.execute_team_op(
@@ -322,7 +321,6 @@ def test_execute_team_op_5xx_raises_for_activity_retry(monkeypatch):
         return FakeResponse(500, "boom")
 
     monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
-    monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "direct")
     monkeypatch.setattr(team_ops.requests, "request", fake_request)
 
     with pytest.raises(team_ops.TeamOpsApiError):
@@ -339,7 +337,6 @@ def test_execute_team_op_success_carries_team_identity(monkeypatch):
         return FakeResponse(200, {"ok": True, "task": {"id": "t1"}})
 
     monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
-    monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "direct")
     monkeypatch.setattr(team_ops.requests, "request", fake_request)
 
     out = team_ops.execute_team_op(
@@ -352,6 +349,36 @@ def test_execute_team_op_success_carries_team_identity(monkeypatch):
         "workflow-orchestrator-team-script"
     )
     assert calls[-1]["headers"]["X-Wfb-Session-Id"] == "lead-e1"
+
+
+def test_team_api_uses_direct_service_and_dedicated_timeout(monkeypatch):
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/ensure-script-team"):
+            return FakeResponse(200, {"teamId": "team-e1", "leadSessionId": "lead-e1"})
+        return FakeResponse(200, {"ok": True})
+
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    monkeypatch.setenv("WORKFLOW_BUILDER_URL", "http://workflow-builder.internal:3000/")
+    # Workflow-data keeps its short Dapr deadline; team spawn must not inherit it.
+    monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "dapr")
+    monkeypatch.setenv("WORKFLOW_DATA_API_TIMEOUT_SECONDS", "2")
+    # 900s host-ready contract plus 30s for BFF and transport overhead.
+    monkeypatch.setenv("TEAM_API_TIMEOUT_SECONDS", "930")
+    monkeypatch.setattr(team_ops.requests, "request", fake_request)
+
+    out = team_ops.execute_team_op(
+        None, {"executionId": "e1", "op": "status", "args": {}}
+    )
+
+    assert out["success"] is True
+    assert [url for url, _ in calls] == [
+        "http://workflow-builder.internal:3000/api/internal/team/ensure-script-team",
+        "http://workflow-builder.internal:3000/api/internal/team/team-e1",
+    ]
+    assert all(kwargs["timeout"] == 930.0 for _, kwargs in calls)
 
 
 # ── Stage-1 UI data: rail labels + spawn sessionId backfill ───────────────
