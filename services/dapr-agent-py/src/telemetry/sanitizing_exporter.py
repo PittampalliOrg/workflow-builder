@@ -12,7 +12,7 @@ from opentelemetry.sdk._logs.export import LogRecordExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
-from opentelemetry.trace import Link, Status
+from opentelemetry.trace import Link, Status, StatusCode
 
 from .content_sanitizer import (
     sanitize_content_for_telemetry,
@@ -79,6 +79,21 @@ def _sanitize_status(status: Status) -> Status:
     return Status(status.status_code, safe_description)
 
 
+def _canonical_span_status(
+    span: ReadableSpan,
+    attributes: Mapping[str, Any],
+) -> Status:
+    """Restore canonical tool failures after upstream wrappers mark returns OK."""
+    if (
+        attributes.get("openinference.span.kind") == "TOOL"
+        and attributes.get("success") is False
+    ):
+        error = attributes.get("error")
+        description = error if isinstance(error, str) and error else None
+        return Status(StatusCode.ERROR, description)
+    return _sanitize_status(span.status)
+
+
 def _sanitize_log_body(value: Any) -> Any:
     try:
         safe_value = sanitize_content_for_telemetry(value)
@@ -94,6 +109,7 @@ def _sanitize_log_body(value: Any) -> Any:
 
 def sanitize_readable_span(span: ReadableSpan) -> ReadableSpan:
     """Clone a finished span with every exported content surface sanitized."""
+    attributes = _sanitize_attributes(span.attributes)
     events = tuple(
         Event(
             sanitize_text_for_telemetry(event.name),
@@ -111,11 +127,11 @@ def sanitize_readable_span(span: ReadableSpan) -> ReadableSpan:
         context=span.context,
         parent=span.parent,
         resource=_sanitize_resource(span.resource),
-        attributes=_sanitize_attributes(span.attributes),
+        attributes=attributes,
         events=events,
         links=links,
         kind=span.kind,
-        status=_sanitize_status(span.status),
+        status=_canonical_span_status(span, attributes),
         start_time=span.start_time,
         end_time=span.end_time,
         instrumentation_scope=span.instrumentation_scope,

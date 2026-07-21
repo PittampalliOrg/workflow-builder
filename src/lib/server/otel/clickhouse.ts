@@ -132,6 +132,42 @@ function traceResourceScopeSuffix(scope: TraceResourceScope | undefined): string
 	return clauses.length > 0 ? `AND ${clauses.join(' AND ')}` : '';
 }
 
+function firstTraceAttribute(...keys: string[]): string {
+	return keys.reduceRight(
+		(fallback, key) =>
+			`if(mapContains(SpanAttributes, '${key}') AND notEmpty(SpanAttributes['${key}']), SpanAttributes['${key}'], ${fallback})`,
+		"''"
+	);
+}
+
+/** Mirrors span-error-policy.ts at the physical query boundary so paging stays exact. */
+function expectedKubernetesNotFoundSql(): string {
+	const status = firstTraceAttribute('http.response.status_code', 'http.status_code');
+	const method = firstTraceAttribute('http.request.method', 'http.method');
+	const path = firstTraceAttribute('url.path', 'http.target', 'url.full', 'http.url');
+	const warmPool =
+		'/apis/extensions[.]agents[.]x-k8s[.]io/v1alpha1/namespaces/[^/]+/sandboxwarmpools/[^/?]+/?([?].*)?$';
+	const sandboxTemplate =
+		'/apis/extensions[.]agents[.]x-k8s[.]io/v1alpha1/namespaces/[^/]+/sandboxtemplates/[^/?]+/?([?].*)?$';
+	const runtimeService =
+		'/api/v1/namespaces/[^/]+/services/agent-runtime-[^/?]+-mcp/?([?].*)?$';
+	return `(
+		ServiceName = 'workflow-builder'
+		AND ${status} = '404'
+		AND (
+			(upper(${method}) = 'GET' AND match(${path}, '${warmPool}'))
+			OR (
+				upper(${method}) = 'DELETE'
+				AND (
+					match(${path}, '${warmPool}')
+					OR match(${path}, '${sandboxTemplate}')
+					OR match(${path}, '${runtimeService}')
+				)
+			)
+		)
+	)`;
+}
+
 function llmTraceResourceScopeSuffix(
 	scope: TraceResourceScope | undefined,
 	window: TraceTimeWindow = {}
@@ -882,7 +918,10 @@ export async function searchTraceSpanSummaries(
 	if (sanitized.length === 0) return { spans: [], truncated: false, limit };
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const clauses = [`TraceId IN (${inClause})`];
-	if (opts.errorsOnly) clauses.push(`StatusCode = 'Error'`);
+	if (opts.errorsOnly) {
+		clauses.push(`StatusCode = 'Error'`);
+		clauses.push(`NOT ${expectedKubernetesNotFoundSql()}`);
+	}
 	if (opts.query?.trim()) {
 		const query = escapeClickHouseString(opts.query.trim());
 		clauses.push(
@@ -916,7 +955,10 @@ export async function searchTraceSpans(
 	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
 	const clauses = [`TraceId IN (${inClause})`];
 	clauses.push(...traceResourceScopeClauses(opts.resourceScope));
-	if (opts.errorsOnly) clauses.push(`StatusCode = 'Error'`);
+	if (opts.errorsOnly) {
+		clauses.push(`StatusCode = 'Error'`);
+		clauses.push(`NOT ${expectedKubernetesNotFoundSql()}`);
+	}
 	if (opts.query?.trim()) {
 		const q = escapeClickHouseString(opts.query.trim());
 		clauses.push(

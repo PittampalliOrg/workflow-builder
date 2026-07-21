@@ -85,6 +85,13 @@ def test_tool_dispatch_evidence_events_are_emitted() -> None:
     assert "[tool-dispatch] run_tool entry" in source
 
 
+def test_tool_dispatch_passes_encoded_failures_to_canonical_span() -> None:
+    source = MAIN_SOURCE.read_text()
+
+    assert 'success=locals().get("_exec_success")' in source
+    assert 'error=locals().get("_exec_error")' in source
+
+
 def test_terminal_session_events_are_persisted_for_in_turn_cancellation() -> None:
     source = MAIN_SOURCE.read_text()
 

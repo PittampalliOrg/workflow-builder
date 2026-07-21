@@ -4350,7 +4350,11 @@ class OpenShellDurableAgent(DurableAgent):
                             _tool_result_json = json.dumps(_res_for_span, default=str)[:16384]
                         except Exception:
                             _tool_result_json = str(_res_for_span)[:16384]
-                    end_tool_span(tool_result=_tool_result_json)
+                    end_tool_span(
+                        tool_result=_tool_result_json,
+                        success=locals().get("_exec_success"),
+                        error=locals().get("_exec_error"),
+                    )
                 from src.telemetry.attributes import reset_session_context
 
                 if _tel_session_token is not None:

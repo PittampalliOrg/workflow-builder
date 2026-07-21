@@ -319,6 +319,38 @@ describe('ApplicationWorkflowDiagnosticsQueryService', () => {
 		expect(JSON.stringify(result.body)).not.toContain('hidden');
 	});
 
+	it('removes only expected Kubernetes absence spans from error triage', async () => {
+		const cleanupProbe = {
+			...traceSpan(1),
+			serviceName: 'workflow-builder',
+			operationName: 'DELETE',
+			attributes: {
+				'http.request.method': 'DELETE',
+				'http.response.status_code': 404,
+				'url.path':
+					'/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces/workflow-builder/sandboxtemplates/agent-runtime-pool-coding'
+			}
+		};
+		const actionable = {
+			...traceSpan(2),
+			statusMessage: 'MCP tool timed out'
+		};
+		vi.mocked(reads.searchSpans).mockResolvedValue([cleanupProbe, actionable] as never[]);
+
+		const result = await service.searchSpans({
+			execution,
+			errorsOnly: true,
+			limit: 20,
+			offset: 0,
+			encodeCursor: String
+		});
+
+		expect(result.body).toMatchObject({
+			spans: [{ spanId: actionable.spanId, statusMessage: 'MCP tool timed out' }],
+			page: { count: 1, truncated: false }
+		});
+	});
+
 	it('keeps active-run trace reads partial and refreshable', async () => {
 		const result = await service.searchSpans({
 			execution: { ...execution, status: 'running', completedAt: null },

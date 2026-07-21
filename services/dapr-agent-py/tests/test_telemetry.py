@@ -204,6 +204,44 @@ def test_span_hierarchy_and_attributes(telemetry_with_in_memory, monkeypatch):
     assert exec_span_out.parent.span_id == tool_span.context.span_id
 
 
+def test_failed_tool_result_marks_canonical_activity_error(telemetry_with_in_memory):
+    exporter, _ = telemetry_with_in_memory
+    from opentelemetry.trace import StatusCode
+
+    from src.telemetry import end_tool_span, start_tool_span
+    from src.telemetry.providers import get_tracer
+
+    tracer = get_tracer()
+    assert tracer is not None
+    with tracer.start_as_current_span("agent-session-test.run_tool") as activity:
+        start_tool_span(
+            "browser_agent_browser_open",
+            tool_input='{"url":"https://example.test"}',
+        )
+        end_tool_span(
+            tool_result=json.dumps(
+                {
+                    "content": "Error: McpError: timed out after 180.0 seconds",
+                    "role": "tool",
+                }
+            ),
+            success=False,
+            error="Error: McpError: timed out after 180.0 seconds",
+        )
+        assert activity.status.status_code is StatusCode.ERROR
+
+    canonical = _find_span(exporter, "agent-session-test.run_tool")
+    helper = _find_span(exporter, "claude_code.tool")
+    assert canonical.status.status_code is StatusCode.ERROR
+    assert (
+        canonical.status.description == "Error: McpError: timed out after 180.0 seconds"
+    )
+    assert canonical.attributes["openinference.span.kind"] == "TOOL"
+    assert canonical.attributes["tool.name"] == "browser_agent_browser_open"
+    assert canonical.attributes["success"] is False
+    assert helper.status.status_code is StatusCode.ERROR
+
+
 def test_current_trace_context_prefers_active_llm_span(telemetry_with_in_memory):
     exporter, _ = telemetry_with_in_memory
     from src.telemetry import (
