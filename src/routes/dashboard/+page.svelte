@@ -22,6 +22,7 @@
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		Radio,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -293,6 +294,111 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status: compact read on retained preview
+		     readiness, trace availability, and recent agent activity using
+		     only data the dashboard already loads. Each tile degrades to an
+		     explicit empty state when its source is absent. -->
+		<Card>
+			<CardHeader class="pb-2">
+				<CardTitle class="text-base flex items-center gap-2">
+					<Radio class="size-4" /> Preview Development Status
+				</CardTitle>
+				<CardDescription class="text-xs">
+					Readiness of preview environments, live-sync traces, and recent agent
+					activity for this workspace.
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+					<!-- Retained preview readiness -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Preview readiness
+						</div>
+						{#if data.stats.totalEnvironments > 0}
+							<div class="mt-1 text-2xl font-semibold">
+								{data.stats.totalEnvironments}
+							</div>
+							<div class="text-xs text-muted-foreground">
+								retained environment{data.stats.totalEnvironments === 1 ? '' : 's'}
+								ready to host previews
+							</div>
+						{:else}
+							<div class="mt-1 text-sm text-muted-foreground">
+								No environments retained yet.
+							</div>
+							<button
+								type="button"
+								class="text-xs text-primary hover:underline mt-1"
+								onclick={() => goto(`/workspaces/${slug}/environments/new`)}
+							>
+								Define an environment
+							</button>
+						{/if}
+					</div>
+
+					<!-- Trace availability -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Trace availability
+						</div>
+						{#if recentRuns.length > 0}
+							{@const traced = recentRuns.filter((r) => r.sessionCount > 0).length}
+							<div class="mt-1 text-2xl font-semibold">
+								{traced}/{recentRuns.length}
+							</div>
+							<div class="text-xs text-muted-foreground">
+								recent run{recentRuns.length === 1 ? '' : 's'} with session traces
+							</div>
+						{:else}
+							<div class="mt-1 text-sm text-muted-foreground">
+								No recent runs to trace.
+							</div>
+							<div class="text-xs text-muted-foreground mt-1">
+								Run a workflow to capture execution traces.
+							</div>
+						{/if}
+					</div>
+
+					<!-- Recent agent activity -->
+					<div class="rounded border p-3">
+						<div class="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Agent activity
+						</div>
+						{#if data.activeSessions.length > 0}
+							<div class="mt-1 text-2xl font-semibold">
+								{data.stats.activeSessions}
+							</div>
+							<div class="text-xs text-muted-foreground truncate">
+								Latest: {data.activeSessions[0].agentName} · {formatRelative(
+									data.activeSessions[0].updatedAt
+								)}
+							</div>
+						{:else if recentRuns.length > 0}
+							<div class="mt-1 text-2xl font-semibold">
+								{recentRuns.length}
+							</div>
+							<div class="text-xs text-muted-foreground">
+								workflow run{recentRuns.length === 1 ? '' : 's'} recently; no live
+								agent sessions
+							</div>
+						{:else}
+							<div class="mt-1 text-sm text-muted-foreground">
+								No recent agent activity.
+							</div>
+							<button
+								type="button"
+								class="text-xs text-primary hover:underline mt-1"
+								onclick={() => goto(`/workspaces/${slug}/sessions/new`)}
+							>
+								Start a session
+							</button>
+						{/if}
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
