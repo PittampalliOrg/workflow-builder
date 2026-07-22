@@ -729,6 +729,13 @@
       "when": 1784408400000,
       "tag": "0109_api_key_workspace_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1784680474000,
+      "tag": "0110_drasi_kubernetes_observations",
+      "breakpoints": true
     }
   ]
 }
