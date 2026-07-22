@@ -134,6 +134,15 @@ describe("Drasi Kubernetes observation projection migration", () => {
 					"utf8",
 				),
 			);
+			await client.exec(
+				readFileSync(
+					resolve(
+						process.cwd(),
+						"drizzle/0111_drasi_kubernetes_observation_tombstones.sql",
+					),
+					"utf8",
+				),
+			);
 
 			await expect(
 				client.query<{ event_id: string; phase: string }>(
@@ -167,6 +176,28 @@ describe("Drasi Kubernetes observation projection migration", () => {
 			);
 			expect(retained.rows[0]).toMatchObject({ phase: "Drifted" });
 			expect(retained.rows[0].observed_at).toBe("2026-07-21 12:05:00");
+			await expect(
+				client.query<{ count: number }>(
+					"select count(*)::int as count from drasi_kubernetes_observations",
+				),
+			).resolves.toMatchObject({ rows: [{ count: 1 }] });
+
+			await client.exec(`
+				update gitops_activity_events
+				set phase = 'Deleted', observed_at = '2026-07-21T12:10:00Z'
+				where event_id = 'current-1'
+			`);
+			await expect(
+				client.query<{ count: number }>(
+					"select count(*)::int as count from drasi_kubernetes_observations",
+				),
+			).resolves.toMatchObject({ rows: [{ count: 0 }] });
+
+			await client.exec(`
+				update gitops_activity_events
+				set phase = 'Healthy', observed_at = '2026-07-21T12:11:00Z'
+				where event_id = 'current-1'
+			`);
 			await expect(
 				client.query<{ count: number }>(
 					"select count(*)::int as count from drasi_kubernetes_observations",

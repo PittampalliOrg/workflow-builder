@@ -145,6 +145,45 @@ describe("platform incident analysis seed", () => {
     }
   });
 
+  it("canonicalizes Drasi PostgreSQL local timestamps without weakening the workflow contract", () => {
+    const normalized = normalizeDrasiIncident(
+      {
+        queryId: "dapr-resource-drift",
+        resourceKind: "Component",
+        resourceNamespace: "workflow-builder",
+        resourceName: "duplicate-actor-store",
+        episodeStartedAt: "2026-07-21T12:00:00.123456",
+        evidence: { phase: "Drifted" },
+      },
+      { cluster: "dev" },
+    );
+    expect(normalized).toMatchObject({
+      ok: true,
+      envelope: {
+        triggerData: { episodeStartedAt: "2026-07-21T12:00:00.123Z" },
+      },
+    });
+
+    for (const episodeStartedAt of [
+      "2026-07-21 12:00:00",
+      "2026-07-21T12:00",
+      "2026-07-21",
+    ]) {
+      expect(
+        normalizeDrasiIncident(
+          {
+            queryId: "dapr-resource-drift",
+            resourceKind: "Component",
+            resourceNamespace: "workflow-builder",
+            resourceName: "duplicate-actor-store",
+            episodeStartedAt,
+          },
+          { cluster: "dev" },
+        ),
+      ).toMatchObject({ ok: false });
+    }
+  });
+
   it("redacts direct-launch secrets before model binding", async () => {
     const prompt = await runFixture({
       source: "drasi",
