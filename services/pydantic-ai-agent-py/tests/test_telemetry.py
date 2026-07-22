@@ -107,7 +107,9 @@ def test_call_llm_emits_openinference_llm_span(monkeypatch, workspace, otel_memo
     assert attrs["dapr.workflow.instance_id"] == "inst-1"
     input_messages = json.loads(attrs["llm.input_messages"])
     assert input_messages[0]["role"] == "system"
-    assert any(m["role"] == "user" and "say done" in m["content"] for m in input_messages)
+    assert any(
+        m["role"] == "user" and "say done" in m["content"] for m in input_messages
+    )
     output_messages = json.loads(attrs["llm.output_messages"])
     assert output_messages == [{"role": "assistant", "content": "done"}]
 
@@ -192,10 +194,8 @@ def test_context_usage_fields_kimi_window():
     assert fields["context_input_tokens"] == 150_000
     assert fields["context_used_percentage"] == 14
     assert fields["context_remaining_percentage"] == 86
-    assert fields["context_effective_window"] == 1_048_576 - 20_000
-    assert (
-        fields["context_auto_compact_threshold"] == 1_048_576 - 20_000 - 13_000
-    )
+    assert fields["context_effective_window"] == 1_048_576 - 131_072
+    assert fields["context_auto_compact_threshold"] == 1_048_576 - 131_072 - 13_000
 
 
 def test_content_attr_truncation():
@@ -207,6 +207,8 @@ def test_content_attr_truncation():
             self.attrs[key] = value
 
     span = Rec()
-    telemetry.set_content_attr(span, "tool.result", "x" * (telemetry.MAX_CONTENT_SIZE + 5))
+    telemetry.set_content_attr(
+        span, "tool.result", "x" * (telemetry.MAX_CONTENT_SIZE + 5)
+    )
     assert len(span.attrs["tool.result"]) == telemetry.MAX_CONTENT_SIZE
     assert span.attrs["tool.result.truncated"] is True

@@ -10,7 +10,6 @@ part kinds), not a hand-rolled reimplementation.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from typing import Any
 
 from pydantic_ai.messages import (
@@ -21,6 +20,7 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     TextPart,
     ToolCallPart,
+    ToolReturn,
     ToolReturnPart,
     UserPromptPart,
     is_multi_modal_content,
@@ -64,38 +64,50 @@ def truncate(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
 def tool_return_message(
     tool_name: str, tool_call_id: str, content: Any
 ) -> ModelRequest:
-    """One serialized-able ModelRequest carrying a single ToolReturnPart."""
-    if isinstance(content, str):
-        content = truncate(content)
-    elif isinstance(content, list):
-        content = [
-            item
-            if is_multi_modal_content(item) or not isinstance(item, str)
-            else truncate(item)
-            for item in content
-        ]
-    return ModelRequest(
-        parts=[
-            ToolReturnPart(
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-                content=content,
-            )
-        ]
-    )
+    """Build Pydantic's native correlated return plus optional user content."""
+    tool_return = content if isinstance(content, ToolReturn) else ToolReturn(content)
+    parts: list[Any] = [
+        ToolReturnPart(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            content=tool_return.return_value,
+            metadata=tool_return.metadata,
+        )
+    ]
+    if tool_return.content:
+        parts.append(UserPromptPart(content=tool_return.content))
+    return ModelRequest(parts=parts)
 
 
 def tool_result_display_text(content: Any) -> str:
     """Return observability/UI text without embedding binary media bytes."""
-    part = ToolReturnPart(tool_name="tool", tool_call_id="display", content=content)
+    tool_return = content if isinstance(content, ToolReturn) else ToolReturn(content)
+    part = ToolReturnPart(
+        tool_name="tool",
+        tool_call_id="display",
+        content=tool_return.return_value,
+        metadata=tool_return.metadata,
+    )
     text = part.model_response_str().strip()
-    if part.files:
-        suffix = f"[{len(part.files)} media part(s) omitted]"
+    media_count = len(part.files)
+    if tool_return.content:
+        content_items = (
+            [tool_return.content]
+            if isinstance(tool_return.content, str)
+            else list(tool_return.content)
+        )
+        media_count += sum(is_multi_modal_content(item) for item in content_items)
+    if media_count:
+        suffix = f"[{media_count} media part(s) omitted]"
         text = f"{text}\n{suffix}" if text else suffix
     return truncate(text or "[empty tool result]")
 
 
 def tool_result_has_media(content: Any) -> bool:
+    if isinstance(content, ToolReturn):
+        return tool_result_has_media(content.return_value) or tool_result_has_media(
+            content.content
+        )
     if is_multi_modal_content(content):
         return True
     if isinstance(content, (list, tuple)):
@@ -186,21 +198,6 @@ def response_tool_calls(response: ModelResponse) -> list[dict[str, Any]]:
                 }
             )
     return calls
-
-
-def sanitize_invalid_tool_call_args(
-    response: ModelResponse, invalid_call_ids: set[str]
-) -> ModelResponse:
-    """Replace invalid provider arguments before they enter durable history."""
-    if not invalid_call_ids:
-        return response
-    parts = [
-        replace(part, args={})
-        if isinstance(part, ToolCallPart) and str(part.tool_call_id) in invalid_call_ids
-        else part
-        for part in response.parts
-    ]
-    return replace(response, parts=parts)
 
 
 def openinference_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:

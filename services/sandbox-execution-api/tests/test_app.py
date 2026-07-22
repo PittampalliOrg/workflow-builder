@@ -255,6 +255,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert env["AGENT_SERVICE_NAME"] == "agent-session-abc123"
     assert env["DAPR_GRPC_ENDPOINT"] == "dns:localhost:50001"
     assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "16777216"
+    assert env["DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES"] == "16777216"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS"] == "16"
     assert env["DAPR_WORKFLOW_MAX_CONCURRENT_ACTIVITIES"] == "48"
     assert env["DAPR_AGENT_PY_HOOKS_ENABLED"] == "false"
@@ -283,6 +284,113 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
             "optional": True,
         }
     } not in env_from
+
+
+def test_agent_workflow_host_state_client_grpc_limit_follows_workflow_limit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", "25165824")
+    monkeypatch.delenv("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES", raising=False)
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(localQueue="benchmark-fast"),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    }
+    assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "25165824"
+    assert env["DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES"] == "25165824"
+
+
+def test_agent_workflow_host_state_client_grpc_limit_follows_class_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", raising=False)
+    monkeypatch.delenv("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES", raising=False)
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostEnv={"DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES": "25165824"},
+        ),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    }
+    assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "25165824"
+    assert env["DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES"] == "25165824"
+
+
+def test_agent_workflow_host_explicit_state_client_grpc_limit_takes_precedence(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", raising=False)
+    monkeypatch.delenv("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES", raising=False)
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostEnv={
+                "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES": "25165824",
+                "DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES": "33554432",
+            },
+        ),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    }
+    assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "25165824"
+    assert env["DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES"] == "33554432"
+
+
+def test_agent_workflow_host_blank_class_grpc_limits_use_derived_defaults(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", raising=False)
+    monkeypatch.delenv("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES", raising=False)
+
+    manifest = build_agent_workflow_host_sandbox_manifest(
+        AgentWorkflowHostRequest(
+            sessionId="sw-session-1",
+            agentAppId="agent-session-abc123",
+        ),
+        namespace="workflow-builder",
+        class_config=ExecutionClassConfig(
+            localQueue="benchmark-fast",
+            agentHostEnv={
+                "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES": " ",
+                "DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES": "",
+            },
+        ),
+    )
+
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    }
+    assert env["DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES"] == "16777216"
+    assert env["DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES"] == "16777216"
 
 
 def test_agent_workflow_host_sandbox_uses_pydantic_config_only_for_pydantic_image() -> None:

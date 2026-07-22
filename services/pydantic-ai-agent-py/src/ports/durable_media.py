@@ -8,7 +8,9 @@ from typing import Any, Protocol
 class DurableMediaPort(Protocol):
     """Externalize and restore Pydantic AI message media."""
 
-    async def externalize(self, node: Any) -> Any: ...
+    async def externalize(
+        self, node: Any, *, preserve_references: bool = False
+    ) -> Any: ...
 
     async def restore(
         self,

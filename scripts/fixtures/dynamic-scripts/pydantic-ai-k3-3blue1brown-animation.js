@@ -149,7 +149,7 @@ const animation = await agent(
     schema: buildSchema,
     sandbox: {
       cwd: "/sandbox/work",
-      maxTurns: 60,
+      maxTurns: 40,
       timeoutMinutes: 60,
     },
   },

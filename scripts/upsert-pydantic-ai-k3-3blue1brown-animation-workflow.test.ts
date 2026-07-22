@@ -98,7 +98,7 @@ describe("fresh Pydantic AI K3 animation workflow upsert", () => {
     expect(spec.script).toContain('effort: "max"');
     expect(spec.script).toContain('isolation: "shared"');
     expect(spec.script).toContain(
-      'sandbox: {\n      cwd: "/sandbox/work",\n      maxTurns: 60,',
+      'sandbox: {\n      cwd: "/sandbox/work",\n      maxTurns: 40,',
     );
     expect(spec.script).not.toContain("sandbox: {\n      workspaceRef");
 

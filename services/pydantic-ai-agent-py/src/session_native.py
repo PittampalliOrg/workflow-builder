@@ -5,12 +5,22 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from src.config import DURABLE_ERROR_MAX_BYTES
+
 
 SESSION_NATIVE_AGENT_WORKFLOW_MODE = "session-native"
 SESSION_WORKFLOW_STATE_KEY = "sessionWorkflowState"
 SESSION_TERMINATE_EVENT_TYPE = "session.terminate"
 USER_INTERRUPT_EVENT_TYPE = "user.interrupt"
 TEAM_MAILBOX_DELIVERY_KIND = "team-mailbox"
+TEAM_MAILBOX_BATCH_ID_WINDOW = 128
+TEAM_MAILBOX_EVENT_ID_WINDOW = 512
+TEAM_MAILBOX_ID_MAX_BYTES = 256
+
+
+def _bounded_event_text(value: Any) -> str:
+    encoded = str(value or "").encode("utf-8")
+    return encoded[:DURABLE_ERROR_MAX_BYTES].decode("utf-8", errors="ignore")
 
 
 def _positive_int(value: Any) -> int | None:
@@ -52,16 +62,16 @@ def terminal_stop_reason_from_events(
         if event_type == USER_INTERRUPT_EVENT_TYPE:
             reason: dict[str, str] = {"type": "interrupted"}
             if event.get("reason") is not None:
-                reason["reason"] = str(event.get("reason"))
+                reason["reason"] = _bounded_event_text(event.get("reason"))
             if event.get("source") is not None:
-                reason["source"] = str(event.get("source"))
+                reason["source"] = _bounded_event_text(event.get("source"))
             return reason
         if event_type == SESSION_TERMINATE_EVENT_TYPE:
             reason = {"type": "terminated"}
             if event.get("reason") is not None:
-                reason["reason"] = str(event.get("reason"))
+                reason["reason"] = _bounded_event_text(event.get("reason"))
             if event.get("source") is not None:
-                reason["source"] = str(event.get("source"))
+                reason["source"] = _bounded_event_text(event.get("source"))
             return reason
     return None
 
@@ -81,8 +91,12 @@ def session_workflow_state_from_message(message: dict[str, Any]) -> dict[str, An
         )
     else:
         control_override_fields = []
-    team_mailbox_batch_ids = _string_id_list(state.get("teamMailboxBatchIds"))
-    team_mailbox_event_ids = _string_id_list(state.get("teamMailboxEventIds"))
+    team_mailbox_batch_ids = _bounded_id_list(
+        state.get("teamMailboxBatchIds"), max_items=TEAM_MAILBOX_BATCH_ID_WINDOW
+    )
+    team_mailbox_event_ids = _bounded_id_list(
+        state.get("teamMailboxEventIds"), max_items=TEAM_MAILBOX_EVENT_ID_WINDOW
+    )
     return {
         "turnCounter": turn_counter,
         "configRevision": config_revision,
@@ -93,17 +107,40 @@ def session_workflow_state_from_message(message: dict[str, Any]) -> dict[str, An
     }
 
 
-def _string_id_list(value: Any) -> list[str]:
+def _bounded_id(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or len(text.encode("utf-8")) > TEAM_MAILBOX_ID_MAX_BYTES:
+        return None
+    return text
+
+
+def _bounded_id_list(value: Any, *, max_items: int) -> list[str]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes, bytearray)):
         return []
-    return sorted({str(item).strip() for item in value if str(item).strip()})
+    items = sorted(value, key=str) if isinstance(value, (set, frozenset)) else value
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        identifier = _bounded_id(item)
+        if identifier is None or identifier in seen:
+            continue
+        seen.add(identifier)
+        ordered.append(identifier)
+    return ordered[-max_items:]
+
+
+def _remember_recent_id(identifiers: list[str], identifier: str, *, max_items: int) -> None:
+    identifiers.append(identifier)
+    overflow = len(identifiers) - max_items
+    if overflow > 0:
+        del identifiers[:overflow]
 
 
 def accept_team_mailbox_delivery(
     batch: Any,
     *,
-    accepted_batch_ids: set[str],
-    accepted_event_ids: set[str],
+    accepted_batch_ids: list[str],
+    accepted_event_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Deduplicate accepted team mailbox events in durable workflow state."""
     if not isinstance(batch, dict):
@@ -121,27 +158,36 @@ def accept_team_mailbox_delivery(
     ):
         return events
 
-    batch_id = str(delivery.get("batchId") or "").strip()
+    batch_id = _bounded_id(delivery.get("batchId"))
     raw_event_ids = delivery.get("eventIds")
     if (
-        not batch_id
+        batch_id is None
         or not isinstance(raw_event_ids, list)
         or len(raw_event_ids) != len(raw_events or [])
         or len(events) != len(raw_events or [])
     ):
         return events
-    event_ids = [str(event_id or "").strip() for event_id in raw_event_ids]
+    event_ids = [_bounded_id(event_id) for event_id in raw_event_ids]
     if not all(event_ids):
         return events
     if batch_id in accepted_batch_ids:
         return []
 
-    accepted_batch_ids.add(batch_id)
+    _remember_recent_id(
+        accepted_batch_ids,
+        batch_id,
+        max_items=TEAM_MAILBOX_BATCH_ID_WINDOW,
+    )
     pending: list[dict[str, Any]] = []
     for event_id, event in zip(event_ids, events, strict=True):
+        assert event_id is not None
         if event_id in accepted_event_ids:
             continue
-        accepted_event_ids.add(event_id)
+        _remember_recent_id(
+            accepted_event_ids,
+            event_id,
+            max_items=TEAM_MAILBOX_EVENT_ID_WINDOW,
+        )
         pending.append(event)
     return pending
 
@@ -170,17 +216,23 @@ def build_continue_as_new_input(
     *,
     message: dict[str, Any],
     agent_config: dict[str, Any],
+    history_ref: str | None,
     pending_events: list[dict[str, Any]],
     turn_counter: int,
     config_revision: int,
     control_override_fields: set[str],
     continuation_count: int,
     reason: str,
-    team_mailbox_batch_ids: set[str] | None = None,
-    team_mailbox_event_ids: set[str] | None = None,
+    team_mailbox_batch_ids: Iterable[str] | None = None,
+    team_mailbox_event_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the next session_workflow input while keeping agent state external."""
+    """Build one bounded rollover input while keeping agent history external."""
     next_message = dict(message)
+    next_message.pop("history", None)
+    if isinstance(history_ref, str) and history_ref:
+        next_message["historyRef"] = history_ref
+    else:
+        next_message.pop("historyRef", None)
     next_message["agentConfig"] = dict(agent_config or {})
     next_message["initialEvents"] = list(pending_events or [])
     next_message[SESSION_WORKFLOW_STATE_KEY] = {
@@ -189,7 +241,11 @@ def build_continue_as_new_input(
         "controlOverrideFields": sorted(control_override_fields),
         "continuationCount": int(continuation_count) + 1,
         "lastContinueAsNewReason": reason,
-        "teamMailboxBatchIds": sorted(team_mailbox_batch_ids or set()),
-        "teamMailboxEventIds": sorted(team_mailbox_event_ids or set()),
+        "teamMailboxBatchIds": _bounded_id_list(
+            team_mailbox_batch_ids or [], max_items=TEAM_MAILBOX_BATCH_ID_WINDOW
+        ),
+        "teamMailboxEventIds": _bounded_id_list(
+            team_mailbox_event_ids or [], max_items=TEAM_MAILBOX_EVENT_ID_WINDOW
+        ),
     }
     return next_message

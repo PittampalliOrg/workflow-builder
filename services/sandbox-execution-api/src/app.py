@@ -3308,9 +3308,35 @@ def build_agent_workflow_host_sandbox_manifest(
     session_label = _safe_name(request.sessionId, max_length=63)
     image = request.agentImage or class_config.agentHostImage
     image_pull_policy = _image_pull_policy_for_agent_host(image)
+    class_workflow_grpc_limit = str(
+        class_config.agentHostEnv.get("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES") or ""
+    ).strip()
+    class_state_client_grpc_limit = str(
+        class_config.agentHostEnv.get("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES")
+        or ""
+    ).strip()
+    workflow_grpc_max_message_bytes = class_workflow_grpc_limit or (
+        os.environ.get("DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", "").strip()
+        or "16777216"
+    )
+    dapr_grpc_max_inbound_message_size_bytes = (
+        class_state_client_grpc_limit
+        or os.environ.get("DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES", "").strip()
+        or workflow_grpc_max_message_bytes
+    )
+    class_agent_host_env_values = dict(class_config.agentHostEnv)
+    for key in (
+        "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES",
+        "DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES",
+    ):
+        value = str(class_agent_host_env_values.get(key) or "").strip()
+        if value:
+            class_agent_host_env_values[key] = value
+        else:
+            class_agent_host_env_values.pop(key, None)
     class_agent_host_env = [
         {"name": key, "value": value}
-        for key, value in sorted(class_config.agentHostEnv.items())
+        for key, value in sorted(class_agent_host_env_values.items())
         if key and value is not None
     ]
     if class_config.agentHostEnvFrom is not None:
@@ -3396,9 +3422,11 @@ def build_agent_workflow_host_sandbox_manifest(
                     {"name": "DAPR_GRPC_ENDPOINT", "value": "dns:localhost:50001"},
                     {
                         "name": "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES",
-                        "value": os.environ.get(
-                            "DAPR_WORKFLOW_GRPC_MAX_MESSAGE_BYTES", "16777216"
-                        ),
+                        "value": workflow_grpc_max_message_bytes,
+                    },
+                    {
+                        "name": "DAPR_GRPC_MAX_INBOUND_MESSAGE_SIZE_BYTES",
+                        "value": dapr_grpc_max_inbound_message_size_bytes,
                     },
                     {
                         "name": "DAPR_WORKFLOW_MAX_CONCURRENT_ORCHESTRATIONS",

@@ -1,7 +1,7 @@
 """Capability hook hosting: compaction in call_llm, overflow in execute_tool.
 
-These exercise the REAL harness capabilities (SlidingWindow,
-ClampOversizedMessages, OverflowingToolOutput) through the durable activity
+These exercise the real Harness OverflowingToolOutput plus the K3-aware history
+window through the durable activity
 seams — proving the hook chains run inside activities and their effects land
 in the activity RETURN values (the durability contract).
 """
@@ -72,8 +72,9 @@ def test_router_builds_compaction_and_overflow_capabilities(workspace):
     router = toolsets_mod.get_router({})
     names = {type(c).__name__ for c in router._capabilities}
     assert "OverflowingToolOutput" in names
-    assert "ClampOversizedMessages" in names
-    assert "SlidingWindow" in names
+    assert "ClampOversizedMessages" not in names
+    assert "SlidingWindow" not in names
+    assert "KimiHistoryWindow" in names
     assert "FileSystem" in names and "Shell" in names
     assert "FunctionToolset" in names
 
@@ -213,20 +214,62 @@ def test_compaction_flags_disable_capabilities(monkeypatch, tmp_path):
     router = toolsets_mod.ToolRouter({})
     names = {type(c).__name__ for c in router._capabilities}
     assert "SlidingWindow" not in names
+    assert "KimiHistoryWindow" not in names
     assert "OverflowingToolOutput" not in names
     # core tools still present
     assert "FileSystem" in names and "Shell" in names
 
 
-def test_sliding_window_compacts_history_in_call_llm(monkeypatch, workspace):
+def test_kimi_history_window_reserves_context_and_transport_budgets(
+    monkeypatch, tmp_path
+):
+    from src.config import (
+        COMPACTION_KEEP_MESSAGES,
+        COMPACTION_MAX_MESSAGES,
+        KIMI_COMPACTION_KEEP_TOKENS,
+        KIMI_CONTEXT_WINDOW,
+        KIMI_INPUT_SAFETY_BUFFER_TOKENS,
+        KIMI_MAX_COMPLETION_TOKENS,
+        KIMI_MAX_INPUT_TOKENS,
+        TRANSCRIPT_KEEP_BYTES,
+        TRANSCRIPT_MAX_BYTES,
+    )
+
+    monkeypatch.setattr(toolsets_mod, "WORKSPACE_ROOT", str(tmp_path))
+    toolsets_mod._ROUTERS.clear()
+    router = toolsets_mod.ToolRouter({})
+    window = next(
+        capability
+        for capability in router._capabilities
+        if type(capability).__name__ == "KimiHistoryWindow"
+    )
+
+    assert window.max_tokens == KIMI_MAX_INPUT_TOKENS
+    assert window.keep_tokens == KIMI_COMPACTION_KEEP_TOKENS
+    assert window.keep_tokens < window.max_tokens
+    assert window.max_bytes == TRANSCRIPT_MAX_BYTES
+    assert window.keep_bytes == TRANSCRIPT_KEEP_BYTES
+    assert window.keep_bytes < window.max_bytes
+    assert window.max_messages == COMPACTION_MAX_MESSAGES
+    assert window.keep_messages == COMPACTION_KEEP_MESSAGES
+    assert (
+        window.max_tokens + KIMI_MAX_COMPLETION_TOKENS + KIMI_INPUT_SAFETY_BUFFER_TOKENS
+        == KIMI_CONTEXT_WINDOW
+    )
+
+
+def test_kimi_message_window_compacts_history_in_call_llm(monkeypatch, workspace):
     """A long history is windowed by before_model_request; what the model
     receives AND what the activity returns is the compacted list."""
     from pydantic_ai.messages import ModelRequest, TextPart, UserPromptPart
 
-    # Tight window so the effect is unambiguous.
-    monkeypatch.setattr(toolsets_mod, "COMPACTION_MAX_MESSAGES", 6)
-    monkeypatch.setattr(toolsets_mod, "COMPACTION_KEEP_MESSAGES", 4)
-    monkeypatch.setattr(toolsets_mod, "CLAMP_MAX_PART_CHARS", 100000)
+    from src.compaction.kimi_history import KimiHistoryWindow
+
+    monkeypatch.setattr(
+        toolsets_mod,
+        "KimiHistoryWindow",
+        lambda: KimiHistoryWindow(max_messages=6, keep_messages=4),
+    )
     toolsets_mod._ROUTERS.clear()
 
     captured: dict[str, Any] = {}
@@ -249,11 +292,80 @@ def test_sliding_window_compacts_history_in_call_llm(monkeypatch, workspace):
     assert len(returned) <= len(captured["messages"]) + 1  # + the appended response
 
 
-def test_clamp_shrinks_oversized_assistant_text_in_call_llm(monkeypatch, workspace):
-    """ClampOversizedMessages targets ModelResponse parts (prior assistant
-    text + tool-call args) — complementary to OverflowingToolOutput, which
-    handles tool RESULTS. A huge prior assistant TextPart is clamped before
-    the next model call."""
+def test_token_sliding_window_compacts_before_durable_model_request(
+    monkeypatch, workspace
+):
+    from pydantic_ai.messages import ModelRequest, TextPart, UserPromptPart
+
+    from src.compaction.kimi_history import KimiHistoryWindow
+
+    monkeypatch.setattr(
+        toolsets_mod,
+        "KimiHistoryWindow",
+        lambda: KimiHistoryWindow(
+            max_messages=1_000,
+            keep_messages=900,
+            max_tokens=300,
+            keep_tokens=200,
+            max_bytes=100_000,
+            keep_bytes=80_000,
+        ),
+    )
+    toolsets_mod._ROUTERS.clear()
+
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(captured, lambda: [TextPart(content="ok")])
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+    history = dump_messages(
+        [
+            ModelRequest(parts=[UserPromptPart(content=f"message {i} " + "x" * 80)])
+            for i in range(30)
+        ]
+    )
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "continue", "messages": history, "context": {}, "iteration": 5},
+    )
+
+    assert len(captured["messages"]) < 31
+    returned = load_messages(out["messages"])
+    assert len(returned) <= len(captured["messages"]) + 1
+
+
+def test_kimi_history_budget_failure_is_not_skipped_or_retried(monkeypatch, workspace):
+    from pydantic_ai.messages import TextPart
+
+    from src.compaction.kimi_history import KimiHistoryWindow
+
+    monkeypatch.setattr(
+        toolsets_mod,
+        "KimiHistoryWindow",
+        lambda: KimiHistoryWindow(
+            max_messages=1_000,
+            keep_messages=900,
+            max_tokens=10,
+            keep_tokens=5,
+            max_bytes=1_000,
+            keep_bytes=500,
+        ),
+    )
+    toolsets_mod._ROUTERS.clear()
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(captured, lambda: [TextPart(content="should not run")])
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "x" * 1_000, "messages": [], "context": {}, "iteration": 0},
+    )
+
+    assert out["configurationErrorCode"] == "model_context_window_error"
+    assert "messages" not in captured
+
+
+def test_kimi_history_does_not_mutate_retained_assistant_text(monkeypatch, workspace):
+    """K3 replay keeps retained assistant messages byte-for-byte."""
     from pydantic_ai.messages import (
         ModelRequest,
         ModelResponse,
@@ -261,8 +373,6 @@ def test_clamp_shrinks_oversized_assistant_text_in_call_llm(monkeypatch, workspa
         UserPromptPart,
     )
 
-    monkeypatch.setattr(toolsets_mod, "CLAMP_MAX_PART_CHARS", 500)
-    monkeypatch.setattr(toolsets_mod, "COMPACTION_MAX_MESSAGES", 1000)
     toolsets_mod._ROUTERS.clear()
 
     captured: dict[str, Any] = {}
@@ -286,8 +396,7 @@ def test_clamp_shrinks_oversized_assistant_text_in_call_llm(monkeypatch, workspa
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "TextPart" and isinstance(p.content, str)
     )
-    # the 50k assistant TextPart reached the model clamped well below 50k
-    assert 0 < len(seen) < 50000
+    assert seen == big
 
 
 def test_overflow_spills_large_tool_output_in_execute_tool(monkeypatch, workspace):

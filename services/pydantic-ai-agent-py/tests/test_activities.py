@@ -84,6 +84,7 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     settings = captured["settings"]
     assert settings["temperature"] == 1
     assert settings["frequency_penalty"] == 0
+    assert settings["max_tokens"] == 131_072
     assert settings["extra_body"] == {"reasoning_effort": "max"}
 
     # harness tools were offered to the model as pydantic-ai ToolDefinitions
@@ -109,6 +110,203 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     assert out["text"] == "working"
     reloaded = load_messages(out["messages"])
     assert type(reloaded[-1]).__name__ == "ModelResponse"
+
+
+def test_invalid_tool_args_keep_provider_response_exact_but_execute_as_error(
+    monkeypatch, workspace
+):
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    raw_args = '{"command":"ls","broken":'
+    captured: dict[str, Any] = {}
+    fake = make_fake_model(
+        captured,
+        [
+            [
+                ToolCallPart(
+                    tool_name="run_command",
+                    args=raw_args,
+                    tool_call_id="bad-args",
+                )
+            ]
+        ],
+    )
+    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "run it", "messages": [], "context": {}, "iteration": 0},
+    )
+
+    call = out["toolCalls"][0]
+    assert call["args"] == {}
+    assert "valid JSON object" in call["argsError"]
+    retained = load_messages(out["messages"])[-1]
+    retained_call = next(
+        part for part in retained.parts if isinstance(part, ToolCallPart)
+    )
+    assert retained_call.args.encode("utf-8") == raw_args.encode("utf-8")
+
+    tool_out = execute_tool(
+        FakeActivityCtx(),
+        {"call": call, "context": {}, "iteration": 0},
+    )
+    returned = load_messages([tool_out["message"]])[0].parts[0]
+    assert isinstance(returned, ToolReturnPart)
+    assert "valid JSON object" in str(returned.content)
+    assert tool_out["toolSucceeded"] is False
+
+
+def test_call_llm_normalizes_provider_context_rejection(monkeypatch, workspace):
+    class ProviderContextError(Exception):
+        status_code = 400
+        body = {"error": "maximum context length exceeded"}
+
+    class RejectingModel:
+        model_name = "kimi-k3"
+
+        async def request(self, messages, model_settings, model_request_parameters):
+            raise ProviderContextError("invalid request")
+
+    monkeypatch.setattr(wfmod, "build_model", RejectingModel)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {"task": "inspect the oversized input", "messages": [], "context": {}},
+    )
+
+    assert out["configurationErrorCode"] == "model_context_window_error"
+    assert "1,048,576-token context window" in out["configurationError"]
+    assert out["toolCalls"] == []
+    assert load_messages(out["messages"])
+
+
+def test_call_llm_invalid_structured_schema_is_typed_and_transport_bounded(
+    monkeypatch, workspace
+):
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ThinkingPart,
+        UserPromptPart,
+    )
+
+    from src.adapters.dapr_durable_payload_codec import DaprDurablePayloadCodecAdapter
+    from src.compaction.kimi_history import compact_kimi_history
+
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 10_000)
+    monkeypatch.setattr(
+        wfmod,
+        "compact_kimi_history",
+        lambda messages: compact_kimi_history(
+            messages,
+            max_messages=20,
+            keep_messages=8,
+            max_tokens=2_000,
+            keep_tokens=1_750,
+            max_bytes=8_000,
+            keep_bytes=7_000,
+        ),
+    )
+    history = dump_messages(
+        [
+            ModelRequest(parts=[UserPromptPart(content="original request")]),
+            *[
+                ModelResponse(parts=[ThinkingPart(content="汉😀" * 1_000)])
+                for _ in range(5)
+            ],
+        ]
+    )
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {
+            "task": "current request",
+            "messages": history,
+            "context": {
+                "agentConfig": {
+                    "structuredOutputMode": "tool",
+                    "responseJsonSchema": {},
+                }
+            },
+        },
+    )
+
+    assert out["configurationErrorCode"] == "structured_output_config_error"
+    assert "requires a non-empty responseJsonSchema" in out["configurationError"]
+    assert codec.size_bytes(out) <= 10_000
+
+
+def test_call_llm_structured_tool_collision_is_typed_and_transport_bounded(
+    monkeypatch, workspace
+):
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ThinkingPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.tools import ToolDefinition
+
+    from src.adapters.dapr_durable_payload_codec import DaprDurablePayloadCodecAdapter
+    from src.compaction.kimi_history import compact_kimi_history
+
+    class CollidingRouter:
+        async def tool_defs_with_execution(self):
+            return [
+                ToolDefinition(
+                    name="StructuredOutput",
+                    description="collision",
+                    parameters_json_schema={"type": "object"},
+                )
+            ], set()
+
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "get_router", lambda _config: CollidingRouter())
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 10_000)
+    monkeypatch.setattr(
+        wfmod,
+        "compact_kimi_history",
+        lambda messages: compact_kimi_history(
+            messages,
+            max_messages=20,
+            keep_messages=8,
+            max_tokens=2_000,
+            keep_tokens=1_750,
+            max_bytes=8_000,
+            keep_bytes=7_000,
+        ),
+    )
+    history = dump_messages(
+        [
+            ModelRequest(parts=[UserPromptPart(content="original request")]),
+            *[
+                ModelResponse(parts=[ThinkingPart(content="汉😀" * 1_000)])
+                for _ in range(5)
+            ],
+        ]
+    )
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {
+            "messages": history,
+            "context": {
+                "agentConfig": {
+                    "structuredOutputMode": "tool",
+                    "responseJsonSchema": {
+                        "type": "object",
+                        "properties": {"summary": {"type": "string"}},
+                    },
+                }
+            },
+        },
+    )
+
+    assert out["configurationErrorCode"] == "structured_output_config_error"
+    assert "collides with the reserved StructuredOutput" in out["configurationError"]
+    assert codec.size_bytes(out) <= 10_000
 
 
 def test_call_llm_marks_mcp_tool_calls_for_sequential_execution(monkeypatch, workspace):
@@ -288,11 +486,14 @@ def test_call_llm_does_not_commit_an_interrupted_stream(monkeypatch, workspace):
 
     monkeypatch.setattr(wfmod, "build_model", lambda: BrokenStreamingModel())
 
-    with pytest.raises(RuntimeError, match="connection interrupted"):
+    with pytest.raises(
+        RuntimeError, match="call_llm failed before returning a durable result"
+    ) as exc_info:
         call_llm(
             FakeActivityCtx(),
             {"task": "stream it", "messages": [], "context": {}, "iteration": 0},
         )
+    assert "connection interrupted" not in str(exc_info.value)
 
 
 def test_call_llm_exposes_dapr_style_structured_output_function(monkeypatch, workspace):
@@ -346,38 +547,6 @@ def test_call_llm_exposes_dapr_style_structured_output_function(monkeypatch, wor
         "properties": {"summary": {"type": "string"}},
     }
     assert out["toolCalls"][0]["toolName"] == "StructuredOutput"
-
-
-def test_call_llm_sanitizes_malformed_tool_arguments_before_history(
-    monkeypatch, workspace
-):
-    from pydantic_ai.messages import ToolCallPart
-
-    captured: dict[str, Any] = {}
-    fake = make_fake_model(
-        captured,
-        [
-            [
-                ToolCallPart(
-                    tool_name="run_command",
-                    args="{not-json",
-                    tool_call_id="bad1",
-                )
-            ]
-        ],
-    )
-    monkeypatch.setattr(wfmod, "build_model", lambda: fake)
-
-    out = call_llm(
-        FakeActivityCtx(),
-        {"task": "run it", "messages": [], "context": {}, "iteration": 0},
-    )
-
-    call = out["toolCalls"][0]
-    assert call["args"] == {}
-    assert "valid JSON object" in call["argsError"]
-    reloaded = load_messages(out["messages"])
-    assert reloaded[-1].parts[0].args == {}
 
 
 def test_execute_tool_runs_real_harness_tools(workspace):
