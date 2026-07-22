@@ -84,6 +84,7 @@ import {
 } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { toPostgresTimestampParam } from "$lib/server/db/sql-params";
+import { resolvePublishedSessionRuntimeSandboxName } from "$lib/server/application/session-runtime-host-recovery";
 import {
 	agents,
 	benchmarkRunInstances,
@@ -1210,7 +1211,11 @@ export class CurrentSessionRepository implements SessionRepository {
       )
       .limit(1);
     const runtimeAppId = row?.runtimeAppId?.trim() ?? "";
-    const runtimeSandboxName = row?.runtimeSandboxName?.trim() ?? "";
+    const runtimeSandboxName =
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: row?.runtimeAppId ?? null,
+        runtimeSandboxName: row?.runtimeSandboxName ?? null,
+      }) ?? "";
     if (!runtimeAppId || !runtimeSandboxName) return null;
     const recoveryStartedAt =
       row?.recoveryStartedAt &&
@@ -1282,7 +1287,11 @@ export class CurrentSessionRepository implements SessionRepository {
 
       const runtimeInstanceId = row.runtimeInstanceId?.trim() ?? "";
       const runtimeAppId = row.runtimeAppId?.trim() ?? "";
-      const runtimeSandboxName = row.runtimeSandboxName?.trim() ?? "";
+      const runtimeSandboxName =
+        resolvePublishedSessionRuntimeSandboxName({
+          runtimeAppId: row.runtimeAppId,
+          runtimeSandboxName: row.runtimeSandboxName,
+        }) ?? "";
       if (
         !runtimeInstanceId ||
         !runtimeAppId ||
