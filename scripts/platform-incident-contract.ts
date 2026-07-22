@@ -81,6 +81,7 @@ export const PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA = {
 		},
 		episodeStartedAt: { type: "string", maxLength: 64, format: "date-time" },
 		severity: { type: "string", enum: ["info", "warning", "critical"] },
+		eventId: { type: "string", maxLength: 512 },
 		subject: { type: "string", maxLength: 500 },
 		executionId: { type: "string", maxLength: 256, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
 		sessionId: { type: "string", maxLength: 256, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
