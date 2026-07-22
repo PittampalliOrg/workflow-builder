@@ -79,8 +79,8 @@ describe("agent workflow host app readiness", () => {
 			podIP: "10.244.1.20",
 		});
 		expect(calls).toEqual([
-			"http://10.244.1.20:8002/healthz",
-			"http://10.244.1.20:8002/healthz",
+			"http://10.244.1.20:8002/readyz",
+			"http://10.244.1.20:8002/readyz",
 		]);
 	});
 
@@ -122,7 +122,7 @@ describe("agent workflow host app readiness", () => {
 
 		expect(result).toBeNull();
 		expect(fetchImpl).toHaveBeenCalledWith(
-			"http://10.244.1.99:8002/healthz",
+			"http://10.244.1.99:8002/readyz",
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 	});
