@@ -3,6 +3,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+	CompleteWorkflowExecutionRuntimeHostActivationResult,
+	PublishWorkflowExecutionRuntimeHostResult,
+	ReserveWorkflowExecutionRuntimeHostResult,
+	WorkflowExecutionRuntimeHostRetirementResult,
+} from "$lib/server/application/ports";
 
 const mocks = vi.hoisted(() => {
 	const execution = {
@@ -31,6 +37,44 @@ const mocks = vi.hoisted(() => {
 		createWorkflowFile: vi.fn(async () => ({ file: { id: "file-1" } })),
 		saveWorkflowBrowserArtifact: vi.fn(async () => ({ id: "bwf_1" })),
 	};
+	const helperOperation = {
+		executionId: "exec-1",
+		purpose: "cli-workspace-command" as const,
+		helperSessionId: "exec-1__cliws",
+		generationStartedAt: new Date("2026-07-22T12:00:00.123Z"),
+		runtimeAppId: "helper-exec-1__cliws",
+		runtimeInstanceId: "exec-1",
+		runtimeSandboxName: "agent-host-helper-exec-1__cliws",
+		owned: true,
+		operationId: "operation-1",
+	};
+	const workflowExecutionRuntimeHosts = {
+		reserve: vi.fn(async (): Promise<ReserveWorkflowExecutionRuntimeHostResult> => ({
+			status: "reserved" as const,
+			operation: helperOperation,
+		})),
+		publish: vi.fn(
+			async (): Promise<PublishWorkflowExecutionRuntimeHostResult> => ({
+				status: "published",
+			}),
+		),
+		completeActivation: vi.fn(
+			async (): Promise<CompleteWorkflowExecutionRuntimeHostActivationResult> => ({
+				status: "activated",
+			}),
+		),
+		abort: vi.fn(async () => true),
+		retireUnpublished: vi.fn(
+			async (): Promise<WorkflowExecutionRuntimeHostRetirementResult> => ({
+				status: "retired",
+				cleanup: {
+					status: "cleaned",
+					sandbox: "deleted",
+				},
+			}),
+		),
+		requestReap: vi.fn(),
+	};
 	const requireInternal = vi.fn(() => undefined);
 	const waitForAgentWorkflowHostAppReady = vi.fn(async () => ({
 		baseUrl: "http://127.0.0.1:1",
@@ -42,20 +86,28 @@ const mocks = vi.hoisted(() => {
 	);
 	const maybeProvisionAgentWorkflowHost = vi.fn(async () => ({
 		agentAppId: "helper-exec-1__cliws",
+		sandboxName: "agent-host-helper-exec-1__cliws",
 	}));
+	const activateAgentWorkflowHostGeneration = vi.fn(async () => undefined);
 	return {
+		activateAgentWorkflowHostGeneration,
 		candidate,
 		execution,
+		helperOperation,
 		maybeProvisionAgentWorkflowHost,
 		probeAgentWorkflowHostAppReady,
 		requireInternal,
 		waitForAgentWorkflowHostAppReady,
 		workflowData,
+		workflowExecutionRuntimeHosts,
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		workflowExecutionRuntimeHosts: mocks.workflowExecutionRuntimeHosts,
+	}),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -66,7 +118,7 @@ vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 	waitForAgentWorkflowHostAppReady: mocks.waitForAgentWorkflowHostAppReady,
 	probeAgentWorkflowHostAppReady: mocks.probeAgentWorkflowHostAppReady,
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
-	sessionHostAppId: (sessionId: string) => `helper-${sessionId}`,
+	activateAgentWorkflowHostGeneration: mocks.activateAgentWorkflowHostGeneration,
 }));
 
 vi.mock("$lib/server/workflows/github-token", () => ({
@@ -129,6 +181,20 @@ describe("CLI workspace command route", () => {
 		mocks.workflowData.getExecutionById.mockResolvedValue(mocks.execution);
 		mocks.workflowData.createWorkflowFile.mockResolvedValue({ file: { id: "file-1" } });
 		mocks.workflowData.saveWorkflowBrowserArtifact.mockResolvedValue({ id: "bwf_1" });
+		mocks.workflowExecutionRuntimeHosts.reserve.mockResolvedValue({
+			status: "reserved",
+			operation: mocks.helperOperation,
+		});
+		mocks.workflowExecutionRuntimeHosts.publish.mockResolvedValue({
+			status: "published",
+		});
+		mocks.workflowExecutionRuntimeHosts.completeActivation.mockResolvedValue({
+			status: "activated",
+		});
+		mocks.workflowExecutionRuntimeHosts.retireUnpublished.mockResolvedValue({
+			status: "retired",
+			cleanup: { status: "cleaned", sandbox: "deleted" },
+		});
 		mocks.execution.executionIrVersion = null;
 	});
 
@@ -179,6 +245,7 @@ describe("CLI workspace command route", () => {
 			agentAppId: "agent-session-1",
 		});
 		expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+		expect(mocks.workflowExecutionRuntimeHosts.reserve).not.toHaveBeenCalled();
 	});
 
 	it("uses the execution Dapr instance as helper shared workspace key", async () => {
@@ -199,6 +266,21 @@ describe("CLI workspace command route", () => {
 		});
 		expect(mocks.waitForAgentWorkflowHostAppReady).not.toHaveBeenCalled();
 		expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+		expect(mocks.workflowExecutionRuntimeHosts.reserve).toHaveBeenCalledWith({
+			executionId: "exec-1",
+			purpose: "cli-workspace-command",
+			helperSessionId: "exec-1__cliws",
+		});
+		expect(mocks.workflowExecutionRuntimeHosts.publish).toHaveBeenCalledWith(
+			mocks.helperOperation,
+		);
+		expect(mocks.activateAgentWorkflowHostGeneration).toHaveBeenCalledWith({
+			agentAppId: "helper-exec-1__cliws",
+			sandboxName: "agent-host-helper-exec-1__cliws",
+		});
+		expect(
+			mocks.workflowExecutionRuntimeHosts.completeActivation,
+		).toHaveBeenCalledWith(mocks.helperOperation);
 	});
 
 	it("provisions a missing helper before entering the readiness wait", async () => {
@@ -220,7 +302,9 @@ describe("CLI workspace command route", () => {
 			expect.objectContaining({
 				sessionId: "exec-1__cliws",
 				workflowExecutionId: "exec-1",
+				timeoutMinutes: 30,
 				sharedWorkspaceKey: "sw-example-exec-exec-1",
+				provisioningStartedAt: mocks.helperOperation.generationStartedAt,
 			}),
 		);
 		expect(mocks.waitForAgentWorkflowHostAppReady).toHaveBeenCalledTimes(1);
@@ -233,6 +317,77 @@ describe("CLI workspace command route", () => {
 		expect(mocks.maybeProvisionAgentWorkflowHost.mock.invocationCallOrder[0]).toBeLessThan(
 			mocks.waitForAgentWorkflowHostAppReady.mock.invocationCallOrder[0],
 		);
+	});
+
+	it("rejects a terminal execution before probing or provisioning a helper", async () => {
+		mocks.workflowExecutionRuntimeHosts.reserve.mockResolvedValueOnce({
+			status: "execution_not_active",
+		});
+
+		await expect(
+			POST(event({ command: "npm run build", helperPod: true }) as never),
+		).rejects.toMatchObject({ status: 409 });
+		expect(mocks.probeAgentWorkflowHostAppReady).not.toHaveBeenCalled();
+		expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+	});
+
+	it("does not activate when a successor owns publication", async () => {
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValueOnce({
+			baseUrl: "http://127.0.0.1:1",
+		});
+		mocks.workflowExecutionRuntimeHosts.publish.mockResolvedValueOnce({
+			status: "lost",
+		});
+		mocks.workflowExecutionRuntimeHosts.retireUnpublished.mockResolvedValueOnce({
+			status: "fenced",
+		});
+
+		await expect(
+			POST(event({ command: "npm run build", helperPod: true }) as never),
+		).rejects.toMatchObject({ status: 409 });
+		expect(mocks.workflowExecutionRuntimeHosts.retireUnpublished).toHaveBeenCalledWith({
+			...mocks.helperOperation,
+			error: "workflow helper publication lease was lost",
+		});
+		expect(mocks.activateAgentWorkflowHostGeneration).not.toHaveBeenCalled();
+	});
+
+	it("retires an owned generation when provider activation fails", async () => {
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValueOnce({
+			baseUrl: "http://127.0.0.1:1",
+		});
+		mocks.activateAgentWorkflowHostGeneration.mockRejectedValueOnce(
+			new Error("SEA activation failed"),
+		);
+
+		await expect(
+			POST(event({ command: "npm run build", helperPod: true }) as never),
+		).rejects.toMatchObject({ status: 409 });
+		expect(mocks.workflowExecutionRuntimeHosts.retireUnpublished).toHaveBeenCalledWith({
+			...mocks.helperOperation,
+			error: "SEA activation failed",
+		});
+		expect(
+			mocks.workflowExecutionRuntimeHosts.completeActivation,
+		).not.toHaveBeenCalled();
+	});
+
+	it("retires the generation when the execution stops during activation", async () => {
+		mocks.probeAgentWorkflowHostAppReady.mockResolvedValueOnce({
+			baseUrl: "http://127.0.0.1:1",
+		});
+		mocks.workflowExecutionRuntimeHosts.completeActivation.mockResolvedValueOnce({
+			status: "execution_not_active",
+		});
+
+		await expect(
+			POST(event({ command: "npm run build", helperPod: true }) as never),
+		).rejects.toMatchObject({ status: 409 });
+		expect(mocks.activateAgentWorkflowHostGeneration).toHaveBeenCalledOnce();
+		expect(mocks.workflowExecutionRuntimeHosts.retireUnpublished).toHaveBeenCalledWith({
+			...mocks.helperOperation,
+			error: "workflow execution stopped during helper activation",
+		});
 	});
 
 	it("uses the dynamic-script shared workspace key for helper pods", async () => {

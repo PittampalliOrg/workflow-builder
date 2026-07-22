@@ -69,13 +69,20 @@ const mocks = vi.hoisted(() => {
     upsertTraceLineageLinks: vi.fn(),
   };
   const sessionRuntimeHostCleanup = { requestReap: vi.fn() };
-  return { workflowData, sessionRuntimeHostCleanup, requireInternal: vi.fn() };
+  const workflowExecutionRuntimeHosts = { requestReap: vi.fn() };
+  return {
+    workflowData,
+    sessionRuntimeHostCleanup,
+    workflowExecutionRuntimeHosts,
+    requireInternal: vi.fn(),
+  };
 });
 
 vi.mock("$lib/server/application", () => ({
   getApplicationAdapters: () => ({
     workflowData: mocks.workflowData,
     sessionRuntimeHostCleanup: mocks.sessionRuntimeHostCleanup,
+    workflowExecutionRuntimeHosts: mocks.workflowExecutionRuntimeHosts,
   }),
 }));
 

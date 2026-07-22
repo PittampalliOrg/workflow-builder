@@ -1103,6 +1103,34 @@ export type DeletedCliStorage = {
 	persistentVolumes: string[];
 };
 
+export async function listCliStorageForSession(
+	sessionId: string,
+	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
+): Promise<string[]> {
+	const sessionLabel = safeKubernetesLabelValue(sessionId);
+	const selector = encodeURIComponent(
+		`workflow-builder.cnoe.io/session-id=${sessionLabel}`,
+	);
+	const res = await kubeFetch(
+		`/api/v1/namespaces/${namespace}/persistentvolumeclaims?labelSelector=${selector}`,
+	);
+	if (!res.ok) {
+		throw new Error(
+			`list helper PVCs for ${sessionLabel} failed: ${res.status} ${await res.text()}`,
+		);
+	}
+	const body = (await res.json()) as {
+		items?: Array<{ metadata?: { name?: string } }>;
+	};
+	return [
+		...new Set(
+			(body.items ?? [])
+				.map((item) => item.metadata?.name?.trim())
+				.filter((name): name is string => Boolean(name)),
+		),
+	];
+}
+
 async function deleteKubernetesResource(
 	path: string,
 	kind: string,
@@ -1130,28 +1158,7 @@ export async function deleteCliStorageForSession(
 	sessionId: string,
 	namespace = DEFAULT_AGENT_RUNTIME_NAMESPACE,
 ): Promise<DeletedCliStorage> {
-	const sessionLabel = safeKubernetesLabelValue(sessionId);
-	const selector = encodeURIComponent(
-		`workflow-builder.cnoe.io/session-id=${sessionLabel}`,
-	);
-	const res = await kubeFetch(
-		`/api/v1/namespaces/${namespace}/persistentvolumeclaims?labelSelector=${selector}`,
-	);
-	if (!res.ok) {
-		throw new Error(
-			`list helper PVCs for ${sessionLabel} failed: ${res.status} ${await res.text()}`,
-		);
-	}
-	const body = (await res.json()) as {
-		items?: Array<{ metadata?: { name?: string } }>;
-	};
-	const names = [
-		...new Set(
-			(body.items ?? [])
-				.map((item) => item.metadata?.name?.trim())
-				.filter((name): name is string => Boolean(name)),
-		),
-	];
+	const names = await listCliStorageForSession(sessionId, namespace);
 	const deletedPvcs: string[] = [];
 	const deletedPvs: string[] = [];
 	for (const name of names) {

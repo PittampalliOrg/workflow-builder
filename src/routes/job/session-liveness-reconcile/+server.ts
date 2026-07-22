@@ -28,7 +28,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			console.log(
 				`[session-reconciler] tick: scanned=${result.scanned} actions=${result.actionsTaken} ` +
 					`runtimeHostCleanup=${result.runtimeHostCleanup.acknowledged.length} ` +
-					`runtimeHostCleanupFailed=${result.runtimeHostCleanup.failed.length} dryRun=${result.dryRun}`,
+					`runtimeHostCleanupFailed=${result.runtimeHostCleanup.failed.length} ` +
+					`workflowRuntimeHostCleanup=${result.workflowExecutionRuntimeHostCleanup.acknowledged.length} ` +
+					`workflowRuntimeHostCleanupFailed=${result.workflowExecutionRuntimeHostCleanup.failed.length} ` +
+					`dryRun=${result.dryRun}`,
 			);
 		}
 		return json({ ok: true, ...result });

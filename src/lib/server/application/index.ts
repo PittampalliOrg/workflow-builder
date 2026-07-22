@@ -252,6 +252,9 @@ import {
   WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
 import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/application/adapters/session-sandbox-destroyer";
+import { KubernetesWorkflowExecutionRuntimeHostCleanupProvider } from "$lib/server/application/adapters/execution-runtime-host-cleaner";
+import { AgentWorkflowExecutionRuntimeHostIdentityFactory } from "$lib/server/application/adapters/execution-runtime-host-identity";
+import { PostgresWorkflowExecutionRuntimeHostRepository } from "$lib/server/application/adapters/execution-runtime-hosts";
 import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
 import { createDaprPostgresSessionEventLog } from "$lib/server/application/adapters/session-events-dapr-postgres";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
@@ -333,6 +336,7 @@ import {
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
 import { ApplicationSessionRuntimeHostCleanupService } from "$lib/server/application/session-runtime-host-cleanup";
+import { ApplicationWorkflowExecutionRuntimeHostService } from "$lib/server/application/execution-runtime-hosts";
 import { ApplicationSandboxEventsService } from "$lib/server/application/sandbox-events";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
@@ -805,6 +809,12 @@ export function getApplicationAdapters(
     | undefined;
   let sessionRuntimeHostCleanup:
     | ApplicationSessionRuntimeHostCleanupService
+    | undefined;
+  let workflowExecutionRuntimeHosts:
+    | ApplicationWorkflowExecutionRuntimeHostService
+    | undefined;
+  let workflowExecutionLifecycle:
+    | LifecycleWorkflowExecutionControllerPort
     | undefined;
   let sessionRuntimeHostRecovery:
     | ApplicationSessionRuntimeHostRecoveryService
@@ -1322,6 +1332,22 @@ export function getApplicationAdapters(
         runtimeInspector: new DaprSessionRuntimeInspectionAdapter(),
         sandboxes: getSessionSandboxDestroyer(),
       }));
+  const getWorkflowExecutionRuntimeHosts = () =>
+    (workflowExecutionRuntimeHosts ??=
+      new ApplicationWorkflowExecutionRuntimeHostService({
+        repository: new PostgresWorkflowExecutionRuntimeHostRepository(
+          getDatabase(),
+        ),
+        provider: new KubernetesWorkflowExecutionRuntimeHostCleanupProvider({
+          sandboxes: getSessionSandboxDestroyer(),
+        }),
+        identities: new AgentWorkflowExecutionRuntimeHostIdentityFactory(),
+      }));
+  const getWorkflowExecutionLifecycle = () =>
+    (workflowExecutionLifecycle ??=
+      new LifecycleWorkflowExecutionControllerPort(
+        getWorkflowExecutionRuntimeHosts(),
+      ));
   const getSessionProvisioning = () =>
     (sessionProvisioning ??= new KubernetesSessionProvisioningReader());
   const getSessionEvents = () =>
@@ -1400,7 +1426,7 @@ export function getApplicationAdapters(
         getSessionGoalStore(),
         getLifecycleCoordinatorOwners(),
       ),
-      workflowLifecycle: new LifecycleWorkflowExecutionControllerPort(),
+      workflowLifecycle: getWorkflowExecutionLifecycle(),
       workflowCoordinatorOwners:
         new LifecycleWorkflowExecutionCoordinatorOwnerPort(
           getLifecycleCoordinatorOwners(),
@@ -1731,7 +1757,7 @@ export function getApplicationAdapters(
         workflowData: getWorkflowData(),
         approvalEvents: new DaprWorkflowApprovalEventPort(),
         coordinatorOwners: new LifecycleWorkflowExecutionCoordinatorOwnerPort(),
-        executionLifecycle: new LifecycleWorkflowExecutionControllerPort(),
+        executionLifecycle: getWorkflowExecutionLifecycle(),
         executionReadModels: getWorkflowExecutionReadModels(),
         runStarter: new LegacyWorkflowRunStarterPort(),
         workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
@@ -2639,7 +2665,7 @@ export function getApplicationAdapters(
           getSessionGoalStore(),
           getLifecycleCoordinatorOwners(),
         ),
-        executions: new LifecycleWorkflowExecutionControllerPort(),
+        executions: getWorkflowExecutionLifecycle(),
       }));
   const getPreviewAcceptanceBroker = () => {
     if (previewAcceptanceBroker) return previewAcceptanceBroker;
@@ -3008,6 +3034,9 @@ export function getApplicationAdapters(
     },
     get sessionRuntimeHostCleanup() {
       return getSessionRuntimeHostCleanup();
+    },
+    get workflowExecutionRuntimeHosts() {
+      return getWorkflowExecutionRuntimeHosts();
     },
     get sessionRuntimeHostRecovery() {
       return getSessionRuntimeHostRecovery();

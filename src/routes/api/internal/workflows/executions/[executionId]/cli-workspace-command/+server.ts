@@ -34,7 +34,7 @@ import {
 	waitForAgentWorkflowHostAppReady,
 	probeAgentWorkflowHostAppReady,
 	maybeProvisionAgentWorkflowHost,
-	sessionHostAppId,
+	activateAgentWorkflowHostGeneration,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
 import type { AgentConfig } from "$lib/types/agents";
@@ -201,7 +201,8 @@ async function readFileBytes(
 export const POST: RequestHandler = async ({ params, request }) => {
 	requireInternal(request);
 	const executionId = params.executionId;
-	const { workflowData } = getApplicationAdapters();
+	const { workflowData, workflowExecutionRuntimeHosts } =
+		getApplicationAdapters();
 
 	let body: {
 		command?: unknown;
@@ -323,7 +324,37 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			? `ws_script_${executionId}`
 			: (execRow?.daprInstanceId ?? executionId);
 		const helperSessionId = `${executionId}__cliws`;
-		const helperAppId = sessionHostAppId(helperSessionId);
+		// Do not adopt pre-migration stable-id helpers into this ownership row: no
+		// crash-safe creation generation exists for them. Their compute timeout is
+		// finite; PVC owner binding was best-effort, so rare legacy storage orphans
+		// remain operational debt instead of being assigned guessed ownership. Every
+		// new request uses the exact reserved generation below.
+		let reservation;
+		try {
+			reservation = await workflowExecutionRuntimeHosts.reserve({
+				executionId,
+				purpose: "cli-workspace-command",
+				helperSessionId,
+			});
+		} catch (err) {
+			if (isDatabaseNotConfigured(err)) return error(503, "Database not configured");
+			throw err;
+		}
+		if (reservation.status === "not_found") {
+			return error(404, `Workflow execution ${executionId} was not found`);
+		}
+		if (reservation.status === "execution_not_active") {
+			return error(409, "workflow execution is stopping or terminal");
+		}
+		if (reservation.status === "busy") {
+			return error(409, "workflow helper operation is already in progress");
+		}
+		if (reservation.status === "target_mismatch") {
+			return error(409, "workflow helper runtime identity does not match");
+		}
+		const helperOperation = reservation.operation;
+		const helperAppId = helperOperation.runtimeAppId;
+		let helperFailure = "workflow helper did not become ready";
 		// Fast path: check once for an already-ready helper. A missing helper must
 		// provision immediately instead of consuming the full readiness timeout as
 		// an existence probe. Provisioning is idempotent when a helper is starting.
@@ -343,16 +374,71 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					timeoutMinutes: helperTimeoutMinutes,
 					sessionSecretEnv: ghToken ? { GITHUB_TOKEN: ghToken } : null,
 					sharedWorkspaceKey,
+					provisioningStartedAt: helperOperation.generationStartedAt,
 				});
-				const appId = prov?.agentAppId ?? helperAppId;
-				const ready = await waitForAgentWorkflowHostAppReady({ agentAppId: appId });
+				if (
+					prov?.agentAppId !== helperAppId ||
+					prov.sandboxName !== helperOperation.runtimeSandboxName
+				) {
+					throw new Error("workflow helper provider returned a different generation");
+				}
+				const ready = await waitForAgentWorkflowHostAppReady({
+					agentAppId: helperAppId,
+				});
 				if (ready?.baseUrl) baseUrl = ready.baseUrl;
 			} catch (err) {
+				helperFailure = err instanceof Error ? err.message : String(err);
 				console.warn(
 					`[cli-workspace-command] helper-pod provision failed for ${executionId}:`,
-					err instanceof Error ? err.message : err,
+					helperFailure,
 				);
 			}
+		}
+		if (!baseUrl) {
+			await workflowExecutionRuntimeHosts.retireUnpublished({
+				...helperOperation,
+				error: helperFailure,
+			});
+			return error(
+				409,
+				`No live interactive-cli pod for execution ${executionId}; cannot run the command`,
+			);
+		}
+
+		const published = await workflowExecutionRuntimeHosts.publish(helperOperation);
+		if (published.status !== "published") {
+			await workflowExecutionRuntimeHosts.retireUnpublished({
+				...helperOperation,
+				error:
+					published.status === "lost"
+						? "workflow helper publication lease was lost"
+						: "workflow execution stopped before helper publication",
+			});
+			return error(409, "workflow execution is stopping or terminal");
+		}
+		try {
+			await activateAgentWorkflowHostGeneration({
+				agentAppId: helperOperation.runtimeAppId,
+				sandboxName: helperOperation.runtimeSandboxName,
+			});
+		} catch (err) {
+			await workflowExecutionRuntimeHosts.retireUnpublished({
+				...helperOperation,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return error(409, "workflow helper generation could not be activated");
+		}
+		const activation =
+			await workflowExecutionRuntimeHosts.completeActivation(helperOperation);
+		if (activation.status !== "activated") {
+			await workflowExecutionRuntimeHosts.retireUnpublished({
+				...helperOperation,
+				error:
+					activation.status === "lost"
+						? "workflow helper activation lease was lost"
+						: "workflow execution stopped during helper activation",
+			});
+			return error(409, "workflow execution is stopping or terminal");
 		}
 	}
 	if (!baseUrl) {
