@@ -68,11 +68,15 @@ const mocks = vi.hoisted(() => {
     getTraceTargetsForExecution: vi.fn(),
     upsertTraceLineageLinks: vi.fn(),
   };
-  return { workflowData, requireInternal: vi.fn() };
+  const sessionRuntimeHostCleanup = { requestReap: vi.fn() };
+  return { workflowData, sessionRuntimeHostCleanup, requireInternal: vi.fn() };
 });
 
 vi.mock("$lib/server/application", () => ({
-  getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+  getApplicationAdapters: () => ({
+    workflowData: mocks.workflowData,
+    sessionRuntimeHostCleanup: mocks.sessionRuntimeHostCleanup,
+  }),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({

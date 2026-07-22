@@ -26,7 +26,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		const result = await runSessionReconcile();
 		if (!("skipped" in result)) {
 			console.log(
-				`[session-reconciler] tick: scanned=${result.scanned} actions=${result.actionsTaken} dryRun=${result.dryRun}`,
+				`[session-reconciler] tick: scanned=${result.scanned} actions=${result.actionsTaken} ` +
+					`runtimeHostCleanup=${result.runtimeHostCleanup.acknowledged.length} ` +
+					`runtimeHostCleanupFailed=${result.runtimeHostCleanup.failed.length} dryRun=${result.dryRun}`,
 			);
 		}
 		return json({ ok: true, ...result });

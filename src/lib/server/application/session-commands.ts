@@ -33,7 +33,8 @@ import type {
 	SessionRepository,
 	SessionRepositoryMountTarget,
 	SessionRepositoryMounter,
-  SessionRuntimeCleanupPort,
+	SessionRuntimeCleanupPort,
+	TerminalRuntimeHostCleanupPort,
 	SessionSandboxDestroyer,
 	SessionWorkflowSpawner,
 	WorkspaceProjectRepository,
@@ -263,6 +264,7 @@ export class ApplicationSessionCommandService {
       runtimeCleaner: SessionRuntimeCleanupPort;
 			workspaceProjects?: WorkspaceProjectRepository;
 			sandboxDestroyer?: SessionSandboxDestroyer;
+			terminalRuntimeHostCleanup?: TerminalRuntimeHostCleanupPort;
 			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
 			agentRuntimeSync?: AgentRuntimeSyncPort;
 			devSessionWorkflows?: DevSessionWorkflowResolver;
@@ -756,25 +758,10 @@ export class ApplicationSessionCommandService {
 	}
 
 	async reapTerminatedWorkflowSessionRuntimeHosts(
-		input: ReapTerminatedWorkflowSessionRuntimeHostsCommand,
+		_input: ReapTerminatedWorkflowSessionRuntimeHostsCommand,
 	): Promise<void> {
-		if (!this.deps.sandboxDestroyer) return;
-    const rows =
-      await this.deps.sessions.listReapableWorkflowSessionRuntimeHosts({
-			workflowExecutionId: input.workflowExecutionId,
-		});
-		for (const row of rows) {
-			if (row.sessionId === input.exceptSessionId) continue;
-			try {
-				await this.deps.sandboxDestroyer.deleteRuntimeSandbox(
-					`agent-host-${row.runtimeAppId}`,
-				);
-			} catch (err) {
-				console.warn(
-					`[sessions] reap host agent-host-${row.runtimeAppId} failed (best-effort): ${String(err)}`,
-				);
-			}
-		}
+		if (!this.deps.terminalRuntimeHostCleanup) return;
+		this.deps.terminalRuntimeHostCleanup.requestReap();
 	}
 
   /**

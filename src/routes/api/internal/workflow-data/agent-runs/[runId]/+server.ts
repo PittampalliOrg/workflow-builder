@@ -36,7 +36,8 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
 		return error(400, "status must be one of running, completed, failed");
 	}
 
-	const result = await getApplicationAdapters().workflowData.updateAgentRunLifecycle({
+	const { workflowData, sessionRuntimeHostCleanup } = getApplicationAdapters();
+	const result = await workflowData.updateAgentRunLifecycle({
 		id: runId,
 		status: status as "running" | "completed" | "failed",
 		result:
@@ -49,6 +50,12 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
 		workspaceRef: normalizeString(body.workspaceRef),
 		eventPublished: body.eventPublished === true,
 	});
+	if (status === "completed" || status === "failed") {
+		// This durable journal transition closes the native parent-consumption
+		// fence. Emit a second eager hint in case the terminal session event arrived
+		// first and its earlier sweep correctly left the host pending.
+		sessionRuntimeHostCleanup.requestReap();
+	}
 
 	return json({ ok: true, ...result });
 };

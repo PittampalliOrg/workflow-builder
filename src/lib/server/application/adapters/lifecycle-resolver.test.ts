@@ -42,6 +42,7 @@ describe("Postgres lifecycle stop intent", () => {
 				runtime_app_id text,
 					runtime_sandbox_name text,
 					runtime_host_owned boolean NOT NULL DEFAULT true,
+					runtime_host_cleanup_completed_at timestamp,
 					runtime_provisioning_started_at timestamp,
 					runtime_provisioning_app_id text,
 					runtime_provisioning_instance_id text,
@@ -901,6 +902,63 @@ describe("Postgres lifecycle stop intent", () => {
       stop_requested_at: null,
       stop_requested_mode: null,
     });
+    const cleanup = await client.query<{
+      runtime_host_cleanup_completed_at: Date | null;
+    }>(`
+			SELECT runtime_host_cleanup_completed_at
+			FROM sessions
+			WHERE id = 'session-1'
+		`);
+    expect(cleanup.rows[0]?.runtime_host_cleanup_completed_at).toBeInstanceOf(
+      Date,
+    );
+  });
+
+  it("acknowledges a stopped CLI runtime host after lifecycle cleanup", async () => {
+    let target = await resolveTarget({ kind: "session", id: "session-1" });
+    await target.markStopRequested("CLI session stopped", "terminate");
+    target = await resolveTarget({ kind: "session", id: "session-1" });
+
+    await expect(
+      target.finalizeDb("CLI session stopped", "terminated", "terminate"),
+    ).resolves.toBe("finalized");
+
+    const persisted = await client.query<{
+      status: string;
+      runtime_host_cleanup_completed_at: Date | null;
+    }>(`
+			SELECT status, runtime_host_cleanup_completed_at
+			FROM sessions
+			WHERE id = 'session-1'
+		`);
+    expect(persisted.rows[0]).toMatchObject({
+      status: "terminated",
+      runtime_host_cleanup_completed_at: expect.any(Date),
+    });
+  });
+
+  it("does not acknowledge a runtime host after its Sandbox target changes", async () => {
+    let target = await resolveTarget({ kind: "session", id: "session-1" });
+    await target.markStopRequested("CLI session stopped", "terminate");
+    target = await resolveTarget({ kind: "session", id: "session-1" });
+    await client.exec(`
+			UPDATE sessions
+			SET runtime_sandbox_name = 'agent-host-agent-session-replaced'
+			WHERE id = 'session-1'
+		`);
+
+    await expect(
+      target.finalizeDb("CLI session stopped", "terminated", "terminate"),
+    ).resolves.toBe("finalized");
+
+    const persisted = await client.query<{
+      runtime_host_cleanup_completed_at: Date | null;
+    }>(`
+			SELECT runtime_host_cleanup_completed_at
+			FROM sessions
+			WHERE id = 'session-1'
+		`);
+    expect(persisted.rows[0]?.runtime_host_cleanup_completed_at).toBeNull();
   });
 
   it("acks child intents satisfied by a parent but preserves a stronger child reset", async () => {

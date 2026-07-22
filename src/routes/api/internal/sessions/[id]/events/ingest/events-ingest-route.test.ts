@@ -21,14 +21,31 @@ const mocks = vi.hoisted(() => {
 			},
 			cleanupSessionSandbox: false,
 		})),
-	};
-	const validateInternalToken = vi.fn(() => true);
-	const cleanupSessionSandbox = vi.fn(async () => undefined);
-	return { cleanupSessionSandbox, validateInternalToken, workflowData };
-});
+		};
+		const validateInternalToken = vi.fn(() => true);
+		const cleanupSessionSandbox = vi.fn(async () => undefined);
+		const sessionRuntimeHostCleanup = {
+			requestReap: vi.fn(),
+			reapPending: vi.fn(async () => ({
+				scanned: 1,
+				acknowledged: ["session-1"],
+				failed: [],
+				dryRun: false,
+			})),
+		};
+		return {
+			cleanupSessionSandbox,
+			sessionRuntimeHostCleanup,
+			validateInternalToken,
+			workflowData,
+		};
+	});
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		sessionRuntimeHostCleanup: mocks.sessionRuntimeHostCleanup,
+	}),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -146,7 +163,7 @@ describe("internal session event ingest route", () => {
 		expect(mocks.cleanupSessionSandbox).not.toHaveBeenCalled();
 	});
 
-	it("fires sandbox cleanup only when workflow-data requests it", async () => {
+	it("eagerly reaps a naturally completed Pydantic host", async () => {
 		mocks.workflowData.ingestSessionEvent.mockResolvedValueOnce({
 			event: {
 				id: "event-terminated",
@@ -170,5 +187,6 @@ describe("internal session event ingest route", () => {
 
 		expect(response.status).toBe(200);
 		expect(mocks.cleanupSessionSandbox).toHaveBeenCalledWith("session-1");
+		expect(mocks.sessionRuntimeHostCleanup.requestReap).toHaveBeenCalledOnce();
 	});
 });

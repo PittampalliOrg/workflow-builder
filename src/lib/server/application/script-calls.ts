@@ -7,7 +7,10 @@
  * enforces workspace scope via `workflowData.getScopedExecutionById`.
  */
 
-import type { WorkflowDataService } from "$lib/server/application/ports";
+import type {
+	TerminalRuntimeHostCleanupPort,
+	WorkflowDataService,
+} from "$lib/server/application/ports";
 import {
 	postgresScriptCallsStore,
 	type ScriptCallRecord,
@@ -24,6 +27,7 @@ export class ApplicationScriptCallsService {
 		private readonly deps: {
 			workflowData: Pick<WorkflowDataService, "getScopedExecutionById">;
 			store?: ScriptCallsStore;
+			terminalRuntimeHosts?: TerminalRuntimeHostCleanupPort;
 		},
 	) {}
 
@@ -42,7 +46,17 @@ export class ApplicationScriptCallsService {
 		callId: string,
 		input: ScriptCallUpsertInput,
 	): Promise<ScriptCallRecord> {
-		return this.store.upsertScriptCall(executionId, callId, input);
+		const call = await this.store.upsertScriptCall(executionId, callId, input);
+		if (
+			call.sessionId &&
+			["done", "null", "error", "skipped"].includes(call.status)
+		) {
+			// The journal write is the parent-consumption fence. Cleanup is eager but
+			// detached so the orchestrator activity is never coupled to SEA latency;
+			// the nullable session acknowledgement lets the scheduled reconciler retry.
+			this.deps.terminalRuntimeHosts?.requestReap();
+		}
+		return call;
 	}
 
 	/** Internal resume-after-edit journal import (`done` rows only). */

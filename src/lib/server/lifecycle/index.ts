@@ -16,7 +16,6 @@ import { env } from "$env/dynamic/private";
 import { createDaprCascadeDeps } from "$lib/server/application/adapters/lifecycle-cascade";
 import { resolveDurableTarget } from "$lib/server/application/adapters/lifecycle-resolver";
 import { configuredWorkspaceRetentionPort } from "$lib/server/application/adapters/workspace-retention-http";
-import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
 	DURABLE_RUNTIME_MISSING_STATUS,
@@ -191,6 +190,27 @@ function strongestStopMode(
 ): DurableStopMode {
   if (right == null) return left;
   return STOP_MODE_PRIORITY[right] > STOP_MODE_PRIORITY[left] ? right : left;
+}
+
+function ownedRuntimeSandboxTargets(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+): Array<{ runtimeAppId: string; runtimeSandboxName: string }> {
+  const targets = new Map<
+    string,
+    { runtimeAppId: string; runtimeSandboxName: string }
+  >();
+  for (const target of resolved.agentRuntimeTargets) {
+    const runtimeAppId = target.runtimeAppId.trim();
+    const runtimeSandboxName = target.runtimeSandboxName?.trim();
+    if (!runtimeAppId || !runtimeSandboxName || target.ownsRuntimeSandbox === false) {
+      continue;
+    }
+    targets.set(`${runtimeAppId}\u0000${runtimeSandboxName}`, {
+      runtimeAppId,
+      runtimeSandboxName,
+    });
+  }
+  return [...targets.values()];
 }
 
 async function cleanupResolvedWorkspaces(
@@ -556,24 +576,28 @@ export async function stopDurableRun(
   // durable state deletion only; retaining state must not leave a running
   // Sandbox behind, and cleanup must not depend on whether closure happened in
   // this request or a later confirmation poll.
-	let reapOk = true;
-		for (const name of resolved.sandboxNames) {
-			try {
-				const result = await deleteKubernetesSandbox(name);
+  let reapOk = true;
+  for (const target of ownedRuntimeSandboxTargets(resolved)) {
+    const name = target.runtimeSandboxName;
+    try {
+      if (!cascadeDeps.deleteRuntimeSandbox) {
+        throw new Error("runtime Sandbox deletion is not configured");
+      }
+      await cascadeDeps.deleteRuntimeSandbox(target);
       steps.push({
         name: `reap-sandbox:${name}`,
         result: "ok",
-        detail: result,
+        detail: "deleted-or-missing",
       });
-			} catch (err) {
-				reapOk = false;
-				steps.push({
-					name: `reap-sandbox:${name}`,
-					result: "failed",
-					detail: err instanceof Error ? err.message : String(err),
-				});
-			}
-		}
+    } catch (err) {
+      reapOk = false;
+      steps.push({
+        name: `reap-sandbox:${name}`,
+        result: "failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   const workspaceCleanupOk = await (purge
     ? cleanupResolvedWorkspaces(resolved, true, (name, ok, detail) => {
         steps.push({
@@ -712,17 +736,21 @@ async function finalizeConfirmedStop(
     return { state: "stopping", scope: resolved.scope };
   }
   let reapOk = true;
-	for (const name of resolved.sandboxNames) {
-		try {
-			await deleteKubernetesSandbox(name);
+  for (const target of ownedRuntimeSandboxTargets(resolved)) {
+    const name = target.runtimeSandboxName;
+    try {
+      if (!cascadeDeps.deleteRuntimeSandbox) {
+        throw new Error("runtime Sandbox deletion is not configured");
+      }
+      await cascadeDeps.deleteRuntimeSandbox(target);
     } catch (err) {
       reapOk = false;
       console.warn(
         `confirmDurableStop: Sandbox ${name} reap failed:`,
         err instanceof Error ? err.message : err,
       );
-		}
-		}
+    }
+  }
   const destructive = expectedMode === "purge" || expectedMode === "reset";
   const reportWorkspaceResult = (name: string, ok: boolean, detail?: string) => {
     if (!ok) {

@@ -99,6 +99,34 @@ describe("Dapr lifecycle cascade agent-runtime transport", () => {
     );
   });
 
+  it("binds provider deletion to the canonical app and Sandbox target", async () => {
+    const deleteRuntimeSandbox = vi.fn(async (name: string) => ({
+      name,
+      kind: "runtime" as const,
+      status: "deleted" as const,
+    }));
+    const deps = createDaprCascadeDeps({
+      sandboxDestroyer: { deleteRuntimeSandbox },
+    });
+
+    await expect(
+      deps.deleteRuntimeSandbox?.({
+        runtimeAppId: RUNTIME_APP_ID,
+        runtimeSandboxName: SANDBOX_NAME,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      deps.deleteRuntimeSandbox?.({
+        runtimeAppId: RUNTIME_APP_ID,
+        runtimeSandboxName: "agent-host-agent-session-stale",
+      }),
+    ).rejects.toThrow(
+      "runtime target mismatch: agent-session-abc does not own agent-host-agent-session-stale",
+    );
+    expect(deleteRuntimeSandbox).toHaveBeenCalledOnce();
+    expect(deleteRuntimeSandbox).toHaveBeenCalledWith(SANDBOX_NAME);
+  });
+
   it("strictly deletes named and execution-scoped OpenShell workspaces", async () => {
     const deps = createDaprCascadeDeps();
     mocks.daprFetch.mockResolvedValueOnce(new Response("{}", { status: 200 }));

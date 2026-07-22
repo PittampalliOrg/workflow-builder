@@ -43,7 +43,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		typeof body.producerEpoch === "string" && body.producerEpoch
 			? body.producerEpoch
 			: null;
-	const { workflowData } = getApplicationAdapters();
+	const { workflowData, sessionRuntimeHostCleanup } = getApplicationAdapters();
 	const result = await workflowData.ingestSessionEvent({
 		sessionId: params.id,
 		type,
@@ -55,6 +55,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	if (result.cleanupSessionSandbox) {
 		void cleanupSessionSandbox(params.id);
+		sessionRuntimeHostCleanup.requestReap();
 	}
 
 	return json({ event: result.event });

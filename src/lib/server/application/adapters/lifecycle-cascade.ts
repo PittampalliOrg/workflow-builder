@@ -21,7 +21,9 @@ import type {
   SessionRuntimeCleanupPort,
   SessionRuntimeInspectionPort,
   SessionRuntimeInstanceState,
+  SessionSandboxDestroyer,
 } from "$lib/server/application/ports";
+import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/application/adapters/session-sandbox-destroyer";
 import {
 	type AgentRuntimeTarget,
 	type DurableCascadeDeps,
@@ -59,6 +61,8 @@ export type CreateDaprCascadeDepsOptions = {
     runtimeAppId: string,
     runtimeSandboxName: string,
   ) => Promise<AgentWorkflowHostLocation>;
+  /** Provider-owned session Sandbox teardown. */
+  sandboxDestroyer?: Pick<SessionSandboxDestroyer, "deleteRuntimeSandbox">;
 };
 
 export type AgentWorkflowHostLocation =
@@ -194,6 +198,8 @@ export function createDaprCascadeDeps(
     (opts.locateAgentWorkflowHost
       ? opts.locateAgentWorkflowHost
       : defaultAgentWorkflowHostActivation);
+  const sandboxDestroyer =
+    opts.sandboxDestroyer ?? new SandboxExecutionApiSessionSandboxDestroyer();
 
   async function safelyLocateAgentWorkflowHost(
     runtimeAppId: string,
@@ -737,6 +743,26 @@ export function createDaprCascadeDeps(
     );
   }
 
+  async function deleteRuntimeSandbox(target: {
+    runtimeAppId: string;
+    runtimeSandboxName: string;
+  }): Promise<void> {
+    const expectedSandboxName = `agent-host-${target.runtimeAppId}`;
+    if (target.runtimeSandboxName !== expectedSandboxName) {
+      throw new Error(
+        `runtime target mismatch: ${target.runtimeAppId} does not own ${target.runtimeSandboxName}`,
+      );
+    }
+    const result = await sandboxDestroyer.deleteRuntimeSandbox(
+      target.runtimeSandboxName,
+    );
+    if (result.status === "error") {
+      throw new Error(
+        result.error || `runtime Sandbox ${target.runtimeSandboxName} deletion failed`,
+      );
+    }
+  }
+
 	const waitParentClosed = (instanceId: string) =>
 		waitForDurableRuntimeClosedWithin(
 			`workflow ${instanceId}`,
@@ -771,6 +797,7 @@ export function createDaprCascadeDeps(
 		purgeParent,
 		purgeAgentRuntime,
 		purgeStateRows,
+    deleteRuntimeSandbox,
     deleteWorkspaceSandbox,
     cleanupWorkspaceExecution: cleanupSessionSandboxStrict,
 		sleep,

@@ -392,6 +392,15 @@ export interface SessionRepository {
 	listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
+	listPendingTerminalRuntimeHostCleanups(
+		input: ListTerminalSessionRuntimeHostCleanupInput,
+	): Promise<TerminalSessionRuntimeHostCleanupRecord[]>;
+	claimTerminalRuntimeHostCleanup(
+		input: ClaimTerminalSessionRuntimeHostCleanupInput,
+	): Promise<boolean>;
+	acknowledgeTerminalRuntimeHostCleanup(
+		input: AcknowledgeTerminalSessionRuntimeHostCleanupInput,
+	): Promise<boolean>;
 	createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }>;
 	getPeerSession(sessionId: string): Promise<PeerSessionRecord | null>;
   /** Atomically fence the parent session/execution and insert or reuse a peer. */
@@ -893,6 +902,38 @@ export type UpdateWorkflowEnsureSessionRuntimeInput = {
 export type WorkflowSessionRuntimeHostRecord = {
 	sessionId: string;
 	runtimeAppId: string;
+};
+
+export type TerminalSessionRuntimeHostCleanupRecord = {
+	sessionId: string;
+	runtimeAppId: string;
+	instanceId: string;
+	/** Persisted provider target snapshot; NULL uses the app id's canonical name. */
+	runtimeSandboxName: string | null;
+};
+
+export type ListTerminalSessionRuntimeHostCleanupInput = {
+	limit: number;
+	availableBefore: Date;
+	sessionId?: string;
+	workflowExecutionId?: string;
+};
+
+export type ClaimTerminalSessionRuntimeHostCleanupInput = {
+	sessionId: string;
+	runtimeAppId: string;
+	instanceId: string;
+	runtimeSandboxName: string | null;
+	attemptedAt: Date;
+	availableBefore: Date;
+};
+
+export type AcknowledgeTerminalSessionRuntimeHostCleanupInput = {
+	sessionId: string;
+	runtimeAppId: string;
+	instanceId: string;
+	runtimeSandboxName: string | null;
+	completedAt: Date;
 };
 
 export type PeerSessionRecord = {

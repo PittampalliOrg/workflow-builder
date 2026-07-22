@@ -112,6 +112,11 @@ export type DurableCascadeDeps = {
 		agentRuntimeTargets: AgentRuntimeTarget[],
 		statePurgeInstanceIds?: string[],
 	) => Promise<void>;
+	/** Strictly delete one exact owned per-session runtime target through its provider. */
+	deleteRuntimeSandbox?: (target: {
+		runtimeAppId: string;
+		runtimeSandboxName: string;
+	}) => Promise<void>;
   /** Strictly delete one per-session OpenShell Sandbox by its actual name. */
   deleteWorkspaceSandbox?: (sandboxName: string) => Promise<void>;
   /** Strictly clean workflow-owned OpenShell workspaces by execution scope. */
