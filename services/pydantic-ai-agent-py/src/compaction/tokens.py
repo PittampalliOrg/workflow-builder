@@ -9,30 +9,25 @@ Session Pulse's Context % tile reads them (`context_source=provider_usage`).
 
 from __future__ import annotations
 
-import os
+from src.config import (
+    KIMI_CONTEXT_WINDOW,
+    KIMI_INPUT_SAFETY_BUFFER_TOKENS,
+    KIMI_MAX_COMPLETION_TOKENS,
+)
 
-# Claude Code parity constants (autoCompact.ts)
-MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
-AUTOCOMPACT_BUFFER_TOKENS = 13_000
-
-KIMI_K3_DEFAULT_CONTEXT_WINDOW = 1_048_576
 KIMI_K3_CONTEXT_KEYS = {"kimi-k3", "llm-kimi-k3", "kimi/kimi-k3"}
-DEFAULT_WINDOW = KIMI_K3_DEFAULT_CONTEXT_WINDOW
+DEFAULT_WINDOW = KIMI_CONTEXT_WINDOW
 
 
-def _kimi_k3_context_window() -> int:
-    try:
-        value = int(os.environ.get("KIMI_CONTEXT_WINDOW", ""))
-    except (TypeError, ValueError):
-        return KIMI_K3_DEFAULT_CONTEXT_WINDOW
-    return value if value > 0 else KIMI_K3_DEFAULT_CONTEXT_WINDOW
+class ContextWindowBudgetError(ValueError):
+    """The estimated request cannot fit the configured K3 context window."""
 
 
 def get_context_window(model: str | None) -> int:
     if model:
         normalized = model.strip().lower()
         if normalized in KIMI_K3_CONTEXT_KEYS or "kimi" in normalized:
-            return _kimi_k3_context_window()
+            return KIMI_CONTEXT_WINDOW
     return DEFAULT_WINDOW
 
 
@@ -40,25 +35,45 @@ def get_effective_window(
     model: str | None,
     *,
     window_override: int | None = None,
-    summary_reserve: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+    completion_reserve: int = KIMI_MAX_COMPLETION_TOKENS,
 ) -> int:
     base = get_context_window(model)
     if window_override and window_override > 0:
         base = min(base, window_override)
-    return max(0, base - summary_reserve)
+    return max(0, base - completion_reserve)
 
 
 def get_auto_compact_threshold(
     model: str | None,
     *,
     window_override: int | None = None,
-    summary_reserve: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-    buffer_tokens: int = AUTOCOMPACT_BUFFER_TOKENS,
+    completion_reserve: int = KIMI_MAX_COMPLETION_TOKENS,
+    buffer_tokens: int = KIMI_INPUT_SAFETY_BUFFER_TOKENS,
 ) -> int:
     effective = get_effective_window(
-        model, window_override=window_override, summary_reserve=summary_reserve
+        model,
+        window_override=window_override,
+        completion_reserve=completion_reserve,
     )
     return max(0, effective - buffer_tokens)
+
+
+def get_completion_token_budget(
+    model: str | None,
+    *,
+    input_tokens: int,
+    requested_tokens: int = KIMI_MAX_COMPLETION_TOKENS,
+    buffer_tokens: int = KIMI_INPUT_SAFETY_BUFFER_TOKENS,
+) -> int:
+    """Cap completion tokens so estimated input and output fit one K3 window."""
+
+    available = get_context_window(model) - max(0, input_tokens) - buffer_tokens
+    if available < 1:
+        raise ContextWindowBudgetError(
+            "Estimated Kimi K3 input exceeds the configured context window after "
+            "reserving provider and tool-schema headroom."
+        )
+    return min(max(1, requested_tokens), available)
 
 
 def _clamp_percentage(value: float) -> int:
@@ -76,8 +91,8 @@ def context_usage_fields(
     cache_creation_input_tokens: int | float | None = None,
     token_count: int | float | None = None,
     window_override: int | None = None,
-    summary_reserve: int = MAX_OUTPUT_TOKENS_FOR_SUMMARY,
-    buffer_tokens: int = AUTOCOMPACT_BUFFER_TOKENS,
+    completion_reserve: int = KIMI_MAX_COMPLETION_TOKENS,
+    buffer_tokens: int = KIMI_INPUT_SAFETY_BUFFER_TOKENS,
 ) -> dict[str, int]:
     """Additive context-window telemetry fields (same contract as dapr-agent-py).
 
@@ -104,12 +119,14 @@ def context_usage_fields(
     )
     remaining_percentage = max(0, 100 - used_percentage)
     effective = get_effective_window(
-        model, window_override=window_override, summary_reserve=summary_reserve
+        model,
+        window_override=window_override,
+        completion_reserve=completion_reserve,
     )
     threshold = get_auto_compact_threshold(
         model,
         window_override=window_override,
-        summary_reserve=summary_reserve,
+        completion_reserve=completion_reserve,
         buffer_tokens=buffer_tokens,
     )
     if threshold > 0:

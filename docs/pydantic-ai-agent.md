@@ -9,8 +9,10 @@ as its own Dapr workflow activity**.
 
 The durable shape follows the **Diagrid python-ai** reference
 (`diagrid/agent/pydantic_ai/`, local checkout `~/repos/diagridio/python-ai/main`):
-one workflow (`agent_workflow`) + named activities, full message history as
-JSON across every boundary.
+one workflow (`agent_workflow`) plus named activities. Full native Pydantic AI
+messages live in an immutable, content-addressed transcript store on the
+per-sandbox workspace; Dapr history carries only opaque transcript/message
+references and strictly bounded private execution context.
 
 ```
 session_workflow (platform contract wrapper, literal name)
@@ -18,7 +20,8 @@ session_workflow (platform contract wrapper, literal name)
        loop (≤ maxIterations):
          ├─ check_cancellation  activity  (session-cancel:{instance} key)
          ├─ call_llm            activity  (ONE LLM message)
-         └─ execute_tool        activity  ×N per tool call — when_all fan-out
+         ├─ execute_tool        activity  ×N per tool call — when_all fan-out
+         └─ commit_tool_results activity  (validate + publish balanced history)
 ```
 
 - `call_llm` speaks through **pydantic-ai's own model classes**
@@ -31,6 +34,14 @@ session_workflow (platform contract wrapper, literal name)
 - The iteration-0 `call_llm` **bootstraps** the message list (system prompt =
   `agentConfig.systemPrompt` + capability instructions) so the workflow body
   stays deterministic/pure — the workflow never does I/O.
+- `call_llm` publishes a `history+sha256://...` manifest plus the exact final
+  assistant `message+sha256://...`. Tool activities resolve their arguments
+  from that response, publish one correlated result reference each, and
+  `commit_tool_results` validates the whole call/result wave before advancing
+  the history. A legacy inline history is imported once and then migrates to
+  references.
+- Private activity context can contain MCP credentials, so it remains inside
+  bounded Dapr payloads and is never persisted in the agent-readable workspace.
 
 ## Deltas from the Diagrid reference
 
@@ -113,22 +124,23 @@ available.
 ### Capability hooks (compatibility with Dapr durability)
 
 Because the **Dapr workflow is the run loop** (not pydantic-ai's graph), a
-harness capability is compatible iff every seam it uses maps onto one of our
-two activities. The rule and the seam-by-seam verdicts:
+harness capability is compatible iff every seam it uses maps onto a durable
+activity. The rule and the seam-by-seam verdicts:
 
 | Capability seam                                                     | Hosted in                                          | Durable?                                                    |
 | ------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------- |
 | `get_toolset` / `prepare_tools`                                     | tools offered in `call_llm`, run in `execute_tool` | ✅ per-activity                                             |
 | `get_instructions`                                                  | system-prompt bootstrap in `call_llm`              | ✅ recorded in history                                      |
-| `before/wrap/after_model_request`                                   | around `model.request()` in `call_llm`             | ✅ — the transformed history is the activity's RETURN value |
+| `before/wrap/after_model_request`                                   | around `model.request()` in `call_llm`             | ✅ — transformed history is stored behind an immutable ref  |
 | `after_tool_execute`                                                | around the tool result in `execute_tool`           | ✅ result is the activity's return                          |
 | `wrap_run` / `before_run` / `after_run` / node & event-stream hooks | —                                                  | ❌ no pydantic-ai run to attach to                          |
 
 `src/toolsets.py::ToolRouter` hosts the `before/wrap/after_model_request`
 chains inside `call_llm` and the `after_tool_execute` chain inside
 `execute_tool`. Crucially, the compacted/transformed message list is what the
-activity **returns**, so Dapr replay and the durable history stay consistent
-and bounded.
+activity **stores before returning its reference**, so Dapr replay and the
+durable history stay consistent and bounded without copying the transcript
+through every workflow event.
 
 **Enabled in v1** (env-gated, on by default):
 
@@ -136,20 +148,30 @@ and bounded.
   results spill to a `LocalFileStore` under `<workspace>/.overflow` and are
   truncated in-history; the model fetches the rest via the injected
   `read_tool_result` tool. Replaces the earlier `TOOL_RESULT_MAX_CHARS` hard
-  truncation. Env: `PYDANTIC_AI_OVERFLOW_ENABLED`.
-- **Compaction** (`before_model_request`), deterministic (no LLM call):
-  `ClampOversizedMessages` then `SlidingWindow`. Env:
-  `PYDANTIC_AI_COMPACTION_ENABLED`, `PYDANTIC_AI_CLAMP_MAX_PART_CHARS`,
-  `PYDANTIC_AI_COMPACTION_MAX_MESSAGES`, `PYDANTIC_AI_COMPACTION_KEEP_MESSAGES`.
-  Together with Overflow these are the **16 MiB workflow-payload ceiling
-  mitigation** — not just compatible but wanted.
+  truncation. Env: `PYDANTIC_AI_OVERFLOW_ENABLED`. Every `execute_tool` result
+  is also measured with Dapr's exact durable encoder; if overflow is disabled
+  or its store fails, an oversized result becomes a bounded, correlated tool
+  error rather than crossing the activity transport limit.
+- **Compaction** (`before_model_request`), deterministic (no LLM call): the
+  K3-aware `KimiHistoryWindow` includes `ThinkingPart` content,
+  preserves tool-call/return pairs, and enforces both model-token and transcript
+  JSON-byte budgets. Env:
+  `PYDANTIC_AI_COMPACTION_ENABLED`, `PYDANTIC_AI_COMPACTION_MAX_MESSAGES`,
+  `PYDANTIC_AI_COMPACTION_KEEP_MESSAGES`,
+  `PYDANTIC_AI_COMPACTION_KEEP_TOKENS`,
+  `PYDANTIC_AI_TRANSCRIPT_MAX_BYTES`, and
+  `PYDANTIC_AI_TRANSCRIPT_KEEP_BYTES`. Retained K3 reasoning is never
+  truncated: only complete messages/tool pairs are evicted; if the newest group
+  cannot fit, the activity returns `model_context_window_error`.
+  Together with Overflow and reference transport, these keep exact transcripts
+  outside Dapr's 16 MiB workflow-message ceiling.
 
-**Verified scope distinction (would bite otherwise):**
-`ClampOversizedMessages` clamps **`ModelResponse` parts only** (prior
-assistant text + tool-call args) — NOT `UserPromptPart` or `ToolReturnPart`
-(`_clamp_oversized_messages.py:143` skips non-`ModelResponse` messages).
-Tool RESULTS are the domain of **OverflowingToolOutput** instead. The two are
-complementary; neither shrinks user prompts (those ride the SlidingWindow).
+**Verified K3 replay distinction:** retained assistant messages cannot be
+rewritten. Harness `ClampOversizedMessages` is therefore disabled because it
+mutates assistant text and tool-call arguments. `OverflowingToolOutput` bounds
+tool results before they enter the transcript; `KimiHistoryWindow` evicts only
+whole messages and matched tool-call/return pairs. Older user prompts can leave
+the history, while the first and current request are never silently truncated.
 
 **Available but NOT enabled** (compatible; add by appending to
 `build_capabilities` when needed): `Memory` (toolset + instructions +
@@ -160,7 +182,8 @@ needs an external backend), `Guardrails` `InputGuard` (`wrap_model_request`),
 inside `call_llm`).
 
 **Incompatible / deliberately excluded** (need the run graph or duplicate the
-platform): `SubAgents` and `StepPersistence` (`wrap_run`; the Dapr workflow
+platform): `ClampOversizedMessages` (violates K3 complete-assistant replay),
+`SubAgents` and `StepPersistence` (`wrap_run`; the Dapr workflow
 already IS the run + step persistence — use platform delegation / replay
 instead); harness `Dynamic Workflow` (conflicts with the platform
 dynamic-script engine).
@@ -168,8 +191,10 @@ dynamic-script engine).
 **Hook retry rule:** hook chains re-run on **activity retry** (up to
 `retryMaxAttempts`=3). Side effects inside them must be idempotent, and error
 hooks must not swallow exceptions Dapr's RetryPolicy needs to see. The chains
-are fail-soft per capability (a throwing hook is logged and skipped) so a
-buggy capability can't wedge a turn.
+are fail-soft per capability except the intentional
+`ContextWindowBudgetError`, which is converted into one terminal
+`model_context_window_error` result so Dapr does not retry an impossible
+request.
 
 **Granularity note (goal constraint):** every enabled capability splits
 cleanly — each tool call is its own activity, each model call its own. The
@@ -182,9 +207,40 @@ that reason, documented here per the granularity escape hatch.
 `KIMI_BASE_URL` (default `https://api.kimi.com/coding/v1`) + `KIMI_API_KEY`;
 kimi-k3 accepts only `temperature=1`, `frequency_penalty=0`, and always runs
 max reasoning (`extra_body.reasoning_effort=max`) — enforced in
-`build_model_settings()`. Registry declares `supportedProviders: ["kimi"]`,
-`multiProvider: false`; widening happens by adding pydantic-ai provider
-classes in `build_model()`.
+`build_model_settings()`. The same settings apply to ordinary and structured
+output calls. Replay-safe K3 history compaction reserves K3's configured
+131,072-token completion budget plus a 13,000-token provider/tool-schema safety
+buffer inside the provider-capped 1,048,576-token context window
+(`KIMI_CONTEXT_WINDOW`). Near the estimated boundary, the request adapter
+reduces `max_completion_tokens` to the remaining capacity. This is deliberately
+best-effort: the Kimi-for-Coding endpoint does not expose exact request-token
+estimation, and tool schemas, provider tokenization, and image payloads can add
+tokens beyond the harness estimate. A provider context-limit rejection is
+normalized into one terminal `model_context_window_error` result instead of
+retrying the same invalid request. Reference-backed transcripts are limited to
+64 MiB and compact toward 48 MiB by default, independently of Dapr's message
+ceiling. Workflow inputs are bounded to a 512 KiB task and 16 KiB private
+model context; ordinary tool activities receive at most 8 KiB of private
+context, the structured-output activity may receive the full 16 KiB model
+context, and one response may contain at most eight tool calls. Registry declares
+`supportedProviders: ["kimi"]` and
+`multiProvider: false`; widening happens by adding pydantic-ai provider classes
+in `build_model()`.
+
+The transport regression uses Dapr's actual protobuf `WorkflowRequest` shape,
+not a JSON-size estimate, and records three scheduled attempts, two bounded
+failures, two retry-timer pairs, and one completion for every activity. The
+40-wave, eight-tool retry storm is 4,401 events and 13,544,601 bytes, leaving
+3,232,615 bytes below the 16 MiB ceiling. A 39-wave run followed by the maximum
+256 KiB no-tool answer is 4,311 events and 13,576,682 bytes, leaving 3,200,534
+bytes. The reachable structured-output maximum is 34 ordinary waves, five
+mixed invalid StructuredOutput waves, then a maximum valid result; it is 4,331
+events and 13,766,055 bytes, leaving 3,011,161 bytes. The largest individual
+activity payload is 540,810 bytes. The 512 KiB initial task appears four times
+under maximum retry history (once in `ExecutionStarted` and once in each of the
+three first-LLM schedules); every iteration also includes its bounded 16 KiB
+model context, 8 KiB ordinary-tool contexts, and reference-only tool/result/
+commit envelopes.
 
 K3 requests stream on the HTTP connection by default
 (`KIMI_STREAMING_ENABLED=true`) because max-thinking turns can outlive an
@@ -229,8 +285,10 @@ journal still performs the platform's final schema validation.
 the `session.status_*` vocabulary (`status_rescheduled`, `status_running`,
 `turn_started`, `status_idle{end_turn}`, `status_terminating/terminated`,
 `session.error`), with `autoTerminateAfterEndTurn` one-shot turns as
-`__turn__N` child workflows. Multi-turn continuity: each turn's serialized
-message history seeds the next (workflow-local, durable via replay).
+`__turn__N` child workflows. Multi-turn continuity: each turn's transcript
+reference seeds the next. Long-lived sessions `continue_as_new` after every
+completed turn, carrying only the latest reference and compact session/mailbox
+state; one-shot auto-terminate turns preserve their existing terminal behavior.
 CMA events (`agent.message`/`agent.tool_use`/`agent.tool_result` +
 `agent.llm_usage` **net of cache reads**) publish from inside activities via
 the byte-identical vendored `src/event_publisher.py`. Endpoints:

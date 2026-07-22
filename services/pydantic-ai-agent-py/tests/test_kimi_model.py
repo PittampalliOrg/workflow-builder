@@ -8,9 +8,19 @@ import json
 import httpx
 import pytest
 
+from src.compaction.tokens import (
+    ContextWindowBudgetError,
+    get_completion_token_budget,
+)
 from src.messages_io import tool_return_message
 from src.structured_output import output_tool_definition
-from src.workflow import _kimi_model_profile, build_model, build_model_settings
+from src.workflow import (
+    _kimi_model_profile,
+    apply_context_completion_budget,
+    build_model,
+    build_model_settings,
+    is_provider_context_window_error,
+)
 
 
 def test_build_model_requires_api_key(monkeypatch):
@@ -33,8 +43,45 @@ def test_model_settings_enforce_kimi_contract():
     settings = build_model_settings()
     assert settings["temperature"] == 1
     assert settings["frequency_penalty"] == 0
+    assert settings["max_tokens"] == 131_072
     assert settings["extra_body"] == {"reasoning_effort": "max"}
     assert settings["timeout"] > 0
+
+
+def test_context_budget_reserves_completion_and_reduces_it_near_limit():
+    assert get_completion_token_budget("kimi-k3", input_tokens=904_504) == 131_072
+    assert get_completion_token_budget("kimi-k3", input_tokens=910_000) == 125_576
+    with pytest.raises(ContextWindowBudgetError):
+        get_completion_token_budget("kimi-k3", input_tokens=1_035_576)
+
+
+def test_model_settings_apply_context_budget_after_compaction():
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    messages = [ModelRequest(parts=[UserPromptPart(content="x" * (910_000 * 4))])]
+    settings = apply_context_completion_budget(build_model_settings(), messages)
+
+    assert 120_000 < settings["max_tokens"] < 131_072
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "message", "expected"),
+    [
+        (400, {"error": "context length exceeds token limit"}, "bad request", True),
+        (400, None, "max_completion_tokens exceeds context window", True),
+        (400, {"error": "unknown tool"}, "bad request", False),
+        (500, {"error": "context window"}, "server error", False),
+    ],
+)
+def test_provider_context_window_error_detection(status_code, body, message, expected):
+    class ProviderError(Exception):
+        pass
+
+    exc = ProviderError(message)
+    exc.status_code = status_code
+    exc.body = body
+
+    assert is_provider_context_window_error(exc) is expected
 
 
 def test_kimi_chat_wire_uses_dapr_style_output_tool_and_replays_reasoning():
@@ -139,6 +186,8 @@ def test_kimi_chat_wire_uses_dapr_style_output_tool_and_replays_reasoning():
     assert body["reasoning_effort"] == "max"
     assert body["temperature"] == 1
     assert body["frequency_penalty"] == 0
+    assert body["max_completion_tokens"] == 131_072
+    assert "max_tokens" not in body
     assert "response_format" not in body
     structured = body["tools"][0]["function"]
     assert structured["name"] == "StructuredOutput"
@@ -350,6 +399,8 @@ def test_kimi_chat_stream_aggregates_reasoning_fragmented_tools_and_usage():
     assert captured["reasoning_effort"] == "max"
     assert captured["temperature"] == 1
     assert captured["frequency_penalty"] == 0
+    assert captured["max_completion_tokens"] == 131_072
+    assert "max_tokens" not in captured
     thinking = next(part for part in response.parts if isinstance(part, ThinkingPart))
     tool_call = next(part for part in response.parts if isinstance(part, ToolCallPart))
     assert thinking.content == "Think hard."

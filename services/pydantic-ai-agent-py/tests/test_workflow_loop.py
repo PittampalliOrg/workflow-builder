@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 import src.workflow as wfmod
+from src.adapters.dapr_durable_payload_codec import DaprDurablePayloadCodecAdapter
 from src.workflow import agent_workflow, call_llm, check_cancellation, execute_tool
 from src.structured_output import MAX_STRUCTURED_OUTPUT_NUDGES, STRUCTURED_OUTPUT_NUDGE
 
@@ -49,9 +50,16 @@ def drive(gen, responses):
 
 
 def llm_response(text="", tool_calls=None, messages=None):
+    projected_calls = [
+        {
+            **call,
+            "isStructuredOutput": call.get("toolName") == "StructuredOutput",
+        }
+        for call in (tool_calls or [])
+    ]
     return {
         "messages": messages or [{"kind": "request"}],
-        "toolCalls": tool_calls or [],
+        "toolCalls": projected_calls,
         "text": text,
     }
 
@@ -205,6 +213,32 @@ def test_iteration_budget_exhaustion():
     assert result["success"] is False
     assert "2-iteration budget" in result["content"]
     assert len([c for c in ctx.calls if c[0] is call_llm]) == 2
+
+
+def test_iteration_override_cannot_exceed_hard_per_turn_cap():
+    ctx = FakeCtx()
+    call = {"toolName": "run_command", "toolCallId": "t", "args": {}}
+    responses = []
+    for _ in range(wfmod.MAX_ITERATIONS_PER_TURN):
+        responses.extend(
+            [
+                {"cancelled": False},
+                llm_response(tool_calls=[call]),
+                [{"message": {"kind": "request"}}],
+            ]
+        )
+
+    _, result = drive(
+        agent_workflow(
+            ctx,
+            {"task": "loop", "context": {}, "maxIterations": 999},
+        ),
+        responses,
+    )
+
+    assert result["success"] is False
+    assert "40-iteration budget" in result["content"]
+    assert len([entry for entry in ctx.calls if entry[0] is call_llm]) == 40
 
 
 def test_structured_output_tool_finishes_with_canonical_json():
@@ -429,6 +463,56 @@ def test_invalid_structured_schema_returns_a_typed_configuration_failure():
     assert "object-shaped" in result["content"]
 
 
+def test_model_context_rejection_returns_a_non_structured_terminal_failure():
+    ctx = FakeCtx()
+    gen = agent_workflow(ctx, {"task": "inspect", "context": {}})
+
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            {
+                "messages": [{"kind": "request"}],
+                "toolCalls": [],
+                "text": "",
+                "configurationError": "Kimi K3 context window exceeded.",
+                "configurationErrorCode": "model_context_window_error",
+            },
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["errorCode"] == "model_context_window_error"
+    assert "structuredOutputFailure" not in result
+
+
+def test_unrepresentable_tool_result_returns_a_typed_terminal_failure():
+    ctx = FakeCtx()
+    gen = agent_workflow(ctx, {"task": "inspect", "context": {}})
+    call = {"toolName": "inspect_dom", "toolCallId": "tc-large", "args": {}}
+
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=[call]),
+            [
+                {
+                    "message": None,
+                    "toolSucceeded": False,
+                    "configurationError": "Tool correlation envelope is too large.",
+                    "configurationErrorCode": (wfmod.TOOL_RESULT_DURABLE_PAYLOAD_ERROR),
+                }
+            ],
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["errorCode"] == wfmod.TOOL_RESULT_DURABLE_PAYLOAD_ERROR
+    assert "structuredOutputFailure" not in result
+    assert len([entry for entry in ctx.calls if entry[0] is call_llm]) == 1
+
+
 def test_retry_policy_shape():
     policy = wfmod.RETRY_POLICY
     # dapr.ext.workflow RetryPolicy exposes underscored attrs; assert via repr-safe access
@@ -439,3 +523,291 @@ def test_retry_policy_shape():
     ):
         if hasattr(policy, attr):
             assert getattr(policy, attr) == expected
+
+
+def test_exhausted_llm_retry_returns_bounded_terminal_with_balanced_history(
+    monkeypatch,
+):
+    class FakeTaskFailedError(Exception):
+        pass
+
+    monkeypatch.setattr(wfmod.wf, "TaskFailedError", FakeTaskFailedError)
+    old_ref = "history+sha256://" + "1" * 64
+    ctx = FakeCtx()
+    workflow = agent_workflow(
+        ctx,
+        {"task": "continue", "historyRef": old_ref, "context": {}},
+    )
+
+    assert next(workflow)[1] is check_cancellation
+    scheduled = workflow.send({"cancelled": False})
+    assert scheduled[1] is call_llm
+    with pytest.raises(StopIteration) as stopped:
+        workflow.throw(FakeTaskFailedError("provider body must not escape"))
+
+    result = stopped.value.value
+    assert result["errorCode"] == wfmod.ACTIVITY_RETRY_EXHAUSTED_ERROR
+    assert result["historyRef"] == old_ref
+    assert "provider body" not in result["error"]
+
+
+def test_tool_and_commit_failures_roll_back_then_resume_from_balanced_ref(
+    monkeypatch,
+):
+    class FakeTaskFailedError(Exception):
+        pass
+
+    monkeypatch.setattr(wfmod.wf, "TaskFailedError", FakeTaskFailedError)
+    old_ref = "history+sha256://" + "2" * 64
+    assistant_ref = "history+sha256://" + "3" * 64
+    response_ref = "message+sha256://" + "4" * 64
+    message_ref = "message+sha256://" + "5" * 64
+    llm_out = {
+        "historyRef": assistant_ref,
+        "responseRef": response_ref,
+        "toolCalls": [
+            {
+                "responseRef": response_ref,
+                "toolIndex": 0,
+                "sequential": False,
+                "isStructuredOutput": False,
+            }
+        ],
+        "text": "",
+    }
+
+    tool_ctx = FakeCtx()
+    tool_workflow = agent_workflow(
+        tool_ctx,
+        {"task": "continue", "historyRef": old_ref, "context": {}},
+    )
+    next(tool_workflow)
+    scheduled = tool_workflow.send({"cancelled": False})
+    scheduled = tool_workflow.send(llm_out)
+    assert scheduled[0] == "when_all"
+    with pytest.raises(StopIteration) as tool_stopped:
+        tool_workflow.throw(FakeTaskFailedError("tool failed"))
+    assert tool_stopped.value.value["historyRef"] == old_ref
+    assert "historyRefInvalid" not in tool_stopped.value.value
+
+    commit_ctx = FakeCtx()
+    commit_workflow = agent_workflow(
+        commit_ctx,
+        {"task": "continue", "historyRef": old_ref, "context": {}},
+    )
+    next(commit_workflow)
+    scheduled = commit_workflow.send({"cancelled": False})
+    scheduled = commit_workflow.send(llm_out)
+    scheduled = commit_workflow.send([{"messageRef": message_ref}])
+    assert scheduled[1] is wfmod.commit_tool_results
+    with pytest.raises(StopIteration) as commit_stopped:
+        commit_workflow.throw(FakeTaskFailedError("commit failed"))
+    terminal = commit_stopped.value.value
+    assert terminal["historyRef"] == old_ref
+    assert "historyRefInvalid" not in terminal
+
+    resumed_ctx = FakeCtx()
+    resumed = agent_workflow(
+        resumed_ctx,
+        {"task": "resume", "historyRef": terminal["historyRef"], "context": {}},
+    )
+    next(resumed)
+    scheduled = resumed.send({"cancelled": False})
+    assert scheduled[1] is call_llm
+    assert scheduled[2]["historyRef"] == old_ref
+
+
+def test_later_irreducible_tool_input_schedules_no_tool_activities(monkeypatch):
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 1_200)
+    ctx = FakeCtx()
+    gen = agent_workflow(ctx, {"task": "inspect", "context": {}})
+    calls = [
+        {"toolName": "read_file", "toolCallId": "fits", "args": {}},
+        {
+            "toolName": "read_file",
+            "toolCallId": "too-large-" + "x" * 3_000,
+            "args": {},
+        },
+    ]
+
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=calls),
+        ],
+    )
+
+    assert [entry for entry in ctx.calls if entry[0] is execute_tool] == []
+    assert result["errorCode"] == wfmod.DURABLE_WORKFLOW_PAYLOAD_ERROR
+    assert result["messages"] == []
+    assert codec.size_bytes(result) <= 1_200
+
+
+def test_workflow_splits_parallel_fanout_by_aggregate_input_size(monkeypatch):
+    codec = DaprDurablePayloadCodecAdapter()
+    context = {"pad": "x" * 250, "workflowInstanceId": "inst-1"}
+    response_ref = "message+sha256://" + "a" * 64
+    projected_calls = [
+        {
+            "responseRef": response_ref,
+            "toolIndex": index,
+            "sequential": False,
+            "isStructuredOutput": False,
+        }
+        for index in range(3)
+    ]
+    payloads = [
+        {
+            "call": call,
+            "context": wfmod._tool_activity_context(context, call),
+            "iteration": 0,
+        }
+        for call in projected_calls
+    ]
+    aggregate_limit = codec.size_bytes(payloads[:2])
+    assert codec.size_bytes(payloads) > aggregate_limit
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", aggregate_limit)
+    ctx = FakeCtx()
+    gen = agent_workflow(
+        ctx,
+        {"task": "inspect", "context": {"pad": "x" * 250}},
+    )
+
+    yielded, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=projected_calls),
+            [
+                {"message": {"kind": "request", "id": "tc-0"}},
+                {"message": {"kind": "request", "id": "tc-1"}},
+            ],
+            [{"message": {"kind": "request", "id": "tc-2"}}],
+            {"cancelled": False},
+            llm_response(text="done"),
+        ],
+    )
+
+    fanout_yields = [item for item in yielded if item[0] == "when_all"]
+    assert [len(item[1]) for item in fanout_yields] == [2, 1]
+    assert all(
+        codec.size_bytes([task[2] for task in item[1]]) <= aggregate_limit
+        for item in fanout_yields
+    )
+    assert [
+        entry[1]["call"]["toolIndex"]
+        for entry in ctx.calls
+        if entry[0] is execute_tool
+    ] == [0, 1, 2]
+    assert result["success"] is True
+
+
+def test_workflow_boundary_decisions_are_deterministic():
+    calls = [
+        {"toolName": "read_file", "toolCallId": "tc-1", "args": {"path": "a"}},
+        {"toolName": "read_file", "toolCallId": "tc-2", "args": {"path": "b"}},
+    ]
+    responses = [
+        {"cancelled": False},
+        llm_response(tool_calls=calls),
+        [
+            {"message": {"kind": "request", "id": "tc-1"}},
+            {"message": {"kind": "request", "id": "tc-2"}},
+        ],
+        {"cancelled": False},
+        llm_response(text="done"),
+    ]
+
+    def run_once():
+        ctx = FakeCtx()
+        _, result = drive(
+            agent_workflow(ctx, {"task": "inspect", "context": {"sessionId": "s"}}),
+            responses,
+        )
+        return [entry[1] for entry in ctx.calls], result
+
+    assert run_once() == run_once()
+
+
+def test_oversized_cancellation_result_returns_bounded_cancelled_terminal(
+    monkeypatch,
+):
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 900)
+    ctx = FakeCtx()
+    gen = agent_workflow(
+        ctx,
+        {
+            "task": "stop",
+            "history": [{"kind": "request", "payload": "x" * 5_000}],
+            "context": {},
+        },
+    )
+
+    _, result = drive(
+        gen,
+        [
+            {
+                "cancelled": True,
+                "reason": "stop" * 2_000,
+                "stop_reason": {"type": "terminated", "reason": "stop" * 2_000},
+            }
+        ],
+    )
+
+    assert codec.size_bytes(result) <= 900
+    assert result["errorCode"] == wfmod.DURABLE_WORKFLOW_PAYLOAD_ERROR
+    assert result["messages"] == []
+    assert result["cancelled"] is True
+    assert result["stop_reason"] == {"type": "terminated"}
+
+
+def test_oversized_final_output_returns_bounded_typed_terminal(monkeypatch):
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 900)
+    ctx = FakeCtx()
+
+    _, result = drive(
+        agent_workflow(ctx, {"task": "answer", "context": {}}),
+        [
+            {"cancelled": False},
+            llm_response(text="x" * 5_000),
+        ],
+    )
+
+    assert codec.size_bytes(result) <= 900
+    assert result["errorCode"] == wfmod.DURABLE_WORKFLOW_PAYLOAD_ERROR
+    assert result["messages"] == []
+
+
+def test_oversized_max_iteration_output_returns_bounded_typed_terminal(monkeypatch):
+    codec = DaprDurablePayloadCodecAdapter()
+    monkeypatch.setattr(wfmod, "DURABLE_ACTIVITY_MAX_BYTES", 900)
+    ctx = FakeCtx()
+    call = {"toolName": "read_file", "toolCallId": "tc-max", "args": {}}
+
+    _, result = drive(
+        agent_workflow(
+            ctx,
+            {"task": "loop", "context": {}, "maxIterations": 1},
+        ),
+        [
+            {"cancelled": False},
+            llm_response(tool_calls=[call]),
+            [
+                {
+                    "message": {
+                        "kind": "request",
+                        "id": "tc-max",
+                        "payload": "x" * 5_000,
+                    }
+                }
+            ],
+        ],
+    )
+
+    assert codec.size_bytes(result) <= 900
+    assert result["errorCode"] == wfmod.DURABLE_WORKFLOW_PAYLOAD_ERROR
+    assert result["messages"] == []

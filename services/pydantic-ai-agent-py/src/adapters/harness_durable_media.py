@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai import BinaryContent
+from pydantic_ai import BinaryContent, ImageUrl
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai_harness.media import DiskMediaStore, MediaContext, parse_media_uri
 
@@ -34,62 +34,114 @@ class HarnessDurableMediaAdapter:
         root = Path(workspace_root).resolve()
         self._store = DiskMediaStore(root / ".pydantic-ai" / "media")
 
-    async def _externalize_content(self, value: Any) -> Any:
-        if isinstance(value, BinaryContent):
+    async def _externalize_content(
+        self,
+        typed: Any,
+        serialized: Any,
+        *,
+        preserve_references: bool,
+    ) -> Any:
+        if isinstance(typed, BinaryContent):
             uri = await self._store.put(
-                value.data,
-                context=MediaContext(media_type=value.media_type),
+                typed.data,
+                context=MediaContext(media_type=typed.media_type),
+            )
+            sentinel = ImageUrl(
+                url=uri,
+                media_type=typed.media_type,
+                identifier=typed.identifier,
+                vendor_metadata={
+                    _MEDIA_ENVELOPE: {
+                        "size_bytes": len(typed.data),
+                        "vendor_metadata": typed.vendor_metadata,
+                    }
+                },
             )
             return {
-                _MEDIA_ENVELOPE: {
-                    "uri": uri,
-                    "size_bytes": len(value.data),
-                    "media_type": value.media_type,
-                    "identifier": value.identifier,
-                    "vendor_metadata": value.vendor_metadata,
-                }
+                "url": sentinel.url,
+                "force_download": sentinel.force_download,
+                "vendor_metadata": sentinel.vendor_metadata,
+                "kind": sentinel.kind,
+                "media_type": sentinel.media_type,
+                "identifier": sentinel.identifier,
             }
-        if isinstance(value, (list, tuple)):
-            return [await self._externalize_content(item) for item in value]
-        if isinstance(value, dict):
+        if isinstance(typed, (list, tuple)) and isinstance(serialized, list):
+            if len(typed) != len(serialized):
+                raise ValueError("serialized media sequence length changed")
+            return [
+                await self._externalize_content(
+                    item,
+                    raw_item,
+                    preserve_references=preserve_references,
+                )
+                for item, raw_item in zip(typed, serialized, strict=True)
+            ]
+        if isinstance(typed, dict) and isinstance(serialized, dict):
+            if preserve_references and (
+                self._media_marker(serialized) is not None
+                or self._escaped_json_envelope(serialized)
+            ):
+                return serialized
             encoded = {
-                str(key): await self._externalize_content(item)
-                for key, item in value.items()
+                str(key): await self._externalize_content(
+                    item,
+                    serialized.get(str(key)),
+                    preserve_references=preserve_references,
+                )
+                for key, item in typed.items()
             }
-            if _MEDIA_ENVELOPE in value or _JSON_ENVELOPE in value:
-                return {_JSON_ENVELOPE: list(encoded.items())}
+            vendor_metadata = typed.get("vendor_metadata")
+            if (
+                _MEDIA_ENVELOPE in typed
+                or _JSON_ENVELOPE in typed
+                or (
+                    isinstance(vendor_metadata, dict)
+                    and _MEDIA_ENVELOPE in vendor_metadata
+                )
+            ):
+                return {
+                    _JSON_ENVELOPE: [[key, value] for key, value in encoded.items()]
+                }
             return encoded
-        return value
+        return serialized
 
-    async def externalize(self, node: Any) -> list[dict[str, Any]]:
+    async def externalize(
+        self, node: Any, *, preserve_references: bool = False
+    ) -> list[dict[str, Any]]:
         """Externalize typed ModelMessages and return their durable JSON form."""
         if not isinstance(node, list):
             raise TypeError("durable media externalize expects a ModelMessage list")
-        messages: list[ModelMessage] = []
-        for message in node:
+        serialized_messages = dump_messages(node)
+        for message, serialized_message in zip(
+            node, serialized_messages, strict=True
+        ):
             if not isinstance(message, ModelRequest):
-                messages.append(message)
                 continue
-            parts: list[Any] = []
-            for part in message.parts:
+            serialized_parts = serialized_message.get("parts")
+            if not isinstance(serialized_parts, list):
+                raise ValueError("serialized model request is missing parts")
+            for part, serialized_part in zip(
+                message.parts, serialized_parts, strict=True
+            ):
                 if isinstance(part, (ToolReturnPart, UserPromptPart)) and not isinstance(
                     part.content, str
                 ):
-                    part = replace(
-                        part,
-                        content=await self._externalize_content(part.content),
+                    serialized_part["content"] = await self._externalize_content(
+                        part.content,
+                        serialized_part.get("content"),
+                        preserve_references=preserve_references,
                     )
-                parts.append(part)
-            messages.append(replace(message, parts=parts))
-        return dump_messages(messages)
+        return serialized_messages
 
-    async def _restore_media_envelope(self, payload: Any, expected_size: int) -> Any:
+    async def _restore_media_envelope(
+        self, sentinel: dict[str, Any], payload: Any, expected_size: int
+    ) -> Any:
         if not isinstance(payload, dict):
-            raise ValueError("external media envelope payload must be an object")
-        uri = payload.get("uri")
-        media_type = payload.get("media_type")
+            raise ValueError("external media marker payload must be an object")
+        uri = sentinel.get("url")
+        media_type = sentinel.get("media_type")
         if not isinstance(uri, str) or not isinstance(media_type, str):
-            raise ValueError("external media envelope is missing uri or media_type")
+            raise ValueError("external media sentinel is missing url or media_type")
         raw = await self._store.get(uri)
         if len(raw) != expected_size:
             raise ValueError(
@@ -107,8 +159,40 @@ class HarnessDurableMediaAdapter:
             "media_type": media_type,
             "vendor_metadata": payload.get("vendor_metadata"),
             "kind": "binary",
-            "identifier": payload.get("identifier"),
+            "identifier": sentinel.get("identifier"),
         }
+
+    @staticmethod
+    def _media_marker(value: dict[str, Any]) -> dict[str, Any] | None:
+        if value.get("kind") != "image-url":
+            return None
+        uri = value.get("url")
+        vendor_metadata = value.get("vendor_metadata")
+        if not isinstance(uri, str) or not uri.startswith("media+sha256://"):
+            return None
+        if not isinstance(vendor_metadata, dict) or set(vendor_metadata) != {
+            _MEDIA_ENVELOPE
+        }:
+            return None
+        marker = vendor_metadata[_MEDIA_ENVELOPE]
+        if not isinstance(marker, dict) or set(marker) != {
+            "size_bytes",
+            "vendor_metadata",
+        }:
+            return None
+        return marker
+
+    @staticmethod
+    def _escaped_json_envelope(value: dict[str, Any]) -> bool:
+        if set(value) != {_JSON_ENVELOPE}:
+            return False
+        pairs = value[_JSON_ENVELOPE]
+        return isinstance(pairs, list) and all(
+            isinstance(pair, list)
+            and len(pair) == 2
+            and isinstance(pair[0], str)
+            for pair in pairs
+        )
 
     async def _restore_content(
         self,
@@ -135,39 +219,14 @@ class HarnessDurableMediaAdapter:
             return restored
         if not isinstance(value, dict):
             return value
-        if set(value) == {_JSON_ENVELOPE}:
-            pairs = value[_JSON_ENVELOPE]
-            if not isinstance(pairs, list):
-                raise ValueError("escaped tool JSON envelope must contain key/value pairs")
-            restored_json: dict[str, Any] = {}
-            for pair in pairs:
-                if (
-                    not isinstance(pair, list)
-                    or len(pair) != 2
-                    or not isinstance(pair[0], str)
-                ):
-                    raise ValueError("escaped tool JSON envelope contains an invalid pair")
-                restored_json[pair[0]] = await self._restore_content(
-                    pair[1],
-                    restore_all=restore_all,
-                    seen_budget=seen_budget,
-                    request_budget=request_budget,
-                )
-            return restored_json
-        if set(value) == {_MEDIA_ENVELOPE}:
-            if not restore_all:
-                if seen_budget[0] <= 0:
-                    return _OMITTED_MEDIA
-            payload = value[_MEDIA_ENVELOPE]
-            if not isinstance(payload, dict):
-                raise ValueError("external media envelope payload must be an object")
-            size = payload.get("size_bytes")
+        media_marker = self._media_marker(value)
+        if media_marker is not None:
+            size = media_marker.get("size_bytes")
             if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
-                raise ValueError("external media envelope has an invalid size_bytes")
-            if (
-                request_budget["images"] <= 0
-                or size > request_budget["bytes"]
-            ):
+                raise ValueError("external media sentinel has an invalid size_bytes")
+            if not restore_all and seen_budget[0] <= 0:
+                return _OMITTED_MEDIA
+            if request_budget["images"] <= 0 or size > request_budget["bytes"]:
                 return (
                     "[image not admitted to this model request: aggregate media "
                     "limit reached; invoke its originating media tool again in a "
@@ -177,7 +236,33 @@ class HarnessDurableMediaAdapter:
             request_budget["bytes"] -= size
             if not restore_all:
                 seen_budget[0] -= 1
-            return await self._restore_media_envelope(payload, size)
+            return await self._restore_media_envelope(value, media_marker, size)
+        if set(value) == {_JSON_ENVELOPE}:
+            pairs = value[_JSON_ENVELOPE]
+            if not isinstance(pairs, list):
+                raise ValueError("escaped tool JSON envelope must contain key/value pairs")
+            restored_pairs: list[list[Any]] = []
+            for pair in pairs:
+                if (
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or not isinstance(pair[0], str)
+                ):
+                    raise ValueError("escaped tool JSON envelope contains an invalid pair")
+                restored_pairs.append(
+                    [
+                        pair[0],
+                        await self._restore_content(
+                            pair[1],
+                            restore_all=restore_all,
+                            seen_budget=seen_budget,
+                            request_budget=request_budget,
+                        ),
+                    ]
+                )
+            # Keep the wrapper through Pydantic's discriminated-union parse;
+            # otherwise ordinary JSON shaped like ImageUrl is coerced to media.
+            return {_JSON_ENVELOPE: restored_pairs}
         restored_dict: dict[str, Any] = {}
         for key, item in reversed(list(value.items())):
             restored_dict[key] = await self._restore_content(
@@ -187,6 +272,35 @@ class HarnessDurableMediaAdapter:
                 request_budget=request_budget,
             )
         return {key: restored_dict[key] for key in value}
+
+    @classmethod
+    def _decode_json_envelopes(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [cls._decode_json_envelopes(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._decode_json_envelopes(item) for item in value)
+        if not isinstance(value, dict):
+            return value
+        if set(value) == {_JSON_ENVELOPE}:
+            pairs = value[_JSON_ENVELOPE]
+            if not isinstance(pairs, list):
+                raise ValueError("escaped tool JSON envelope must contain key/value pairs")
+            decoded: dict[str, Any] = {}
+            for pair in pairs:
+                if (
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or not isinstance(pair[0], str)
+                ):
+                    raise ValueError(
+                        "escaped tool JSON envelope contains an invalid pair"
+                    )
+                decoded[pair[0]] = cls._decode_json_envelopes(pair[1])
+            return decoded
+        return {
+            str(key): cls._decode_json_envelopes(item)
+            for key, item in value.items()
+        }
 
     async def restore(
         self,
@@ -247,4 +361,21 @@ class HarnessDurableMediaAdapter:
                         seen_budget=budget,
                         request_budget=request_budget,
                     )
-        return load_messages(raw)
+        restored = load_messages(raw)
+        decoded: list[ModelMessage] = []
+        for message in restored:
+            if not isinstance(message, ModelRequest):
+                decoded.append(message)
+                continue
+            parts = []
+            for part in message.parts:
+                if isinstance(part, (ToolReturnPart, UserPromptPart)) and not isinstance(
+                    part.content, str
+                ):
+                    part = replace(
+                        part,
+                        content=self._decode_json_envelopes(part.content),
+                    )
+                parts.append(part)
+            decoded.append(replace(message, parts=parts))
+        return decoded

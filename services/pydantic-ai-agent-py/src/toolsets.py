@@ -38,11 +38,10 @@ from pydantic_ai._run_context import RunContext
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.usage import RunUsage
 
+from src.compaction.kimi_history import KimiHistoryWindow
+from src.compaction.tokens import ContextWindowBudgetError
 from src.config import (
-    CLAMP_MAX_PART_CHARS,
     COMPACTION_ENABLED,
-    COMPACTION_KEEP_MESSAGES,
-    COMPACTION_MAX_MESSAGES,
     MCP_CALL_TIMEOUT_SECONDS,
     MCP_FAIL_CACHE_SECONDS,
     MCP_LIST_TIMEOUT_SECONDS,
@@ -157,9 +156,9 @@ def _run_context(messages: list[Any] | None = None, model: Any = None) -> RunCon
 def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
     """Tool + hook capabilities, in application order.
 
-    Order matters for the model-request hook chain: clamp oversized parts
-    first, then window the history. List order stands in for upstream's
-    ``get_ordering`` sort (documented simplification).
+    Order matters for the model-request hook chain: KimiHistoryWindow bounds
+    whole replay-safe message groups before the request reaches K3. List order
+    stands in for upstream's ``get_ordering`` sort (documented simplification).
     """
     from pydantic_ai_harness import FileSystem, Shell
 
@@ -295,21 +294,7 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
 
     if COMPACTION_ENABLED:
         try:
-            from pydantic_ai_harness.compaction import (
-                ClampOversizedMessages,
-                SlidingWindow,
-            )
-
-            capabilities.append(
-                ClampOversizedMessages(max_part_chars=CLAMP_MAX_PART_CHARS)
-            )
-            capabilities.append(
-                SlidingWindow(
-                    max_messages=COMPACTION_MAX_MESSAGES,
-                    keep_messages=COMPACTION_KEEP_MESSAGES,
-                    preserve_first_user_message=True,
-                )
-            )
+            capabilities.append(KimiHistoryWindow())
         except Exception as exc:  # noqa: BLE001
             logger.warning("[toolsets] compaction capabilities unavailable: %s", exc)
 
@@ -690,6 +675,8 @@ class ToolRouter:
                 result = await self._maybe_await(hook(ctx, request_context))
                 if result is not None:
                     request_context = result
+            except ContextWindowBudgetError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[hooks] before_model_request %s failed (skipped): %s",

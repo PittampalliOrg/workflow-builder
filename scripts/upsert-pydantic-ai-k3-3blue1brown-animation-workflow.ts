@@ -51,7 +51,7 @@ export const PYDANTIC_AGENT_CONFIG = {
   modelSpec: "kimi/kimi-k3",
   reasoningEffort: "max",
   contextWindowTokens: 1_048_576,
-  maxTurns: 60,
+  maxTurns: 40,
   timeoutMinutes: 60,
   cwd: "/sandbox/work",
   builtinTools: [

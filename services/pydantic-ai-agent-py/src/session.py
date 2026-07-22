@@ -4,7 +4,9 @@ Minimal-but-faithful port of the proven browser-use-agent/dapr-agent-py
 session loop: same BFF childInput shape, ``session.status_*`` vocabulary,
 ``autoTerminateAfterEndTurn`` one-shot semantics with ``__turn__N`` child
 instances, terminal control events, and multi-turn continuity (the durable
-message history from each turn feeds the next).
+content-addressed history reference from each turn feeds the next). Long-lived
+sessions continue as new after every completed turn so Dapr replay history stays
+bounded to one agent turn.
 """
 
 from __future__ import annotations
@@ -16,11 +18,13 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
+from src.config import MAX_ITERATIONS_PER_TURN
 from src.event_publisher import publish_session_event
 from src.runtime_start_authority import authorize_session_runtime_start
 from src.session_config import apply_session_control_events
 from src.session_native import (
     accept_team_mailbox_delivery,
+    build_continue_as_new_input,
     logical_turn_id,
     session_native_event_fields,
     session_workflow_instance_id,
@@ -118,7 +122,7 @@ def _resolve_max_iterations(agent_cfg: dict[str, Any]) -> int | None:
         except (TypeError, ValueError):
             continue
         if value > 0:
-            return value
+            return min(value, MAX_ITERATIONS_PER_TURN)
     return None
 
 
@@ -133,6 +137,7 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
             "sessionId": "sesn_abc",
             "agentConfig": { ... },
             "initialEvents": [{"type": "user.message", "content": [...]}],
+            "historyRef": "history+sha256://...",  # optional continuation
             "autoTerminateAfterEndTurn": true,   # workflow-bridge one-shot
             "dbExecutionId": "...",
         }
@@ -141,29 +146,29 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
     session_id = str(message.get("sessionId") or "")
     if not session_id:
         raise RuntimeError("session_workflow requires sessionId")
+    initial_history_ref = message.get("historyRef")
+    history_ref: str | None = (
+        initial_history_ref
+        if isinstance(initial_history_ref, str) and initial_history_ref
+        else None
+    )
 
     # The Dapr instance can be accepted before its session row publishes the
     # exact runtime generation. Revalidate that persisted authority as the first
     # durable step, before status events, model requests, or tool execution.
     if bool(message.get("requiresStartAuthority")):
-        for pending_attempt in range(
-            len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1
-        ):
+        for pending_attempt in range(len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1):
             start_authority = yield ctx.call_activity(
                 authorize_session_runtime_start,
                 input={
                     "sessionId": session_id,
-                    "workflowMcpSessionToken": message.get(
-                        "workflowMcpSessionToken"
-                    ),
+                    "workflowMcpSessionToken": message.get("workflowMcpSessionToken"),
                     "runtimeAppId": message.get("runtimeAppId")
                     or message.get("agentAppId"),
                     "runtimeInstanceId": ctx.instance_id,
                 },
             )
-            if isinstance(start_authority, dict) and start_authority.get(
-                "authorized"
-            ):
+            if isinstance(start_authority, dict) and start_authority.get("authorized"):
                 break
             retryable_pending = bool(
                 isinstance(start_authority, dict)
@@ -171,9 +176,8 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                 and start_authority.get("code")
                 in {"team_pending", "runtime_unpublished"}
             )
-            if (
-                not retryable_pending
-                or pending_attempt >= len(_START_AUTHORITY_PENDING_DELAYS_SECONDS)
+            if not retryable_pending or pending_attempt >= len(
+                _START_AUTHORITY_PENDING_DELAYS_SECONDS
             ):
                 return {
                     "success": False,
@@ -214,22 +218,21 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
     auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
     turn_counter = int(continuation_state["turnCounter"])
     config_revision = int(continuation_state["configRevision"])
-    accepted_team_mailbox_batch_ids = set(
-        continuation_state["teamMailboxBatchIds"]
-    )
-    accepted_team_mailbox_event_ids = set(
-        continuation_state["teamMailboxEventIds"]
-    )
-    # Durable multi-turn continuity: the serialized pydantic-ai message
-    # history from each turn seeds the next (held as workflow-local state,
-    # durable via replay).
-    history: list[dict] = []
+    continuation_count = int(continuation_state["continuationCount"])
+    control_override_fields = set(continuation_state["controlOverrideFields"])
+    accepted_team_mailbox_batch_ids = list(continuation_state["teamMailboxBatchIds"])
+    accepted_team_mailbox_event_ids = list(continuation_state["teamMailboxEventIds"])
+    # Durable multi-turn continuity carries only a content-addressed reference.
+    # The agent workflow owns loading and replacing the referenced transcript.
 
     if not ctx.is_replaying:
         publish_session_event(
             session_id,
             "session.status_rescheduled",
-            {"vaultIds": vault_ids, **session_native_event_fields(workflow_instance_id)},
+            {
+                "vaultIds": vault_ids,
+                **session_native_event_fields(workflow_instance_id),
+            },
         )
 
     while True:
@@ -263,6 +266,12 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
         )
         if config_changes:
             config_revision += 1
+            for change in config_changes:
+                changed_keys = change.get("changedKeys")
+                if isinstance(changed_keys, list):
+                    control_override_fields.update(
+                        str(key) for key in changed_keys if str(key)
+                    )
             if not ctx.is_replaying:
                 publish_session_event(
                     session_id,
@@ -281,7 +290,10 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
         terminal_stop_reason = terminal_stop_reason_from_events(pending)
         if terminal_stop_reason:
             if not ctx.is_replaying:
-                for event_type in ("session.status_terminating", "session.status_terminated"):
+                for event_type in (
+                    "session.status_terminating",
+                    "session.status_terminated",
+                ):
                     publish_session_event(
                         session_id,
                         event_type,
@@ -327,7 +339,7 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
 
         child_input = {
             "task": task_text,
-            "history": history,
+            "historyRef": history_ref,
             "maxIterations": _resolve_max_iterations(agent_cfg),
             "context": {
                 "sessionId": session_id,
@@ -373,7 +385,7 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                     session_native_event_fields(workflow_instance_id),
                 )
             if auto_terminate:
-                return {
+                failure = {
                     "success": False,
                     "content": str(exc)[:500],
                     "error": str(exc)[:500],
@@ -381,6 +393,9 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                     "turn": turn_counter,
                     **session_native_event_fields(workflow_instance_id),
                 }
+                if history_ref:
+                    failure["historyRef"] = history_ref
+                return failure
             return
 
         result_dict = (
@@ -388,7 +403,20 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
             if isinstance(turn_result, dict)
             else {"content": str(turn_result or "")}
         )
-        history = list(result_dict.pop("messages", None) or history)
+        if result_dict.get("historyRefInvalid") is True:
+            history_ref = None
+            result_dict.pop("historyRef", None)
+        else:
+            returned_history_ref = result_dict.get("historyRef")
+            if isinstance(returned_history_ref, str) and returned_history_ref:
+                history_ref = returned_history_ref
+        # Inline histories are intentionally retired. Never put a child's
+        # result.messages back into session state or a one-shot response.
+        result_dict.pop("messages", None)
+        if history_ref:
+            result_dict["historyRef"] = history_ref
+        else:
+            result_dict.pop("historyRef", None)
 
         if auto_terminate:
             cancelled = bool(result_dict.get("cancelled"))
@@ -438,3 +466,21 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
             for key, value in session_native_event_fields(workflow_instance_id).items():
                 result_dict.setdefault(key, value)
             return result_dict
+
+        ctx.continue_as_new(
+            build_continue_as_new_input(
+                message=message,
+                agent_config=agent_cfg,
+                history_ref=history_ref,
+                pending_events=pending,
+                turn_counter=turn_counter,
+                config_revision=config_revision,
+                control_override_fields=control_override_fields,
+                continuation_count=continuation_count,
+                reason="turn_complete",
+                team_mailbox_batch_ids=accepted_team_mailbox_batch_ids,
+                team_mailbox_event_ids=accepted_team_mailbox_event_ids,
+            ),
+            save_events=True,
+        )
+        return

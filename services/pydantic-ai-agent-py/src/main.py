@@ -61,11 +61,13 @@ from src.session_config import (  # noqa: E402
 from src.workflow import (  # noqa: E402
     CALL_LLM_ACTIVITY,
     CHECK_CANCELLATION_ACTIVITY,
+    COMMIT_TOOL_RESULTS_ACTIVITY,
     EXECUTE_TOOL_ACTIVITY,
     _session_cancel_state_key,
     agent_workflow,
     call_llm,
     check_cancellation,
+    commit_tool_results,
     execute_tool,
 )
 
@@ -90,6 +92,7 @@ runtime.register_workflow(session_workflow)
 runtime.register_workflow(agent_workflow)
 runtime.register_activity(call_llm, name=CALL_LLM_ACTIVITY)
 runtime.register_activity(execute_tool, name=EXECUTE_TOOL_ACTIVITY)
+runtime.register_activity(commit_tool_results, name=COMMIT_TOOL_RESULTS_ACTIVITY)
 runtime.register_activity(check_cancellation, name=CHECK_CANCELLATION_ACTIVITY)
 runtime.register_activity(
     authorize_session_runtime_start,
