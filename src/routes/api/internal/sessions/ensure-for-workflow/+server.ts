@@ -10,6 +10,9 @@ import {
 	runtimeSupportsStructuredOutput,
 	validateDraft202012ObjectSchema,
 } from "$lib/server/application/structured-output";
+import {
+	resolvePublishedSessionRuntimeSandboxName,
+} from "$lib/server/application/session-runtime-host-recovery";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import {
@@ -1035,9 +1038,11 @@ export const POST: RequestHandler = async ({ request }) => {
     let reuseHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>> =
       null;
     let reuseChildAppId: string | null = persistedRuntimeAppId;
-    let reuseRuntimeSandboxName: string | null = persistedRuntimeAppId
-      ? existing.runtimeSandboxName
-      : null;
+    let reuseRuntimeSandboxName: string | null =
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: persistedRuntimeAppId,
+        runtimeSandboxName: existing.runtimeSandboxName,
+      });
     let reusePublishedHostReadiness: "ready" | "not_ready" | null = null;
     if (persistedRuntimeAppId && reuseRuntimeSandboxName) {
       const publishedHost = await sessionRuntimeHostRecovery.ensurePublished({

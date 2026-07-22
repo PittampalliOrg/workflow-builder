@@ -68,6 +68,21 @@ export type EnsurePublishedSessionRuntimeHostResult = {
   readiness: SessionRuntimeHostReadiness;
 };
 
+/** Resolve the exact provider target for published dedicated hosts, including
+ * legacy rows written before the Sandbox name was persisted. Shared runtime
+ * app ids deliberately remain without a synthesized per-session target. */
+export function resolvePublishedSessionRuntimeSandboxName(input: {
+  runtimeAppId: string | null;
+  runtimeSandboxName: string | null;
+}): string | null {
+  const persisted = input.runtimeSandboxName?.trim();
+  if (persisted) return persisted;
+  const runtimeAppId = input.runtimeAppId?.trim();
+  return runtimeAppId?.startsWith("agent-session-")
+    ? `agent-host-${runtimeAppId}`
+    : null;
+}
+
 type SessionRuntimeHostRecoveryDependencies = {
   repository: SessionRuntimeHostRecoveryRepositoryPort;
   provider: SessionRuntimeHostRecoveryProviderPort;

@@ -3834,7 +3834,7 @@ def test_benchmark_durable_run_returns_cancelled_when_spawn_sees_cancelled_run()
     assert result["childWorkflowName"] == "session_workflow"
 
 
-def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflow_order():
+def test_existing_benchmark_history_without_agent_host_status_preserves_child_workflow_order():
     workflow = types.SimpleNamespace(
         use=None,
         document=types.SimpleNamespace(name="test-workflow"),
@@ -3862,6 +3862,10 @@ def test_benchmark_durable_run_without_agent_host_status_preserves_child_workflo
 
     class _FakeCtx(_FakeDurableClockCtx):
         instance_id = "parent-benchmark-wf-no-host-status"
+
+        def is_patched(self, patch_name):
+            assert patch_name == "agent-host-wait-budget-v1"
+            return False
 
         def call_activity(self, activity, input=None):
             return {
@@ -4150,8 +4154,8 @@ def test_spawn_session_host_wait_times_out_waiting_for_agent_session_host(monkey
     # Concurrency plan P2: the readiness timeout is enforced by the
     # workflow-side replay-stable durable-timer budget, not by time.monotonic
     # inside the activity; the TimeoutError shape is unchanged.
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "2")
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "3")
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_POLL_SECONDS", 2)
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS", 3)
 
     queued_body = {
         "sessionId": "child-session",
@@ -4185,8 +4189,8 @@ def test_spawn_session_host_wait_times_out_waiting_for_agent_session_host(monkey
 
 
 def test_prepared_host_wait_budget_does_not_read_a_replay_sliding_clock(monkeypatch):
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "5")
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "12")
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_POLL_SECONDS", 5)
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS", 12)
 
     class _ReplayClockCtx(_FakeHostWaitCtx):
         def is_patched(self, patch_name):
@@ -4262,6 +4266,84 @@ def test_spawn_session_activity_preserves_old_bff_missing_host_status(monkeypatc
     # Missing agentHostStatus (old BFF) => the workflow-side wait (concurrency
     # plan P2) dispatches immediately instead of polling.
     assert SPAWN_SESSION.agent_session_host_wait_needed(body) is False
+    assert (
+        SPAWN_SESSION.agent_session_host_wait_needed(
+            body, missing_status_waits=True
+        )
+        is True
+    )
+
+
+def test_fresh_host_wait_repolls_when_old_bff_omits_host_status(monkeypatch):
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_POLL_SECONDS", 2)
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS", 4)
+    ctx = _FakeHostWaitCtx()
+    gen = SESSION_HOST_WAIT.spawn_session_with_host_wait(
+        ctx, {"sessionId": "child-session"}, lambda value: value
+    )
+
+    assert next(gen)["activity"] == "spawn_session_for_workflow"
+    timer = gen.send(
+        {
+            "sessionId": "child-session",
+            "agentAppId": "agent-session-abc123",
+            "childInput": {"sessionId": "child-session"},
+        }
+    )
+    assert timer.kind == "timer"
+
+    repoll = gen.send(None)
+    assert repoll["activity"] == "spawn_session_for_workflow"
+    with pytest.raises(StopIteration) as stop:
+        gen.send(
+            {
+                "sessionId": "child-session",
+                "agentAppId": "agent-session-abc123",
+                "agentHostStatus": "ready",
+                "childInput": {"sessionId": "child-session"},
+            }
+        )
+    assert stop.value.value["agentHostStatus"] == "ready"
+
+
+def test_fresh_host_wait_action_sequence_is_stable_across_env_rollout(monkeypatch):
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_POLL_SECONDS", 2)
+    monkeypatch.setattr(SESSION_HOST_WAIT, "_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS", 4)
+
+    def exhaust_wait() -> tuple[list[timedelta], int]:
+        ctx = _FakeHostWaitCtx()
+        gen = SESSION_HOST_WAIT.spawn_session_with_host_wait(
+            ctx, {"sessionId": "child-session"}, lambda value: value
+        )
+        value = next(gen)
+        activity_count = 0
+        queued = {
+            "agentAppId": "agent-session-abc123",
+            "agentHostStatus": "queued",
+        }
+        while True:
+            if isinstance(value, dict) and value.get("activity"):
+                activity_count += 1
+                response = queued
+            else:
+                response = None
+            try:
+                value = gen.send(response)
+            except TimeoutError:
+                return [
+                    timer - ctx._CLOCK_EPOCH for timer in ctx.timers
+                ], activity_count
+
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "1")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "99")
+    original = exhaust_wait()
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "17")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "17")
+    replay = exhaust_wait()
+
+    assert original == replay
+    assert original[1] == 3
+    assert original[0] == [timedelta(seconds=2), timedelta(seconds=4)]
 
 
 def test_benchmark_sw_workflow_skips_parent_workspace_cleanup():

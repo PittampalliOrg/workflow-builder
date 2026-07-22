@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationSessionRuntimeHostRecoveryService,
   ensurePublishedSessionRuntimeHost,
+  resolvePublishedSessionRuntimeSandboxName,
 } from "./session-runtime-host-recovery";
 
 const SESSION_ID = "session-1";
@@ -77,6 +78,27 @@ const input = {
 };
 
 describe("published session runtime host recovery", () => {
+  it("derives only canonical dedicated-host Sandbox names for legacy rows", () => {
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-session-legacy",
+        runtimeSandboxName: null,
+      }),
+    ).toBe("agent-host-agent-session-legacy");
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-runtime-pydantic-ai-agent-py",
+        runtimeSandboxName: null,
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-session-current",
+        runtimeSandboxName: "agent-host-explicit-generation",
+      }),
+    ).toBe("agent-host-explicit-generation");
+  });
+
   it("leaves an existing exact generation active without allocating a lease", async () => {
     const ports = deps();
 

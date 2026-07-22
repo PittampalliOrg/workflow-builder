@@ -659,8 +659,10 @@ def test_batch_v2_host_ready_timeout_journals_per_call_dispatch_error(monkeypatc
     """Concurrency plan P2: a host that never leaves 'queued' times out at the
     pump's durable barrier and becomes a PER-CALL dispatchError journal row —
     the run itself proceeds (no whole-run TimeoutError)."""
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "5")
-    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "12")
+    from workflows import session_host_wait
+
+    monkeypatch.setattr(session_host_wait, "_HOST_WAIT_BUDGET_V1_POLL_SECONDS", 5)
+    monkeypatch.setattr(session_host_wait, "_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS", 12)
     cid = "a" * 40 + "_0"
     ctx = FakeCtx(
         evaluator=make_evaluator([agent_task(cid)], "done"),

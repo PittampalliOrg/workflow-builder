@@ -30,6 +30,8 @@ from activities.spawn_session import (
 
 
 _REPLAY_STABLE_HOST_WAIT_BUDGET_PATCH = "agent-host-wait-budget-v1"
+_HOST_WAIT_BUDGET_V1_POLL_SECONDS = 5
+_HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS = 900
 
 
 def _uses_replay_stable_wait_budget(ctx) -> bool:
@@ -53,10 +55,13 @@ def _host_wait_poll_budget(poll_seconds: int, timeout_seconds: int) -> int:
     return max(0, timeout_seconds // poll_seconds)
 
 
-def _poll_and_timeout_seconds() -> tuple[int, int]:
-    # Env reads inside workflow code are stable across replays as long as the
-    # pod env is unchanged mid-instance (same contract the dynamic-script
-    # clamps already rely on); a rolled env only shifts FUTURE poll spacing.
+def _legacy_poll_and_timeout_seconds() -> tuple[int, int]:
+    """Read the legacy environment-controlled timing contract.
+
+    Fresh v1 histories use constants below because changing pod environment
+    between replays must not change the number or duration of recorded actions.
+    A future timing change requires a new workflow patch version.
+    """
     poll_seconds = _int_env(
         "AGENT_SESSION_HOST_READY_POLL_SECONDS",
         DEFAULT_AGENT_SESSION_HOST_READY_POLL_SECONDS,
@@ -66,6 +71,15 @@ def _poll_and_timeout_seconds() -> tuple[int, int]:
         DEFAULT_AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS,
     )
     return poll_seconds, timeout_seconds
+
+
+def _poll_and_timeout_seconds(*, replay_stable_budget: bool) -> tuple[int, int]:
+    if replay_stable_budget:
+        return (
+            _HOST_WAIT_BUDGET_V1_POLL_SECONDS,
+            _HOST_WAIT_BUDGET_V1_TIMEOUT_SECONDS,
+        )
+    return _legacy_poll_and_timeout_seconds()
 
 
 def spawn_session_with_host_wait(ctx, bridge_payload: dict[str, Any], freeze):
@@ -78,8 +92,10 @@ def spawn_session_with_host_wait(ctx, bridge_payload: dict[str, Any], freeze):
     AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS, preserving the old failure mode
     at the same call-site altitude.
     """
-    poll_seconds, timeout_seconds = _poll_and_timeout_seconds()
     replay_stable_budget = _uses_replay_stable_wait_budget(ctx)
+    poll_seconds, timeout_seconds = _poll_and_timeout_seconds(
+        replay_stable_budget=replay_stable_budget
+    )
     polls_remaining = _host_wait_poll_budget(poll_seconds, timeout_seconds)
     deadline = (
         None
@@ -90,7 +106,9 @@ def spawn_session_with_host_wait(ctx, bridge_payload: dict[str, Any], freeze):
         result = yield ctx.call_activity(
             spawn_session_for_workflow, input=freeze(bridge_payload)
         )
-        if not agent_session_host_wait_needed(result):
+        if not agent_session_host_wait_needed(
+            result, missing_status_waits=replay_stable_budget
+        ):
             return result
         if replay_stable_budget:
             timed_out = polls_remaining <= 0
@@ -132,8 +150,10 @@ def wait_for_prepared_agent_hosts(
     failures instead of failing the whole script run, mirroring how it already
     treats bridge refusals.
     """
-    poll_seconds, timeout_seconds = _poll_and_timeout_seconds()
     replay_stable_budget = _uses_replay_stable_wait_budget(ctx)
+    poll_seconds, timeout_seconds = _poll_and_timeout_seconds(
+        replay_stable_budget=replay_stable_budget
+    )
     polls_remaining = _host_wait_poll_budget(poll_seconds, timeout_seconds)
     deadline = (
         None
@@ -153,7 +173,9 @@ def wait_for_prepared_agent_hosts(
                 "agentAppId": prepared.get("appId"),
                 "agentHostStatus": prepared.get("agentHostStatus"),
             }
-            if agent_session_host_wait_needed(probe):
+            if agent_session_host_wait_needed(
+                probe, missing_status_waits=replay_stable_budget
+            ):
                 pending.append(index)
         return pending
 
