@@ -160,6 +160,11 @@ export interface WorkflowAgentRunStore {
 	upsertScheduledAgentRun(
 		input: UpsertWorkflowAgentRunScheduledInput,
 	): Promise<{ id: string }>;
+	/**
+	 * Persist a run transition. A terminal transition must atomically converge
+	 * its exact linked session projection so a pre-event runtime failure cannot
+	 * leave that session active after the owning run has finished.
+	 */
 	updateAgentRunLifecycle(
 		input: UpdateWorkflowAgentRunLifecycleInput,
 	): Promise<{ id: string; status: WorkflowAgentRunStatus }>;

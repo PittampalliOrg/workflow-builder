@@ -63,7 +63,7 @@ class WorkflowBuilderRuntimeStartAuthorityAdapter:
                 text = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
-            if exc.code not in {403, 404, 409}:
+            if exc.code not in {401, 403, 404, 409}:
                 raise RuntimeError(
                     f"runtime start authorization failed (HTTP {exc.code}): {detail}"
                 ) from exc

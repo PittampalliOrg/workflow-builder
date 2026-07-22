@@ -290,6 +290,13 @@ async function provisionDevPreviewInternal(
   const previewEnv: Record<string, string> = {
     ...(descriptor.extraEnv ?? {}),
   };
+  if (previewNative && descriptor.service === "workflow-builder") {
+    // Traffic moves from the GitOps Deployment to this mutable pod while
+    // requests are still in flight. Keep session credentials valid across the
+    // handoff instead of deriving their audience from either pod's public URL.
+    previewEnv.WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE = "preview-native-v1";
+    if (params.origin) previewEnv.APP_PUBLIC_URL = params.origin;
+  }
   const browseUrl =
     previewNative && params.origin
       ? params.origin

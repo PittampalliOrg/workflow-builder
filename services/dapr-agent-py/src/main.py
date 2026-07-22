@@ -5754,7 +5754,7 @@ class OpenShellDurableAgent(DurableAgent):
                 text = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
-            if exc.code in {403, 404, 409}:
+            if exc.code in {401, 403, 404, 409}:
                 try:
                     denial = json.loads(detail)
                 except Exception:  # noqa: BLE001
@@ -6377,6 +6377,12 @@ class OpenShellDurableAgent(DurableAgent):
                     or pending_attempt
                     >= len(_START_AUTHORITY_PENDING_DELAYS_SECONDS)
                 ):
+                    authority_detail = {
+                        key: start_authority.get(key)
+                        for key in ("status", "code", "retryable", "reason")
+                        if isinstance(start_authority, dict)
+                        and start_authority.get(key) not in (None, "")
+                    }
                     return {
                         "success": False,
                         "cancelled": True,
@@ -6388,6 +6394,7 @@ class OpenShellDurableAgent(DurableAgent):
                             if retryable_pending
                             else "session start was not authorized"
                         ),
+                        "startAuthority": authority_detail,
                     }
                 yield ctx.create_timer(
                     timedelta(

@@ -129,7 +129,17 @@ describe("internal session runtime start authority route", () => {
       status: 403,
       error: "invalid session token",
     });
-    await expectHttpStatus(Promise.resolve(POST(event() as never)), 403);
+    const response = (await POST(event() as never)) as Response;
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      authorized: false,
+      retryable: false,
+      code: "session_principal_unauthorized",
+      message: "invalid session token",
+      sessionId: "child-1",
+      runtimeAppId: "agent-session-child",
+      runtimeInstanceId: "child-runtime-1",
+    });
     expect(mocks.sessionRuntimeStartAuthority.authorize).not.toHaveBeenCalled();
   });
 
@@ -201,7 +211,17 @@ describe("internal session runtime start authority route", () => {
         },
       },
     });
-    await expectHttpStatus(Promise.resolve(POST(event() as never)), 403);
+    const mismatch = (await POST(event() as never)) as Response;
+    expect(mismatch.status).toBe(403);
+    await expect(mismatch.json()).resolves.toEqual({
+      authorized: false,
+      retryable: false,
+      code: "session_principal_mismatch",
+      message: "Start authority must match the signed session",
+      sessionId: "child-1",
+      runtimeAppId: "agent-session-child",
+      runtimeInstanceId: "child-runtime-1",
+    });
 
     mocks.sessionRuntimeStartAuthority.authorize.mockResolvedValueOnce({
       status: "error",

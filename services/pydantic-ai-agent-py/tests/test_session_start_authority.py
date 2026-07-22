@@ -96,6 +96,11 @@ def test_denial_finishes_before_status_events_or_agent_work(monkeypatch):
         "content": "",
         "sessionId": "session-1",
         "error": "session start was not authorized",
+        "startAuthority": {
+            "status": 409,
+            "code": "runtime_superseded",
+            "retryable": False,
+        },
     }
     assert published == []
     assert ctx.children == []

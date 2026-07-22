@@ -19,6 +19,8 @@ const now = new Date("2026-07-18T12:00:00.000Z");
 
 describe("Workflow MCP session tokens", () => {
   beforeEach(() => {
+    delete process.env.ORIGIN;
+    delete process.env.WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE;
     process.env.JWT_SIGNING_KEY = "test-workflow-mcp-signing-key";
     process.env.APP_PUBLIC_URL = "https://workflow-builder-dev.example.test";
     process.env.WORKFLOW_MCP_SESSION_TOKEN_TTL_SECONDS = "3600";
@@ -27,6 +29,8 @@ describe("Workflow MCP session tokens", () => {
   afterEach(() => {
     delete process.env.JWT_SIGNING_KEY;
     delete process.env.APP_PUBLIC_URL;
+    delete process.env.ORIGIN;
+    delete process.env.WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE;
     delete process.env.WORKFLOW_MCP_SESSION_TOKEN_TTL_SECONDS;
     delete process.env.WORKFLOW_MCP_SESSION_TOKEN_REFRESH_GRACE_SECONDS;
   });
@@ -56,6 +60,20 @@ describe("Workflow MCP session tokens", () => {
 
     process.env.APP_PUBLIC_URL =
       "https://workflow-builder-staging.example.test";
+    expect(verifyWorkflowMcpSessionToken(token, now)).toBeNull();
+  });
+
+  it("keeps an explicit preview audience valid across traffic handoff", () => {
+    process.env.WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE = "preview-native-v1";
+    process.env.APP_PUBLIC_URL =
+      "https://workflow-builder-ryzen.tail286401.ts.net";
+    const token = mintWorkflowMcpSessionToken(identity, now);
+
+    process.env.APP_PUBLIC_URL = "https://wfb-preview-dev.tail286401.ts.net";
+    process.env.ORIGIN = "https://wfb-preview-dev.tail286401.ts.net";
+    expect(verifyWorkflowMcpSessionToken(token, now)).toEqual(identity);
+
+    process.env.WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE = "another-preview-lane";
     expect(verifyWorkflowMcpSessionToken(token, now)).toBeNull();
   });
 

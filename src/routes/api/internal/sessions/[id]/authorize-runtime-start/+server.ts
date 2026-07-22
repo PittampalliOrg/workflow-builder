@@ -28,11 +28,33 @@ export const POST: RequestHandler = async ({ request, params }) => {
     { requiredScope: "workflow:execute" },
   );
   if (!principalResult.ok) {
-    return error(principalResult.status, principalResult.error);
+    return json(
+      {
+        authorized: false,
+        retryable: false,
+        code: "session_principal_unauthorized",
+        message: principalResult.error,
+        sessionId,
+        runtimeAppId,
+        runtimeInstanceId,
+      },
+      { status: principalResult.status },
+    );
   }
   const principal = principalResult.principal;
   if (!principal.sessionId || principal.sessionId !== sessionId) {
-    return error(403, "Start authority must match the signed session");
+    return json(
+      {
+        authorized: false,
+        retryable: false,
+        code: "session_principal_mismatch",
+        message: "Start authority must match the signed session",
+        sessionId,
+        runtimeAppId,
+        runtimeInstanceId,
+      },
+      { status: 403 },
+    );
   }
 
   const result = await app.sessionRuntimeStartAuthority.authorize(

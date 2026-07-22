@@ -6970,18 +6970,79 @@ export class PostgresWorkflowAgentRunStore implements WorkflowAgentRunStore {
 				})
 				.where(eq(workflowAgentRuns.id, input.id));
 		} else {
-			await this.database
-				.update(workflowAgentRuns)
-				.set({
-					status: input.status,
-					result: input.result ?? null,
-					error: input.error ?? null,
-					...(input.workspaceRef ? { workspaceRef: input.workspaceRef } : {}),
-					completedAt: sql`COALESCE(${workflowAgentRuns.completedAt}, now())`,
-					...(input.eventPublished ? { eventPublishedAt: new Date() } : {}),
-					updatedAt: new Date(),
-				})
-				.where(eq(workflowAgentRuns.id, input.id));
+			await this.database.transaction(async (tx) => {
+				const now = new Date();
+				const [run] = await tx
+					.update(workflowAgentRuns)
+					.set({
+						status: input.status,
+						result: input.result ?? null,
+						error: input.error ?? null,
+						...(input.workspaceRef ? { workspaceRef: input.workspaceRef } : {}),
+						completedAt: sql`COALESCE(${workflowAgentRuns.completedAt}, ${now})`,
+						...(input.eventPublished ? { eventPublishedAt: now } : {}),
+						updatedAt: now,
+					})
+					.where(eq(workflowAgentRuns.id, input.id))
+					.returning({
+						workflowExecutionId: workflowAgentRuns.workflowExecutionId,
+						agentWorkflowId: workflowAgentRuns.agentWorkflowId,
+						daprInstanceId: workflowAgentRuns.daprInstanceId,
+						completedAt: workflowAgentRuns.completedAt,
+					});
+
+				if (!run) return;
+				const terminalSessionStatus =
+					input.status === "failed" ? "failed" : "terminated";
+				const failureMessage = input.error?.trim();
+				const crashReason = JSON.stringify({
+					type: "crashed",
+					message:
+						failureMessage ||
+						"Workflow agent run failed before session termination",
+				});
+				await tx
+					.update(sessions)
+					.set({
+						// The runtime normally emits session.status_terminated. This is the
+						// durable fallback for failures before the first session event, while
+						// preserving an already-terminal projection that won the race.
+						status: sql<string>`CASE
+							WHEN ${sessions.status} = 'terminated' THEN ${sessions.status}
+							ELSE ${terminalSessionStatus}
+						END`,
+						...(input.status === "failed"
+							? {
+									stopReason: sql<Record<string, unknown>>`COALESCE(
+										${sessions.stopReason},
+										${crashReason}::jsonb
+									)`,
+									errorMessage: sql<string>`COALESCE(
+										NULLIF(${failureMessage ?? ""}, ''),
+										${sessions.errorMessage},
+										'Workflow agent run failed before session termination'
+									)`,
+								}
+							: {}),
+						pendingInput: null,
+						completedAt: sql`COALESCE(${sessions.completedAt}, ${run.completedAt ?? now})`,
+						updatedAt: now,
+					})
+					.where(
+						and(
+							eq(sessions.id, run.agentWorkflowId),
+							eq(sessions.workflowExecutionId, run.workflowExecutionId),
+							isNull(sessions.completedAt),
+							or(
+								eq(sessions.daprInstanceId, run.daprInstanceId),
+								and(
+									isNull(sessions.daprInstanceId),
+									eq(sessions.id, run.agentWorkflowId),
+								),
+							),
+						),
+					);
+			});
 		}
 
 		return { id: input.id, status: input.status };

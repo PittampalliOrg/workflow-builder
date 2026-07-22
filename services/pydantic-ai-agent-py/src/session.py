@@ -179,6 +179,12 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
             if not retryable_pending or pending_attempt >= len(
                 _START_AUTHORITY_PENDING_DELAYS_SECONDS
             ):
+                authority_detail = {
+                    key: start_authority.get(key)
+                    for key in ("status", "code", "retryable", "reason")
+                    if isinstance(start_authority, dict)
+                    and start_authority.get(key) not in (None, "")
+                }
                 return {
                     "success": False,
                     "cancelled": True,
@@ -190,6 +196,7 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                         if retryable_pending
                         else "session start was not authorized"
                     ),
+                    "startAuthority": authority_detail,
                 }
             yield ctx.create_timer(
                 timedelta(
