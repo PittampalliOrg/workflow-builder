@@ -1,5 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
+import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PostgresWorkflowAgentRunStore } from "./postgres";
 
@@ -187,5 +188,55 @@ describe("PostgresWorkflowAgentRunStore terminal session convergence", () => {
 
 		expect(await session("session-terminal-terminated")).toEqual(terminated);
 		expect(await session("session-terminal-failed")).toEqual(failed);
+	});
+});
+
+describe("PostgresWorkflowAgentRunStore postgres-js timestamp parameters", () => {
+	it("uses the database clock without sending raw Date parameters", async () => {
+		const calls: Array<{ sql: string; params: unknown[] }> = [];
+		const results: unknown[][][] = [
+			[
+				[
+					"execution-1",
+					"session-completed",
+					"instance-completed",
+					"2026-07-22 20:07:03.870",
+				],
+			],
+			[],
+		];
+		const postgresClient = {
+			options: { parsers: {}, serializers: {} },
+			unsafe: (query: string, params: unknown[]) => {
+				calls.push({ sql: query, params: [...params] });
+				const rows = results.shift() ?? [];
+				return Object.assign(Promise.resolve(rows), {
+					values: async () => rows,
+				});
+			},
+			begin: async <T>(run: (client: unknown) => Promise<T>) =>
+				run(postgresClient),
+		};
+		const database = drizzlePostgresJs(postgresClient as never);
+		const store = new PostgresWorkflowAgentRunStore(database as never);
+
+		await expect(
+			store.updateAgentRunLifecycle({
+				id: "run-completed",
+				status: "completed",
+				result: { content: "done" },
+			}),
+		).resolves.toEqual({ id: "run-completed", status: "completed" });
+
+		expect(calls).toHaveLength(2);
+		expect(calls[0]?.sql).toContain(
+			'COALESCE("workflow_agent_runs"."completed_at", now())',
+		);
+		expect(calls[1]?.sql).toContain(
+			'COALESCE("sessions"."completed_at", now())',
+		);
+		expect(calls.flatMap((call) => call.params)).not.toContainEqual(
+			expect.any(Date),
+		);
 	});
 });
