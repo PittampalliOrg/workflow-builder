@@ -3778,10 +3778,6 @@ def build_agent_workflow_host_sandbox_manifest(
         ),
         "dapr.io/enable-workflow": "true",
         "dapr.io/enable-native-sidecar": "true",
-        "dapr.io/internal-grpc-port": os.environ.get(
-            "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT",
-            "3502",
-        ),
         "dapr.io/placement-host-address": os.environ.get(
             "DAPR_PLACEMENT_HOST_ADDRESS",
             "dapr-placement-server.dapr-system.svc.cluster.local:50005",
@@ -5082,20 +5078,9 @@ def build_dev_preview_sandbox_manifest(
             "dapr.io/sidecar-readiness-probe-period-seconds": "1",
             "dapr.io/sidecar-readiness-probe-timeout-seconds": "1",
         }
-        # Dapr internal-grpc-port is APP-LEVEL contract — it's the port daprd dials on a
-        # PEER for service invocation, and Dapr uses the CALLER's configured value (it
-        # assumes a cluster-uniform port). A preview-native adopt pod REPLACES a prod
-        # Deployment and must service-invoke NON-adopted prod peers (e.g. the adopted
-        # orchestrator → the still-prod function-router); prod sets no override (Dapr
-        # default), so the adopt pod must match it, else the invoke hits
-        # `connection refused` on 3502 (ERR_DIRECT_INVOKE). Agent-host dispatch is a
-        # child WORKFLOW (ctx.call_child_workflow), which is placement-routed to the
-        # target's REGISTERED port and so is unaffected by this. The host Dapr-shadow
-        # path keeps the 3502 override (it is isolated + agent-host-parity).
-        if not request.previewNative:
-            dapr_annotations["dapr.io/internal-grpc-port"] = os.environ.get(
-                "DAPR_AGENT_HOST_INTERNAL_GRPC_PORT", "3502"
-            )
+        # Internal gRPC is a cluster-wide peer-dial contract: Dapr uses the caller's
+        # configured port when invoking another app. Every host workload uses Dapr's
+        # default 50002, so sandbox sidecars must omit a per-pod override too.
         pod_template_metadata["annotations"] = dapr_annotations
     sandbox_spec: dict[str, Any] = {
         "replicas": 1,
