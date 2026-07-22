@@ -6,6 +6,8 @@ const MAX_KEY_LENGTH = 256;
 const MAX_SUBJECT_LENGTH = 500;
 const MAX_EVIDENCE_STRING_LENGTH = 2_000;
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const DRASI_POSTGRES_LOCAL_DATETIME =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?$/;
 const CORRELATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const CLUSTER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -143,10 +145,13 @@ function canonicalTimestamp(
 ): { ok: true; value: string } | { ok: false; error: string } {
   const parsed = requiredString(value, name, 64);
   if (!parsed.ok) return parsed;
-  if (!RFC3339.test(parsed.value)) {
+  const candidate = DRASI_POSTGRES_LOCAL_DATETIME.test(parsed.value)
+    ? `${parsed.value}Z`
+    : parsed.value;
+  if (!RFC3339.test(candidate)) {
     return { ok: false, error: `${name} must be an RFC3339 timestamp` };
   }
-  const milliseconds = Date.parse(parsed.value);
+  const milliseconds = Date.parse(candidate);
   if (Number.isNaN(milliseconds)) {
     return { ok: false, error: `${name} must be an RFC3339 timestamp` };
   }
