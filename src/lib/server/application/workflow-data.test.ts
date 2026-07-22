@@ -707,6 +707,9 @@ function fakeSessions(): SessionRepository {
 		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => [
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]),
+		listPendingTerminalRuntimeHostCleanups: vi.fn(async () => []),
+		claimTerminalRuntimeHostCleanup: vi.fn(async () => false),
+		acknowledgeTerminalRuntimeHostCleanup: vi.fn(async () => true),
 		createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async (input) => ({

@@ -14,6 +14,7 @@ import type {
   SessionRuntimeCleanupPort,
 	SessionSandboxDestroyer,
 	SessionWorkflowSpawner,
+	TerminalRuntimeHostCleanupPort,
 	WorkspaceProjectRepository,
 	WorkflowEphemeralAgentStore,
 	WorkflowPublishedAgent,
@@ -34,6 +35,7 @@ describe("ApplicationSessionCommandService", () => {
 	let sandboxProvisioner: SandboxProvisioner;
 	let repositoryMounter: SessionRepositoryMounter;
 	let sandboxDestroyer: SessionSandboxDestroyer;
+	let terminalRuntimeHostCleanup: TerminalRuntimeHostCleanupPort;
   let runtimeCleaner: SessionRuntimeCleanupPort;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let workspaceProjects: WorkspaceProjectRepository;
@@ -73,6 +75,15 @@ describe("ApplicationSessionCommandService", () => {
 				status: "deleted" as const,
 			})),
 		};
+		terminalRuntimeHostCleanup = {
+			requestReap: vi.fn(),
+			reapPending: vi.fn(async () => ({
+				scanned: 0,
+				acknowledged: [],
+				failed: [],
+				dryRun: false,
+			})),
+		};
     runtimeCleaner = {
       purgeRuntimeInstance: vi.fn(async () => undefined),
     };
@@ -108,6 +119,7 @@ describe("ApplicationSessionCommandService", () => {
       runtimeCleaner,
 			workspaceProjects,
 			sandboxDestroyer,
+			terminalRuntimeHostCleanup,
 			workflowEphemeralAgents,
 			agentRuntimeSync,
 		});
@@ -546,31 +558,14 @@ describe("ApplicationSessionCommandService", () => {
     ).toHaveBeenCalledWith("session-1", "http://agent-runtime:8002");
 	});
 
-	it("reaps terminal workflow session hosts through the sandbox destroyer port", async () => {
-    vi.mocked(
-      sessions.listReapableWorkflowSessionRuntimeHosts,
-    ).mockResolvedValue([
-			{ sessionId: "old-session", runtimeAppId: "agent-session-old" },
-			{ sessionId: "session-1", runtimeAppId: "agent-session-current" },
-		]);
+	it("coalesces terminal workflow host cleanup through the eager signal port", async () => {
+			await service.reapTerminatedWorkflowSessionRuntimeHosts({
+				workflowExecutionId: "execution-1",
+				exceptSessionId: "session-1",
+			});
 
-		await service.reapTerminatedWorkflowSessionRuntimeHosts({
-			workflowExecutionId: "execution-1",
-			exceptSessionId: "session-1",
+		expect(terminalRuntimeHostCleanup.requestReap).toHaveBeenCalledOnce();
 		});
-
-    expect(
-      sessions.listReapableWorkflowSessionRuntimeHosts,
-    ).toHaveBeenCalledWith({
-			workflowExecutionId: "execution-1",
-		});
-		expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
-			"agent-host-agent-session-old",
-		);
-		expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalledWith(
-			"agent-host-agent-session-current",
-		);
-	});
 
   it("acknowledges a stopped lease only after deleting its provisioned host", async () => {
     const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
@@ -1413,6 +1408,9 @@ function fakeSessions(): SessionRepository {
     })),
     updateWorkflowEnsureSessionRuntime: vi.fn(async () => true),
 		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => []),
+		listPendingTerminalRuntimeHostCleanups: vi.fn(async () => []),
+		claimTerminalRuntimeHostCleanup: vi.fn(async () => false),
+		acknowledgeTerminalRuntimeHostCleanup: vi.fn(async () => true),
 		createSessionFork: vi.fn(async () => ({ id: "fork-1" })),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async () => {

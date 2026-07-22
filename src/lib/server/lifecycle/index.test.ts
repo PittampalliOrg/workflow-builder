@@ -2,10 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedDurableTarget } from "./resolvers";
 
 const mocks = vi.hoisted(() => ({
-  resolveDurableTarget: vi.fn(),
-  deleteKubernetesSandbox: vi.fn(),
-  raiseSessionEvent: vi.fn(),
-  cascadeDeps: {
+	resolveDurableTarget: vi.fn(),
+	raiseSessionEvent: vi.fn(),
+	cascadeDeps: {
     getParentStatus: vi.fn(),
     getParentCurrentNode: vi.fn(),
     getAgentRuntimeStatus: vi.fn(),
@@ -17,8 +16,9 @@ const mocks = vi.hoisted(() => ({
     waitAgentRuntimeClosed: vi.fn(),
     purgeParent: vi.fn(),
     purgeAgentRuntime: vi.fn(),
-    purgeStateRows: vi.fn(),
-    deleteWorkspaceSandbox: vi.fn(),
+		purgeStateRows: vi.fn(),
+		deleteRuntimeSandbox: vi.fn(),
+		deleteWorkspaceSandbox: vi.fn(),
     cleanupWorkspaceExecution: vi.fn(),
     sleep: vi.fn(async () => undefined),
     waitPollMs: 1,
@@ -49,11 +49,6 @@ vi.mock("$lib/server/application/adapters/workspace-retention-http", () => ({
   configuredWorkspaceRetentionPort: () => mocks.workspaceRetention,
 }));
 
-vi.mock("$lib/server/kube/client", () => ({
-  deleteKubernetesSandbox: (...args: unknown[]) =>
-    mocks.deleteKubernetesSandbox(...args),
-}));
-
 vi.mock("$lib/server/sessions/control", () => ({
   raiseSessionEvent: (...args: unknown[]) => mocks.raiseSessionEvent(...args),
 }));
@@ -63,6 +58,11 @@ import { confirmDurableStop, stopDurableRun } from "./index";
 function resolved(
   overrides: Partial<ResolvedDurableTarget> = {},
 ): ResolvedDurableTarget {
+  const inferredRuntimeTargets = (overrides.sandboxNames ?? []).map((name) => ({
+    runtimeAppId: name.replace(/^agent-host-/, ""),
+    instanceId: "session-1",
+    runtimeSandboxName: name,
+  }));
   return {
     notFound: false,
     dbActive: true,
@@ -73,7 +73,7 @@ function resolved(
     activeChildNodes: [],
     scope: { projectId: "project-1", userId: "user-1" },
     parentInstanceIds: [],
-    agentRuntimeTargets: [],
+    agentRuntimeTargets: overrides.agentRuntimeTargets ?? inferredRuntimeTargets,
     runtimeProvisioningLeases: [],
     unresolvedRuntimeLinkages: [],
     sandboxNames: [],
@@ -94,7 +94,7 @@ function resolved(
 describe("durable lifecycle convergence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.deleteKubernetesSandbox.mockResolvedValue("deleted");
+		mocks.cascadeDeps.deleteRuntimeSandbox.mockResolvedValue(undefined);
     mocks.cascadeDeps.getParentStatus.mockResolvedValue("RUNNING");
     mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue("RUNNING");
     mocks.cascadeDeps.cancelParent.mockResolvedValue("requested");
@@ -137,7 +137,7 @@ describe("durable lifecycle convergence", () => {
     expect(mocks.cascadeDeps.terminateAgentRuntime).not.toHaveBeenCalled();
     expect(mocks.cascadeDeps.purgeAgentRuntime).not.toHaveBeenCalled();
     expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
-    expect(mocks.deleteKubernetesSandbox).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).not.toHaveBeenCalled();
     expect(target.finalizeDb).not.toHaveBeenCalled();
   });
 
@@ -215,8 +215,11 @@ describe("durable lifecycle convergence", () => {
     expect(mocks.cascadeDeps.terminateAgentRuntime).toHaveBeenCalledTimes(2);
     expect(target.markStopRequested).toHaveBeenCalledTimes(2);
     expect(persistedRequestedAt).toEqual(originalRequestedAt);
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-      "agent-host-agent-session-abc",
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).toHaveBeenCalledWith(
+	      {
+	        runtimeAppId: "agent-session-abc",
+	        runtimeSandboxName: "agent-host-agent-session-abc",
+	      },
     );
     expect(target.finalizeDb).toHaveBeenCalledTimes(1);
   });
@@ -227,7 +230,8 @@ describe("durable lifecycle convergence", () => {
       sandboxNames: ["agent-host-agent-session-abc"],
     });
     mocks.resolveDurableTarget.mockResolvedValue(target);
-    mocks.deleteKubernetesSandbox
+		mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue("COMPLETED");
+    mocks.cascadeDeps.deleteRuntimeSandbox
       .mockRejectedValueOnce(new Error("Kubernetes API unavailable"))
       .mockResolvedValueOnce("deleted");
 
@@ -239,7 +243,7 @@ describe("durable lifecycle convergence", () => {
     await expect(
       confirmDurableStop({ kind: "session", id: "session-1" }),
     ).resolves.toMatchObject({ state: "confirmed" });
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledTimes(2);
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).toHaveBeenCalledTimes(2);
     expect(target.finalizeDb).toHaveBeenCalledTimes(1);
   });
 
@@ -248,7 +252,7 @@ describe("durable lifecycle convergence", () => {
       sandboxNames: ["agent-host-agent-session-abc"],
     });
     mocks.resolveDurableTarget.mockResolvedValue(target);
-    mocks.deleteKubernetesSandbox.mockRejectedValueOnce(
+    mocks.cascadeDeps.deleteRuntimeSandbox.mockRejectedValueOnce(
       new Error("delete rejected"),
     );
 
@@ -280,8 +284,11 @@ describe("durable lifecycle convergence", () => {
     );
 
     expect(result).toMatchObject({ confirmed: true, state: "confirmed" });
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-      "agent-host-agent-session-abc",
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).toHaveBeenCalledWith(
+	      {
+	        runtimeAppId: "agent-session-abc",
+	        runtimeSandboxName: "agent-host-agent-session-abc",
+	      },
     );
     expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
     expect(mocks.cascadeDeps.purgeAgentRuntime).not.toHaveBeenCalled();
@@ -492,7 +499,6 @@ describe("durable lifecycle convergence", () => {
       { kind: "session", id: "session-1" },
       { mode: "purge", graceMs: 0 },
     );
-
     expect(result.state).toBe("confirmed");
     expect(mocks.cascadeDeps.terminateAgentRuntime).toHaveBeenCalledWith(
       "agent-session-late",
@@ -500,8 +506,11 @@ describe("durable lifecycle convergence", () => {
       "Stopped by user",
       "agent-host-agent-session-late",
     );
-    expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-      "agent-host-agent-session-late",
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).toHaveBeenCalledWith(
+	      {
+	        runtimeAppId: "agent-session-late",
+	        runtimeSandboxName: "agent-host-agent-session-late",
+	      },
     );
     expect(after.finalizeDb).toHaveBeenCalledOnce();
   });
@@ -590,7 +599,7 @@ describe("durable lifecycle convergence", () => {
     expect(result.state).toBe("stopping");
     expect(mocks.cascadeDeps.purgeStateRows).toHaveBeenCalledOnce();
     expect(target.finalizeDb).not.toHaveBeenCalled();
-    expect(mocks.deleteKubernetesSandbox).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.deleteRuntimeSandbox).not.toHaveBeenCalled();
   });
 
   it("keeps a concurrently escalated stop pending when finalization loses its mode fence", async () => {
@@ -711,8 +720,11 @@ describe("durable lifecycle convergence", () => {
       "Stopped by user",
       prospectiveTarget.runtimeSandboxName,
     );
-		expect(mocks.deleteKubernetesSandbox).toHaveBeenCalledWith(
-			prospectiveTarget.runtimeSandboxName,
+		expect(mocks.cascadeDeps.deleteRuntimeSandbox).toHaveBeenCalledWith(
+			{
+				runtimeAppId: prospectiveTarget.runtimeAppId,
+				runtimeSandboxName: prospectiveTarget.runtimeSandboxName,
+			},
 		);
 		expect(
 			target.acknowledgeRuntimeProvisioningCompensation,
@@ -721,7 +733,7 @@ describe("durable lifecycle convergence", () => {
 			target.runtimeProvisioningLeases[0].startedAt,
 		);
 		expect(
-			vi.mocked(mocks.deleteKubernetesSandbox).mock.invocationCallOrder[0],
+			vi.mocked(mocks.cascadeDeps.deleteRuntimeSandbox).mock.invocationCallOrder[0],
 		).toBeLessThan(
 			vi.mocked(target.acknowledgeRuntimeProvisioningCompensation).mock
 				.invocationCallOrder[0],
@@ -793,7 +805,7 @@ describe("durable lifecycle convergence", () => {
 			})),
 		});
 		mocks.resolveDurableTarget.mockResolvedValue(target);
-		mocks.deleteKubernetesSandbox.mockRejectedValueOnce(
+		mocks.cascadeDeps.deleteRuntimeSandbox.mockRejectedValueOnce(
 			new Error("delete failed"),
 		);
 

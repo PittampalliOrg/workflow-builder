@@ -74,14 +74,21 @@ const mocks = vi.hoisted(() => {
 			sourceKeys: ["source-key"],
 		})),
 	};
+	const sessionRuntimeHostCleanup = {
+		requestReap: vi.fn(),
+	};
 	return {
 		workflowData,
+		sessionRuntimeHostCleanup,
 		requireInternal: vi.fn(),
 	};
 });
 
 vi.mock("$lib/server/application", () => ({
-	getApplicationAdapters: () => ({ workflowData: mocks.workflowData }),
+	getApplicationAdapters: () => ({
+		workflowData: mocks.workflowData,
+		sessionRuntimeHostCleanup: mocks.sessionRuntimeHostCleanup,
+	}),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -173,6 +180,25 @@ describe("internal workflow-data routes", () => {
 			workspaceRef: null,
 			eventPublished: true,
 		});
+		expect(mocks.sessionRuntimeHostCleanup.requestReap).toHaveBeenCalledOnce();
+	});
+
+	it("does not signal runtime-host cleanup while an agent run remains active", async () => {
+		await patchAgentRun({
+			params: { runId: "agent-run-1" },
+			request: jsonRequest({ status: "running" }),
+		} as never);
+
+		expect(mocks.sessionRuntimeHostCleanup.requestReap).not.toHaveBeenCalled();
+	});
+
+	it("signals runtime-host cleanup when an agent run fails", async () => {
+		await patchAgentRun({
+			params: { runId: "agent-run-1" },
+			request: jsonRequest({ status: "failed", error: "runtime failed" }),
+		} as never);
+
+		expect(mocks.sessionRuntimeHostCleanup.requestReap).toHaveBeenCalledOnce();
 	});
 
 	it("updates execution read models and logs through the workflow-data service", async () => {

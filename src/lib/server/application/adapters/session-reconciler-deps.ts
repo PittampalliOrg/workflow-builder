@@ -21,9 +21,9 @@ import {
 } from "$lib/server/application/adapters/lifecycle-cascade";
 import {
   CurrentSessionRepository,
-  KubernetesSessionSandboxDestroyer,
   LifecycleSessionController,
 } from "$lib/server/application/adapters/sessions";
+import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/application/adapters/session-sandbox-destroyer";
 import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
 import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { appendSessionEvent } from "$lib/server/application/adapters/session-events";
@@ -79,6 +79,11 @@ import {
 } from "$lib/server/sessions/spawn";
 import { createSessionRuntimeProvisioningReplacement } from "$lib/server/application/adapters/session-runtime-generation";
 import type { LivenessReconcileCandidateRecord } from "$lib/server/application/ports";
+import type {
+  TerminalRuntimeHostCleanupPort,
+  TerminalRuntimeHostCleanupResult,
+} from "$lib/server/application/ports";
+import { ApplicationSessionRuntimeHostCleanupService } from "$lib/server/application/session-runtime-host-cleanup";
 
 export type ReconcilerTickMode = "dapr-job" | "cronjob" | "off";
 
@@ -172,7 +177,7 @@ export function createSessionRuntimeProvisioningReconcilerDeps(): SessionRuntime
     store: new CurrentSessionRepository(),
     runtimeInspector: new DaprSessionRuntimeInspectionAdapter(),
     runtimeCleaner: new DaprSessionRuntimeCleanupAdapter(),
-    sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+    sandboxDestroyer: new SandboxExecutionApiSessionSandboxDestroyer(),
     runtimeHostEnsurer: {
       ensurePublished: async (target) => {
         await ensurePublishedSessionWorkflowHost(target);
@@ -189,6 +194,40 @@ export function createSessionRuntimeProvisioningReconcilerDeps(): SessionRuntime
       }),
     now: () => Date.now(),
   };
+}
+
+export function createTerminalRuntimeHostCleanupService(
+  database: Database = defaultDb,
+): TerminalRuntimeHostCleanupPort {
+  return new ApplicationSessionRuntimeHostCleanupService({
+    sessions: new CurrentSessionRepository(database),
+    runtimeInspector: new DaprSessionRuntimeInspectionAdapter(),
+    sandboxes: new SandboxExecutionApiSessionSandboxDestroyer(),
+  });
+}
+
+export async function runScheduledTerminalRuntimeHostCleanupPass(
+  cleanup: TerminalRuntimeHostCleanupPort,
+  input: { limit: number; dryRun: boolean },
+): Promise<TerminalRuntimeHostCleanupResult> {
+  try {
+    return await cleanup.reapPending(input);
+  } catch (error) {
+    // A scan-level DB/transport error must not suppress the other periodic
+    // reconciler lanes. The NULL acknowledgement remains the retry queue, so
+    // the next independently scheduled tick will try the obligation again.
+    return {
+      scanned: 0,
+      acknowledged: [],
+      failed: [
+        {
+          sessionId: "<scan>",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      ],
+      dryRun: input.dryRun,
+    };
+  }
 }
 
 export function createTeamMemberLaunchReconcilerDeps(): TeamMemberLaunchReconcilerDeps {
@@ -528,6 +567,7 @@ export type RunSessionReconcileResult = ReconcileRunResult & {
   workflowStops: WorkflowStopReconcileResult;
   teamMemberLaunches: TeamMemberLaunchReconcileRunResult;
   runtimeProvisioning: SessionRuntimeProvisioningReconcileResult;
+  runtimeHostCleanup: TerminalRuntimeHostCleanupResult;
   skipped?: string;
 };
 
@@ -558,6 +598,12 @@ export async function runSessionReconcile(
         actionsTaken: 0,
         dryRun: true,
         decisions: [],
+      },
+      runtimeHostCleanup: {
+        scanned: 0,
+        acknowledged: [],
+        failed: [],
+        dryRun: true,
       },
       skipped: "disabled",
     };
@@ -601,10 +647,18 @@ export async function runSessionReconcile(
     },
   );
   const sessions = await reconcileSessions(createSessionReconcilerDeps(), opts);
+  // Cleanup is independently scheduled, not dependent on event/node hot paths,
+  // but runs after the core convergence lanes so bounded SEA latency cannot
+  // delay stop, provisioning, team-launch, or liveness repairs.
+  const runtimeHostCleanup = await runScheduledTerminalRuntimeHostCleanupPass(
+    createTerminalRuntimeHostCleanupService(),
+    { dryRun: opts.dryRun, limit: opts.limit },
+  );
   return {
     ...sessions,
     workflowStops,
     teamMemberLaunches,
     runtimeProvisioning,
+    runtimeHostCleanup,
   };
 }

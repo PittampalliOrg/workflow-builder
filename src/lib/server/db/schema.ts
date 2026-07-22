@@ -3416,6 +3416,17 @@ export const sessions = pgTable(
     // routing identity while preventing child lifecycle from deleting that
     // parent-owned Sandbox.
     runtimeHostOwned: boolean("runtime_host_owned").notNull().default(true),
+    // Durable acknowledgement that the owned per-session runtime host was
+    // physically deleted. Terminal rows with an owned runtime target and no
+    // acknowledgement remain cleanup candidates across process restarts.
+    runtimeHostCleanupCompletedAt: timestamp(
+      "runtime_host_cleanup_completed_at",
+    ),
+    // Lease/rotation cursor for cleanup attempts. An old value is retryable;
+    // a recent value prevents duplicate provider calls across BFF replicas.
+    runtimeHostCleanupAttemptedAt: timestamp(
+      "runtime_host_cleanup_attempted_at",
+    ),
     // Versioned, non-secret provider recipe used to recreate the exact published
     // generation when a provisional Sandbox expires before activation.
     runtimeHostLaunchSpec: jsonb("runtime_host_launch_spec").$type<
@@ -3516,6 +3527,11 @@ export const sessions = pgTable(
     runtimeAppIdx: index("idx_sessions_runtime_app_id").on(table.runtimeAppId),
     runtimeSandboxIdx: index("idx_sessions_runtime_sandbox_name").on(
       table.runtimeSandboxName,
+    ),
+    runtimeHostCleanupIdx: index("idx_sessions_runtime_host_cleanup").on(
+      table.runtimeHostCleanupCompletedAt,
+      table.runtimeHostCleanupAttemptedAt,
+      table.completedAt,
     ),
     mlflowRunIdx: index("idx_sessions_mlflow_run").on(table.mlflowRunId),
     mlflowParentRunIdx: index("idx_sessions_mlflow_parent_run").on(

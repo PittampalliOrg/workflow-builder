@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { toPostgresTimestampParam } from "$lib/server/db/sql-params";
 import {
@@ -238,11 +238,28 @@ export function createPostgresLifecycleTargetResolver(
 		const agentRuntimeTargets = [];
     const runtimeProvisioningLeases = [];
     const unresolvedRuntimeLinkages = [];
+		const runtimeHostCleanupTargets: Array<{
+			sessionId: string;
+			runtimeAppId: string;
+			instanceId: string;
+			runtimeSandboxName: string | null;
+		}> = [];
 		for (const s of childSessions) {
       const requiresRuntimeLinkage = sessionRequiresRuntimeLinkage(s);
       const persistedTarget = agentTargetForSession(s);
       const targets = requiresRuntimeLinkage ? agentTargetsForSession(s) : [];
       agentRuntimeTargets.push(...targets);
+			if (
+				persistedTarget?.ownsRuntimeSandbox !== false &&
+				persistedTarget?.runtimeSandboxName?.trim()
+			) {
+				runtimeHostCleanupTargets.push({
+					sessionId: s.id,
+					runtimeAppId: persistedTarget.runtimeAppId,
+					instanceId: persistedTarget.instanceId,
+					runtimeSandboxName: s.runtimeSandboxName,
+				});
+			}
       const active =
         s.status !== "terminated" &&
         !(s.status === "failed" && s.completedAt != null);
@@ -409,6 +426,40 @@ export function createPostgresLifecycleTargetResolver(
 								ne(sessions.status, "terminated"),
 							),
 						);
+					// finalizeDb is reached only after the cascade has deleted every
+					// provider-owned runtime Sandbox (or SEA confirmed it absent). Persist
+					// that physical-cleanup acknowledgement for both newly and previously
+					// terminal children.
+					for (const cleanupTarget of runtimeHostCleanupTargets) {
+						await tx
+							.update(sessions)
+							.set({
+								runtimeHostCleanupCompletedAt: now,
+								updatedAt: now,
+							})
+							.where(
+								and(
+									eq(sessions.workflowExecutionId, id),
+									eq(sessions.id, cleanupTarget.sessionId),
+									eq(sessions.runtimeAppId, cleanupTarget.runtimeAppId),
+									or(
+										eq(sessions.daprInstanceId, cleanupTarget.instanceId),
+										and(
+											isNull(sessions.daprInstanceId),
+											eq(sessions.id, cleanupTarget.instanceId),
+										),
+									),
+									cleanupTarget.runtimeSandboxName === null
+										? isNull(sessions.runtimeSandboxName)
+										: eq(
+												sessions.runtimeSandboxName,
+												cleanupTarget.runtimeSandboxName,
+											),
+									eq(sessions.runtimeHostOwned, true),
+									isNotNull(sessions.runtimeAppId),
+								),
+							);
+					}
 					await tx
 						.update(workflowAgentRuns)
 						.set({
@@ -688,6 +739,21 @@ export function createPostgresLifecycleTargetResolver(
 							runtimeProvisioningSandboxName: null,
 							runtimeProvisioningHostOwned: null,
 							runtimeProvisioningHostLaunchSpec: null,
+							...(persistedTarget?.ownsRuntimeSandbox !== false &&
+							persistedTarget?.runtimeSandboxName?.trim()
+								? {
+										runtimeHostCleanupCompletedAt: sql<Date | null>`CASE
+											WHEN ${sessions.runtimeAppId} = ${persistedTarget.runtimeAppId}
+												AND COALESCE(${sessions.daprInstanceId}, ${sessions.id}) = ${persistedTarget.instanceId}
+												AND ${session.runtimeSandboxName === null
+													? isNull(sessions.runtimeSandboxName)
+													: eq(sessions.runtimeSandboxName, session.runtimeSandboxName)}
+												AND ${sessions.runtimeHostOwned} = true
+											THEN ${now}
+											ELSE ${sessions.runtimeHostCleanupCompletedAt}
+										END`,
+									}
+								: {}),
 						updatedAt: now,
 					})
             .where(eq(sessions.id, id));

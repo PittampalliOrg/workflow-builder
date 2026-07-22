@@ -232,7 +232,10 @@ import {
   PostgresPromptStackPresetReadRepository,
 } from "$lib/server/application/adapters/prompt-presets";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
-import { DaprSessionRuntimeCleanupAdapter } from "$lib/server/application/adapters/lifecycle-cascade";
+import {
+  DaprSessionRuntimeCleanupAdapter,
+  DaprSessionRuntimeInspectionAdapter,
+} from "$lib/server/application/adapters/lifecycle-cascade";
 import {
   CurrentSessionRepository,
   DaprSessionGoalLoopDriver,
@@ -240,7 +243,6 @@ import {
   DaprSessionRuntimeEventRaiser,
   DaprSessionUserEventCommandAdapter,
   DefaultSessionRuntimeConfigReader,
-  KubernetesSessionSandboxDestroyer,
   KubernetesSessionProvisioningReader,
   LifecycleSessionController,
   LifecycleSessionGoalScopeGuard,
@@ -249,6 +251,7 @@ import {
   SessionAgentConfigCommandAdapter,
   WorkspaceSessionRepositoryMounter,
 } from "$lib/server/application/adapters/sessions";
+import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/application/adapters/session-sandbox-destroyer";
 import { PostgresSessionEventLog } from "$lib/server/application/adapters/session-events";
 import { createDaprPostgresSessionEventLog } from "$lib/server/application/adapters/session-events-dapr-postgres";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
@@ -329,6 +332,7 @@ import {
 } from "$lib/server/application/internal-goal-control";
 import { ApplicationSessionLifecycleService } from "$lib/server/application/session-lifecycle";
 import { ApplicationSessionSandboxService } from "$lib/server/application/session-sandboxes";
+import { ApplicationSessionRuntimeHostCleanupService } from "$lib/server/application/session-runtime-host-cleanup";
 import { ApplicationSandboxEventsService } from "$lib/server/application/sandbox-events";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
@@ -796,6 +800,12 @@ export function getApplicationAdapters(
   let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
   let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
   let sessionCommands: ApplicationSessionCommandService | undefined;
+  let sessionSandboxDestroyer:
+    | SandboxExecutionApiSessionSandboxDestroyer
+    | undefined;
+  let sessionRuntimeHostCleanup:
+    | ApplicationSessionRuntimeHostCleanupService
+    | undefined;
   let sessionRuntimeHostRecovery:
     | ApplicationSessionRuntimeHostRecoveryService
     | undefined;
@@ -1302,6 +1312,16 @@ export function getApplicationAdapters(
     (goalFlow ??= new PostgresGoalFlowReadStore(getDatabase()));
   const getSessions = () =>
     (sessions ??= new CurrentSessionRepository(getDatabase()));
+  const getSessionSandboxDestroyer = () =>
+    (sessionSandboxDestroyer ??=
+      new SandboxExecutionApiSessionSandboxDestroyer());
+  const getSessionRuntimeHostCleanup = () =>
+    (sessionRuntimeHostCleanup ??=
+      new ApplicationSessionRuntimeHostCleanupService({
+        sessions: getSessions(),
+        runtimeInspector: new DaprSessionRuntimeInspectionAdapter(),
+        sandboxes: getSessionSandboxDestroyer(),
+      }));
   const getSessionProvisioning = () =>
     (sessionProvisioning ??= new KubernetesSessionProvisioningReader());
   const getSessionEvents = () =>
@@ -1611,7 +1631,7 @@ export function getApplicationAdapters(
         getSessionGoalStore(),
         getLifecycleCoordinatorOwners(),
       ),
-      sandboxes: new KubernetesSessionSandboxDestroyer(),
+      sandboxes: getSessionSandboxDestroyer(),
     }));
   const getSandboxEvents = () =>
     (sandboxEvents ??= new ApplicationSandboxEventsService(
@@ -1643,7 +1663,7 @@ export function getApplicationAdapters(
       workflowMcpSessionTokens,
       sandboxProvisioner: getSandboxProvisioner(),
       sessions: getSessions(),
-      sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+      sandboxDestroyer: getSessionSandboxDestroyer(),
       teamMailboxDelivery: getTeamMailboxDelivery(),
     }));
   const getCodeCheckpoints = () =>
@@ -1731,6 +1751,7 @@ export function getApplicationAdapters(
   const getScriptCalls = () =>
     (scriptCalls ??= new ApplicationScriptCallsService({
       workflowData: getWorkflowData(),
+      terminalRuntimeHosts: getSessionRuntimeHostCleanup(),
       store:
         config.scriptCallsStoreAdapter === "dapr-postgres-binding"
           ? (daprPostgresScriptCallsStore ??=
@@ -2793,7 +2814,8 @@ export function getApplicationAdapters(
       workflowSpawner: getWorkflowSpawner(),
       runtimeCleaner: new DaprSessionRuntimeCleanupAdapter(),
       workspaceProjects: getWorkspaceProjects(),
-      sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+      sandboxDestroyer: getSessionSandboxDestroyer(),
+      terminalRuntimeHostCleanup: getSessionRuntimeHostCleanup(),
       workflowEphemeralAgents: new PostgresWorkflowEphemeralAgentStore(),
       agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
       devSessionWorkflows: getWorkflowDefinitions(),
@@ -2983,6 +3005,9 @@ export function getApplicationAdapters(
     },
     get sessionCommands() {
       return getSessionCommands();
+    },
+    get sessionRuntimeHostCleanup() {
+      return getSessionRuntimeHostCleanup();
     },
     get sessionRuntimeHostRecovery() {
       return getSessionRuntimeHostRecovery();

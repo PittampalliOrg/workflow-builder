@@ -3,6 +3,8 @@ import type {
   AcknowledgeRuntimeProvisioningCompensationInput,
   AuthorizeSessionRuntimeStartInput,
 	AttachSessionRuntimeInput,
+	AcknowledgeTerminalSessionRuntimeHostCleanupInput,
+	ClaimTerminalSessionRuntimeHostCleanupInput,
   CompleteSessionRuntimeHostRecoveryResult,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
@@ -15,6 +17,7 @@ import type {
 	GoalLoopStore,
 	CreateWorkflowEnsureSessionInput,
 	LivenessReconcileCandidateRecord,
+	ListTerminalSessionRuntimeHostCleanupInput,
 	PeerSessionRecord,
   ReserveSessionRuntimeProvisioningInput,
   RuntimeProvisioningLease,
@@ -47,13 +50,12 @@ import type {
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
   SessionUserEventAcceptance,
-	SessionSandboxDeleteResult,
-	SessionSandboxDestroyer,
 	SessionUserEventCommandPort,
 	SessionListInput,
 	SessionWorkflowSpawner,
 	SessionWorkflowContext,
-  TeamMailboxDeliveryMetadata,
+	TeamMailboxDeliveryMetadata,
+	TerminalSessionRuntimeHostCleanupRecord,
 	WorkflowDataService,
 	UpdateSessionStatusInput,
 	UpdateSessionStatusUnlessTerminatedInput,
@@ -67,11 +69,15 @@ import {
   asc,
   desc,
   eq,
+	exists,
   ilike,
   inArray,
   isNotNull,
   isNull,
+  lt,
   ne,
+  notExists,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -88,10 +94,12 @@ import {
 	sessions,
 	threadGoals,
 	workflowScriptCalls,
+	workflowAgentRuns,
 	workflowExecutions,
 	workflows,
 	type Session,
 	type SessionResource as SessionResourceRow,
+	type WorkflowAgentRunStatus,
 } from "$lib/server/db/schema";
 import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { raiseSessionAgentConfigPatch as raiseSessionAgentConfigPatchForRuntime } from "$lib/server/sessions/agent-config-patch";
@@ -111,8 +119,6 @@ import {
 	mountSessionRepositoriesViaHost,
 	mountSingleRepository,
 } from "$lib/server/application/adapters/session-repositories";
-import { openshellRuntimeFetch } from "$lib/server/openshell-runtime";
-import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import {
 	confirmDurableStop,
 	inspectDurableRun,
@@ -242,6 +248,83 @@ function runtimeProvisioningCompensationAuthority(): SQL {
 			)
 		)
 	)`;
+}
+
+function terminalRuntimeHostParentConsumptionFence(database: Database): SQL {
+	const terminalScriptStatuses = ["done", "null", "error", "skipped"];
+	const terminalNativeRunStatuses: WorkflowAgentRunStatus[] = [
+		"completed",
+		"failed",
+		"event_published",
+	];
+	const activeParent = database
+		.select({ id: workflowExecutions.id })
+		.from(workflowExecutions)
+		.where(
+			and(
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+				inArray(workflowExecutions.status, ["pending", "running"]),
+			),
+		);
+	const activeDynamicScriptParent = database
+		.select({ id: workflowExecutions.id })
+		.from(workflowExecutions)
+		.innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+		.where(
+			and(
+				eq(workflowExecutions.id, sessions.workflowExecutionId),
+				eq(workflows.engineType, "dynamic-script"),
+				inArray(workflowExecutions.status, ["pending", "running"]),
+			),
+		);
+	const scriptCallForSession = (terminal: boolean) =>
+		database
+			.select({ id: workflowScriptCalls.callId })
+			.from(workflowScriptCalls)
+			.where(
+				and(
+					eq(
+						workflowScriptCalls.workflowExecutionId,
+						sessions.workflowExecutionId,
+					),
+					eq(workflowScriptCalls.sessionId, sessions.id),
+					terminal
+						? inArray(workflowScriptCalls.status, terminalScriptStatuses)
+						: notInArray(workflowScriptCalls.status, terminalScriptStatuses),
+				),
+			);
+	const nativeRunForSession = (terminal: boolean) =>
+		database
+			.select({ id: workflowAgentRuns.id })
+			.from(workflowAgentRuns)
+			.where(
+				and(
+					eq(
+						workflowAgentRuns.workflowExecutionId,
+						sessions.workflowExecutionId,
+					),
+					eq(workflowAgentRuns.agentWorkflowId, sessions.id),
+					terminal
+						? inArray(workflowAgentRuns.status, terminalNativeRunStatuses)
+						: notInArray(workflowAgentRuns.status, terminalNativeRunStatuses),
+				),
+			);
+
+	return or(
+		// A terminal parent has necessarily moved beyond child-result consumption.
+		notExists(activeParent),
+		and(
+			exists(activeDynamicScriptParent),
+			notExists(scriptCallForSession(false)),
+			exists(scriptCallForSession(true)),
+		),
+		and(
+			exists(activeParent),
+			notExists(activeDynamicScriptParent),
+			notExists(nativeRunForSession(false)),
+			exists(nativeRunForSession(true)),
+		),
+	) as SQL;
 }
 
 function requireDb(database: Database = defaultDb): Database {
@@ -2211,43 +2294,167 @@ export class CurrentSessionRepository implements SessionRepository {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]> {
 		const database = requireDb(this.database);
-		// `sessions.status` is a user-facing lifecycle marker, not proof that the
-		// parent workflow has consumed the child workflow result. Dynamic-script
-		// runs make that parent boundary explicit in workflow_script_calls: only
-		// reap a session host once its journal row is terminal. Non-script workflow
-		// sessions have no journal row and keep the legacy terminal-session behavior.
 		const rows = await database
 			.select({ id: sessions.id, runtimeAppId: sessions.runtimeAppId })
 			.from(sessions)
-			.leftJoin(
-				workflowScriptCalls,
-				eq(workflowScriptCalls.sessionId, sessions.id),
-			)
 			.where(
 				and(
 					eq(sessions.workflowExecutionId, input.workflowExecutionId),
 					inArray(sessions.status, ["terminated", "failed"]),
-          eq(sessions.runtimeHostOwned, true),
+					eq(sessions.runtimeHostOwned, true),
 					isNotNull(sessions.runtimeAppId),
-					or(
-						isNull(workflowScriptCalls.callId),
-						inArray(workflowScriptCalls.status, [
-							"done",
-							"null",
-							"error",
-							"skipped",
-						]),
-					),
+					terminalRuntimeHostParentConsumptionFence(database),
 				),
 			);
 		return rows.flatMap((row) =>
 			row.runtimeAppId
 				? [{ sessionId: row.id, runtimeAppId: row.runtimeAppId }]
-			: [],
+				: [],
 		);
 	}
 
-  async createSessionFork(
+	async listPendingTerminalRuntimeHostCleanups(
+		input: ListTerminalSessionRuntimeHostCleanupInput,
+	): Promise<TerminalSessionRuntimeHostCleanupRecord[]> {
+		const database = requireDb(this.database);
+		const limit = Math.max(1, Math.min(Math.trunc(input.limit || 50), 200));
+		const sessionId = input.sessionId?.trim();
+		const workflowExecutionId = input.workflowExecutionId?.trim();
+		if (input.sessionId !== undefined && !sessionId) return [];
+		if (input.workflowExecutionId !== undefined && !workflowExecutionId) return [];
+
+		const rows = await database
+			.select({
+				id: sessions.id,
+				runtimeAppId: sessions.runtimeAppId,
+				daprInstanceId: sessions.daprInstanceId,
+				runtimeSandboxName: sessions.runtimeSandboxName,
+				completedAt: sessions.completedAt,
+			})
+			.from(sessions)
+			.where(
+				and(
+					inArray(sessions.status, ["terminated", "failed"]),
+					isNotNull(sessions.completedAt),
+					eq(sessions.runtimeHostOwned, true),
+					isNotNull(sessions.runtimeAppId),
+					isNull(sessions.runtimeHostCleanupCompletedAt),
+					or(
+						isNull(sessions.runtimeHostCleanupAttemptedAt),
+						lt(
+							sessions.runtimeHostCleanupAttemptedAt,
+							input.availableBefore,
+						),
+					),
+					sessionId ? eq(sessions.id, sessionId) : undefined,
+					workflowExecutionId
+						? eq(sessions.workflowExecutionId, workflowExecutionId)
+						: undefined,
+					terminalRuntimeHostParentConsumptionFence(database),
+				),
+			)
+			.orderBy(
+				sql`${sessions.runtimeHostCleanupAttemptedAt} ASC NULLS FIRST`,
+				asc(sessions.completedAt),
+			)
+			.limit(limit);
+
+		return rows.flatMap((row) => {
+			const runtimeAppId = row.runtimeAppId?.trim();
+			if (!runtimeAppId) return [];
+			return [
+					{
+						sessionId: row.id,
+						runtimeAppId,
+						instanceId: row.daprInstanceId?.trim() || row.id,
+						runtimeSandboxName: row.runtimeSandboxName,
+					},
+			];
+		});
+	}
+
+	async claimTerminalRuntimeHostCleanup(
+		input: ClaimTerminalSessionRuntimeHostCleanupInput,
+	): Promise<boolean> {
+		const database = requireDb(this.database);
+		const claimed = await database
+			.update(sessions)
+			.set({
+				runtimeHostCleanupAttemptedAt: input.attemptedAt,
+				updatedAt: sql<Date>`GREATEST(
+					${sessions.updatedAt},
+					${toPostgresTimestampParam(input.attemptedAt)}
+				)`,
+			})
+			.where(
+				and(
+					eq(sessions.id, input.sessionId),
+					eq(sessions.runtimeAppId, input.runtimeAppId),
+						or(
+							eq(sessions.daprInstanceId, input.instanceId),
+						and(
+							isNull(sessions.daprInstanceId),
+							eq(sessions.id, input.instanceId),
+						),
+						),
+						input.runtimeSandboxName === null
+							? isNull(sessions.runtimeSandboxName)
+							: eq(sessions.runtimeSandboxName, input.runtimeSandboxName),
+						inArray(sessions.status, ["terminated", "failed"]),
+					eq(sessions.runtimeHostOwned, true),
+					isNotNull(sessions.completedAt),
+					isNull(sessions.runtimeHostCleanupCompletedAt),
+					or(
+						isNull(sessions.runtimeHostCleanupAttemptedAt),
+						lt(
+							sessions.runtimeHostCleanupAttemptedAt,
+							input.availableBefore,
+						),
+					),
+				),
+			)
+			.returning({ id: sessions.id });
+		return claimed.length > 0;
+	}
+
+	async acknowledgeTerminalRuntimeHostCleanup(
+		input: AcknowledgeTerminalSessionRuntimeHostCleanupInput,
+	): Promise<boolean> {
+		const database = requireDb(this.database);
+		const acknowledged = await database
+			.update(sessions)
+			.set({
+				runtimeHostCleanupCompletedAt: input.completedAt,
+				updatedAt: sql<Date>`GREATEST(
+					${sessions.updatedAt},
+					${toPostgresTimestampParam(input.completedAt)}
+				)`,
+			})
+			.where(
+				and(
+					eq(sessions.id, input.sessionId),
+					eq(sessions.runtimeAppId, input.runtimeAppId),
+						or(
+							eq(sessions.daprInstanceId, input.instanceId),
+						and(
+							isNull(sessions.daprInstanceId),
+							eq(sessions.id, input.instanceId),
+						),
+						),
+						input.runtimeSandboxName === null
+							? isNull(sessions.runtimeSandboxName)
+							: eq(sessions.runtimeSandboxName, input.runtimeSandboxName),
+						inArray(sessions.status, ["terminated", "failed"]),
+					eq(sessions.runtimeHostOwned, true),
+					isNotNull(sessions.completedAt),
+					isNull(sessions.runtimeHostCleanupCompletedAt),
+				),
+			)
+			.returning({ id: sessions.id });
+		return acknowledged.length > 0;
+	}
+
+	async createSessionFork(
     input: CreateSessionForkInput,
   ): Promise<{ id: string }> {
 		const session = await this.createSession({
@@ -3010,65 +3217,6 @@ export class WorkspaceSessionRepositoryMounter implements SessionRepositoryMount
 		target: SessionRepositoryMountTarget,
 	): Promise<void> {
 		return mountSingleRepository(sessionId, resource, target);
-	}
-}
-
-export class KubernetesSessionSandboxDestroyer implements SessionSandboxDestroyer {
-  async deleteRuntimeSandbox(
-    name: string,
-  ): Promise<SessionSandboxDeleteResult> {
-		try {
-			const status = await deleteKubernetesSandbox(name);
-			return {
-				name,
-				kind: "runtime",
-				status: status === "deleted" ? "deleted" : "missing",
-			};
-		} catch (err) {
-			return {
-				name,
-				kind: "runtime",
-				status: "error",
-				error: err instanceof Error ? err.message : String(err),
-			};
-		}
-	}
-
-  async deleteWorkspaceSandbox(
-    name: string,
-  ): Promise<SessionSandboxDeleteResult> {
-		try {
-			const response = await openshellRuntimeFetch(
-				`/api/v1/sandboxes/${encodeURIComponent(name)}`,
-				{ method: "DELETE" },
-			);
-			if (response.ok) {
-				return { name, kind: "workspace", status: "deleted" };
-			}
-			const detail = await response.text().catch(() => "");
-			if (
-				response.status === 404 ||
-				detail.toLowerCase().includes("sandbox not found")
-			) {
-				return { name, kind: "workspace", status: "missing" };
-			}
-			return {
-				name,
-				kind: "workspace",
-				status: "error",
-				error:
-					detail.slice(0, 500) ||
-					response.statusText ||
-					`HTTP ${response.status}`,
-			};
-		} catch (err) {
-			return {
-				name,
-				kind: "workspace",
-				status: "error",
-				error: err instanceof Error ? err.message : String(err),
-			};
-		}
 	}
 }
 

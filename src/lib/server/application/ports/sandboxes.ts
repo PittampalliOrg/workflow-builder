@@ -135,6 +135,25 @@ export interface SessionSandboxDestroyer {
 	deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult>;
 }
 
+export type TerminalRuntimeHostCleanupResult = {
+	scanned: number;
+	acknowledged: string[];
+	failed: Array<{ sessionId: string; error: string }>;
+	dryRun: boolean;
+};
+
+export interface TerminalRuntimeHostCleanupPort {
+	/** Coalesce an eager hint into a process-wide, unscoped fair sweep. */
+	requestReap(): void;
+	reapPending(input: {
+		limit?: number;
+		sessionId?: string;
+		workflowExecutionId?: string;
+		exceptSessionId?: string;
+		dryRun?: boolean;
+	}): Promise<TerminalRuntimeHostCleanupResult>;
+}
+
 export interface SessionRuntimeCleanupPort {
 	purgeRuntimeInstance(input: {
 		runtimeAppId: string;
