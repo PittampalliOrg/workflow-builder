@@ -49,6 +49,7 @@ from google.protobuf import wrappers_pb2  # noqa: E402
 from src.config import AGENT_SERVICE_NAME, AGENT_STATE_STORE, WORKSPACE_ROOT  # noqa: E402
 from src.event_publisher import set_incremental_tier_enabled  # noqa: E402
 from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
+from src.runtime_readiness import workflow_runtime_readiness  # noqa: E402
 from src.runtime_start_authority import (  # noqa: E402
     AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
     authorize_session_runtime_start,
@@ -203,7 +204,22 @@ def healthz() -> dict:
 
 @app.get("/readyz")
 def readyz() -> dict:
-    return {"ok": True, "service": AGENT_SERVICE_NAME}
+    ready, runtime_status = workflow_runtime_readiness()
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "service": AGENT_SERVICE_NAME,
+                "code": "workflow_runtime_unavailable",
+                "runtimeStatus": runtime_status,
+            },
+        )
+    return {
+        "ok": True,
+        "service": AGENT_SERVICE_NAME,
+        "runtimeStatus": runtime_status,
+    }
 
 
 @app.get("/agent/instances/{instance_id}")

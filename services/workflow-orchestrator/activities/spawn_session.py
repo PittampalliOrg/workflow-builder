@@ -129,19 +129,24 @@ def _agent_session_host_is_ready(value: str | None) -> bool:
     return value in {"ready", "running"}
 
 
-def agent_session_host_wait_needed(result: Any) -> bool:
+def agent_session_host_wait_needed(
+    result: Any, *, missing_status_waits: bool = False
+) -> bool:
     """True when a bridge result reports a per-session host that is not ready yet.
 
-    Non-host runtimes (no agent-session-* app id), missing statuses, and
-    cancelled results all return False — callers dispatch immediately in
-    those cases, matching the old in-activity loop's exit conditions.
+    Non-host runtimes (no agent-session-* app id) and cancelled results return
+    False. ``missing_status_waits`` is a workflow-versioned compatibility
+    switch: old histories dispatch when an old BFF omits the status, while
+    fresh histories fail closed until the host explicitly reports readiness.
     """
     if not isinstance(result, dict) or result.get("cancelled") is True:
         return False
     if not _is_agent_session_app_id(result.get("agentAppId")):
         return False
     status = _agent_session_host_status(result)
-    return status is not None and not _agent_session_host_is_ready(status)
+    return (status is None and missing_status_waits) or (
+        status is not None and not _agent_session_host_is_ready(status)
+    )
 
 
 def _post_ensure_for_workflow(

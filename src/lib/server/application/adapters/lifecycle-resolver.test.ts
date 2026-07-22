@@ -10,6 +10,7 @@ import {
 describe("Postgres lifecycle stop intent", () => {
   let client: PGlite;
   let resolveTarget: ReturnType<typeof createPostgresLifecycleTargetResolver>;
+  let loggedQueries: Array<{ query: string; params: unknown[] }>;
 
   beforeEach(async () => {
     client = new PGlite();
@@ -87,8 +88,15 @@ describe("Postgres lifecycle stop intent", () => {
 				'agent-session-1', 'agent-host-agent-session-1'
 			);
 		`);
+    loggedQueries = [];
     resolveTarget = createPostgresLifecycleTargetResolver(
-      drizzle(client) as never,
+      drizzle(client, {
+        logger: {
+          logQuery(query, params) {
+            loggedQueries.push({ query, params });
+          },
+        },
+      }) as never,
     );
   });
 
@@ -914,14 +922,34 @@ describe("Postgres lifecycle stop intent", () => {
     );
   });
 
-  it("acknowledges a stopped CLI runtime host after lifecycle cleanup", async () => {
+  it("acknowledges the exact owned runtime host with postgres-js-safe timestamp parameters", async () => {
+    await client.exec(`
+			UPDATE sessions SET
+				runtime_app_id = 'agent-session-explicit',
+				dapr_instance_id = 'dapr-instance-explicit',
+				runtime_sandbox_name = 'agent-host-agent-session-explicit',
+				runtime_host_owned = true,
+				runtime_host_cleanup_completed_at = NULL
+			WHERE id = 'session-1'
+		`);
     let target = await resolveTarget({ kind: "session", id: "session-1" });
     await target.markStopRequested("CLI session stopped", "terminate");
     target = await resolveTarget({ kind: "session", id: "session-1" });
+    loggedQueries = [];
 
     await expect(
       target.finalizeDb("CLI session stopped", "terminated", "terminate"),
     ).resolves.toBe("finalized");
+
+    const cleanupUpdate = loggedQueries.find(
+      ({ query }) =>
+        query.startsWith('update "sessions"') &&
+        query.includes('"runtime_host_cleanup_completed_at"'),
+    );
+    expect(cleanupUpdate).toBeDefined();
+    expect(cleanupUpdate?.params.some((param) => param instanceof Date)).toBe(
+      false,
+    );
 
     const persisted = await client.query<{
       status: string;

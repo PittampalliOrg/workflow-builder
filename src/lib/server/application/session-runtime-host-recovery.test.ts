@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ApplicationSessionRuntimeHostRecoveryService,
   ensurePublishedSessionRuntimeHost,
+  resolvePublishedSessionRuntimeSandboxName,
 } from "./session-runtime-host-recovery";
 
 const SESSION_ID = "session-1";
@@ -16,6 +17,7 @@ const LAUNCH_SPEC = {
 
 function deps(options?: {
   activations?: Array<"active" | "absent">;
+  readiness?: "ready" | "not_ready";
   completion?:
     | "completed"
     | "already_completed"
@@ -54,6 +56,7 @@ function deps(options?: {
     },
     provider: {
       activate: vi.fn(async () => activations.shift() ?? "active"),
+      probeReadiness: vi.fn(async () => options?.readiness ?? "ready"),
       recreate: vi.fn(async () => undefined),
     },
     cleanup: {
@@ -75,6 +78,27 @@ const input = {
 };
 
 describe("published session runtime host recovery", () => {
+  it("derives only canonical dedicated-host Sandbox names for legacy rows", () => {
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-session-legacy",
+        runtimeSandboxName: null,
+      }),
+    ).toBe("agent-host-agent-session-legacy");
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-runtime-pydantic-ai-agent-py",
+        runtimeSandboxName: null,
+      }),
+    ).toBeNull();
+    expect(
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: "agent-session-current",
+        runtimeSandboxName: "agent-host-explicit-generation",
+      }),
+    ).toBe("agent-host-explicit-generation");
+  });
+
   it("leaves an existing exact generation active without allocating a lease", async () => {
     const ports = deps();
 
@@ -82,12 +106,32 @@ describe("published session runtime host recovery", () => {
       new ApplicationSessionRuntimeHostRecoveryService(ports).ensurePublished(
         input,
       ),
-    ).resolves.toEqual({ recovered: false });
+    ).resolves.toEqual({ recovered: false, readiness: "ready" });
 
     expect(
       ports.repository.beginSessionRuntimeHostRecovery,
     ).not.toHaveBeenCalled();
     expect(ports.provider.recreate).not.toHaveBeenCalled();
+    expect(ports.provider.probeReadiness).toHaveBeenCalledWith({
+      runtimeAppId: APP_ID,
+      runtimeSandboxName: SANDBOX_NAME,
+    });
+    expect(
+      vi.mocked(ports.provider.activate).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(ports.provider.probeReadiness).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("reports an activated published generation as not ready until the provider proves readiness", async () => {
+    const ports = deps({ readiness: "not_ready" });
+
+    await expect(
+      ensurePublishedSessionRuntimeHost(ports, input),
+    ).resolves.toEqual({ recovered: false, readiness: "not_ready" });
+
+    expect(ports.provider.recreate).not.toHaveBeenCalled();
+    expect(ports.provider.probeReadiness).toHaveBeenCalledOnce();
   });
 
   it("cleans up when stop wins completion of an already-active recovery retry", async () => {
@@ -123,6 +167,7 @@ describe("published session runtime host recovery", () => {
       ensurePublishedSessionRuntimeHost(ports, input),
     ).resolves.toEqual({
       recovered: true,
+      readiness: "ready",
     });
 
     expect(ports.provider.recreate).toHaveBeenCalledWith({
@@ -180,7 +225,7 @@ describe("published session runtime host recovery", () => {
 
     await expect(
       ensurePublishedSessionRuntimeHost(ports, input),
-    ).resolves.toEqual({ recovered: false });
+    ).resolves.toEqual({ recovered: false, readiness: "ready" });
 
     expect(ports.provider.recreate).toHaveBeenCalledTimes(1);
     expect(
@@ -258,6 +303,7 @@ describe("published session runtime host recovery", () => {
       ensurePublishedSessionRuntimeHost(ports, input),
     ).resolves.toEqual({
       recovered: true,
+      readiness: "ready",
     });
 
     expect(ports.cleanup.cleanup).not.toHaveBeenCalled();

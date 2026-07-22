@@ -28,6 +28,9 @@ import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
 import type {
+  EnsurePublishedSessionRuntimeHostResult,
+} from "$lib/server/application/session-runtime-host-recovery";
+import type {
   RuntimeProvisioningLease,
   SessionUserEventAcceptance,
   StaleSessionRuntimeProvisioningTarget,
@@ -228,7 +231,7 @@ export async function ensurePublishedSessionWorkflowHost(input: {
   sessionId: string;
   runtimeAppId: string;
   runtimeSandboxName: string;
-}): Promise<{ recovered: boolean }> {
+}): Promise<EnsurePublishedSessionRuntimeHostResult> {
   const workflowData = getApplicationAdapters().workflowData;
   const session = await workflowData.getSessionDetail({
     sessionId: input.sessionId,

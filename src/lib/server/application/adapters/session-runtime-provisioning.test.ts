@@ -871,6 +871,49 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
     expect((await runtimeRow()).runtime_provisioning_started_at).not.toBeNull();
   });
 
+  it("normalizes a legacy published host without a persisted Sandbox name", async () => {
+    await client.exec(`
+			UPDATE sessions
+			SET dapr_instance_id = 'legacy-published-instance',
+			    runtime_app_id = 'agent-session-legacy-published',
+			    runtime_sandbox_name = NULL,
+			    runtime_host_launch_spec = '{"version":1,"request":{"agentAppId":"agent-session-legacy-published"},"secretEnvKeys":[]}'::jsonb
+			WHERE id = 'session-1'
+		`);
+    const input = {
+      sessionId: "session-1",
+      expectedRuntimeAppId: "agent-session-legacy-published",
+    };
+
+    await expect(
+      repository.inspectSessionRuntimeHostRecovery(input),
+    ).resolves.toMatchObject({
+      runtimeAppId: "agent-session-legacy-published",
+      runtimeSandboxName: "agent-host-agent-session-legacy-published",
+      recoveryStartedAt: null,
+    });
+
+    const recovery = await repository.beginSessionRuntimeHostRecovery(input);
+    expect(recovery).toMatchObject({
+      runtimeAppId: "agent-session-legacy-published",
+      runtimeSandboxName: "agent-host-agent-session-legacy-published",
+    });
+    await expect(runtimeRow()).resolves.toMatchObject({
+      runtime_sandbox_name: null,
+      runtime_provisioning_app_id: "agent-session-legacy-published",
+      runtime_provisioning_instance_id: "legacy-published-instance",
+      runtime_provisioning_sandbox_name:
+        "agent-host-agent-session-legacy-published",
+      runtime_provisioning_host_owned: true,
+    });
+    await expect(
+      repository.inspectSessionRuntimeHostRecovery(input),
+    ).resolves.toMatchObject({
+      runtimeSandboxName: "agent-host-agent-session-legacy-published",
+      recoveryStartedAt: recovery?.startedAt,
+    });
+  });
+
   it("rejects published child-host recovery after its parent session stops", async () => {
     await client.exec(`
 				INSERT INTO sessions (id, status, agent_id, user_id)

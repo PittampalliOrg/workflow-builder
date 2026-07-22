@@ -10,6 +10,9 @@ import {
 	runtimeSupportsStructuredOutput,
 	validateDraft202012ObjectSchema,
 } from "$lib/server/application/structured-output";
+import {
+	resolvePublishedSessionRuntimeSandboxName,
+} from "$lib/server/application/session-runtime-host-recovery";
 import { validateInternalToken } from "$lib/server/internal-auth";
 import { rewriteMcpForBrowserSidecar } from "$lib/server/agents/mcp-sidecar";
 import {
@@ -1035,17 +1038,21 @@ export const POST: RequestHandler = async ({ request }) => {
     let reuseHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>> =
       null;
     let reuseChildAppId: string | null = persistedRuntimeAppId;
-    let reuseRuntimeSandboxName: string | null = persistedRuntimeAppId
-      ? existing.runtimeSandboxName
-      : null;
+    let reuseRuntimeSandboxName: string | null =
+      resolvePublishedSessionRuntimeSandboxName({
+        runtimeAppId: persistedRuntimeAppId,
+        runtimeSandboxName: existing.runtimeSandboxName,
+      });
+    let reusePublishedHostReadiness: "ready" | "not_ready" | null = null;
     if (persistedRuntimeAppId && reuseRuntimeSandboxName) {
-      await sessionRuntimeHostRecovery.ensurePublished({
+      const publishedHost = await sessionRuntimeHostRecovery.ensurePublished({
         sessionId: existing.id,
         runtimeAppId: persistedRuntimeAppId,
         runtimeSandboxName: reuseRuntimeSandboxName,
         sessionSecretEnv: workflowSessionSecretEnv,
         traceContext,
       });
+      reusePublishedHostReadiness = publishedHost.readiness;
     }
     if (!persistedRuntimeAppId) {
       const provisioningLease =
@@ -1156,13 +1163,14 @@ export const POST: RequestHandler = async ({ request }) => {
         }
         reuseLeaseClosed = true;
         if (reuseHost?.sandboxName) {
-          await sessionRuntimeHostRecovery.ensurePublished({
+          const publishedHost = await sessionRuntimeHostRecovery.ensurePublished({
             sessionId: existing.id,
             runtimeAppId: reuseChildAppId,
             runtimeSandboxName: reuseHost.sandboxName,
             sessionSecretEnv: workflowSessionSecretEnv,
             traceContext,
           });
+          reusePublishedHostReadiness = publishedHost.readiness;
         }
       } catch (caught) {
         await cleanupReuseProvisioning();
@@ -1211,7 +1219,12 @@ export const POST: RequestHandler = async ({ request }) => {
       agentSlug: reuseRuntime.slug,
 			agentAppId: reuseChildAppId,
 			runtimeSandboxName: reuseRuntimeSandboxName,
-			agentHostStatus: reuseHost?.status ?? null,
+			agentHostStatus:
+				reusePublishedHostReadiness === "ready"
+					? "ready"
+					: reusePublishedHostReadiness === "not_ready"
+						? "queued"
+						: (reuseHost?.status ?? null),
 			childInput: buildChildInput({
 				sessionId: existing.id,
         workflowMcpSessionToken,
@@ -1320,6 +1333,7 @@ export const POST: RequestHandler = async ({ request }) => {
   let provisioningLeaseClosed = false;
   let sessionHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>> =
     null;
+  let sessionPublishedHostReadiness: "ready" | "not_ready" | null = null;
   let childAgentAppId: string | null = null;
   let childRuntimeSandboxName: string | null = null;
   const cleanupProvisioning = async (): Promise<void> => {
@@ -1464,13 +1478,14 @@ export const POST: RequestHandler = async ({ request }) => {
       }
       provisioningLeaseClosed = true;
       if (sessionHost?.sandboxName) {
-        await sessionRuntimeHostRecovery.ensurePublished({
+        const publishedHost = await sessionRuntimeHostRecovery.ensurePublished({
           sessionId,
           runtimeAppId: childAgentAppId,
           runtimeSandboxName: sessionHost.sandboxName,
           sessionSecretEnv: workflowSessionSecretEnv,
           traceContext,
         });
+        sessionPublishedHostReadiness = publishedHost.readiness;
       }
     } else {
       await cleanupProvisioning();
@@ -1548,7 +1563,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 		agentAppId: childAgentAppId,
 		runtimeSandboxName: childRuntimeSandboxName,
-		agentHostStatus: sessionHost?.status ?? null,
+		agentHostStatus:
+			sessionPublishedHostReadiness === "ready"
+				? "ready"
+				: sessionPublishedHostReadiness === "not_ready"
+					? "queued"
+					: (sessionHost?.status ?? null),
 		childInput: buildChildInput({
 			sessionId,
       workflowMcpSessionToken,

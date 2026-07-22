@@ -22,7 +22,15 @@ const mocks = vi.hoisted(() => {
     leaseStartedAt,
 		validateInternalToken: vi.fn(() => true),
     sessionRuntimeHostRecovery: {
-      ensurePublished: vi.fn(async () => ({ recovered: false })),
+      ensurePublished: vi.fn(
+        async (): Promise<{
+          recovered: boolean;
+          readiness: "ready" | "not_ready";
+        }> => ({
+          recovered: false,
+          readiness: "ready",
+        }),
+      ),
     },
 		maybeProvisionAgentWorkflowHost: vi.fn(async (params: unknown) => {
 			state.hostCalls.push(params);
@@ -639,6 +647,23 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
     );
   });
 
+  it("keeps a newly published host queued until post-activation readiness is proven", async () => {
+    mocks.sessionRuntimeHostRecovery.ensurePublished.mockResolvedValueOnce({
+      recovered: false,
+      readiness: "not_ready",
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+    });
+
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledOnce();
+    expect(payload.agentHostStatus).toBe("queued");
+  });
+
   it("reuses an existing published runtime without reserving a new generation", async () => {
     mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
       id: "sess-codex-cli",
@@ -685,6 +710,7 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
       mocks.workflowData.updateWorkflowEnsureSessionRuntime,
     ).not.toHaveBeenCalled();
     expect(payload.agentAppId).toBe("agent-session-persisted");
+    expect(payload.agentHostStatus).toBe("ready");
     expect(payload.runtimeSandboxName).toBe("sandbox-persisted");
     expect(payload.childInput).toEqual(
       expect.objectContaining({
@@ -695,6 +721,142 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
     expect(
       mocks.sessionCommands.materializeWorkflowSessionRepositories,
     ).toHaveBeenCalled();
+  });
+
+  it("repolls a queued published host and returns ready only after live readiness is proven", async () => {
+    mocks.workflowData.getWorkflowEnsureSession
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "sess-pydantic-ai-agent-py",
+        agentId: "agent-test",
+        agentVersion: 4,
+        userId: "user-1",
+        projectId: "project-1",
+        workflowExecutionId: null,
+        parentExecutionId: null,
+        vaultIds: [],
+        sandboxName: "pydantic-ai-agent-py",
+        runtimeAppId: "agent-session-test",
+        runtimeSandboxName: "sandbox-test",
+      });
+    mocks.workflowData.getSessionDetail.mockResolvedValueOnce({
+      daprInstanceId: "sess-pydantic-ai-agent-py",
+      status: "running",
+      stopRequestedAt: null,
+      completedAt: null,
+    });
+    mocks.maybeProvisionAgentWorkflowHost.mockResolvedValueOnce({
+      agentAppId: "agent-session-test",
+      sandboxName: "sandbox-test",
+      status: "queued",
+      launchSpec: { version: 1, request: {}, secretEnvKeys: [] },
+    });
+    mocks.sessionRuntimeHostRecovery.ensurePublished
+      .mockResolvedValueOnce({ recovered: false, readiness: "not_ready" })
+      .mockResolvedValueOnce({ recovered: false, readiness: "ready" });
+
+    const first = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+    });
+    const second = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+    });
+
+    expect(first.agentHostStatus).toBe("queued");
+    expect(second.agentHostStatus).toBe("ready");
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledOnce();
+    expect(
+      mocks.sessionRuntimeHostRecovery.ensurePublished,
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns a retryable queued status while a published host is still not ready", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-still-cold",
+      agentId: "agent-test",
+      agentVersion: 4,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: "agent-session-still-cold",
+      runtimeSandboxName: "sandbox-still-cold",
+    });
+    mocks.workflowData.getSessionDetail.mockResolvedValueOnce({
+      daprInstanceId: "sess-still-cold",
+      status: "running",
+      stopRequestedAt: null,
+      completedAt: null,
+    });
+    mocks.sessionRuntimeHostRecovery.ensurePublished.mockResolvedValueOnce({
+      recovered: false,
+      readiness: "not_ready",
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+      body: { sessionId: "sess-still-cold" },
+    });
+
+    expect(payload.agentHostStatus).toBe("queued");
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it("repolls a legacy dedicated host whose Sandbox name was not persisted", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-legacy-host",
+      agentId: "agent-test",
+      agentVersion: 4,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: "agent-session-legacy-host",
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.getSessionDetail.mockResolvedValueOnce({
+      daprInstanceId: "sess-legacy-host",
+      status: "running",
+      stopRequestedAt: null,
+      completedAt: null,
+    });
+    mocks.sessionRuntimeHostRecovery.ensurePublished.mockResolvedValueOnce({
+      recovered: false,
+      readiness: "not_ready",
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+      body: { sessionId: "sess-legacy-host" },
+    });
+
+    expect(mocks.sessionRuntimeHostRecovery.ensurePublished).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-legacy-host",
+        runtimeAppId: "agent-session-legacy-host",
+        runtimeSandboxName: "agent-host-agent-session-legacy-host",
+      }),
+    );
+    expect(payload.runtimeSandboxName).toBe(
+      "agent-host-agent-session-legacy-host",
+    );
+    expect(payload.agentHostStatus).toBe("queued");
   });
 
   it("reports an active busy lease as retryable provisioning", async () => {

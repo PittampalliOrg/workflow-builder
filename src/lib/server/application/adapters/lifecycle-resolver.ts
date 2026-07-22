@@ -749,7 +749,7 @@ export function createPostgresLifecycleTargetResolver(
 													? isNull(sessions.runtimeSandboxName)
 													: eq(sessions.runtimeSandboxName, session.runtimeSandboxName)}
 												AND ${sessions.runtimeHostOwned} = true
-											THEN ${now}
+											THEN ${toPostgresTimestampParam(now)}
 											ELSE ${sessions.runtimeHostCleanupCompletedAt}
 										END`,
 									}

@@ -931,7 +931,7 @@ async function probeAgentWorkflowHostAppReadyOnce(params: {
 		const pod = await getAgentWorkflowHostPod(params.agentAppId);
 		if (!pod) return { ready: false, error: "pod not found" };
 		const baseUrl = `http://${pod.podIP}:8002`;
-		const res = await (params.fetchImpl ?? fetch)(`${baseUrl}/healthz`, {
+		const res = await (params.fetchImpl ?? fetch)(`${baseUrl}/readyz`, {
 			method: "GET",
 			signal: AbortSignal.timeout(Math.max(1, params.timeoutMs ?? 1_500)),
 		});
