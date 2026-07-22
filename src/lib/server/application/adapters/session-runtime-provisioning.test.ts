@@ -18,6 +18,7 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
     await client.exec(`
 			CREATE TABLE workflow_executions (
 				id text PRIMARY KEY,
+				dapr_instance_id text,
 				status text NOT NULL,
 				stop_requested_at timestamp,
 				completed_at timestamp
@@ -472,6 +473,38 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
     ).resolves.toBe(false);
   });
 
+  it.each(["paused", "failed"])(
+    "does not compensate a lease while its parent session is nonterminal %s",
+    async (status) => {
+      await client.exec(`
+				INSERT INTO sessions (id, status, agent_id, user_id)
+				VALUES ('parent-nonterminal', 'running', 'agent-1', 'user-1');
+				INSERT INTO sessions (
+					id, status, agent_id, user_id, parent_execution_id
+				) VALUES (
+					'child-nonterminal', 'rescheduling', 'agent-1', 'user-1',
+					'parent-nonterminal'
+				)
+			`);
+      const lease = await repository.reserveSessionRuntimeProvisioning({
+        sessionId: "child-nonterminal",
+      });
+      expect(lease).not.toBeNull();
+      await client.exec(`
+				UPDATE sessions
+				SET status = '${status}'
+				WHERE id = 'parent-nonterminal'
+			`);
+
+      await expect(
+        repository.canCompensateRuntimeProvisioning({
+          sessionId: "child-nonterminal",
+          expectedStartedAt: lease?.startedAt as Date,
+        }),
+      ).resolves.toBe(false);
+    },
+  );
+
   it("keeps the first staged launch recipe immutable within a generation", async () => {
     const lease = await repository.reserveSessionRuntimeProvisioning({
       sessionId: "session-1",
@@ -914,24 +947,31 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
     });
   });
 
-  it("authorizes exact compensation when the parent workflow terminates", async () => {
+  it("authorizes workflow-parent compensation only after the workflow terminates", async () => {
     await client.exec(`
-				INSERT INTO workflow_executions (id, status)
-				VALUES ('workflow-parent', 'running');
-				UPDATE sessions
-				SET workflow_execution_id = 'workflow-parent'
-				WHERE id = 'session-1'
-			`);
+			INSERT INTO workflow_executions (id, dapr_instance_id, status)
+			VALUES ('workflow-parent', 'dsw-workflow-parent', 'running');
+			UPDATE sessions
+			SET workflow_execution_id = 'workflow-parent',
+			    parent_execution_id = 'dsw-workflow-parent'
+			WHERE id = 'session-1'
+		`);
     const lease = await repository.reserveSessionRuntimeProvisioning({
       sessionId: "session-1",
     });
     expect(lease).not.toBeNull();
+    await expect(
+      repository.canCompensateRuntimeProvisioning({
+        sessionId: "session-1",
+        expectedStartedAt: lease?.startedAt as Date,
+      }),
+    ).resolves.toBe(false);
 
     await client.exec(`
-				UPDATE workflow_executions
-				SET status = 'cancelled', completed_at = now()
-				WHERE id = 'workflow-parent'
-			`);
+			UPDATE workflow_executions
+			SET status = 'cancelled', completed_at = now()
+			WHERE id = 'workflow-parent'
+		`);
 
     await expect(
       repository.canCompensateRuntimeProvisioning({
@@ -949,11 +989,15 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
 
   it("completes a recovery lease idempotently for an active published generation", async () => {
     await client.exec(`
+			INSERT INTO workflow_executions (id, dapr_instance_id, status)
+			VALUES ('workflow-recovery', 'dsw-workflow-recovery', 'running');
 			UPDATE sessions
 			SET dapr_instance_id = 'published-instance-2',
 			    runtime_app_id = 'agent-session-published',
 			    runtime_sandbox_name = 'agent-host-agent-session-published',
-			    runtime_host_launch_spec = '{"version":1,"request":{"agentAppId":"agent-session-published"},"secretEnvKeys":[]}'::jsonb
+			    runtime_host_launch_spec = '{"version":1,"request":{"agentAppId":"agent-session-published"},"secretEnvKeys":[]}'::jsonb,
+			    workflow_execution_id = 'workflow-recovery',
+			    parent_execution_id = 'dsw-workflow-recovery'
 			WHERE id = 'session-1'
 		`);
     const recovery = await repository.beginSessionRuntimeHostRecovery({
@@ -1068,31 +1112,82 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
     ).resolves.toBe(false);
   });
 
-  it("creates workflow children with the lease but no synthetic actual target", async () => {
+  it.each([
+    ["Dapr workflow instance", "dsw-workflow-1"],
+    ["legacy workflow id", "workflow-1"],
+  ])("publishes a workflow child through its %s", async (_kind, parentId) => {
     await client.exec(`
-			INSERT INTO workflow_executions (id, status)
-			VALUES ('workflow-1', 'running')
+			INSERT INTO workflow_executions (id, dapr_instance_id, status)
+			VALUES ('workflow-1', 'dsw-workflow-1', 'running')
 		`);
 
-    await expect(
-      repository.createWorkflowEnsureSession({
-        id: "workflow-child-1",
-        title: "Workflow child",
-        agentId: "agent-1",
-        agentVersion: 1,
-        vaultIds: [],
-        userId: "user-1",
-        projectId: "project-1",
-        sandboxName: "workspace-1",
-        workflowExecutionId: "workflow-1",
-        parentExecutionId: "workflow-1",
-      }),
-    ).resolves.toEqual({ startedAt: expect.any(Date) });
+    const lease = await repository.createWorkflowEnsureSession({
+      id: "workflow-child-1",
+      title: "Workflow child",
+      agentId: "agent-1",
+      agentVersion: 1,
+      vaultIds: [],
+      userId: "user-1",
+      projectId: "project-1",
+      sandboxName: "workspace-1",
+      workflowExecutionId: "workflow-1",
+      parentExecutionId: parentId,
+    });
+    expect(lease).toEqual({ startedAt: expect.any(Date) });
 
-    const row = await runtimeRow("workflow-child-1");
-    expect(row.runtime_app_id).toBeNull();
-    expect(row.runtime_sandbox_name).toBeNull();
-    expect(row.runtime_provisioning_started_at).not.toBeNull();
+    await expect(
+      repository.updateWorkflowEnsureSessionRuntime({
+        sessionId: "workflow-child-1",
+        expectedStartedAt: lease?.startedAt as Date,
+        runtimeAppId: "agent-session-workflow-child-1",
+        runtimeSandboxName: "agent-host-workflow-child-1",
+        runtimeHostOwned: true,
+        runtimeHostLaunchSpec: null,
+      }),
+    ).resolves.toBe(true);
+
+    await expect(runtimeRow("workflow-child-1")).resolves.toMatchObject({
+      runtime_app_id: "agent-session-workflow-child-1",
+      runtime_sandbox_name: "agent-host-workflow-child-1",
+      runtime_provisioning_started_at: null,
+    });
+  });
+
+  it("does not let workflow lineage bypass a stopped parent session", async () => {
+    await client.exec(`
+			INSERT INTO workflow_executions (id, dapr_instance_id, status)
+			VALUES ('workflow-collision', 'parent-collision', 'running');
+			INSERT INTO sessions (
+				id, status, agent_id, user_id, stop_requested_at
+			) VALUES (
+				'parent-collision', 'running', 'agent-1', 'user-1', now()
+			)
+		`);
+
+    const lease = await repository.createWorkflowEnsureSession({
+      id: "workflow-child-collision",
+      title: "Workflow child collision",
+      agentId: "agent-1",
+      agentVersion: 1,
+      vaultIds: [],
+      userId: "user-1",
+      projectId: "project-1",
+      sandboxName: "workspace-collision",
+      workflowExecutionId: "workflow-collision",
+      parentExecutionId: "parent-collision",
+    });
+    expect(lease).toEqual({ startedAt: expect.any(Date) });
+
+    await expect(
+      repository.updateWorkflowEnsureSessionRuntime({
+        sessionId: "workflow-child-collision",
+        expectedStartedAt: lease?.startedAt as Date,
+        runtimeAppId: "agent-session-collision",
+        runtimeSandboxName: "agent-host-collision",
+        runtimeHostOwned: true,
+        runtimeHostLaunchSpec: null,
+      }),
+    ).resolves.toBe(false);
   });
 
   it("reads authoritative workflow child ownership and lineage", async () => {
