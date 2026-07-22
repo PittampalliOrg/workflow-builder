@@ -4229,6 +4229,38 @@ export const gitopsActivityEvents = pgTable(
   }),
 );
 
+export const drasiKubernetesObservations = pgTable(
+  "drasi_kubernetes_observations",
+  {
+    eventId: text("event_id").primaryKey(),
+    phase: text("phase"),
+    reason: text("reason"),
+    message: text("message"),
+    resourceGroup: text("resource_group"),
+    resourceVersion: text("resource_version"),
+    resourceResource: text("resource_resource"),
+    resourceKind: text("resource_kind"),
+    resourceNamespace: text("resource_namespace"),
+    resourceName: text("resource_name"),
+    resourceUid: text("resource_uid"),
+    observedAt: timestamp("observed_at").notNull(),
+    correlation: jsonb("correlation")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    resourceIdx: index("idx_drasi_kubernetes_observations_resource").on(
+      table.resourceGroup,
+      table.resourceKind,
+      table.resourceNamespace,
+      table.resourceName,
+    ),
+    phaseIdx: index("idx_drasi_kubernetes_observations_phase").on(table.phase),
+  }),
+);
+
 export const benchmarkArtifacts = pgTable(
   "benchmark_artifacts",
   {
