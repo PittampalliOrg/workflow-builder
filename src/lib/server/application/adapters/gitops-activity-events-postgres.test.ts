@@ -143,6 +143,22 @@ describe("Drasi Kubernetes observation projection migration", () => {
 					"utf8",
 				),
 			);
+			await client.exec(
+				readFileSync(
+					resolve(
+						process.cwd(),
+						"drizzle/0112_drasi_kubernetes_observation_replica_identity.sql",
+					),
+					"utf8",
+				),
+			);
+			await expect(
+				client.query<{ relreplident: string }>(`
+					select relreplident
+					from pg_class
+					where oid = 'drasi_kubernetes_observations'::regclass
+				`),
+			).resolves.toMatchObject({ rows: [{ relreplident: "f" }] });
 
 			await expect(
 				client.query<{ event_id: string; phase: string }>(
