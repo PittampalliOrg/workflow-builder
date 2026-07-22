@@ -42,6 +42,8 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
 				runtime_app_id text,
 					runtime_sandbox_name text,
 					runtime_host_owned boolean NOT NULL DEFAULT true,
+					runtime_host_cleanup_completed_at timestamp,
+					runtime_host_cleanup_attempted_at timestamp,
 						runtime_host_launch_spec jsonb,
 						runtime_provisioning_started_at timestamp,
 						runtime_provisioning_app_id text,
