@@ -13,6 +13,7 @@ import {
 
 const TOKEN = /^[0-9a-f]{64}$/;
 const DEFAULT_TIMEOUT_MS = 120_000;
+export const MAX_PREVIEW_RUNTIME_UPSTREAM_TIMEOUT_MS = 1_800_000;
 const MAX_NORMALIZED_ERROR_BYTES = 65_536;
 const IPV4_UPSTREAM_DISPATCHER = new Agent({ connect: { family: 4 } });
 
@@ -83,7 +84,10 @@ export class HttpPreviewRuntimeUpstreamAdapter implements PreviewRuntimeUpstream
       Number(env.PREVIEW_RUNTIME_UPSTREAM_TIMEOUT_MS ?? "");
     const timeoutMs =
       Number.isFinite(configuredTimeout) && configuredTimeout > 0
-        ? Math.max(5_000, Math.min(600_000, configuredTimeout))
+        ? Math.max(
+            5_000,
+            Math.min(MAX_PREVIEW_RUNTIME_UPSTREAM_TIMEOUT_MS, configuredTimeout),
+          )
         : DEFAULT_TIMEOUT_MS;
     let response: Response;
     try {

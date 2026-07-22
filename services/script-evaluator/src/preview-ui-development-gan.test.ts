@@ -36,7 +36,7 @@ async function drive(
     snapshotResult?: Record<string, unknown>;
   } = {},
 ) {
-  const args = {
+  const args: Record<string, unknown> = {
     intent: "Add a preview development status panel",
     ...extraArgs,
   };
@@ -297,6 +297,46 @@ describe("preview UI development GAN child fixture", () => {
     expect(output).not.toHaveProperty("handoff");
     expect(output).not.toHaveProperty("sessionId");
     expect(output).not.toHaveProperty("sessionUrl");
+    const generator = tasks.find((task) => task.kind === "agent");
+    const prompt = String(generator?.prompt ?? "");
+    expect(prompt).toContain("Inspect at most five source files");
+    expect(prompt).toContain("push exactly one HMR generation");
+    expect(prompt).toContain("SCRATCH=/tmp/preview-ui-gan-build");
+  });
+
+  it("selects the fixed Pydantic AI Kimi UI builder with the expanded quality budget", async () => {
+    const { result, tasks } = await drive({
+      builderProfile: "pydantic-ai-k3-ui",
+      targetRoutes: ["/drasi"],
+    });
+    expect(result.status, result.error?.message).toBe("done");
+    const generator = tasks.find((task) => task.kind === "agent");
+    expect(generator?.opts).toMatchObject({
+      agent: "pydantic-ai-k3-preview-ui-builder-agent",
+      agentType: "pydantic-ai-agent-py",
+      model: "kimi/kimi-k3",
+      effort: "max",
+      sandbox: {
+        cwd: "/sandbox/work",
+        maxTurns: 40,
+        timeoutMinutes: 60,
+      },
+    });
+    const prompt = String(generator?.prompt ?? "");
+    expect(prompt).toContain("There is no five-file inspection limit");
+    expect(prompt).toContain("multiple atomic HMR generations");
+    expect(prompt).toContain("/drasi");
+    expect(prompt).toContain(
+      "SCRATCH=/sandbox/work/preview-ui-gan-build",
+    );
+    expect(prompt).not.toContain("SCRATCH=/tmp/preview-ui-gan-build");
+    expect(prompt).not.toContain("Inspect at most five source files");
+    expect(result.returnValue).toMatchObject({
+      builderProfile: "pydantic-ai-k3-ui",
+      agentSlug: "pydantic-ai-k3-preview-ui-builder-agent",
+      agentType: "pydantic-ai-agent-py",
+      targetRoutes: ["/drasi"],
+    });
   });
 
   it("derives the sandbox timeout from ttlHours when retaining", async () => {

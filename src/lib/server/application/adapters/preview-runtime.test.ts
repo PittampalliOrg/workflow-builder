@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HmacPreviewRuntimeCapabilityAdapter,
   HttpPreviewRuntimeUpstreamAdapter,
+  MAX_PREVIEW_RUNTIME_UPSTREAM_TIMEOUT_MS,
 } from "$lib/server/application/adapters/preview-runtime";
 import {
   derivePreviewControlCapability,
@@ -42,6 +43,37 @@ describe("preview runtime capability adapter", () => {
 });
 
 describe("preview runtime HTTP adapter", () => {
+  it("clamps long preview model calls to the 30-minute upstream ceiling", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const adapter = new HttpPreviewRuntimeUpstreamAdapter({
+        url: () => "https://api.z.ai/api/paas/v4/chat/completions",
+        token: () => "provider-token",
+        timeoutMs: 9_000_000,
+        fetchImpl: vi.fn(
+          async () =>
+            new Response('{"id":"completion-1"}', {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        ) as typeof fetch,
+      });
+
+      await adapter.complete({
+        identity,
+        payload: {
+          model: "kimi-k3",
+          messages: [{ role: "user", content: "hi" }],
+        },
+      });
+
+      expect(MAX_PREVIEW_RUNTIME_UPSTREAM_TIMEOUT_MS).toBe(1_800_000);
+      expect(timeout).toHaveBeenCalledWith(1_800_000);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("uses the exact trusted URL and injects only central credentials", async () => {
     const fetchImpl = vi.fn(
       async (_url: string | URL | Request, _init?: RequestInit) =>

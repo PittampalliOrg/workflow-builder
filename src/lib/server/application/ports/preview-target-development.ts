@@ -6,6 +6,13 @@ export const PREVIEW_DEVELOPMENT_WORKFLOW_ID =
 export const PREVIEW_DEVELOPMENT_WORKFLOW_NAME =
 	PREVIEW_DEVELOPMENT_WORKFLOW_ID;
 
+export const PREVIEW_DEVELOPMENT_BUILDER_PROFILES = [
+	"kimi-k3-juicefs",
+	"pydantic-ai-k3-ui",
+] as const;
+export type PreviewDevelopmentBuilderProfile =
+	(typeof PREVIEW_DEVELOPMENT_BUILDER_PROFILES)[number];
+
 export type PreviewDevelopmentControlAction = "submit_preview_pr" | "discard";
 
 /** Exact PreviewEnvironment generation. No network location crosses this port. */
@@ -21,7 +28,8 @@ export type PreviewDevelopmentTarget = Readonly<{
 export type PreviewDevelopmentWorkflowInput = Readonly<{
   intent: string;
   services: readonly string[];
-  agentSlug?: string;
+  builderProfile?: PreviewDevelopmentBuilderProfile;
+  targetRoutes?: readonly string[];
   keepPreview?: boolean | string;
   /** Additive child controls: forwarded when present, never defaulted here. */
   ttlHours?: number;

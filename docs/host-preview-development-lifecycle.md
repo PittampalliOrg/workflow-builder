@@ -33,6 +33,8 @@ The parent accepts this closed schema:
 | `intent`                | yes      | -                      | non-empty string, at most 12,000 characters     |
 | `environmentName`       | yes      | -                      | lowercase DNS-style name, at most 40 characters |
 | `services`              | no       | `['workflow-builder']` | unique catalog service IDs, 1-16 items          |
+| `builderProfile`        | no       | `kimi-k3-juicefs`      | closed policy-owned builder profile enum        |
+| `targetRoutes`          | no       | `['/dashboard']`       | 1-16 unique absolute application routes         |
 | `ttlHours`              | no       | `8`                    | integer from 2 through 24                       |
 | `retainAfterCompletion` | no       | `false`                | retain a successful environment                 |
 | `retainOnFailure`       | no       | `false`                | retain a failed environment for diagnosis       |
@@ -46,9 +48,23 @@ More than one service is admitted only when
 though the fixture always permits the schema's upper bound.
 
 The user does not provide actor, project, repository, source or platform SHA,
-catalog digest, workflow digest, origin, execution ID, URLs, or credentials.
-Those values are derived and revalidated by the application layer. `intent` is
-passed as task data and is never interpolated into infrastructure commands.
+catalog digest, workflow digest, origin, execution ID, agent slug, agent
+runtime, URLs, or credentials. Those values are derived and revalidated by the
+application layer. `intent` is passed as task data and is never interpolated
+into infrastructure commands.
+
+`builderProfile` is symbolic policy, not agent authority. The supported
+profiles are:
+
+- `kimi-k3-juicefs`: the established Kimi K3 Dapr Agents proof builder;
+- `pydantic-ai-k3-ui`: the fixed
+  `pydantic-ai-k3-preview-ui-builder-agent` on `pydantic-ai-agent-py`, with
+  shared `/sandbox/work`, max reasoning, 40 turns, and a 60-minute agent
+  window.
+
+The Pydantic UI profile may inspect all relevant application and theme source
+and apply multiple fresh atomic HMR generations. The default profile retains
+its one-generation, five-file proof constraints.
 
 ## Exact Target
 
@@ -83,7 +99,8 @@ surface is available; a similarly named or stale environment is not accepted.
 ### Start Development
 
 The parent calls `preview/workflow-start` for the pinned child. It forwards only
-the development request and optional retention/gate controls. A short 404 while
+the development request, selected closed builder profile and target routes,
+and optional retention/gate controls. A short 404 while
 the preview-local seed hook publishes the child is retryable. Bounded 409 and
 502 responses are treated as transient; contract and authorization failures
 remain permanent.

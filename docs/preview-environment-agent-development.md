@@ -67,6 +67,8 @@ The full API shape is:
   "intent": "Implement and verify the requested change across both services.",
   "environmentName": "app-live-example-02",
   "services": ["workflow-builder", "workflow-orchestrator"],
+  "builderProfile": "pydantic-ai-k3-ui",
+  "targetRoutes": ["/dashboard"],
   "ttlHours": 8,
   "retainAfterCompletion": false,
   "retainOnFailure": false,
@@ -79,6 +81,15 @@ The full API shape is:
   "maxIterations": 2
 }
 ```
+
+`builderProfile` is a closed policy selector. Use `pydantic-ai-k3-ui` for a
+high-craft Workflow Builder UI task that needs broader theme/source inspection,
+up to 40 Pydantic AI turns, a 60-minute agent window, and multiple fresh atomic
+HMR generations. The fixed saved agent is
+`pydantic-ai-k3-preview-ui-builder-agent` on `pydantic-ai-agent-py` with
+`kimi/kimi-k3`; callers cannot provide an agent slug or runtime. Set
+`targetRoutes` to every application route the workflow must smoke before
+capture and draft-PR promotion.
 
 The supported preview-native service IDs are listed in
 [Preview environments](preview-environments.md#agentic-development).

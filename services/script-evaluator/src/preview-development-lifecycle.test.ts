@@ -59,6 +59,8 @@ async function drive(
 		impactReview?: boolean;
 		diffScope?: string[];
 		maxIterations?: number;
+		builderProfile?: "kimi-k3-juicefs" | "pydantic-ai-k3-ui";
+		targetRoutes?: string[];
 		startFailureMessage?: string;
 		transientStartFailures?: number;
 		transientStartFailureMessage?: string;
@@ -84,6 +86,10 @@ async function drive(
 		...(options.maxIterations != null
 			? { maxIterations: options.maxIterations }
 			: {}),
+		...(options.builderProfile
+			? { builderProfile: options.builderProfile }
+			: {}),
+		...(options.targetRoutes ? { targetRoutes: options.targetRoutes } : {}),
 	};
   const completedResults: Record<
     string,
@@ -316,6 +322,28 @@ describe("host preview development lifecycle", () => {
       cleanup: { cleanup: { complete: true } },
     });
   });
+
+	it("forwards the closed Pydantic UI profile and target routes without agent authority", async () => {
+		const { result, tasks } = await drive({
+			builderProfile: "pydantic-ai-k3-ui",
+			targetRoutes: ["/drasi"],
+			maxIterations: 3,
+		});
+		expect(result.status, result.error?.message).toBe("done");
+		const start = tasks.find(
+			(task) => task.actionSlug === "preview/workflow-start",
+		);
+		expect(start?.args).toMatchObject({
+			builderProfile: "pydantic-ai-k3-ui",
+			targetRoutes: ["/drasi"],
+			maxIterations: 3,
+		});
+		expect(start?.args).not.toHaveProperty("agentSlug");
+		expect(result.returnValue).toMatchObject({
+			builderProfile: "pydantic-ai-k3-ui",
+			targetRoutes: ["/drasi"],
+		});
+	});
 
 	it("verifies the affected service subset for a multi-service preview", async () => {
 		const { result, tasks } = await drive({

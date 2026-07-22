@@ -1015,10 +1015,16 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
 const SIGNATURE = /^[0-9a-f]{64}$/;
 const SAFE_EXECUTION_ID = /^[A-Za-z0-9._:-]{1,256}$/;
-const SAFE_AGENT_SLUG = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const PROMOTION_RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
+const SAFE_PREVIEW_TARGET_ROUTE =
+	/^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/;
+const PREVIEW_DEVELOPMENT_BUILDER_PROFILES = new Set([
+	"kimi-k3-juicefs",
+	"pydantic-ai-k3-ui",
+]);
 const MAX_DIFF_SCOPE_PREFIXES = 128;
 const MAX_DIFF_SCOPE_PREFIX_CHARS = 512;
+const MAX_PREVIEW_TARGET_ROUTES = 16;
 
 function exactObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key));
@@ -1196,7 +1202,8 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 					"target",
 					"intent",
 					"services",
-					"agentSlug",
+					"builderProfile",
+					"targetRoutes",
 					"ttlHours",
 					"retainAfterCompletion",
 					"interactiveHandoff",
@@ -1207,9 +1214,22 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 				typeof actionInput.intent !== "string" ||
 				actionInput.intent.trim().length < 1 ||
 				actionInput.intent.length > 12_000 ||
-				(actionInput.agentSlug !== undefined &&
-					(typeof actionInput.agentSlug !== "string" ||
-						!SAFE_AGENT_SLUG.test(actionInput.agentSlug))) ||
+				(actionInput.builderProfile !== undefined &&
+					(typeof actionInput.builderProfile !== "string" ||
+						!PREVIEW_DEVELOPMENT_BUILDER_PROFILES.has(
+							actionInput.builderProfile,
+						))) ||
+				(actionInput.targetRoutes !== undefined &&
+					(!Array.isArray(actionInput.targetRoutes) ||
+						actionInput.targetRoutes.length < 1 ||
+						actionInput.targetRoutes.length > MAX_PREVIEW_TARGET_ROUTES ||
+						actionInput.targetRoutes.some(
+							(route) =>
+								typeof route !== "string" ||
+								!SAFE_PREVIEW_TARGET_ROUTE.test(route),
+						) ||
+						new Set(actionInput.targetRoutes).size !==
+							actionInput.targetRoutes.length)) ||
 				(actionInput.ttlHours !== undefined &&
 					(!Number.isInteger(actionInput.ttlHours) ||
 						(actionInput.ttlHours as number) < 2 ||
@@ -1252,8 +1272,11 @@ export function buildPreviewDevelopmentProxyRequest(input: {
 				input: {
 					intent: actionInput.intent,
 					services,
-					...(actionInput.agentSlug !== undefined
-						? { agentSlug: actionInput.agentSlug }
+					...(actionInput.builderProfile !== undefined
+						? { builderProfile: actionInput.builderProfile }
+						: {}),
+					...(actionInput.targetRoutes !== undefined
+						? { targetRoutes: actionInput.targetRoutes }
 						: {}),
 					keepPreview: "true",
 					// Optional child controls forward only when present so the default

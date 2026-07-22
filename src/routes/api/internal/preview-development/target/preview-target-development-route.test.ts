@@ -82,7 +82,8 @@ describe("host preview development route", () => {
         input: {
           intent: "Update the dashboard",
           services: ["workflow-builder"],
-          agentSlug: "kimi-k3-juicefs-builder-agent",
+          builderProfile: "pydantic-ai-k3-ui",
+          targetRoutes: ["/admin/drasi"],
           keepPreview: true,
         },
       },
@@ -101,7 +102,8 @@ describe("host preview development route", () => {
       workflowInput: {
         intent: "Update the dashboard",
         services: ["workflow-builder"],
-        agentSlug: "kimi-k3-juicefs-builder-agent",
+        builderProfile: "pydantic-ai-k3-ui",
+        targetRoutes: ["/admin/drasi"],
         keepPreview: true,
       },
     });

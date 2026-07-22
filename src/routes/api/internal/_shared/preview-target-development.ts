@@ -3,6 +3,7 @@ import type {
   PreviewDevelopmentBrokerStartInput,
   PreviewDevelopmentBrokerStatusInput,
   PreviewDevelopmentBrokerVerifyPromotionInput,
+  PreviewDevelopmentBuilderProfile,
   PreviewDevelopmentControlAction,
   PreviewDevelopmentTarget,
   PreviewDevelopmentWorkflowInput,
@@ -120,7 +121,8 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
     [
       "intent",
       "services",
-      "agentSlug",
+      "builderProfile",
+      "targetRoutes",
       "keepPreview",
       "ttlHours",
       "retainAfterCompletion",
@@ -134,9 +136,13 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
   if (!Array.isArray(raw.services)) {
     throw new Error("workflowInput.services must be an array");
   }
-  const agentSlug = raw.agentSlug;
-  if (agentSlug !== undefined && typeof agentSlug !== "string") {
-    throw new Error("workflowInput.agentSlug must be a string");
+  const builderProfile = raw.builderProfile;
+  if (builderProfile !== undefined && typeof builderProfile !== "string") {
+    throw new Error("workflowInput.builderProfile must be a string");
+  }
+  const targetRoutes = raw.targetRoutes;
+  if (targetRoutes !== undefined && !Array.isArray(targetRoutes)) {
+    throw new Error("workflowInput.targetRoutes must be an array");
   }
   const keepPreview = raw.keepPreview;
   if (
@@ -189,7 +195,16 @@ function workflowInput(value: unknown): PreviewDevelopmentWorkflowInput {
     services: raw.services.map((service, index) =>
       string(service, `workflowInput.services[${index}]`),
     ),
-    ...(agentSlug !== undefined ? { agentSlug } : {}),
+    ...(builderProfile !== undefined
+      ? { builderProfile: builderProfile as PreviewDevelopmentBuilderProfile }
+      : {}),
+    ...(targetRoutes !== undefined
+      ? {
+          targetRoutes: targetRoutes.map((route, index) =>
+            string(route, `workflowInput.targetRoutes[${index}]`),
+          ),
+        }
+      : {}),
     ...(keepPreview !== undefined ? { keepPreview } : {}),
     ...(ttlHours !== undefined ? { ttlHours } : {}),
     ...(retainAfterCompletion !== undefined ? { retainAfterCompletion } : {}),

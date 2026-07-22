@@ -118,7 +118,8 @@ describe("preview development action binding", () => {
         target,
         intent: "Add a deployment health panel",
         services: ["workflow-builder", "function-router"],
-        agentSlug: "kimi-k3-juicefs-builder-agent",
+        builderProfile: "pydantic-ai-k3-ui",
+        targetRoutes: ["/drasi"],
       },
       dbExecutionId: "parent-1",
       idempotencyKey: "workflow:parent-1:start",
@@ -135,7 +136,8 @@ describe("preview development action binding", () => {
             input: {
               intent: "Add a deployment health panel",
               services: ["workflow-builder", "function-router"],
-              agentSlug: "kimi-k3-juicefs-builder-agent",
+              builderProfile: "pydantic-ai-k3-ui",
+              targetRoutes: ["/drasi"],
               keepPreview: "true",
             },
           },
@@ -258,6 +260,8 @@ describe("preview development action binding", () => {
     expect(input).not.toHaveProperty("impactReview");
     expect(input).not.toHaveProperty("diffScope");
     expect(input).not.toHaveProperty("maxIterations");
+    expect(input).not.toHaveProperty("builderProfile");
+    expect(input).not.toHaveProperty("targetRoutes");
 
     for (const actionInput of [
       { ttlHours: 1 },
@@ -271,6 +275,10 @@ describe("preview development action binding", () => {
       { maxIterations: 0 },
       { maxIterations: 4 },
       { maxIterations: "2" },
+      { builderProfile: "attacker-selected-agent" },
+      { targetRoutes: [] },
+      { targetRoutes: ["https://attacker.invalid"] },
+      { targetRoutes: ["/drasi", "/drasi"] },
     ]) {
       expect(
         buildPreviewDevelopmentProxyRequest({
@@ -289,6 +297,22 @@ describe("preview development action binding", () => {
         error: "preview/workflow-start: invalid workflow input",
       });
     }
+
+    expect(
+      buildPreviewDevelopmentProxyRequest({
+        actionSlug: "preview/workflow-start",
+        actionInput: {
+          target,
+          intent: "Add a deployment health panel",
+          services: ["workflow-builder"],
+          agentSlug: "attacker-selected-agent",
+        },
+        dbExecutionId: "parent-1",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: "preview/workflow-start: invalid workflow input",
+    });
   });
 
   it("binds every lifecycle observation and teardown action to the exact tuple", () => {
