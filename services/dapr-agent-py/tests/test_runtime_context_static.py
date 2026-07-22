@@ -216,7 +216,7 @@ def test_session_start_authority_is_first_replay_durable_session_step() -> None:
     assert 'payload.get("runtimeAppId")' in activity_source
     assert 'payload.get("runtimeInstanceId")' in activity_source
     assert '"runtimeInstanceId": runtime_instance_id' in activity_source
-    assert "if exc.code in {403, 404, 409}:" in activity_source
+    assert "if exc.code in {401, 403, 404, 409}:" in activity_source
     assert 'code in {"team_pending", "runtime_unpublished"}' in activity_source
     assert 'denial.get("retryable") is True' in activity_source
 
@@ -249,6 +249,7 @@ def test_session_start_authority_is_first_replay_durable_session_step() -> None:
     assert sum(pending_schedule) >= 15 * 60
     assert '"session start was not authorized"' in session_source
     assert '"session start authority remained pending"' in session_source
+    assert '"startAuthority": authority_detail' in session_source
 
 
 def test_swebench_one_shot_turn_skips_replay_unsafe_agent_wrapper_mutations() -> None:

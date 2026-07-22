@@ -369,6 +369,15 @@ describe("dev-preview portability boundary", () => {
     expect(calls).toContain(
       "http://sandbox-api/internal/vcluster-preview/myprev/touch",
     );
+    const provisionCall = fetchMock.mock.calls.find(
+      ([url]) => url === "http://sandbox-api/internal/dev-preview",
+    );
+    const body = JSON.parse(String(provisionCall?.[1]?.body));
+    expect(body.env).toMatchObject({
+      APP_PUBLIC_URL: "https://wfb-myprev.tail286401.ts.net",
+      ORIGIN: "https://wfb-myprev.tail286401.ts.net",
+      WORKFLOW_MCP_SESSION_TOKEN_AUDIENCE: "preview-native-v1",
+    });
   });
 
   it("skips the physical preview touch when host runtimes are disabled", async () => {

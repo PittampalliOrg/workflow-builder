@@ -178,6 +178,35 @@ def test_adapter_only_retries_explicit_publication_pending_codes(
     )
 
 
+def test_adapter_returns_invalid_session_credentials_as_a_terminal_denial(monkeypatch):
+    body = json.dumps(
+        {
+            "code": "session_principal_unauthorized",
+            "retryable": False,
+            "message": "The platform session credential is invalid",
+        }
+    ).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert _adapter().authorize(_request()) == RuntimeStartAuthorityDecision(
+        authorized=False,
+        status=401,
+        code="session_principal_unauthorized",
+        retryable=False,
+        reason="The platform session credential is invalid",
+    )
+
+
 def test_main_registers_the_authority_activity():
     source = (Path(__file__).parents[1] / "src/main.py").read_text()
     assert "runtime.register_activity(\n    authorize_session_runtime_start," in source
