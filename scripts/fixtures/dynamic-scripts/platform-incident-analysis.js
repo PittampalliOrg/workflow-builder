@@ -118,7 +118,38 @@ export const meta = {
 };
 
 const incident = args && typeof args === "object" ? args : {};
-const queryIds = new Set(meta.input.properties.queryId.enum);
+const queryIds = new Set([
+  "workflow-execution-stalled",
+  "session-failure-storm",
+  "sandbox-provisioning-stalled",
+  "kueue-admission-stalled",
+  "dapr-resource-warning",
+  "dapr-resource-drift",
+]);
+const evidenceKeys = new Set([
+  "workflowId",
+  "status",
+  "phase",
+  "nodeId",
+  "nodeName",
+  "startedAt",
+  "lastProgressAt",
+  "stalledMinutes",
+  "eventType",
+  "failureCount",
+  "windowStartedAt",
+  "lastEventAt",
+  "errorMessage",
+  "reason",
+  "message",
+  "conditionType",
+  "conditionStatus",
+  "ready",
+  "observedAt",
+  "daprAppId",
+  "componentType",
+  "actorStateStore",
+]);
 if (
   !queryIds.has(incident.queryId) ||
   incident.incidentType !== incident.queryId ||
@@ -243,9 +274,7 @@ const redactValue = (value, depth = 0) => {
 };
 const safeEvidence = Object.fromEntries(
   Object.entries(incident.evidence || {})
-    .filter(([key]) =>
-      meta.input.properties.evidence.propertyNames.enum.includes(key),
-    )
+    .filter(([key]) => evidenceKeys.has(key))
     .map(([key, value]) => [
       key,
       redactValue(value),

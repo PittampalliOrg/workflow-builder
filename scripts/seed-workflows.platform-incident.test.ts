@@ -5,6 +5,7 @@ import {
   validateDynamicScriptSpec,
 } from "../src/lib/server/workflows/dynamic-script-validation";
 import { normalizeDrasiIncident } from "../src/lib/server/application/drasi-incidents";
+import { extractMeta } from "../services/script-evaluator/src/meta";
 import { PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA } from "./platform-incident-contract";
 
 const source = readFileSync(
@@ -28,12 +29,11 @@ const script = readFileSync(
 );
 
 function fixtureMeta() {
-  const prefix = "export const meta =";
-  const start = script.indexOf(prefix);
-  const end = script.indexOf("\n\nconst incident", start);
-  if (start < 0 || end < 0) throw new Error("fixture metadata block not found");
-  const expression = script.slice(start + prefix.length, end).trim().replace(/;$/, "");
-  return Function(`"use strict"; return (${expression});`)() as {
+  const extracted = extractMeta(script);
+  if (!extracted.ok || !extracted.meta) {
+    throw new Error(extracted.error ?? "fixture metadata block not found");
+  }
+  return extracted.meta as {
     name: string;
     input: Record<string, unknown>;
   };
@@ -41,11 +41,12 @@ function fixtureMeta() {
 
 async function runFixture(input: Record<string, unknown>): Promise<string> {
   let capturedPrompt = "";
-  const executable = script.replace("export const meta =", "const meta =");
+  const extracted = extractMeta(script);
+  if (!extracted.ok) throw new Error(extracted.error ?? "fixture metadata block not found");
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
     ...args: string[]
   ) => (...args: unknown[]) => Promise<unknown>;
-  const run = new AsyncFunction("args", "phase", "agent", executable);
+  const run = new AsyncFunction("args", "phase", "agent", extracted.body);
   await run(input, () => undefined, async (prompt: unknown) => {
     capturedPrompt = String(prompt);
     return {
@@ -217,6 +218,32 @@ describe("platform incident analysis seed", () => {
     expect(prompt).not.toContain("very secret value");
     expect(prompt).not.toContain("abc,def");
     expect(prompt).not.toContain("session=top secret");
+  });
+
+  it("executes the evaluator-stripped body for a triggered resource incident", async () => {
+    const prompt = await runFixture({
+      source: "drasi",
+      cluster: "dev",
+      eventId: "dapr-cloud-event-1",
+      queryId: "dapr-resource-drift",
+      incidentType: "dapr-resource-drift",
+      incidentKey:
+        "dapr-resource-drift:Component:workflow-builder:duplicate-actor-store:current",
+      dedupKey: "drasi:dapr-resource-drift:dev:1234567890abcdef12345678",
+      episodeStartedAt: "2026-07-21T12:00:00.000Z",
+      severity: "critical",
+      resourceKind: "Component",
+      resourceNamespace: "workflow-builder",
+      resourceName: "duplicate-actor-store",
+      evidence: {
+        phase: "Drifted",
+        reason: "DuplicateActorStateStore",
+      },
+    });
+
+    expect(prompt).toContain('"queryId":"dapr-resource-drift"');
+    expect(prompt).toContain('"reason":"DuplicateActorStateStore"');
+    expect(prompt).not.toContain("dapr-cloud-event-1");
   });
 
   it("enforces a non-empty read-only tool allowlist", () => {
