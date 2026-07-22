@@ -371,6 +371,193 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             ctx.set_custom_status(encoded)
             last_status_json = encoded
 
+    def _cancel_with_compensation(budget: dict[str, Any]):
+        """Persist cancellation after one deterministic compensation round."""
+        nonlocal dispatched_compensation, seq_counter
+
+        get_result = getattr(cancel_task, "get_result", None)
+        event = get_result() if callable(get_result) else {}
+        event = event if isinstance(event, dict) else {}
+        reason = event.get("reason") or "workflow cancelled"
+        _set_status("cancelled", budget)
+
+        # The cancel intent still wins: journal every in-flight call as
+        # cancelled so the re-evaluated script's awaits settle and its finally
+        # block runs. Evaluate exactly once, then dispatch only compensation
+        # actions from their reserved budget and await + journal them.
+        for cid in list(outstanding):
+            spec = task_specs.get(cid) or {}
+            yield ctx.call_activity(
+                record_script_call_result,
+                input=_freeze(
+                    {
+                        "executionId": exec_id,
+                        "callId": cid,
+                        "seq": spec.get("seq", 0),
+                        "spec": _spec_for_journal(spec),
+                        "raw": {"success": False, "cancelled": True},
+                        "_otel": otel,
+                    }
+                ),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+            )
+            del outstanding[cid]
+            resolved.add(cid)
+        comp_eval_input = {
+            "executionId": exec_id,
+            "script": script,
+            "scriptSha256": script_sha256,
+            "meta": meta,
+            "nested": nested,
+            "budget": budget,
+            "knownCallIds": sorted(resolved),
+            "seenLogCount": seen_log_count,
+            "limits": {"maxItemsPerCall": limits["maxItemsPerCall"]},
+            "_otel": otel,
+        }
+        if has_args:
+            comp_eval_input["args"] = args
+        if actions_enabled:
+            comp_eval_input["features"] = {"actions": True}
+        comp_plan = yield ctx.call_activity(
+            evaluate_script,
+            input=_freeze(comp_eval_input),
+            retry_policy=_SCRIPT_EVAL_RETRY_POLICY,
+        )
+        comp_plan = comp_plan if isinstance(comp_plan, dict) else {}
+        comp_outstanding: dict[str, Any] = {}
+        for comp_task in comp_plan.get("tasks") or []:
+            if not isinstance(comp_task, dict):
+                continue
+            cid = str(comp_task.get("callId") or "").strip()
+            if not cid or cid in resolved or cid in comp_outstanding:
+                continue
+            spec = _build_task_spec(comp_task, task_specs.get(cid), limits)
+            task_specs[cid] = spec
+            spec["seq"] = seq_counter
+            seq_counter += 1
+            child_task: Any
+            if not (actions_enabled and _is_compensation_action(spec)):
+                child_task = {
+                    "dispatchError": (
+                        "workflow cancelled — only compensation actions "
+                        "(teardown/cleanup slugs) may dispatch during the "
+                        "post-cancel compensation round"
+                    )
+                }
+            elif dispatched_compensation >= DEFAULT_MAX_COMPENSATION_ACTIONS:
+                child_task = {
+                    "dispatchError": (
+                        "compensation action budget reached "
+                        f"({DEFAULT_MAX_COMPENSATION_ACTIONS}) — teardown/cleanup "
+                        "calls appear to be looping"
+                    )
+                }
+            else:
+                spec["_instance_id"] = script_child_instance_id(
+                    ctx.instance_id, cid, spec.get("retries", 0)
+                )
+                child_task = start_action_call(
+                    ctx,
+                    call_id=cid,
+                    spec=spec,
+                    exec_id=exec_id,
+                    workflow_id=workflow_id,
+                    otel=otel,
+                )
+            if child_task is None or (
+                isinstance(child_task, dict) and child_task.get("dispatchError")
+            ):
+                raw = (
+                    {"success": False, "error": str(child_task["dispatchError"])}
+                    if isinstance(child_task, dict)
+                    else {"success": False, "cancelled": True}
+                )
+                yield ctx.call_activity(
+                    record_script_call_result,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec["seq"],
+                            "spec": _spec_for_journal(spec),
+                            "raw": raw,
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                resolved.add(cid)
+                continue
+            comp_outstanding[cid] = child_task
+            dispatched_compensation += 1
+            yield ctx.call_activity(
+                record_script_call_dispatch,
+                input=_freeze(
+                    {
+                        "executionId": exec_id,
+                        "callId": cid,
+                        "seq": spec["seq"],
+                        "sessionId": None,
+                        "spec": _spec_for_journal(spec),
+                        "_otel": otel,
+                    }
+                ),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+            )
+        while comp_outstanding:
+            yield wf_when_any(list(comp_outstanding.values()))
+            for cid, comp_child in list(comp_outstanding.items()):
+                if not _task_is_complete(comp_child):
+                    continue
+                try:
+                    raw = comp_child.get_result()
+                except Exception as exc:  # noqa: BLE001 — teardown failure -> journal
+                    raw = {"success": False, "error": str(exc)}
+                del comp_outstanding[cid]
+                spec = task_specs.get(cid) or {}
+                yield ctx.call_activity(
+                    record_script_call_result,
+                    input=_freeze(
+                        {
+                            "executionId": exec_id,
+                            "callId": cid,
+                            "seq": spec.get("seq", 0),
+                            "spec": _spec_for_journal(spec),
+                            "raw": raw if isinstance(raw, dict) else {"content": str(raw)},
+                            "_otel": otel,
+                        }
+                    ),
+                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+                )
+                resolved.add(cid)
+
+        yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
+        if not nested:
+            yield ctx.call_activity(
+                persist_results_to_db,
+                input=_freeze(
+                    {
+                        "executionId": ctx.instance_id,
+                        "dbExecutionId": exec_id,
+                        "success": False,
+                        "error": str(reason),
+                        "phase": "cancelled",
+                        "_otel": otel,
+                    }
+                ),
+                retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+            )
+            yield from _arm_root_workspace_retention(ctx, exec_id, otel)
+        return {
+            "success": False,
+            "status": "cancelled",
+            "cancelled": True,
+            "error": str(reason),
+            "dispatched": dispatched,
+            "logCount": seen_log_count,
+        }
+
     while True:
         # Unknown-kind guard resolutions this round (counts as progress at the
         # no-dispatchable-work check, like resolved_at_dispatch).
@@ -420,6 +607,11 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             input=_freeze(evaluate_input),
             retry_policy=_SCRIPT_EVAL_RETRY_POLICY,
         )
+        # External events can become ready while the evaluator activity is in
+        # flight. Cancellation is terminal authority, so observe it before a
+        # simultaneously returned `done` / `script_error` plan can persist.
+        if _task_is_complete(cancel_task):
+            return (yield from _cancel_with_compensation(budget))
         plan = plan if isinstance(plan, dict) else {}
         status = plan.get("status")
         phases = plan.get("phases") if isinstance(plan.get("phases"), dict) else {}
@@ -1109,192 +1301,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
         winner = yield wf_when_any(wait_set)
 
         if winner is cancel_task:
-            get_result = getattr(cancel_task, "get_result", None)
-            event = get_result() if callable(get_result) else {}
-            event = event if isinstance(event, dict) else {}
-            reason = event.get("reason") or "workflow cancelled"
-            _set_status("cancelled", budget)
-
-            # ONE bounded compensation round before the terminal persist (the
-            # cancel intent still wins — status stays 'cancelled'): journal
-            # every in-flight call as cancelled so the re-evaluated script's
-            # awaits settle and its finally block runs, evaluate ONCE, then
-            # dispatch ONLY compensation-slug actions (from their reserved
-            # budget) and await + journal them. Non-compensation calls get the
-            # dispatchError. Deterministic: one extra evaluate + the pump's
-            # drain pattern, all replayed from persisted history.
-            for cid in list(outstanding):
-                spec = task_specs.get(cid) or {}
-                yield ctx.call_activity(
-                    record_script_call_result,
-                    input=_freeze(
-                        {
-                            "executionId": exec_id,
-                            "callId": cid,
-                            "seq": spec.get("seq", 0),
-                            "spec": _spec_for_journal(spec),
-                            "raw": {"success": False, "cancelled": True},
-                            "_otel": otel,
-                        }
-                    ),
-                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                )
-                del outstanding[cid]
-                resolved.add(cid)
-            comp_eval_input = {
-                "executionId": exec_id,
-                "script": script,
-                "scriptSha256": script_sha256,
-                "meta": meta,
-                "nested": nested,
-                "budget": budget,
-                "knownCallIds": sorted(resolved),
-                "seenLogCount": seen_log_count,
-                "limits": {"maxItemsPerCall": limits["maxItemsPerCall"]},
-                "_otel": otel,
-            }
-            if has_args:
-                comp_eval_input["args"] = args
-            if actions_enabled:
-                comp_eval_input["features"] = {"actions": True}
-            comp_plan = yield ctx.call_activity(
-                evaluate_script,
-                input=_freeze(comp_eval_input),
-                retry_policy=_SCRIPT_EVAL_RETRY_POLICY,
-            )
-            comp_plan = comp_plan if isinstance(comp_plan, dict) else {}
-            comp_outstanding: dict[str, Any] = {}
-            for comp_task in comp_plan.get("tasks") or []:
-                if not isinstance(comp_task, dict):
-                    continue
-                cid = str(comp_task.get("callId") or "").strip()
-                if not cid or cid in resolved or cid in comp_outstanding:
-                    continue
-                spec = _build_task_spec(comp_task, task_specs.get(cid), limits)
-                task_specs[cid] = spec
-                spec["seq"] = seq_counter
-                seq_counter += 1
-                child_task: Any
-                if not (actions_enabled and _is_compensation_action(spec)):
-                    child_task = {
-                        "dispatchError": (
-                            "workflow cancelled — only compensation actions "
-                            "(teardown/cleanup slugs) may dispatch during the "
-                            "post-cancel compensation round"
-                        )
-                    }
-                elif dispatched_compensation >= DEFAULT_MAX_COMPENSATION_ACTIONS:
-                    child_task = {
-                        "dispatchError": (
-                            "compensation action budget reached "
-                            f"({DEFAULT_MAX_COMPENSATION_ACTIONS}) — teardown/cleanup "
-                            "calls appear to be looping"
-                        )
-                    }
-                else:
-                    spec["_instance_id"] = script_child_instance_id(
-                        ctx.instance_id, cid, spec.get("retries", 0)
-                    )
-                    child_task = start_action_call(
-                        ctx,
-                        call_id=cid,
-                        spec=spec,
-                        exec_id=exec_id,
-                        workflow_id=workflow_id,
-                        otel=otel,
-                    )
-                if child_task is None or (
-                    isinstance(child_task, dict) and child_task.get("dispatchError")
-                ):
-                    raw = (
-                        {"success": False, "error": str(child_task["dispatchError"])}
-                        if isinstance(child_task, dict)
-                        else {"success": False, "cancelled": True}
-                    )
-                    yield ctx.call_activity(
-                        record_script_call_result,
-                        input=_freeze(
-                            {
-                                "executionId": exec_id,
-                                "callId": cid,
-                                "seq": spec["seq"],
-                                "spec": _spec_for_journal(spec),
-                                "raw": raw,
-                                "_otel": otel,
-                            }
-                        ),
-                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                    )
-                    resolved.add(cid)
-                    continue
-                comp_outstanding[cid] = child_task
-                dispatched_compensation += 1
-                yield ctx.call_activity(
-                    record_script_call_dispatch,
-                    input=_freeze(
-                        {
-                            "executionId": exec_id,
-                            "callId": cid,
-                            "seq": spec["seq"],
-                            "sessionId": None,
-                            "spec": _spec_for_journal(spec),
-                            "_otel": otel,
-                        }
-                    ),
-                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                )
-            while comp_outstanding:
-                yield wf_when_any(list(comp_outstanding.values()))
-                for cid, comp_child in list(comp_outstanding.items()):
-                    if not _task_is_complete(comp_child):
-                        continue
-                    try:
-                        raw = comp_child.get_result()
-                    except Exception as exc:  # noqa: BLE001 — teardown failure -> journal
-                        raw = {"success": False, "error": str(exc)}
-                    del comp_outstanding[cid]
-                    spec = task_specs.get(cid) or {}
-                    yield ctx.call_activity(
-                        record_script_call_result,
-                        input=_freeze(
-                            {
-                                "executionId": exec_id,
-                                "callId": cid,
-                                "seq": spec.get("seq", 0),
-                                "spec": _spec_for_journal(spec),
-                                "raw": raw if isinstance(raw, dict) else {"content": str(raw)},
-                                "_otel": otel,
-                            }
-                        ),
-                        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                    )
-                    resolved.add(cid)
-
-            yield from _team_auto_shutdown(ctx, exec_id, team_used and not nested, otel)
-            if not nested:
-                yield ctx.call_activity(
-                    persist_results_to_db,
-                    input=_freeze(
-                        {
-                            "executionId": ctx.instance_id,
-                            "dbExecutionId": exec_id,
-                            "success": False,
-                            "error": str(reason),
-                            "phase": "cancelled",
-                            "_otel": otel,
-                        }
-                    ),
-                    retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
-                )
-                yield from _arm_root_workspace_retention(ctx, exec_id, otel)
-            return {
-                "success": False,
-                "status": "cancelled",
-                "cancelled": True,
-                "error": str(reason),
-                "dispatched": dispatched,
-                "logCount": seen_log_count,
-            }
+            return (yield from _cancel_with_compensation(budget))
 
         if winner is control_task:
             get_result = getattr(control_task, "get_result", None)

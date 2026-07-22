@@ -461,6 +461,36 @@ export async function runDurableCascade(
 		}
 		return true;
 	});
+	let activeParentInstanceIds = parentInstanceIds.filter((instanceId) => {
+		const status = parentPreflightStatuses.get(instanceId);
+		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
+			parentTerminations.set(instanceId, "alreadyGone");
+			return false;
+		}
+		if (isTerminalDurableRuntimeStatus(status)) {
+			parentTerminations.set(instanceId, "terminated");
+			return false;
+		}
+		return true;
+	});
+
+	const gracefulParentAttempted =
+		activeParentInstanceIds.length > 0 &&
+		gracefulCancellationEnabled &&
+		gracefulCancellationWaitMs > 0 &&
+		typeof deps.cancelParent === "function";
+	if (gracefulParentAttempted) {
+		await runWithConcurrency(
+			activeParentInstanceIds,
+			concurrency,
+			async (instanceId) => {
+				const result = await deps.cancelParent?.(instanceId, params.reason);
+				if (result === "alreadyGone") {
+					parentTerminations.set(instanceId, "alreadyGone");
+				}
+			},
+		);
+	}
 
 	const gracefulAgentRuntimeAttempted =
 		activeAgentRuntimeTargets.length > 0 &&
@@ -486,6 +516,9 @@ export async function runDurableCascade(
 				}
 			},
 		);
+	}
+
+	if (gracefulAgentRuntimeAttempted) {
 		await runWithConcurrency(
 			activeAgentRuntimeTargets,
 			concurrency,
@@ -578,35 +611,8 @@ export async function runDurableCascade(
 		}
 	});
 
-	let activeParentInstanceIds = parentInstanceIds.filter((instanceId) => {
-		const status = parentPreflightStatuses.get(instanceId);
-		if (status === DURABLE_RUNTIME_MISSING_STATUS) {
-			parentTerminations.set(instanceId, "alreadyGone");
-			return false;
-		}
-		if (isTerminalDurableRuntimeStatus(status)) {
-			parentTerminations.set(instanceId, "terminated");
-			return false;
-		}
-		return true;
-	});
-
 	if (activeParentInstanceIds.length > 0) {
-		const gracefulParentAttempted =
-			gracefulCancellationEnabled &&
-			gracefulCancellationWaitMs > 0 &&
-			typeof deps.cancelParent === "function";
 		if (gracefulParentAttempted) {
-			await runWithConcurrency(
-				activeParentInstanceIds,
-				concurrency,
-				async (instanceId) => {
-					const result = await deps.cancelParent?.(instanceId, params.reason);
-					if (result === "alreadyGone") {
-						parentTerminations.set(instanceId, "alreadyGone");
-					}
-				},
-			);
 			await runWithConcurrency(
 				activeParentInstanceIds,
 				concurrency,

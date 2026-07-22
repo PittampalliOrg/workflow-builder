@@ -54,7 +54,7 @@ const mocks = vi.hoisted(() => {
     attachExecutionSchedulerInstance: vi.fn(),
     markExecutionStartFailed: vi.fn(),
     listStaleRunningExecutions: vi.fn(),
-    updateExecutionReadModel: vi.fn(),
+    applyExecutionRuntimeProjection: vi.fn(),
     appendExecutionLog: vi.fn(),
     updateExecutionLog: vi.fn(),
     upsertWorkflowArtifact: vi.fn(),
@@ -239,7 +239,9 @@ const CONTRACT: Record<
       mocks.workflowData.getExecutionById.mockResolvedValue({
         id: f.pathParams.executionId,
       });
-      mocks.workflowData.updateExecutionReadModel.mockResolvedValue(undefined);
+      mocks.workflowData.applyExecutionRuntimeProjection.mockResolvedValue({
+        applied: true,
+      });
     },
   },
   "append-execution-log": {

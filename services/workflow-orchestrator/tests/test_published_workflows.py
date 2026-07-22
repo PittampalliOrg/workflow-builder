@@ -1887,6 +1887,86 @@ def test_persist_results_backfills_primary_trace_id_from_otel(monkeypatch):
     assert payload["output"]["success"] is True
 
 
+def test_persist_results_projects_cancelled_phase_and_status(monkeypatch):
+    calls = []
+
+    class FakeWorkflowDataClient:
+        def get_execution(self, execution_id):
+            return {
+                "id": execution_id,
+                "startedAt": datetime.now(timezone.utc).isoformat(),
+                "primaryTraceId": "trace-existing",
+            }
+
+        def patch_execution(self, execution_id, payload):
+            calls.append((execution_id, payload))
+            return {"ok": True, "applied": True}
+
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "workflow_data_client",
+        FakeWorkflowDataClient(),
+    )
+
+    result = PERSIST_RESULTS.persist_results_to_db(
+        None,
+        {
+            "dbExecutionId": "db_exec_cancelled",
+            "executionId": "dsw-cancelled",
+            "success": False,
+            "error": "Stopped by user",
+            "phase": "cancelled",
+        },
+    )
+
+    assert result == {"success": True}
+    payload = calls[0][1]
+    assert payload["status"] == "cancelled"
+    assert payload["phase"] == "cancelled"
+    assert payload["output"]["phase"] == "cancelled"
+
+
+def test_persist_results_reports_stop_supersession_as_benign_noop(monkeypatch):
+    class FakeWorkflowDataClient:
+        def get_execution(self, execution_id):
+            return {
+                "id": execution_id,
+                "startedAt": datetime.now(timezone.utc).isoformat(),
+                "primaryTraceId": None,
+            }
+
+        def patch_execution(self, execution_id, payload):
+            return {
+                "ok": True,
+                "applied": False,
+                "reason": "stop_requested",
+                "currentStatus": "running",
+            }
+
+    monkeypatch.setattr(
+        PERSIST_RESULTS,
+        "workflow_data_client",
+        FakeWorkflowDataClient(),
+    )
+
+    result = PERSIST_RESULTS.persist_results_to_db(
+        None,
+        {
+            "dbExecutionId": "db_exec_stopping",
+            "executionId": "dsw-stopping",
+            "success": True,
+            "workflowOutput": {"completedNaturally": True},
+            "phase": "completed",
+        },
+    )
+
+    assert result == {
+        "success": True,
+        "persisted": False,
+        "reason": "stop_requested",
+    }
+
+
 def test_sw_workflow_success_schedules_otel_finalizer_after_persist_and_cleanup(monkeypatch):
     _install_terminal_workflow_model_fakes(monkeypatch)
     ctx = _FakeTerminalWorkflowCtx()

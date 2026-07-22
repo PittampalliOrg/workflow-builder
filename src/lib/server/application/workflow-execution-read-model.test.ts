@@ -434,6 +434,48 @@ describe("ApplicationWorkflowExecutionReadModelService", () => {
 		expect(patch).toEqual(snapshot);
 	});
 
+	it("keeps lifecycle-acknowledged cancellation authoritative over runtime failure", () => {
+		const persistedCompletedAt = new Date("2026-07-03T00:01:00.000Z");
+		const { snapshot, patch } = resolveExecutionStatusSnapshot({
+			persisted: {
+				status: "cancelled",
+				phase: "cancelled",
+				progress: 100,
+				output: {
+					success: false,
+					phase: "cancelled",
+					workflowOutput: null,
+				},
+				error: "Stopped by user",
+				completedAt: persistedCompletedAt,
+				stopReason: "Stopped by user",
+			},
+			runtime: {
+				runtimeStatus: "FAILED",
+				phase: "runtime-failure",
+				progress: 40,
+				outputs: { completedNaturally: true },
+				error: "runtime failed after cancellation",
+				completedAt: "2026-07-03T00:02:00.000Z",
+			},
+			observedAt: new Date("2026-07-03T00:03:00.000Z"),
+		});
+
+		expect(snapshot).toEqual({
+			status: "cancelled",
+			phase: "cancelled",
+			progress: 100,
+			output: {
+				success: false,
+				phase: "cancelled",
+				workflowOutput: null,
+			},
+			error: "Stopped by user",
+			completedAt: persistedCompletedAt,
+		});
+		expect(patch).toBeNull();
+	});
+
 	it("refreshes running executions and uses the row returned by persistence", async () => {
 		const compareAndSetReadModel = vi.fn(async ({ patch }) =>
 			execution(patch as Partial<WorkflowExecutionRecord>),

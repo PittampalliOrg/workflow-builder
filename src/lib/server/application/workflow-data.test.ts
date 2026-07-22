@@ -452,7 +452,7 @@ function fakeWorkflowExecutions(): WorkflowExecutionRepository {
 		attachSchedulerInstance: vi.fn(async () => undefined),
 		markStartFailed: vi.fn(async () => undefined),
 		listStaleRunningExecutions: vi.fn(async () => []),
-		updateReadModel: vi.fn(async () => undefined),
+		applyRuntimeProjection: vi.fn(async () => ({ applied: true as const })),
 		compareAndSetReadModel: vi.fn(async () => null),
 		appendLog: vi.fn(async () => executionLog),
     updateLog: vi.fn(async () => ({
@@ -6913,7 +6913,7 @@ describe("ApplicationWorkflowDataService", () => {
 			message: "SW workflow failed: orchestrator unavailable",
 		});
 
-		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
+		expect(workflowExecutions.applyRuntimeProjection).toHaveBeenCalledWith("exec-1", {
 			status: "error",
 			error: "orchestrator unavailable",
 		});
@@ -6998,7 +6998,7 @@ describe("ApplicationWorkflowDataService", () => {
 			message: "SW workflow failed: missing instanceId",
 		});
 
-		expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
+		expect(workflowExecutions.applyRuntimeProjection).toHaveBeenCalledWith("exec-1", {
 			status: "error",
 			error: "Orchestrator did not return an instanceId",
 		});
@@ -10646,7 +10646,7 @@ describe("ApplicationWorkflowDataService", () => {
 			attachSchedulerInstance: vi.fn(async () => undefined),
 			markStartFailed: vi.fn(async () => undefined),
 				listStaleRunningExecutions: vi.fn(async () => []),
-				updateReadModel: vi.fn(async () => undefined),
+				applyRuntimeProjection: vi.fn(async () => ({ applied: true as const })),
 				compareAndSetReadModel: vi.fn(async () => null),
 			appendLog: vi.fn(async () => executionLog),
       updateLog: vi.fn(async () => ({
@@ -10710,7 +10710,7 @@ describe("ApplicationWorkflowDataService", () => {
 			traceLineage: {} as TraceLineageStore,
 		});
 
-			await service.updateExecutionReadModel("exec-1", { phase: "running" });
+			await service.applyExecutionRuntimeProjection("exec-1", { phase: "running" });
 			await service.compareAndSetExecutionReadModel({
 				executionId: "exec-1",
 				expectedStatus: "running",
@@ -10869,7 +10869,7 @@ describe("ApplicationWorkflowDataService", () => {
 			workspaceRef: "workspace-1",
 		});
 
-			expect(workflowExecutions.updateReadModel).toHaveBeenCalledWith("exec-1", {
+			expect(workflowExecutions.applyRuntimeProjection).toHaveBeenCalledWith("exec-1", {
 				phase: "running",
 			});
 			expect(workflowExecutions.compareAndSetReadModel).toHaveBeenCalledWith({

@@ -19,6 +19,10 @@ describe("Postgres lifecycle stop intent", () => {
 				user_id text NOT NULL,
 				project_id text,
 				status text NOT NULL,
+				phase text,
+				progress integer,
+				output jsonb,
+				summary_output jsonb,
 				dapr_instance_id text,
 				stop_requested_at timestamp,
 				stop_requested_mode text,
@@ -543,6 +547,274 @@ describe("Postgres lifecycle stop intent", () => {
       },
     ]);
     expect(target.workspaceCleanupExecutionIds).toEqual(["workflow-1"]);
+  });
+
+  it("keeps cancellation authoritative over a terminal projection written after stop intent", async () => {
+    await client.exec(`
+			INSERT INTO workflow_executions (
+				id, user_id, project_id, status, phase, progress, dapr_instance_id,
+				output, summary_output
+			) VALUES (
+				'workflow-stop-race', 'user-1', 'project-1', 'running', 'running', 40,
+				'workflow-stop-race',
+				'{"success":true,"outputs":{"returnValue":{"completedNaturally":true}},"workflowOutput":{"completedNaturally":true},"durationMs":123,"phase":"completed"}',
+				'{"result":"natural completion"}'
+			)
+		`);
+
+    let target = await resolveTarget({
+      kind: "workflowExecution",
+      id: "workflow-stop-race",
+    });
+    const intent = await target.markStopRequested("Stopped by user", "terminate");
+    const staleCompletedAt = new Date(intent.requestedAt.getTime() + 1_000);
+    await client.query(
+      `UPDATE workflow_executions
+       SET status = 'success', phase = 'completed', progress = 100,
+           completed_at = $1
+       WHERE id = 'workflow-stop-race'`,
+      [staleCompletedAt],
+    );
+
+    target = await resolveTarget({
+      kind: "workflowExecution",
+      id: "workflow-stop-race",
+    });
+    await expect(
+      target.finalizeDb("Stopped by user", "terminated", "terminate"),
+    ).resolves.toBe("finalized");
+
+    const result = await client.query<{
+      status: string;
+      phase: string | null;
+      progress: number | null;
+      stop_requested_at: Date | null;
+      stop_requested_mode: string | null;
+      stop_reason: string | null;
+			output: Record<string, unknown> | null;
+			summary_output: Record<string, unknown> | null;
+    }>(`
+      SELECT status, phase, progress, stop_requested_at, stop_requested_mode,
+					 stop_reason, output, summary_output
+      FROM workflow_executions
+      WHERE id = 'workflow-stop-race'
+    `);
+    expect(result.rows[0]).toMatchObject({
+      status: "cancelled",
+      phase: "cancelled",
+      progress: 100,
+      stop_requested_at: null,
+	      stop_requested_mode: "terminate",
+      stop_reason: "Stopped by user",
+			output: {
+				success: false,
+				outputs: null,
+				workflowOutput: null,
+				durationMs: 123,
+				phase: "cancelled",
+				error: "Stopped by user",
+			},
+			summary_output: null,
+    });
+  });
+
+	it("canonicalizes an already-cancelled rolling-version row while finalizing its stop", async () => {
+		await client.exec(`
+			INSERT INTO workflow_executions (
+				id, user_id, project_id, status, phase, progress, dapr_instance_id,
+				output, summary_output, stop_requested_at, stop_requested_mode,
+				stop_reason
+			) VALUES (
+				'workflow-legacy-cancelled', 'user-1', 'project-1', 'cancelled',
+				'completed', 100, 'workflow-legacy-cancelled',
+				'{"success":true,"outputs":{"returnValue":{"completedNaturally":true}},"workflowOutput":{"completedNaturally":true}}',
+				'{"result":"natural completion"}', now(), 'terminate', 'Stopped by user'
+			)
+		`);
+
+		const target = await resolveTarget({
+			kind: "workflowExecution",
+			id: "workflow-legacy-cancelled",
+		});
+		await expect(
+			target.finalizeDb("Stopped by user", "terminated", "terminate"),
+		).resolves.toBe("finalized");
+
+		const result = await client.query<{
+			status: string;
+			phase: string | null;
+			output: Record<string, unknown> | null;
+			summary_output: Record<string, unknown> | null;
+			stop_requested_at: Date | null;
+			stop_requested_mode: string | null;
+		}>(`
+			SELECT status, phase, output, summary_output, stop_requested_at,
+			       stop_requested_mode
+			FROM workflow_executions
+			WHERE id = 'workflow-legacy-cancelled'
+		`);
+		expect(result.rows[0]).toEqual({
+			status: "cancelled",
+			phase: "cancelled",
+			output: {
+				success: false,
+				outputs: null,
+				workflowOutput: null,
+				durationMs: null,
+				phase: "cancelled",
+				error: "Stopped by user",
+			},
+			summary_output: null,
+			stop_requested_at: null,
+			stop_requested_mode: "terminate",
+		});
+	});
+
+	it("keeps stop intent pending when scheduler linkage changes after target refresh", async () => {
+		await client.exec(`
+			INSERT INTO workflow_executions (
+				id, user_id, project_id, status, phase, progress, dapr_instance_id
+			) VALUES (
+				'workflow-late-link', 'user-1', 'project-1', 'running', 'running', 20,
+				'placeholder-instance'
+			)
+		`);
+
+		let target = await resolveTarget({
+			kind: "workflowExecution",
+			id: "workflow-late-link",
+		});
+		await target.markStopRequested("Stopped by user", "terminate");
+		target = await resolveTarget({
+			kind: "workflowExecution",
+			id: "workflow-late-link",
+		});
+		expect(target.parentInstanceIds).toEqual(["placeholder-instance"]);
+
+		await client.exec(`
+			UPDATE workflow_executions
+			SET dapr_instance_id = 'late-real-instance'
+			WHERE id = 'workflow-late-link'
+		`);
+		await expect(
+			target.finalizeDb("Stopped by user", "terminated", "terminate"),
+		).resolves.toBe("mode_changed");
+
+		let persisted = await client.query<{
+			status: string;
+			stop_requested_at: Date | null;
+		}>(`
+			SELECT status, stop_requested_at
+			FROM workflow_executions
+			WHERE id = 'workflow-late-link'
+		`);
+		expect(persisted.rows[0]).toMatchObject({
+			status: "running",
+			stop_requested_at: expect.any(Date),
+		});
+
+		target = await resolveTarget({
+			kind: "workflowExecution",
+			id: "workflow-late-link",
+		});
+		expect(target.parentInstanceIds).toEqual(["late-real-instance"]);
+		await expect(
+			target.finalizeDb("Stopped by user", "terminated", "terminate"),
+		).resolves.toBe("finalized");
+		persisted = await client.query<{
+			status: string;
+			stop_requested_at: Date | null;
+		}>(`
+			SELECT status, stop_requested_at
+			FROM workflow_executions
+			WHERE id = 'workflow-late-link'
+		`);
+		expect(persisted.rows[0]).toEqual({
+			status: "cancelled",
+			stop_requested_at: null,
+		});
+	});
+
+	it("does not turn a terminal result into cancellation during no-intent repair", async () => {
+		await client.exec(`
+			INSERT INTO workflow_executions (
+				id, user_id, project_id, status, phase, progress, dapr_instance_id,
+				completed_at, output
+			) VALUES (
+				'workflow-no-intent-terminal', 'user-1', 'project-1', 'success',
+				'completed', 100, 'workflow-no-intent-terminal', now(),
+				'{"success":true,"workflowOutput":{"completedNaturally":true}}'
+			)
+		`);
+
+		const target = await resolveTarget({
+			kind: "workflowExecution",
+			id: "workflow-no-intent-terminal",
+		});
+		await expect(target.finalizeDb("repair", "terminated")).resolves.toBe(
+			"finalized",
+		);
+
+		const result = await client.query<{
+			status: string;
+			phase: string | null;
+			output: Record<string, unknown> | null;
+		}>(`
+			SELECT status, phase, output
+			FROM workflow_executions
+			WHERE id = 'workflow-no-intent-terminal'
+		`);
+		expect(result.rows[0]).toEqual({
+			status: "success",
+			phase: "completed",
+			output: {
+				success: true,
+				workflowOutput: { completedNaturally: true },
+			},
+		});
+	});
+
+  it("preserves a natural completion that predates a later cleanup stop", async () => {
+    await client.exec(`
+			INSERT INTO workflow_executions (
+				id, user_id, project_id, status, phase, progress, dapr_instance_id,
+				completed_at
+			) VALUES (
+				'workflow-completed-first', 'user-1', 'project-1', 'success',
+				'completed', 100, 'workflow-completed-first',
+				'2026-01-01T00:00:00Z'
+			)
+		`);
+
+    let target = await resolveTarget({
+      kind: "workflowExecution",
+      id: "workflow-completed-first",
+    });
+    await target.markStopRequested("cleanup terminal run", "terminate");
+    target = await resolveTarget({
+      kind: "workflowExecution",
+      id: "workflow-completed-first",
+    });
+    await expect(
+      target.finalizeDb("cleanup terminal run", "terminated", "terminate"),
+    ).resolves.toBe("finalized");
+
+    const result = await client.query<{
+      status: string;
+      phase: string | null;
+      stop_requested_at: Date | null;
+      stop_reason: string | null;
+    }>(`
+      SELECT status, phase, stop_requested_at, stop_reason
+      FROM workflow_executions
+      WHERE id = 'workflow-completed-first'
+    `);
+    expect(result.rows[0]).toMatchObject({
+      status: "success",
+      phase: "completed",
+      stop_requested_at: null,
+      stop_reason: "cleanup terminal run",
+    });
   });
 
   it("preserves workflow workspace state on terminate and cleans it on purge", async () => {

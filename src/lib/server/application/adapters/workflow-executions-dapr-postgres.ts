@@ -21,6 +21,7 @@ import type {
 	WorkflowExecutionLogRecord,
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRecord,
+	WorkflowExecutionRuntimeProjectionResult,
 	WorkflowExecutionStatus,
 } from "$lib/server/application/ports";
 
@@ -370,13 +371,28 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 			collection: "workflow_executions",
 			sql: `
 				UPDATE workflow_executions
-				SET
-					dapr_instance_id = $2,
-					phase = 'running',
-					progress = 0,
-					workflow_session_id = coalesce(workflow_session_id, $3),
-					primary_trace_id = coalesce(primary_trace_id, $4)
-				WHERE id = $1
+					SET
+						dapr_instance_id = $2,
+						phase = CASE
+							WHEN status IN ('pending', 'running') AND stop_requested_at IS NULL
+							THEN 'running' ELSE phase END,
+						progress = CASE
+							WHEN status IN ('pending', 'running') AND stop_requested_at IS NULL
+							THEN 0 ELSE progress END,
+						workflow_session_id = coalesce(workflow_session_id, $3),
+						primary_trace_id = coalesce(primary_trace_id, $4),
+						stop_requested_at = CASE
+							WHEN status IN ('success', 'error', 'cancelled')
+								AND stop_reason IS NOT NULL AND stop_requested_at IS NULL
+								AND dapr_instance_id IS DISTINCT FROM $2
+							THEN now() ELSE stop_requested_at END,
+						stop_requested_mode = CASE
+							WHEN status IN ('success', 'error', 'cancelled')
+								AND stop_reason IS NOT NULL AND stop_requested_at IS NULL
+								AND dapr_instance_id IS DISTINCT FROM $2
+							THEN coalesce(stop_requested_mode, 'terminate')
+							ELSE stop_requested_mode END
+						WHERE id = $1
 			`,
 			params: [
 				input.executionId,
@@ -404,7 +420,9 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 					progress = 100,
 					error = $2,
 					completed_at = now()
-				WHERE id = $1
+					WHERE id = $1
+						AND status IN ('pending', 'running')
+						AND stop_requested_at IS NULL
 			`,
 			params: [input.executionId, input.error],
 			paramNames: ["id", "error"],
@@ -433,24 +451,26 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 		}));
 	}
 
-	async updateReadModel(
+	async applyRuntimeProjection(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
-	): Promise<void> {
+	): Promise<WorkflowExecutionRuntimeProjectionResult> {
 		const entries = Object.entries(patch).filter(
 			([key]) => key in READ_MODEL_PATCH_COLUMNS,
 		) as Array<[keyof WorkflowExecutionReadModelPatch, unknown]>;
-		if (entries.length === 0) return;
+		if (entries.length === 0) return { applied: true };
 		const assignments = entries.map(([key], index) =>
 			assignmentFor(READ_MODEL_PATCH_COLUMNS[key], index + 2),
 		);
-		await this.client.exec({
+		const result = await this.client.exec({
 			summary: "workflow_executions.update_read_model",
 			collection: "workflow_executions",
 			sql: `
 				UPDATE workflow_executions
 				SET ${assignments.join(", ")}
 				WHERE id = $1
+					AND status IN ('pending', 'running')
+					AND stop_requested_at IS NULL
 			`,
 			params: [
 				executionId,
@@ -461,6 +481,21 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 			spanParams: [executionId, ...entries.map(([, value]) => value ?? null)],
 			paramNames: ["id", ...entries.map(([key]) => READ_MODEL_PATCH_COLUMNS[key])],
 		});
+		if ((result.rowsAffected ?? 0) > 0) return { applied: true };
+
+		const current = await this.getById(executionId);
+		if (!current) return { applied: false, reason: "not_found" };
+		return current.stopRequestedAt
+			? {
+					applied: false,
+					reason: "stop_requested",
+					currentStatus: current.status,
+				}
+			: {
+					applied: false,
+					reason: "terminal",
+					currentStatus: current.status,
+				};
 	}
 
 	async compareAndSetReadModel(
@@ -479,7 +514,10 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 			sql: `
 				UPDATE workflow_executions
 				SET ${assignments.join(", ")}
-				WHERE id = $1 AND status = $2
+				WHERE id = $1
+						AND status = $2
+						AND stop_requested_at IS NULL
+						AND (status <> 'cancelled' OR stop_reason IS NULL)
 			`,
 			params: [
 				input.executionId,

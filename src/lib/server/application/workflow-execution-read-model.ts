@@ -27,6 +27,9 @@ export type WorkflowExecutionStatusSnapshot = Pick<
 	"status" | "phase" | "progress" | "output" | "error" | "completedAt"
 >;
 
+type WorkflowExecutionStatusAuthoritySnapshot = WorkflowExecutionStatusSnapshot &
+	Partial<Pick<WorkflowExecutionRecord, "stopReason">>;
+
 export type WorkflowRuntimeExecutionStatusSnapshot = Pick<
 	WorkflowRuntimeStatusSnapshot,
 	"runtimeStatus" | "phase" | "progress" | "outputs" | "error" | "completedAt"
@@ -157,7 +160,7 @@ function parseRuntimeCompletedAt(value: string | null): Date | null {
 
 export function resolveExecutionStatusSnapshot(
 	input: {
-		persisted: WorkflowExecutionStatusSnapshot;
+		persisted: WorkflowExecutionStatusAuthoritySnapshot;
 		runtime: WorkflowRuntimeExecutionStatusSnapshot | null | undefined;
 		observedAt: Date;
 	},
@@ -165,6 +168,9 @@ export function resolveExecutionStatusSnapshot(
 	const { persisted, runtime, observedAt } = input;
 	const current = workflowExecutionStatusSnapshotFromRecord(persisted);
 	if (!runtime || !normalizeRuntimeStatus(runtime.runtimeStatus)) {
+		return { snapshot: current, patch: null };
+	}
+	if (persisted.status === "cancelled" && persisted.stopReason?.trim()) {
 		return { snapshot: current, patch: null };
 	}
 

@@ -333,6 +333,105 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 });
 
 describe("runDurableCascade", () => {
+	it("broadcasts root cancellation before child cancellation and every graceful wait", async () => {
+		const events: string[] = [];
+		let parentStatusCalls = 0;
+		let agentStatusCalls = 0;
+		const deps = makeDeps({
+			getParentStatus: vi.fn(async () => {
+				parentStatusCalls += 1;
+				if (parentStatusCalls > 1) events.push("wait-parent");
+				return parentStatusCalls === 1 ? "RUNNING" : "COMPLETED";
+			}),
+			getAgentRuntimeStatus: vi.fn(async () => {
+				agentStatusCalls += 1;
+				if (agentStatusCalls > 1) events.push("wait-child");
+				return agentStatusCalls === 1 ? "RUNNING" : "COMPLETED";
+			}),
+			cancelParent: vi.fn(async () => {
+				events.push("cancel-parent");
+				return "requested" as const;
+			}),
+			cancelAgentRuntime: vi.fn(async () => {
+				events.push("cancel-child");
+				return "requested" as const;
+			}),
+		});
+
+		await runDurableCascade({
+			parentInstanceIds: ["p1"],
+			agentRuntimeTargets: [{ runtimeAppId: "app", instanceId: "i1" }],
+			reason: "test",
+			purge: false,
+			purgeGraceMs: 0,
+			gracefulCancellationEnabled: true,
+			gracefulCancellationWaitMs: 1,
+			deps,
+		});
+
+		expect(events).toEqual([
+			"cancel-parent",
+			"cancel-child",
+			"wait-child",
+			"wait-parent",
+		]);
+		expect(deps.terminateAgentRuntime).not.toHaveBeenCalled();
+		expect(deps.terminateParent).not.toHaveBeenCalled();
+	});
+
+	it("broadcasts both cancellations before either force terminate", async () => {
+		const events: string[] = [];
+		let now = 0;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const deps = makeDeps({
+			getParentStatus: vi.fn(async () => "RUNNING"),
+			getAgentRuntimeStatus: vi.fn(async () => "RUNNING"),
+			cancelParent: vi.fn(async () => {
+				events.push("cancel-parent");
+				return "requested" as const;
+			}),
+			cancelAgentRuntime: vi.fn(async () => {
+				events.push("cancel-child");
+				return "requested" as const;
+			}),
+			terminateAgentRuntime: vi.fn(async () => {
+				events.push("terminate-child");
+				return "terminated" as const;
+			}),
+			terminateParent: vi.fn(async () => {
+				events.push("terminate-parent");
+				return "terminated" as const;
+			}),
+			sleep: vi.fn(async (ms: number) => {
+				now += ms;
+			}),
+		});
+
+		try {
+			await runDurableCascade({
+				parentInstanceIds: ["p1"],
+				agentRuntimeTargets: [{ runtimeAppId: "app", instanceId: "i1" }],
+				reason: "test",
+				purge: false,
+				purgeGraceMs: 0,
+				gracefulCancellationEnabled: true,
+				gracefulCancellationWaitMs: 1,
+				deps,
+			});
+		} finally {
+			nowSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+
+		expect(events).toEqual([
+			"cancel-parent",
+			"cancel-child",
+			"terminate-child",
+			"terminate-parent",
+		]);
+	});
+
 	it("terminates then purges parent + agent runtimes when all close", async () => {
 		const deps = makeDeps();
 		const result = await runDurableCascade({

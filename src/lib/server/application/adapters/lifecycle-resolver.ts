@@ -25,6 +25,24 @@ import type { WorkspaceRetentionIdentity } from "$lib/server/lifecycle/resolvers
 
 type Database = typeof defaultDb;
 
+function cancelledExecutionOutput(
+  value: unknown,
+  reason: string,
+): Record<string, unknown> {
+  const prior =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+	return {
+    success: false,
+		outputs: null,
+    workflowOutput: null,
+		durationMs: typeof prior.durationMs === "number" ? prior.durationMs : null,
+    phase: "cancelled",
+    error: reason,
+  };
+}
+
 function compactWorkspaceRetentionIdentities(
   values: WorkspaceRetentionIdentity[],
 ): WorkspaceRetentionIdentity[] {
@@ -325,6 +343,10 @@ export function createPostgresLifecycleTargetResolver(
               status: workflowExecutions.status,
               stopRequestedAt: workflowExecutions.stopRequestedAt,
               stopRequestedMode: workflowExecutions.stopRequestedMode,
+								daprInstanceId: workflowExecutions.daprInstanceId,
+              completedAt: workflowExecutions.completedAt,
+              output: workflowExecutions.output,
+              summaryOutput: workflowExecutions.summaryOutput,
             })
             .from(workflowExecutions)
             .where(eq(workflowExecutions.id, id))
@@ -340,12 +362,32 @@ export function createPostgresLifecycleTargetResolver(
           ) {
             return "mode_changed" as const;
           }
+							if (current.daprInstanceId !== exec.daprInstanceId) {
+								return "mode_changed" as const;
+							}
 
 				const now = new Date();
-          if (current.status === "pending" || current.status === "running") {
+          const stopWonTerminalRace =
+            current.stopRequestedAt != null &&
+            (current.completedAt == null ||
+              current.completedAt.getTime() >= current.stopRequestedAt.getTime());
+          if (
+            current.status === "pending" ||
+            current.status === "running" ||
+							(current.status !== "cancelled" && stopWonTerminalRace) ||
+							(current.status === "cancelled" && current.stopRequestedAt != null)
+          ) {
 					await tx
 						.update(workflowExecutions)
-						.set({ status: "cancelled", error: reason, completedAt: now })
+						.set({
+							status: "cancelled",
+							phase: "cancelled",
+							progress: 100,
+							error: reason,
+							completedAt: now,
+							output: cancelledExecutionOutput(current.output, reason),
+							summaryOutput: null,
+						})
               .where(eq(workflowExecutions.id, id));
           }
 					await tx
@@ -404,7 +446,7 @@ export function createPostgresLifecycleTargetResolver(
             // reset remains pending for the session reconciler.
             await tx
               .update(sessions)
-              .set({ stopRequestedAt: null, stopRequestedMode: null })
+									.set({ stopRequestedAt: null, stopRequestedMode: null })
               .where(
                 and(
                   eq(sessions.workflowExecutionId, id),
@@ -412,12 +454,12 @@ export function createPostgresLifecycleTargetResolver(
                   childIntentSatisfied,
                 ),
               );
-            // Clearing is the durable acknowledgement. A later stop/clean request on
-            // an already-terminal row creates a fresh pending intent, so a crash
-            // between persistence and cleanup remains eligible for reconciliation.
+							// Clearing the timestamp is the durable acknowledgement. Retain the mode
+							// as last-stop authority so a scheduler linkage published after cleanup
+							// can re-drive the same purge/reset strength without reopening duplicates.
             await tx
               .update(workflowExecutions)
-              .set({ stopRequestedAt: null, stopRequestedMode: null })
+									.set({ stopRequestedAt: null })
               .where(eq(workflowExecutions.id, id));
           }
           return "finalized" as const;
