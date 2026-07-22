@@ -6979,7 +6979,7 @@ export class PostgresWorkflowAgentRunStore implements WorkflowAgentRunStore {
 						result: input.result ?? null,
 						error: input.error ?? null,
 						...(input.workspaceRef ? { workspaceRef: input.workspaceRef } : {}),
-						completedAt: sql`COALESCE(${workflowAgentRuns.completedAt}, ${now})`,
+						completedAt: sql`COALESCE(${workflowAgentRuns.completedAt}, now())`,
 						...(input.eventPublished ? { eventPublishedAt: now } : {}),
 						updatedAt: now,
 					})
@@ -7025,7 +7025,7 @@ export class PostgresWorkflowAgentRunStore implements WorkflowAgentRunStore {
 								}
 							: {}),
 						pendingInput: null,
-						completedAt: sql`COALESCE(${sessions.completedAt}, ${run.completedAt ?? now})`,
+						completedAt: sql`COALESCE(${sessions.completedAt}, now())`,
 						updatedAt: now,
 					})
 					.where(
