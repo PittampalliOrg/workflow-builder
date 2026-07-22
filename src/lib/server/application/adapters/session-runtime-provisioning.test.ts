@@ -1,5 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
+import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CurrentSessionRepository } from "./sessions";
 import {
@@ -728,6 +729,38 @@ describe("CurrentSessionRepository runtime provisioning lease", () => {
       runtime_sandbox_name: "agent-host-old",
       runtime_provisioning_started_at: null,
     });
+  });
+
+  it("encodes compensation timestamps before postgres-js", async () => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const postgresClient = {
+      options: { parsers: {}, serializers: {} },
+      unsafe: (query: string, params: unknown[]) => {
+        calls.push({ sql: query, params: [...params] });
+        return { values: async () => [["session-1"]] };
+      },
+    };
+    const postgresRepository = new CurrentSessionRepository(
+      drizzlePostgresJs(postgresClient as never) as never,
+      resolveAgent as never,
+    );
+    const expectedStartedAt = new Date("2026-07-22T01:02:03.456Z");
+
+    await expect(
+      postgresRepository.acknowledgeRuntimeProvisioningCompensation({
+        sessionId: "session-1",
+        expectedStartedAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("GREATEST");
+    expect(calls[0].params.some((value) => value instanceof Date)).toBe(false);
+    expect(
+      calls[0].params.filter(
+        (value) => value === expectedStartedAt.toISOString(),
+      ),
+    ).toHaveLength(2);
   });
 
   it("recovers one exact published generation and never completes after stop", async () => {

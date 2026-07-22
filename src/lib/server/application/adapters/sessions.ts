@@ -77,6 +77,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
+import { toPostgresTimestampParam } from "$lib/server/db/sql-params";
 import {
 	agents,
 	benchmarkRunInstances,
@@ -887,7 +888,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
           date_trunc('milliseconds', clock_timestamp()),
           ${sessions.updatedAt},
-          ${input.expectedStartedAt}
+          ${toPostgresTimestampParam(input.expectedStartedAt)}
         )`,
       })
       .where(
@@ -934,7 +935,7 @@ export class CurrentSessionRepository implements SessionRepository {
           isNotNull(sessions.runtimeProvisioningAppId),
           isNotNull(sessions.runtimeProvisioningInstanceId),
           isNotNull(sessions.runtimeProvisioningHostOwned),
-          sql`${sessions.runtimeProvisioningStartedAt} <= ${input.staleBefore}`,
+          sql`${sessions.runtimeProvisioningStartedAt} <= ${toPostgresTimestampParam(input.staleBefore)}`,
           sql`(
 							${sessions.workflowExecutionId} IS NULL
 							OR EXISTS (
@@ -1005,7 +1006,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
           date_trunc('milliseconds', clock_timestamp()),
           ${sessions.updatedAt},
-          ${input.expectedStartedAt}
+          ${toPostgresTimestampParam(input.expectedStartedAt)}
         )`,
       })
       .where(
@@ -1300,7 +1301,7 @@ export class CurrentSessionRepository implements SessionRepository {
           updatedAt: sql<Date>`GREATEST(
 						date_trunc('milliseconds', clock_timestamp()),
 						${sessions.updatedAt},
-						${input.expectedStartedAt}
+						${toPostgresTimestampParam(input.expectedStartedAt)}
 					)`,
         })
         .where(
@@ -1336,7 +1337,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
           date_trunc('milliseconds', clock_timestamp()),
           ${sessions.updatedAt},
-          ${input.expectedStartedAt}
+          ${toPostgresTimestampParam(input.expectedStartedAt)}
         )`,
       })
       .where(
@@ -1409,7 +1410,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
 					date_trunc('milliseconds', clock_timestamp()),
 					${sessions.updatedAt},
-					${claimedAt}
+					${toPostgresTimestampParam(claimedAt)}
 				)`,
       })
       .where(
@@ -1469,7 +1470,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
 					date_trunc('milliseconds', clock_timestamp()),
 					${sessions.updatedAt},
-					${claimed.startedAt}
+					${toPostgresTimestampParam(claimed.startedAt)}
 				)`,
       })
       .where(
@@ -1513,7 +1514,7 @@ export class CurrentSessionRepository implements SessionRepository {
         updatedAt: sql<Date>`GREATEST(
           date_trunc('milliseconds', clock_timestamp()),
           ${sessions.updatedAt},
-          ${input.expectedStartedAt}
+          ${toPostgresTimestampParam(input.expectedStartedAt)}
         )`,
       })
       .where(
@@ -1547,7 +1548,7 @@ export class CurrentSessionRepository implements SessionRepository {
       updatedAt: sql<Date>`GREATEST(
         date_trunc('milliseconds', clock_timestamp()),
         ${sessions.updatedAt},
-        ${input.expectedStartedAt}
+        ${toPostgresTimestampParam(input.expectedStartedAt)}
       )`,
 		};
 		if (input.daprInstanceId !== undefined) {

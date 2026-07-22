@@ -11,6 +11,7 @@
 import { sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db as defaultDb } from "$lib/server/db";
+import { toPostgresTimestampParam } from "$lib/server/db/sql-params";
 import { requirePostgresDb } from "$lib/server/application/adapters/postgres";
 import type {
   ActiveTeamMemberStatus,
@@ -72,7 +73,7 @@ type LaunchChildRow = {
   completed_at: Date | null;
   dapr_instance_id: string | null;
   runtime_app_id: string | null;
-  runtime_provisioning_started_at: Date | null;
+  runtime_provisioning_started_at: Date | string | null;
   agent_id: string;
   agent_version: number | null;
   user_id: string;
@@ -728,7 +729,13 @@ export class PostgresTeamStore implements TeamStore {
 							  AND project_id = ${recipe.principal.projectId}
 							  AND dapr_instance_id IS NOT DISTINCT FROM ${child.dapr_instance_id}
 							  AND runtime_app_id IS NOT DISTINCT FROM ${child.runtime_app_id}
-							  AND runtime_provisioning_started_at IS NOT DISTINCT FROM ${child.runtime_provisioning_started_at}
+							  AND runtime_provisioning_started_at IS NOT DISTINCT FROM ${
+									child.runtime_provisioning_started_at == null
+										? null
+										: toPostgresTimestampParam(
+												child.runtime_provisioning_started_at,
+											)
+								}
 							RETURNING id
 						`),
         );
@@ -964,7 +971,13 @@ export class PostgresTeamStore implements TeamStore {
 									  AND project_id = ${dispatchRecipe.principal.projectId}
 									  AND dapr_instance_id IS NOT DISTINCT FROM ${currentDaprInstanceId}
 									  AND runtime_app_id IS NOT DISTINCT FROM ${currentRuntimeAppId}
-									  AND runtime_provisioning_started_at IS NOT DISTINCT FROM ${currentProvisioningStartedAt}
+									  AND runtime_provisioning_started_at IS NOT DISTINCT FROM ${
+											currentProvisioningStartedAt == null
+												? null
+												: toPostgresTimestampParam(
+														currentProvisioningStartedAt,
+													)
+										}
 									RETURNING id
 								`),
         );
@@ -1159,7 +1172,7 @@ export class PostgresTeamStore implements TeamStore {
 			WHERE member.status = 'starting'
 			  AND member.launch_operation_id IS NOT NULL
 			  AND member.launch_kind IN ('spawn', 'revival')
-			  AND member.launch_started_at <= ${input.staleBefore}
+			  AND member.launch_started_at <= ${toPostgresTimestampParam(input.staleBefore)}
 			ORDER BY member.launch_started_at ASC, member.id ASC
 			LIMIT ${Math.max(1, Math.min(Math.trunc(input.limit || 20), 200))}
 		`);

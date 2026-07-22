@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
+import { toPostgresTimestampParam } from "$lib/server/db/sql-params";
 import {
 	evaluationRuns,
 	sessions,
@@ -115,7 +116,7 @@ export function createPostgresLifecycleTargetResolver(
         updatedAt: sql<Date>`GREATEST(
           date_trunc('milliseconds', clock_timestamp()),
           ${sessions.updatedAt},
-          ${input.expectedStartedAt}
+          ${toPostgresTimestampParam(input.expectedStartedAt)}
         )`,
       })
       .where(and(...conditions))
@@ -429,7 +430,10 @@ export function createPostgresLifecycleTargetResolver(
           const persisted = await tx
 					.update(workflowExecutions)
             .set({
-              stopRequestedAt: sql<Date>`COALESCE(${workflowExecutions.stopRequestedAt}, ${requestedAt})`,
+              stopRequestedAt: sql<Date>`COALESCE(
+                ${workflowExecutions.stopRequestedAt},
+                ${toPostgresTimestampParam(requestedAt)}
+              )`,
               stopRequestedMode: monotonicStopMode(
                 workflowExecutions.stopRequestedAt,
                 workflowExecutions.stopRequestedMode,
@@ -456,13 +460,20 @@ export function createPostgresLifecycleTargetResolver(
           await tx
             .update(sessions)
             .set({
-              stopRequestedAt: sql<Date>`COALESCE(${sessions.stopRequestedAt}, ${row.stopRequestedAt})`,
+              stopRequestedAt: sql<Date>`COALESCE(
+                ${sessions.stopRequestedAt},
+                ${toPostgresTimestampParam(row.stopRequestedAt)}
+              )`,
               stopRequestedMode: monotonicStopMode(
                 sessions.stopRequestedAt,
                 sessions.stopRequestedMode,
                 persistedMode,
               ),
-              updatedAt: sql<Date>`CASE WHEN ${sessions.stopRequestedAt} IS NULL THEN ${row.stopRequestedAt} ELSE ${sessions.updatedAt} END`,
+              updatedAt: sql<Date>`CASE
+                WHEN ${sessions.stopRequestedAt} IS NULL
+                THEN ${toPostgresTimestampParam(row.stopRequestedAt)}
+                ELSE ${sessions.updatedAt}
+              END`,
             })
 					.where(
 						and(
@@ -647,13 +658,20 @@ export function createPostgresLifecycleTargetResolver(
         const persisted = await database
 					.update(sessions)
           .set({
-            stopRequestedAt: sql<Date>`COALESCE(${sessions.stopRequestedAt}, ${requestedAt})`,
+            stopRequestedAt: sql<Date>`COALESCE(
+              ${sessions.stopRequestedAt},
+              ${toPostgresTimestampParam(requestedAt)}
+            )`,
             stopRequestedMode: monotonicStopMode(
               sessions.stopRequestedAt,
               sessions.stopRequestedMode,
               mode,
             ),
-            updatedAt: sql<Date>`CASE WHEN ${sessions.stopRequestedAt} IS NULL THEN ${requestedAt} ELSE ${sessions.updatedAt} END`,
+            updatedAt: sql<Date>`CASE
+              WHEN ${sessions.stopRequestedAt} IS NULL
+              THEN ${toPostgresTimestampParam(requestedAt)}
+              ELSE ${sessions.updatedAt}
+            END`,
           })
           .where(eq(sessions.id, id))
           .returning({
@@ -726,7 +744,10 @@ export function createPostgresLifecycleTargetResolver(
         const persisted = await database
 					.update(evaluationRuns)
           .set({
-            cancelRequestedAt: sql<Date>`COALESCE(${evaluationRuns.cancelRequestedAt}, ${requestedAt})`,
+            cancelRequestedAt: sql<Date>`COALESCE(
+              ${evaluationRuns.cancelRequestedAt},
+              ${toPostgresTimestampParam(requestedAt)}
+            )`,
           })
           .where(eq(evaluationRuns.id, id))
           .returning({ cancelRequestedAt: evaluationRuns.cancelRequestedAt });
