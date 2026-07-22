@@ -74,6 +74,9 @@ describe("platform incident analysis seed", () => {
     expect(source).toContain("input: PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA");
     expect(contractSource).toContain("enum: PLATFORM_INCIDENT_QUERY_IDS");
     expect(contractSource).toContain("properties: platformIncidentEvidenceProperties");
+    for (const schemaSource of [contractSource, script, bundle]) {
+      expect(schemaSource).toContain('eventId: { type: "string", maxLength: 512 }');
+    }
     expect(script).toContain('agent: "platform-incident-analyst-agent"');
     expect(script).toContain('additionalProperties: false');
     expect(script).toContain("propertyNames:");
@@ -136,12 +139,18 @@ describe("platform incident analysis seed", () => {
     );
     expect(normalized.ok).toBe(true);
     if (normalized.ok) {
-      expect(
-        validateArgsAgainstMetaInput(
-          PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA,
-          normalized.envelope.triggerData,
-        ),
-      ).toMatchObject({ ok: true });
+      const triggeredArgs = {
+        ...normalized.envelope.triggerData,
+        eventId: "dapr-cloud-event-1",
+      };
+      for (const schema of [
+        PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA,
+        fixtureMeta().input,
+      ]) {
+        expect(validateArgsAgainstMetaInput(schema, triggeredArgs)).toMatchObject({
+          ok: true,
+        });
+      }
     }
   });
 
