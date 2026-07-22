@@ -12,6 +12,7 @@ describe("CurrentSessionRepository session runtime start authority", () => {
     await client.exec(`
 			CREATE TABLE workflow_executions (
 				id text PRIMARY KEY,
+				dapr_instance_id text,
 				status text NOT NULL,
 				stop_requested_at timestamp,
 				completed_at timestamp
@@ -81,6 +82,35 @@ describe("CurrentSessionRepository session runtime start authority", () => {
 		await expect(authorize()).resolves.toEqual({ status: "authorized" });
 		// An HTTP/activity retry is idempotent while the same lineage remains active.
 		await expect(authorize()).resolves.toEqual({ status: "authorized" });
+	});
+
+	it.each(["dsw-workflow-1", "workflow-1"])(
+		"authorizes root workflow lineage through %s",
+		async (parentExecutionId) => {
+			await client.exec(`
+				UPDATE workflow_executions
+				SET dapr_instance_id = 'dsw-workflow-1'
+				WHERE id = 'workflow-1';
+				UPDATE sessions
+				SET parent_execution_id = '${parentExecutionId}'
+				WHERE id = 'child-1'
+			`);
+
+			await expect(authorize()).resolves.toEqual({ status: "authorized" });
+		},
+	);
+
+	it("fails closed for unknown parent lineage", async () => {
+		await client.exec(`
+			UPDATE workflow_executions
+			SET dapr_instance_id = 'dsw-workflow-1'
+			WHERE id = 'workflow-1';
+			UPDATE sessions
+			SET parent_execution_id = 'unknown-parent'
+			WHERE id = 'child-1'
+		`);
+
+		await expect(authorize()).resolves.toEqual({ status: "parent_inactive" });
 	});
 
 	it("does not require a membership row for a signed team lead", async () => {

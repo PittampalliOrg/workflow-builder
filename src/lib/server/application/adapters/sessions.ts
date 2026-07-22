@@ -164,6 +164,24 @@ function activeProvisioningParentWorkflow(): SQL {
   )`;
 }
 
+function activeWorkflowParentLineage(): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM ${workflowExecutions} AS parent_workflow
+    WHERE parent_workflow.id = ${sessions.workflowExecutionId}
+      AND (
+        parent_workflow.id = ${sessions.parentExecutionId}
+        OR parent_workflow.dapr_instance_id = ${sessions.parentExecutionId}
+      )
+      AND parent_workflow.status IN ('pending', 'running')
+      AND parent_workflow.stop_requested_at IS NULL
+      AND parent_workflow.completed_at IS NULL
+  )`;
+}
+
+// Root workflow children store the parent Dapr instance here; peer children
+// store a session id. An existing session row takes precedence over workflow
+// lineage so a stopped peer cannot fall through to the workflow branch.
 function activeProvisioningParentSession(): SQL {
   return sql`(
     ${sessions.parentExecutionId} IS NULL
@@ -174,6 +192,14 @@ function activeProvisioningParentSession(): SQL {
         AND parent_session.status IN ('rescheduling', 'running', 'idle')
         AND parent_session.stop_requested_at IS NULL
         AND parent_session.completed_at IS NULL
+    )
+    OR (
+      NOT EXISTS (
+        SELECT 1
+        FROM ${sessions} AS lineage_session
+        WHERE lineage_session.id = ${sessions.parentExecutionId}
+      )
+      AND ${activeWorkflowParentLineage()}
     )
   )`;
 }
@@ -196,13 +222,23 @@ function runtimeProvisioningCompensationAuthority(): SQL {
 		)
 		OR (
 			${sessions.parentExecutionId} IS NOT NULL
-			AND NOT EXISTS (
-				SELECT 1
-				FROM ${sessions} AS compensation_parent_session
-				WHERE compensation_parent_session.id = ${sessions.parentExecutionId}
-					AND compensation_parent_session.status <> 'terminated'
-					AND compensation_parent_session.stop_requested_at IS NULL
-					AND compensation_parent_session.completed_at IS NULL
+			AND NOT (
+				EXISTS (
+					SELECT 1
+					FROM ${sessions} AS compensation_parent_session
+					WHERE compensation_parent_session.id = ${sessions.parentExecutionId}
+						AND compensation_parent_session.status <> 'terminated'
+						AND compensation_parent_session.stop_requested_at IS NULL
+						AND compensation_parent_session.completed_at IS NULL
+				)
+				OR (
+					NOT EXISTS (
+						SELECT 1
+						FROM ${sessions} AS compensation_lineage_session
+						WHERE compensation_lineage_session.id = ${sessions.parentExecutionId}
+					)
+					AND ${activeWorkflowParentLineage()}
+				)
 			)
 		)
 	)`;
@@ -1255,9 +1291,16 @@ export class CurrentSessionRepository implements SessionRepository {
       ) {
         return "stopped";
       }
+      let parentWorkflow: {
+        id: string;
+        daprInstanceId: string | null;
+      } | null = null;
       if (row.workflowExecutionId) {
         const [parent] = await tx
-          .select({ id: workflowExecutions.id })
+          .select({
+            id: workflowExecutions.id,
+            daprInstanceId: workflowExecutions.daprInstanceId,
+          })
           .from(workflowExecutions)
           .where(
             and(
@@ -1269,21 +1312,35 @@ export class CurrentSessionRepository implements SessionRepository {
           )
           .limit(1);
         if (!parent) return "stopped";
+        parentWorkflow = parent;
       }
       if (row.parentExecutionId) {
-        const [parent] = await tx
-          .select({ id: sessions.id })
+        const [parentSession] = await tx
+          .select({
+            status: sessions.status,
+            stopRequestedAt: sessions.stopRequestedAt,
+            completedAt: sessions.completedAt,
+          })
           .from(sessions)
-          .where(
-            and(
-              eq(sessions.id, row.parentExecutionId),
-              inArray(sessions.status, ["rescheduling", "running", "idle"]),
-              isNull(sessions.stopRequestedAt),
-              isNull(sessions.completedAt),
-            ),
-          )
+          .where(eq(sessions.id, row.parentExecutionId))
           .limit(1);
-        if (!parent) return "stopped";
+        if (parentSession) {
+          if (
+            !(["rescheduling", "running", "idle"] as string[]).includes(
+              parentSession.status,
+            ) ||
+            parentSession.stopRequestedAt != null ||
+            parentSession.completedAt != null
+          ) {
+            return "stopped";
+          }
+        } else if (
+          !parentWorkflow ||
+          (parentWorkflow.id !== row.parentExecutionId &&
+            parentWorkflow.daprInstanceId !== row.parentExecutionId)
+        ) {
+          return "stopped";
+        }
       }
       if (row.startedAt == null) return "already_completed";
       if (row.startedAt.getTime() !== input.expectedStartedAt.getTime()) {
@@ -1618,36 +1675,57 @@ export class CurrentSessionRepository implements SessionRepository {
       // Match lifecycle ordering: parent workflow, parent session, child session.
       // A stop that already owns either parent lock wins; authorization then
       // re-evaluates against its committed stop state and is denied.
+      let parentWorkflow: {
+        id: string;
+        dapr_instance_id: string | null;
+      } | null = null;
       if (initial.workflow_execution_id) {
-        const parentWorkflow = resultRows<{ id: string }>(
+        const parentWorkflows = resultRows<{
+          id: string;
+          dapr_instance_id: string | null;
+        }>(
           await tx.execute(sql`
-					SELECT id
+					SELECT id, dapr_instance_id
 					FROM workflow_executions
 					WHERE id = ${initial.workflow_execution_id}
 					  AND status IN ('pending', 'running')
 					  AND stop_requested_at IS NULL
 					  AND completed_at IS NULL
 					FOR UPDATE
-				`),
+					`),
         );
-        if (parentWorkflow.length === 0) {
+        parentWorkflow = parentWorkflows[0] ?? null;
+        if (!parentWorkflow) {
           return { status: "parent_inactive" as const };
         }
       }
 
       if (initial.parent_execution_id) {
-        const parentSession = resultRows<{ id: string }>(
+        const parentSessions = resultRows<{
+          status: string;
+          stop_requested_at: Date | null;
+          completed_at: Date | null;
+        }>(
           await tx.execute(sql`
-					SELECT id
+					SELECT status, stop_requested_at, completed_at
 					FROM sessions
 					WHERE id = ${initial.parent_execution_id}
-					  AND status IN ('rescheduling', 'running', 'idle')
-					  AND stop_requested_at IS NULL
-					  AND completed_at IS NULL
 					FOR UPDATE
-				`),
+					`),
         );
-        if (parentSession.length === 0) {
+        const parentSession = parentSessions[0] ?? null;
+        if (
+          parentSession
+            ? !(["rescheduling", "running", "idle"] as string[]).includes(
+                parentSession.status,
+              ) ||
+              parentSession.stop_requested_at != null ||
+              parentSession.completed_at != null
+            : !parentWorkflow ||
+              (parentWorkflow.id !== initial.parent_execution_id &&
+                parentWorkflow.dapr_instance_id !==
+                  initial.parent_execution_id)
+        ) {
           return { status: "parent_inactive" as const };
         }
       }
