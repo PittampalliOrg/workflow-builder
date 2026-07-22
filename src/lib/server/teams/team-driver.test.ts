@@ -24,7 +24,7 @@ vi.mock("$lib/server/teams/team-messaging", () => ({
 import { onTeamSessionEvent } from "$lib/server/teams/team-driver";
 import { addMember, ensureTeam } from "$lib/server/teams/team-repo";
 import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
-import type { TeamStore } from "$lib/server/application/ports";
+import type { AddMemberInput, TeamStore } from "$lib/server/application/ports";
 
 type PgliteHandle = ReturnType<typeof createPgliteDb>["db"];
 
@@ -47,6 +47,11 @@ async function fresh(): Promise<{ db: PgliteHandle; store: TeamStore }> {
 			`CREATE TABLE team_tasks (id text primary key, team_id text not null, title text not null, description text, status text default 'pending', assignee_session_id text, depends_on jsonb default '[]'::jsonb, created_by_session_id text, created_at timestamp default now(), updated_at timestamp default now(), completed_at timestamp, completion_note text)`,
 		),
 	);
+  await db.execute(
+    sql.raw(
+      `CREATE TABLE sessions (id text primary key, status text default 'idle', stop_requested_at timestamp)`,
+    ),
+  );
 	// Minimal session_events for the token-budget aggregate (getTeamTokensUsed).
 	await db.execute(
 		sql.raw(
@@ -54,6 +59,18 @@ async function fresh(): Promise<{ db: PgliteHandle; store: TeamStore }> {
 		),
 	);
 	return { db, store: new PostgresTeamStore(() => db as never) };
+}
+
+async function addTestMember(
+  db: PgliteHandle,
+  store: TeamStore,
+  input: AddMemberInput,
+): Promise<void> {
+  await db.execute(sql`
+		INSERT INTO sessions (id, status) VALUES (${input.sessionId}, 'running')
+		ON CONFLICT (id) DO NOTHING
+	`);
+  await addMember(input, store);
 }
 
 function recipients(): InjectArg[] {
@@ -65,30 +82,57 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("notifies the lead on ANY teammate idle (incl. goal_stop) + nudges when work exists", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
 		// a claimable task exists → the auto-claim nudge should fire
 		await db.execute(
-			sql.raw(`INSERT INTO team_tasks (id, team_id, title) VALUES ('tk1','t1','do it')`),
+      sql.raw(
+        `INSERT INTO team_tasks (id, team_id, title) VALUES ('tk1','t1','do it')`,
+      ),
 		);
 		await onTeamSessionEvent(
 			"mate1",
-			{ type: "session.status_idle", data: { stop_reason: { type: "goal_stop" } } },
+      {
+        type: "session.status_idle",
+        data: { stop_reason: { type: "goal_stop" } },
+      },
 			store,
 		);
 		const r = recipients();
 		// lead gets a team-idle notice
-		expect(r.some((a) => a.recipientSessionId === "lead1" && a.kind === "team-idle")).toBe(true);
+    expect(
+      r.some((a) => a.recipientSessionId === "lead1" && a.kind === "team-idle"),
+    ).toBe(true);
 		// teammate gets the auto-claim nudge (there is claimable work)
-		expect(r.some((a) => a.recipientSessionId === "mate1" && a.kind === "team-idle")).toBe(true);
+    expect(
+      r.some((a) => a.recipientSessionId === "mate1" && a.kind === "team-idle"),
+    ).toBe(true);
 	});
 
 	it("does NOT nudge an idle teammate when there is no claimable work (loop guard)", async () => {
-		const { store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
+    const { db, store } = await fresh();
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
 		// no tasks → lead still notified, but NO nudge to the teammate
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
 		const r = recipients();
 		expect(r.some((a) => a.recipientSessionId === "lead1")).toBe(true);
 		expect(r.some((a) => a.recipientSessionId === "mate1")).toBe(false);
@@ -96,29 +140,58 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("does not notify for the lead's own idle", async () => {
 		const { store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await onTeamSessionEvent("lead1", { type: "session.status_idle", data: {} }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await onTeamSessionEvent(
+      "lead1",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
 		expect(injectMock).not.toHaveBeenCalled();
 	});
 
 	it("is a no-op for a non-team session", async () => {
 		const { store } = await fresh();
-		await onTeamSessionEvent("stranger", { type: "session.status_idle", data: {} }, store);
+    await onTeamSessionEvent(
+      "stranger",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
 		expect(injectMock).not.toHaveBeenCalled();
 	});
 
 	it("ignores non-idle events", async () => {
-		const { store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
-		await onTeamSessionEvent("mate1", { type: "agent.message", data: {} }, store);
+    const { db, store } = await fresh();
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "agent.message", data: {} },
+      store,
+    );
 		expect(injectMock).not.toHaveBeenCalled();
 	});
 
 	it("nudges an idle member that still HOLDS an in_progress task (deadlock breaker)", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "researcher",
+    });
 		// mate1 claimed tk1 but went idle without completing it — NOT claimable,
 		// so the claim nudge can't fire; the hold nudge must.
 		await db.execute(
@@ -126,7 +199,11 @@ describe("team-driver onTeamSessionEvent", () => {
 				`INSERT INTO team_tasks (id, team_id, title, status, assignee_session_id) VALUES ('tk1','t1','write summary','in_progress','mate1')`,
 			),
 		);
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
 		const nudge = recipients().find((a) => a.recipientSessionId === "mate1");
 		expect(nudge).toBeDefined();
 		expect(nudge!.content).toContain("tk1");
@@ -136,8 +213,15 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("hold nudge takes priority over the claim nudge and dedupes on the task's updated_at", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "researcher",
+    });
 		await db.execute(
 			sql.raw(
 				`INSERT INTO team_tasks (id, team_id, title, status, assignee_session_id) VALUES ('tk1','t1','write summary','in_progress','mate1')`,
@@ -145,15 +229,25 @@ describe("team-driver onTeamSessionEvent", () => {
 		);
 		// claimable work ALSO exists — the held task must still win
 		await db.execute(
-			sql.raw(`INSERT INTO team_tasks (id, team_id, title) VALUES ('tk2','t1','other')`),
+      sql.raw(
+        `INSERT INTO team_tasks (id, team_id, title) VALUES ('tk2','t1','other')`,
+      ),
+    );
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
 		);
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
 		const mate = recipients().filter((a) => a.recipientSessionId === "mate1");
 		expect(mate).toHaveLength(1);
 		expect(mate[0].sourceEventId).toContain("team-hold-nudge:");
 		// stable hold state → identical sourceEventId on a repeat idle (dedupe key)
 		injectMock.mockClear();
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
 		const again = recipients().filter((a) => a.recipientSessionId === "mate1");
 		expect(again).toHaveLength(1);
 		expect(again[0].sourceEventId).toBe(mate[0].sourceEventId);
@@ -161,8 +255,15 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("marks the member FAILED on session.error and gives the lead the error text", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "researcher" }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "researcher",
+    });
 		await onTeamSessionEvent(
 			"mate1",
 			{ type: "session.error", data: { error: "LLM provider 500" } },
@@ -181,9 +282,18 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("stops feeding claim nudges to a team whose token budget is exhausted", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
-		await db.execute(sql.raw(`UPDATE teams SET token_budget = 100 WHERE id='t1'`));
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
+    await db.execute(
+      sql.raw(`UPDATE teams SET token_budget = 100 WHERE id='t1'`),
+    );
 		// 150 tokens consumed by the member — over the 100 budget.
 		await db.execute(
 			sql.raw(
@@ -193,9 +303,15 @@ describe("team-driver onTeamSessionEvent", () => {
 		// Claimable work exists, but the budget brake wins: lead still notified,
 		// NO claim nudge to the teammate.
 		await db.execute(
-			sql.raw(`INSERT INTO team_tasks (id, team_id, title) VALUES ('tk1','t1','more work')`),
+      sql.raw(
+        `INSERT INTO team_tasks (id, team_id, title) VALUES ('tk1','t1','more work')`,
+      ),
+    );
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
 		);
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
 		const r = recipients();
 		expect(r.some((a) => a.recipientSessionId === "lead1")).toBe(true);
 		expect(r.some((a) => a.recipientSessionId === "mate1")).toBe(false);
@@ -203,12 +319,25 @@ describe("team-driver onTeamSessionEvent", () => {
 
 	it("never resurrects a shutdown member on its final idle", async () => {
 		const { db, store } = await fresh();
-		await ensureTeam({ teamId: "t1", leadSessionId: "lead1", projectId: "p1" }, store);
-		await addMember({ teamId: "t1", sessionId: "mate1", name: "worker" }, store);
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
 		await db.execute(
-			sql.raw(`UPDATE team_members SET status='shutdown' WHERE session_id='mate1'`),
+      sql.raw(
+        `UPDATE team_members SET status='shutdown' WHERE session_id='mate1'`,
+      ),
+    );
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
 		);
-		await onTeamSessionEvent("mate1", { type: "session.status_idle", data: {} }, store);
 		const rows = (await db.execute(
 			sql.raw(`SELECT status FROM team_members WHERE session_id='mate1'`),
 		)) as Array<{ status: string }>;
@@ -216,4 +345,31 @@ describe("team-driver onTeamSessionEvent", () => {
 		expect(injectMock).not.toHaveBeenCalled(); // and no idle notice for the dead
 	});
 
+  it("does not overwrite or notify after persisted stop intent wins the idle race", async () => {
+    const { db, store } = await fresh();
+    await ensureTeam(
+      { teamId: "t1", leadSessionId: "lead1", projectId: "p1" },
+      store,
+    );
+    await addTestMember(db, store, {
+      teamId: "t1",
+      sessionId: "mate1",
+      name: "worker",
+    });
+    await db.execute(sql`
+			UPDATE sessions SET stop_requested_at = now() WHERE id = 'mate1'
+		`);
+
+    await onTeamSessionEvent(
+      "mate1",
+      { type: "session.status_idle", data: {} },
+      store,
+    );
+
+    const rows = (await db.execute(sql`
+			SELECT status FROM team_members WHERE session_id = 'mate1'
+		`)) as Array<{ status: string }>;
+    expect(rows[0].status).toBe("working");
+    expect(injectMock).not.toHaveBeenCalled();
+  });
 });

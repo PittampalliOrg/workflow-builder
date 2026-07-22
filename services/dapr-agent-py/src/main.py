@@ -24,6 +24,8 @@ from fastapi.encoders import jsonable_encoder
 from google.protobuf import wrappers_pb2
 from pydantic import BaseModel, Field
 
+_START_AUTHORITY_PENDING_DELAYS_SECONDS = (1, 2, 4, 8, 15, 30) + (60,) * 14
+
 
 def _configure_durabletask_grpc_defaults() -> None:
     """Raise durabletask's worker channel limit before any workflow runtime starts."""
@@ -172,6 +174,7 @@ from src.session_config import (
     external_control_event_as_user_event,
 )
 from src.session_native import (
+    accept_team_mailbox_delivery,
     build_continue_as_new_input,
     logical_turn_id,
     session_native_event_fields,
@@ -5507,6 +5510,7 @@ class OpenShellDurableAgent(DurableAgent):
         # custom activities so every activity registration is agent-scoped.
         for activity in (
             self.create_peer_session_row,
+            self.authorize_session_runtime_start,
             self.start_script_execution,
             self.poll_script_execution,
             self.seed_mcp_for_instance,
@@ -5549,12 +5553,16 @@ class OpenShellDurableAgent(DurableAgent):
         row = yield ctx.call_activity(
             self._activity_name(self.create_peer_session_row),
             input=message,
+            retry_policy=self._retry_policy,
         )
         if not isinstance(row, dict) or not row.get("sessionId"):
             raise RuntimeError(
                 f"create_peer_session_row returned unexpected payload: {row!r}"
             )
         session_id = row["sessionId"]
+        runtime_app_id = (
+            row.get("runtimeAppId") or message.get("peerAppId")
+        )
         child_result = yield ctx.call_child_workflow(
             "session_workflow",
             input={
@@ -5562,10 +5570,14 @@ class OpenShellDurableAgent(DurableAgent):
                 "workflowMcpSessionToken": row.get(
                     "workflowMcpSessionToken"
                 ),
+                "requiresStartAuthority": bool(
+                    row.get("requiresStartAuthority")
+                ),
                 "agentId": row.get("agentId") or message.get("peerAgentId"),
                 "agentVersion": row.get("agentVersion"),
                 "agentSlug": message.get("peerSlug"),
-                "agentAppId": message.get("peerAppId"),
+                "agentAppId": runtime_app_id,
+                "runtimeAppId": runtime_app_id,
                 "agentConfig": row.get("agentConfig") or {},
                 "environmentConfig": row.get("environmentConfig") or {},
                 "vaultIds": row.get("vaultIds") or [],
@@ -5661,18 +5673,130 @@ class OpenShellDurableAgent(DurableAgent):
         )
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
+                response_status = int(getattr(resp, "status", 200))
                 text = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
             raise RuntimeError(
                 f"spawn-peer rejected (HTTP {exc.code}): {detail}"
             ) from exc
+        if response_status == 202:
+            raise RuntimeError(
+                f"spawn-peer runtime provisioning is still pending for {session_id}"
+            )
         try:
             return json.loads(text)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f"spawn-peer returned non-JSON: {text[:200]!r}"
             ) from exc
+
+    def authorize_session_runtime_start(self, ctx, payload: dict) -> dict:
+        """Activity fence for a scheduled session before it performs agent work."""
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        session_id = str(payload.get("sessionId") or "").strip()
+        session_token = str(
+            payload.get("workflowMcpSessionToken") or ""
+        ).strip()
+        runtime_app_id = str(payload.get("runtimeAppId") or "").strip()
+        runtime_instance_id = str(
+            payload.get("runtimeInstanceId") or ""
+        ).strip()
+        if not session_id:
+            raise ValueError("authorize_session_runtime_start requires sessionId")
+        if not session_token:
+            raise RuntimeError(
+                "authorize_session_runtime_start requires a signed session token"
+            )
+        if not runtime_app_id:
+            raise RuntimeError(
+                "authorize_session_runtime_start requires runtimeAppId"
+            )
+        if not runtime_instance_id:
+            raise RuntimeError(
+                "authorize_session_runtime_start requires runtimeInstanceId"
+            )
+
+        internal_token = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+        if not internal_token:
+            raise RuntimeError(
+                "INTERNAL_API_TOKEN not configured on dapr-agent-py"
+            )
+        app_id = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
+        dapr_http = os.environ.get("DAPR_HTTP_PORT", "3500")
+        encoded_session_id = urllib.parse.quote(session_id, safe="")
+        url = (
+            f"http://localhost:{dapr_http}/v1.0/invoke/{app_id}"
+            f"/method/api/internal/sessions/{encoded_session_id}"
+            "/authorize-runtime-start"
+        )
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(
+                {
+                    "runtimeAppId": runtime_app_id,
+                    "runtimeInstanceId": runtime_instance_id,
+                }
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": internal_token,
+                "X-Wfb-Session-Id": session_id,
+                "X-Wfb-Session-Token": session_token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+            if exc.code in {403, 404, 409}:
+                try:
+                    denial = json.loads(detail)
+                except Exception:  # noqa: BLE001
+                    denial = {}
+                code = (
+                    str(denial.get("code") or "")
+                    if isinstance(denial, dict)
+                    else ""
+                )
+                return {
+                    "authorized": False,
+                    "status": exc.code,
+                    "code": code,
+                    "retryable": bool(
+                        isinstance(denial, dict)
+                        and denial.get("retryable") is True
+                        and code in {"team_pending", "runtime_unpublished"}
+                    ),
+                    "reason": (
+                        str(denial.get("message") or detail)
+                        if isinstance(denial, dict)
+                        else detail
+                    )
+                    or "session start was denied",
+                }
+            raise RuntimeError(
+                f"runtime start authorization failed (HTTP {exc.code}): {detail}"
+            ) from exc
+
+        try:
+            result = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"runtime start authorization returned non-JSON: {text[:200]!r}"
+            ) from exc
+        if not isinstance(result, dict) or result.get("authorized") is not True:
+            return {
+                "authorized": False,
+                "status": 409,
+                "reason": "runtime start authorization was not confirmed",
+            }
+        return result
 
     @workflow_entry
     def run_workflow_script_bridge(self, ctx, message: dict):
@@ -6216,6 +6340,63 @@ class OpenShellDurableAgent(DurableAgent):
         # instances, so the log-context var cannot outlive this invocation.
         set_session_id_log_context(session_id)
 
+        # Every project-owned start uses this first durable step to revalidate DB
+        # stop authority now that the Dapr instance exists.
+        # Publication and team promotion can finish just after Dapr accepts the
+        # start, so only those explicit pending states are durably polled. Stop
+        # and every terminal/mismatched state deny immediately without events,
+        # model calls, or tool work.
+        if bool(message.get("requiresStartAuthority")):
+            for pending_attempt in range(
+                len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1
+            ):
+                start_authority = yield ctx.call_activity(
+                    self._activity_name(self.authorize_session_runtime_start),
+                    input={
+                        "sessionId": session_id,
+                        "workflowMcpSessionToken": message.get(
+                            "workflowMcpSessionToken"
+                        ),
+                        "runtimeAppId": message.get("runtimeAppId")
+                        or message.get("agentAppId"),
+                        "runtimeInstanceId": ctx.instance_id,
+                    },
+                )
+                if isinstance(start_authority, dict) and start_authority.get(
+                    "authorized"
+                ):
+                    break
+                retryable_pending = bool(
+                    isinstance(start_authority, dict)
+                    and start_authority.get("retryable") is True
+                    and start_authority.get("code")
+                    in {"team_pending", "runtime_unpublished"}
+                )
+                if (
+                    not retryable_pending
+                    or pending_attempt
+                    >= len(_START_AUTHORITY_PENDING_DELAYS_SECONDS)
+                ):
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "status": "cancelled",
+                        "content": "",
+                        "sessionId": session_id,
+                        "error": (
+                            "session start authority remained pending"
+                            if retryable_pending
+                            else "session start was not authorized"
+                        ),
+                    }
+                yield ctx.create_timer(
+                    timedelta(
+                        seconds=_START_AUTHORITY_PENDING_DELAYS_SECONDS[
+                            pending_attempt
+                        ]
+                    )
+                )
+
         agent_cfg = _coerce_agent_config(message.get("agentConfig")) or {}
         env_cfg = message.get("environmentConfig") or {}
         vault_ids = message.get("vaultIds") or []
@@ -6253,6 +6434,12 @@ class OpenShellDurableAgent(DurableAgent):
             )
         turn_counter = int(continuation_state["turnCounter"])
         continuation_count = int(continuation_state["continuationCount"])
+        accepted_team_mailbox_batch_ids = set(
+            continuation_state["teamMailboxBatchIds"]
+        )
+        accepted_team_mailbox_event_ids = set(
+            continuation_state["teamMailboxEventIds"]
+        )
         # When the Stop-hook goal driver is active for this goal-mode session, tag
         # the turn-end idle reason != "end_turn" so the inline BFF idle hook
         # (goal-loop.ts) does NOT also drive — the Stop hook is the single driver
@@ -6286,7 +6473,11 @@ class OpenShellDurableAgent(DurableAgent):
                         exc,
                     )
                     break
-                pending = list((batch or {}).get("events") or [])
+                pending = accept_team_mailbox_delivery(
+                    batch,
+                    accepted_batch_ids=accepted_team_mailbox_batch_ids,
+                    accepted_event_ids=accepted_team_mailbox_event_ids,
+                )
                 if not pending:
                     continue
                 # A turn is starting — no longer idle-waiting.
@@ -6802,6 +6993,8 @@ class OpenShellDurableAgent(DurableAgent):
                         control_override_fields=control_override_fields,
                         continuation_count=continuation_count,
                         reason=continue_reason,
+                        team_mailbox_batch_ids=accepted_team_mailbox_batch_ids,
+                        team_mailbox_event_ids=accepted_team_mailbox_event_ids,
                     ),
                     save_events=True,
                 )
@@ -8671,6 +8864,23 @@ def raise_session_event_endpoint(request: dict) -> dict:
                 exc,
             )
     event_name, payload = external_control_event_as_user_event(event_name, payload)
+    delivery_id: str | None = None
+    if event_name == "session.user_events" and isinstance(payload, dict):
+        delivery = payload.get("delivery")
+        if isinstance(delivery, dict) and delivery.get("kind") == "team-mailbox":
+            delivery_id = str(delivery.get("batchId") or "").strip()
+            event_ids = delivery.get("eventIds")
+            events = payload.get("events")
+            if (
+                not delivery_id
+                or not isinstance(event_ids, list)
+                or not isinstance(events, list)
+                or len(event_ids) != len(events)
+                or not all(str(event_id or "").strip() for event_id in event_ids)
+            ):
+                raise HTTPException(
+                    status_code=400, detail="invalid team mailbox delivery metadata"
+                )
 
     raise_request = pb.RaiseEventRequest(
         instanceId=instance_id,
@@ -8682,7 +8892,7 @@ def raise_session_event_endpoint(request: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"RaiseEvent failed: {exc}")
 
-    return {"ok": True}
+    return {"ok": True, "accepted": True, "deliveryId": delivery_id}
 
 
 @app.post("/api/grader-evaluate")

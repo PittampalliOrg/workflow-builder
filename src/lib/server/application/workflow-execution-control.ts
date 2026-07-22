@@ -383,6 +383,12 @@ export class ApplicationWorkflowExecutionControlService {
 		);
     if (result.notFound)
       return workflowControlError(404, "Execution not found");
+    if (result.retryable && !result.requested) {
+      return workflowControlError(
+        503,
+        "Stop intent could not be persisted - please retry.",
+      );
+    }
 
 		const httpStatus =
       result.state === "confirmed"
@@ -641,10 +647,11 @@ export class ApplicationWorkflowExecutionControlService {
 		// Dynamic-script resume-after-edit: there are no nodes to skip — resume
 		// starts a FRESH run of the CURRENT (possibly edited) script and imports the
 		// source run's `done` journal rows so unchanged calls resolve without new
-		// sessions. Only the changed calls re-dispatch. The source must be terminal
-		// (or a confirmed stop) so its journal is stable.
+		// sessions. Only the changed calls re-dispatch. The source must have reached
+		// a terminal projection so its journal is stable. stopRequestedAt is only a
+		// persisted intent and is not evidence that the source has stopped.
 		if (workflow.engineType === "dynamic-script") {
-			if (!isTerminalOrStopped(source)) {
+			if (!isTerminalExecution(source)) {
 				return workflowControlError(
 					409,
 					"Source run is still active; stop it before resuming a dynamic-script run",
@@ -852,9 +859,8 @@ const TERMINAL_EXECUTION_STATUSES = new Set([
 	"completed",
 ]);
 
-/** A run is safe to resume-from when it is terminal or a stop was confirmed. */
-function isTerminalOrStopped(source: WorkflowExecutionRecord): boolean {
-	if (source.stopRequestedAt) return true;
+/** A run is safe to resume-from only after its persisted projection is terminal. */
+function isTerminalExecution(source: WorkflowExecutionRecord): boolean {
   return TERMINAL_EXECUTION_STATUSES.has(
     String(source.status ?? "").toLowerCase(),
   );

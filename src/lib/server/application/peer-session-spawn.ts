@@ -1,8 +1,10 @@
 import type {
 	PeerAgentDispatchContext,
 	PeerSessionRecord,
+  RuntimeProvisioningLease,
 	SandboxProvisioner,
 	SessionRepository,
+  SessionSandboxDestroyer,
 	SessionWorkflowSpawner,
 	WorkflowDataService,
 } from "$lib/server/application/ports";
@@ -10,6 +12,7 @@ import type {
   WorkflowMcpSessionCapabilities,
   WorkflowMcpSessionTokenSigner,
 } from "$lib/server/application/ports/workflow-mcp-auth";
+import type { ApplicationTeamMailboxDeliveryService } from "$lib/server/application/team-mailbox-delivery";
 
 export type PeerSessionSpawnPrincipal = {
   userId: string;
@@ -28,6 +31,13 @@ export type PeerSessionSpawnResult =
 			httpStatus?: number;
 			body: Record<string, unknown>;
 	  }
+  | {
+      status: "pending";
+      httpStatus: 202;
+      code: "runtime_provisioning";
+      message: string;
+      body: Record<string, unknown>;
+    }
 	| {
 			status: "error";
 			httpStatus: number;
@@ -49,7 +59,15 @@ export class ApplicationPeerSessionSpawnService {
 			sandboxProvisioner: SandboxProvisioner;
 			sessions: Pick<
 				SessionRepository,
-				"attachWorkspaceSandbox" | "recordSandboxProvisioningError"
+        | "attachWorkspaceSandbox"
+        | "attachSessionRuntime"
+        | "acknowledgeRuntimeProvisioningCompensation"
+        | "recordSandboxProvisioningError"
+      >;
+      sandboxDestroyer: SessionSandboxDestroyer;
+      teamMailboxDelivery: Pick<
+        ApplicationTeamMailboxDeliveryService,
+        "requestDeliveryAfterRuntimePublished"
 			>;
 		},
 	) {}
@@ -63,6 +81,12 @@ export class ApplicationPeerSessionSpawnService {
 		if (!request.sessionId) return peerSpawnError(400, "sessionId is required");
     if (!request.peerAgentId)
       return peerSpawnError(400, "peerAgentId is required");
+    if (policy.kind === "team" && request.peerAgentVersion == null) {
+      return peerSpawnError(
+        400,
+        "peerAgentVersion is required for team peer spawn",
+      );
+    }
 		if (request.sessionId.length > 64) {
 			return peerSpawnError(
 				400,
@@ -95,6 +119,13 @@ export class ApplicationPeerSessionSpawnService {
         "Peer spawn parent is outside the signed workspace",
       );
     }
+    if (
+      parentOwner.stopRequestedAt != null ||
+      parentOwner.completedAt != null ||
+      parentOwner.status === "terminated"
+    ) {
+      return peerSpawnError(409, "Peer spawn parent is stopping or terminal");
+    }
     if (policy.kind === "call_agent") {
       const parentDispatch =
         await this.deps.workflowData.resolvePeerAgentDispatchContext({
@@ -121,7 +152,11 @@ export class ApplicationPeerSessionSpawnService {
 		const ensureResult = await this.deps.workflowData.ensurePeerSession({
 			sessionId: request.sessionId,
 			peerAgentId: request.peerAgentId,
+      ...(policy.kind === "team"
+        ? { peerAgentVersion: request.peerAgentVersion }
+        : {}),
 			prompt: request.prompt,
+      workflowExecutionId: parentSession.workflowExecutionId,
 			parentSessionId: request.parentSessionId,
       // The signed parent session is server-authoritative lineage. A runtime's
       // nested Dapr instance id is caller-controlled and must not become the
@@ -138,7 +173,10 @@ export class ApplicationPeerSessionSpawnService {
     if (
       ensureResult.reused &&
       (session.agentId !== request.peerAgentId ||
-        session.parentExecutionId !== expectedParent)
+        (policy.kind === "team" &&
+          session.agentVersion !== request.peerAgentVersion) ||
+        session.parentExecutionId !== expectedParent ||
+        session.workflowExecutionId !== parentSession.workflowExecutionId)
     ) {
       return peerSpawnError(
         409,
@@ -170,31 +208,142 @@ export class ApplicationPeerSessionSpawnService {
       capabilities: workflowMcpCapabilities,
     });
 		const base = baseResponse(session, ensureResult.reused);
-		if (ensureResult.reused && !request.skipSpawnOnReplay) {
+    if (ensureResult.reused && !isActivePeerSession(session)) {
+      return peerSpawnError(
+        409,
+        `Session ${session.id} is stopping or terminal`,
+      );
+    }
+    if (
+      ensureResult.reused &&
+      !request.skipSpawnOnReplay &&
+      hasPositiveDispatchEvidence(session)
+    ) {
+      await this.requestPendingTeamMailboxDelivery(session.id);
       return {
         status: "ok",
         body: { ...base, workflowMcpSessionToken },
       };
 		}
 
+    let nativeDispatch: PeerAgentDispatchContext | null = null;
+    let nativeRuntimeAppId: string | null = null;
 		if (request.skipSpawn) {
-			const dispatch =
+      nativeDispatch =
 				await this.deps.workflowData.resolvePeerAgentDispatchContext({
 					agentId: session.agentId,
 					agentVersion: session.agentVersion,
 					environmentId: session.environmentId,
 					environmentVersion: session.environmentVersion,
 				});
-			if (!dispatch) {
+      if (!nativeDispatch) {
         return peerSpawnError(
           500,
           `could not re-resolve peer ${session.agentId}`,
         );
 			}
+      nativeRuntimeAppId = parentSession.runtimeAppId?.trim() || null;
+      if (!nativeRuntimeAppId) {
+        return peerSpawnError(
+          409,
+          "Peer spawn parent has no lifecycle-managed runtime target",
+        );
+      }
+      if (
+        ensureResult.reused &&
+        request.skipSpawnOnReplay &&
+        hasPositiveDispatchEvidence(session)
+      ) {
+        if (session.runtimeAppId?.trim() !== nativeRuntimeAppId) {
+          return peerSpawnError(
+            409,
+            "Published native peer runtime does not match the parent runtime target",
+          );
+        }
+        await this.requestPendingTeamMailboxDelivery(session.id);
+        return {
+          status: "ok",
+          body: {
+            ...skipSpawnResponse(
+              base,
+              session,
+              nativeDispatch,
+              nativeRuntimeAppId,
+            ),
+            workflowMcpSessionToken,
+          },
+        };
+      }
+    }
+
+    const provisioningLease =
+      await this.deps.workflowSpawner.reserveSessionWorkflow(session.id);
+    if (!provisioningLease) {
+      // A reused, active, unpublished child may already have an exact
+      // provisioning owner. That is not a definitive rejection: callers must
+      // preserve their durable intent until the owner publishes or lifecycle
+      // state makes a later retry deterministically fail.
+      if (
+        ensureResult.reused &&
+        isActivePeerSession(session) &&
+        !hasPositiveDispatchEvidence(session)
+      ) {
+        return peerSpawnPending(session.id);
+      }
+      return peerSpawnError(
+        409,
+        `Session ${session.id} is stopping or terminal`,
+      );
+    }
+
+    if (request.skipSpawn) {
+      let attached: boolean;
+      try {
+        attached = await this.deps.sessions.attachSessionRuntime({
+          sessionId: session.id,
+          expectedStartedAt: provisioningLease.startedAt,
+          daprInstanceId: session.id,
+          natsSubject: `session.events.${session.id}`,
+          runtimeAppId: nativeRuntimeAppId,
+          runtimeSandboxName: parentSession.runtimeSandboxName ?? null,
+          runtimeHostOwned: false,
+        });
+      } catch (attachErr) {
+        await this.releaseUnpublishedRuntimeLease(
+          session.id,
+          provisioningLease,
+        );
+        return peerSpawnError(
+          500,
+          attachErr instanceof Error
+            ? attachErr.message
+            : "native runtime attachment failed",
+        );
+      }
+      if (!attached) {
+        await this.releaseUnpublishedRuntimeLease(
+          session.id,
+          provisioningLease,
+        );
+        return peerSpawnError(
+          409,
+          `Session ${session.id} stopped before native peer dispatch`,
+        );
+      }
+      await this.requestPendingTeamMailboxDelivery(session.id);
 			return {
 				status: "ok",
         body: {
-          ...skipSpawnResponse(base, session, dispatch),
+          ...skipSpawnResponse(
+            {
+              ...base,
+              daprInstanceId: session.id,
+              natsSubject: `session.events.${session.id}`,
+            },
+            session,
+            nativeDispatch!,
+            nativeRuntimeAppId!,
+          ),
           workflowMcpSessionToken,
         },
 			};
@@ -212,18 +361,14 @@ export class ApplicationPeerSessionSpawnService {
 		// blocking the spawn — same posture as the interactive path.
 		let sandboxName: string | null = null;
 		if (request.provisionSandbox) {
+      let sandbox;
 			try {
-				const sandbox = await this.deps.sandboxProvisioner.provision({
+        sandbox = await this.deps.sandboxProvisioner.provision({
 					executionId: session.id,
 					name: request.title ?? `peer-${session.id.slice(0, 8)}`,
 					sandboxTemplate: request.sandboxTemplate ?? "base",
 					keepAfterRun: true,
 				});
-				await this.deps.sessions.attachWorkspaceSandbox({
-					sessionId: session.id,
-					workspaceSandboxName: sandbox.sandboxName,
-				});
-				sandboxName = sandbox.sandboxName;
 			} catch (sandboxErr) {
 				console.error("[peer-spawn] sandbox provisioning failed:", sandboxErr);
 				try {
@@ -241,12 +386,52 @@ export class ApplicationPeerSessionSpawnService {
 					);
 				}
 			}
+      if (sandbox) {
+        let attached: boolean;
+        try {
+          attached = await this.deps.sessions.attachWorkspaceSandbox({
+            sessionId: session.id,
+            workspaceSandboxName: sandbox.sandboxName,
+          });
+        } catch (attachErr) {
+          const cleanupError = await this.deleteProvisionedWorkspaceSandbox(
+            sandbox.sandboxName,
+          );
+          await this.releaseUnpublishedRuntimeLease(
+            session.id,
+            provisioningLease,
+          );
+          return peerSpawnError(
+            500,
+            cleanupError ??
+              (attachErr instanceof Error
+                ? attachErr.message
+                : "workspace attachment failed"),
+          );
+        }
+        if (!attached) {
+          const cleanupError = await this.deleteProvisionedWorkspaceSandbox(
+            sandbox.sandboxName,
+          );
+          await this.releaseUnpublishedRuntimeLease(
+            session.id,
+            provisioningLease,
+          );
+          if (cleanupError) return peerSpawnError(500, cleanupError);
+          return peerSpawnError(
+            409,
+            `Session ${session.id} stopped while its workspace was provisioning`,
+          );
+        }
+        sandboxName = sandbox.sandboxName;
+      }
 		}
 
 		try {
 			const { instanceId, natsSubject } =
         await this.deps.workflowSpawner.spawnSessionWorkflow(session.id, {
           workflowMcpCapabilities,
+          provisioningLease,
         });
 			return {
 				status: "ok",
@@ -258,29 +443,64 @@ export class ApplicationPeerSessionSpawnService {
 					natsSubject,
 					sandboxName,
           workflowMcpSessionToken,
-					reused: false,
+          reused: ensureResult.reused,
 				},
 			};
 		} catch (spawnErr) {
-			return {
-				status: "ok",
-				httpStatus: 202,
-				body: {
-					sessionId: session.id,
-					agentId: session.agentId,
-					agentVersion: session.agentVersion,
-					daprInstanceId: null,
-					natsSubject: null,
-          workflowMcpSessionToken,
-					reused: false,
-					error:
-						spawnErr instanceof Error
-							? spawnErr.message
-							: "Workflow spawn failed",
-				},
-			};
+      return peerSpawnError(
+        502,
+        spawnErr instanceof Error ? spawnErr.message : "Workflow spawn failed",
+      );
 		}
 	}
+
+  private async requestPendingTeamMailboxDelivery(
+    sessionId: string,
+  ): Promise<void> {
+    try {
+      await this.deps.teamMailboxDelivery.requestDeliveryAfterRuntimePublished(
+        sessionId,
+      );
+    } catch (err) {
+      // The mailbox row remains durable and the periodic sweeper is the fallback;
+      // runtime attachment must not be rolled back after it has been published.
+      console.warn(
+        `[peer-spawn] mailbox delivery trigger failed for ${sessionId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  private async deleteProvisionedWorkspaceSandbox(
+    sandboxName: string,
+  ): Promise<string | null> {
+    try {
+      const result =
+        await this.deps.sandboxDestroyer.deleteWorkspaceSandbox(sandboxName);
+      return result.status === "error"
+        ? result.error || `failed to delete workspace Sandbox ${sandboxName}`
+        : null;
+    } catch (err) {
+      return err instanceof Error
+        ? err.message
+        : `failed to delete workspace Sandbox ${sandboxName}`;
+    }
+  }
+
+  private async releaseUnpublishedRuntimeLease(
+    sessionId: string,
+    lease: RuntimeProvisioningLease,
+  ): Promise<void> {
+    const released = await this.deps.workflowSpawner.releaseSessionWorkflow(
+      sessionId,
+      lease,
+    );
+    if (released) return;
+    await this.deps.sessions.acknowledgeRuntimeProvisioningCompensation({
+      sessionId,
+      expectedStartedAt: lease.startedAt,
+    });
+  }
 }
 
 function parsePeerSpawnRequest(body: unknown) {
@@ -291,6 +511,12 @@ function parsePeerSpawnRequest(body: unknown) {
 			: null;
 	const peerAgentId =
 		typeof value.peerAgentId === "string" ? value.peerAgentId.trim() : "";
+  const peerAgentVersion =
+    typeof value.peerAgentVersion === "number" &&
+    Number.isSafeInteger(value.peerAgentVersion) &&
+    value.peerAgentVersion > 0
+      ? value.peerAgentVersion
+      : null;
 	const prompt = typeof value.prompt === "string" ? value.prompt : "";
 	const parentSessionId =
 		typeof value.parentSessionId === "string" ? value.parentSessionId : null;
@@ -309,6 +535,7 @@ function parsePeerSpawnRequest(body: unknown) {
 	return {
 		sessionId,
 		peerAgentId,
+    peerAgentVersion,
 		prompt,
 		parentSessionId,
 		parentInstanceId,
@@ -331,19 +558,39 @@ function baseResponse(session: PeerSessionRecord, reused: boolean) {
 	};
 }
 
+function isActivePeerSession(session: PeerSessionRecord): boolean {
+  return (
+    session.stopRequestedAt == null &&
+    session.completedAt == null &&
+    session.status !== "terminated"
+  );
+}
+
+function hasPositiveDispatchEvidence(session: PeerSessionRecord): boolean {
+  return Boolean(
+    isActivePeerSession(session) &&
+    session.daprInstanceId &&
+    session.runtimeAppId &&
+    session.runtimeProvisioningStartedAt == null,
+  );
+}
+
 function skipSpawnResponse(
 	base: ReturnType<typeof baseResponse>,
 	session: PeerSessionRecord,
 	dispatch: PeerAgentDispatchContext,
+  runtimeAppId: string,
 ) {
 	return {
 		...base,
+    runtimeAppId,
 		agentConfig: dispatch.agentConfig,
 		environmentConfig: dispatch.environmentConfig,
 		vaultIds: session.vaultIds,
 		callableAgents: dispatch.callableAgents,
 		registryTeam: dispatch.registryTeam,
 		skipSpawn: true,
+    requiresStartAuthority: true,
 	};
 }
 
@@ -352,6 +599,16 @@ function peerSpawnError(
 	message: string,
 ): PeerSessionSpawnResult {
 	return { status: "error", httpStatus, message };
+}
+
+function peerSpawnPending(sessionId: string): PeerSessionSpawnResult {
+  return {
+    status: "pending",
+    httpStatus: 202,
+    code: "runtime_provisioning",
+    message: `Session ${sessionId} runtime provisioning is already in progress`,
+    body: { sessionId, reused: true, pending: true },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

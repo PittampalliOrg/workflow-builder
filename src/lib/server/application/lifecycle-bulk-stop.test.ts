@@ -20,7 +20,10 @@ describe("ApplicationBulkLifecycleStopService", () => {
 
 	beforeEach(() => {
 		sessionLifecycle = {
-			checkSessionAccess: vi.fn(async () => ({ status: "ok" as const, active: true })),
+      checkSessionAccess: vi.fn(async () => ({
+        status: "ok" as const,
+        active: true,
+      })),
 			pauseSession: vi.fn(async () => ({ ok: true as const })),
 			resumeSession: vi.fn(async () => ({ ok: true as const })),
 			stopSession: vi.fn(async () => ({
@@ -33,7 +36,10 @@ describe("ApplicationBulkLifecycleStopService", () => {
 			pauseSessionGoal: vi.fn(async () => {}),
 		};
 		workflowLifecycle = {
-			checkExecutionAccess: vi.fn(async () => ({ status: "ok" as const, active: true })),
+      checkExecutionAccess: vi.fn(async () => ({
+        status: "ok" as const,
+        active: true,
+      })),
 			stopExecution: vi.fn(async () => ({
 				confirmed: false,
 				notFound: false,
@@ -129,6 +135,38 @@ describe("ApplicationBulkLifecycleStopService", () => {
 		});
 	});
 
+  it("reports stop-intent persistence failures as per-target 503 errors", async () => {
+    vi.mocked(sessionLifecycle.stopSession).mockResolvedValue({
+      confirmed: false,
+      notFound: false,
+      requested: false,
+      state: "stopping",
+      retryable: true,
+      steps: [],
+    });
+
+    const result = await service.stopMany({
+      userId: "user-1",
+      projectId: "project-1",
+      body: { targets: [{ kind: "session", id: "session-1" }] },
+    });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      body: {
+        summary: { failed: 1, stopping: 0 },
+        results: [
+          {
+            kind: "session",
+            id: "session-1",
+            state: "error",
+            status: 503,
+          },
+        ],
+      },
+    });
+  });
+
 	it("pauses session goals before interrupting sessions", async () => {
 		await service.stopMany({
 			userId: "user-1",
@@ -212,7 +250,9 @@ describe("ApplicationBulkLifecycleStopService", () => {
 		expect(result).toMatchObject({
 			status: "ok",
 			body: {
-				results: [{ kind: "workflowExecution", state: "stopping", status: 202 }],
+        results: [
+          { kind: "workflowExecution", state: "stopping", status: 202 },
+        ],
 				summary: { stopping: 1 },
 			},
 		});

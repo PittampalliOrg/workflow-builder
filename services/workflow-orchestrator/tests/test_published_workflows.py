@@ -369,6 +369,7 @@ class _FakeDurableClockCtx:
 class _FakeTerminalWorkflowCtx:
     instance_id = "parent-terminal-wf-1"
     is_replaying = True
+    current_utc_datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     def __init__(self):
         self.statuses = []
@@ -376,11 +377,12 @@ class _FakeTerminalWorkflowCtx:
     def set_custom_status(self, status):
         self.statuses.append(status)
 
-    def call_activity(self, activity, input=None):
+    def call_activity(self, activity, input=None, retry_policy=None):
         return {
             "kind": "call_activity",
             "activity": getattr(activity, "__name__", str(activity)),
             "input": input,
+            "retry_policy": retry_policy,
         }
 
 
@@ -1951,6 +1953,63 @@ def test_sw_workflow_failure_schedules_otel_finalizer_with_error_after_cleanup(m
     assert stop.value.value["phase"] == "failed"
 
 
+def test_sw_workflow_retained_success_arms_terminal_workspace_ttl(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_input = _terminal_workflow_input()
+    workflow_input["triggerData"] = {"keepSandbox": True}
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, workflow_input)
+
+    persisted = next(workflow_gen)
+    assert persisted["activity"] == "persist_results_to_db"
+
+    armed = workflow_gen.send({"success": True})
+    assert armed["activity"] == "arm_execution_workspace_retention"
+    assert armed["input"] == {
+        "executionId": "parent-terminal-wf-1",
+        "dbExecutionId": "db_exec_123",
+        "terminalAt": "2026-01-01T00:00:00Z",
+        "_otel": {"traceId": "1234567890abcdef1234567890abcdef"},
+    }
+    assert armed["retry_policy"] is not None
+
+    finalized = workflow_gen.send({"success": True, "armed": 1})
+    assert finalized["activity"] == "finalize_otel_trace_root"
+
+
+def test_sw_workflow_resumable_failure_registers_then_arms_terminal_workspace_ttl(
+    monkeypatch,
+):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_input = _terminal_workflow_input(
+        [{"fail_step": {"call": "system/fail", "with": {}}}]
+    )
+    workflow_input["workflow"]["document"]["x-workflow-builder"] = {
+        "resumable": True
+    }
+    workflow_gen = SW_WORKFLOW.sw_workflow(ctx, workflow_input)
+
+    node_update = next(workflow_gen)
+    assert node_update["activity"] == "update_execution_node"
+    execution = workflow_gen.send({"success": True})
+    assert execution["activity"] == "execute_action"
+    persisted = workflow_gen.send({"success": False, "error": "forced failure"})
+    assert persisted["activity"] == "persist_results_to_db"
+    registered = workflow_gen.send({"success": True})
+    assert registered["activity"] == "register_resumable_workspace"
+
+    armed = workflow_gen.send({"success": True})
+    assert armed["activity"] == "arm_execution_workspace_retention"
+    assert armed["input"]["executionId"] == "parent-terminal-wf-1"
+    assert armed["input"]["dbExecutionId"] == "db_exec_123"
+    assert armed["input"]["terminalAt"] == "2026-01-01T00:00:00Z"
+    assert armed["retry_policy"] is not None
+
+    finalized = workflow_gen.send({"success": True, "armed": 1})
+    assert finalized["activity"] == "finalize_otel_trace_root"
+
+
 def test_sw_workflow_emits_lifecycle_started_and_completed_when_enabled(monkeypatch):
     # Task #17: with lifecycle auto-emit on (the preview default), the run wrapper
     # yields publish_workflow_started first and publish_workflow_completed before the
@@ -2043,6 +2102,33 @@ def _drive_workflow(workflow_gen, fail_on=None):
             to_send = {"success": False, "error": "forced failure"}
         else:
             to_send = {"success": True}
+
+
+def test_sw_workspace_profile_keep_after_run_skips_cleanup_and_arms_ttl(monkeypatch):
+    _install_terminal_workflow_model_fakes(monkeypatch)
+    ctx = _FakeTerminalWorkflowCtx()
+    workflow_input = _terminal_workflow_input(
+        [
+            {
+                "profile": {
+                    "call": "workspace/profile",
+                    "with": {"keepAfterRun": True, "ttlSeconds": 3600},
+                }
+            }
+        ]
+    )
+
+    activities, final = _drive_workflow(
+        SW_WORKFLOW.sw_workflow(ctx, workflow_input)
+    )
+
+    assert final["success"] is True
+    assert "persist_workspace_session" in activities
+    assert "cleanup_execution_workspaces" not in activities
+    assert activities.count("arm_execution_workspace_retention") == 1
+    assert activities.index("persist_results_to_db") < activities.index(
+        "arm_execution_workspace_retention"
+    )
 
 
 def test_sw_workflow_emits_failed_exactly_once_when_enabled(monkeypatch):
@@ -2195,6 +2281,211 @@ def test_cleanup_execution_workspaces_uses_direct_workspace_runtime_url(monkeypa
             "headers": None,
         }
     ]
+
+
+def test_arm_execution_workspace_retention_uses_configured_provider(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_arm_workspace_retention_provider",
+        "activities/call_agent_service.py",
+    )
+    calls = []
+
+    class _Response:
+        status_code = 200
+        text = '{"terminalAt":"2026-07-21T18:30:00Z","results":[{"status":"armed"}]}'
+
+        def json(self):
+            return {
+                "terminalAt": "2026-07-21T18:30:00Z",
+                "results": [{"status": "armed"}],
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            calls.append({"url": url, "json": json, "headers": headers})
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "Client", _Client, raising=False)
+    monkeypatch.setattr(
+        module,
+        "WORKSPACE_RETENTION_URL",
+        "http://openshell-agent-runtime.openshell.svc.cluster.local:8083",
+    )
+    # The retired workspace runtime remains configured for cleanup only. A
+    # retention call must never use either its HTTP or Dapr transport.
+    monkeypatch.setattr(
+        module,
+        "WORKSPACE_RUNTIME_URL",
+        "http://workspace-runtime.workflow-builder.svc.cluster.local:8001",
+    )
+
+    result = module.arm_execution_workspace_retention(
+        None,
+        {
+            "executionId": "wf-123",
+            "dbExecutionId": "db-123",
+            "terminalAt": "2026-07-21T18:30:00Z",
+        },
+    )
+
+    assert result == {
+        "terminalAt": "2026-07-21T18:30:00Z",
+        "results": [{"status": "armed"}],
+    }
+    assert calls == [
+        {
+            "url": "http://openshell-agent-runtime.openshell.svc.cluster.local:8083/api/workspaces/retain",
+            "json": {
+                "executionId": "wf-123",
+                "dbExecutionId": "db-123",
+                "terminalAt": "2026-07-21T18:30:00Z",
+            },
+            "headers": None,
+        }
+    ]
+
+
+def test_arm_execution_workspace_retention_is_disabled_without_provider(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_arm_workspace_retention_disabled",
+        "activities/call_agent_service.py",
+    )
+
+    class _UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("disabled retention must not create an HTTP client")
+
+    monkeypatch.setattr(module.httpx, "Client", _UnexpectedClient, raising=False)
+    monkeypatch.setattr(module, "WORKSPACE_RETENTION_URL", "")
+    monkeypatch.setattr(
+        module,
+        "WORKSPACE_RUNTIME_URL",
+        "http://workspace-runtime.workflow-builder.svc.cluster.local:8001",
+    )
+
+    assert module.arm_execution_workspace_retention(
+        None,
+        {
+            "executionId": "wf-123",
+            "dbExecutionId": "db-123",
+            "terminalAt": "2026-07-21T18:30:00Z",
+        },
+    ) == {
+        "success": True,
+        "skipped": True,
+        "reason": "workspace_retention_disabled",
+    }
+
+
+def test_arm_execution_workspace_retention_raises_on_non_success_response(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_arm_workspace_retention_failure",
+        "activities/call_agent_service.py",
+    )
+
+    class _Response:
+        status_code = 502
+        text = '{"success":false,"error":"sandbox patch failed"}'
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "Client", _Client, raising=False)
+    monkeypatch.setattr(module, "WORKSPACE_RETENTION_URL", "http://retention-provider")
+
+    with pytest.raises(RuntimeError, match="HTTP 502.*sandbox patch failed"):
+        module.arm_execution_workspace_retention(
+            None,
+            {
+                "executionId": "wf-123",
+                "dbExecutionId": "db-123",
+                "terminalAt": "2026-07-21T18:30:00Z",
+            },
+        )
+
+
+def test_arm_execution_workspace_retention_rejects_semantic_failure(monkeypatch):
+    module = _load_module(
+        "workflow_orchestrator_arm_workspace_retention_semantic_failure",
+        "activities/call_agent_service.py",
+    )
+
+    class _Response:
+        status_code = 200
+        text = '{"success":false,"error":"compare-and-set rejected"}'
+
+        def json(self):
+            return {"success": False, "error": "compare-and-set rejected"}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json=None, headers=None):
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "Client", _Client, raising=False)
+    monkeypatch.setattr(module, "WORKSPACE_RETENTION_URL", "http://retention-provider")
+
+    with pytest.raises(RuntimeError, match="rejected.*compare-and-set rejected"):
+        module.arm_execution_workspace_retention(
+            None,
+            {
+                "executionId": "wf-123",
+                "dbExecutionId": "db-123",
+                "terminalAt": "2026-07-21T18:30:00Z",
+            },
+        )
+
+
+def test_arm_execution_workspace_retention_is_auto_discovered():
+    # Several legacy tests install lightweight ``activities`` stubs during
+    # collection. Temporarily replace every stubbed package entry with the real
+    # package, then restore the test process exactly so order cannot mask or
+    # manufacture the runtime registration contract.
+    saved = {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name == "activities" or name.startswith("activities.")
+    }
+    for name in saved:
+        sys.modules.pop(name, None)
+    try:
+        activities = importlib.import_module("activities")
+        assert "arm_execution_workspace_retention" in {
+            activity.__name__ for activity in activities.ACTIVITIES
+        }
+    finally:
+        for name in list(sys.modules):
+            if name == "activities" or name.startswith("activities."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)
 
 
 def test_sw_workflow_dispatches_task_activity_otel_context(monkeypatch):

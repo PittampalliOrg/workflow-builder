@@ -32,10 +32,13 @@ from src.cli_batch import cli_batch_enabled, run_cli_once_activity
 from src.cli_lifecycle import probe_cli_activity, start_cli_activity, stop_cli_activity
 from src.event_publisher import publish_session_event
 from src.output_sync import sync_output_activity
+from src.runtime_start_authority import authorize_session_runtime_start
 from src.seed import seed_session_activity
 from src.taskhub import LIFECYCLE_EVENT_NAME
 
 logger = logging.getLogger(__name__)
+
+_START_AUTHORITY_PENDING_DELAYS_SECONDS = (1, 2, 4, 8, 15, 30) + (60,) * 14
 
 # Idle-probe interval. Doubles as the cooperative-cancel backstop: each tick
 # checks the session-cancel flag (persisted by the raise-event endpoint on a
@@ -646,6 +649,53 @@ def session_workflow(
     ctx: DaprWorkflowContext, input_data: dict[str, Any]
 ) -> Generator[Any, Any, dict[str, Any] | None]:
     session_id = _session_id(input_data)
+    # StartInstance may be accepted before the BFF publishes this exact runtime
+    # generation. Prove authority before seeding, starting a TUI, or invoking a
+    # batch CLI, so a stale generation cannot run alongside its replacement.
+    if bool(input_data.get("requiresStartAuthority")):
+        for pending_attempt in range(len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1):
+            start_authority = yield ctx.call_activity(
+                authorize_session_runtime_start,
+                input={
+                    "sessionId": session_id,
+                    "workflowMcpSessionToken": input_data.get(
+                        "workflowMcpSessionToken"
+                    ),
+                    "runtimeAppId": input_data.get("runtimeAppId")
+                    or input_data.get("agentAppId"),
+                    "runtimeInstanceId": ctx.instance_id,
+                },
+            )
+            if isinstance(start_authority, Mapping) and start_authority.get(
+                "authorized"
+            ):
+                break
+            retryable_pending = bool(
+                isinstance(start_authority, Mapping)
+                and start_authority.get("retryable") is True
+                and start_authority.get("code")
+                in {"team_pending", "runtime_unpublished"}
+            )
+            if not retryable_pending or pending_attempt >= len(
+                _START_AUTHORITY_PENDING_DELAYS_SECONDS
+            ):
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "status": "cancelled",
+                    "content": "",
+                    "sessionId": session_id,
+                    "error": (
+                        "session start authority remained pending"
+                        if retryable_pending
+                        else "session start was not authorized"
+                    ),
+                }
+            yield ctx.create_timer(
+                timedelta(
+                    seconds=_START_AUTHORITY_PENDING_DELAYS_SECONDS[pending_attempt]
+                )
+            )
     auto_terminate = bool(input_data.get("autoTerminateAfterEndTurn"))
     agent_runtime = _agent_runtime(input_data)
     provenance = _workflow_history_provenance(ctx, input_data, agent_runtime)

@@ -33,6 +33,7 @@ DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 WORKSPACE_RUNTIME_APP_ID = config.WORKSPACE_RUNTIME_APP_ID
 WORKSPACE_RUNTIME_URL = (config.WORKSPACE_RUNTIME_URL or "").rstrip("/")
+WORKSPACE_RETENTION_URL = (config.WORKSPACE_RETENTION_URL or "").rstrip("/")
 DAPR_AGENT_PY_APP_ID = config.DAPR_AGENT_PY_APP_ID
 DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
 CLAUDE_AGENT_PY_APP_ID = config.CLAUDE_AGENT_PY_APP_ID
@@ -413,3 +414,70 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
         except Exception as e:
             logger.error(f"[Cleanup Workspaces] Failed: {e}")
             return {"success": False, "error": str(e)}
+
+
+def arm_execution_workspace_retention(ctx, input_data: dict) -> dict:
+    """Arm terminal-time TTLs for retained workspaces owned by an execution.
+
+    The configured retention provider is the lifecycle authority for Sandbox
+    resources. It resolves exact resources from both workflow instance and
+    database execution identities, then idempotently transitions only
+    ``pending-ttl`` Sandboxes. An empty URL disables the capability. It never
+    falls back to the retired workspace-runtime service.
+
+    Transport failures, non-2xx responses, and explicit semantic rejection
+    intentionally propagate so the workflow activity retry policy can redrive
+    this call.
+    """
+    execution_id = str(input_data.get("executionId") or "").strip()
+    db_execution_id = str(input_data.get("dbExecutionId") or "").strip()
+    terminal_at = str(input_data.get("terminalAt") or "").strip()
+    if not execution_id and not db_execution_id:
+        raise ValueError("executionId or dbExecutionId is required")
+    if not terminal_at:
+        raise ValueError("terminalAt is required")
+
+    if not WORKSPACE_RETENTION_URL:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "workspace_retention_disabled",
+        }
+
+    url = f"{WORKSPACE_RETENTION_URL}/api/workspaces/retain"
+    transport = "http"
+
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "workspace/retain",
+        "workflow.instance_id": execution_id,
+        "workflow.db_execution_id": db_execution_id,
+        "workspace.retention.terminal_at": terminal_at,
+        "workspace.retention.transport": transport,
+    }
+    payload = {
+        "executionId": execution_id,
+        "dbExecutionId": db_execution_id,
+        "terminalAt": terminal_at,
+    }
+
+    with start_activity_span("activity.arm_execution_workspace_retention", otel, attrs):
+        with httpx.Client(timeout=15.0) as client:
+            result = _post_json_with_details(
+                client=client,
+                url=url,
+                payload=payload,
+                service_label="Workspace retention arming",
+            )
+            if result.get("success") is False:
+                detail = str(result.get("error") or result.get("message") or result)
+                raise RuntimeError(
+                    f"Workspace retention arming was rejected: {detail[:1200]}"
+                )
+            if result.get("success") is not True and not isinstance(
+                result.get("results"), list
+            ):
+                raise RuntimeError(
+                    "Workspace retention arming returned no positive acknowledgement"
+                )
+            return result

@@ -18,12 +18,17 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 from dapr_agents.agents.durable import DurableAgent
 from dapr_agents.workflow.decorators import workflow_entry
 
 from src.event_publisher import publish_session_event
+from src.runtime_start_authority import (
+    AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+    authorize_session_runtime_start,
+)
 from src.session_config import apply_session_control_events
 from src.session_native import (
     logical_turn_id,
@@ -34,6 +39,8 @@ from src.session_native import (
 )
 
 logger = logging.getLogger(__name__)
+
+_START_AUTHORITY_PENDING_DELAYS_SECONDS = (1, 2, 4, 8, 15, 30) + (60,) * 14
 
 
 def _coerce_agent_config(raw: Any) -> dict[str, Any]:
@@ -105,6 +112,56 @@ class BrowserUseDurableAgent(DurableAgent):
         session_id = str(message.get("sessionId") or "")
         if not session_id:
             raise RuntimeError("session_workflow requires sessionId")
+
+        # StartInstance may be accepted before the BFF publishes this exact
+        # runtime generation. Prove that persisted authority before browser
+        # status events, model calls, or browser actions can occur.
+        if bool(message.get("requiresStartAuthority")):
+            for pending_attempt in range(
+                len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1
+            ):
+                start_authority = yield ctx.call_activity(
+                    authorize_session_runtime_start,
+                    input={
+                        "sessionId": session_id,
+                        "workflowMcpSessionToken": message.get(
+                            "workflowMcpSessionToken"
+                        ),
+                        "runtimeAppId": message.get("runtimeAppId")
+                        or message.get("agentAppId"),
+                        "runtimeInstanceId": ctx.instance_id,
+                    },
+                )
+                if isinstance(start_authority, dict) and start_authority.get(
+                    "authorized"
+                ):
+                    break
+                retryable_pending = bool(
+                    isinstance(start_authority, dict)
+                    and start_authority.get("retryable") is True
+                    and start_authority.get("code")
+                    in {"team_pending", "runtime_unpublished"}
+                )
+                if not retryable_pending or pending_attempt >= len(
+                    _START_AUTHORITY_PENDING_DELAYS_SECONDS
+                ):
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "status": "cancelled",
+                        "content": "",
+                        "sessionId": session_id,
+                        "error": (
+                            "session start authority remained pending"
+                            if retryable_pending
+                            else "session start was not authorized"
+                        ),
+                    }
+                yield ctx.create_timer(
+                    timedelta(
+                        seconds=_START_AUTHORITY_PENDING_DELAYS_SECONDS[pending_attempt]
+                    )
+                )
 
         agent_cfg = _coerce_agent_config(message.get("agentConfig"))
         vault_ids = message.get("vaultIds") or []
@@ -351,6 +408,10 @@ class BrowserUseDurableAgent(DurableAgent):
         """
         super().register_workflows(runtime)
         runtime.register_workflow(self.session_workflow)
+        runtime.register_activity(
+            authorize_session_runtime_start,
+            name=AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+        )
         # dapr-agents 1.0.4 executor-branch bug: agent_workflow yields
         # ctx.call_activity(self.run_executor) with the bound METHOD, which
         # durabletask resolves by __name__ ("run_executor") — but the base

@@ -2,7 +2,11 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import {
-	addMember,
+  buildTeamMemberSpawnPrompt,
+  canonicalTeamMemberIdentity,
+  createTeamMemberSessionId,
+} from "$lib/server/application/team-member-launch";
+import {
 	ensureTeam,
 	listMembers,
 	resolveAgentIdBySlug,
@@ -15,10 +19,7 @@ const TEAM_MAX_MEMBERS = () => {
 	const raw = Number(process.env.TEAM_MAX_MEMBERS ?? 8);
 	return Number.isFinite(raw) && raw >= 2 ? Math.trunc(raw) : 8;
 };
-import {
-	ensureTeamRunExecution,
-	linkSessionToTeamRun,
-} from "$lib/server/teams/team-run";
+import { ensureTeamRunExecution } from "$lib/server/teams/team-run";
 import { getTeamBudget } from "$lib/server/teams/team-budget";
 import {
   authorizeTeamActionRequest,
@@ -31,13 +32,8 @@ import {
  *
  * Form the team (idempotent) and spawn a peer teammate through the existing
  * peer-session pipeline (Kueue-admitted Sandbox, real sessions row, parent
- * lineage). Records the teammate in team_members.
- *
- * NOTE (remaining wiring): the teammate's agentConfig must also carry the team
- * MCP server with X-Wfb-Team-Id (so it can claim/message) and X-Wfb-Team-Depth
- * (so it cannot spawn nested teams). That stamping belongs in
- * sessions/spawn.ts::spawnSessionWorkflow (via stampTeamMcpHeaders) — see
- * docs/agent-teams-phase1.md § "remaining wiring".
+ * lineage). Membership is reserved as non-working before dispatch and promoted
+ * only after the child is durably linked to the active team run.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
 	const body = (await request.json().catch(() => ({}))) as {
@@ -60,11 +56,65 @@ export const POST: RequestHandler = async ({ params, request }) => {
   if (!authorization.ok)
     return error(authorization.status, authorization.error);
   const leadSessionId = authorization.principal.sessionId;
-  if (!body.agentSlug || !body.name || !body.prompt) {
+  const identity = canonicalTeamMemberIdentity(body.name);
+  if (!body.agentSlug || !identity || !body.prompt) {
     return error(400, "agentSlug, name, and prompt are required");
 	}
+  const { name, title } = identity;
+  const application = getApplicationAdapters();
+  const teammateSessionId = createTeamMemberSessionId({
+    teamId: params.teamId,
+    name,
+  });
+  const reservation = {
+    teamId: params.teamId,
+    sessionId: teammateSessionId,
+    name,
+    agentSlug: body.agentSlug,
+    model: body.model ?? null,
+    planModeRequired: body.planModeRequired ?? false,
+  };
+  const dispatchIntent = {
+    prompt: buildTeamMemberSpawnPrompt(
+      body.prompt,
+      body.planModeRequired ?? false,
+    ),
+    title,
+    skipSpawn: false,
+    provisionSandbox: true,
+    sandboxTemplate: null,
+  };
+  const replay = await application.teamMemberLaunch.inspectNewMemberReplay(
+    reservation,
+    authorization.principal,
+    dispatchIntent,
+  );
+  if (replay?.status === "error") {
+    return error(replay.httpStatus, replay.message);
+  }
+  if (replay) {
+    return json(
+      {
+        ok: true,
+        name: replay.member.name,
+        sessionId: replay.member.session_id,
+        spawn: publicPeerSpawnProjection(replay.spawn.body),
+      },
+      { status: replay.spawn.httpStatus ?? 200 },
+    );
+  }
 
   const projectId = authorization.principal.projectId;
+  const agent = await resolveAgentIdBySlug(projectId, body.agentSlug);
+  if (!agent) return error(404, `no agent '${body.agentSlug}' in this project`);
+  const eligibility =
+    await application.teamMailboxEligibility.checkParticipants({
+      leadSessionId,
+      memberAgentId: agent.id,
+    });
+  if (eligibility.status === "error") {
+    return error(eligibility.httpStatus, eligibility.message);
+  }
 
 	await ensureTeam({
 		teamId: params.teamId,
@@ -89,74 +139,48 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (budget?.exhausted) {
 		return error(
 			400,
-			`team token budget exhausted (${budget.used}/${budget.budget} tokens used) — cannot spawn '${body.name}'. Finish with the teammates you have.`,
+      `team token budget exhausted (${budget.used}/${budget.budget} tokens used) — cannot spawn '${name}'. Finish with the teammates you have.`,
 		);
 	}
 
 	// Give the team a container execution (created once) so it renders as ONE
 	// unified run and all teammate sessions roll up under it. Also sets
 	// teams.workflow_execution_id + stamps the lead session.
-	const teamExecId = await ensureTeamRunExecution({
+  await ensureTeamRunExecution({
 		teamId: params.teamId,
 		projectId,
     leadSessionId,
-		name: body.name,
+    name,
 		prompt: body.prompt,
 	});
 
-	const agent = await resolveAgentIdBySlug(projectId, body.agentSlug);
-	if (!agent) return error(404, `no agent '${body.agentSlug}' in this project`);
-
-	// Deterministic, ≤64-char session id (peer-spawn requirement).
-	const teammateSessionId = `tm-${params.teamId}-${body.name}`.slice(0, 64);
-
-	// Record membership BEFORE spawning the workflow: spawnSessionWorkflow →
-	// spawn.ts looks up this row to stamp X-Wfb-Team-Id + X-Wfb-Team-Depth onto
-	// the teammate's MCP config, so the teammate boots with team scope.
-	const member = await addMember({
-		teamId: params.teamId,
-		sessionId: teammateSessionId,
-		name: body.name,
-		agentSlug: body.agentSlug,
-		model: body.model ?? null,
-		planModeRequired: body.planModeRequired ?? false,
-	});
-
-	// Plan-approval handshake: a plan-mode teammate must plan first — claim_task
-	// is gated server-side until the lead approves (claim route), and this
-	// fragment teaches the protocol (submit_plan → wait for approval).
-	const planFragment = body.planModeRequired
-		? "\n\n# Plan approval required\nYou are in PLAN MODE. Before doing any work: study the task, write a concrete plan, and call submit_plan with it. You cannot claim tasks until the lead approves your plan (you will receive an approval or revision-request message). If revisions are requested, update the plan and submit_plan again."
-		: "";
-
-  const spawn =
-    await getApplicationAdapters().peerSessionSpawn.spawnPeerSession(
-      {
+  const launch = await application.teamMemberLaunch.startNewMember({
+    agentId: agent.id,
+    agentVersion: eligibility.agentVersion,
+    reservation,
+    peerRequest: {
 		sessionId: teammateSessionId,
 		peerAgentId: agent.id,
-		prompt: `${body.prompt}${planFragment}`,
+      peerAgentVersion: eligibility.agentVersion,
         parentSessionId: leadSessionId,
-		title: `teammate:${body.name}`,
 		// Teammates do real file/command work — give each its own OpenShell
 		// workspace sandbox (otherwise the runtime's filesystem/bash tools fail
 		// with "OpenShell sandboxName is required").
-		provisionSandbox: true,
+      ...dispatchIntent,
       },
-      authorization.principal,
-      { kind: "team", teamId: params.teamId },
-    );
-	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
-
-	// Roll the teammate session up under the team run.
-	await linkSessionToTeamRun(teammateSessionId, teamExecId);
+    principal: authorization.principal,
+  });
+  if (launch.status === "error") {
+    return error(launch.httpStatus, launch.message);
+  }
 
 	return json(
     {
       ok: true,
-      name: member.name,
+      name: launch.member.name,
       sessionId: teammateSessionId,
-      spawn: publicPeerSpawnProjection(spawn.body),
+      spawn: publicPeerSpawnProjection(launch.spawn.body),
     },
-		{ status: spawn.httpStatus ?? 200 },
+    { status: launch.spawn.httpStatus ?? 200 },
 	);
 };

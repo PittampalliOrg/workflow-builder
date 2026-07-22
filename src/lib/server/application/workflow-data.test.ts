@@ -634,7 +634,7 @@ function fakeSessions(): SessionRepository {
 			mountedAt: null,
 			removedAt: null,
 		})),
-		attachWorkspaceSandbox: vi.fn(async () => undefined),
+    attachWorkspaceSandbox: vi.fn(async () => true),
 		recordSandboxProvisioningError: vi.fn(async () => undefined),
 		removeSessionResource: vi.fn(async () => false),
 		getSessionProvisioningContext: vi.fn(async () => ({
@@ -651,7 +651,20 @@ function fakeSessions(): SessionRepository {
 			events: { total: 3, totalBytes: 1024, llmTurns: 1 },
 		})),
 		getSessionOwnerUserId: vi.fn(async () => "user-1"),
-		attachSessionRuntime: vi.fn(async () => undefined),
+    reserveSessionRuntimeProvisioning: vi.fn(async () => ({
+      startedAt: new Date("2026-07-21T20:00:00.000Z"),
+    })),
+		stageSessionRuntimeProvisioning: vi.fn(async () => true),
+		listStaleSessionRuntimeProvisioningTargets: vi.fn(async () => []),
+		attachStagedSessionRuntimeProvisioning: vi.fn(async () => true),
+		inspectSessionRuntimeHostRecovery: vi.fn(async () => null),
+		beginSessionRuntimeHostRecovery: vi.fn(async () => null),
+		completeSessionRuntimeHostRecovery: vi.fn(async () => "superseded" as const),
+    acknowledgeRuntimeProvisioningCompensation: vi.fn(async () => true),
+		canCompensateRuntimeProvisioning: vi.fn(async () => true),
+		canReleaseRuntimeProvisioning: vi.fn(async () => true),
+		releaseSessionRuntimeProvisioning: vi.fn(async () => true),
+    attachSessionRuntime: vi.fn(async () => true),
 		getSessionRuntimeTarget: vi.fn(async () => ({
 			appId: "agent-session-1",
 			invokeTarget: "agent-session-1",
@@ -678,21 +691,30 @@ function fakeSessions(): SessionRepository {
 			id: "session-1",
 			agentId: "agent-1",
 			agentVersion: 2,
+			userId: "user-1",
+			projectId: "project-1",
 			vaultIds: ["vault-1"],
 			workflowExecutionId: "exec-1",
+			parentExecutionId: "parent-1",
 			sandboxName: "sandbox-1",
 			runtimeAppId: "agent-session-1",
 			runtimeSandboxName: "agent-host-agent-session-1",
 		})),
-		createWorkflowEnsureSession: vi.fn(async () => undefined),
-		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),
+		createWorkflowEnsureSession: vi.fn(async () => ({
+			startedAt: new Date("2026-07-21T20:00:00.000Z"),
+		})),
+    updateWorkflowEnsureSessionRuntime: vi.fn(async () => true),
 		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => [
 			{ sessionId: "session-old", runtimeAppId: "agent-session-old" },
 		]),
 		createSessionFork: vi.fn(async () => ({ id: "fork-session-1" })),
 		getPeerSession: vi.fn(async () => null),
 		createPeerSession: vi.fn(async (input) => ({
+			status: "ok" as const,
+			created: true,
+			session: {
 			id: input.id,
+				status: "rescheduling" as const,
 			agentId: input.agentId,
 			agentVersion: 3,
 			environmentId: "env-1",
@@ -700,7 +722,13 @@ function fakeSessions(): SessionRepository {
 			vaultIds: ["vault-1"],
 			daprInstanceId: null,
 			natsSubject: null,
+			runtimeAppId: null,
+			runtimeProvisioningStartedAt: null,
+				workflowExecutionId: input.workflowExecutionId,
       parentExecutionId: input.parentExecutionId,
+				stopRequestedAt: null,
+				completedAt: null,
+			},
 		})),
 		findSessionIdByDaprInstanceId: vi.fn(async () => "session-1"),
 		resolveSessionIdForProvisioningEvent: vi.fn(async () => "session-1"),
@@ -808,7 +836,9 @@ function fakeSessionEvents(): SessionEventLog {
 		})),
 		listSessionEvents: vi.fn(async () => []),
 		claimUnraisedTeamEvents: vi.fn(async () => []),
-		unclaimSessionEvents: vi.fn(async () => {}),
+			hasUnprocessedTeamEvents: vi.fn(async () => false),
+			completeTeamEventDelivery: vi.fn(async () => 0),
+			releaseTeamEventDeliveryClaim: vi.fn(async () => 0),
 	};
 }
 
@@ -904,7 +934,10 @@ function fakeSessionExperimentAgents(): SessionExperimentAgentStore {
 
 function fakeSessionRuntimeEvents(): SessionRuntimeEventRaiser {
 	return {
-		raiseSessionUserEvents: vi.fn(async () => undefined),
+		raiseSessionUserEvents: vi.fn(async (_sessionId, _events, delivery) => ({
+			accepted: true as const,
+			deliveryId: delivery?.batchId ?? null,
+		})),
 	};
 }
 
@@ -2829,6 +2862,7 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		await service.updateWorkflowEnsureSessionRuntime({
 			sessionId: "session-2",
+			expectedStartedAt: new Date("2026-07-21T12:00:00.000Z"),
 			runtimeAppId: "agent-session-2",
 			runtimeSandboxName: "agent-host-agent-session-2",
 		});
@@ -2848,6 +2882,7 @@ describe("ApplicationWorkflowDataService", () => {
 		});
 		expect(sessions.updateWorkflowEnsureSessionRuntime).toHaveBeenCalledWith({
 			sessionId: "session-2",
+				expectedStartedAt: new Date("2026-07-21T12:00:00.000Z"),
 			runtimeAppId: "agent-session-2",
 			runtimeSandboxName: "agent-host-agent-session-2",
 		});
@@ -3033,7 +3068,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const result = await service.ensurePeerSession({
 			sessionId: "ca-session-1",
 			peerAgentId: "agent-peer",
+			peerAgentVersion: 3,
 			prompt: "Review this change",
+			workflowExecutionId: "exec-1",
 			parentSessionId: "parent-session-1",
 			parentInstanceId: "parent-instance-1",
 			title: null,
@@ -3044,6 +3081,7 @@ describe("ApplicationWorkflowDataService", () => {
 			reused: false,
 			session: {
 				id: "ca-session-1",
+				status: "rescheduling",
 				agentId: "agent-peer",
 				agentVersion: 3,
 				environmentId: "env-1",
@@ -3051,7 +3089,12 @@ describe("ApplicationWorkflowDataService", () => {
 				vaultIds: ["vault-1"],
 				daprInstanceId: null,
 				natsSubject: null,
+				runtimeAppId: null,
+				runtimeProvisioningStartedAt: null,
+				workflowExecutionId: "exec-1",
         parentExecutionId: "parent-instance-1",
+				stopRequestedAt: null,
+				completedAt: null,
 			},
 		});
     expect(sessions.getSessionFileOwner).toHaveBeenCalledWith(
@@ -3061,9 +3104,11 @@ describe("ApplicationWorkflowDataService", () => {
 		expect(sessions.createPeerSession).toHaveBeenCalledWith({
 			id: "ca-session-1",
 			agentId: "agent-peer",
+			agentVersion: 3,
 			title: "Delegated: Review this change",
 			userId: "user-1",
 			projectId: "project-1",
+			workflowExecutionId: "exec-1",
 			parentExecutionId: "parent-instance-1",
 		});
     expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith(
@@ -3082,6 +3127,7 @@ describe("ApplicationWorkflowDataService", () => {
 	it("returns reused peer sessions without appending another prompt", async () => {
 		const existingSession = {
 			id: "ca-existing",
+			status: "running" as const,
 			agentId: "agent-peer",
 			agentVersion: 2,
 			environmentId: null,
@@ -3089,7 +3135,12 @@ describe("ApplicationWorkflowDataService", () => {
 			vaultIds: [],
 			daprInstanceId: "ca-existing",
 			natsSubject: "session.events.ca-existing",
+			runtimeAppId: "agent-runtime-agent-peer",
+			runtimeProvisioningStartedAt: null,
+			workflowExecutionId: null,
       parentExecutionId: null,
+			stopRequestedAt: null,
+			completedAt: null,
 		};
 		const sessions = {
 			...fakeSessions(),
@@ -3111,6 +3162,172 @@ describe("ApplicationWorkflowDataService", () => {
 			}),
 		).resolves.toEqual({ ok: true, session: existingSession, reused: true });
 		expect(sessions.createPeerSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("rejects an existing peer whose version differs from the team pin", async () => {
+		const existingSession = {
+			id: "ca-existing-version",
+			status: "running" as const,
+			agentId: "agent-peer",
+			agentVersion: 2,
+			environmentId: null,
+			environmentVersion: null,
+			vaultIds: [],
+			daprInstanceId: "ca-existing-version",
+			natsSubject: "session.events.ca-existing-version",
+			runtimeAppId: "agent-runtime-agent-peer",
+			runtimeProvisioningStartedAt: null,
+			workflowExecutionId: null,
+			parentExecutionId: null,
+			stopRequestedAt: null,
+			completedAt: null,
+		};
+		const sessions = {
+			...fakeSessions(),
+			getPeerSession: vi.fn(async () => existingSession),
+			createPeerSession: vi.fn(),
+		} satisfies SessionRepository;
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver: fakePeerAgentResolver(),
+		});
+
+		await expect(
+			service.ensurePeerSession({
+				sessionId: existingSession.id,
+				peerAgentId: "agent-peer",
+				peerAgentVersion: 3,
+				prompt: "again",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 409,
+			message:
+				"Existing peer session agent version 2 does not match required version 3",
+		});
+		expect(sessions.createPeerSession).not.toHaveBeenCalled();
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("treats a concurrent peer insert as a replay and does not duplicate the prompt", async () => {
+		const sessions = fakeSessions();
+		const concurrent = {
+			id: "ca-concurrent",
+			status: "rescheduling" as const,
+			agentId: "agent-peer",
+			agentVersion: 3,
+			environmentId: null,
+			environmentVersion: null,
+			vaultIds: [],
+			daprInstanceId: null,
+			natsSubject: null,
+			runtimeAppId: null,
+			runtimeProvisioningStartedAt: null,
+			workflowExecutionId: "exec-1",
+			parentExecutionId: "parent-session-1",
+			stopRequestedAt: null,
+			completedAt: null,
+		};
+		vi.mocked(sessions.createPeerSession).mockResolvedValueOnce({
+			status: "ok",
+			session: concurrent,
+			created: false,
+		});
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver: fakePeerAgentResolver(),
+		});
+
+		await expect(
+			service.ensurePeerSession({
+				sessionId: "ca-concurrent",
+				peerAgentId: "agent-peer",
+				prompt: "once",
+				workflowExecutionId: "exec-1",
+				parentSessionId: "parent-session-1",
+			}),
+		).resolves.toEqual({ ok: true, session: concurrent, reused: true });
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("rejects a concurrent peer insert that won with another agent version", async () => {
+		const sessions = fakeSessions();
+		vi.mocked(sessions.createPeerSession).mockResolvedValueOnce({
+			status: "ok",
+			created: false,
+			session: {
+				id: "ca-concurrent-version",
+				status: "rescheduling",
+				agentId: "agent-peer",
+				agentVersion: 2,
+				environmentId: null,
+				environmentVersion: null,
+				vaultIds: [],
+				daprInstanceId: null,
+				natsSubject: null,
+				runtimeAppId: null,
+				runtimeProvisioningStartedAt: null,
+				workflowExecutionId: "exec-1",
+				parentExecutionId: "parent-session-1",
+				stopRequestedAt: null,
+				completedAt: null,
+			},
+		});
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver: fakePeerAgentResolver(),
+		});
+
+		await expect(
+			service.ensurePeerSession({
+				sessionId: "ca-concurrent-version",
+				peerAgentId: "agent-peer",
+				peerAgentVersion: 3,
+				prompt: "once",
+				workflowExecutionId: "exec-1",
+				parentSessionId: "parent-session-1",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 409,
+			message:
+				"Peer session agent version 2 does not match required version 3",
+		});
+		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
+	});
+
+	it("surfaces the parent execution fence as a conflict", async () => {
+		const sessions = fakeSessions();
+		vi.mocked(sessions.createPeerSession).mockResolvedValueOnce({
+			status: "execution_not_active",
+		});
+		const sessionEvents = fakeSessionEvents();
+		const { service } = makeService({
+			sessions,
+			sessionEvents,
+			peerAgentResolver: fakePeerAgentResolver(),
+		});
+
+		await expect(
+			service.ensurePeerSession({
+				sessionId: "ca-stopped",
+				peerAgentId: "agent-peer",
+				prompt: "too late",
+				workflowExecutionId: "exec-stopped",
+				parentSessionId: "parent-session-1",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			status: 409,
+			message: "Parent session or workflow execution is stopping or terminal",
+		});
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});
 
@@ -3357,12 +3574,13 @@ describe("ApplicationWorkflowDataService", () => {
 	it("attaches session runtime metadata through session ports", async () => {
 		const sessions = {
 			...fakeSessions(),
-			attachSessionRuntime: vi.fn(async () => undefined),
+      attachSessionRuntime: vi.fn(async () => true),
 		} satisfies SessionRepository;
 		const { service } = makeService({ sessions });
 
 		await service.attachSessionRuntime({
 			sessionId: "session-1",
+			expectedStartedAt: new Date("2026-07-21T12:00:00.000Z"),
 			daprInstanceId: "session-1",
 			natsSubject: "session.events.session-1",
 			runtimeAppId: "agent-session-1",
@@ -3371,12 +3589,73 @@ describe("ApplicationWorkflowDataService", () => {
 
 		expect(sessions.attachSessionRuntime).toHaveBeenCalledWith({
 			sessionId: "session-1",
+			expectedStartedAt: new Date("2026-07-21T12:00:00.000Z"),
 			daprInstanceId: "session-1",
 			natsSubject: "session.events.session-1",
 			runtimeAppId: "agent-session-1",
 			runtimeSandboxName: "agent-host-agent-session-1",
 		});
 	});
+
+  it("reserves session runtime provisioning through session ports", async () => {
+    const lease = { startedAt: new Date("2026-07-21T20:00:00.000Z") };
+    const sessions = {
+      ...fakeSessions(),
+      reserveSessionRuntimeProvisioning: vi.fn(async () => lease),
+    } satisfies SessionRepository;
+    const { service } = makeService({ sessions });
+
+    await expect(
+      service.reserveSessionRuntimeProvisioning({ sessionId: "session-1" }),
+    ).resolves.toEqual(lease);
+    expect(sessions.reserveSessionRuntimeProvisioning).toHaveBeenCalledWith({
+      sessionId: "session-1",
+    });
+  });
+
+	it("stages an exact unpublished runtime target through session ports", async () => {
+		const sessions = {
+			...fakeSessions(),
+			stageSessionRuntimeProvisioning: vi.fn(async () => true),
+		} satisfies SessionRepository;
+		const { service } = makeService({ sessions });
+		const input = {
+			sessionId: "session-1",
+			expectedStartedAt: new Date("2026-07-21T20:00:00.000Z"),
+			runtimeAppId: "shared-runtime",
+			durableInstanceId: "session-runtime-generation-1",
+			runtimeSandboxName: null,
+			runtimeHostOwned: false,
+			runtimeHostLaunchSpec: null,
+		};
+
+		await expect(
+			service.stageSessionRuntimeProvisioning(input),
+		).resolves.toBe(true);
+		expect(sessions.stageSessionRuntimeProvisioning).toHaveBeenCalledWith(input);
+	});
+
+  it("acknowledges runtime provisioning compensation through session ports", async () => {
+    const sessions = {
+      ...fakeSessions(),
+      acknowledgeRuntimeProvisioningCompensation: vi.fn(async () => true),
+    } satisfies SessionRepository;
+    const { service } = makeService({ sessions });
+    const expectedStartedAt = new Date("2026-07-21T20:00:00.000Z");
+
+    await expect(
+      service.acknowledgeRuntimeProvisioningCompensation({
+        sessionId: "session-1",
+        expectedStartedAt,
+      }),
+    ).resolves.toBe(true);
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      expectedStartedAt,
+    });
+  });
 
 	it("loads session runtime targets through scoped session ports", async () => {
 		const target = {
@@ -4512,7 +4791,9 @@ describe("ApplicationWorkflowDataService", () => {
 			sessionId,
 			agentSlug: "glm-juicefs-builder-agent",
 		});
-		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+    expect(
+      sessionAgentSlugs.resolveSessionAgentIdBySlug,
+    ).not.toHaveBeenCalled();
 		expect(sessions.ensureSession).not.toHaveBeenCalled();
 		expect(sessionAgents.resolveSessionAgent).toHaveBeenCalledWith({
 			agentId: "legacy-agent",
@@ -4531,7 +4812,9 @@ describe("ApplicationWorkflowDataService", () => {
 		const sessionId = expectedWorkflowDevSessionId(executionId);
 		const sessions = {
 			...fakeSessions(),
-			getSession: vi.fn(async () => ({
+      getSession: vi.fn(
+        async () =>
+          ({
 				...sampleSessionDetail(),
 				id: sessionId,
 				title: "Dev handoff",
@@ -4539,7 +4822,8 @@ describe("ApplicationWorkflowDataService", () => {
 				agentVersion: 2,
 				projectId: "project-1",
 				workflowExecutionId: executionId,
-			}) as SessionDetail),
+          }) as SessionDetail,
+      ),
 			getSessionFileOwner: vi.fn(async () => ({
 				id: sessionId,
 				userId: "user-1",
@@ -4584,7 +4868,9 @@ describe("ApplicationWorkflowDataService", () => {
 			status: "session_conflict",
 			reason: "identity_mismatch",
 		});
-		expect(sessionAgentSlugs.resolveSessionAgentIdBySlug).not.toHaveBeenCalled();
+    expect(
+      sessionAgentSlugs.resolveSessionAgentIdBySlug,
+    ).not.toHaveBeenCalled();
 		expect(sessions.ensureSession).not.toHaveBeenCalled();
 		expect(sessionEvents.appendSessionEvent).not.toHaveBeenCalled();
 	});

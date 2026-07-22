@@ -23,9 +23,9 @@ import { getApplicationAdapters } from "$lib/server/application";
  *
  * IDEMPOTENCY: JetStream is at-least-once (≤3 deliveries). The session id is
  * derived deterministically from `dedupKey` (or the CloudEvent id), so a
- * redelivery resolves to the same session and already-exists short-circuits in
- * the command service. We ALWAYS ack (`{status:"SUCCESS"}`)
- * so a poison message can't wedge the subscription (JetStream max-deliver → DLQ).
+ * redelivery resolves to the same session. Validation failures are acknowledged;
+ * transient dispatch failures return Dapr `RETRY`, allowing JetStream max-deliver
+ * and its DLQ policy to govern bounded recovery.
  */
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -38,15 +38,13 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	try {
 		const { sessionCommands } = getApplicationAdapters();
-		await sessionCommands.dispatchAgentTrigger({ body });
+		const result = await sessionCommands.dispatchAgentTrigger({ body });
+		return json({ status: result.status === "retry" ? "RETRY" : "SUCCESS" });
 	} catch (err) {
-		// Never NACK on a handler error — ack so JetStream redelivery/DLQ governs,
-		// not an infinite wedge. The deterministic id makes a manual replay safe.
 		console.error(
 			"[agent-trigger] dispatch failed:",
 			err instanceof Error ? err.message : err,
 		);
+		return json({ status: "RETRY" });
 	}
-
-	return json({ status: "SUCCESS" });
 };

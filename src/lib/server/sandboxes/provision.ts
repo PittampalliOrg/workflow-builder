@@ -248,24 +248,38 @@ function resolveSandboxName(
 export async function cleanupSessionSandbox(
 	executionId: string,
 ): Promise<void> {
-	const url = `${getWorkspaceRuntimeUrl()}/api/workspaces/cleanup`;
 	try {
-		const res = await daprFetch(url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ executionId }),
-			maxRetries: 1,
-		});
-		if (!res.ok) {
-			console.warn(
-				"[sandbox-cleanup] workspace/cleanup non-OK:",
-				res.status,
-				(await res.text()).slice(0, 300),
-			);
-		}
+		await cleanupSessionSandboxStrict(executionId);
 	} catch (err) {
 		// Cleanup is best-effort; a stuck sandbox gets reaped by the
 		// runtime's TTL/GC pass eventually. Log + move on.
 		console.warn("[sandbox-cleanup] workspace/cleanup failed:", err);
 	}
+}
+
+/**
+ * Lifecycle-grade OpenShell cleanup. Unlike {@link cleanupSessionSandbox}, this
+ * function rejects on an unconfirmed cleanup so the persisted stop intent stays
+ * pending and the reconciler can retry instead of acknowledging a leaked
+ * workspace.
+ */
+export async function cleanupSessionSandboxStrict(
+	executionId: string,
+): Promise<void> {
+	const normalizedExecutionId = executionId.trim();
+	if (!normalizedExecutionId) {
+		throw new Error("workspace cleanup requires an executionId");
+	}
+	const url = `${getWorkspaceRuntimeUrl()}/api/workspaces/cleanup`;
+	const res = await daprFetch(url, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ executionId: normalizedExecutionId }),
+		maxRetries: 1,
+	});
+	if (res.ok) return;
+	const detail = (await res.text().catch(() => "")).slice(0, 500);
+	throw new Error(
+		`openshell-agent-runtime workspace/cleanup failed (${res.status})${detail ? `: ${detail}` : ""}`,
+	);
 }

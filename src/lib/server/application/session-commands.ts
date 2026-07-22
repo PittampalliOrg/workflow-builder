@@ -13,10 +13,14 @@ import {
 	DEV_SESSION_WORKFLOW_ID,
 	type SessionKind,
 } from "$lib/server/application/session-kind";
-import { canResumeCliSession, isInteractiveCliRuntime } from "$lib/server/sessions/resume";
+import {
+  canResumeCliSession,
+  isInteractiveCliRuntime,
+} from "$lib/server/sessions/resume";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { sandboxProvisionFailureMessage } from "$lib/server/sandboxes/provision";
+import { sessionRuntimeGenerationInstanceId } from "$lib/server/application/session-runtime-identity";
 import type {
 	AddSessionResourceInput,
 	AgentRuntimeSyncPort,
@@ -29,6 +33,7 @@ import type {
 	SessionRepository,
 	SessionRepositoryMountTarget,
 	SessionRepositoryMounter,
+  SessionRuntimeCleanupPort,
 	SessionSandboxDestroyer,
 	SessionWorkflowSpawner,
 	WorkspaceProjectRepository,
@@ -148,6 +153,40 @@ export type AppendWorkflowSessionInitialMessageCommand = {
 	text: string | null | undefined;
 };
 
+export type ProvisionWorkflowSessionWorkspaceCommand = {
+  sessionId: string;
+  title: string;
+  sandboxTemplate?: string;
+};
+
+export type ProvisionWorkflowSessionWorkspaceResult =
+  | {
+      status: "ready";
+      sandboxName: string;
+      workspaceRef: string | null;
+      rootPath: string;
+    }
+  | { status: "stopping" };
+
+export type CompensateStoppedRuntimeProvisioningCommand = {
+  sessionId: string;
+  sandboxName: string;
+  leaseStartedAt: Date;
+};
+
+export type CleanupUnpublishedRuntimeProvisioningCommand = {
+  sessionId: string;
+  sandboxName: string | null;
+  leaseStartedAt: Date;
+  durableInstance?: {
+    runtimeAppId: string;
+    instanceId: string;
+    runtimeSandboxName: string | null;
+  };
+  /** Recovery retries clean side effects but retain this exact staged lease. */
+  preserveActiveLease?: boolean;
+};
+
 export type ResolveWorkflowSessionAgentCommand = {
 	publishedAgent: WorkflowPublishedAgent | null;
 	workflowId: string;
@@ -167,7 +206,7 @@ export type DispatchAgentTriggerCommand = {
 };
 
 export type DispatchAgentTriggerResult = {
-	status: "ack";
+  status: "ack" | "retry";
 	outcome:
 		| "missing_fields"
 		| "agent_not_found"
@@ -200,6 +239,16 @@ function triggerSessionId(dedupKey: string): string {
 	return `evt-${hex}`;
 }
 
+function hasPositiveSessionDispatchEvidence(session: SessionDetail): boolean {
+  return Boolean(
+    session.daprInstanceId?.trim() && session.runtimeAppId?.trim(),
+  );
+}
+
+function isTerminalSession(session: SessionDetail): boolean {
+  return session.status === "terminated" || session.completedAt != null;
+}
+
 export class ApplicationSessionCommandService {
 	constructor(
 		private readonly deps: {
@@ -211,6 +260,7 @@ export class ApplicationSessionCommandService {
 			sandboxProvisioner: SandboxProvisioner;
 			repositoryMounter: SessionRepositoryMounter;
 			workflowSpawner: SessionWorkflowSpawner;
+      runtimeCleaner: SessionRuntimeCleanupPort;
 			workspaceProjects?: WorkspaceProjectRepository;
 			sandboxDestroyer?: SessionSandboxDestroyer;
 			workflowEphemeralAgents?: WorkflowEphemeralAgentStore;
@@ -319,7 +369,12 @@ export class ApplicationSessionCommandService {
 					? data.title
 					: undefined;
 
-			if ((!agentIdRaw && !agentSlugRaw) || !projectId || !userId || !dedupKey) {
+      if (
+        (!agentIdRaw && !agentSlugRaw) ||
+        !projectId ||
+        !userId ||
+        !dedupKey
+      ) {
 				console.warn(
 					"[agent-trigger] missing required fields (agentId|agentSlug, projectId, userId, dedupKey) — dropping",
 				);
@@ -370,7 +425,11 @@ export class ApplicationSessionCommandService {
 
 			const sessionId = triggerSessionId(dedupKey);
 			const existing = await this.deps.sessions.getSession(sessionId);
-			if (existing) {
+      if (
+        existing &&
+        (hasPositiveSessionDispatchEvidence(existing) ||
+          isTerminalSession(existing))
+      ) {
 				return {
 					status: "ack",
 					outcome: "duplicate",
@@ -379,7 +438,9 @@ export class ApplicationSessionCommandService {
 				};
 			}
 
-			const session = await this.deps.sessions.createSession({
+      const session =
+        existing ??
+        (await this.deps.sessions.createSession({
 				id: sessionId,
 				agentId: agent.id,
 				agentVersion: agent.version ?? agentVersion,
@@ -387,8 +448,21 @@ export class ApplicationSessionCommandService {
 				title: title ?? `Triggered · ${agent.name}`,
 				userId,
 				projectId,
-			});
+        }));
+      const provisioningLease =
+        await this.deps.workflowSpawner.reserveSessionWorkflow(session.id);
+      if (!provisioningLease) {
+        return {
+          status: "retry",
+          outcome: "failed",
+          sessionId,
+          agentId: agent.id,
+          message: `Session ${session.id} provisioning is already in progress`,
+        };
+      }
 
+      let handedOff = false;
+      try {
 			if (objective.trim()) {
 				const userMessage: UserEvent = {
 					type: "user.message",
@@ -397,11 +471,24 @@ export class ApplicationSessionCommandService {
 				await this.deps.sessionEvents.appendSessionEvent(session.id, {
 					type: userMessage.type,
 					data: userMessage as unknown as Record<string, unknown>,
+            sourceEventId: `agent-trigger:${dedupKey}`,
 					processedAt: null,
 				});
 			}
 
-			await this.deps.workflowSpawner.spawnSessionWorkflow(session.id);
+        handedOff = true;
+        await this.deps.workflowSpawner.spawnSessionWorkflow(session.id, {
+          provisioningLease,
+        });
+      } finally {
+        if (!handedOff) {
+          await this.cleanupUnpublishedRuntimeProvisioning({
+            sessionId: session.id,
+            sandboxName: null,
+            leaseStartedAt: provisioningLease.startedAt,
+          });
+        }
+      }
 			console.info(
 				`[agent-trigger] started session ${session.id} for agent ${agent.slug} (project ${projectId})`,
 			);
@@ -414,7 +501,7 @@ export class ApplicationSessionCommandService {
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			console.error("[agent-trigger] dispatch failed:", message);
-			return { status: "ack", outcome: "failed", message };
+      return { status: "retry", outcome: "failed", message };
 		}
 	}
 
@@ -422,11 +509,37 @@ export class ApplicationSessionCommandService {
 		input: StartSessionWorkflowCommand,
 	): Promise<StartSessionWorkflowResult> {
 		const session = await this.deps.sessions.getSession(input.sessionId);
-		if (!session || !this.isSessionInProject(session, input.projectId ?? null)) {
+    if (
+      !session ||
+      !this.isSessionInProject(session, input.projectId ?? null)
+    ) {
 			return { status: "not_found", message: "Session not found" };
 		}
+    if (isTerminalSession(session)) {
+      return {
+        status: "failed",
+        message: `Session ${input.sessionId} is stopping or terminal`,
+      };
+    }
 
+    // Published runtime identity is the idempotency authority. A published
+    // session is intentionally ineligible for a new provisioning lease, so
+    // return before reservation rather than misclassifying it as terminal.
 		if (session.daprInstanceId) {
+      const lifecycle = await this.deps.sessions.getSessionFileOwner(
+        input.sessionId,
+      );
+      if (
+        !lifecycle ||
+        lifecycle.stopRequestedAt != null ||
+        lifecycle.completedAt != null ||
+        lifecycle.status === "terminated"
+      ) {
+        return {
+          status: "failed",
+          message: `Session ${input.sessionId} is stopping or terminal`,
+        };
+      }
 			return {
 				status: "already_started",
 				instanceId: session.daprInstanceId,
@@ -435,15 +548,25 @@ export class ApplicationSessionCommandService {
 			};
 		}
 
+    const provisioningLease =
+      await this.deps.workflowSpawner.reserveSessionWorkflow(input.sessionId);
+    if (!provisioningLease) {
+      return {
+        status: "failed",
+        message: `Session ${input.sessionId} is stopping or terminal`,
+      };
+    }
+    let handedOff = false;
+    try {
 		await this.deps.sessions.updateSessionStatusUnlessTerminated({
 			id: input.sessionId,
 			status: "rescheduling",
 			errorMessage: null,
 		});
-
-		try {
+      handedOff = true;
 			const runtime = await this.deps.workflowSpawner.spawnSessionWorkflow(
 				input.sessionId,
+        { provisioningLease },
 			);
 			return {
 				status: "started",
@@ -469,6 +592,14 @@ export class ApplicationSessionCommandService {
 				};
 			}
 			return { status: "failed", message };
+    } finally {
+      if (!handedOff) {
+        await this.cleanupUnpublishedRuntimeProvisioning({
+          sessionId: input.sessionId,
+          sandboxName: null,
+          leaseStartedAt: provisioningLease.startedAt,
+        });
+      }
 		}
 	}
 
@@ -479,7 +610,10 @@ export class ApplicationSessionCommandService {
 		if (parsed.status === "invalid") return parsed;
 
 		const session = await this.deps.sessions.getSession(input.sessionId);
-		if (!session || !this.isSessionInProject(session, input.projectId ?? null)) {
+    if (
+      !session ||
+      !this.isSessionInProject(session, input.projectId ?? null)
+    ) {
 			return { status: "not_found", message: "Session not found" };
 		}
 
@@ -567,12 +701,14 @@ export class ApplicationSessionCommandService {
 		if (!this.deps.workflowEphemeralAgents) {
 			throw new Error("Workflow ephemeral agent store is not configured");
 		}
-		return this.deps.workflowEphemeralAgents.findOrCreateWorkflowEphemeralAgent({
+    return this.deps.workflowEphemeralAgents.findOrCreateWorkflowEphemeralAgent(
+      {
 			workflowId: input.workflowId,
 			nodeId: input.nodeId,
 			agentConfig: input.agentConfig,
 			userId: input.userId,
-		});
+      },
+    );
 	}
 
 	async syncWorkflowSessionAgentRuntime(
@@ -623,7 +759,8 @@ export class ApplicationSessionCommandService {
 		input: ReapTerminatedWorkflowSessionRuntimeHostsCommand,
 	): Promise<void> {
 		if (!this.deps.sandboxDestroyer) return;
-		const rows = await this.deps.sessions.listReapableWorkflowSessionRuntimeHosts({
+    const rows =
+      await this.deps.sessions.listReapableWorkflowSessionRuntimeHosts({
 			workflowExecutionId: input.workflowExecutionId,
 		});
 		for (const row of rows) {
@@ -640,11 +777,160 @@ export class ApplicationSessionCommandService {
 		}
 	}
 
+  /**
+   * Delete the just-created host, then acknowledge only the exact compensating
+   * provisioning lease. A deletion failure deliberately leaves the lease for
+   * lifecycle reconciliation; a false acknowledgement preserves a newer lease.
+   */
+  async compensateStoppedRuntimeProvisioning(
+    input: CompensateStoppedRuntimeProvisioningCommand,
+  ): Promise<boolean> {
+    if (!this.deps.sandboxDestroyer) {
+      throw new Error("runtime sandbox deletion is not configured");
+    }
+    const stillOwned =
+      await this.deps.sessions.canCompensateRuntimeProvisioning({
+        sessionId: input.sessionId,
+        expectedStartedAt: input.leaseStartedAt,
+      });
+    if (!stillOwned) return false;
+    const result = await this.deps.sandboxDestroyer.deleteRuntimeSandbox(
+      input.sandboxName,
+    );
+    if (result.status === "error") {
+      throw new Error(
+        result.error || `failed to delete runtime Sandbox ${input.sandboxName}`,
+      );
+    }
+    return this.deps.sessions.acknowledgeRuntimeProvisioningCompensation({
+      sessionId: input.sessionId,
+      expectedStartedAt: input.leaseStartedAt,
+    });
+  }
+
+  /**
+   * Purge an accepted-but-unpublished durable instance, clean up its host, then
+   * close the exact provisioning lease. Active setup failures release the lease;
+   * a concurrent stop is acknowledged only after the same cleanup proof.
+   */
+  async cleanupUnpublishedRuntimeProvisioning(
+    input: CleanupUnpublishedRuntimeProvisioningCommand,
+  ): Promise<boolean> {
+    const leaseInput = {
+      sessionId: input.sessionId,
+      expectedStartedAt: input.leaseStartedAt,
+    };
+    const ownsActiveLease =
+      await this.deps.sessions.canReleaseRuntimeProvisioning(leaseInput);
+    const ownsStoppedLease = ownsActiveLease
+      ? false
+      : await this.deps.sessions.canCompensateRuntimeProvisioning(leaseInput);
+
+    if (input.durableInstance) {
+      const expectedInstanceId = sessionRuntimeGenerationInstanceId(
+        input.sessionId,
+        input.leaseStartedAt,
+      );
+      if (input.durableInstance.instanceId !== expectedInstanceId) {
+        throw new Error(
+          `Refusing cleanup for non-generation runtime instance ${input.durableInstance.instanceId}`,
+        );
+      }
+    }
+
+    if (!ownsActiveLease && !ownsStoppedLease) {
+      if (input.durableInstance) {
+        const published = await this.deps.sessions.getSession(input.sessionId);
+        const exactInstanceIsPublished = Boolean(
+          published?.daprInstanceId === input.durableInstance.instanceId &&
+          published.runtimeAppId === input.durableInstance.runtimeAppId,
+        );
+        if (!exactInstanceIsPublished) {
+          await this.deps.runtimeCleaner.purgeRuntimeInstance(
+            input.durableInstance,
+          );
+        }
+      }
+      return false;
+    }
+
+    if (input.durableInstance) {
+      await this.deps.runtimeCleaner.purgeRuntimeInstance(
+        input.durableInstance,
+      );
+    }
+
+    if (input.sandboxName) {
+      if (!this.deps.sandboxDestroyer) {
+        throw new Error("runtime sandbox deletion is not configured");
+      }
+      const result = await this.deps.sandboxDestroyer.deleteRuntimeSandbox(
+        input.sandboxName,
+      );
+      if (result.status === "error") {
+        throw new Error(
+          result.error ||
+            `failed to delete runtime Sandbox ${input.sandboxName}`,
+        );
+      }
+    }
+
+    if (ownsActiveLease && input.preserveActiveLease) return true;
+    if (ownsActiveLease) {
+      const released = await this.deps.workflowSpawner.releaseSessionWorkflow(
+        input.sessionId,
+        { startedAt: input.leaseStartedAt },
+      );
+      if (released) return true;
+    }
+    return this.deps.sessions.acknowledgeRuntimeProvisioningCompensation(
+      leaseInput,
+    );
+  }
+
+  /** Provision and durably attach an auto-owned workflow workspace. */
+  async provisionWorkflowSessionWorkspace(
+    input: ProvisionWorkflowSessionWorkspaceCommand,
+  ): Promise<ProvisionWorkflowSessionWorkspaceResult> {
+    let sandbox;
+    try {
+      sandbox = await this.deps.sandboxProvisioner.provision({
+        executionId: input.sessionId,
+        name: input.title,
+        sandboxTemplate: input.sandboxTemplate ?? "base",
+        keepAfterRun: true,
+      });
+    } catch (err) {
+      throw new Error(sandboxProvisionFailureMessage(err), { cause: err });
+    }
+    let attached: boolean;
+    try {
+      attached = await this.deps.sessions.attachWorkspaceSandbox({
+        sessionId: input.sessionId,
+        workspaceSandboxName: sandbox.sandboxName,
+      });
+    } catch (err) {
+      await this.deleteProvisionedWorkspaceSandbox(sandbox.sandboxName);
+      throw err;
+    }
+    if (!attached) {
+      await this.deleteProvisionedWorkspaceSandbox(sandbox.sandboxName);
+      return { status: "stopping" };
+    }
+    return {
+      status: "ready",
+      sandboxName: sandbox.sandboxName,
+      workspaceRef: sandbox.workspaceRef,
+      rootPath: sandbox.rootPath,
+    };
+  }
+
 	async createInteractiveSession(
 		input: CreateInteractiveSessionCommand,
 	): Promise<CreateInteractiveSessionResult> {
 		const body = input.body;
-		const requestedAgentId = typeof body.agentId === "string" ? body.agentId : "";
+    const requestedAgentId =
+      typeof body.agentId === "string" ? body.agentId : "";
 		if (!requestedAgentId) {
 			return { status: "invalid", message: "agentId is required" };
 		}
@@ -689,7 +975,9 @@ export class ApplicationSessionCommandService {
 				agentId: resolvedAgentId,
 				agentVersion: resolvedAgentVersion,
 				environmentId:
-					typeof body.environmentId === "string" ? body.environmentId : undefined,
+          typeof body.environmentId === "string"
+            ? body.environmentId
+            : undefined,
 				environmentVersion:
 					typeof body.environmentVersion === "number"
 						? body.environmentVersion
@@ -702,11 +990,23 @@ export class ApplicationSessionCommandService {
 				projectId: input.projectId ?? null,
 				resumedFromSessionId: resumeFromSessionId ?? null,
 			});
+      const provisioningLease =
+        await this.deps.workflowSpawner.reserveSessionWorkflow(session.id);
+      if (!provisioningLease) {
+        return {
+          status: "conflict",
+          message: `Session ${session.id} is stopping or terminal`,
+        };
+      }
 
-			const resolvedAgent = await this.deps.sessionAgents.resolveSessionAgent({
+      let handedOff = false;
+      try {
+        const resolvedAgent = await this.deps.sessionAgents.resolveSessionAgent(
+          {
 				agentId: session.agentId,
 				agentVersion: session.agentVersion ?? undefined,
-			});
+          },
+        );
 			await this.appendInitialMessage({ sessionId: session.id, body });
 
 			const mergedRepos = dedupeRepositoriesByUrl([
@@ -731,10 +1031,20 @@ export class ApplicationSessionCommandService {
 				}
 			}
 
-			const repoMountTarget = await this.maybeProvisionSandbox({ session, body });
+        const repoMountTarget = await this.maybeProvisionSandbox({
+          session,
+          body,
+        });
+        if (repoMountTarget === false) {
+          return {
+            status: "conflict",
+            message: `Session ${session.id} stopped while its workspace was provisioning`,
+          };
+        }
 			const interactiveCliRuntime =
 				getRuntimeDescriptor(
-					readRuntimeFromConfig(resolvedAgent?.config) ?? resolvedAgent?.runtime,
+            readRuntimeFromConfig(resolvedAgent?.config) ??
+              resolvedAgent?.runtime,
 				)?.capabilities?.interactiveTerminal === true;
 			if (repoMountTarget && !interactiveCliRuntime) {
 				try {
@@ -747,15 +1057,20 @@ export class ApplicationSessionCommandService {
 				}
 			}
 
+        handedOff = true;
 			try {
 				const { instanceId, natsSubject } =
-					await this.deps.workflowSpawner.spawnSessionWorkflow(session.id);
+            await this.deps.workflowSpawner.spawnSessionWorkflow(session.id, {
+              provisioningLease,
+            });
 				session.daprInstanceId = instanceId;
 				session.natsSubject = natsSubject;
 			} catch (spawnErr) {
 				console.error("[sessions] spawn failed:", spawnErr);
 				session.errorMessage =
-					spawnErr instanceof Error ? spawnErr.message : "Workflow spawn failed";
+            spawnErr instanceof Error
+              ? spawnErr.message
+              : "Workflow spawn failed";
 				if (spawnErr instanceof CliTokenError) {
 					return {
 						status: "precondition_failed",
@@ -769,6 +1084,15 @@ export class ApplicationSessionCommandService {
 			}
 
 			return { status: "created", session };
+      } finally {
+        if (!handedOff) {
+          await this.cleanupUnpublishedRuntimeProvisioning({
+            sessionId: session.id,
+            sandboxName: null,
+            leaseStartedAt: provisioningLease.startedAt,
+          });
+        }
+      }
 		} catch (err) {
 			return {
 				status: "invalid",
@@ -788,10 +1112,16 @@ export class ApplicationSessionCommandService {
 	> {
 		const source = await this.deps.sessions.getSession(input.sourceSessionId);
 		if (!source) {
-			return { status: "not_found", message: "resumeFromSessionId session not found" };
+      return {
+        status: "not_found",
+        message: "resumeFromSessionId session not found",
+      };
 		}
 		if (input.projectId && source.projectId !== input.projectId) {
-			return { status: "not_found", message: "resumeFromSessionId session not found" };
+      return {
+        status: "not_found",
+        message: "resumeFromSessionId session not found",
+      };
 		}
 		const sourceAgent = await this.deps.sessionAgents.resolveSessionAgent({
 			agentId: source.agentId,
@@ -840,7 +1170,8 @@ export class ApplicationSessionCommandService {
 			agentId: input.requestedAgentId,
 			agentVersion: input.resolvedAgentVersion,
 		});
-		if (!baseAgent) return { status: "not_found", message: "Base agent not found" };
+    if (!baseAgent)
+      return { status: "not_found", message: "Base agent not found" };
 		if (isAgentConfigEquivalent(baseAgent.config, input.agentConfig)) {
 			return {
 				status: "ok",
@@ -850,14 +1181,16 @@ export class ApplicationSessionCommandService {
 		}
 		try {
 			const experiment =
-				await this.deps.sessionExperimentAgents.findOrCreateSessionExperimentAgent({
+        await this.deps.sessionExperimentAgents.findOrCreateSessionExperimentAgent(
+          {
 					baseAgentId: baseAgent.id,
 					baseAgentSlug: baseAgent.slug,
 					baseAgentName: baseAgent.name,
 					agentConfig: input.agentConfig,
 					userId: input.userId,
 					projectId: input.projectId ?? null,
-				});
+          },
+        );
 			return {
 				status: "ok",
 				agentId: experiment.agentId,
@@ -896,7 +1229,7 @@ export class ApplicationSessionCommandService {
 	private async maybeProvisionSandbox(input: {
 		session: SessionDetail;
 		body: Record<string, unknown>;
-	}): Promise<SessionRepositoryMountTarget | null> {
+  }): Promise<SessionRepositoryMountTarget | null | false> {
 		const provisioning =
 			typeof input.body.provisioning === "string" &&
 			input.body.provisioning.trim().toLowerCase() === "lazy"
@@ -904,8 +1237,9 @@ export class ApplicationSessionCommandService {
 				: "eager";
 		if (provisioning !== "eager") return null;
 
+    let sandbox;
 		try {
-			const sandbox = await this.deps.sandboxProvisioner.provision({
+      sandbox = await this.deps.sandboxProvisioner.provision({
 				executionId: input.session.id,
 				name: input.session.title ?? `session-${input.session.id.slice(0, 8)}`,
 				sandboxTemplate:
@@ -914,17 +1248,6 @@ export class ApplicationSessionCommandService {
 						: "base",
 				keepAfterRun: true,
 			});
-			await this.deps.sessions.attachWorkspaceSandbox({
-				sessionId: input.session.id,
-				workspaceSandboxName: sandbox.sandboxName,
-			});
-			input.session.workspaceSandboxName = sandbox.sandboxName;
-			input.session.errorMessage = null;
-			return {
-				executionId: input.session.id,
-				workspaceRef: sandbox.workspaceRef,
-				rootPath: sandbox.rootPath,
-			};
 		} catch (sandboxErr) {
 			console.error("[sessions] sandbox provisioning failed:", sandboxErr);
 			const message = sandboxProvisionFailureMessage(sandboxErr);
@@ -942,6 +1265,42 @@ export class ApplicationSessionCommandService {
 			}
 			return null;
 		}
+    let attached: boolean;
+    try {
+      attached = await this.deps.sessions.attachWorkspaceSandbox({
+        sessionId: input.session.id,
+        workspaceSandboxName: sandbox.sandboxName,
+      });
+    } catch (attachErr) {
+      await this.deleteProvisionedWorkspaceSandbox(sandbox.sandboxName);
+      throw attachErr;
+    }
+    if (!attached) {
+      await this.deleteProvisionedWorkspaceSandbox(sandbox.sandboxName);
+      return false;
+    }
+    input.session.workspaceSandboxName = sandbox.sandboxName;
+    input.session.errorMessage = null;
+    return {
+      executionId: input.session.id,
+      workspaceRef: sandbox.workspaceRef,
+      rootPath: sandbox.rootPath,
+    };
+  }
+
+  private async deleteProvisionedWorkspaceSandbox(
+    sandboxName: string,
+  ): Promise<void> {
+    if (!this.deps.sandboxDestroyer) {
+      throw new Error("workspace sandbox deletion is not configured");
+    }
+    const deleted =
+      await this.deps.sandboxDestroyer.deleteWorkspaceSandbox(sandboxName);
+    if (deleted.status === "error") {
+      throw new Error(
+        deleted.error || `failed to delete workspace Sandbox ${sandboxName}`,
+      );
+    }
 	}
 
 	private async mountRepoIntoLiveSession(
@@ -965,11 +1324,15 @@ export class ApplicationSessionCommandService {
 				provErr,
 			);
 		}
-		await this.deps.repositoryMounter.mountSessionRepository(session.id, resource, {
+    await this.deps.repositoryMounter.mountSessionRepository(
+      session.id,
+      resource,
+      {
 			executionId: session.id,
 			workspaceRef,
 			rootPath,
-		});
+      },
+    );
 	}
 
 	private isSessionInProject(
@@ -1065,7 +1428,8 @@ function parseRepositoryResources(value: unknown): ParsedRepoResource[] {
 					? e.authTokenCredentialId
 					: undefined,
 			appConnectionExternalId:
-				typeof e.appConnectionExternalId === "string" && e.appConnectionExternalId
+        typeof e.appConnectionExternalId === "string" &&
+        e.appConnectionExternalId
 					? e.appConnectionExternalId
 					: undefined,
 		});

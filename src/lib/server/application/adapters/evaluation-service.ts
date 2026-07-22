@@ -28,6 +28,7 @@ import { getMissingRequiredTriggerFields } from "$lib/server/workflows/trigger-v
 import { expandGreenfieldPromptInput } from "$lib/server/workflows/greenfield-prompt";
 import type { ModelCompletionPort } from "$lib/server/application/ports";
 import type { EvaluationJudge } from "$lib/server/application/evaluation-judge";
+import { retainedWorkspaceTtlSeconds } from "$lib/server/application/workspace-retention-policy";
 import { validateTriggerModel } from "$lib/server/workflows/model-validation";
 import { applyWorkflowInputDefaults } from "$lib/utils/workflow-input-config";
 import {
@@ -3075,7 +3076,7 @@ export function buildSwebenchEvaluationWorkflowSpec(params: {
 	const repoPath = SWEBENCH_EVALUATION_REPO_PATH;
 	const workspaceRoot = SWEBENCH_EVALUATION_WORKSPACE_ROOT;
 	const timeoutMinutes = Math.max(1, Math.ceil(timeoutSeconds / 60));
-	const ttlSeconds = Math.max(timeoutSeconds + 3600, 7200);
+	const ttlSeconds = retainedWorkspaceTtlSeconds(timeoutSeconds);
 	const sandboxTemplate = inferenceEnvironment.sandboxTemplate || "dapr-agent";
 	const workspaceRef = buildStableWorkspaceRef("eval-swebench", [
 		params.runId ?? params.evaluationName,

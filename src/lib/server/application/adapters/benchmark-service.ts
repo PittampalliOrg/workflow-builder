@@ -110,6 +110,7 @@ import {
 	type BenchmarkRunTerminalOutcome,
 	type BenchmarkSessionTurnInput,
 } from "$lib/server/application/benchmark-logic";
+import { retainedWorkspaceTtlSeconds } from "$lib/server/application/workspace-retention-policy";
 
 // Pure logic extracted to application/benchmark-logic.ts (hex P3 slice 1);
 // re-exported so existing import sites — including the
@@ -6001,8 +6002,8 @@ export function buildSwebenchInstanceWorkflowSpec(params: {
 		params.instanceId,
 	);
 	const timeoutMinutes = Math.max(1, Math.ceil(params.timeoutSeconds / 60));
-	const ttlSeconds = Math.max(
-		params.timeoutSeconds + 3600,
+	const ttlSeconds = retainedWorkspaceTtlSeconds(
+		params.timeoutSeconds,
 		SWEBENCH_SANDBOX_TTL_SECONDS_FALLBACK,
 	);
 	const keepSandboxAfterRun = true;

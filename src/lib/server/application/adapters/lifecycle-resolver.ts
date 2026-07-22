@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
 	evaluationRuns,
@@ -9,18 +9,120 @@ import {
 } from "$lib/server/db/schema";
 import {
 	agentTargetForSession,
+  agentTargetsForSession,
 	compactLifecycleIds,
+  type DurableStopMode,
 	type FinalizeOutcome,
 	type LifecycleTargetResolver,
 	notFoundLifecycleTarget,
 	nodeIdFromChildSessionId,
+  normalizeDurableStopMode,
+  prospectiveAgentTargetForSession,
+  sessionRequiresRuntimeLinkage,
 } from "$lib/server/lifecycle/resolvers";
+import type { WorkspaceRetentionIdentity } from "$lib/server/lifecycle/resolvers";
 
 type Database = typeof defaultDb;
+
+function compactWorkspaceRetentionIdentities(
+  values: WorkspaceRetentionIdentity[],
+): WorkspaceRetentionIdentity[] {
+  const unique = new Map<string, WorkspaceRetentionIdentity>();
+  for (const value of values) {
+    const durableExecutionId = value.durableExecutionId.trim();
+    const databaseExecutionId = value.databaseExecutionId?.trim() || null;
+    if (!durableExecutionId && !databaseExecutionId) continue;
+    unique.set(
+      `${durableExecutionId}\u0000${databaseExecutionId ?? ""}`,
+      { durableExecutionId, databaseExecutionId },
+    );
+  }
+  return [...unique.values()];
+}
+
+function persistedModeOrNull(value: unknown): DurableStopMode | null {
+  return value == null ? null : normalizeDurableStopMode(value);
+}
+
+function stopIntentMatches(
+  requestedAt: Date | null,
+  persistedMode: unknown,
+  expectedMode: DurableStopMode | undefined,
+): boolean {
+  if (expectedMode === undefined) return requestedAt == null;
+  return (
+    requestedAt != null &&
+    normalizeDurableStopMode(persistedMode) === expectedMode
+  );
+}
+
+function dedicatedHostReservationPending(row: {
+  runtimeAppId: string | null;
+  runtimeSandboxName?: string | null;
+}): boolean {
+  return (
+    (row.runtimeAppId ?? "").startsWith("agent-session-") &&
+    !(row.runtimeSandboxName ?? "").trim()
+  );
+}
+
+/**
+ * Atomic monotonic stop mode expression. A brand-new intent starts at the
+ * requested mode. Once a timestamp exists, a legacy null mode means terminate;
+ * later explicit requests may escalate terminate -> purge -> reset, never
+ * downgrade. The returned database value is the only mode the cascade trusts.
+ */
+function monotonicStopMode(
+  stopRequestedAt: unknown,
+  stopRequestedMode: unknown,
+  requestedMode: DurableStopMode,
+) {
+  return sql<DurableStopMode>`CASE
+		WHEN ${stopRequestedAt} IS NULL THEN ${requestedMode}
+		WHEN ${stopRequestedMode} = 'reset' OR ${requestedMode} = 'reset' THEN 'reset'
+		WHEN ${stopRequestedMode} = 'purge' OR ${requestedMode} = 'purge' THEN 'purge'
+		ELSE 'terminate'
+	END`;
+}
 
 export function createPostgresLifecycleTargetResolver(
 	database: Database = defaultDb,
 ): LifecycleTargetResolver {
+  async function acknowledgeStoppedRuntimeProvisioningLease(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+    workflowExecutionId?: string;
+  }): Promise<boolean> {
+    const conditions = [
+      eq(sessions.id, input.sessionId),
+      isNotNull(sessions.stopRequestedAt),
+      eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+    ];
+    if (input.workflowExecutionId !== undefined) {
+      conditions.push(
+        eq(sessions.workflowExecutionId, input.workflowExecutionId),
+      );
+    }
+    const acknowledged = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningStartedAt: null,
+			runtimeProvisioningAppId: null,
+			runtimeProvisioningInstanceId: null,
+			runtimeProvisioningSandboxName: null,
+			runtimeProvisioningHostOwned: null,
+			runtimeProvisioningHostLaunchSpec: null,
+        updatedAt: sql<Date>`GREATEST(
+          date_trunc('milliseconds', clock_timestamp()),
+          ${sessions.updatedAt},
+          ${input.expectedStartedAt}
+        )`,
+      })
+      .where(and(...conditions))
+      .returning({ id: sessions.id });
+    return acknowledged.length > 0;
+  }
+
 	async function resolveWorkflowExecution(id: string) {
 		if (!database) return notFoundLifecycleTarget();
 		const [exec] = await database
@@ -29,6 +131,7 @@ export function createPostgresLifecycleTargetResolver(
 				daprInstanceId: workflowExecutions.daprInstanceId,
 				status: workflowExecutions.status,
 				stopRequestedAt: workflowExecutions.stopRequestedAt,
+        stopRequestedMode: workflowExecutions.stopRequestedMode,
 				projectId: workflowExecutions.projectId,
 				userId: workflowExecutions.userId,
 			})
@@ -40,11 +143,19 @@ export function createPostgresLifecycleTargetResolver(
 		const childSessions = await database
 			.select({
 				id: sessions.id,
+				agentId: sessions.agentId,
 				status: sessions.status,
 				completedAt: sessions.completedAt,
 				daprInstanceId: sessions.daprInstanceId,
+        workspaceSandboxName: sessions.workspaceSandboxName,
 				runtimeAppId: sessions.runtimeAppId,
 				runtimeSandboxName: sessions.runtimeSandboxName,
+					runtimeHostOwned: sessions.runtimeHostOwned,
+        runtimeProvisioningStartedAt: sessions.runtimeProvisioningStartedAt,
+				runtimeProvisioningAppId: sessions.runtimeProvisioningAppId,
+				runtimeProvisioningInstanceId: sessions.runtimeProvisioningInstanceId,
+				runtimeProvisioningSandboxName: sessions.runtimeProvisioningSandboxName,
+				runtimeProvisioningHostOwned: sessions.runtimeProvisioningHostOwned,
 			})
 			.from(sessions)
 			.where(eq(sessions.workflowExecutionId, id));
@@ -53,7 +164,10 @@ export function createPostgresLifecycleTargetResolver(
 		// A node qualifies only when every run-index child of it is DB-terminated:
 		// in a same-node durable/run loop, run__0 can be terminated while the parent
 		// legitimately advances to run__1 of the same node.
-		const nodeChildCounts = new Map<string, { total: number; terminated: number }>();
+    const nodeChildCounts = new Map<
+      string,
+      { total: number; terminated: number }
+    >();
 		for (const s of childSessions) {
 			const node = nodeIdFromChildSessionId(s.id);
 			if (!node) continue;
@@ -64,7 +178,10 @@ export function createPostgresLifecycleTargetResolver(
 			// Without the latter, a reconciler-converged child would land in
 			// activeChildNodes and permanently BLOCK the force-finalize the crash path
 			// now depends on.
-			if (s.status === "terminated" || (s.status === "failed" && s.completedAt != null)) {
+      if (
+        s.status === "terminated" ||
+        (s.status === "failed" && s.completedAt != null)
+      ) {
 				entry.terminated += 1;
 			}
 			nodeChildCounts.set(node, entry);
@@ -88,29 +205,111 @@ export function createPostgresLifecycleTargetResolver(
 			.from(workflowAgentRuns)
 			.where(eq(workflowAgentRuns.workflowExecutionId, id));
 
+    const activeOpenShellWorkspaces = await database
+      .select({ workspaceRef: workflowWorkspaceSessions.workspaceRef })
+      .from(workflowWorkspaceSessions)
+      .where(
+        and(
+          eq(workflowWorkspaceSessions.workflowExecutionId, id),
+          eq(workflowWorkspaceSessions.backend, "openshell"),
+          eq(workflowWorkspaceSessions.status, "active"),
+        ),
+      );
+
 		const agentRuntimeTargets = [];
+    const runtimeProvisioningLeases = [];
+    const unresolvedRuntimeLinkages = [];
 		for (const s of childSessions) {
-			const target = agentTargetForSession(s);
-			if (target) agentRuntimeTargets.push(target);
+      const requiresRuntimeLinkage = sessionRequiresRuntimeLinkage(s);
+      const persistedTarget = agentTargetForSession(s);
+      const targets = requiresRuntimeLinkage ? agentTargetsForSession(s) : [];
+      agentRuntimeTargets.push(...targets);
+      const active =
+        s.status !== "terminated" &&
+        !(s.status === "failed" && s.completedAt != null);
+      const prospectiveTarget = s.runtimeProvisioningStartedAt
+        ? prospectiveAgentTargetForSession(s)
+        : null;
+      if (
+        active &&
+        requiresRuntimeLinkage &&
+        s.runtimeProvisioningStartedAt &&
+        prospectiveTarget
+      ) {
+        runtimeProvisioningLeases.push({
+          sessionId: s.id,
+          startedAt: s.runtimeProvisioningStartedAt,
+          prospectiveTarget,
+        });
 		}
+      if (
+        active &&
+        requiresRuntimeLinkage &&
+        (s.runtimeProvisioningStartedAt != null ||
+          !persistedTarget ||
+          dedicatedHostReservationPending(s))
+      ) {
+        unresolvedRuntimeLinkages.push(s.id);
+		}
+    }
+    const requestedAt = exec.stopRequestedAt ?? new Date();
 
 		return {
 			notFound: false,
 			dbActive: exec.status === "pending" || exec.status === "running",
 			stopRequestedAt: exec.stopRequestedAt ?? null,
+      stopRequestedMode: persistedModeOrNull(exec.stopRequestedMode),
 			terminatedChildNodes,
 			activeChildNodes,
 			scope: { projectId: exec.projectId ?? null, userId: exec.userId },
 			parentInstanceIds: compactLifecycleIds([exec.daprInstanceId ?? exec.id]),
 			agentRuntimeTargets,
+      runtimeProvisioningLeases,
+      acknowledgeRuntimeProvisioningCompensation: (
+        sessionId: string,
+        expectedStartedAt: Date,
+      ) =>
+        acknowledgeStoppedRuntimeProvisioningLease({
+          sessionId,
+          expectedStartedAt,
+          workflowExecutionId: id,
+        }),
+      unresolvedRuntimeLinkages: compactLifecycleIds(unresolvedRuntimeLinkages),
 			sandboxNames: compactLifecycleIds(
-				childSessions.map((s) => s.runtimeSandboxName),
+	        agentRuntimeTargets
+	          .filter((target) => target.ownsRuntimeSandbox !== false)
+	          .map((target) => target.runtimeSandboxName),
+	      ),
+      workspaceSandboxNames: compactLifecycleIds(
+        childSessions.map((s) => s.workspaceSandboxName),
 			),
+      workspaceRetentionIdentities: compactWorkspaceRetentionIdentities([
+        ...(activeOpenShellWorkspaces.length > 0
+          ? [
+              {
+                durableExecutionId: exec.daprInstanceId ?? exec.id,
+                databaseExecutionId: exec.id,
+              },
+            ]
+          : []),
+        ...childSessions
+          .filter((session) => Boolean(session.workspaceSandboxName?.trim()))
+          .map((session) => ({
+            durableExecutionId: session.id,
+            databaseExecutionId: exec.id,
+          })),
+      ]),
+      workspaceCleanupExecutionIds:
+        activeOpenShellWorkspaces.length > 0 ? [id] : [],
 			statePurgeInstanceIds: compactLifecycleIds([
 				...childSessions.map((s) => s.daprInstanceId),
 				...agentRuns.flatMap((r) => [r.daprInstanceId, r.agentWorkflowId]),
 			]),
-			finalizeDb: async (reason: string, outcome: FinalizeOutcome = "terminated") => {
+      finalizeDb: async (
+        reason: string,
+        outcome: FinalizeOutcome = "terminated",
+        expectedMode?: DurableStopMode,
+      ) => {
 				if (outcome === "crashed") {
 					// Documented no-op: the workflow-execution finalize writes `cancelled`
 					// (its own terminal vocabulary); the `crashed` outcome only shapes the
@@ -119,20 +318,48 @@ export function createPostgresLifecycleTargetResolver(
 						`[lifecycle-resolver] finalizeDb(crashed) dropped for workflowExecution ${id} — workflow finalize writes 'cancelled'`,
 					);
 				}
+        return database.transaction(async (tx) => {
+          const [current] = await tx
+            .select({
+              status: workflowExecutions.status,
+              stopRequestedAt: workflowExecutions.stopRequestedAt,
+              stopRequestedMode: workflowExecutions.stopRequestedMode,
+            })
+            .from(workflowExecutions)
+            .where(eq(workflowExecutions.id, id))
+            .limit(1)
+            .for("update");
+          if (
+            !current ||
+            !stopIntentMatches(
+              current.stopRequestedAt,
+              current.stopRequestedMode,
+              expectedMode,
+            )
+          ) {
+            return "mode_changed" as const;
+          }
+
 				const now = new Date();
-				await database.transaction(async (tx) => {
+          if (current.status === "pending" || current.status === "running") {
 					await tx
 						.update(workflowExecutions)
 						.set({ status: "cancelled", error: reason, completedAt: now })
-						.where(
-							and(
-								eq(workflowExecutions.id, id),
-								inArray(workflowExecutions.status, ["pending", "running"]),
-							),
-						);
+              .where(eq(workflowExecutions.id, id));
+          }
 					await tx
 						.update(sessions)
-						.set({ status: "terminated", completedAt: now, updatedAt: now })
+            .set({
+              status: "terminated",
+              completedAt: now,
+              runtimeProvisioningStartedAt: null,
+							runtimeProvisioningAppId: null,
+							runtimeProvisioningInstanceId: null,
+							runtimeProvisioningSandboxName: null,
+							runtimeProvisioningHostOwned: null,
+							runtimeProvisioningHostLaunchSpec: null,
+              updatedAt: now,
+            })
 						.where(
 							and(
 								eq(sessions.workflowExecutionId, id),
@@ -153,6 +380,7 @@ export function createPostgresLifecycleTargetResolver(
 								inArray(workflowAgentRuns.status, ["scheduled", "running"]),
 							),
 						);
+          if (expectedMode === "purge" || expectedMode === "reset") {
 					await tx
 						.update(workflowWorkspaceSessions)
 						.set({ status: "cleaned", cleanedAt: now, updatedAt: now })
@@ -162,18 +390,90 @@ export function createPostgresLifecycleTargetResolver(
 								eq(workflowWorkspaceSessions.status, "active"),
 							),
 						);
+          }
+          if (expectedMode !== undefined) {
+            const childIntentSatisfied =
+              expectedMode === "reset"
+                ? sql`true`
+                : expectedMode === "purge"
+                  ? sql`${sessions.stopRequestedMode} IS NULL OR ${sessions.stopRequestedMode} IN ('terminate', 'purge')`
+                  : sql`${sessions.stopRequestedMode} IS NULL OR ${sessions.stopRequestedMode} = 'terminate'`;
+            // The parent cascade covered every resolved child at this mode. Ack
+            // only child intents no stronger than that work; a concurrent child
+            // reset remains pending for the session reconciler.
+            await tx
+              .update(sessions)
+              .set({ stopRequestedAt: null, stopRequestedMode: null })
+              .where(
+                and(
+                  eq(sessions.workflowExecutionId, id),
+                  sql`${sessions.stopRequestedAt} IS NOT NULL`,
+                  childIntentSatisfied,
+                ),
+              );
+            // Clearing is the durable acknowledgement. A later stop/clean request on
+            // an already-terminal row creates a fresh pending intent, so a crash
+            // between persistence and cleanup remains eligible for reconciliation.
+            await tx
+              .update(workflowExecutions)
+              .set({ stopRequestedAt: null, stopRequestedMode: null })
+              .where(eq(workflowExecutions.id, id));
+          }
+          return "finalized" as const;
 				});
 			},
-			markStopRequested: async (reason: string) => {
-				await database
+      markStopRequested: async (reason: string, mode: DurableStopMode) => {
+        return database.transaction(async (tx) => {
+          // Deliberately update by id even when the execution is already terminal:
+          // repeated cleanup must remain idempotent and still reap leaked compute.
+          const persisted = await tx
 					.update(workflowExecutions)
-					.set({ stopRequestedAt: new Date(), stopReason: reason })
+            .set({
+              stopRequestedAt: sql<Date>`COALESCE(${workflowExecutions.stopRequestedAt}, ${requestedAt})`,
+              stopRequestedMode: monotonicStopMode(
+                workflowExecutions.stopRequestedAt,
+                workflowExecutions.stopRequestedMode,
+                mode,
+              ),
+              stopReason: sql<string>`COALESCE(${workflowExecutions.stopReason}, ${reason})`,
+            })
+            .where(eq(workflowExecutions.id, id))
+            .returning({
+              stopRequestedAt: workflowExecutions.stopRequestedAt,
+              stopRequestedMode: workflowExecutions.stopRequestedMode,
+            });
+          const row = persisted[0];
+          if (!row?.stopRequestedAt) {
+            throw new Error(
+              `workflow execution ${id} stop intent was not persisted`,
+            );
+          }
+          const persistedMode = normalizeDurableStopMode(row.stopRequestedMode);
+
+          // A workflow and its child sessions share one durable stop intent. Stamp
+          // active children in the same transaction so the session reconciler can
+          // independently re-drive their per-host control after a BFF restart.
+          await tx
+            .update(sessions)
+            .set({
+              stopRequestedAt: sql<Date>`COALESCE(${sessions.stopRequestedAt}, ${row.stopRequestedAt})`,
+              stopRequestedMode: monotonicStopMode(
+                sessions.stopRequestedAt,
+                sessions.stopRequestedMode,
+                persistedMode,
+              ),
+              updatedAt: sql<Date>`CASE WHEN ${sessions.stopRequestedAt} IS NULL THEN ${row.stopRequestedAt} ELSE ${sessions.updatedAt} END`,
+            })
 					.where(
 						and(
-							eq(workflowExecutions.id, id),
-							inArray(workflowExecutions.status, ["pending", "running"]),
+                eq(sessions.workflowExecutionId, id),
+                ne(sessions.status, "terminated"),
+                isNull(sessions.completedAt),
 						),
 					);
+
+          return { requestedAt: row.stopRequestedAt, mode: persistedMode };
+        });
 			},
 		};
 	}
@@ -183,44 +483,141 @@ export function createPostgresLifecycleTargetResolver(
 		const [session] = await database
 			.select({
 				id: sessions.id,
+				agentId: sessions.agentId,
 				status: sessions.status,
+        completedAt: sessions.completedAt,
 				stopRequestedAt: sessions.stopRequestedAt,
+        stopRequestedMode: sessions.stopRequestedMode,
 				daprInstanceId: sessions.daprInstanceId,
+        workspaceSandboxName: sessions.workspaceSandboxName,
 				runtimeAppId: sessions.runtimeAppId,
 				runtimeSandboxName: sessions.runtimeSandboxName,
+						runtimeHostOwned: sessions.runtimeHostOwned,
+        runtimeProvisioningStartedAt: sessions.runtimeProvisioningStartedAt,
+					runtimeProvisioningAppId: sessions.runtimeProvisioningAppId,
+					runtimeProvisioningInstanceId: sessions.runtimeProvisioningInstanceId,
+					runtimeProvisioningSandboxName: sessions.runtimeProvisioningSandboxName,
+					runtimeProvisioningHostOwned: sessions.runtimeProvisioningHostOwned,
 				projectId: sessions.projectId,
 				userId: sessions.userId,
+				workflowExecutionId: sessions.workflowExecutionId,
 			})
 			.from(sessions)
 			.where(eq(sessions.id, id))
 			.limit(1);
 		if (!session) return notFoundLifecycleTarget();
 
-		const target = agentTargetForSession(session);
+    const requiresRuntimeLinkage = sessionRequiresRuntimeLinkage(session);
+    const persistedTarget = agentTargetForSession(session);
+    const targets = requiresRuntimeLinkage
+      ? agentTargetsForSession(session)
+      : [];
+    const prospectiveTarget = session.runtimeProvisioningStartedAt
+      ? prospectiveAgentTargetForSession(session)
+      : null;
+    const active =
+      session.status !== "terminated" &&
+      !(session.status === "failed" && session.completedAt != null);
+    const requestedAt = session.stopRequestedAt ?? new Date();
 		return {
 			notFound: false,
-			dbActive: session.status !== "terminated",
+      dbActive: active,
 			dbStatus: session.status,
 			stopRequestedAt: session.stopRequestedAt ?? null,
+      stopRequestedMode: persistedModeOrNull(session.stopRequestedMode),
 			terminatedChildNodes: [],
 			activeChildNodes: [],
 			scope: { projectId: session.projectId ?? null, userId: session.userId },
 			parentInstanceIds: [],
-			agentRuntimeTargets: target ? [target] : [],
-			sandboxNames: compactLifecycleIds([session.runtimeSandboxName]),
+      agentRuntimeTargets: targets,
+      runtimeProvisioningLeases:
+        active &&
+        requiresRuntimeLinkage &&
+        session.runtimeProvisioningStartedAt &&
+        prospectiveTarget
+          ? [
+              {
+                sessionId: session.id,
+                startedAt: session.runtimeProvisioningStartedAt,
+                prospectiveTarget,
+              },
+            ]
+          : [],
+      acknowledgeRuntimeProvisioningCompensation: (
+        sessionId: string,
+        expectedStartedAt: Date,
+      ) =>
+        sessionId === id
+          ? acknowledgeStoppedRuntimeProvisioningLease({
+              sessionId,
+              expectedStartedAt,
+            })
+          : Promise.resolve(false),
+      unresolvedRuntimeLinkages:
+        active &&
+        requiresRuntimeLinkage &&
+        (session.runtimeProvisioningStartedAt != null ||
+          !persistedTarget ||
+          dedicatedHostReservationPending(session))
+          ? [session.id]
+          : [],
+	      sandboxNames: compactLifecycleIds(
+	        targets
+	          .filter((target) => target.ownsRuntimeSandbox !== false)
+	          .map((target) => target.runtimeSandboxName),
+	      ),
+      workspaceSandboxNames: compactLifecycleIds([
+        session.workspaceSandboxName,
+      ]),
+      workspaceRetentionIdentities: session.workspaceSandboxName?.trim()
+        ? [
+            {
+              durableExecutionId: session.id,
+              databaseExecutionId: session.workflowExecutionId ?? null,
+            },
+          ]
+        : [],
+      workspaceCleanupExecutionIds: [],
 			statePurgeInstanceIds: compactLifecycleIds([
 				session.daprInstanceId ?? session.id,
 			]),
-			finalizeDb: async (reason: string, outcome: FinalizeOutcome = "terminated") => {
+      finalizeDb: async (
+        reason: string,
+        outcome: FinalizeOutcome = "terminated",
+        expectedMode?: DurableStopMode,
+      ) => {
+        return database.transaction(async (tx) => {
+          const [current] = await tx
+            .select({
+              status: sessions.status,
+              stopRequestedAt: sessions.stopRequestedAt,
+              stopRequestedMode: sessions.stopRequestedMode,
+            })
+            .from(sessions)
+            .where(eq(sessions.id, id))
+            .limit(1)
+            .for("update");
+          if (
+            !current ||
+            !stopIntentMatches(
+              current.stopRequestedAt,
+              current.stopRequestedMode,
+              expectedMode,
+            )
+          ) {
+            return "mode_changed" as const;
+          }
+
 				const now = new Date();
 				const crashed = outcome === "crashed";
-				await database
+          await tx
 					.update(sessions)
 					.set({
-						// A reconciler-converged crash lands `failed` + a `crashed` stop
-						// reason (so the row + UI read "Crashed", the resume affordance
-						// appears, and it is distinguishable from a clean stop); a normal
-						// stop lands `terminated`. Both stamp completedAt (terminal).
+              ...(current.status === "terminated"
+                ? {}
+                : {
+                    // A reconciler-converged crash lands `failed` + a
+                    // `crashed` reason; a normal stop lands `terminated`.
 						status: crashed ? "failed" : "terminated",
 						stopReason: {
 							type: crashed ? "crashed" : undefined,
@@ -228,15 +625,49 @@ export function createPostgresLifecycleTargetResolver(
 							source: "lifecycle_controller",
 						},
 						completedAt: now,
+                  }),
+              ...(expectedMode !== undefined
+                ? { stopRequestedAt: null, stopRequestedMode: null }
+                : {}),
+              runtimeProvisioningStartedAt: null,
+							runtimeProvisioningAppId: null,
+							runtimeProvisioningInstanceId: null,
+							runtimeProvisioningSandboxName: null,
+							runtimeProvisioningHostOwned: null,
+							runtimeProvisioningHostLaunchSpec: null,
 						updatedAt: now,
 					})
-					.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
+            .where(eq(sessions.id, id));
+          return "finalized" as const;
+        });
 			},
-			markStopRequested: async () => {
-				await database
+      markStopRequested: async (_reason: string, mode: DurableStopMode) => {
+        // Update terminal rows too: a repeated Stop & clean must be able to reap
+        // leaked compute instead of failing because the projection is terminal.
+        const persisted = await database
 					.update(sessions)
-					.set({ stopRequestedAt: new Date(), updatedAt: new Date() })
-					.where(and(eq(sessions.id, id), ne(sessions.status, "terminated")));
+          .set({
+            stopRequestedAt: sql<Date>`COALESCE(${sessions.stopRequestedAt}, ${requestedAt})`,
+            stopRequestedMode: monotonicStopMode(
+              sessions.stopRequestedAt,
+              sessions.stopRequestedMode,
+              mode,
+            ),
+            updatedAt: sql<Date>`CASE WHEN ${sessions.stopRequestedAt} IS NULL THEN ${requestedAt} ELSE ${sessions.updatedAt} END`,
+          })
+          .where(eq(sessions.id, id))
+          .returning({
+            stopRequestedAt: sessions.stopRequestedAt,
+            stopRequestedMode: sessions.stopRequestedMode,
+          });
+        const row = persisted[0];
+        if (!row?.stopRequestedAt) {
+          throw new Error(`session ${id} stop intent was not persisted`);
+        }
+        return {
+          requestedAt: row.stopRequestedAt,
+          mode: normalizeDurableStopMode(row.stopRequestedMode),
+        };
 			},
 		};
 	}
@@ -254,6 +685,7 @@ export function createPostgresLifecycleTargetResolver(
 			.where(eq(evaluationRuns.id, id))
 			.limit(1);
 		if (!run) return notFoundLifecycleTarget();
+    const requestedAt = run.cancelRequestedAt ?? new Date();
 		// DB flip + scope are owned by evaluations/service.ts::cancelEvaluationRun;
 		// the controller only drives the durable terminate/purge of the coordinator
 		// execution here.
@@ -261,12 +693,23 @@ export function createPostgresLifecycleTargetResolver(
 			notFound: false,
 			dbActive: !["completed", "failed", "cancelled"].includes(run.status),
 			stopRequestedAt: run.cancelRequestedAt ?? null,
+      // Evaluation cancellation has one authority and one destructive semantic:
+      // cancelEvaluationRun always purges the coordinator durable state. Preserve
+      // that mode across a delayed confirmation without adding a second mode
+      // column to the evaluation aggregate.
+      stopRequestedMode: run.cancelRequestedAt ? ("purge" as const) : null,
 			terminatedChildNodes: [],
 			activeChildNodes: [],
 			scope: null,
 			parentInstanceIds: compactLifecycleIds([run.coordinatorExecutionId]),
 			agentRuntimeTargets: [],
+      runtimeProvisioningLeases: [],
+      acknowledgeRuntimeProvisioningCompensation: async () => false,
+      unresolvedRuntimeLinkages: [],
 			sandboxNames: [],
+      workspaceSandboxNames: [],
+      workspaceRetentionIdentities: [],
+      workspaceCleanupExecutionIds: [],
 			statePurgeInstanceIds: compactLifecycleIds([run.coordinatorExecutionId]),
 			finalizeDb: async (_reason: string, outcome?: FinalizeOutcome) => {
 				if (outcome === "crashed") {
@@ -277,12 +720,23 @@ export function createPostgresLifecycleTargetResolver(
 						`[lifecycle-resolver] finalizeDb(crashed) dropped for evalRun ${id} — eval finalize is owned by cancelEvaluationRun`,
 					);
 				}
+        return "finalized" as const;
 			},
-			markStopRequested: async () => {
-				await database
+      markStopRequested: async (_reason: string, _mode: DurableStopMode) => {
+        const persisted = await database
 					.update(evaluationRuns)
-					.set({ cancelRequestedAt: new Date() })
-					.where(eq(evaluationRuns.id, id));
+          .set({
+            cancelRequestedAt: sql<Date>`COALESCE(${evaluationRuns.cancelRequestedAt}, ${requestedAt})`,
+          })
+          .where(eq(evaluationRuns.id, id))
+          .returning({ cancelRequestedAt: evaluationRuns.cancelRequestedAt });
+        if (!persisted[0]?.cancelRequestedAt) {
+          throw new Error(`evaluation run ${id} stop intent was not persisted`);
+        }
+        return {
+          requestedAt: persisted[0].cancelRequestedAt,
+          mode: "purge" as const,
+        };
 			},
 		};
 	}

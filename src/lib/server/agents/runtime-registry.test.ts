@@ -137,6 +137,28 @@ describe("runtime registry — readers", () => {
 		expect(getRuntimeDescriptor("agy-cli")?.capabilities.supportsHooks).toBe(true);
 	});
 
+	it("only receipt-capable runtimes can participate in durable agent teams", () => {
+		for (const id of listRuntimeIds()) {
+			expect(
+				typeof getRuntimeDescriptor(id)?.capabilities
+					.supportsTeamMailboxReceipts,
+			).toBe("boolean");
+		}
+		const capable = listRuntimeIds().filter(
+			(id) =>
+				getRuntimeDescriptor(id)?.capabilities.supportsTeamMailboxReceipts ===
+				true,
+		);
+		expect(capable.sort()).toEqual(
+			[
+				"dapr-agent-py",
+				"dapr-agent-py-juicefs",
+				"dapr-agent-py-testing",
+				"pydantic-ai-agent-py",
+			].sort(),
+		);
+	});
+
 	it("maps Claude Code GLM to a model id accepted by the Z.AI Anthropic gateway", () => {
 		const glm = getRuntimeDescriptor("claude-code-cli-glm");
 		expect(glm?.cliAuth?.provider).toBe("zai");

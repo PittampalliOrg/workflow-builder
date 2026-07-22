@@ -49,6 +49,10 @@ from google.protobuf import wrappers_pb2  # noqa: E402
 from src.config import AGENT_SERVICE_NAME, AGENT_STATE_STORE, WORKSPACE_ROOT  # noqa: E402
 from src.event_publisher import set_incremental_tier_enabled  # noqa: E402
 from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
+from src.runtime_start_authority import (  # noqa: E402
+    AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+    authorize_session_runtime_start,
+)
 from src.session import session_workflow  # noqa: E402
 from src.session_config import (  # noqa: E402
     TERMINAL_CONTROL_EVENT_TYPES,
@@ -87,6 +91,10 @@ runtime.register_workflow(agent_workflow)
 runtime.register_activity(call_llm, name=CALL_LLM_ACTIVITY)
 runtime.register_activity(execute_tool, name=EXECUTE_TOOL_ACTIVITY)
 runtime.register_activity(check_cancellation, name=CHECK_CANCELLATION_ACTIVITY)
+runtime.register_activity(
+    authorize_session_runtime_start,
+    name=AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+)
 
 
 @asynccontextmanager
@@ -280,6 +288,23 @@ def raise_session_event_endpoint(request: dict) -> dict:
                 exc,
             )
     event_name, payload = external_control_event_as_user_event(event_name, payload)
+    delivery_id: str | None = None
+    if event_name == "session.user_events" and isinstance(payload, dict):
+        delivery = payload.get("delivery")
+        if isinstance(delivery, dict) and delivery.get("kind") == "team-mailbox":
+            delivery_id = str(delivery.get("batchId") or "").strip()
+            event_ids = delivery.get("eventIds")
+            events = payload.get("events")
+            if (
+                not delivery_id
+                or not isinstance(event_ids, list)
+                or not isinstance(events, list)
+                or len(event_ids) != len(events)
+                or not all(str(event_id or "").strip() for event_id in event_ids)
+            ):
+                raise HTTPException(
+                    status_code=400, detail="invalid team mailbox delivery metadata"
+                )
 
     raise_request = pb.RaiseEventRequest(
         instanceId=instance_id,
@@ -291,7 +316,7 @@ def raise_session_event_endpoint(request: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"RaiseEvent failed: {exc}")
 
-    return {"ok": True}
+    return {"ok": True, "accepted": True, "deliveryId": delivery_id}
 
 
 @app.post("/api/v2/agent-runs/{instance_id}/terminate")

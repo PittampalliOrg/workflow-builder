@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const daprFetchMock = vi.hoisted(() => vi.fn());
+const lifecycleMocks = vi.hoisted(() => ({
+  stopDurableRun: vi.fn(),
+}));
 
 vi.mock("$lib/server/dapr-client", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("$lib/server/dapr-client")>();
+  const actual =
+    await importOriginal<typeof import("$lib/server/dapr-client")>();
 	return {
 		...actual,
 		daprFetch: (...args: unknown[]) => daprFetchMock(...args),
@@ -11,11 +15,43 @@ vi.mock("$lib/server/dapr-client", async (importOriginal) => {
 	};
 });
 
+vi.mock("$lib/server/lifecycle", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("$lib/server/lifecycle")>();
+  return {
+    ...actual,
+    stopDurableRun: (...args: unknown[]) =>
+      lifecycleMocks.stopDurableRun(...args),
+  };
+});
+
 import {
 	authenticateReconcilerJobPayload,
+  createSessionReconcilerDeps,
 	RECONCILER_JOB_NAME,
 	scheduleSessionReconcilerJob,
 } from "./session-reconciler-deps";
+
+describe("session stop reconciliation", () => {
+  it("re-drives persisted stop intent through the vetted idempotent lifecycle command", async () => {
+    lifecycleMocks.stopDurableRun.mockResolvedValue({
+      confirmed: true,
+      requested: true,
+      state: "confirmed",
+    });
+    const deps = createSessionReconcilerDeps();
+
+    await deps.redriveStop("session-1", "purge");
+
+    expect(lifecycleMocks.stopDurableRun).toHaveBeenCalledWith(
+      { kind: "session", id: "session-1" },
+      {
+        mode: "purge",
+        reason: "Persisted stop intent re-driven by session reconciler",
+        graceMs: 0,
+      },
+    );
+  });
+});
 
 // authenticateReconcilerJobPayload reads INTERNAL_API_TOKEN via env → process.env
 // fallback; the vitest $env mock is empty, so process.env drives it here.
@@ -49,7 +85,9 @@ describe("authenticateReconcilerJobPayload", () => {
 	it("accepts a matching token at body.token OR body.data.token, and rejects mismatches", () => {
 		process.env.INTERNAL_API_TOKEN = "s3kret";
 		expect(authenticateReconcilerJobPayload({ token: "s3kret" })).toBe(true);
-		expect(authenticateReconcilerJobPayload({ data: { token: "s3kret" } })).toBe(true);
+    expect(
+      authenticateReconcilerJobPayload({ data: { token: "s3kret" } }),
+    ).toBe(true);
 		expect(authenticateReconcilerJobPayload({ token: "nope" })).toBe(false);
 		// length mismatch must not throw (timingSafeEqual requires equal length)
 		expect(authenticateReconcilerJobPayload({ token: "s3kre" })).toBe(false);
@@ -70,11 +108,16 @@ describe("scheduleSessionReconcilerJob", () => {
 		process.env.SESSION_RECONCILER_TICK = "dapr-job";
 		daprFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
-		await Promise.all([scheduleSessionReconcilerJob(), scheduleSessionReconcilerJob()]);
+    await Promise.all([
+      scheduleSessionReconcilerJob(),
+      scheduleSessionReconcilerJob(),
+    ]);
 
 		expect(daprFetchMock).toHaveBeenCalledTimes(2);
 		for (const [url, options] of daprFetchMock.mock.calls) {
-			expect(url).toBe(`http://localhost:3500/v1.0/jobs/${RECONCILER_JOB_NAME}`);
+      expect(url).toBe(
+        `http://localhost:3500/v1.0/jobs/${RECONCILER_JOB_NAME}`,
+      );
 			expect(options).toMatchObject({
 				method: "POST",
 				headers: { "Content-Type": "application/json" },

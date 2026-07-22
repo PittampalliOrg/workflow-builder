@@ -13,9 +13,12 @@ import {
 	resolveAgentRuntimeRoute,
 } from "$lib/server/agents/runtime-routing";
 import {
+  type AgentWorkflowHostLaunchSpec,
 	maybeProvisionAgentWorkflowHost,
+  recreateAgentWorkflowHostGeneration,
 	waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
+import { ensurePublishedAgentWorkflowHostGeneration } from "$lib/server/sessions/runtime-host-recovery";
 import {
 	resolveSessionRuntimeTarget,
 	runtimeUsesSharedWorkspace,
@@ -24,6 +27,13 @@ import { buildCliSessionSecretEnv } from "$lib/server/sessions/session-secret-en
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import { evaluateSwap } from "$lib/server/agents/swap-safety";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
+import type {
+  RuntimeProvisioningLease,
+  SessionUserEventAcceptance,
+  StaleSessionRuntimeProvisioningTarget,
+  TeamMailboxDeliveryMetadata,
+} from "$lib/server/application/ports";
+import { sessionRuntimeGenerationInstanceId } from "$lib/server/lifecycle/resolvers";
 
 /** Session owner (sessions.userId) — not part of the public SessionDetail
  * shape, so resolve it through workflow-data for the CLI-token gate. */
@@ -66,6 +76,87 @@ async function resolveRunWorkspaceKey(executionId: string): Promise<string> {
 	}
 }
 
+async function resolveRuntimeHostSessionSecretEnv(input: {
+  sessionId: string;
+  runtimeDescriptor: ReturnType<typeof getRuntimeDescriptor>;
+}): Promise<Record<string, string> | null> {
+  const cliAuth = input.runtimeDescriptor?.capabilities?.interactiveTerminal
+    ? input.runtimeDescriptor.cliAuth
+    : undefined;
+  if (!cliAuth || cliAuth.credentialKind === "device_login") return null;
+  const { provider, envVar, setupCommand, credentialKind } = cliAuth;
+  if (!envVar) {
+    throw new Error(
+      `Runtime "${input.runtimeDescriptor?.id}" cliAuth.credentialKind=${credentialKind} requires an envVar`,
+    );
+  }
+  const optional = credentialKind === "file_bundle";
+  const setupHint = setupCommand
+    ? `run \`${setupCommand}\` locally`
+    : "see the runtime docs";
+  const ownerUserId = await resolveSessionOwnerUserId(input.sessionId);
+  const { cliCredentials } = getApplicationAdapters();
+  if (ownerUserId && cliCredentials.needsBootLease(provider)) {
+    const leased = await cliCredentials.acquireBootLease(
+      ownerUserId,
+      provider,
+      input.sessionId,
+    );
+    if (!leased) {
+      console.warn(
+        `[spawn] ${provider} boot-lease not acquired in time for session ${input.sessionId}; proceeding (may race a concurrent refresh)`,
+      );
+    }
+  }
+  const credential = ownerUserId
+    ? await cliCredentials.getUserCredential(ownerUserId, provider)
+    : null;
+  if (!credential) {
+    if (optional) return null;
+    throw new CliTokenError(
+      "CLI_TOKEN_MISSING",
+      provider,
+      `No ${provider} CLI credential linked for this user. ` +
+        `Add one under Settings → CLI tokens (${setupHint}).`,
+    );
+  }
+  if (
+    !optional &&
+    credential.expiresAt &&
+    credential.expiresAt.getTime() < Date.now()
+  ) {
+    throw new CliTokenError(
+      "CLI_TOKEN_EXPIRED",
+      provider,
+      `The linked ${provider} CLI credential has expired. ` +
+        `Re-enroll under Settings → CLI tokens (${setupHint}).`,
+    );
+  }
+  if (!input.runtimeDescriptor) {
+    throw new Error(
+      `Runtime auth descriptor resolved for ${provider}, but no runtime target was selected`,
+    );
+  }
+  return buildCliSessionSecretEnv(input.runtimeDescriptor, credential.token);
+}
+
+async function requestPendingTeamMailboxDelivery(
+  sessionId: string,
+): Promise<void> {
+  try {
+    await getApplicationAdapters().teamMailboxDelivery.requestDeliveryAfterRuntimePublished(
+      sessionId,
+    );
+  } catch (err) {
+    // Runtime publication is already authoritative. Keep the durable mailbox row
+    // for the sweeper rather than compensating a healthy workflow generation.
+    console.warn(
+      `[session-spawn] mailbox delivery trigger failed for ${sessionId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 /**
  * Spawn a `session_workflow` instance in `dapr-agent-py` for the given
  * session row. Uses the Dapr sidecar's workflow API directly — no new
@@ -73,8 +164,8 @@ async function resolveRunWorkspaceKey(executionId: string): Promise<string> {
  * from `DAPR_HTTP_ENDPOINT` / `DAPR_HTTP_PORT` the same way other callers
  * use it.
  *
- * Idempotent: if a workflow instance with the session's id already exists,
- * returns the existing instance without re-starting.
+ * Idempotent per provisioning lease. A new lease receives a new durable
+ * instance id, preventing a late start or cleanup from crossing generations.
  */
 export interface SpawnSessionWorkflowOptions {
 	/**
@@ -95,6 +186,73 @@ export interface SpawnSessionWorkflowOptions {
     teamId: string | null;
     teamRole: "none" | "lead" | "member";
   };
+  /** Existing exclusive lease held by the application service. */
+  provisioningLease?: RuntimeProvisioningLease;
+  /** Keep an exact staged lease retryable after recovery-side cleanup. */
+  preserveStagedLeaseOnFailure?: boolean;
+  /** Exact target forwarded only by the stale-provisioning reconciler. */
+  stagedRuntimeTarget?: StaleSessionRuntimeProvisioningTarget;
+}
+
+/**
+ * Persist the provisioning lease before an application service performs any
+ * external setup needed by the session. The raw spawn path repeats this
+ * idempotently so legacy/internal callers cannot bypass the lifecycle fence.
+ */
+export async function reserveSessionWorkflow(
+  sessionId: string,
+): Promise<RuntimeProvisioningLease | null> {
+  return getApplicationAdapters().workflowData.reserveSessionRuntimeProvisioning(
+    { sessionId },
+  );
+}
+
+export async function releaseSessionWorkflow(
+  sessionId: string,
+  lease: RuntimeProvisioningLease,
+): Promise<boolean> {
+  return getApplicationAdapters().workflowData.releaseSessionRuntimeProvisioning(
+    {
+      sessionId,
+      expectedStartedAt: lease.startedAt,
+    },
+  );
+}
+
+/**
+ * Re-drive the exact published host generation for an existing durable session.
+ * Runtime credentials are resolved at the composition boundary and never read
+ * by the team-delivery use case or persisted in the recovery recipe.
+ */
+export async function ensurePublishedSessionWorkflowHost(input: {
+  sessionId: string;
+  runtimeAppId: string;
+  runtimeSandboxName: string;
+}): Promise<{ recovered: boolean }> {
+  const workflowData = getApplicationAdapters().workflowData;
+  const session = await workflowData.getSessionDetail({
+    sessionId: input.sessionId,
+  });
+  if (!session) throw new Error(`Session ${input.sessionId} not found`);
+  const agent = await workflowData.resolveSessionAgent({
+    agentId: session.agentId,
+    agentVersion: session.agentVersion ?? undefined,
+  });
+  if (!agent) throw new Error(`Agent ${session.agentId} not found`);
+  const runtime = getRuntimeDescriptor(
+    (agent.config as { runtime?: string }).runtime ?? agent.runtime,
+  );
+  const sessionSecretEnv = await resolveRuntimeHostSessionSecretEnv({
+    sessionId: input.sessionId,
+    runtimeDescriptor: runtime,
+  });
+  return ensurePublishedAgentWorkflowHostGeneration(
+    getApplicationAdapters().sessionRuntimeHostRecovery,
+    {
+      ...input,
+      sessionSecretEnv,
+    },
+  );
 }
 
 export async function spawnSessionWorkflow(
@@ -109,12 +267,66 @@ export async function spawnSessionWorkflow(
 		sessionId,
 	});
 	if (!session) throw new Error(`Session ${sessionId} not found`);
-	if (session.daprInstanceId) {
+  const stagedRuntimeTarget = options.stagedRuntimeTarget;
+  if (
+    stagedRuntimeTarget &&
+    (!options.provisioningLease ||
+      stagedRuntimeTarget.sessionId !== sessionId ||
+      !stagedRuntimeTarget.runtimeAppId.trim() ||
+      !stagedRuntimeTarget.durableInstanceId.trim() ||
+      stagedRuntimeTarget.startedAt.getTime() !==
+        options.provisioningLease.startedAt.getTime())
+  ) {
+    throw new Error(
+      `Session ${sessionId} staged runtime target requires its exact provisioning lease`,
+    );
+  }
+  // Published durable identity is stronger than the asynchronous status
+  // projection. A retry can observe `rescheduling` after publication but before
+  // status_running; only the exact staged-generation reconciler may bypass this.
+  if (session.daprInstanceId && !stagedRuntimeTarget) {
+    if (options.provisioningLease) {
+      await workflowData.releaseSessionRuntimeProvisioning({
+        sessionId,
+        expectedStartedAt: options.provisioningLease.startedAt,
+      });
+    }
+    if (
+      session.status !== "terminated" &&
+      !session.completedAt &&
+      session.runtimeAppId &&
+      session.runtimeSandboxName
+    ) {
+      await ensurePublishedSessionWorkflowHost({
+        sessionId,
+        runtimeAppId: session.runtimeAppId,
+        runtimeSandboxName: session.runtimeSandboxName,
+      });
+    }
+    await requestPendingTeamMailboxDelivery(sessionId);
 		return {
 			instanceId: session.daprInstanceId,
 			natsSubject: session.natsSubject ?? `session.events.${sessionId}`,
 		};
 	}
+  const provisioningLease =
+    options.provisioningLease ??
+    (await workflowData.reserveSessionRuntimeProvisioning({ sessionId }));
+  if (!provisioningLease) {
+    throw new Error(`Session ${sessionId} is stopping or terminal`);
+  }
+  const instanceId =
+    stagedRuntimeTarget?.durableInstanceId.trim() ||
+    sessionRuntimeGenerationInstanceId(sessionId, provisioningLease.startedAt);
+  if (!instanceId) {
+    throw new Error(`Session ${sessionId} has an invalid provisioning lease`);
+  }
+  let provisionedRuntimeSandboxName: string | null = null;
+  let targetRuntimeAppId: string | null = null;
+  let provisioningFinalized = false;
+  let durableStartState: "not_issued" | "ambiguous" | "accepted" | "rejected" =
+    "not_issued";
+  try {
 	const agent = await workflowData.resolveSessionAgent({
 		agentId: session.agentId,
 		agentVersion: session.agentVersion ?? undefined,
@@ -154,16 +366,17 @@ export async function spawnSessionWorkflow(
       ).environment
 		: null;
 
-	// Seed the workflow with any events the user already posted between
-	// session.create and workflow spawn (e.g. an `initialMessage` sent via
-	// POST /api/v1/sessions).
+    // Seed ordinary user input posted between session.create and workflow spawn
+    // (for example POST /api/v1/sessions `initialMessage`). Team-origin rows
+    // remain in the mailbox so their stable ids flow through claim/receipt.
   const existingEvents =
     await getApplicationAdapters().workflowData.listSessionEvents(sessionId, {
       limit: 50,
     });
-	const initialEvents = existingEvents
-		.filter((e) => e.type.startsWith("user."))
-		.map((e) => e.data);
+    const initialEvents =
+      getApplicationAdapters().teamMailboxDelivery.initialUserEvents(
+        existingEvents,
+      );
 
 	// Rewrite Playwright MCP entries to point at the per-agent browser
 	// sidecar (http://localhost:3100/mcp). The DB config stores stdio
@@ -236,7 +449,9 @@ export async function spawnSessionWorkflow(
 		if (verdict.drops.length > 0) {
 			console.warn(
 				`[swap-safety] session ${sessionId} \u2192 runtime "${swapTarget.id}" ${verdict.decision}: ` +
-					verdict.drops.map((d) => `${d.capability}(${d.severity})`).join(", "),
+            verdict.drops
+              .map((d) => `${d.capability}(${d.severity})`)
+              .join(", "),
 			);
 			for (const d of verdict.drops)
 				console.warn(`[swap-safety]   ${d.detail}`);
@@ -308,8 +523,15 @@ export async function spawnSessionWorkflow(
 	// is enabled (teammates are always stamped). Best-effort — a lookup failure
 	// must never block a spawn.
 	const teamMember = await getMemberBySession(sessionId).catch(() => null);
-	const teamId = teamMember?.team_id ?? deriveLeadTeamId(sessionId);
-	const isTeammate = !!teamMember && teamMember.role !== "lead";
+    const signedTeamId =
+      options.workflowMcpCapabilities?.teamId?.trim() || null;
+    const signedTeamRole = options.workflowMcpCapabilities?.teamRole ?? "none";
+    const teamId =
+      signedTeamId ?? teamMember?.team_id ?? deriveLeadTeamId(sessionId);
+    const isTeammate =
+      signedTeamRole === "member"
+        ? signedTeamId !== null
+        : !!teamMember && teamMember.role !== "lead";
 	// A lead opts into the team tools per-agent via agentConfig.teamsEnabled.
 	const teamsEnabled =
 		(resolvedAgentConfig as { teamsEnabled?: boolean }).teamsEnabled === true;
@@ -337,6 +559,11 @@ export async function spawnSessionWorkflow(
       return null;
     }
   })();
+    if (!workflowMcpSessionToken) {
+      throw new Error(
+        `Session ${sessionId} cannot start without signed lifecycle authority`,
+      );
+    }
 	// The Codex-"ultra" policy dial: teamMode 'proactive' injects ONE system
 	// fragment flipping the default only-when-asked posture — deliberately
 	// prompt-text-only (mirrors Codex's MultiAgentMode developer message).
@@ -384,7 +611,10 @@ export async function spawnSessionWorkflow(
 	// Interactive-CLI lane: the runtime hosts the real CLI TUI in the session
 	// pod. The host selects the adapter from `agentConfig.cliAdapter`, stamped
 	// here from the runtime descriptor (one image hosts claude/codex/agy).
-	if (swapTarget?.capabilities?.interactiveTerminal && swapTarget.cliAdapter) {
+    if (
+      swapTarget?.capabilities?.interactiveTerminal &&
+      swapTarget.cliAdapter
+    ) {
 		(agentConfigForDispatch as Record<string, unknown>).cliAdapter =
 			swapTarget.cliAdapter;
 		// Resume: this session re-mounts the original's durable transcript subtree
@@ -406,7 +636,9 @@ export async function spawnSessionWorkflow(
 		// awaited, never throws into spawn; no X-Connection-External-Id (warm-up
 		// only triggers the Knative activator).
 		const warmUrls = ((agentConfigForDispatch.mcpServers as unknown[]) ?? [])
-			.filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+        .filter(
+          (s): s is Record<string, unknown> => !!s && typeof s === "object",
+        )
 			.filter((s) => {
 				const sourceType = String(s.sourceType ?? s.source_type ?? "");
 				const registryRef = String(s.registryRef ?? s.registry_ref ?? "");
@@ -417,7 +649,9 @@ export async function spawnSessionWorkflow(
 		if (warmUrls.length > 0) {
 			void Promise.allSettled(
 				warmUrls.map((u) =>
-					daprFetch(u, { method: "GET", maxRetries: 2 }).catch(() => undefined),
+            daprFetch(u, { method: "GET", maxRetries: 2 }).catch(
+              () => undefined,
+            ),
 				),
 			);
 		}
@@ -435,75 +669,12 @@ export async function spawnSessionWorkflow(
 	//   - device_login → no pre-provisioned credential; the user completes the
 	//     in-terminal device-code OAuth flow on first launch. No gate, no secret.
 	// Tokens are NEVER placed in agentConfig or the Dapr payload.
-	let sessionSecretEnv: Record<string, string> | null = null;
-	const cliAuth = swapTarget?.capabilities?.interactiveTerminal
-		? swapTarget.cliAuth
-		: undefined;
-	if (cliAuth && cliAuth.credentialKind !== "device_login") {
-		const { provider, envVar, setupCommand, credentialKind } = cliAuth;
-		if (!envVar) {
-			throw new Error(
-				`Runtime "${swapTarget?.id}" cliAuth.credentialKind=${credentialKind} requires an envVar`,
-			);
-		}
-		// file_bundle is captured automatically post-login, so its absence is not
-		// an error — the user just logs in once in the terminal.
-		const optional = credentialKind === "file_bundle";
-		const setupHint = setupCommand
-			? `run \`${setupCommand}\` locally`
-			: "see the runtime docs";
-		const ownerUserId = await resolveSessionOwnerUserId(sessionId);
-		const { cliCredentials } = getApplicationAdapters();
-		// Serialize concurrent single-use-refresh boots (codex): hold the per-(user,
-		// provider) lease across spawn→capture so this session resolves the freshest
-		// token instead of racing the spent refresh token. Best-effort (proceeds on
-		// timeout); released by the cli-credentials capture route.
-		if (ownerUserId && cliCredentials.needsBootLease(provider)) {
-			const leased = await cliCredentials.acquireBootLease(
-				ownerUserId,
-				provider,
+    const sessionSecretEnv = await resolveRuntimeHostSessionSecretEnv({
 				sessionId,
-			);
-			if (!leased) {
-				console.warn(
-					`[spawn] ${provider} boot-lease not acquired in time for session ${sessionId}; proceeding (may race a concurrent refresh)`,
-				);
-			}
-		}
-		const credential = ownerUserId
-			? await cliCredentials.getUserCredential(ownerUserId, provider)
-			: null;
-		if (!credential) {
-			if (!optional) {
-				throw new CliTokenError(
-					"CLI_TOKEN_MISSING",
-					provider,
-					`No ${provider} CLI credential linked for this user. ` +
-						`Add one under Settings → CLI tokens (${setupHint}).`,
-				);
-			}
-			// optional + none yet → device-code login this session, capture after.
-		} else {
-			if (
-				!optional &&
-				credential.expiresAt &&
-				credential.expiresAt.getTime() < Date.now()
-			) {
-				throw new CliTokenError(
-					"CLI_TOKEN_EXPIRED",
-					provider,
-					`The linked ${provider} CLI credential has expired. ` +
-						`Re-enroll under Settings → CLI tokens (${setupHint}).`,
-				);
-			}
-			if (!swapTarget) {
-				throw new Error(
-					`Runtime auth descriptor resolved for ${provider}, but no runtime target was selected`,
-				);
-			}
-      sessionSecretEnv = buildCliSessionSecretEnv(swapTarget, credential.token);
-		}
-	}
+      runtimeDescriptor: swapTarget,
+    });
+
+    const natsSubject = `session.events.${sessionId}`;
 
 	// Resolve the dispatch app-id. Two paths share the same downstream shape
 	// (Dapr service-invoke into `/internal/sessions/spawn`); only the pod
@@ -516,8 +687,33 @@ export async function spawnSessionWorkflow(
 	//      pool emitted at agent publish; we patch `spec.replicas: 1` on demand
 	//      via `wakeAgentRuntime` and the upstream agent-sandbox controller
 	//      manages the pod.
-	let sessionHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>>;
+    let sessionHost: Awaited<
+      ReturnType<typeof maybeProvisionAgentWorkflowHost>
+    >;
 	try {
+      if (stagedRuntimeTarget?.runtimeHostOwned) {
+        const sandboxName = stagedRuntimeTarget.runtimeSandboxName?.trim();
+        const launchSpec = stagedRuntimeTarget.runtimeHostLaunchSpec;
+        if (!sandboxName || !launchSpec) {
+          throw new Error(
+            `Session ${sessionId} exact staged host is missing recovery metadata`,
+          );
+        }
+        await recreateAgentWorkflowHostGeneration({
+          agentAppId: stagedRuntimeTarget.runtimeAppId,
+          sandboxName,
+          launchSpec,
+          sessionSecretEnv,
+        });
+        sessionHost = {
+          agentAppId: stagedRuntimeTarget.runtimeAppId,
+          sandboxName,
+          status: "recreated",
+          launchSpec: launchSpec as AgentWorkflowHostLaunchSpec,
+        };
+      } else if (stagedRuntimeTarget) {
+        sessionHost = null;
+      } else {
 		sessionHost = await maybeProvisionAgentWorkflowHost({
 			sessionId,
 			agentConfig: agentConfigForDispatch,
@@ -543,9 +739,11 @@ export async function spawnSessionWorkflow(
 			// this id, so the resumed pod re-mounts the original conversation's
 			// Postgres-backed subtree (paired with continueSession above).
 			resumeFromSessionId: session.resumedFromSessionId ?? null,
+          provisioningStartedAt: provisioningLease.startedAt,
 		});
+      }
 	} catch (err) {
-		if (options.requireWorkflowHost) throw err;
+      if (stagedRuntimeTarget || options.requireWorkflowHost) throw err;
 		console.warn(
 			`[session-spawn] sandbox provision failed, falling back to warm-pool wake:`,
 			err instanceof Error ? err.message : err,
@@ -555,7 +753,43 @@ export async function spawnSessionWorkflow(
 	if (options.requireWorkflowHost && !sessionHost) {
 		throw new Error("required per-session workflow host was not provisioned");
 	}
-	const targetAppId = sessionHost?.agentAppId ?? runtimeRoute.appId;
+    const targetAppId =
+      stagedRuntimeTarget?.runtimeAppId ??
+      sessionHost?.agentAppId ??
+      runtimeRoute.appId;
+    targetRuntimeAppId = targetAppId;
+    provisionedRuntimeSandboxName = stagedRuntimeTarget
+      ? stagedRuntimeTarget.runtimeSandboxName
+      : (sessionHost?.sandboxName ?? null);
+    const runtimeHostOwned =
+      stagedRuntimeTarget?.runtimeHostOwned ??
+      provisionedRuntimeSandboxName != null;
+    const runtimeHostLaunchSpec = stagedRuntimeTarget
+      ? stagedRuntimeTarget.runtimeHostLaunchSpec
+      : (sessionHost?.launchSpec ?? null);
+    const staged = await workflowData.stageSessionRuntimeProvisioning({
+      sessionId,
+      expectedStartedAt: provisioningLease.startedAt,
+      runtimeAppId: targetAppId,
+      durableInstanceId: instanceId,
+      runtimeSandboxName: provisionedRuntimeSandboxName,
+      runtimeHostOwned,
+      runtimeHostLaunchSpec,
+    });
+    if (!staged) {
+      await getApplicationAdapters().sessionCommands.cleanupUnpublishedRuntimeProvisioning(
+        {
+          sessionId,
+          sandboxName: provisionedRuntimeSandboxName,
+          leaseStartedAt: provisioningLease.startedAt,
+          preserveActiveLease: options.preserveStagedLeaseOnFailure === true,
+        },
+      );
+      provisioningFinalized = true;
+      throw new Error(
+        `Session ${sessionId} stopped before its runtime start was staged`,
+      );
+    }
 	if (!sessionHost) {
 		try {
 			const { wakeAgentRuntime } = await import("$lib/server/kube/client");
@@ -593,9 +827,13 @@ export async function spawnSessionWorkflow(
 		// workspace_profile node provides its own sandboxName.
 		sandboxName: session.workspaceSandboxName ?? null,
 		initialEvents,
+      // Every newly scheduled session revalidates the persisted lifecycle fence
+      // before emitting events or performing model/tool work. This closes the
+      // accepted-start-to-runtime-publication window for UI sessions as well as
+      // native and separately hosted peer sessions.
+      requiresStartAuthority: true,
 	};
 
-	const instanceId = sessionId;
 	const daprEndpoint = getDaprSidecarUrl();
 	// Per-agent runtime pods now live in the same namespace as the
 	// BFF + orchestrator (workflow-builder). Bare app-id routing works
@@ -630,6 +868,10 @@ export async function spawnSessionWorkflow(
 			);
 		}
 	}
+    // Once dispatch begins, a thrown transport error cannot prove that
+    // StartInstance was rejected. Keep the staged generation authoritative until
+    // the reconciler can inspect its deterministic instance id.
+    durableStartState = "ambiguous";
 	const res = await (directRuntimeBaseUrl
 		? daprFetch(`${directRuntimeBaseUrl}/internal/sessions/spawn`, {
 				method: "POST",
@@ -646,22 +888,115 @@ export async function spawnSessionWorkflow(
 				},
 			));
 	if (!res.ok && res.status !== 409) {
+      durableStartState = "rejected";
 		const text = await res.text().catch(() => "");
 		throw new Error(
 			`Dapr workflow start failed (${res.status}): ${text.slice(0, 200)}`,
 		);
 	}
+    durableStartState = "accepted";
 
-	const natsSubject = `session.events.${sessionId}`;
-	await getApplicationAdapters().workflowData.attachSessionRuntime({
+    // Publish positive start evidence only after the runtime accepted the durable
+    // instance. Until this CAS succeeds, the lease keeps lifecycle cleanup aware
+    // of the deterministic prospective host and the child polls start authority.
+    const attached = await workflowData.attachStagedSessionRuntimeProvisioning({
+      sessionId,
+      expectedStartedAt: provisioningLease.startedAt,
+    });
+    if (!attached) {
+      await getApplicationAdapters().sessionCommands.cleanupUnpublishedRuntimeProvisioning(
+        {
 		sessionId,
-		daprInstanceId: instanceId,
-		natsSubject,
+          sandboxName: provisionedRuntimeSandboxName,
+          leaseStartedAt: provisioningLease.startedAt,
+          durableInstance: {
 		runtimeAppId: targetAppId,
-		runtimeSandboxName: sessionHost?.sandboxName ?? null,
+            instanceId,
+            runtimeSandboxName: provisionedRuntimeSandboxName,
+          },
+          preserveActiveLease: options.preserveStagedLeaseOnFailure === true,
+        },
+      );
+      provisioningFinalized = true;
+      throw new Error(
+        `Session ${sessionId} stopped while its runtime host was provisioning`,
+      );
+    }
+    if (runtimeHostOwned && provisionedRuntimeSandboxName) {
+      await ensurePublishedAgentWorkflowHostGeneration(
+        getApplicationAdapters().sessionRuntimeHostRecovery,
+        {
+          sessionId,
+          runtimeAppId: targetAppId,
+          runtimeSandboxName: provisionedRuntimeSandboxName,
+          sessionSecretEnv,
+        },
+      );
+    }
+    const completion = await workflowData.completeSessionRuntimeHostRecovery({
+      sessionId,
+      expectedRuntimeAppId: targetAppId,
+      expectedStartedAt: provisioningLease.startedAt,
 	});
+    if (completion !== "completed" && completion !== "already_completed") {
+      await getApplicationAdapters().sessionCommands.cleanupUnpublishedRuntimeProvisioning(
+        {
+          sessionId,
+          sandboxName: provisionedRuntimeSandboxName,
+          leaseStartedAt: provisioningLease.startedAt,
+          durableInstance: {
+            runtimeAppId: targetAppId,
+            instanceId,
+            runtimeSandboxName: provisionedRuntimeSandboxName,
+          },
+          preserveActiveLease: options.preserveStagedLeaseOnFailure === true,
+        },
+      );
+      provisioningFinalized = true;
+      throw new Error(
+        `Session ${sessionId} runtime publication lost authority (${completion})`,
+      );
+    }
+    provisioningFinalized = true;
+    await requestPendingTeamMailboxDelivery(sessionId);
 
 	return { instanceId, natsSubject };
+  } catch (err) {
+    if (!provisioningFinalized && durableStartState !== "ambiguous") {
+      // Remove a host created by a failed setup before releasing/acknowledging
+      // the exact lease. If the runtime accepted the durable start, purge that
+      // exact generation first even when the runtime host is a shared pool.
+      // Sandbox deletion remains conditional on owning a dedicated host.
+      await getApplicationAdapters()
+        .sessionCommands.cleanupUnpublishedRuntimeProvisioning({
+          sessionId,
+          sandboxName: provisionedRuntimeSandboxName,
+          leaseStartedAt: provisioningLease.startedAt,
+          ...(durableStartState === "accepted" && targetRuntimeAppId
+            ? {
+                durableInstance: {
+                  runtimeAppId: targetRuntimeAppId,
+                  instanceId,
+                  runtimeSandboxName: provisionedRuntimeSandboxName,
+                },
+              }
+            : {}),
+          preserveActiveLease: options.preserveStagedLeaseOnFailure === true,
+        })
+        .catch((cleanupErr) => {
+          console.error(
+            `[session-spawn] unpublished runtime cleanup failed for ${sessionId}/${instanceId}:`,
+            cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+          );
+          return false;
+        });
+    } else if (!provisioningFinalized) {
+      console.warn(
+        `[session-spawn] retaining ambiguous staged runtime ${sessionId}/${instanceId} for reconciliation`,
+      );
+    }
+    throw err;
+  }
 }
 
 function getDaprSidecarUrl(): string {
@@ -677,11 +1012,17 @@ function getDaprSidecarUrl(): string {
 export async function raiseSessionUserEvents(
 	sessionId: string,
 	events: unknown[],
-): Promise<void> {
+  delivery?: TeamMailboxDeliveryMetadata,
+): Promise<SessionUserEventAcceptance> {
 	const session = await getApplicationAdapters().workflowData.getSessionDetail({
 		sessionId,
 	});
-	if (!session?.daprInstanceId) return; // not yet spawned — events will be picked up at spawn time via listEvents
+  if (!session?.daprInstanceId) {
+    if (delivery) {
+      throw new Error("Session runtime has not accepted the mailbox delivery");
+    }
+    return { accepted: true, deliveryId: null };
+  }
 	// Route raise-event to the exact runtime that owns the session. New rows
 	// persist this at spawn time; older rows fall back through the agent route.
 	const target = await resolveSessionRuntimeTarget(sessionId);
@@ -691,7 +1032,7 @@ export async function raiseSessionUserEvents(
 	const body = JSON.stringify({
 		instanceId: session.daprInstanceId,
 		eventName: "session.user_events",
-		payload: { events },
+    payload: { events, ...(delivery ? { delivery } : {}) },
 	});
 	const res =
 		target?.runtimeSandboxName || target?.appId.startsWith("agent-session-")
@@ -718,4 +1059,17 @@ export async function raiseSessionUserEvents(
 			`Dapr raiseEvent failed (${res.status}): ${text.slice(0, 200)}`,
 		);
 	}
+  if (delivery) {
+    const receipt = (await res.json().catch(() => null)) as {
+      accepted?: unknown;
+      deliveryId?: unknown;
+    } | null;
+    if (receipt?.accepted !== true || receipt.deliveryId !== delivery.batchId) {
+      throw new Error(
+        `Runtime did not acknowledge mailbox delivery ${delivery.batchId}`,
+      );
+    }
+    return { accepted: true, deliveryId: delivery.batchId };
+  }
+  return { accepted: true, deliveryId: null };
 }

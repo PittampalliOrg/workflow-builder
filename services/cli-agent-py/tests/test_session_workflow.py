@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import timedelta
 
 import pytest
 
 import src.session_workflow as sw
+from src.runtime_start_authority import authorize_session_runtime_start
 
 
 class FakeTask:
@@ -71,6 +73,92 @@ BASE_INPUT = {
 }
 
 
+def _authority_input() -> dict:
+    return {
+        **BASE_INPUT,
+        "runtimeAppId": "cli-runtime-generation",
+        "workflowMcpSessionToken": "signed-token",
+        "requiresStartAuthority": True,
+    }
+
+
+def test_start_authority_pending_schedule_covers_recovery_interval():
+    schedule = sw._START_AUTHORITY_PENDING_DELAYS_SECONDS
+
+    assert schedule[:6] == (1, 2, 4, 8, 15, 30)
+    assert sum(schedule) >= 15 * 60
+
+
+def test_start_authority_denial_precedes_events_seed_and_cli_work(monkeypatch):
+    published: list[tuple] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda *args, **kwargs: published.append((args, kwargs)),
+    )
+    ctx = FakeCtx()
+    workflow = sw.session_workflow(ctx, _authority_input())
+
+    first = next(workflow)
+    assert first.kind == "activity:authorize_session_runtime_start"
+    with pytest.raises(StopIteration) as stopped:
+        workflow.send(
+            {
+                "authorized": False,
+                "status": 409,
+                "code": "runtime_superseded",
+                "retryable": False,
+            }
+        )
+
+    assert stopped.value.value["status"] == "cancelled"
+    assert published == []
+    assert ctx.activity_calls == [
+        (
+            authorize_session_runtime_start.__name__,
+            {
+                "sessionId": "sess-wf-1",
+                "workflowMcpSessionToken": "signed-token",
+                "runtimeAppId": "cli-runtime-generation",
+                "runtimeInstanceId": "inst-test-1",
+            },
+        )
+    ]
+
+
+def test_start_authority_publication_pending_retries_before_seed(monkeypatch):
+    published: list[tuple] = []
+    monkeypatch.setattr(
+        sw,
+        "publish_session_event",
+        lambda *args, **kwargs: published.append((args, kwargs)),
+    )
+    ctx = FakeCtx()
+    workflow = sw.session_workflow(ctx, _authority_input())
+
+    assert next(workflow).kind == "activity:authorize_session_runtime_start"
+    timer = workflow.send(
+        {
+            "authorized": False,
+            "status": 409,
+            "code": "runtime_unpublished",
+            "retryable": True,
+        }
+    )
+    assert timer.kind == "timer"
+    assert timer.detail == timedelta(seconds=1)
+    assert published == []
+    assert workflow.send(None).kind == "activity:authorize_session_runtime_start"
+
+    seed = workflow.send({"authorized": True})
+    assert seed.kind == "activity:seed_session_activity"
+    assert [name for name, _payload in ctx.activity_calls] == [
+        "authorize_session_runtime_start",
+        "authorize_session_runtime_start",
+        "seed_session_activity",
+    ]
+
+
 def _start_to_first_when_any(
     driver, *, seed_result=None, prepare_result=None, start_result=None
 ):
@@ -80,7 +168,8 @@ def _start_to_first_when_any(
     yielded = driver.gen.send(seed_result or {"paths": {}, "warnings": []})
     if yielded.kind == "activity:prepare_swebench_workspace_activity":
         yielded = driver.gen.send(
-            prepare_result or {"ok": True, "prepared": True, "workspaceRoot": "/sandbox/repo"}
+            prepare_result
+            or {"ok": True, "prepared": True, "workspaceRoot": "/sandbox/repo"}
         )
     assert yielded.kind == "activity:start_cli_activity"
     return driver.gen.send(start_result or {"paneRef": "p1", "agentDetected": True})
@@ -369,7 +458,9 @@ def test_completed_swebench_run_extracts_model_patch(monkeypatch):
     event_task.result = {"events": [{"type": "turn.completed", "content": "done"}]}
     yielded = driver.gen.send(event_task)
     yielded = _complete_bounded_stop(driver, yielded)
-    patch_act = _bounded_winner(driver, yielded, "activity:extract_model_patch_activity")
+    patch_act = _bounded_winner(
+        driver, yielded, "activity:extract_model_patch_activity"
+    )
     assert patch_act.detail["baseCommit"] == "abc123"
     assert patch_act.detail["workspaceRoot"] == "/sandbox/repo"
     patch_act.result = {
@@ -429,14 +520,18 @@ def test_extract_model_patch_activity_uses_base_commit_and_excludes_tests(
     repo = tmp_path / "sandbox" / "repo"
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
     (repo / "pkg.py").write_text("old\n", encoding="utf-8")
     (repo / "tests").mkdir()
     (repo / "tests" / "test_pkg.py").write_text("old\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
-    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
     (repo / "pkg.py").write_text("new\n", encoding="utf-8")
     (repo / "tests" / "test_pkg.py").write_text("new\n", encoding="utf-8")
     monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
@@ -455,7 +550,9 @@ def test_prepare_swebench_workspace_activity_clones_base_commit(tmp_path, monkey
     source = tmp_path / "source"
     source.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=source, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=source, check=True)
     (source / "pkg.py").write_text("old\n", encoding="utf-8")
     subprocess.run(["git", "add", "pkg.py"], cwd=source, check=True)
@@ -497,7 +594,9 @@ def test_prepare_swebench_workspace_activity_clones_base_commit(tmp_path, monkey
     assert head == base
 
 
-def test_prepare_swebench_workspace_rejects_paths_outside_sandbox(tmp_path, monkeypatch):
+def test_prepare_swebench_workspace_rejects_paths_outside_sandbox(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("AGENT_LOCAL_SANDBOX_ROOT", str(tmp_path / "sandbox"))
 
     result = sw.prepare_swebench_workspace_activity(
@@ -953,7 +1052,11 @@ def test_status_idle_includes_zero_background_task_count(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {
         "events": [
-            {"type": "turn.completed", "lastAssistantText": "x", "backgroundTaskCount": 0}
+            {
+                "type": "turn.completed",
+                "lastAssistantText": "x",
+                "backgroundTaskCount": 0,
+            }
         ]
     }
     driver.gen.send(event_task)
@@ -1012,7 +1115,11 @@ def test_non_int_background_task_count_is_ignored(monkeypatch):
     event_task = driver.event_task()
     event_task.result = {
         "events": [
-            {"type": "turn.completed", "lastAssistantText": "x", "backgroundTaskCount": True}
+            {
+                "type": "turn.completed",
+                "lastAssistantText": "x",
+                "backgroundTaskCount": True,
+            }
         ]
     }
     driver.gen.send(event_task)

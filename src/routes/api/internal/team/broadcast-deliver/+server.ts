@@ -13,10 +13,12 @@ import { injectTeamMessage } from "$lib/server/teams/team-messaging";
  *
  * IDEMPOTENCY: JetStream is at-least-once. The per-recipient sourceEventId is
  * deterministic, so a redelivery is swallowed by the (session_id, source_event_id)
- * unique index. We ALWAYS ack (`{status:"SUCCESS"}`) so a poison message can't
- * wedge the subscription (JetStream max-deliver → DLQ governs, not an infinite loop).
+ * unique index. A transient `starting` member defers the event with Dapr RETRY;
+ * recipients already written are deduplicated on redelivery. Malformed/poison
+ * messages are still acknowledged so they cannot wedge the subscription.
  */
 export const POST: RequestHandler = async ({ request }) => {
+	let deferredStartingMember = false;
 	let evt: {
 		teamId?: string;
 		fromSessionId?: string | null;
@@ -40,6 +42,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			for (const m of members) {
 				if (m.session_id === evt.fromSessionId) continue;
 				if (m.status === "shutdown") continue;
+				if (m.status === "starting") {
+					deferredStartingMember = true;
+					continue;
+				}
 				await injectTeamMessage({
 					recipientSessionId: m.session_id,
 					fromName: from?.name ?? "lead",
@@ -56,5 +62,5 @@ export const POST: RequestHandler = async ({ request }) => {
 			err instanceof Error ? err.message : err,
 		);
 	}
-	return json({ status: "SUCCESS" });
+	return json({ status: deferredStartingMember ? "RETRY" : "SUCCESS" });
 };

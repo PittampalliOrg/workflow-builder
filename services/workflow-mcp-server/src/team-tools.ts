@@ -27,6 +27,21 @@ const WORKFLOW_BUILDER_URL =
 	process.env.WORKFLOW_BUILDER_URL ??
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+const TEAM_ACTION_PENDING_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.TEAM_ACTION_PENDING_MAX_ATTEMPTS ?? "5", 10) || 5,
+);
+const TEAM_ACTION_PENDING_RETRY_MS = Math.max(
+  0,
+  Number.parseInt(process.env.TEAM_ACTION_PENDING_RETRY_MS ?? "500", 10) || 500,
+);
+
+type TeamActionResponse = {
+  ok: boolean;
+  status: number;
+  json: unknown;
+  text: string;
+};
 
 export function currentTeamActionHeaders(): Record<string, string> {
   const principal = currentWorkflowMcpContext().principal;
@@ -109,7 +124,7 @@ async function callBff(
 	teamId: string,
 	action: string,
 	body: Record<string, unknown>,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+): Promise<TeamActionResponse> {
 	const url = `${WORKFLOW_BUILDER_URL}/api/internal/team/${encodeURIComponent(
 		teamId,
 	)}/${action}`;
@@ -129,6 +144,39 @@ async function callBff(
 		/* non-JSON body */
 	}
 	return { ok: resp.ok, status: resp.status, json, text };
+}
+
+export async function redriveAcceptedTeamAction(
+  request: () => Promise<TeamActionResponse>,
+  options: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    sleep?: (delayMs: number) => Promise<void>;
+  } = {},
+): Promise<TeamActionResponse> {
+  const maxAttempts = Math.max(
+    1,
+    Math.trunc(options.maxAttempts ?? TEAM_ACTION_PENDING_MAX_ATTEMPTS),
+  );
+  const retryDelayMs = Math.max(
+    0,
+    Math.trunc(options.retryDelayMs ?? TEAM_ACTION_PENDING_RETRY_MS),
+  );
+  const sleep =
+    options.sleep ??
+    ((delayMs: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await request();
+      const retryable = response.status === 202 || response.status >= 500;
+      if (!retryable || attempt === maxAttempts) return response;
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+    }
+    await sleep(retryDelayMs);
+  }
+  throw new Error("team action redrive exhausted without a response");
 }
 
 /**
@@ -186,14 +234,21 @@ export function registerTeamTools(
             "INTERNAL_API_TOKEN is not configured; cannot spawn a teammate.",
           );
 			try {
-				const r = await callBff(ctx.teamId, "spawn", {
+          const request = {
 					leadSessionId: ctx.sessionId,
 					agentSlug: args.agentSlug,
 					name: args.name,
 					prompt: args.prompt,
 					model: args.model,
 					planModeRequired: args.planModeRequired ?? false,
-				});
+          };
+          const r = await redriveAcceptedTeamAction(() =>
+            callBff(ctx.teamId, "spawn", request),
+          );
+          if (r.status === 202)
+            return errorResult(
+              "spawn_teammate was accepted but is still pending; retry with the same name and request.",
+            );
           if (!r.ok)
             return errorResult(
               `spawn_teammate failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`,
@@ -864,11 +919,18 @@ export function registerTeamTools(
             "INTERNAL_API_TOKEN is not configured; cannot revive a teammate.",
           );
 				try {
-					const r = await callBff(ctx.teamId, "revive", {
+          const request = {
 						requestedBySessionId: ctx.sessionId,
 						name: args.name,
 						prompt: args.prompt,
-					});
+          };
+          const r = await redriveAcceptedTeamAction(() =>
+            callBff(ctx.teamId, "revive", request),
+          );
+          if (r.status === 202)
+            return errorResult(
+              "revive_teammate was accepted but is still pending; retry with the same name and request.",
+            );
 					if (!r.ok)
             return errorResult(
               `revive_teammate failed (HTTP ${r.status}): ${r.text.slice(0, 300)}`,

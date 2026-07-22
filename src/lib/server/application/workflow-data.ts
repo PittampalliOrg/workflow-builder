@@ -5625,7 +5625,19 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 	): Promise<EnsurePeerSessionResult> {
 		const sessions = this.requireSessions();
 		const existing = await sessions.getPeerSession(input.sessionId);
-		if (existing) return { ok: true, session: existing, reused: true };
+    if (existing) {
+      if (
+        input.peerAgentVersion != null &&
+        existing.agentVersion !== input.peerAgentVersion
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          message: `Existing peer session agent version ${existing.agentVersion ?? "none"} does not match required version ${input.peerAgentVersion}`,
+        };
+      }
+      return { ok: true, session: existing, reused: true };
+    }
 
 		let userId = "";
 		let projectId: string | null = null;
@@ -5661,16 +5673,36 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			};
 		}
 
-		const session = await sessions.createPeerSession({
+    const created = await sessions.createPeerSession({
 			id: input.sessionId,
 			agentId: input.peerAgentId,
+      agentVersion: input.peerAgentVersion ?? undefined,
 			title: input.title ?? `Delegated: ${input.prompt.slice(0, 40)}`,
 			userId,
 			projectId,
+      workflowExecutionId: input.workflowExecutionId ?? null,
       parentExecutionId:
         input.parentInstanceId ?? input.parentSessionId ?? null,
 		});
-		if (input.prompt.trim()) {
+    if (created.status === "execution_not_active") {
+      return {
+        ok: false,
+        status: 409,
+        message: "Parent session or workflow execution is stopping or terminal",
+      };
+    }
+    const session = created.session;
+    if (
+      input.peerAgentVersion != null &&
+      session.agentVersion !== input.peerAgentVersion
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        message: `Peer session agent version ${session.agentVersion ?? "none"} does not match required version ${input.peerAgentVersion}`,
+      };
+    }
+    if (created.created && input.prompt.trim()) {
 			await this.requireSessionEvents().appendSessionEvent(session.id, {
 				type: "user.message",
 				data: {
@@ -5681,7 +5713,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			});
 		}
 
-		return { ok: true, session, reused: false };
+    return { ok: true, session, reused: !created.created };
 	}
 
 	resolvePeerAgentDispatchContext(input: {
@@ -5987,8 +6019,8 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 			agentVersion: session.agentVersion ?? undefined,
 		});
 		const matchedAgentPolicy = pinnedAgent
-			? [input.agentPolicy, ...(input.replayAgentPolicies ?? [])].find((policy) =>
-					workflowDevSessionAgentMatchesPolicy(pinnedAgent, policy),
+      ? [input.agentPolicy, ...(input.replayAgentPolicies ?? [])].find(
+          (policy) => workflowDevSessionAgentMatchesPolicy(pinnedAgent, policy),
 				)
 			: undefined;
 		if (
@@ -6131,9 +6163,83 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessions().getSessionOwnerUserId({ sessionId });
 	}
 
+  reserveSessionRuntimeProvisioning(
+    input: Parameters<
+      WorkflowDataService["reserveSessionRuntimeProvisioning"]
+    >[0],
+  ) {
+    return this.requireSessions().reserveSessionRuntimeProvisioning(input);
+  }
+
+  stageSessionRuntimeProvisioning(
+    input: Parameters<
+      WorkflowDataService["stageSessionRuntimeProvisioning"]
+    >[0],
+  ) {
+    return this.requireSessions().stageSessionRuntimeProvisioning(input);
+  }
+
+  attachStagedSessionRuntimeProvisioning(
+    input: Parameters<
+      WorkflowDataService["attachStagedSessionRuntimeProvisioning"]
+    >[0],
+  ) {
+    return this.requireSessions().attachStagedSessionRuntimeProvisioning(input);
+  }
+
+  inspectSessionRuntimeHostRecovery(
+    input: Parameters<
+      WorkflowDataService["inspectSessionRuntimeHostRecovery"]
+    >[0],
+  ) {
+    return this.requireSessions().inspectSessionRuntimeHostRecovery(input);
+  }
+
+  beginSessionRuntimeHostRecovery(
+    input: Parameters<
+      WorkflowDataService["beginSessionRuntimeHostRecovery"]
+    >[0],
+  ) {
+    return this.requireSessions().beginSessionRuntimeHostRecovery(input);
+  }
+
+  completeSessionRuntimeHostRecovery(
+    input: Parameters<
+      WorkflowDataService["completeSessionRuntimeHostRecovery"]
+    >[0],
+  ) {
+    return this.requireSessions().completeSessionRuntimeHostRecovery(input);
+  }
+
+  acknowledgeRuntimeProvisioningCompensation(
+    input: Parameters<
+      WorkflowDataService["acknowledgeRuntimeProvisioningCompensation"]
+    >[0],
+  ) {
+    return this.requireSessions().acknowledgeRuntimeProvisioningCompensation(
+      input,
+    );
+  }
+
+  canCompensateRuntimeProvisioning(
+    input: Parameters<
+      WorkflowDataService["canCompensateRuntimeProvisioning"]
+    >[0],
+  ) {
+    return this.requireSessions().canCompensateRuntimeProvisioning(input);
+  }
+
+  releaseSessionRuntimeProvisioning(
+    input: Parameters<
+      WorkflowDataService["releaseSessionRuntimeProvisioning"]
+    >[0],
+  ) {
+    return this.requireSessions().releaseSessionRuntimeProvisioning(input);
+  }
+
 	attachSessionRuntime(
 		input: Parameters<WorkflowDataService["attachSessionRuntime"]>[0],
-	): Promise<void> {
+  ): Promise<boolean> {
 		return this.requireSessions().attachSessionRuntime(input);
 	}
 
@@ -6297,12 +6403,27 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.requireSessionEvents().appendSessionEvent(sessionId, event);
 	}
 
-	claimUnraisedTeamEvents(sessionId: string) {
-		return this.requireSessionEvents().claimUnraisedTeamEvents(sessionId);
+  claimUnraisedTeamEvents(input: {
+    sessionId: string;
+    claimToken: string;
+    staleAfterSeconds: number;
+  }) {
+    return this.requireSessionEvents().claimUnraisedTeamEvents(input);
+  }
+
+  hasUnprocessedTeamEvents(sessionId: string) {
+    return this.requireSessionEvents().hasUnprocessedTeamEvents(sessionId);
 	}
 
-	unclaimSessionEvents(sessionId: string, ids: string[]) {
-		return this.requireSessionEvents().unclaimSessionEvents(sessionId, ids);
+  completeTeamEventDelivery(input: { sessionId: string; claimToken: string }) {
+    return this.requireSessionEvents().completeTeamEventDelivery(input);
+  }
+
+  releaseTeamEventDeliveryClaim(input: {
+    sessionId: string;
+    claimToken: string;
+  }) {
+    return this.requireSessionEvents().releaseTeamEventDeliveryClaim(input);
 	}
 
 	async appendSessionUserEvents(input: {

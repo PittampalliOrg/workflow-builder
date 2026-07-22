@@ -1,7 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
-import { getMemberByName, setMemberStatus } from "$lib/server/teams/team-repo";
-import { stopDurableRun } from "$lib/server/lifecycle";
+import { getApplicationAdapters } from "$lib/server/application";
 import { authorizeTeamActionRequest } from "../../team-action-principal";
 
 /**
@@ -28,15 +27,25 @@ export const POST: RequestHandler = async ({ params, request }) => {
     return error(authorization.status, authorization.error);
 	if (!body.name) return error(400, "name is required");
 
-	const member = await getMemberByName(params.teamId, body.name);
-	if (!member) return error(404, `no teammate '${body.name}' in this team`);
-  if (member.role === "lead")
-    return error(400, "cannot shut down the team lead");
-
-	const result = await stopDurableRun(
-		{ kind: "session", id: member.session_id },
-		{ mode: "terminate", reason: "team shutdown" },
+  const result = await getApplicationAdapters().teamShutdown.shutdownMember({
+    teamId: params.teamId,
+    name: body.name,
+  });
+  if (result.status === "not_found") return error(404, result.message);
+  if (result.status === "invalid") return error(400, result.message);
+  if (result.status === "unavailable") return error(503, result.message);
+  if (result.status === "stopping") {
+    return json(
+      { ok: false, state: "stopping", name: result.name, stop: result.stop },
+      { status: 202, headers: { "retry-after": "5" } },
 	);
-	await setMemberStatus(member.session_id, "shutdown");
-	return json({ ok: true, name: member.name, stop: result });
+  }
+  return json({
+    ok: true,
+    state: "confirmed",
+    name: result.name,
+    ...("stop" in result
+      ? { stop: result.stop }
+      : { terminalEvidence: result.terminalEvidence }),
+  });
 };

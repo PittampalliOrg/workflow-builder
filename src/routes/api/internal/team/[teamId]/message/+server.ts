@@ -35,6 +35,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	const recipient = await getMemberByName(params.teamId, body.to);
 	if (!recipient) return error(404, `no teammate '${body.to}' in this team`);
+  if (recipient.status === "starting") {
+    return json(
+      {
+        ok: false,
+        state: "starting",
+        retryable: true,
+        message: `teammate '${body.to}' is still starting`,
+      },
+      { status: 409, headers: { "retry-after": "1" } },
+    );
+  }
   const from = await getMemberBySession(authorization.principal.sessionId);
 
 	await injectTeamMessage({

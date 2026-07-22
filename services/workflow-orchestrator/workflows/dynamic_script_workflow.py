@@ -35,6 +35,7 @@ from workflows.session_host_wait import wait_for_prepared_agent_hosts
 from dapr.ext.workflow import when_any as wf_when_any
 
 from activities.aggregate_script_usage import aggregate_script_usage
+from activities.call_agent_service import arm_execution_workspace_retention
 from activities.evaluate_script import evaluate_script
 from activities.append_script_logs import append_script_logs
 from activities.persist_results_to_db import persist_results_to_db
@@ -51,6 +52,7 @@ from activities.track_agent_run import (
 )
 from activities.log_node_execution import update_execution_node
 from workflows.script_agent_dispatch import (
+    _TEAM_OP_RETRY_POLICY,
     _start_script_call,
     script_child_instance_id,
     start_action_call,
@@ -59,7 +61,7 @@ from workflows.script_agent_dispatch import (
     start_team_call,
 )
 from activities.team_ops import execute_team_op
-from workflows.sw_workflow import _freeze
+from workflows.sw_workflow import _freeze, _workflow_terminal_at
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +138,22 @@ _BFF_ACTIVITY_RETRY_POLICY = wf.RetryPolicy(
 )
 # Backwards-compatible alias (evaluate_script's call site + docstrings keep working).
 _SCRIPT_EVAL_RETRY_POLICY = _BFF_ACTIVITY_RETRY_POLICY
+
+
+def _arm_root_workspace_retention(ctx, db_execution_id: str, otel):
+    """Arm retained Sandbox TTLs after the root execution becomes terminal."""
+    yield ctx.call_activity(
+        arm_execution_workspace_retention,
+        input=_freeze(
+            {
+                "executionId": ctx.instance_id,
+                "dbExecutionId": db_execution_id,
+                "terminalAt": _workflow_terminal_at(ctx),
+                "_otel": otel,
+            }
+        ),
+        retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+    )
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -462,6 +480,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                     retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
+                yield from _arm_root_workspace_retention(ctx, exec_id, otel)
             return {
                 "success": True,
                 "status": "completed",
@@ -491,6 +510,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                     retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
+                yield from _arm_root_workspace_retention(ctx, exec_id, otel)
             return {
                 "success": False,
                 "status": "script_error",
@@ -1075,6 +1095,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                     retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
+                yield from _arm_root_workspace_retention(ctx, exec_id, otel)
             return {
                 "success": False,
                 "status": "script_error",
@@ -1265,6 +1286,7 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                     ),
                     retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
                 )
+                yield from _arm_root_workspace_retention(ctx, exec_id, otel)
             return {
                 "success": False,
                 "status": "cancelled",
@@ -1477,7 +1499,7 @@ def _team_auto_shutdown(ctx, exec_id: str, team_used: bool, otel):
             input=_freeze(
                 {"executionId": exec_id, "op": "shutdown", "args": {}, "_otel": otel}
             ),
-            retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+            retry_policy=_TEAM_OP_RETRY_POLICY,
         )
     except Exception:  # noqa: BLE001
         logger.warning("[dynamic-script] team auto-shutdown failed for %s", exec_id)

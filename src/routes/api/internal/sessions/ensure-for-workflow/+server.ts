@@ -2,6 +2,7 @@ import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
 import type {
+  SessionCommandAgent,
 	WorkflowDataService,
 	WorkflowPublishedAgent,
 } from "$lib/server/application/ports";
@@ -27,10 +28,6 @@ import {
 	maybeProvisionAgentWorkflowHost,
 } from "$lib/server/sessions/agent-workflow-host";
 import { resolveWorkflowSessionSecretEnv } from "$lib/server/sessions/session-secret-env";
-import {
-	provisionSessionSandboxWithRetry,
-	sandboxProvisionFailureMessage,
-} from "$lib/server/sandboxes/provision";
 import {
 	decideGoalHarness,
 	runtimeHasNativeGoalHarness,
@@ -118,7 +115,8 @@ function stampAgentBrowserRunHeaders(
 			),
 		);
 		if (!isTrustedAgentBrowserMcpUrl(e.url)) {
-			return Object.keys(sanitizedHeaders).length === Object.keys(sourceHeaders).length
+      return Object.keys(sanitizedHeaders).length ===
+        Object.keys(sourceHeaders).length
 				? entry
 				: { ...e, headers: sanitizedHeaders };
 		}
@@ -150,6 +148,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		workflowData,
 		sessionGoals,
 		sessionCommands,
+    sessionRuntimeHostRecovery,
 		promptStackCompiler,
 		workflowTargetAuth,
     workflowMcpSessionTokenSigner,
@@ -171,12 +170,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.nodeName === "string" && body.nodeName.trim()
 			? body.nodeName.trim()
 			: nodeId;
-	const workflowExecutionId =
+	const requestedWorkflowExecutionId =
 		typeof body.workflowExecutionId === "string"
 			? body.workflowExecutionId
 			: null;
-	const parentExecutionId =
+	let workflowExecutionId = requestedWorkflowExecutionId;
+	const requestedParentExecutionId =
 		typeof body.parentExecutionId === "string" ? body.parentExecutionId : null;
+	let parentExecutionId = requestedParentExecutionId;
 	const benchmarkRunId =
 		typeof body.benchmarkRunId === "string" && body.benchmarkRunId.trim()
 			? body.benchmarkRunId.trim()
@@ -192,23 +193,86 @@ export const POST: RequestHandler = async ({ request }) => {
 			? body.benchmarkExecutionClass.trim()
 			: null;
 	let benchmarkExecutionClass = bodyBenchmarkExecutionClass;
-	let userId = typeof body.userId === "string" ? body.userId : "";
-	let projectId = typeof body.projectId === "string" ? body.projectId : null;
+	const requestedUserId =
+		typeof body.userId === "string" && body.userId.trim()
+			? body.userId.trim()
+			: null;
+	const requestedProjectId =
+		typeof body.projectId === "string" && body.projectId.trim()
+			? body.projectId.trim()
+			: null;
+	let userId = requestedUserId ?? "";
+	let projectId = requestedProjectId;
 
-	// If userId wasn't passed explicitly, resolve from the workflow execution
-	// row. The orchestrator doesn't carry user_id on TaskContext today, so
-	// this makes the Python side simpler: it only needs the execution id.
-	if (!userId && workflowExecutionId) {
-		const executionContext =
-			await workflowData.getWorkflowExecutionSessionOwnerContext(
-				workflowExecutionId,
+	if (!sessionId) return error(400, "sessionId is required");
+	if (!workflowId || !nodeId)
+		return error(400, "workflowId and nodeId are required");
+
+	const existing = await workflowData.getWorkflowEnsureSession(sessionId);
+	if (existing) {
+		const lineageMismatch =
+			(requestedUserId != null && requestedUserId !== existing.userId) ||
+			(requestedProjectId != null &&
+				requestedProjectId !== existing.projectId) ||
+			(requestedWorkflowExecutionId != null &&
+				requestedWorkflowExecutionId !== existing.workflowExecutionId) ||
+			(requestedParentExecutionId != null &&
+				requestedParentExecutionId !== existing.parentExecutionId);
+		if (lineageMismatch) {
+			return error(
+				409,
+				`Existing session ${existing.id} ownership or execution lineage does not match the request`,
 			);
-		if (executionContext) {
+		}
+		userId = existing.userId;
+		projectId = existing.projectId;
+		workflowExecutionId = existing.workflowExecutionId;
+		parentExecutionId = existing.parentExecutionId;
+	}
+
+	// Resolve the parent even when userId is already present: stop intent on the
+  // parent is the provisioning fence that prevents a late activity retry from
+  // recreating a child host after the user stopped the workflow.
+	const executionContext = workflowExecutionId
+    ? await workflowData.getWorkflowExecutionSessionOwnerContext(
+				workflowExecutionId,
+      )
+		: null;
+	if (
+		executionContext &&
+		(executionContext.workflowId !== workflowId ||
+			(requestedUserId != null &&
+				requestedUserId !== executionContext.userId) ||
+			(requestedProjectId != null &&
+				requestedProjectId !== executionContext.projectId) ||
+			(existing != null &&
+				(existing.userId !== executionContext.userId ||
+					existing.projectId !== executionContext.projectId)))
+	) {
+		return error(
+			409,
+			"workflow execution ownership or workflow identity does not match the request",
+			);
+	}
+  if (
+    executionContext &&
+    (executionContext.stopRequestedAt != null ||
+      (executionContext.status != null &&
+        !new Set(["pending", "running"]).has(executionContext.status)))
+  ) {
+    return error(409, "workflow execution is stopping or terminal");
+  }
+	// The orchestrator does not carry user_id on TaskContext, so fill ownership
+	// from the authoritative execution when it was omitted.
+	if (executionContext && !existing) {
 			userId = executionContext.userId;
-			if (!projectId) {
 				projectId = executionContext.projectId;
 			}
-		}
+	if (!userId) {
+		return error(
+			400,
+			"userId could not be resolved — pass explicit userId or a workflowExecutionId that exists",
+		);
 	}
 	if (benchmarkRunId) {
 		const gate = await workflowData.checkBenchmarkSessionProvisioningGate({
@@ -297,7 +361,77 @@ export const POST: RequestHandler = async ({ request }) => {
 		body.agentConfig && typeof body.agentConfig === "object"
 			? (body.agentConfig as unknown as AgentConfig)
 			: null;
-	let agentConfig = await prepareAgentConfig(rawAgentConfig);
+	let agentConfig: AgentConfig | null = null;
+	const buildExactSavedAgentConfig = async (
+		savedAgent: SessionCommandAgent,
+	): Promise<
+		| { ok: true; config: AgentConfig }
+		| { ok: false; message: string }
+	> => {
+		const flattened =
+			await getApplicationAdapters().capabilityBundles.flattenBundles(
+				savedAgent.config,
+				savedAgent.projectId ?? projectId,
+			);
+		const flattenedRecord = flattened as AgentConfig & {
+			agentAppId?: unknown;
+		};
+		const merged = { ...flattenedRecord } as Record<string, unknown>;
+		for (const key of [
+			"model",
+			"modelSpec",
+			"reasoningEffort",
+			"responseJsonSchema",
+			"structuredOutputMode",
+		] as const) {
+			const override = (rawAgentConfig as Record<string, unknown> | null)?.[
+				key
+			];
+			if (override !== undefined && override !== null) merged[key] = override;
+		}
+
+		const savedRuntime =
+			typeof flattenedRecord.runtime === "string" &&
+			flattenedRecord.runtime.trim()
+				? flattenedRecord.runtime.trim()
+				: typeof savedAgent.runtime === "string" && savedAgent.runtime.trim()
+					? savedAgent.runtime.trim()
+					: null;
+		if (!savedRuntime) {
+			return { ok: false, message: "saved agent has no runtime" };
+		}
+		merged.runtime = savedRuntime;
+		const savedAppId =
+			typeof savedAgent.runtimeAppId === "string" &&
+			savedAgent.runtimeAppId.trim()
+				? savedAgent.runtimeAppId.trim()
+				: typeof flattenedRecord.agentAppId === "string" &&
+						flattenedRecord.agentAppId.trim()
+					? flattenedRecord.agentAppId.trim()
+					: null;
+		if (savedAppId) merged.agentAppId = savedAppId;
+
+		if (merged.structuredOutputMode === "tool") {
+			const capability =
+				await runtimeRegistry.getStructuredOutputCapability(savedRuntime);
+			if (!runtimeSupportsStructuredOutput(capability)) {
+				return {
+					ok: false,
+					message: `runtime '${savedRuntime}' does not support StructuredOutput with Draft 2020-12`,
+				};
+			}
+			const schema = validateDraft202012ObjectSchema(
+				merged.responseJsonSchema,
+			);
+			if (!schema.ok) return { ok: false, message: schema.error };
+			merged.responseJsonSchema = schema.schema;
+		}
+
+		const prepared = await prepareAgentConfig(merged as AgentConfig);
+		return prepared
+			? { ok: true, config: prepared }
+			: { ok: false, message: "saved-agent configuration is unavailable" };
+	};
 	const environmentConfig =
 		body.environmentConfig && typeof body.environmentConfig === "object"
 			? (body.environmentConfig as Record<string, unknown>)
@@ -343,11 +477,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : null;
 	let bridgeTimeoutMinutes =
 		parsePositiveInteger(body.timeoutMinutes) ??
-		parsePositiveInteger(agentConfig?.timeoutMinutes);
+		parsePositiveInteger(rawAgentConfig?.timeoutMinutes);
 	let bridgeMaxIterations =
 		parsePositiveInteger(body.maxIterations) ??
 		parsePositiveInteger(body.maxTurns) ??
-		parsePositiveInteger(agentConfig?.maxTurns);
+		parsePositiveInteger(rawAgentConfig?.maxTurns);
 
 	// Optional goal-driven mode: a {objective, tokenBudget?, maxIterations?} block
 	// turns this into a multi-turn run that loops toward the objective until
@@ -379,17 +513,12 @@ export const POST: RequestHandler = async ({ request }) => {
 			: typeof body.agentVersion === "string" && body.agentVersion.trim()
 				? Number.parseInt(body.agentVersion, 10)
 				: null;
-
-	if (!sessionId) return error(400, "sessionId is required");
-	if (!workflowId || !nodeId)
-		return error(400, "workflowId and nodeId are required");
-	if (!userId) {
-		return error(
-			400,
-			"userId could not be resolved — pass explicit userId or a workflowExecutionId that exists",
-		);
-	}
-	if (!agentConfig) return error(400, "agentConfig is required");
+	const resolveAgentVersionRaw =
+		typeof body.resolveAgentVersion === "number" &&
+		Number.isFinite(body.resolveAgentVersion) &&
+		body.resolveAgentVersion > 0
+			? Math.trunc(body.resolveAgentVersion)
+			: null;
 
 	// Named-agent resolution (cutover P1e): dynamic-script agent(..., {agent})
 	// resolves the slug HERE, at dispatch-prepare time — scripts compute slugs
@@ -405,7 +534,75 @@ export const POST: RequestHandler = async ({ request }) => {
 	let resolvedAgentSlug: string | null = null;
 	let effectiveAgentId = bodyAgentId;
 	let effectiveAgentVersion = bodyAgentVersion;
-	if (resolveAgentSlugRaw) {
+	let resolvedSavedAgent: SessionCommandAgent | null = null;
+  // A prior request may have committed the deterministic session row and then
+  // lost its HTTP response. That row is the replay authority: never re-resolve
+  // an unpinned/latest agent from the repeated request, because its current
+  // version may have advanced between attempts.
+	if (existing) {
+    if (
+      !existing.agentId?.trim() ||
+      !Number.isInteger(existing.agentVersion) ||
+      (existing.agentVersion ?? 0) <= 0
+    ) {
+      return error(
+        409,
+        `Existing session ${existing.id} does not have an exact saved-agent version pin`,
+      );
+    }
+    const pinnedAgentVersion = existing.agentVersion as number;
+		const savedAgent = await workflowData.resolveSessionAgentByRef({
+			id: existing.agentId,
+			version: pinnedAgentVersion,
+		});
+		if (
+			!savedAgent?.config ||
+			savedAgent.id !== existing.agentId ||
+			savedAgent.version !== pinnedAgentVersion
+		) {
+      return error(
+        409,
+        `Existing session ${existing.id} saved-agent version pin could not be resolved exactly`,
+			);
+		}
+		const requestedRefMismatch =
+			(bodyAgentId != null && bodyAgentId !== savedAgent.id) ||
+			(bodyAgentVersion != null && bodyAgentVersion !== savedAgent.version) ||
+			(bodyAgentSlug != null && bodyAgentSlug !== savedAgent.slug) ||
+			(resolveAgentVersionRaw != null &&
+				resolveAgentVersionRaw !== savedAgent.version) ||
+			(resolveAgentSlugRaw != null &&
+				resolveAgentSlugRaw !== savedAgent.id &&
+				resolveAgentSlugRaw !== savedAgent.slug);
+		if (requestedRefMismatch) {
+			return error(
+				409,
+				`Existing session ${existing.id} saved-agent identity does not match the request`,
+			);
+		}
+    if (
+      projectId &&
+      savedAgent.projectId &&
+      savedAgent.projectId !== projectId
+    ) {
+      return error(
+        403,
+        `Existing session ${existing.id} saved agent is not in this project`,
+      );
+    }
+		const built = await buildExactSavedAgentConfig(savedAgent);
+		if (!built.ok) {
+			return error(
+				409,
+				`Existing session ${existing.id} ${built.message}`,
+			);
+		}
+		agentConfig = built.config;
+		resolvedSavedAgent = savedAgent;
+		effectiveAgentId = existing.agentId;
+		effectiveAgentVersion = pinnedAgentVersion;
+		resolvedAgentSlug = resolveAgentSlugRaw;
+	} else if (resolveAgentSlugRaw) {
 		if (!projectId) {
 			return json(
 				{
@@ -443,20 +640,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		effectiveAgentId = resolvedId;
 		// Version pin (evals): honored when the caller sends one; otherwise the
 		// latest registered version.
-		const resolveAgentVersionRaw =
-			typeof body.resolveAgentVersion === "number" &&
-			Number.isFinite(body.resolveAgentVersion) &&
-			body.resolveAgentVersion > 0
-				? Math.trunc(body.resolveAgentVersion)
-				: null;
 		effectiveAgentVersion = resolveAgentVersionRaw;
-		resolvedAgentSlug = resolveAgentSlugRaw;
 
 		// Dynamic-script agent({agent:'slug'}) resolves the slug at RUNTIME, so it
 		// bypasses resolveSpecAgentRefs (which inlines a STATIC durable/run node's
 		// DB agent config at workflow-start). Load the resolved agent's stored
 		// config here and use it as the dispatch base, overlaying ONLY the
-		// orchestrator's per-call fields (model/effort/schema/runtime) on top —
+    // orchestrator's per-call fields (model/effort/schema/mode) on top —
 		// otherwise the session loses the agent's mcpServers / systemPrompt /
 		// builtinTools / tools and runs with just the minimal per-call config plus
 		// the auto-wired wfb_goal MCP server. (Skills still need registry
@@ -475,74 +665,37 @@ export const POST: RequestHandler = async ({ request }) => {
 					{ status: 422 },
 				);
 			}
-			const flattened =
-				await getApplicationAdapters().capabilityBundles.flattenBundles(
-					dbAgent.config,
-					dbAgent.projectId ?? projectId,
-				);
-				const overrides = (rawAgentConfig ?? {}) as Record<string, unknown>;
-				const merged: Record<string, unknown> = { ...flattened };
-				for (const key of [
-					"runtime",
-					"model",
-					"modelSpec",
-					"reasoningEffort",
-					"responseJsonSchema",
-					"structuredOutputMode",
-				]) {
-					if (overrides[key] !== undefined && overrides[key] !== null) {
-						merged[key] = overrides[key];
-					}
-				}
-				if (typeof dbAgent.runtime === "string" && dbAgent.runtime.trim()) {
-					merged.runtime = dbAgent.runtime.trim();
-				}
 				if (
-					typeof dbAgent.runtimeAppId === "string" &&
-					dbAgent.runtimeAppId.trim()
+				dbAgent.id !== effectiveAgentId ||
+				(resolveAgentVersionRaw != null &&
+					dbAgent.version !== resolveAgentVersionRaw) ||
+				(bodyAgentId != null && bodyAgentId !== dbAgent.id) ||
+				(bodyAgentVersion != null && bodyAgentVersion !== dbAgent.version) ||
+				(bodyAgentSlug != null && bodyAgentSlug !== dbAgent.slug)
 				) {
-					merged.agentAppId = dbAgent.runtimeAppId.trim();
+				return error(409, "resolved saved-agent identity does not match request");
 				}
-				if (merged.structuredOutputMode === "tool") {
-					const resolvedRuntime = String(merged.runtime || "").trim();
-					const capability =
-						await runtimeRegistry.getStructuredOutputCapability(
-							resolvedRuntime,
-						);
-					if (!runtimeSupportsStructuredOutput(capability)) {
+			const built = await buildExactSavedAgentConfig(dbAgent);
+			if (!built.ok) {
 						return json(
-							{
-								code: "agent_ref_unresolved",
-								error: `agent '${resolveAgentSlugRaw}' resolves to runtime '${resolvedRuntime || "unknown"}', which does not support StructuredOutput with Draft 2020-12`,
-							},
+					{ code: "agent_ref_unresolved", error: built.message },
 							{ status: 422 },
 						);
 					}
-					const schema = validateDraft202012ObjectSchema(
-						merged.responseJsonSchema,
-					);
-					if (!schema.ok) {
-						return json(
-							{
-								code: "agent_ref_unresolved",
-								error: schema.error,
-							},
-							{ status: 422 },
-						);
-					}
-					merged.responseJsonSchema = schema.schema;
-				}
-				agentConfig = await prepareAgentConfig(merged as AgentConfig);
-				// Re-derive config-sourced fallbacks from the now-full config so the
-				// session inherits the agent's own timeout / max-turns.
-				bridgeTimeoutMinutes =
-					parsePositiveInteger(body.timeoutMinutes) ??
-					parsePositiveInteger(agentConfig?.timeoutMinutes);
-				bridgeMaxIterations =
-					parsePositiveInteger(body.maxIterations) ??
-					parsePositiveInteger(body.maxTurns) ??
-					parsePositiveInteger(agentConfig?.maxTurns);
+			agentConfig = built.config;
+			resolvedSavedAgent = dbAgent;
+			effectiveAgentId = dbAgent.id;
+			effectiveAgentVersion = dbAgent.version;
+			resolvedAgentSlug = resolveAgentSlugRaw;
 		} catch (err) {
+			if (
+				err &&
+				typeof err === "object" &&
+				"status" in err &&
+				(err as { status?: unknown }).status === 409
+			) {
+				throw err;
+			}
 			console.warn(
 				"[ensure-for-workflow] failed to load resolved agent config for slug",
 				resolvedAgentSlug,
@@ -557,12 +710,47 @@ export const POST: RequestHandler = async ({ request }) => {
 			);
 		}
 	}
+	if (!existing && !resolveAgentSlugRaw && bodyAgentId) {
+		const savedAgent = await workflowData.resolveSessionAgentByRef({
+			id: bodyAgentId,
+			version: bodyAgentVersion ?? undefined,
+		});
+		if (
+			!savedAgent?.config ||
+			savedAgent.id !== bodyAgentId ||
+			(bodyAgentVersion != null && savedAgent.version !== bodyAgentVersion) ||
+			(bodyAgentSlug != null && savedAgent.slug !== bodyAgentSlug)
+		) {
+			return error(409, "saved-agent identity does not match the request");
+		}
+		if (
+			projectId &&
+			savedAgent.projectId &&
+			savedAgent.projectId !== projectId
+		) {
+			return error(403, "saved agent is not in this project");
+		}
+		const built = await buildExactSavedAgentConfig(savedAgent);
+		if (!built.ok) return error(422, built.message);
+		agentConfig = built.config;
+		resolvedSavedAgent = savedAgent;
+		effectiveAgentId = savedAgent.id;
+		effectiveAgentVersion = savedAgent.version;
+	}
+	if (!agentConfig) agentConfig = await prepareAgentConfig(rawAgentConfig);
 
 	// The named-agent branch above may have replaced agentConfig with the
 	// resolved DB agent's full config; re-narrow to non-null for the rest of the
 	// handler (a null here means both the inline config and the resolved agent
 	// were absent).
 	if (!agentConfig) return error(400, "agentConfig is required");
+	bridgeTimeoutMinutes =
+		parsePositiveInteger(body.timeoutMinutes) ??
+		parsePositiveInteger(agentConfig.timeoutMinutes);
+	bridgeMaxIterations =
+		parsePositiveInteger(body.maxIterations) ??
+		parsePositiveInteger(body.maxTurns) ??
+		parsePositiveInteger(agentConfig.maxTurns);
 
 	// Swap-safety gate for the durable/run (workflow + SWE-bench) path — mirrors
 	// the direct-spawn gate in sessions/spawn.ts. Warn/reject when the dispatched
@@ -627,6 +815,12 @@ export const POST: RequestHandler = async ({ request }) => {
       return null;
     }
   })();
+  if (!workflowMcpSessionToken) {
+    return error(
+      500,
+      `Session ${sessionId} cannot start without signed lifecycle authority`,
+    );
+  }
   // Goals are authored in code (dynamic-script) and completed by the BFF
   // evidence backstop; the goal MCP server is no longer auto-wired. Only
   // explicitly-configured MCP servers reach the dispatched session.
@@ -705,7 +899,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	// every tool with "sandbox not found". Explicit workspace/profile steps (e.g.
 	// the 3Blue1Brown demo, which SHARE a sandbox across agent + browser/validate
 	// + preview) still take precedence. Idempotent by executionId=sessionId, and
-	// cleaned up on session-end via cleanupSessionSandbox.
+  // cleaned up by the lifecycle controller. The external create happens only
+  // after the session/parent stop fence is committed below.
 	// juicefs-shared agents (e.g. dapr-agent-py-juicefs) get their workspace from
 	// the per-execution JuiceFS CSI mount keyed by sharedWorkspaceKey — they run
 	// file/bash tools locally (LocalWorkspaceRuntime), NOT over the OpenShell remote
@@ -722,28 +917,38 @@ export const POST: RequestHandler = async ({ request }) => {
 	const hasWiredSandbox =
 		!!bridgeSandboxName ||
 		(!!bridgeWorkspaceRef && bridgeWorkspaceRef.startsWith("ws_"));
-	if (needsOpenShellSandbox && !hasWiredSandbox) {
-		try {
-			const autoSandbox = await provisionSessionSandboxWithRetry({
-				executionId: sessionId,
-				name: title,
-				sandboxTemplate:
-					typeof (agentConfig as { sandboxTemplate?: unknown })
-						.sandboxTemplate === "string"
+  const shouldAutoProvisionOpenShellSandbox =
+    needsOpenShellSandbox && !hasWiredSandbox;
+  const autoSandboxTemplate =
+    typeof (agentConfig as { sandboxTemplate?: unknown }).sandboxTemplate ===
+    "string"
 						? ((agentConfig as { sandboxTemplate?: string })
 								.sandboxTemplate as string)
-						: "base",
-				keepAfterRun: true,
+      : "base";
+  const provisionAutoWorkspace = async (): Promise<boolean> => {
+    try {
+      const provisioned =
+        await sessionCommands.provisionWorkflowSessionWorkspace({
+          sessionId,
+          title,
+          sandboxTemplate: autoSandboxTemplate,
 			});
-			bridgeSandboxName = autoSandbox.sandboxName;
-			bridgeWorkspaceRef = autoSandbox.workspaceRef ?? bridgeWorkspaceRef;
+      if (provisioned.status === "stopping") return false;
+      bridgeSandboxName = provisioned.sandboxName;
+      bridgeWorkspaceRef = provisioned.workspaceRef ?? bridgeWorkspaceRef;
 			console.log(
-				`[ensure-for-workflow] auto-provisioned OpenShell sandbox ${autoSandbox.sandboxName} for ${swapTarget?.id} session ${sessionId}`,
+        `[ensure-for-workflow] auto-provisioned OpenShell sandbox ${provisioned.sandboxName} for ${swapTarget?.id} session ${sessionId}`,
 			);
+      return true;
 		} catch (err) {
-			return error(503, sandboxProvisionFailureMessage(err));
-		}
+      throw error(
+        503,
+        err instanceof Error
+          ? err.message
+          : "OpenShell sandbox provisioning failed",
+      );
 	}
+  };
 	const swapVerdict = swapTarget
 		? evaluateSwap(dispatchAgentConfig as Record<string, unknown>, swapTarget)
 		: null;
@@ -774,31 +979,129 @@ export const POST: RequestHandler = async ({ request }) => {
 	});
 
 	// Idempotent: if a session with this deterministic id already exists, return it.
-	const existing = await workflowData.getWorkflowEnsureSession(sessionId);
 	if (existing) {
+		if (!resolvedSavedAgent) {
+			return error(
+        409,
+        `Existing session ${existing.id} saved-agent version pin is unavailable`,
+      );
+    }
 		await sessionCommands.syncWorkflowSessionAgentRuntime({
 			agentId: existing.agentId,
 			bestEffort: true,
 			context: `existing session ${sessionId}`,
 		});
+    const [existingDetail, existingOwner] = existing.runtimeAppId?.trim()
+      ? await Promise.all([
+          workflowData.getSessionDetail({ sessionId: existing.id }),
+          workflowData.getSessionFileOwner(existing.id),
+        ])
+      : [null, null];
+    const persistedRuntimeAppId =
+      existing.runtimeAppId?.trim() &&
+      existingDetail?.daprInstanceId?.trim() &&
+      existingOwner != null &&
+      existingOwner.stopRequestedAt == null &&
+      existingOwner.completedAt == null &&
+      existingOwner.status !== "terminated"
+        ? existing.runtimeAppId.trim()
+        : null;
 		// Also wake on replay/idempotent hits — the orchestrator's
 		// `ctx.call_child_workflow` still needs the target pod live.
-		const reuseRuntime = await resolveRuntimeIdentity(
-			workflowData,
-			existing.agentId,
-		);
-		const reuseAgentAppId =
-			reuseRuntime?.appId ??
-			bodyAgentAppId ??
-			(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
+    const configuredAgentAppId = (
+      dispatchAgentConfig as AgentConfig & { agentAppId?: unknown }
+    ).agentAppId;
+		const pinnedConfigAppId =
+			typeof configuredAgentAppId === "string" && configuredAgentAppId.trim()
+				? configuredAgentAppId.trim()
+				: resolvedSavedAgent.runtimeAppId;
+		const reuseRoute = resolveAgentRuntimeRoute({
+			agentSlug: resolvedSavedAgent.slug,
+      runtimeAppId: pinnedConfigAppId,
+      config: dispatchAgentConfig,
+    });
+		const reuseRuntime = {
+			slug: resolvedSavedAgent.slug,
+      appId: reuseRoute.appId,
+    };
+    const reuseAgentAppId = persistedRuntimeAppId ?? reuseRuntime.appId;
 		const reuseWakeSlug = await resolveWakeSlug({
 			workflowData,
-			bodyAgentSlug,
+			bodyAgentSlug: resolvedSavedAgent.slug,
 			bodyAgentAppId: reuseAgentAppId,
 			agentConfig: dispatchAgentConfig,
 			agentId: existing.agentId,
 		});
-		const reuseHost = await maybeProvisionAgentWorkflowHost({
+    let reuseHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>> =
+      null;
+    let reuseChildAppId: string | null = persistedRuntimeAppId;
+    let reuseRuntimeSandboxName: string | null = persistedRuntimeAppId
+      ? existing.runtimeSandboxName
+      : null;
+    if (persistedRuntimeAppId && reuseRuntimeSandboxName) {
+      await sessionRuntimeHostRecovery.ensurePublished({
+        sessionId: existing.id,
+        runtimeAppId: persistedRuntimeAppId,
+        runtimeSandboxName: reuseRuntimeSandboxName,
+        sessionSecretEnv: workflowSessionSecretEnv,
+        traceContext,
+      });
+    }
+    if (!persistedRuntimeAppId) {
+      const provisioningLease =
+        await workflowData.reserveSessionRuntimeProvisioning({
+          sessionId: existing.id,
+        });
+      if (!provisioningLease) {
+        const owner =
+          existingOwner ??
+          (await workflowData.getSessionFileOwner(existing.id));
+        const stopping =
+          owner?.stopRequestedAt != null ||
+          owner?.completedAt != null ||
+          owner?.status === "terminated";
+        return json(
+          stopping
+            ? {
+                error: "session_stopping",
+                message: `Session ${existing.id} is stopping or terminal`,
+              }
+            : {
+                error: "session_provisioning",
+                message: `Session ${existing.id} runtime provisioning is already in progress`,
+                retryable: true,
+              },
+          {
+            status: stopping ? 409 : 503,
+            headers: stopping ? undefined : { "Retry-After": "1" },
+          },
+        );
+      }
+      let reuseLeaseClosed = false;
+      const cleanupReuseProvisioning = async (): Promise<void> => {
+        if (reuseLeaseClosed) return;
+        reuseLeaseClosed = true;
+        await sessionCommands.cleanupUnpublishedRuntimeProvisioning({
+          sessionId: existing.id,
+          sandboxName: reuseHost?.sandboxName ?? null,
+          leaseStartedAt: provisioningLease.startedAt,
+        });
+      };
+      try {
+        if (
+          shouldAutoProvisionOpenShellSandbox &&
+          !(await provisionAutoWorkspace())
+        ) {
+          await cleanupReuseProvisioning();
+          return json(
+            {
+              error: "session_stopping",
+              message: `Session ${existing.id} stopped while its workspace was provisioning`,
+            },
+            { status: 409 },
+          );
+        }
+        reuseHost = await maybeProvisionAgentWorkflowHost({
 			sessionId: existing.id,
 			agentConfig: executionDispatchAgentConfig,
 			workflowExecutionId,
@@ -818,20 +1121,53 @@ export const POST: RequestHandler = async ({ request }) => {
 			// .daprInstanceId) use. Both interactive-cli AND juicefs-shared
 			// (dapr-agent-py-juicefs) key on it so agents, the deterministic
 			// cliWorkspace spine, and the Files tab all land on one subtree.
-      sharedWorkspaceKey: runtimeUsesSharedWorkspace(swapTarget?.capabilities)
+          sharedWorkspaceKey: runtimeUsesSharedWorkspace(
+            swapTarget?.capabilities,
+          )
 					? (bridgeWorkspaceRef ?? workflowExecutionId)
 					: null,
 			seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
+          provisioningStartedAt: provisioningLease.startedAt,
 		});
-		const reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
-		const reuseRuntimeSandboxName =
+        reuseChildAppId = reuseHost?.agentAppId ?? reuseAgentAppId;
+        reuseRuntimeSandboxName =
 			reuseHost?.sandboxName ?? existing.runtimeSandboxName ?? null;
-		if (reuseChildAppId) {
-			await workflowData.updateWorkflowEnsureSessionRuntime({
+        if (!reuseChildAppId) {
+          await cleanupReuseProvisioning();
+          return error(500, "could not resolve peer runtime target");
+        }
+        const attached = await workflowData.updateWorkflowEnsureSessionRuntime({
 				sessionId: existing.id,
+          expectedStartedAt: provisioningLease.startedAt,
 				runtimeAppId: reuseChildAppId,
 				runtimeSandboxName: reuseRuntimeSandboxName,
+          runtimeHostOwned: reuseHost?.sandboxName != null,
+          runtimeHostLaunchSpec: reuseHost?.launchSpec ?? null,
 			});
+        if (!attached) {
+          await cleanupReuseProvisioning();
+          return json(
+            {
+              error: "session_stopping",
+              message: `Session ${existing.id} stopped while its runtime host was provisioning`,
+            },
+            { status: 409 },
+          );
+        }
+        reuseLeaseClosed = true;
+        if (reuseHost?.sandboxName) {
+          await sessionRuntimeHostRecovery.ensurePublished({
+            sessionId: existing.id,
+            runtimeAppId: reuseChildAppId,
+            runtimeSandboxName: reuseHost.sandboxName,
+            sessionSecretEnv: workflowSessionSecretEnv,
+            traceContext,
+          });
+        }
+      } catch (caught) {
+        await cleanupReuseProvisioning();
+        throw caught;
+      }
 		}
 		if (!reuseHost && reuseWakeSlug) {
 			try {
@@ -860,12 +1196,19 @@ export const POST: RequestHandler = async ({ request }) => {
 				evidencePlan: effectiveBridgeGoal.evidencePlan,
 			});
 		}
+    await sessionCommands.materializeWorkflowSessionRepositories({
+      sessionId: existing.id,
+      repositories: dispatchAgentConfig.repositories,
+      workflowExecutionId: existing.workflowExecutionId ?? workflowExecutionId,
+      workspaceRef: bridgeWorkspaceRef,
+      cwd: bridgeCwd,
+    });
 		return json({
 			sessionId: existing.id,
 			agentId: existing.agentId,
 			agentVersion: existing.agentVersion,
 			...(resolvedAgentSlug ? { resolvedAgentSlug } : {}),
-			agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
+      agentSlug: reuseRuntime.slug,
 			agentAppId: reuseChildAppId,
 			runtimeSandboxName: reuseRuntimeSandboxName,
 			agentHostStatus: reuseHost?.status ?? null,
@@ -891,8 +1234,13 @@ export const POST: RequestHandler = async ({ request }) => {
 				timeoutMinutes: bridgeTimeoutMinutes,
 				maxIterations: effectiveMaxIterations,
 				customGoal: evaluatorGoal,
-				agentSlug: reuseRuntime?.slug ?? bodyAgentSlug,
+        agentId: existing.agentId,
+        agentVersion: existing.agentVersion,
+        agentSlug: reuseRuntime.slug,
 				agentAppId: reuseChildAppId,
+				activeModelId: resolvedSavedAgent.mlflowModelVersion ?? null,
+				activeModelName: resolvedSavedAgent.mlflowModelName ?? null,
+				activeModelUri: resolvedSavedAgent.mlflowUri ?? null,
 			}),
 			reused: true,
 		});
@@ -907,6 +1255,14 @@ export const POST: RequestHandler = async ({ request }) => {
 		agentVersion: effectiveAgentVersion,
 		projectId,
 	});
+	if (
+		resolvedSavedAgent &&
+		(!publishedAgent ||
+			publishedAgent.agentId !== resolvedSavedAgent.id ||
+			publishedAgent.agentVersion !== resolvedSavedAgent.version)
+	) {
+		return error(409, "published agent identity does not match saved version");
+	}
 	const sessionAgent = await sessionCommands.resolveWorkflowSessionAgent({
 		publishedAgent,
 		workflowId,
@@ -915,16 +1271,38 @@ export const POST: RequestHandler = async ({ request }) => {
 		userId,
 	});
 	const { agentId, agentVersion } = sessionAgent;
+	if (
+		resolvedSavedAgent &&
+		(agentId !== resolvedSavedAgent.id ||
+			agentVersion !== resolvedSavedAgent.version)
+	) {
+		return error(409, "workflow session agent does not match saved version");
+	}
 	await sessionCommands.syncWorkflowSessionAgentRuntime({ agentId });
-	const runtimeIdentity = await resolveRuntimeIdentity(workflowData, agentId);
+	const savedDispatchAppId = (
+		dispatchAgentConfig as AgentConfig & { agentAppId?: unknown }
+	).agentAppId;
+	const runtimeIdentity = resolvedSavedAgent
+		? {
+				slug: resolvedSavedAgent.slug,
+				appId: resolveAgentRuntimeRoute({
+					agentSlug: resolvedSavedAgent.slug,
+					runtimeAppId:
+						typeof savedDispatchAppId === "string" && savedDispatchAppId.trim()
+							? savedDispatchAppId.trim()
+							: resolvedSavedAgent.runtimeAppId,
+					config: dispatchAgentConfig,
+				}).appId,
+			}
+		: await resolveRuntimeIdentity(workflowData, agentId);
 
 	// Create the session row with the deterministic id. We bypass createSession's
 	// auto-id generation by inserting directly, then reuse createSession's
 	// defaults via a follow-up lookup. To keep a single code path, we do a
 	// direct insert here since createSession doesn't accept a pre-computed id.
-	const incomingSandboxName =
+  let incomingSandboxName =
 		bridgeSandboxName ?? dispatchAgentConfig.runtime ?? "dapr-agent-py";
-	await workflowData.createWorkflowEnsureSession({
+  const provisioningLease = await workflowData.createWorkflowEnsureSession({
 		id: sessionId,
 		title,
 		agentId,
@@ -936,6 +1314,38 @@ export const POST: RequestHandler = async ({ request }) => {
 		workflowExecutionId,
 		parentExecutionId,
 	});
+  if (!provisioningLease) {
+    return error(409, "workflow execution is stopping or terminal");
+  }
+  let provisioningLeaseClosed = false;
+  let sessionHost: Awaited<ReturnType<typeof maybeProvisionAgentWorkflowHost>> =
+    null;
+  let childAgentAppId: string | null = null;
+  let childRuntimeSandboxName: string | null = null;
+  const cleanupProvisioning = async (): Promise<void> => {
+    if (provisioningLeaseClosed) return;
+    provisioningLeaseClosed = true;
+    await sessionCommands.cleanupUnpublishedRuntimeProvisioning({
+      sessionId,
+      sandboxName: sessionHost?.sandboxName ?? null,
+      leaseStartedAt: provisioningLease.startedAt,
+    });
+  };
+  try {
+    if (
+      shouldAutoProvisionOpenShellSandbox &&
+      !(await provisionAutoWorkspace())
+    ) {
+      await cleanupProvisioning();
+      return json(
+        {
+          error: "session_stopping",
+          message: `Session ${sessionId} stopped while its workspace was provisioning`,
+        },
+        { status: 409 },
+      );
+    }
+    incomingSandboxName = bridgeSandboxName ?? incomingSandboxName;
 	// Now that the session row exists, surface a degraded swap (computed above)
 	// as a runtime.swap_degraded event — the durable/run half of the WARN-phase
 	// audit dataset. The gate had to run before this (it may reject before the
@@ -989,7 +1399,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		runtimeIdentity?.appId ??
 		bodyAgentAppId ??
 		(bodyAgentSlug ? agentRuntimeDedicatedAppId(bodyAgentSlug) : null);
-	const sessionHost = await maybeProvisionAgentWorkflowHost({
+    sessionHost = await maybeProvisionAgentWorkflowHost({
 		sessionId,
 		agentConfig: executionDispatchAgentConfig,
 		workflowExecutionId,
@@ -1009,8 +1419,9 @@ export const POST: RequestHandler = async ({ request }) => {
 				? (bridgeWorkspaceRef ?? workflowExecutionId)
 				: null,
 		seedWorkspaceFrom: bridgeSeedWorkspaceFrom,
+      provisioningStartedAt: provisioningLease.startedAt,
 	});
-	let childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
+    childAgentAppId = sessionHost?.agentAppId ?? targetAgentAppId;
 	// Concurrency plan P3: when a shared-pool runtime skipped the per-session
 	// host, the identity the orchestrator stamped (legacy shared app id, e.g.
 	// "dapr-agent-py") must be re-routed through the pool resolver so the
@@ -1031,13 +1442,43 @@ export const POST: RequestHandler = async ({ request }) => {
 			childAgentAppId = poolRoute.appId;
 		}
 	}
-	const childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
+    childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
 	if (childAgentAppId) {
-		await workflowData.updateWorkflowEnsureSessionRuntime({
+      const attached = await workflowData.updateWorkflowEnsureSessionRuntime({
 			sessionId,
+        expectedStartedAt: provisioningLease.startedAt,
 			runtimeAppId: childAgentAppId,
 			runtimeSandboxName: childRuntimeSandboxName,
+        runtimeHostOwned: sessionHost?.sandboxName != null,
+        runtimeHostLaunchSpec: sessionHost?.launchSpec ?? null,
 		});
+      if (!attached) {
+        await cleanupProvisioning();
+        return json(
+          {
+            error: "session_stopping",
+            message: `Session ${sessionId} stopped while its runtime host was provisioning`,
+          },
+          { status: 409 },
+        );
+      }
+      provisioningLeaseClosed = true;
+      if (sessionHost?.sandboxName) {
+        await sessionRuntimeHostRecovery.ensurePublished({
+          sessionId,
+          runtimeAppId: childAgentAppId,
+          runtimeSandboxName: sessionHost.sandboxName,
+          sessionSecretEnv: workflowSessionSecretEnv,
+          traceContext,
+        });
+      }
+    } else {
+      await cleanupProvisioning();
+      return error(500, "could not resolve workflow session runtime target");
+    }
+  } catch (caught) {
+    await cleanupProvisioning();
+    throw caught;
 	}
 	const wakeSlug = await resolveWakeSlug({
 		workflowData,
@@ -1131,9 +1572,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			agentVersion,
 			agentSlug: runtimeIdentity?.slug ?? bodyAgentSlug,
 			agentAppId: childAgentAppId,
-			activeModelId: publishedAgent?.mlflowModelVersion ?? null,
-			activeModelName: publishedAgent?.mlflowModelName ?? null,
-			activeModelUri: publishedAgent?.mlflowUri ?? null,
+			activeModelId: resolvedSavedAgent
+				? resolvedSavedAgent.mlflowModelVersion
+				: publishedAgent?.mlflowModelVersion ?? null,
+			activeModelName: resolvedSavedAgent
+				? resolvedSavedAgent.mlflowModelName
+				: publishedAgent?.mlflowModelName ?? null,
+			activeModelUri: resolvedSavedAgent
+				? resolvedSavedAgent.mlflowUri
+				: publishedAgent?.mlflowUri ?? null,
 		}),
 		reused: false,
 	});
@@ -1203,6 +1650,7 @@ function buildChildInput(params: {
 		instructionBundle: params.instructionBundle ?? null,
 		agentSlug: params.agentSlug ?? null,
 		agentAppId: params.agentAppId ?? null,
+    requiresStartAuthority: true,
 		runtimeConfigInspectionVersion: 1,
 		environmentConfig: params.environmentConfig,
 		workflowId: params.workflowId,

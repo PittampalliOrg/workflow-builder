@@ -18,24 +18,21 @@
  * and the exactly-once claim — lives entirely behind the topic. Content is NOT
  * in the payload; the subscriber reads the durable rows.
  *
- * If the publish fails after the append, the message is still persisted and the
- * next publish/nudge to the same recipient flushes it (the claim is a batch).
+ * If the publish fails after the append, the message is still persisted. Runtime
+ * publication, the next message/nudge, or the periodic sweeper re-drives it.
  */
 
 import { getApplicationAdapters } from "$lib/server/application";
+import {
+	TEAM_MAILBOX_DELIVERY_TOPIC as TEAM_MESSAGE_TOPIC,
+	TEAM_MAILBOX_EVENT_ORIGINS,
+} from "$lib/server/application/team-mailbox-delivery";
 
-export type TeamMessageKind =
-	| "teammate-message"
-	| "team-broadcast"
-	| "team-idle"
-	// A teammate's turn ended on an ERROR (not a normal idle) — the lead's
-	// notice carries the error text so failure is distinguishable from
-	// completion (Claude Code v2.1.198 parity).
-	| "team-error";
+export { TEAM_MESSAGE_TOPIC };
 
-/** Topic carrying team message delivery triggers (subject under `workflow.>`
- * on the ORCHESTRATOR JetStream stream — see stacks Subscription-team-message). */
-export const TEAM_MESSAGE_TOPIC = "workflow.team-message";
+// `team-error` is a teammate turn ending on ERROR rather than normal idle; the
+// lead's notice carries the error text so failure remains distinguishable.
+export type TeamMessageKind = (typeof TEAM_MAILBOX_EVENT_ORIGINS)[number];
 
 /**
  * Inject a team message into `recipientSessionId`. `sourceEventId` MUST be
@@ -52,7 +49,7 @@ export async function injectTeamMessage(input: {
 	// Same shape the goal loop uses; `origin`/`fromAgent` let the UI style it and
 	// the agent ignores the extra fields. Content is the standard block array.
 	// NOTE: `origin` doubles as the claim scope in claimUnraisedTeamEvents — the
-	// three TeamMessageKind values are exactly the set the delivery path owns.
+	// TeamMessageKind values are exactly the set the delivery path owns.
 	const userMessage = {
 		type: "user.message",
 		content: [{ type: "text", text: input.content }],

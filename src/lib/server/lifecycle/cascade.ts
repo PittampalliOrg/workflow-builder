@@ -40,6 +40,9 @@ const DEFAULT_WAIT_POLL_MS = 1_000;
 export type AgentRuntimeTarget = {
 	runtimeAppId: string;
 	instanceId: string;
+  runtimeSandboxName?: string | null;
+	/** False for a native peer that routes through a parent-owned host. */
+	ownsRuntimeSandbox?: boolean;
 };
 
 export type DurableTerminationResult =
@@ -79,31 +82,40 @@ export type DurableCascadeDeps = {
 	getAgentRuntimeStatus: (
 		runtimeAppId: string,
 		instanceId: string,
+    runtimeSandboxName?: string | null,
 	) => Promise<unknown>;
 	cancelAgentRuntime?: (
 		runtimeAppId: string,
 		instanceId: string,
 		reason: string,
+    runtimeSandboxName?: string | null,
 	) => Promise<DurableGracefulCancellationResult>;
 	terminateAgentRuntime: (
 		runtimeAppId: string,
 		instanceId: string,
 		reason: string,
+    runtimeSandboxName?: string | null,
 	) => Promise<DurableTerminationResult>;
 	waitAgentRuntimeClosed: (
 		runtimeAppId: string,
 		instanceId: string,
+    runtimeSandboxName?: string | null,
 	) => Promise<boolean>;
 	purgeParent: (instanceId: string) => Promise<void>;
 	purgeAgentRuntime: (
 		runtimeAppId: string,
 		instanceId: string,
+    runtimeSandboxName?: string | null,
 	) => Promise<void>;
 	purgeStateRows?: (
 		parentInstanceIds: string[],
 		agentRuntimeTargets: AgentRuntimeTarget[],
 		statePurgeInstanceIds?: string[],
 	) => Promise<void>;
+  /** Strictly delete one per-session OpenShell Sandbox by its actual name. */
+  deleteWorkspaceSandbox?: (sandboxName: string) => Promise<void>;
+  /** Strictly clean workflow-owned OpenShell workspaces by execution scope. */
+  cleanupWorkspaceExecution?: (executionId: string) => Promise<void>;
 	sleep: (ms: number) => Promise<void>;
 };
 
@@ -138,7 +150,9 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 	);
 }
 
-export function isRecoverableDaprWorkflowTerminateError(input: unknown): boolean {
+export function isRecoverableDaprWorkflowTerminateError(
+  input: unknown,
+): boolean {
 	const normalized = errorText(input).toLowerCase();
 	return (
 		normalized.includes("dapr workflow terminate failed with http 500") ||
@@ -328,16 +342,31 @@ export function daprStateKeyMatchPattern(instanceId: string): string {
 export function dedupeAgentRuntimeTargets(
 	targets: AgentRuntimeTarget[],
 ): AgentRuntimeTarget[] {
-	const seen = new Set<string>();
+  const seen = new Map<string, number>();
 	const deduped: AgentRuntimeTarget[] = [];
 	for (const target of targets) {
 		const runtimeAppId = target.runtimeAppId.trim();
 		const instanceId = target.instanceId.trim();
+    const runtimeSandboxName = target.runtimeSandboxName?.trim() || null;
 		if (!runtimeAppId || !instanceId) continue;
 		const key = agentRuntimeTargetKey({ runtimeAppId, instanceId });
-		if (seen.has(key)) continue;
-		seen.add(key);
-		deduped.push({ runtimeAppId, instanceId });
+    const existingIndex = seen.get(key);
+    if (existingIndex !== undefined) {
+      const existing = deduped[existingIndex];
+      if (existing && !existing.runtimeSandboxName && runtimeSandboxName) {
+        deduped[existingIndex] = {
+          ...existing,
+          runtimeSandboxName,
+        };
+      }
+      continue;
+    }
+    seen.set(key, deduped.length);
+    deduped.push(
+      target.runtimeSandboxName === undefined
+        ? { runtimeAppId, instanceId }
+        : { runtimeAppId, instanceId, runtimeSandboxName },
+    );
 	}
 	return deduped;
 }
@@ -368,7 +397,9 @@ export async function runDurableCascade(
 	const gracefulCancellationEnabled =
 		params.gracefulCancellationEnabled ?? false;
 	const gracefulCancellationWaitMs = params.gracefulCancellationWaitMs ?? 0;
-	const parentInstanceIds = [...new Set(params.parentInstanceIds.filter(Boolean))];
+  const parentInstanceIds = [
+    ...new Set(params.parentInstanceIds.filter(Boolean)),
+  ];
 	const agentRuntimeTargets = dedupeAgentRuntimeTargets(
 		params.agentRuntimeTargets,
 	);
@@ -379,9 +410,15 @@ export async function runDurableCascade(
 	let parentClosed = true;
 	let agentRuntimeClosed = true;
 
-	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+  await runWithConcurrency(
+    parentInstanceIds,
+    concurrency,
+    async (instanceId) => {
 		try {
-			parentPreflightStatuses.set(instanceId, await deps.getParentStatus(instanceId));
+        parentPreflightStatuses.set(
+          instanceId,
+          await deps.getParentStatus(instanceId),
+        );
 		} catch (err) {
 			console.warn(
 				`Failed to preflight workflow status ${instanceId}:`,
@@ -389,13 +426,18 @@ export async function runDurableCascade(
 			);
 			parentPreflightStatuses.set(instanceId, null);
 		}
-	});
+    },
+  );
 
 	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
 		try {
 			agentRuntimePreflightStatuses.set(
 				agentRuntimeTargetKey(target),
-				await deps.getAgentRuntimeStatus(target.runtimeAppId, target.instanceId),
+        await deps.getAgentRuntimeStatus(
+          target.runtimeAppId,
+          target.instanceId,
+          target.runtimeSandboxName,
+        ),
 			);
 		} catch (err) {
 			console.warn(
@@ -434,9 +476,13 @@ export async function runDurableCascade(
 					target.runtimeAppId,
 					target.instanceId,
 					params.reason,
+          target.runtimeSandboxName,
 				);
 				if (result === "alreadyGone") {
-					agentRuntimeTerminations.set(agentRuntimeTargetKey(target), "alreadyGone");
+          agentRuntimeTerminations.set(
+            agentRuntimeTargetKey(target),
+            "alreadyGone",
+          );
 				}
 			},
 		);
@@ -448,7 +494,12 @@ export async function runDurableCascade(
 				if (agentRuntimeTerminations.get(key) === "alreadyGone") return;
 				const closed = await waitForDurableRuntimeClosedWithin(
 					`agent runtime graceful cancel ${target.runtimeAppId}/${target.instanceId}`,
-					() => deps.getAgentRuntimeStatus(target.runtimeAppId, target.instanceId),
+          () =>
+            deps.getAgentRuntimeStatus(
+              target.runtimeAppId,
+              target.instanceId,
+              target.runtimeSandboxName,
+            ),
 					gracefulCancellationWaitMs,
 					deps.sleep,
 				);
@@ -456,7 +507,9 @@ export async function runDurableCascade(
 			},
 		);
 		activeAgentRuntimeTargets = activeAgentRuntimeTargets.filter((target) => {
-			const termination = agentRuntimeTerminations.get(agentRuntimeTargetKey(target));
+      const termination = agentRuntimeTerminations.get(
+        agentRuntimeTargetKey(target),
+      );
 			return (
 				termination !== "alreadyGone" &&
 				termination !== "terminated" &&
@@ -465,13 +518,17 @@ export async function runDurableCascade(
 		});
 	}
 
-	await runWithConcurrency(activeAgentRuntimeTargets, concurrency, async (target) => {
+  await runWithConcurrency(
+    activeAgentRuntimeTargets,
+    concurrency,
+    async (target) => {
 		const key = agentRuntimeTargetKey(target);
 		if (gracefulAgentRuntimeAttempted) {
 			try {
 				const status = await deps.getAgentRuntimeStatus(
 					target.runtimeAppId,
 					target.instanceId,
+            target.runtimeSandboxName,
 				);
 				if (status === DURABLE_RUNTIME_MISSING_STATUS) {
 					agentRuntimeTerminations.set(key, "alreadyGone");
@@ -492,12 +549,14 @@ export async function runDurableCascade(
 			target.runtimeAppId,
 			target.instanceId,
 			params.reason,
+        target.runtimeSandboxName,
 		);
 		agentRuntimeTerminations.set(key, termination);
 		if (termination === "failed") {
 			agentRuntimeClosed = false;
 		}
-	});
+    },
+  );
 
 	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
 		const key = agentRuntimeTargetKey(target);
@@ -509,7 +568,11 @@ export async function runDurableCascade(
 		const closed =
 			termination === "alreadyGone" ||
 			termination === "closed" ||
-			(await deps.waitAgentRuntimeClosed(target.runtimeAppId, target.instanceId));
+      (await deps.waitAgentRuntimeClosed(
+        target.runtimeAppId,
+        target.instanceId,
+        target.runtimeSandboxName,
+      ));
 		if (!closed) {
 			agentRuntimeClosed = false;
 		}
@@ -568,7 +631,10 @@ export async function runDurableCascade(
 			});
 		}
 
-		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+    await runWithConcurrency(
+      activeParentInstanceIds,
+      concurrency,
+      async (instanceId) => {
 			if (gracefulParentAttempted) {
 				try {
 					const status = await deps.getParentStatus(instanceId);
@@ -587,14 +653,21 @@ export async function runDurableCascade(
 					);
 				}
 			}
-			const termination = await deps.terminateParent(instanceId, params.reason);
+        const termination = await deps.terminateParent(
+          instanceId,
+          params.reason,
+        );
 			parentTerminations.set(instanceId, termination);
 			if (termination === "failed") {
 				parentClosed = false;
 			}
-		});
+      },
+    );
 
-		await runWithConcurrency(activeParentInstanceIds, concurrency, async (instanceId) => {
+    await runWithConcurrency(
+      activeParentInstanceIds,
+      concurrency,
+      async (instanceId) => {
 			const termination = parentTerminations.get(instanceId) ?? "terminated";
 			if (termination === "failed") {
 				parentClosed = false;
@@ -607,7 +680,8 @@ export async function runDurableCascade(
 			if (!closed) {
 				parentClosed = false;
 			}
-		});
+      },
+    );
 
 		if (!parentClosed) {
 			parentClosed = true;
@@ -630,7 +704,10 @@ export async function runDurableCascade(
 					) {
 						return;
 					}
-					const termination = await deps.terminateParent(instanceId, params.reason);
+          const termination = await deps.terminateParent(
+            instanceId,
+            params.reason,
+          );
 					if (termination === "failed") {
 						parentClosed = false;
 						return;
@@ -666,11 +743,19 @@ export async function runDurableCascade(
 		await deps.sleep(params.purgeGraceMs);
 	}
 	await runWithConcurrency(agentRuntimeTargets, concurrency, async (target) => {
-		await deps.purgeAgentRuntime(target.runtimeAppId, target.instanceId);
+    await deps.purgeAgentRuntime(
+      target.runtimeAppId,
+      target.instanceId,
+      target.runtimeSandboxName,
+    );
 	});
-	await runWithConcurrency(parentInstanceIds, concurrency, async (instanceId) => {
+  await runWithConcurrency(
+    parentInstanceIds,
+    concurrency,
+    async (instanceId) => {
 		await deps.purgeParent(instanceId);
-	});
+    },
+  );
 	await deps.purgeStateRows?.(
 		parentInstanceIds,
 		agentRuntimeTargets,

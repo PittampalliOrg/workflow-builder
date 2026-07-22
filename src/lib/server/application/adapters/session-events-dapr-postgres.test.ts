@@ -83,7 +83,9 @@ function fakeFallback(): SessionEventLog {
 		getSessionEvent: vi.fn(),
 		listSessionEvents: vi.fn(),
 		claimUnraisedTeamEvents: vi.fn(async () => []),
-		unclaimSessionEvents: vi.fn(async () => {}),
+		hasUnprocessedTeamEvents: vi.fn(async () => false),
+		completeTeamEventDelivery: vi.fn(async () => 0),
+		releaseTeamEventDeliveryClaim: vi.fn(async () => 0),
 	};
 }
 
@@ -277,5 +279,84 @@ describe("DaprPostgresSessionEventLog", () => {
 		]);
 		expect(client.calls[0]?.sql).toContain("ON CONFLICT DO NOTHING");
 		expect(postAppendHook).not.toHaveBeenCalled();
+	});
+
+	it("leases the same four team origins without setting processed_at", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("session_events.claim_unraised_team_events", [
+			["evt-team-error", 7, JSON.stringify({ origin: "team-error" })],
+		]);
+		const store = new DaprPostgresSessionEventLog(fakeFallback(), client);
+
+		await expect(
+			store.claimUnraisedTeamEvents({
+				sessionId: "session-1",
+				claimToken: "claim-1",
+				staleAfterSeconds: 300,
+			}),
+		).resolves.toEqual([
+			{
+				id: "evt-team-error",
+				sequence: 7,
+				data: { origin: "team-error" },
+			},
+		]);
+		const call = client.calls[0];
+		expect(call?.sql).toContain(
+			"('teammate-message', 'team-broadcast', 'team-idle', 'team-error')",
+		);
+		expect(call?.sql).toContain("team_delivery_claim_token = $2");
+		expect(call?.sql).toContain("team_delivery_claimed_at <=");
+		expect(call?.sql).not.toContain("SET processed_at");
+		expect(call?.params).toEqual(["session-1", "claim-1", 300]);
+	});
+
+	it("completes and releases only exact claim tokens", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("session_events.complete_team_delivery", [
+			["evt-1"],
+			["evt-2"],
+		]);
+		client.queryRows.set("session_events.release_team_delivery_claim", [
+			["evt-3"],
+		]);
+		const store = new DaprPostgresSessionEventLog(fakeFallback(), client);
+
+		await expect(
+			store.completeTeamEventDelivery({
+				sessionId: "session-1",
+				claimToken: "accepted-claim",
+			}),
+		).resolves.toBe(2);
+		await expect(
+			store.releaseTeamEventDeliveryClaim({
+				sessionId: "session-1",
+				claimToken: "failed-claim",
+			}),
+		).resolves.toBe(1);
+
+		expect(client.calls[0]?.sql).toContain("SET processed_at = now()");
+		expect(client.calls[0]?.sql).toContain(
+			"team_delivery_claim_token = $2",
+		);
+		expect(client.calls[1]?.sql).not.toContain("processed_at = now()");
+		expect(client.calls[1]?.sql).toContain(
+			"team_delivery_claim_token = $2",
+		);
+	});
+
+	it("distinguishes a claimed pending mailbox from a truly empty mailbox", async () => {
+		const client = new FakeBindingClient();
+		client.queryRows.set("session_events.has_unprocessed_team_events", [[1]]);
+		const store = new DaprPostgresSessionEventLog(fakeFallback(), client);
+
+		await expect(store.hasUnprocessedTeamEvents("session-1")).resolves.toBe(true);
+		expect(client.calls[0]).toMatchObject({
+			summary: "session_events.has_unprocessed_team_events",
+			params: ["session-1"],
+			paramNames: ["session_id"],
+		});
+		expect(client.calls[0]?.sql).toContain("processed_at IS NULL");
+		expect(client.calls[0]?.sql).not.toContain("team_delivery_claim_token IS NULL");
 	});
 });

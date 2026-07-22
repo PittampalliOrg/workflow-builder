@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
 import { CliTokenError } from "$lib/server/application/cli-credentials";
+import { sessionRuntimeGenerationInstanceId } from "$lib/server/application/session-runtime-identity";
 import type {
 	AgentRuntimeSyncPort,
 	SandboxProvisioner,
@@ -10,6 +11,7 @@ import type {
 	SessionExperimentAgentStore,
 	SessionRepository,
 	SessionRepositoryMounter,
+  SessionRuntimeCleanupPort,
 	SessionSandboxDestroyer,
 	SessionWorkflowSpawner,
 	WorkspaceProjectRepository,
@@ -32,6 +34,7 @@ describe("ApplicationSessionCommandService", () => {
 	let sandboxProvisioner: SandboxProvisioner;
 	let repositoryMounter: SessionRepositoryMounter;
 	let sandboxDestroyer: SessionSandboxDestroyer;
+  let runtimeCleaner: SessionRuntimeCleanupPort;
 	let workflowSpawner: SessionWorkflowSpawner;
 	let workspaceProjects: WorkspaceProjectRepository;
 	let workflowEphemeralAgents: WorkflowEphemeralAgentStore;
@@ -70,7 +73,14 @@ describe("ApplicationSessionCommandService", () => {
 				status: "deleted" as const,
 			})),
 		};
+    runtimeCleaner = {
+      purgeRuntimeInstance: vi.fn(async () => undefined),
+    };
 		workflowSpawner = {
+      reserveSessionWorkflow: vi.fn(async () => ({
+        startedAt: new Date("2026-07-21T20:00:00.000Z"),
+      })),
+      releaseSessionWorkflow: vi.fn(async () => true),
 			spawnSessionWorkflow: vi.fn(async () => ({
 				instanceId: "session-1",
 				natsSubject: "session.events.session-1",
@@ -95,6 +105,7 @@ describe("ApplicationSessionCommandService", () => {
 			sandboxProvisioner,
 			repositoryMounter,
 			workflowSpawner,
+      runtimeCleaner,
 			workspaceProjects,
 			sandboxDestroyer,
 			workflowEphemeralAgents,
@@ -122,6 +133,9 @@ describe("ApplicationSessionCommandService", () => {
 			projectId: "project-1",
 			resumedFromSessionId: null,
 		});
+    expect(workflowSpawner.reserveSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
 			type: "user.message",
 			data: {
@@ -142,10 +156,49 @@ describe("ApplicationSessionCommandService", () => {
 		});
     expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
       "session-1",
+      expect.objectContaining({ provisioningLease: expect.any(Object) }),
     );
 		expect(result.session.workspaceSandboxName).toBe("ws-ready");
 		expect(result.session.daprInstanceId).toBe("session-1");
 	});
+
+  it("does not provision a workspace when runtime reservation loses", async () => {
+    vi.mocked(workflowSpawner.reserveSessionWorkflow).mockResolvedValueOnce(
+      null,
+    );
+
+    const result = await service.createInteractiveSession({
+      userId: "user-1",
+      projectId: "project-1",
+      body: { agentId: "agent-1" },
+    });
+
+    expect(result).toEqual({
+      status: "conflict",
+      message: "Session session-1 is stopping or terminal",
+    });
+    expect(sandboxProvisioner.provision).not.toHaveBeenCalled();
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("compensates the workspace and refuses spawn when stop wins attachment", async () => {
+    vi.mocked(sessions.attachWorkspaceSandbox).mockResolvedValueOnce(false);
+
+    const result = await service.createInteractiveSession({
+      userId: "user-1",
+      projectId: "project-1",
+      body: { agentId: "agent-1" },
+    });
+
+    expect(result).toEqual({
+      status: "conflict",
+      message: "Session session-1 stopped while its workspace was provisioning",
+    });
+    expect(sandboxDestroyer.deleteWorkspaceSandbox).toHaveBeenCalledWith(
+      "ws-ready",
+    );
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+  });
 
 	it("keeps session creation non-fatal when eager sandbox provisioning fails", async () => {
 		vi.mocked(sandboxProvisioner.provision).mockRejectedValue(
@@ -168,6 +221,7 @@ describe("ApplicationSessionCommandService", () => {
 		expect(repositoryMounter.mountSessionRepositories).not.toHaveBeenCalled();
     expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
       "session-1",
+      expect.objectContaining({ provisioningLease: expect.any(Object) }),
     );
 		expect(result.session.errorMessage).toBe(
 			"OpenShell sandbox provisioning failed: failed to decode Protobuf message",
@@ -180,6 +234,14 @@ describe("ApplicationSessionCommandService", () => {
 			daprInstanceId: "existing-instance",
 			natsSubject: "session.events.existing-instance",
 		});
+    vi.mocked(sessions.getSessionFileOwner).mockResolvedValueOnce({
+      id: "session-1",
+      userId: "user-1",
+      projectId: "project-1",
+      status: "running",
+      stopRequestedAt: null,
+      completedAt: null,
+    });
 
 		const result = await service.startSessionWorkflow({
 			sessionId: "session-1",
@@ -193,9 +255,63 @@ describe("ApplicationSessionCommandService", () => {
 			natsSubject: "session.events.existing-instance",
 			alreadyStarted: true,
 		});
+    expect(workflowSpawner.reserveSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).not.toHaveBeenCalled();
 		expect(sessions.updateSessionStatusUnlessTerminated).not.toHaveBeenCalled();
 		expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
 	});
+
+  it("rejects a published session with persisted stop intent", async () => {
+    vi.mocked(sessions.getSession).mockResolvedValue({
+      ...sampleSession(),
+      daprInstanceId: "stopping-instance",
+      natsSubject: "session.events.stopping-instance",
+    });
+    vi.mocked(sessions.getSessionFileOwner).mockResolvedValueOnce({
+      id: "session-1",
+      userId: "user-1",
+      projectId: "project-1",
+      status: "running",
+      stopRequestedAt: new Date("2026-07-21T20:00:00.000Z"),
+      completedAt: null,
+    });
+
+    await expect(
+      service.startSessionWorkflow({
+        sessionId: "session-1",
+        userId: "user-1",
+        projectId: "project-1",
+      }),
+    ).resolves.toEqual({
+      status: "failed",
+      message: "Session session-1 is stopping or terminal",
+    });
+    expect(workflowSpawner.reserveSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("rejects a terminal published session before idempotent runtime reuse", async () => {
+    vi.mocked(sessions.getSession).mockResolvedValue({
+      ...sampleSession(),
+      status: "terminated",
+      completedAt: "2026-07-21T20:00:00.000Z",
+      daprInstanceId: "dead-instance",
+      natsSubject: "session.events.dead-instance",
+    });
+
+    await expect(
+      service.startSessionWorkflow({
+        sessionId: "session-1",
+        userId: "user-1",
+        projectId: "project-1",
+      }),
+    ).resolves.toEqual({
+      status: "failed",
+      message: "Session session-1 is stopping or terminal",
+    });
+    expect(workflowSpawner.reserveSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+  });
 
 	it("starts an unstarted session through workflow spawner and status ports", async () => {
 		vi.mocked(sessions.getSession).mockResolvedValue(sampleSession());
@@ -212,6 +328,9 @@ describe("ApplicationSessionCommandService", () => {
 			natsSubject: "session.events.session-1",
 			alreadyStarted: false,
 		});
+    expect(workflowSpawner.reserveSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(sessions.updateSessionStatusUnlessTerminated).toHaveBeenCalledWith({
 			id: "session-1",
 			status: "rescheduling",
@@ -219,6 +338,7 @@ describe("ApplicationSessionCommandService", () => {
 		});
     expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
       "session-1",
+      expect.objectContaining({ provisioningLease: expect.any(Object) }),
     );
 	});
 
@@ -452,6 +572,382 @@ describe("ApplicationSessionCommandService", () => {
 		);
 	});
 
+  it("acknowledges a stopped lease only after deleting its provisioned host", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+    await expect(
+      service.compensateStoppedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-race",
+        leaseStartedAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
+      "agent-host-agent-session-race",
+    );
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      expectedStartedAt: leaseStartedAt,
+    });
+    expect(
+      vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(sessions.acknowledgeRuntimeProvisioningCompensation).mock
+        .invocationCallOrder[0],
+    );
+  });
+
+  it("preserves the lease when runtime host compensation fails", async () => {
+    vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mockResolvedValueOnce({
+      name: "agent-host-agent-session-race",
+      kind: "runtime",
+      status: "error",
+      error: "delete failed",
+    });
+
+    await expect(
+      service.compensateStoppedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-race",
+        leaseStartedAt: new Date("2026-07-21T20:00:00.000Z"),
+      }),
+    ).rejects.toThrow("delete failed");
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("deletes an unpublished runtime host before releasing an active lease", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-unpublished",
+        leaseStartedAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
+      "agent-host-agent-session-unpublished",
+    );
+    expect(workflowSpawner.releaseSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      { startedAt: leaseStartedAt },
+    );
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(workflowSpawner.releaseSessionWorkflow).mock
+        .invocationCallOrder[0],
+    );
+  });
+
+  it("purges the exact unpublished generation after its provisioning lease is lost", async () => {
+    const leaseStartedAt = new Date("2026-07-21T19:00:00.000Z");
+    const instanceId = sessionRuntimeGenerationInstanceId(
+      "session-1",
+      leaseStartedAt,
+    )!;
+    vi.mocked(sessions.canReleaseRuntimeProvisioning).mockResolvedValueOnce(
+      false,
+    );
+    vi.mocked(sessions.canCompensateRuntimeProvisioning).mockResolvedValueOnce(
+      false,
+    );
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-new-owner",
+        leaseStartedAt,
+        durableInstance: {
+          runtimeAppId: "agent-session-new-owner",
+          instanceId,
+          runtimeSandboxName: "agent-host-agent-session-new-owner",
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(runtimeCleaner.purgeRuntimeInstance).toHaveBeenCalledWith({
+      runtimeAppId: "agent-session-new-owner",
+      instanceId,
+      runtimeSandboxName: "agent-host-agent-session-new-owner",
+    });
+    expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).not.toHaveBeenCalled();
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("does not purge an exact generation that was published despite an attach error", async () => {
+    const leaseStartedAt = new Date("2026-07-21T19:00:00.000Z");
+    const instanceId = sessionRuntimeGenerationInstanceId(
+      "session-1",
+      leaseStartedAt,
+    )!;
+    vi.mocked(sessions.canReleaseRuntimeProvisioning).mockResolvedValueOnce(
+      false,
+    );
+    vi.mocked(sessions.canCompensateRuntimeProvisioning).mockResolvedValueOnce(
+      false,
+    );
+    vi.mocked(sessions.getSession).mockResolvedValueOnce({
+      ...sampleSession(),
+      daprInstanceId: instanceId,
+      runtimeAppId: "agent-runtime-pool-coding",
+    });
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: null,
+        leaseStartedAt,
+        durableInstance: {
+          runtimeAppId: "agent-runtime-pool-coding",
+          instanceId,
+          runtimeSandboxName: null,
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(runtimeCleaner.purgeRuntimeInstance).not.toHaveBeenCalled();
+    expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalled();
+  });
+
+  it("rejects cleanup metadata that is not bound to the provisioning generation", async () => {
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: null,
+        leaseStartedAt: new Date("2026-07-21T19:00:00.000Z"),
+        durableInstance: {
+          runtimeAppId: "agent-runtime-pool-coding",
+          instanceId: "session-1",
+          runtimeSandboxName: null,
+        },
+      }),
+    ).rejects.toThrow("Refusing cleanup for non-generation runtime instance");
+
+    expect(runtimeCleaner.purgeRuntimeInstance).not.toHaveBeenCalled();
+  });
+
+  it("purges an accepted durable instance before deleting its unpublished host", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+    const durableInstance = {
+      runtimeAppId: "agent-session-unpublished",
+      instanceId: sessionRuntimeGenerationInstanceId(
+        "session-1",
+        leaseStartedAt,
+      )!,
+      runtimeSandboxName: "agent-host-agent-session-unpublished",
+    };
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-unpublished",
+        leaseStartedAt,
+        durableInstance,
+      }),
+    ).resolves.toBe(true);
+
+    expect(runtimeCleaner.purgeRuntimeInstance).toHaveBeenCalledWith(
+      durableInstance,
+    );
+    expect(
+      vi.mocked(runtimeCleaner.purgeRuntimeInstance).mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mock
+        .invocationCallOrder[0],
+    );
+    expect(
+      vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(workflowSpawner.releaseSessionWorkflow).mock
+        .invocationCallOrder[0],
+    );
+  });
+
+  it("acknowledges the exact stopped lease after unpublished host cleanup", async () => {
+    vi.mocked(workflowSpawner.releaseSessionWorkflow).mockResolvedValueOnce(
+      false,
+    );
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: null,
+        leaseStartedAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalled();
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      expectedStartedAt: leaseStartedAt,
+    });
+  });
+
+  it("deletes an activated child host before acknowledging its parent-stopped lease", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+    vi.mocked(sessions.canReleaseRuntimeProvisioning).mockResolvedValueOnce(
+      false,
+    );
+    vi.mocked(sessions.canCompensateRuntimeProvisioning).mockResolvedValueOnce(
+      true,
+    );
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "child-session",
+        sandboxName: "agent-host-activated-child",
+        leaseStartedAt,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
+      "agent-host-activated-child",
+    );
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).toHaveBeenCalledWith({
+      sessionId: "child-session",
+      expectedStartedAt: leaseStartedAt,
+    });
+    expect(
+      vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(sessions.acknowledgeRuntimeProvisioningCompensation).mock
+        .invocationCallOrder[0],
+    );
+  });
+
+  it("purges an unpublished shared-pool instance without deleting the shared host", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+    const durableInstance = {
+      runtimeAppId: "agent-runtime-pool-coding",
+      instanceId: sessionRuntimeGenerationInstanceId(
+        "session-1",
+        leaseStartedAt,
+      )!,
+      runtimeSandboxName: null,
+    };
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: null,
+        leaseStartedAt,
+        durableInstance,
+      }),
+    ).resolves.toBe(true);
+
+    expect(runtimeCleaner.purgeRuntimeInstance).toHaveBeenCalledWith(
+      durableInstance,
+    );
+    expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      { startedAt: leaseStartedAt },
+    );
+  });
+
+  it("cleans retry side effects while preserving the exact active staged lease", async () => {
+    const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
+    const durableInstance = {
+      runtimeAppId: "agent-session-unpublished",
+      instanceId: sessionRuntimeGenerationInstanceId(
+        "session-1",
+        leaseStartedAt,
+      )!,
+      runtimeSandboxName: "agent-host-agent-session-unpublished",
+    };
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-unpublished",
+        leaseStartedAt,
+        durableInstance,
+        preserveActiveLease: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(runtimeCleaner.purgeRuntimeInstance).toHaveBeenCalledWith(
+      durableInstance,
+    );
+    expect(sandboxDestroyer.deleteRuntimeSandbox).toHaveBeenCalledWith(
+      "agent-host-agent-session-unpublished",
+    );
+    expect(workflowSpawner.releaseSessionWorkflow).not.toHaveBeenCalled();
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unpublished lease fenced when host deletion fails", async () => {
+    vi.mocked(sandboxDestroyer.deleteRuntimeSandbox).mockResolvedValueOnce({
+      name: "agent-host-agent-session-unpublished",
+      kind: "runtime",
+      status: "error",
+      error: "delete failed",
+    });
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-unpublished",
+        leaseStartedAt: new Date("2026-07-21T20:00:00.000Z"),
+      }),
+    ).rejects.toThrow("delete failed");
+    expect(workflowSpawner.releaseSessionWorkflow).not.toHaveBeenCalled();
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("keeps the host and lease fenced when durable instance purge fails", async () => {
+    vi.mocked(runtimeCleaner.purgeRuntimeInstance).mockRejectedValueOnce(
+      new Error("runtime purge failed"),
+    );
+
+    await expect(
+      service.cleanupUnpublishedRuntimeProvisioning({
+        sessionId: "session-1",
+        sandboxName: "agent-host-agent-session-unpublished",
+        leaseStartedAt: new Date("2026-07-21T20:00:00.000Z"),
+        durableInstance: {
+          runtimeAppId: "agent-session-unpublished",
+          instanceId: sessionRuntimeGenerationInstanceId(
+            "session-1",
+            new Date("2026-07-21T20:00:00.000Z"),
+          )!,
+          runtimeSandboxName: "agent-host-agent-session-unpublished",
+        },
+      }),
+    ).rejects.toThrow("runtime purge failed");
+    expect(sandboxDestroyer.deleteRuntimeSandbox).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).not.toHaveBeenCalled();
+    expect(
+      sessions.acknowledgeRuntimeProvisioningCompensation,
+    ).not.toHaveBeenCalled();
+  });
+
 	it("appends workflow swap degradation events through the event-log port", async () => {
 		await service.appendWorkflowSessionSwapDegradedEvent({
 			sessionId: "session-1",
@@ -653,7 +1149,11 @@ describe("ApplicationSessionCommandService", () => {
 	});
 
 	it("short-circuits duplicate agent-trigger sessions", async () => {
-		vi.mocked(sessions.getSession).mockResolvedValueOnce(sampleSession());
+    vi.mocked(sessions.getSession).mockResolvedValueOnce({
+      ...sampleSession(),
+      daprInstanceId: "session-1",
+      runtimeAppId: "agent-session-1",
+    });
 
 		const result = await service.dispatchAgentTrigger({
 			body: agentTriggerBody(),
@@ -692,16 +1192,21 @@ describe("ApplicationSessionCommandService", () => {
 				projectId: "project-1",
 			}),
 		);
+    expect(workflowSpawner.reserveSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
 		expect(sessionEvents.appendSessionEvent).toHaveBeenCalledWith("session-1", {
 			type: "user.message",
 			data: {
 				type: "user.message",
 				content: [{ type: "text", text: "Draft the update" }],
 			},
+      sourceEventId: "agent-trigger:source:event:1",
 			processedAt: null,
 		});
 		expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
 			"session-1",
+      expect.objectContaining({ provisioningLease: expect.any(Object) }),
 		);
 		expect(result).toEqual({
 			status: "ack",
@@ -711,7 +1216,46 @@ describe("ApplicationSessionCommandService", () => {
 		});
 	});
 
-	it("keeps agent-trigger spawn failures ack-safe", async () => {
+  it("redrives an existing trigger row that has no positive dispatch evidence", async () => {
+    vi.mocked(sessions.getSession).mockResolvedValueOnce(sampleSession());
+
+    const result = await service.dispatchAgentTrigger({
+      body: agentTriggerBody(),
+    });
+
+    expect(sessions.createSession).not.toHaveBeenCalled();
+    expect(workflowSpawner.reserveSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+    );
+    expect(workflowSpawner.spawnSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({ provisioningLease: expect.any(Object) }),
+    );
+    expect(result).toMatchObject({ status: "ack", outcome: "started" });
+  });
+
+  it("releases the trigger lease when event persistence fails before spawn", async () => {
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    vi.mocked(sessionEvents.appendSessionEvent).mockRejectedValueOnce(
+      new Error("event write failed"),
+    );
+
+    const result = await service.dispatchAgentTrigger({
+      body: agentTriggerBody(),
+    });
+
+    expect(result).toMatchObject({ status: "retry", outcome: "failed" });
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      { startedAt: new Date("2026-07-21T20:00:00.000Z") },
+    );
+    error.mockRestore();
+  });
+
+  it("requests bounded redelivery when agent-trigger spawn fails", async () => {
     const error = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -724,7 +1268,7 @@ describe("ApplicationSessionCommandService", () => {
 		});
 
 		expect(result).toEqual({
-			status: "ack",
+      status: "retry",
 			outcome: "failed",
 			message: "spawn failed",
 		});
@@ -734,6 +1278,48 @@ describe("ApplicationSessionCommandService", () => {
 		);
 		error.mockRestore();
 	});
+
+  it("releases an explicit-start lease when status preparation fails", async () => {
+    vi.mocked(sessions.getSession).mockResolvedValueOnce(sampleSession());
+    vi.mocked(
+      sessions.updateSessionStatusUnlessTerminated,
+    ).mockRejectedValueOnce(new Error("status write failed"));
+
+    const result = await service.startSessionWorkflow({
+      sessionId: "session-1",
+      userId: "user-1",
+      projectId: "project-1",
+    });
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      { startedAt: new Date("2026-07-21T20:00:00.000Z") },
+    );
+  });
+
+  it("releases an interactive-session lease when pre-spawn agent resolution fails", async () => {
+    vi.mocked(sessionAgents.resolveSessionAgent).mockRejectedValueOnce(
+      new Error("agent lookup failed"),
+    );
+
+    const result = await service.createInteractiveSession({
+      userId: "user-1",
+      projectId: "project-1",
+      body: { agentId: "agent-1" },
+    });
+
+    expect(result).toEqual({
+      status: "invalid",
+      message: "agent lookup failed",
+    });
+    expect(workflowSpawner.spawnSessionWorkflow).not.toHaveBeenCalled();
+    expect(workflowSpawner.releaseSessionWorkflow).toHaveBeenCalledWith(
+      "session-1",
+      { startedAt: new Date("2026-07-21T20:00:00.000Z") },
+    );
+  });
 
 	it("rejects invalid session resource payloads before touching persistence", async () => {
 		const result = await service.addSessionResource({
@@ -792,13 +1378,28 @@ function fakeSessions(): SessionRepository {
 			mountedAt: null,
 			removedAt: null,
 		})),
-		attachWorkspaceSandbox: vi.fn(async () => undefined),
+    attachWorkspaceSandbox: vi.fn(async () => true),
 		recordSandboxProvisioningError: vi.fn(async () => undefined),
 		removeSessionResource: vi.fn(async () => false),
 		getSessionProvisioningContext: vi.fn(async () => null),
 		getSessionContextUsage: vi.fn(async () => null),
 		getSessionOwnerUserId: vi.fn(async () => null),
-		attachSessionRuntime: vi.fn(async () => undefined),
+    reserveSessionRuntimeProvisioning: vi.fn(async () => ({
+      startedAt: new Date("2026-07-21T20:00:00.000Z"),
+    })),
+    stageSessionRuntimeProvisioning: vi.fn(async () => true),
+    listStaleSessionRuntimeProvisioningTargets: vi.fn(async () => []),
+    attachStagedSessionRuntimeProvisioning: vi.fn(async () => true),
+    inspectSessionRuntimeHostRecovery: vi.fn(async () => null),
+    beginSessionRuntimeHostRecovery: vi.fn(async () => null),
+    completeSessionRuntimeHostRecovery: vi.fn(
+      async () => "superseded" as const,
+    ),
+    acknowledgeRuntimeProvisioningCompensation: vi.fn(async () => true),
+    canCompensateRuntimeProvisioning: vi.fn(async () => true),
+    canReleaseRuntimeProvisioning: vi.fn(async () => true),
+    releaseSessionRuntimeProvisioning: vi.fn(async () => true),
+    attachSessionRuntime: vi.fn(async () => true),
 		getSessionRuntimeTarget: vi.fn(async () => null),
 		getSessionRuntimeDebugTarget: vi.fn(async () => null),
 		getBrowserSessionTarget: vi.fn(async () => null),
@@ -807,8 +1408,10 @@ function fakeSessions(): SessionRepository {
 		listWorkflowExecutionSessionRuntimes: vi.fn(async () => []),
 		listSandboxSessionOwners: vi.fn(async () => []),
 		getWorkflowEnsureSession: vi.fn(async () => null),
-		createWorkflowEnsureSession: vi.fn(async () => undefined),
-		updateWorkflowEnsureSessionRuntime: vi.fn(async () => undefined),
+    createWorkflowEnsureSession: vi.fn(async () => ({
+      startedAt: new Date("2026-07-21T20:00:00.000Z"),
+    })),
+    updateWorkflowEnsureSessionRuntime: vi.fn(async () => true),
 		listReapableWorkflowSessionRuntimeHosts: vi.fn(async () => []),
 		createSessionFork: vi.fn(async () => ({ id: "fork-1" })),
 		getPeerSession: vi.fn(async () => null),
@@ -848,7 +1451,9 @@ function fakeSessionEvents(): SessionEventLog {
 		getSessionEvent: vi.fn(async () => null),
 		listSessionEvents: vi.fn(async () => []),
 		claimUnraisedTeamEvents: vi.fn(async () => []),
-		unclaimSessionEvents: vi.fn(async () => {}),
+    hasUnprocessedTeamEvents: vi.fn(async () => false),
+    completeTeamEventDelivery: vi.fn(async () => 0),
+    releaseTeamEventDeliveryClaim: vi.fn(async () => 0),
 	};
 }
 
@@ -1028,6 +1633,7 @@ describe("ApplicationSessionCommandService.getSessionListPage", () => {
 			sandboxProvisioner: {} as SandboxProvisioner,
 			repositoryMounter: {} as SessionRepositoryMounter,
 			workflowSpawner: {} as SessionWorkflowSpawner,
+      runtimeCleaner: {} as SessionRuntimeCleanupPort,
 			devSessionWorkflows: { findProjectWorkflowIdByIdOrNamePrefix },
 		});
 		return { service, listSessions, findProjectWorkflowIdByIdOrNamePrefix };

@@ -3,13 +3,20 @@ predicates, and the team_ops 4xx-vs-5xx error classification."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 import activities.team_ops as team_ops
+from activities.team_ops import _TEAM_OP_ATTEMPT_HTTP_BUDGET_SECONDS
 from activities.script_call_journal import record_script_call_result
-from workflows.script_agent_dispatch import start_team_call, TEAM_JOIN_WORKFLOW_NAME
+from workflows.dynamic_script_workflow import _team_auto_shutdown
+from workflows.script_agent_dispatch import (
+    _TEAM_OP_RETRY_POLICY,
+    start_team_call,
+    TEAM_JOIN_WORKFLOW_NAME,
+)
 from workflows.team_join_workflow import _predicate_satisfied
 
 
@@ -76,7 +83,49 @@ def test_simple_ops_dispatch_as_activity_tasks(op):
     assert call["input"]["teamName"] == "demo"
     # Transport/5xx raises out of execute_team_op MUST be retried — one BFF
     # blip must not throw into the script (dev regression 2026-07-10).
-    assert call["retry_policy"] is not None
+    assert call["retry_policy"] is _TEAM_OP_RETRY_POLICY
+
+
+def test_team_op_retry_policy_has_dedicated_convergence_horizon():
+    policy = _TEAM_OP_RETRY_POLICY
+    assert policy.first_retry_interval == timedelta(seconds=2)
+    assert policy.max_number_of_attempts == 20
+    assert policy.backoff_coefficient == 2
+    assert policy.max_retry_interval == timedelta(seconds=60)
+
+    retry_delays = policy.max_number_of_attempts - 1
+    interval_seconds = policy.first_retry_interval.total_seconds()
+    max_interval_seconds = policy.max_retry_interval.total_seconds()
+    horizon_seconds = 0
+    for _ in range(retry_delays):
+        horizon_seconds += min(interval_seconds, max_interval_seconds)
+        interval_seconds *= policy.backoff_coefficient
+
+    assert horizon_seconds == 902
+    effective_horizon_seconds = (
+        policy.max_number_of_attempts * _TEAM_OP_ATTEMPT_HTTP_BUDGET_SECONDS
+        + horizon_seconds
+    )
+    assert effective_horizon_seconds == 2_102  # 35m02s including request time
+
+
+def test_terminal_auto_shutdown_uses_team_op_retry_policy():
+    ctx = RoutingCtx()
+    cleanup = _team_auto_shutdown(ctx, "e1", True, {"traceId": "trace-1"})
+
+    scheduled = next(cleanup)
+
+    assert scheduled is not None
+    assert len(ctx.activity_calls) == 1
+    call = ctx.activity_calls[0]
+    assert call["fn"] == "execute_team_op"
+    assert call["input"] == {
+        "executionId": "e1",
+        "op": "shutdown",
+        "args": {},
+        "_otel": {"traceId": "trace-1"},
+    }
+    assert call["retry_policy"] is _TEAM_OP_RETRY_POLICY
 
 
 def test_meta_team_token_budget_flows_to_ops_and_join():
@@ -327,6 +376,285 @@ def test_execute_team_op_5xx_raises_for_activity_retry(monkeypatch):
         team_ops.execute_team_op(None, {"executionId": "e1", "op": "status", "args": {}})
 
 
+def test_ensure_script_team_5xx_raises_for_activity_retry(monkeypatch):
+    monkeypatch.setattr(
+        team_ops,
+        "_request",
+        lambda *args, **kwargs: (503, {"message": "team service unavailable"}),
+    )
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="team service unavailable"):
+        team_ops.execute_team_op(
+            None, {"executionId": "e1", "op": "status", "args": {}}
+        )
+
+
+def test_ensure_script_team_4xx_is_deterministic_failure(monkeypatch):
+    monkeypatch.setattr(
+        team_ops,
+        "_request",
+        lambda *args, **kwargs: (404, {"message": "execution not found"}),
+    )
+
+    assert team_ops.execute_team_op(
+        None, {"executionId": "e1", "op": "status", "args": {}}
+    ) == {"success": False, "error": "execution not found"}
+
+
+def test_spawn_accepted_202_raises_for_activity_retry(monkeypatch):
+    def fake_request(method, url, **kwargs):
+        if url.endswith("/ensure-script-team"):
+            return FakeResponse(200, {"teamId": "team-e1", "leadSessionId": "lead-e1"})
+        return FakeResponse(
+            202,
+            {
+                "ok": True,
+                "spawn": {"sessionId": "tm-team-e1-worker", "pending": True},
+            },
+        )
+
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    monkeypatch.setattr(team_ops.requests, "request", fake_request)
+
+    with pytest.raises(
+        team_ops.TeamOpsApiError, match="team spawn accepted but not confirmed"
+    ):
+        team_ops.execute_team_op(
+            None,
+            {
+                "executionId": "e1",
+                "op": "spawn",
+                "args": {"agent": "worker", "name": "worker", "prompt": "work"},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (202, {"ok": False, "state": "stopping", "stop": {"confirmed": False}}),
+        (200, {"ok": True, "stop": {"confirmed": False, "state": "stopping"}}),
+        (200, {"ok": False, "state": "confirmed"}),
+        (
+            200,
+            {
+                "ok": True,
+                "state": "confirmed",
+                "stop": {"confirmed": False, "state": "stopping"},
+            },
+        ),
+        (
+            200,
+            {
+                "ok": True,
+                "state": "stopping",
+                "stop": {"confirmed": True, "state": "confirmed"},
+            },
+        ),
+        (200, {"ok": True, "state": "confirmed", "stop": {"confirmed": True}}),
+    ],
+)
+def test_shutdown_partial_2xx_raises_for_activity_retry(monkeypatch, status, body):
+    def fake_request(method, url, **kwargs):
+        if url.endswith("/ensure-script-team"):
+            return FakeResponse(200, {"teamId": "team-e1", "leadSessionId": "lead-e1"})
+        return FakeResponse(status, body)
+
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    monkeypatch.setattr(team_ops.requests, "request", fake_request)
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="accepted but not confirmed"):
+        team_ops.execute_team_op(
+            None,
+            {"executionId": "e1", "op": "shutdown", "args": {"name": "worker"}},
+        )
+
+
+def test_shutdown_accepts_only_positive_terminal_evidence(monkeypatch):
+    responses = iter(
+        [
+            (200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}),
+            (
+                200,
+                {
+                    "ok": True,
+                    "state": "confirmed",
+                    "stop": {"confirmed": True, "state": "confirmed"},
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(team_ops, "_request", lambda *args, **kwargs: next(responses))
+
+    out = team_ops.execute_team_op(
+        None,
+        {"executionId": "e1", "op": "shutdown", "args": {"name": "worker"}},
+    )
+
+    assert out["success"] is True
+    assert out["result"]["state"] == "confirmed"
+
+
+def test_shutdown_replay_accepts_explicit_already_terminal_evidence(monkeypatch):
+    responses = iter(
+        [
+            (200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}),
+            (
+                200,
+                {
+                    "ok": True,
+                    "state": "confirmed",
+                    "terminalEvidence": "member_already_terminal",
+                },
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(team_ops, "_request", lambda *args, **kwargs: next(responses))
+
+    out = team_ops.execute_team_op(
+        None,
+        {"executionId": "e1", "op": "shutdown", "args": {"name": "worker"}},
+    )
+
+    assert out["success"] is True
+    assert out["result"]["terminalEvidence"] == "member_already_terminal"
+
+
+def test_shutdown_all_preserves_partial_members_as_retryable(monkeypatch):
+    calls: list[str] = []
+
+    def fake_request(method, path, json_body=None, **kwargs):
+        calls.append(path)
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        if method == "GET":
+            return 200, {
+                "members": [
+                    {"name": "lead", "role": "lead", "status": "working"},
+                    {"name": "done", "role": "member", "status": "working"},
+                    {"name": "slow", "role": "member", "status": "working"},
+                ]
+            }
+        if json_body["name"] == "done":
+            return 200, {"ok": True, "state": "confirmed"}
+        return 202, {"ok": False, "state": "stopping"}
+
+    monkeypatch.setattr(team_ops, "_request", fake_request)
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="state=stopping"):
+        team_ops.execute_team_op(
+            None, {"executionId": "e1", "op": "shutdown", "args": {}}
+        )
+
+    assert calls[-2:] == [
+        "/api/internal/team/team-e1/shutdown",
+        "/api/internal/team/team-e1/shutdown",
+    ]
+
+
+def test_shutdown_all_succeeds_only_when_every_member_is_confirmed(monkeypatch):
+    shutdown_names: list[str] = []
+
+    def fake_request(method, path, json_body=None, **kwargs):
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        if method == "GET":
+            return 200, {
+                "members": [
+                    {"name": "done", "role": "member", "status": "shutdown"},
+                    {"name": "worker", "role": "member", "status": "working"},
+                ]
+            }
+        shutdown_names.append(json_body["name"])
+        return 200, {"ok": True, "state": "confirmed"}
+
+    monkeypatch.setattr(team_ops, "_request", fake_request)
+
+    out = team_ops.execute_team_op(
+        None, {"executionId": "e1", "op": "shutdown", "args": {}}
+    )
+
+    assert out["success"] is True
+    assert out["result"] == {
+        "ok": True,
+        "state": "confirmed",
+        "shutdown": ["done", "worker"],
+    }
+    assert shutdown_names == ["done", "worker"]
+
+
+def test_shutdown_all_does_not_hide_member_not_found(monkeypatch):
+    def fake_request(method, path, json_body=None, **kwargs):
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        if method == "GET":
+            return 200, {
+                "members": [{"name": "gone", "role": "member", "status": "working"}]
+            }
+        return 404, {"message": "durable run for teammate 'gone' was not found"}
+
+    monkeypatch.setattr(team_ops, "_request", fake_request)
+
+    out = team_ops.execute_team_op(
+        None, {"executionId": "e1", "op": "shutdown", "args": {}}
+    )
+
+    assert out == {
+        "success": False,
+        "error": "durable run for teammate 'gone' was not found",
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"ok": True},
+        {"members": "not-a-list"},
+        {"members": [None]},
+        {"members": [{"role": "member"}]},
+        {"members": [{"name": "worker"}]},
+    ],
+)
+def test_shutdown_all_malformed_team_status_is_retriable(monkeypatch, body):
+    def fake_request(method, path, json_body=None, **kwargs):
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        return 200, body
+
+    monkeypatch.setattr(team_ops, "_request", fake_request)
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="malformed"):
+        team_ops.execute_team_op(
+            None, {"executionId": "e1", "op": "shutdown", "args": {}}
+        )
+
+
+def test_shutdown_all_rejects_contradictory_member_confirmation(monkeypatch):
+    def fake_request(method, path, json_body=None, **kwargs):
+        if path.endswith("ensure-script-team"):
+            return 200, {"teamId": "team-e1", "leadSessionId": "lead-e1"}
+        if method == "GET":
+            return 200, {
+                "members": [
+                    {"name": "worker", "role": "member", "status": "working"}
+                ]
+            }
+        return 200, {
+            "ok": True,
+            "state": "confirmed",
+            "stop": {"confirmed": False, "state": "stopping"},
+        }
+
+    monkeypatch.setattr(team_ops, "_request", fake_request)
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="state=stopping"):
+        team_ops.execute_team_op(
+            None, {"executionId": "e1", "op": "shutdown", "args": {}}
+        )
+
+
 def test_execute_team_op_success_carries_team_identity(monkeypatch):
     calls: list[dict[str, Any]] = []
 
@@ -365,7 +693,7 @@ def test_team_api_uses_direct_service_and_dedicated_timeout(monkeypatch):
     # Workflow-data keeps its short Dapr deadline; team spawn must not inherit it.
     monkeypatch.setenv("WORKFLOW_DATA_API_TRANSPORT", "dapr")
     monkeypatch.setenv("WORKFLOW_DATA_API_TIMEOUT_SECONDS", "2")
-    # 900s host-ready contract plus 30s for BFF and transport overhead.
+    # A long override cannot invalidate the bounded durable retry horizon.
     monkeypatch.setenv("TEAM_API_TIMEOUT_SECONDS", "930")
     monkeypatch.setattr(team_ops.requests, "request", fake_request)
 
@@ -378,7 +706,28 @@ def test_team_api_uses_direct_service_and_dedicated_timeout(monkeypatch):
         "http://workflow-builder.internal:3000/api/internal/team/ensure-script-team",
         "http://workflow-builder.internal:3000/api/internal/team/team-e1",
     ]
-    assert all(kwargs["timeout"] == 930.0 for _, kwargs in calls)
+    assert all(kwargs["timeout"] <= 30.0 for _, kwargs in calls)
+
+
+def test_team_api_attempt_budget_caps_shutdown_fanout(monkeypatch):
+    now = 1_000.0
+    time_calls = iter([now, now, now + 29.0, now + 59.95])
+    monkeypatch.setattr(team_ops.time, "monotonic", lambda: next(time_calls))
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "t")
+    monkeypatch.setattr(
+        team_ops.requests,
+        "request",
+        lambda *args, **kwargs: FakeResponse(200, {"ok": True}),
+    )
+
+    @team_ops._bounded_http_attempt
+    def make_three_requests():
+        team_ops._request("GET", "/first")
+        team_ops._request("GET", "/second")
+        team_ops._request("GET", "/third")
+
+    with pytest.raises(team_ops.TeamOpsApiError, match="HTTP budget exhausted"):
+        make_three_requests()
 
 
 # ── Stage-1 UI data: rail labels + spawn sessionId backfill ───────────────

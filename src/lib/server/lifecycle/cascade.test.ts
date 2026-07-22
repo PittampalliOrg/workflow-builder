@@ -12,7 +12,9 @@ import {
 	shouldForceFinalizeCrossAppWedge,
 } from "./cascade";
 
-function makeDeps(overrides: Partial<DurableCascadeDeps> = {}): DurableCascadeDeps {
+function makeDeps(
+  overrides: Partial<DurableCascadeDeps> = {},
+): DurableCascadeDeps {
 	return {
 		getParentStatus: vi.fn(async () => "RUNNING"),
 		terminateParent: vi.fn(async () => "terminated" as const),
@@ -42,7 +44,13 @@ describe("pure helpers", () => {
 	});
 
 	it("isTerminalDurableRuntimeStatus matches terminal states case-insensitively", () => {
-		for (const s of ["COMPLETED", "failed", "Terminated", "CANCELLED", "canceled"]) {
+    for (const s of [
+      "COMPLETED",
+      "failed",
+      "Terminated",
+      "CANCELLED",
+      "canceled",
+    ]) {
 			expect(isTerminalDurableRuntimeStatus(s)).toBe(true);
 		}
 		for (const s of ["RUNNING", "PENDING", "SUSPENDED", "", null, undefined]) {
@@ -51,11 +59,15 @@ describe("pure helpers", () => {
 	});
 
 	it("durableRuntimeStatusFromBody unwraps nested status shapes", () => {
-		expect(durableRuntimeStatusFromBody({ runtimeStatus: "RUNNING" })).toBe("RUNNING");
-		expect(durableRuntimeStatusFromBody({ runtime_status: "FAILED" })).toBe("FAILED");
-		expect(durableRuntimeStatusFromBody({ status: { runtimeStatus: "COMPLETED" } })).toBe(
-			"COMPLETED",
+    expect(durableRuntimeStatusFromBody({ runtimeStatus: "RUNNING" })).toBe(
+      "RUNNING",
 		);
+    expect(durableRuntimeStatusFromBody({ runtime_status: "FAILED" })).toBe(
+      "FAILED",
+    );
+    expect(
+      durableRuntimeStatusFromBody({ status: { runtimeStatus: "COMPLETED" } }),
+    ).toBe("COMPLETED");
 		expect(durableRuntimeStatusFromBody(null)).toBeNull();
 	});
 
@@ -63,12 +75,20 @@ describe("pure helpers", () => {
 		expect(
 			dedupeAgentRuntimeTargets([
 				{ runtimeAppId: "a", instanceId: "1" },
-				{ runtimeAppId: "a", instanceId: "1" },
+        {
+          runtimeAppId: "a",
+          instanceId: "1",
+          runtimeSandboxName: "agent-host-a",
+        },
 				{ runtimeAppId: " ", instanceId: "1" },
 				{ runtimeAppId: "a", instanceId: "2" },
 			]),
 		).toEqual([
-			{ runtimeAppId: "a", instanceId: "1" },
+      {
+        runtimeAppId: "a",
+        instanceId: "1",
+        runtimeSandboxName: "agent-host-a",
+      },
 			{ runtimeAppId: "a", instanceId: "2" },
 		]);
 	});
@@ -88,28 +108,63 @@ describe("daprStateKeyMatchPattern (GAP-4: boundary-anchored, no sibling over-de
 
 	it("matches wfstate history + metadata keys for the exact instance", () => {
 		const id = "sw-x-exec-ABC";
-		expect(matches("workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC||history-15", id)).toBe(true);
-		expect(matches("workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC", id)).toBe(true);
+    expect(
+      matches(
+        "workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC||history-15",
+        id,
+      ),
+    ).toBe(true);
+    expect(
+      matches(
+        "workflow-orchestrator||dapr.internal.x.workflow||sw-x-exec-ABC",
+        id,
+      ),
+    ).toBe(true);
 	});
 
 	it("matches __turn__ sub-instances of a run instance", () => {
 		const id = "sw-x-exec-ABC__durable__node__run__0";
-		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__0__turn__1||history-2", id)).toBe(true);
+    expect(
+      matches(
+        "agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__0__turn__1||history-2",
+        id,
+      ),
+    ).toBe(true);
 	});
 
 	it("matches agent_py_state _workflow_ keys (lowercased id)", () => {
 		const id = "sw-x-exec-ABC__durable__node__run__0";
-		expect(matches("dapr-agent-py||dapr-agent-py:_workflow_sw-x-exec-abc__durable__node__run__0", id)).toBe(true);
+    expect(
+      matches(
+        "dapr-agent-py||dapr-agent-py:_workflow_sw-x-exec-abc__durable__node__run__0",
+        id,
+      ),
+    ).toBe(true);
 	});
 
 	it("does NOT match a sibling whose index is a prefix superset", () => {
 		const id = "sw-x-exec-ABC__durable__node__run__1";
-		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__10__turn__1||history-2", id)).toBe(false);
-		expect(matches("agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__11", id)).toBe(false);
+    expect(
+      matches(
+        "agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__10__turn__1||history-2",
+        id,
+      ),
+    ).toBe(false);
+    expect(
+      matches(
+        "agent-session-1||x.workflow||sw-x-exec-ABC__durable__node__run__11",
+        id,
+      ),
+    ).toBe(false);
 	});
 
 	it("does NOT match a different instance", () => {
-		expect(matches("workflow-orchestrator||x.workflow||sw-x-exec-XYZ||history-1", "sw-x-exec-ABC")).toBe(false);
+    expect(
+      matches(
+        "workflow-orchestrator||x.workflow||sw-x-exec-XYZ||history-1",
+        "sw-x-exec-ABC",
+      ),
+    ).toBe(false);
 	});
 });
 
@@ -144,7 +199,9 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 	});
 
 	it("does not fire when no stop was requested", () => {
-		expect(shouldForceFinalizeCrossAppWedge({ ...base, stopRequestedAt: null })).toBe(false);
+    expect(
+      shouldForceFinalizeCrossAppWedge({ ...base, stopRequestedAt: null }),
+    ).toBe(false);
 	});
 
 	// --- Core child-evidence matrix (the fix) ----------------------------------
@@ -215,7 +272,11 @@ describe("shouldForceFinalizeCrossAppWedge", () => {
 		// A still-booting sandbox that merely 404s has no DB-terminal child → no node
 		// listed → no cross-app wedge to clean up.
 		expect(
-			shouldForceFinalizeCrossAppWedge({ ...base, terminatedChildNodes: [], activeChildNodes: [] }),
+      shouldForceFinalizeCrossAppWedge({
+        ...base,
+        terminatedChildNodes: [],
+        activeChildNodes: [],
+      }),
 		).toBe(false);
 	});
 
@@ -276,7 +337,13 @@ describe("runDurableCascade", () => {
 		const deps = makeDeps();
 		const result = await runDurableCascade({
 			parentInstanceIds: ["p1"],
-			agentRuntimeTargets: [{ runtimeAppId: "app", instanceId: "i1" }],
+      agentRuntimeTargets: [
+        {
+          runtimeAppId: "app",
+          instanceId: "i1",
+          runtimeSandboxName: "agent-host-app",
+        },
+      ],
 			reason: "test",
 			purge: true,
 			purgeGraceMs: 0,
@@ -284,9 +351,18 @@ describe("runDurableCascade", () => {
 		});
 		expect(result.allClosed).toBe(true);
 		expect(deps.terminateParent).toHaveBeenCalledWith("p1", "test");
-		expect(deps.terminateAgentRuntime).toHaveBeenCalledWith("app", "i1", "test");
+    expect(deps.terminateAgentRuntime).toHaveBeenCalledWith(
+      "app",
+      "i1",
+      "test",
+      "agent-host-app",
+    );
 		expect(deps.purgeParent).toHaveBeenCalledWith("p1");
-		expect(deps.purgeAgentRuntime).toHaveBeenCalledWith("app", "i1");
+    expect(deps.purgeAgentRuntime).toHaveBeenCalledWith(
+      "app",
+      "i1",
+      "agent-host-app",
+    );
 		expect(deps.purgeStateRows).toHaveBeenCalledTimes(1);
 	});
 

@@ -9,22 +9,38 @@
  * read from env with safe defaults (`DRY_RUN` defaults ON).
  */
 import { timingSafeEqual } from "node:crypto";
+import { asc, isNotNull } from "drizzle-orm";
 import { env } from "$env/dynamic/private";
 import { readAdapter, readFlag } from "$lib/server/application/config";
-import { createDaprCascadeDeps } from "$lib/server/application/adapters/lifecycle-cascade";
-import { CurrentSessionRepository } from "$lib/server/application/adapters/sessions";
+import { db as defaultDb } from "$lib/server/db";
+import { workflowExecutions } from "$lib/server/db/schema";
+import {
+  createDaprCascadeDeps,
+  DaprSessionRuntimeCleanupAdapter,
+  DaprSessionRuntimeInspectionAdapter,
+} from "$lib/server/application/adapters/lifecycle-cascade";
+import {
+  CurrentSessionRepository,
+  KubernetesSessionSandboxDestroyer,
+  LifecycleSessionController,
+} from "$lib/server/application/adapters/sessions";
+import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
 import { resolveAgentRef } from "$lib/server/application/adapters/agent-registry";
 import { appendSessionEvent } from "$lib/server/application/adapters/session-events";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
 import {
 	confirmDurableStop,
 	convergeCrashedSession,
+  stopDurableRun,
 } from "$lib/server/lifecycle";
 import {
 	DURABLE_RUNTIME_MISSING_STATUS,
 	isTerminalDurableRuntimeStatus,
 } from "$lib/server/lifecycle/cascade";
-import { agentTargetForSession } from "$lib/server/lifecycle/resolvers";
+import {
+  agentTargetForSession,
+  normalizeDurableStopMode,
+} from "$lib/server/lifecycle/resolvers";
 import {
 	reconcileSessions,
 	type ReconcileEvidenceState,
@@ -32,6 +48,21 @@ import {
 	type ReconcileRunResult,
 	type ReconcileSessionsDeps,
 } from "$lib/server/lifecycle/session-reconciler";
+import {
+  reconcileStaleSessionRuntimeProvisioning,
+  type SessionRuntimeProvisioningReconcileResult,
+  type SessionRuntimeProvisioningReconcilerDeps,
+} from "$lib/server/application/session-runtime-provisioning-reconciler";
+import {
+  reconcileWorkflowStops,
+  type WorkflowStopReconcileResult,
+  type WorkflowStopReconcilerDeps,
+} from "$lib/server/lifecycle/workflow-stop-reconciler";
+import {
+  reconcileTeamMemberLaunches,
+  type TeamMemberLaunchReconcileRunResult,
+  type TeamMemberLaunchReconcilerDeps,
+} from "$lib/server/application/team-member-launch-reconciler";
 import { maybeAutoResumeSession } from "$lib/server/lifecycle/auto-resume";
 import {
 	deleteSessionRuntimeExitedPods,
@@ -42,10 +73,16 @@ import { countEventsByType } from "$lib/server/application/adapters/session-even
 import { daprFetch, getDaprSidecarUrl } from "$lib/server/dapr-client";
 import { cleanupSessionSandbox } from "$lib/server/sandboxes/provision";
 import { isInteractiveCliRuntime } from "$lib/server/sessions/resume";
-import { spawnSessionWorkflow } from "$lib/server/sessions/spawn";
+import {
+  ensurePublishedSessionWorkflowHost,
+  spawnSessionWorkflow,
+} from "$lib/server/sessions/spawn";
+import { createSessionRuntimeProvisioningReplacement } from "$lib/server/application/adapters/session-runtime-generation";
 import type { LivenessReconcileCandidateRecord } from "$lib/server/application/ports";
 
 export type ReconcilerTickMode = "dapr-job" | "cronjob" | "off";
+
+type Database = typeof defaultDb;
 
 export type ReconcilerConfig = {
 	enabled: boolean;
@@ -58,9 +95,17 @@ export type ReconcilerConfig = {
 	tick: ReconcilerTickMode;
 	/** Stranded-host rescue attempts allowed per session (0 disables rescue). */
 	maxRescuesPerSession: number;
+  /** Age at which a non-working teammate launch enters bounded reconciliation. */
+  teamMemberLaunchStaleSeconds: number;
+  /** Age at which a staged-but-unpublished exact runtime is inspected. */
+  runtimeProvisioningStaleSeconds: number;
 };
 
-const TICK_MODES: readonly ReconcilerTickMode[] = ["dapr-job", "cronjob", "off"];
+const TICK_MODES: readonly ReconcilerTickMode[] = [
+  "dapr-job",
+  "cronjob",
+  "off",
+];
 
 function readEnv(name: string): string {
 	return (env[name] ?? process.env[name] ?? "").trim();
@@ -68,25 +113,89 @@ function readEnv(name: string): string {
 
 // Clamped-int env reader — the one shape config.ts's readFlag/readAdapter (reused
 // below) don't cover (envSeconds in lifecycle/index.ts is MS-scaled + private).
-function readInt(name: string, fallback: number, min: number, max: number): number {
+function readInt(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
 	const n = Number.parseInt(readEnv(name), 10);
 	const v = Number.isFinite(n) ? n : fallback;
 	return Math.max(min, Math.min(max, v));
 }
 
 export function readReconcilerConfig(): ReconcilerConfig {
-	const maxActionsPerRun = readInt("SESSION_RECONCILER_MAX_ACTIONS_PER_RUN", 10, 1, 1000);
+  const maxActionsPerRun = readInt(
+    "SESSION_RECONCILER_MAX_ACTIONS_PER_RUN",
+    10,
+    1,
+    1000,
+  );
 	return {
 		enabled: readFlag(env, "SESSION_RECONCILER_ENABLED", true),
 		dryRun: readFlag(env, "SESSION_RECONCILER_DRY_RUN", true),
-		minAgeSeconds: readInt("SESSION_RECONCILER_MIN_AGE_SECONDS", 300, 30, 86_400),
-		silentWarnSeconds: readInt("SESSION_RECONCILER_SILENT_WARN_SECONDS", 900, 30, 86_400),
+    minAgeSeconds: readInt(
+      "SESSION_RECONCILER_MIN_AGE_SECONDS",
+      300,
+      30,
+      86_400,
+    ),
+    silentWarnSeconds: readInt(
+      "SESSION_RECONCILER_SILENT_WARN_SECONDS",
+      900,
+      30,
+      86_400,
+    ),
 		autoResume: readFlag(env, "SESSION_RECONCILER_AUTO_RESUME", false),
 		maxActionsPerRun,
 		// Scan more than we'll act on so a run drains the backlog over ticks.
 		scanLimit: Math.max(50, Math.min(200, maxActionsPerRun * 5)),
 		tick: readAdapter(env, "SESSION_RECONCILER_TICK", "dapr-job", TICK_MODES),
 		maxRescuesPerSession: readInt("SESSION_RECONCILER_MAX_RESCUES", 3, 0, 20),
+    teamMemberLaunchStaleSeconds: readInt(
+      "TEAM_MEMBER_LAUNCH_STALE_SECONDS",
+      60,
+      30,
+      3_600,
+    ),
+    runtimeProvisioningStaleSeconds: readInt(
+      "SESSION_RUNTIME_PROVISIONING_STALE_SECONDS",
+      600,
+      30,
+      3_600,
+    ),
+  };
+}
+
+export function createSessionRuntimeProvisioningReconcilerDeps(): SessionRuntimeProvisioningReconcilerDeps {
+  return {
+    store: new CurrentSessionRepository(),
+    runtimeInspector: new DaprSessionRuntimeInspectionAdapter(),
+    runtimeCleaner: new DaprSessionRuntimeCleanupAdapter(),
+    sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+    runtimeHostEnsurer: {
+      ensurePublished: async (target) => {
+        await ensurePublishedSessionWorkflowHost(target);
+      },
+    },
+    generationFactory: {
+      createReplacement: createSessionRuntimeProvisioningReplacement,
+    },
+    redriveSession: async (target) =>
+      spawnSessionWorkflow(target.sessionId, {
+        provisioningLease: { startedAt: target.startedAt },
+        preserveStagedLeaseOnFailure: true,
+        stagedRuntimeTarget: target,
+      }),
+    now: () => Date.now(),
+  };
+}
+
+export function createTeamMemberLaunchReconcilerDeps(): TeamMemberLaunchReconcilerDeps {
+  return {
+    teams: new PostgresTeamStore(),
+    lifecycle: new LifecycleSessionController(),
+    now: () => Date.now(),
 	};
 }
 
@@ -94,9 +203,12 @@ function classifyDaprStatus(raw: unknown): {
 	runtime: ReconcileEvidenceState;
 	terminal: boolean;
 } {
-	if (raw === DURABLE_RUNTIME_MISSING_STATUS) return { runtime: "absent", terminal: false };
-	if (raw === null || raw === undefined) return { runtime: "unknown", terminal: false };
-	if (isTerminalDurableRuntimeStatus(raw)) return { runtime: "present", terminal: true };
+  if (raw === DURABLE_RUNTIME_MISSING_STATUS)
+    return { runtime: "absent", terminal: false };
+  if (raw === null || raw === undefined)
+    return { runtime: "unknown", terminal: false };
+  if (isTerminalDurableRuntimeStatus(raw))
+    return { runtime: "present", terminal: true };
 	return { runtime: "present", terminal: false };
 }
 
@@ -108,7 +220,10 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 	// the agent's autoResume policy allows — maybeAutoResumeSession gates both).
 	const autoResumeDeps = {
 		resolveAgent: async (ref: { id: string; version?: number }) => {
-			const resolved = await resolveAgentRef({ id: ref.id, version: ref.version });
+      const resolved = await resolveAgentRef({
+        id: ref.id,
+        version: ref.version,
+      });
 			if (!resolved) return null;
 			return {
 				runtime: String(resolved.runtime),
@@ -136,11 +251,13 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 			});
 			return { id: created.id };
 		},
-		spawnSessionWorkflow: (sessionId: string) => spawnSessionWorkflow(sessionId),
+    spawnSessionWorkflow: (sessionId: string) =>
+      spawnSessionWorkflow(sessionId),
 	};
 
 	return {
-		listCandidates: (input) => sessionRepo.listLivenessReconcileCandidates(input),
+    listCandidates: (input) =>
+      sessionRepo.listLivenessReconcileCandidates(input),
 		isCliFamily: (agentRuntime) =>
 			isInteractiveCliRuntime(getRuntimeDescriptor(agentRuntime ?? "")),
 		probeDaprRuntime: async (cand) => {
@@ -157,6 +274,7 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 				const raw = await cascadeDeps.getAgentRuntimeStatus(
 					target.runtimeAppId,
 					target.instanceId,
+          target.runtimeSandboxName,
 				);
 				return classifyDaprStatus(raw);
 			} catch {
@@ -165,7 +283,13 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 			}
 		},
 		probeSandboxCr: async (cand) => {
-			const name = (cand.runtimeSandboxName ?? "").trim();
+      const target = agentTargetForSession({
+        id: cand.id,
+        daprInstanceId: cand.daprInstanceId,
+        runtimeAppId: cand.runtimeAppId,
+        runtimeSandboxName: cand.runtimeSandboxName,
+      });
+      const name = (target?.runtimeSandboxName ?? "").trim();
 			// No CR name ⇒ we can't prove the CR is gone → unknown (never converge on
 			// it). A genuinely never-provisioned row (no name AND no app-id) is caught
 			// by the pure decider's never_provisioned branch before any probe.
@@ -195,7 +319,9 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 			// Delete only EXITED pods; the Sandbox controller (CR still present,
 			// spec.replicas=1) recreates the host and the durabletask worker resumes
 			// the session's durable workflow via replay. Verified live 2026-07-07.
-			const deleted = await deleteSessionRuntimeExitedPods({ runtimeAppId: appId });
+      const deleted = await deleteSessionRuntimeExitedPods({
+        runtimeAppId: appId,
+      });
 			// Per-attempt idempotent marker — this is what countRescueAttempts counts,
 			// so retried ticks with an unchanged attempt index never double-count.
 			await appendSessionEvent(cand.id, {
@@ -229,11 +355,24 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 				sourceEventId: `reconciler:${sessionId}:${data.action}:${episode}`,
 			});
 		},
+    redriveStop: async (sessionId, mode) => {
+      await stopDurableRun(
+        { kind: "session", id: sessionId },
+        {
+          mode,
+          reason: "Persisted stop intent re-driven by session reconciler",
+          graceMs: 0,
+        },
+      );
+    },
 		confirmStop: async (sessionId) => {
 			await confirmDurableStop({ kind: "session", id: sessionId });
 		},
 		convergeCrashed: async (sessionId, reason) => {
-			await convergeCrashedSession({ kind: "session", id: sessionId }, { reason });
+      await convergeCrashedSession(
+        { kind: "session", id: sessionId },
+        { reason },
+      );
 		},
 		cleanupWorkspace: async (cand) => {
 			await cleanupSessionSandbox(cand.daprInstanceId ?? cand.id);
@@ -252,6 +391,42 @@ export function createSessionReconcilerDeps(): ReconcileSessionsDeps {
 				autoResumeDeps,
 			),
 	};
+}
+
+export function createWorkflowStopReconcilerDeps(
+  database: Database = defaultDb,
+): WorkflowStopReconcilerDeps {
+  return {
+    listCandidates: async ({ limit }) => {
+      if (!database) throw new Error("Database not configured");
+      const rows = await database
+        .select({
+          id: workflowExecutions.id,
+          mode: workflowExecutions.stopRequestedMode,
+        })
+        .from(workflowExecutions)
+        .where(isNotNull(workflowExecutions.stopRequestedAt))
+        .orderBy(asc(workflowExecutions.stopRequestedAt))
+        .limit(Math.max(1, Math.min(Math.trunc(limit || 20), 200)));
+      return rows.map((row) => ({
+        id: row.id,
+        mode: normalizeDurableStopMode(row.mode),
+      }));
+    },
+    redriveStop: async (id, mode) => {
+      const result = await stopDurableRun(
+        { kind: "workflowExecution", id },
+        {
+          mode,
+          reason: "Persisted stop intent re-driven by workflow reconciler",
+          graceMs: 0,
+        },
+      );
+      if (!result.requested || result.retryable) {
+        throw new Error(`workflow stop redrive did not persist for ${id}`);
+      }
+    },
+  };
 }
 
 export const RECONCILER_JOB_NAME = "session-liveness-reconcile";
@@ -292,13 +467,16 @@ export async function scheduleSessionReconcilerJob(): Promise<void> {
 	const spacingMs = 20_000;
 	for (let attempt = 1; attempt <= attempts; attempt++) {
 		try {
-			const res = await daprFetch(`${getDaprSidecarUrl()}/v1.0/jobs/${RECONCILER_JOB_NAME}`, {
+      const res = await daprFetch(
+        `${getDaprSidecarUrl()}/v1.0/jobs/${RECONCILER_JOB_NAME}`,
+        {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body,
 				maxRetries: 0,
 				signal: AbortSignal.timeout(5_000),
-			});
+        },
+      );
 			if (res.ok) {
 				console.log(
 					`[session-reconciler] scheduled Dapr Job '${RECONCILER_JOB_NAME}' (@every 10m)`,
@@ -346,7 +524,12 @@ export function authenticateReconcilerJobPayload(body: unknown): boolean {
 	return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export type RunSessionReconcileResult = ReconcileRunResult & { skipped?: string };
+export type RunSessionReconcileResult = ReconcileRunResult & {
+  workflowStops: WorkflowStopReconcileResult;
+  teamMemberLaunches: TeamMemberLaunchReconcileRunResult;
+  runtimeProvisioning: SessionRuntimeProvisioningReconcileResult;
+  skipped?: string;
+};
 
 /**
  * The single reconcile entry both tick surfaces call. Reads env config, applies
@@ -358,7 +541,26 @@ export async function runSessionReconcile(
 ): Promise<RunSessionReconcileResult> {
 	const cfg = readReconcilerConfig();
 	if (!cfg.enabled) {
-		return { scanned: 0, decisions: [], actionsTaken: 0, dryRun: true, skipped: "disabled" };
+    return {
+      scanned: 0,
+      decisions: [],
+      actionsTaken: 0,
+      dryRun: true,
+      workflowStops: { scanned: 0, redriven: [], failed: [], dryRun: true },
+      teamMemberLaunches: {
+        scanned: 0,
+        actionsTaken: 0,
+        dryRun: true,
+        decisions: [],
+      },
+      runtimeProvisioning: {
+        scanned: 0,
+        actionsTaken: 0,
+        dryRun: true,
+        decisions: [],
+      },
+      skipped: "disabled",
+    };
 	}
 	const opts: ReconcileOptions = {
 		dryRun: overrides.dryRun ?? cfg.dryRun,
@@ -369,5 +571,40 @@ export async function runSessionReconcile(
 		autoResume: cfg.autoResume,
 		maxRescuesPerSession: cfg.maxRescuesPerSession,
 	};
-	return reconcileSessions(createSessionReconcilerDeps(), opts);
+  // Parent stop intents run first. Their resolver atomically propagates intent to
+  // child sessions; the following session scan then sees the post-redrive state
+  // instead of issuing duplicate control from a stale snapshot.
+  const workflowStops = await reconcileWorkflowStops(
+    createWorkflowStopReconcilerDeps(),
+    {
+      dryRun: opts.dryRun,
+      limit: opts.limit,
+      maxActionsPerRun: opts.maxActionsPerRun,
+    },
+  );
+  const runtimeProvisioning = await reconcileStaleSessionRuntimeProvisioning(
+    createSessionRuntimeProvisioningReconcilerDeps(),
+    {
+      dryRun: opts.dryRun,
+      limit: opts.limit,
+      maxActionsPerRun: opts.maxActionsPerRun,
+      staleSeconds: cfg.runtimeProvisioningStaleSeconds,
+    },
+  );
+  const teamMemberLaunches = await reconcileTeamMemberLaunches(
+    createTeamMemberLaunchReconcilerDeps(),
+    {
+      dryRun: opts.dryRun,
+      limit: opts.limit,
+      maxActionsPerRun: opts.maxActionsPerRun,
+      staleSeconds: cfg.teamMemberLaunchStaleSeconds,
+    },
+  );
+  const sessions = await reconcileSessions(createSessionReconcilerDeps(), opts);
+  return {
+    ...sessions,
+    workflowStops,
+    teamMemberLaunches,
+    runtimeProvisioning,
+  };
 }

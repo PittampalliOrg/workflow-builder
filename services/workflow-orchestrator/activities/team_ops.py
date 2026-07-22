@@ -16,11 +16,16 @@ the evaluator's team-call resolution):
     failures (unknown agent slug, unknown teammate name, no project) must NOT
     retry.
   • transport / 5xx   -> raise — the activity retry policy retries.
+  • shutdown 202 or a partial 2xx -> raise — accepted is not terminal; retry
+    until the BFF confirms the durable run closed.
 """
 
 from __future__ import annotations
 
 import os
+import time
+from contextvars import ContextVar
+from functools import wraps
 from typing import Any
 from urllib.parse import quote
 
@@ -31,13 +36,49 @@ class TeamOpsApiError(RuntimeError):
     """Transport-level failure talking to the BFF team API (retriable)."""
 
 
+_TEAM_API_MAX_REQUEST_TIMEOUT_SECONDS = 30.0
+_TEAM_OP_ATTEMPT_HTTP_BUDGET_SECONDS = 60.0
+_team_op_attempt_deadline: ContextVar[float | None] = ContextVar(
+    "team_op_attempt_deadline",
+    default=None,
+)
+
+
 def _timeout_seconds() -> float:
-    # The BFF may spend up to 900s admitting a per-session agent host. Keep a
-    # finite extra 30s for its surrounding sandbox, persistence, and HTTP work.
+    # Retry lifecycle convergence durably instead of holding an orchestrator
+    # worker on one request. The env knob may shorten, but never extend, this
+    # deadline because it is part of the activity's tested wall-time budget.
     try:
-        return max(0.1, float(os.environ.get("TEAM_API_TIMEOUT_SECONDS", "930")))
+        configured = float(os.environ.get("TEAM_API_TIMEOUT_SECONDS", "30"))
     except ValueError:
-        return 930.0
+        configured = _TEAM_API_MAX_REQUEST_TIMEOUT_SECONDS
+    timeout = min(
+        max(0.1, configured),
+        _TEAM_API_MAX_REQUEST_TIMEOUT_SECONDS,
+    )
+    deadline = _team_op_attempt_deadline.get()
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining < 0.1:
+        raise TeamOpsApiError("team API activity attempt HTTP budget exhausted")
+    return min(timeout, remaining)
+
+
+def _bounded_http_attempt(fn):
+    """Cap all HTTP calls made by one activity attempt, including shutdown-all."""
+
+    @wraps(fn)
+    def bounded(*args, **kwargs):
+        token = _team_op_attempt_deadline.set(
+            time.monotonic() + _TEAM_OP_ATTEMPT_HTTP_BUDGET_SECONDS
+        )
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _team_op_attempt_deadline.reset(token)
+
+    return bounded
 
 
 def _direct_base_url() -> str:
@@ -101,6 +142,33 @@ def _client_error_message(status: int, body: Any) -> str:
     return f"team API returned HTTP {status}"
 
 
+def _shutdown_confirmed(status: int, body: Any) -> bool:
+    """Require positive, internally consistent terminal evidence."""
+    if (
+        not 200 <= status < 300
+        or not isinstance(body, dict)
+        or body.get("ok") is not True
+    ):
+        return False
+    top_state = body.get("state")
+    top_confirmed = top_state == "confirmed"
+    if top_state is not None and not top_confirmed:
+        return False
+
+    nested_present = "stop" in body
+    stop = body.get("stop")
+    nested_confirmed = (
+        isinstance(stop, dict)
+        and stop.get("confirmed") is True
+        and stop.get("state") == "confirmed"
+    )
+    # A present nested lifecycle result is part of the evidence contract. It
+    # may not contradict (or only partially support) the top-level claim.
+    if nested_present and not nested_confirmed:
+        return False
+    return top_confirmed or nested_confirmed
+
+
 def _ensure_script_team(
     execution_id: str,
     name: str | None,
@@ -118,6 +186,8 @@ def _ensure_script_team(
             **({"tokenBudget": token_budget} if token_budget else {}),
         },
     )
+    if status >= 500:
+        raise TeamOpsApiError(_client_error_message(status, body))
     if status >= 400:
         # Deterministic (unknown execution / no project) — surface to the script.
         return {"success": False, "error": _client_error_message(status, body)}
@@ -200,31 +270,61 @@ def _op_request(
                 {"requestedBySessionId": lead_session_id, "name": name},
                 acting_session_id=lead_session_id,
             )
-        # No name → shut down every member (run-terminal cleanup). Best-effort
-        # per member; report the members targeted.
+        # No name → shut down every member (run-terminal cleanup). Preserve a
+        # partial result as 202 so the activity retry policy can finish the set.
         status, body = _request("GET", base, acting_session_id=lead_session_id)
         if status >= 400:
             return status, body
         members = body.get("members") if isinstance(body, dict) else None
-        targeted: list[str] = []
-        for member in members or []:
+        if not isinstance(members, list):
+            raise TeamOpsApiError(
+                "team shutdown status response was malformed (members must be a list)"
+            )
+        confirmed: list[str] = []
+        stopping: list[str] = []
+        for member in members:
+            if not isinstance(member, dict):
+                raise TeamOpsApiError(
+                    "team shutdown status response was malformed (member must be an object)"
+                )
             m_name = member.get("name")
             role = member.get("role")
-            m_status = member.get("status")
-            if role == "lead" or m_status == "shutdown" or not m_name:
+            if not isinstance(m_name, str) or not m_name.strip():
+                raise TeamOpsApiError(
+                    "team shutdown status response was malformed (member name is required)"
+                )
+            if not isinstance(role, str) or not role.strip():
+                raise TeamOpsApiError(
+                    f"team shutdown status response was malformed (role missing for {m_name})"
+                )
+            # A mixed-version BFF may have written `shutdown` before durable
+            # confirmation. Re-check every non-lead member idempotently.
+            if role == "lead":
                 continue
-            s, _ = _request(
+            s, shutdown_body = _request(
                 "POST",
                 f"{base}/shutdown",
                 {"requestedBySessionId": lead_session_id, "name": m_name},
                 acting_session_id=lead_session_id,
             )
-            if s < 400:
-                targeted.append(m_name)
-        return 200, {"ok": True, "shutdown": targeted}
+            if s >= 400:
+                return s, shutdown_body
+            if _shutdown_confirmed(s, shutdown_body):
+                confirmed.append(m_name)
+            else:
+                stopping.append(m_name)
+        if stopping:
+            return 202, {
+                "ok": False,
+                "state": "stopping",
+                "shutdown": confirmed,
+                "stopping": stopping,
+            }
+        return 200, {"ok": True, "state": "confirmed", "shutdown": confirmed}
     return 400, {"error": f"unknown team op '{op}'"}
 
 
+@_bounded_http_attempt
 def execute_team_op(ctx, input_data: dict) -> dict:
     """Dapr activity: run one script `team.*` op. See module docstring for the
     error contract. Input: {executionId, op, args?, teamName?, teamTokenBudget?}."""
@@ -245,8 +345,22 @@ def execute_team_op(ctx, input_data: dict) -> dict:
     lead_session_id = ensured["leadSessionId"]
 
     status, body = _op_request(op, team_id, lead_session_id, args)
+    if status >= 500:
+        raise TeamOpsApiError(_client_error_message(status, body))
     if status >= 400:
         return {"success": False, "error": _client_error_message(status, body)}
+    if status == 202:
+        state = body.get("state") if isinstance(body, dict) else None
+        raise TeamOpsApiError(
+            f"team {op} accepted but not confirmed"
+            + (f" (state={state})" if state else "")
+        )
+    if op == "shutdown" and not _shutdown_confirmed(status, body):
+        state = body.get("state") if isinstance(body, dict) else None
+        raise TeamOpsApiError(
+            "team shutdown accepted but not confirmed"
+            + (f" (state={state})" if state else "")
+        )
     return {
         "success": True,
         "result": body if isinstance(body, (dict, list)) else {"raw": body},
@@ -255,6 +369,7 @@ def execute_team_op(ctx, input_data: dict) -> dict:
     }
 
 
+@_bounded_http_attempt
 def get_team_state(ctx, input_data: dict) -> dict:
     """Dapr activity: the team view for the join predicate loop. Ensures the
     team first so join-before-spawn never 404s. Input: {executionId}."""

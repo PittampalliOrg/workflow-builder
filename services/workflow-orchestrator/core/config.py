@@ -53,6 +53,10 @@ class OrchestratorConfig:
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     WORKSPACE_RUNTIME_APP_ID: str = "workspace-runtime"
     WORKSPACE_RUNTIME_URL: str = ""
+    # Optional provider-owned retained-workspace lifecycle endpoint. Empty keeps
+    # retention arming disabled; it must never inherit the legacy workspace
+    # runtime transport because that service does not own Agent Sandbox CRs.
+    WORKSPACE_RETENTION_URL: str = ""
     DAPR_AGENT_PY_APP_ID: str = "dapr-agent-py"
     DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     DAPR_AGENT_PY_JUICEFS_APP_ID: str = "dapr-agent-py-juicefs"
@@ -110,6 +114,7 @@ class OrchestratorConfig:
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
                 "WORKSPACE_RUNTIME_APP_ID",
+                "WORKSPACE_RETENTION_URL",
                 "DAPR_AGENT_PY_APP_ID",
                 "DAPR_AGENT_PY_TESTING_APP_ID",
                 "DAPR_AGENT_PY_JUICEFS_APP_ID",
@@ -179,6 +184,7 @@ class OrchestratorConfig:
                 "workspace-runtime",
             ),
             "WORKSPACE_RUNTIME_URL": ("WORKSPACE_RUNTIME_URL", ""),
+            "WORKSPACE_RETENTION_URL": ("WORKSPACE_RETENTION_URL", ""),
             "DAPR_AGENT_PY_APP_ID": ("DAPR_AGENT_PY_APP_ID", "dapr-agent-py"),
             "DAPR_AGENT_PY_TESTING_APP_ID": (
                 "DAPR_AGENT_PY_TESTING_APP_ID",
