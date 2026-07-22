@@ -49,3 +49,4 @@ export * from "./ports/workflows";
 export * from "./ports/workflow-mcp-auth";
 export * from "./ports/workflow-diagnostics";
 export * from "./ports/workflow-target-auth";
+export * from "./ports/workspace-retention";

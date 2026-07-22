@@ -970,14 +970,18 @@
 				const res = await fetch(`/api/v1/sessions/${sessionId}/stop/status`);
 				if (!res.ok) break;
 				const b = (await res.json().catch(() => ({}))) as { state?: string };
-				if (b?.state === 'confirmed' || b?.state === 'notFound') break;
+				if (b?.state === 'confirmed' || b?.state === 'notFound') {
+					await initialLoad();
+					await checkSandboxLiveness();
+					break;
+				}
 			} catch {
 				/* transient — keep polling */
 			}
 		}
 		stopConverging = false;
 	}
-	async function stopRun(mode: 'purge' | 'reset') {
+	async function stopRun(mode: 'terminate' | 'reset') {
 		if (!session || stopBusy || stopConverging) return;
 		const label = mode === 'reset' ? 'Stop & reset' : 'Stop';
 		if (
@@ -1012,6 +1016,9 @@
 				void pollStopStatus();
 			} else if (!res.ok) {
 				errorMessage = b?.message ?? `${label} did not confirm (${res.status})`;
+			} else {
+				await initialLoad();
+				await checkSandboxLiveness();
 			}
 		} finally {
 			stopBusy = false;
@@ -1326,7 +1333,7 @@
 							</DropdownMenu.Item>
 						{/if}
 						<DropdownMenu.Item
-							onSelect={() => stopRun('purge')}
+							onSelect={() => stopRun('terminate')}
 							disabled={session?.status === 'terminated' || stopBusy || stopConverging}
 							class="text-destructive focus:text-destructive"
 						>

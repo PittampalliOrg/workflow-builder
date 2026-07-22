@@ -43,9 +43,7 @@ export class ApplicationSessionLifecycleService {
 	getSessionCoordinatorOwner(
 		sessionId: string,
 	): Promise<SessionCoordinatorOwner | null> {
-		return this.deps.lifecycle
-			.getCoordinatorOwner(sessionId)
-			.catch(() => null);
+    return this.deps.lifecycle.getCoordinatorOwner(sessionId).catch(() => null);
 	}
 
 	async pauseSession(
@@ -133,7 +131,9 @@ export class ApplicationSessionLifecycleService {
 		if (access.status !== "ok") return access;
 
 		const mode = parseStopMode(input.body.mode);
-		const owner = await this.deps.lifecycle.getCoordinatorOwner(input.sessionId);
+    const owner = await this.deps.lifecycle.getCoordinatorOwner(
+      input.sessionId,
+    );
 		if (owner) {
 			return {
 				status: "ok",
@@ -152,7 +152,9 @@ export class ApplicationSessionLifecycleService {
 		}
 
 		if (mode === "interrupt") {
-			await this.deps.lifecycle.pauseSessionGoal(input.sessionId).catch(() => {});
+      await this.deps.lifecycle
+        .pauseSessionGoal(input.sessionId)
+        .catch(() => {});
 		}
 
 		const result = await this.deps.lifecycle.stopSession(input.sessionId, {
@@ -163,9 +165,19 @@ export class ApplicationSessionLifecycleService {
 				typeof input.body.graceMs === "number" ? input.body.graceMs : undefined,
 		});
 		if (result.notFound) return sessionNotFound();
+    if (result.retryable && !result.requested) {
+      return {
+        status: "unavailable",
+        message: "Stop intent could not be persisted - please retry.",
+      };
+    }
 
 		const httpStatus =
-			result.state === "confirmed" ? 200 : result.state === "stopping" ? 202 : 409;
+      result.state === "confirmed"
+        ? 200
+        : result.state === "stopping"
+          ? 202
+          : 409;
 		return {
 			status: "ok",
 			httpStatus,
@@ -179,7 +191,9 @@ export class ApplicationSessionLifecycleService {
 		const access = await this.requireSessionAccess(input);
 		if (access.status !== "ok") return access;
 
-		const result = await this.deps.lifecycle.confirmSessionStop(input.sessionId);
+    const result = await this.deps.lifecycle.confirmSessionStop(
+      input.sessionId,
+    );
 		return { status: "ok", body: { state: result.state } };
 	}
 
@@ -222,7 +236,8 @@ export class ApplicationSessionLifecycleService {
 }
 
 function parseStopMode(value: unknown): SessionLifecycleStopMode {
-	return typeof value === "string" && STOP_MODES.has(value as SessionLifecycleStopMode)
+  return typeof value === "string" &&
+    STOP_MODES.has(value as SessionLifecycleStopMode)
 		? (value as SessionLifecycleStopMode)
 		: "terminate";
 }

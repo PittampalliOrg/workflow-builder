@@ -47,7 +47,9 @@ describe("ApplicationInternalGoalControlService", () => {
 			getSessionEvent: vi.fn(async () => null),
 			listSessionEvents: vi.fn(async () => []),
 			claimUnraisedTeamEvents: vi.fn(async () => []),
-			unclaimSessionEvents: vi.fn(async () => {}),
+				hasUnprocessedTeamEvents: vi.fn(async () => false),
+				completeTeamEventDelivery: vi.fn(async () => 0),
+				releaseTeamEventDeliveryClaim: vi.fn(async () => 0),
 		};
 		rejectionIds = {
 			nextGoalRejectionSourceEventId: vi.fn(

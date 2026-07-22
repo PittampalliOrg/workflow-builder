@@ -15,6 +15,7 @@
 import { env } from "$env/dynamic/private";
 import { createDaprCascadeDeps } from "$lib/server/application/adapters/lifecycle-cascade";
 import { resolveDurableTarget } from "$lib/server/application/adapters/lifecycle-resolver";
+import { configuredWorkspaceRetentionPort } from "$lib/server/application/adapters/workspace-retention-http";
 import { deleteKubernetesSandbox } from "$lib/server/kube/client";
 import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
@@ -25,9 +26,12 @@ import {
 	shouldForceFinalizeCrossAppWedge,
 } from "./cascade";
 import {
+  type DurableStopMode,
 	type DurableRunTarget,
 	type DurableTargetScope,
 	type FinalizeOutcome,
+  normalizeDurableStopMode,
+  type PersistedStopIntent,
 } from "./resolvers";
 
 export type { DurableRunTarget, DurableTargetScope } from "./resolvers";
@@ -100,7 +104,12 @@ export type StopDurableRunResult = {
 // blocked in a long activity (terminate applies only when the activity yields), so
 // operators can widen it; the persisted stop-intent + explicit stop/status
 // confirmation path converge the tail.
-function envSeconds(name: string, fallbackS: number, minS: number, maxS: number): number {
+function envSeconds(
+  name: string,
+  fallbackS: number,
+  minS: number,
+  maxS: number,
+): number {
 	const raw = env[name] ?? process.env[name];
 	const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
 	const s = Number.isFinite(n) ? n : fallbackS;
@@ -109,8 +118,14 @@ function envSeconds(name: string, fallbackS: number, minS: number, maxS: number)
 const cascadeDeps = createDaprCascadeDeps({
 	waitMs: envSeconds("LIFECYCLE_CASCADE_WAIT_SECONDS", 90, 5, 1800),
 	waitPollMs: envSeconds("LIFECYCLE_CASCADE_POLL_SECONDS", 1, 1, 30),
-	requestTimeoutMs: envSeconds("LIFECYCLE_CASCADE_REQUEST_TIMEOUT_SECONDS", 20, 1, 120),
+  requestTimeoutMs: envSeconds(
+    "LIFECYCLE_CASCADE_REQUEST_TIMEOUT_SECONDS",
+    20,
+    1,
+    120,
+  ),
 });
+const workspaceRetention = configuredWorkspaceRetentionPort();
 
 // Grace before confirmDurableStop force-finalizes the cross-app child wedge.
 // The SW-interpreter parent runs a `durable/run` step via
@@ -131,6 +146,170 @@ const WEDGE_FINALIZE_GRACE_MS = envSeconds(
 	30,
 	1800,
 );
+
+// A stop can race eager per-session host provisioning. The provisioner persists
+// an independent lease before external creation; the resolver keeps the old
+// authoritative target and also derives the deterministic prospective host.
+// Each child lease gets its own bounded grace. A dead provisioner therefore
+// expires from the time it started, rather than making a later stop wait again.
+const PROVISIONING_STOP_GRACE_MS = envSeconds(
+  "LIFECYCLE_PROVISIONING_STOP_GRACE_SECONDS",
+  600,
+  5,
+  1800,
+);
+
+function unresolvedLinkageBlocks(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+  requestedAt: Date | null,
+): boolean {
+  if (resolved.unresolvedRuntimeLinkages.length === 0) return false;
+  const leaseBySession = new Map(
+    resolved.runtimeProvisioningLeases.map((lease) => [
+      lease.sessionId,
+      lease.startedAt,
+    ]),
+  );
+  return resolved.unresolvedRuntimeLinkages.some((sessionId) => {
+    // Rows created by an older deployment have no explicit lease. Preserve the
+    // rollout-safe behavior for those rows by aging them from the stop intent.
+    const graceStartedAt = leaseBySession.get(sessionId) ?? requestedAt;
+    if (!graceStartedAt) return true;
+    return Date.now() - graceStartedAt.getTime() < PROVISIONING_STOP_GRACE_MS;
+  });
+}
+
+const STOP_MODE_PRIORITY: Record<DurableStopMode, number> = {
+  terminate: 0,
+  purge: 1,
+  reset: 2,
+};
+
+function strongestStopMode(
+  left: DurableStopMode,
+  right: DurableStopMode | null,
+): DurableStopMode {
+  if (right == null) return left;
+  return STOP_MODE_PRIORITY[right] > STOP_MODE_PRIORITY[left] ? right : left;
+}
+
+async function cleanupResolvedWorkspaces(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+  includeExecutionScoped: boolean,
+  onResult?: (name: string, ok: boolean, detail?: string) => void,
+): Promise<boolean> {
+  let cleanupOk = true;
+  for (const name of resolved.workspaceSandboxNames) {
+    try {
+      if (!cascadeDeps.deleteWorkspaceSandbox) {
+        throw new Error("named OpenShell Sandbox deletion is not configured");
+      }
+      await cascadeDeps.deleteWorkspaceSandbox(name);
+      onResult?.(`cleanup-workspace-sandbox:${name}`, true);
+    } catch (err) {
+      cleanupOk = false;
+      onResult?.(
+        `cleanup-workspace-sandbox:${name}`,
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  if (includeExecutionScoped) {
+    for (const executionId of resolved.workspaceCleanupExecutionIds) {
+      try {
+        if (!cascadeDeps.cleanupWorkspaceExecution) {
+          throw new Error(
+            "execution-scoped OpenShell cleanup is not configured",
+          );
+        }
+        await cascadeDeps.cleanupWorkspaceExecution(executionId);
+        onResult?.(`cleanup-workspace-execution:${executionId}`, true);
+      } catch (err) {
+        cleanupOk = false;
+        onResult?.(
+          `cleanup-workspace-execution:${executionId}`,
+          false,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+  }
+  return cleanupOk;
+}
+
+async function retainOrCleanupResolvedWorkspaces(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+  terminalAt: Date,
+  onResult?: (name: string, ok: boolean, detail?: string) => void,
+): Promise<boolean> {
+  // Retention is an explicit provider capability. Clusters that have not
+  // adopted it keep the established terminate cleanup behavior; once enabled,
+  // the provider owns the first TTL transition and a failed acknowledgement
+  // leaves the durable stop intent pending for confirmation retry.
+  if (!workspaceRetention || resolved.workspaceRetentionIdentities.length === 0) {
+    return cleanupResolvedWorkspaces(resolved, false, onResult);
+  }
+
+  let ok = true;
+  for (const identity of resolved.workspaceRetentionIdentities) {
+    const label =
+      identity.databaseExecutionId || identity.durableExecutionId || "unknown";
+    try {
+      const acknowledgement = await workspaceRetention.armTerminalRetention({
+        identity,
+        terminalAt,
+      });
+      onResult?.(
+        `arm-workspace-retention:${label}`,
+        true,
+        `results=${acknowledgement.resultCount}`,
+      );
+    } catch (err) {
+      ok = false;
+      onResult?.(
+        `arm-workspace-retention:${label}`,
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  return ok;
+}
+
+async function acknowledgeResolvedProvisioningLeases(
+	resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+	onResult?: (name: string, ok: boolean, detail?: string) => void,
+): Promise<boolean> {
+	let ok = true;
+	for (const lease of resolved.runtimeProvisioningLeases) {
+		try {
+			const acknowledged =
+				await resolved.acknowledgeRuntimeProvisioningCompensation(
+					lease.sessionId,
+					lease.startedAt,
+				);
+			if (!acknowledged) {
+				ok = false;
+				onResult?.(
+					`ack-runtime-provisioning:${lease.sessionId}`,
+					false,
+					"lease generation changed; re-resolving before finalization",
+				);
+				continue;
+			}
+			onResult?.(`ack-runtime-provisioning:${lease.sessionId}`, true);
+		} catch (err) {
+			ok = false;
+			onResult?.(
+				`ack-runtime-provisioning:${lease.sessionId}`,
+				false,
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+	}
+	return ok;
+}
 
 /**
  * Resolve a target's auth scope + whether its durable run is still active,
@@ -154,7 +333,7 @@ export async function stopDurableRun(
 	target: DurableRunTarget,
 	opts: StopDurableRunOptions,
 ): Promise<StopDurableRunResult> {
-	const resolved = await resolveDurableTarget(target);
+  let resolved = await resolveDurableTarget(target);
 	if (resolved.notFound) {
 		return {
 			confirmed: false,
@@ -214,13 +393,17 @@ export async function stopDurableRun(
 		};
 	}
 
-	const purge = opts.mode === "purge" || opts.mode === "reset";
 	// Cooperative-first: when the caller doesn't specify a grace, give terminate/
 	// purge/reset a short window so the cascade raises the cooperative cancel first
 	// (the agent honors it at the next turn/tool boundary via the dapr-agent-py
 	// cancel-key) and only force-terminates if it doesn't yield in time. Env-tunable;
 	// 0 disables (pure force). Interrupt mode returns above and never reaches here.
-	const defaultGraceMs = envSeconds("LIFECYCLE_TERMINATE_GRACE_SECONDS", 5, 0, 120);
+  const defaultGraceMs = envSeconds(
+    "LIFECYCLE_TERMINATE_GRACE_SECONDS",
+    5,
+    0,
+    120,
+  );
 	const graceMs = Math.max(0, opts.graceMs ?? defaultGraceMs);
 	// Persist the durable stop-intent up front so the row reads "Stopping…" and the
 	// status confirmation path can finalize it after the in-request poll window
@@ -229,12 +412,14 @@ export async function stopDurableRun(
 	// stop_requested_at, so a swallowed write here can leave a wedged run
 	// permanently un-finalizable. Retry transient failures before giving up, and
 	// surface a hard failure rather than silently proceeding.
-	let stopIntentPersisted = false;
+  let persistedIntent: PersistedStopIntent | null = null;
 	let stopIntentError: string | undefined;
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		try {
-			await resolved.markStopRequested(reason);
-			stopIntentPersisted = true;
+      persistedIntent = await resolved.markStopRequested(
+        reason,
+        opts.mode as DurableStopMode,
+      );
 			break;
 		} catch (err) {
 			stopIntentError = err instanceof Error ? err.message : String(err);
@@ -243,25 +428,109 @@ export async function stopDurableRun(
 	}
 	steps.push({
 		name: "mark-stop-requested",
-		result: stopIntentPersisted ? "ok" : "failed",
-		detail: stopIntentPersisted ? undefined : `intent NOT persisted: ${stopIntentError}`,
+    result: persistedIntent ? "ok" : "failed",
+    detail: persistedIntent
+      ? `mode=${persistedIntent.mode}`
+      : `intent NOT persisted: ${stopIntentError}`,
 	});
-	const cascade = await runDurableCascade({
+  if (!persistedIntent) {
+    // Without durable intent the background reconciler has nothing authoritative
+    // to retry. Fail closed before issuing any runtime or Kubernetes mutation.
+    return {
+      confirmed: false,
+      notFound: false,
+      requested: false,
+      state: "stopping",
+      scope: resolved.scope,
+      retryable: true,
+      steps,
+    };
+  }
+
+  // Resolution before the stop write is only an authorization/identity snapshot.
+  // Workflow child creation serializes on the same parent row and may have won
+  // that lock immediately before markStopRequested. Re-resolve after the atomic
+  // stop transaction so every child it stamped, plus its runtime/Sandbox linkage,
+  // participates in this cascade and finalization decision.
+  try {
+    const refreshed = await resolveDurableTarget(target);
+    if (refreshed.notFound)
+      throw new Error("target disappeared after stop persistence");
+    resolved = refreshed;
+    steps.push({ name: "refresh-stop-targets", result: "ok" });
+  } catch (err) {
+    steps.push({
+      name: "refresh-stop-targets",
+      result: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      confirmed: false,
+      notFound: false,
+      requested: true,
+      state: "stopping",
+      scope: resolved.scope,
+      retryable: true,
+      steps,
+    };
+  }
+
+  // The database-returned mode is authoritative. It captures concurrent requests
+  // and guarantees retries can escalate terminate -> purge -> reset but never
+  // downgrade an already-persisted destructive intent.
+  const effectiveMode = strongestStopMode(
+    persistedIntent.mode,
+    resolved.stopRequestedMode,
+  );
+  const purge = effectiveMode === "purge" || effectiveMode === "reset";
+  const linkageBlocked = unresolvedLinkageBlocks(
+    resolved,
+    persistedIntent.requestedAt,
+  );
+  if (resolved.unresolvedRuntimeLinkages.length > 0) {
+    steps.push({
+      name: "resolve-runtime-linkage",
+      result: linkageBlocked ? "partial" : "skipped",
+      detail: linkageBlocked
+        ? `waiting for ${resolved.unresolvedRuntimeLinkages.join(", ")}`
+        : `provisioning grace elapsed for ${resolved.unresolvedRuntimeLinkages.join(", ")}`,
+	});
+  }
+  const cascadePurge = purge && !linkageBlocked;
+  let cascade: DurableCascadeResult;
+  try {
+    cascade = await runDurableCascade({
 		parentInstanceIds: resolved.parentInstanceIds,
 		agentRuntimeTargets: resolved.agentRuntimeTargets,
 		statePurgeInstanceIds: resolved.statePurgeInstanceIds,
 		reason,
-		purge,
+      purge: cascadePurge,
 		purgeGraceMs: 0,
-		forceStatePurgeOnUnclosed: opts.mode === "reset",
+      forceStatePurgeOnUnclosed: effectiveMode === "reset" && !linkageBlocked,
 		gracefulCancellationEnabled: graceMs > 0,
 		gracefulCancellationWaitMs: graceMs,
 		deps: cascadeDeps,
 	});
+  } catch (err) {
+    steps.push({
+      name: "durable-cascade",
+      result: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      confirmed: false,
+      notFound: false,
+      requested: true,
+      state: "stopping",
+      scope: resolved.scope,
+      retryable: true,
+      steps,
+    };
+  }
 	steps.push({
 		name: "durable-cascade",
 		result: cascade.allClosed ? "ok" : "partial",
-		detail: `parentClosed=${cascade.parentClosed} agentRuntimeClosed=${cascade.agentRuntimeClosed} purged=${purge}`,
+    detail: `parentClosed=${cascade.parentClosed} agentRuntimeClosed=${cascade.agentRuntimeClosed} purged=${cascadePurge}`,
 	});
 
 	// Not confirmed terminal in-request — e.g. a workflow blocked in a long
@@ -271,7 +540,7 @@ export async function stopDurableRun(
 	// cascade keeps converging; a status poll finalizes once Dapr reports
 	// terminal. Report "stopping" (HTTP 202), not a
 	// hard 409 that leaves the row stale forever.
-	if (!cascade.allClosed) {
+  if (!cascade.allClosed || linkageBlocked) {
 		return {
 			confirmed: false,
 			notFound: false,
@@ -283,12 +552,19 @@ export async function stopDurableRun(
 		};
 	}
 
+  // Every terminal stop releases its dedicated compute host. `purge` controls
+  // durable state deletion only; retaining state must not leave a running
+  // Sandbox behind, and cleanup must not depend on whether closure happened in
+  // this request or a later confirmation poll.
 	let reapOk = true;
-	if (purge) {
 		for (const name of resolved.sandboxNames) {
 			try {
 				const result = await deleteKubernetesSandbox(name);
-				steps.push({ name: `reap-sandbox:${name}`, result: "ok", detail: result });
+      steps.push({
+        name: `reap-sandbox:${name}`,
+        result: "ok",
+        detail: result,
+      });
 			} catch (err) {
 				reapOk = false;
 				steps.push({
@@ -298,12 +574,59 @@ export async function stopDurableRun(
 				});
 			}
 		}
-	}
+  const workspaceCleanupOk = await (purge
+    ? cleanupResolvedWorkspaces(resolved, true, (name, ok, detail) => {
+        steps.push({
+          name,
+          result: ok ? "ok" : "failed",
+          detail,
+        });
+      })
+    : retainOrCleanupResolvedWorkspaces(resolved, new Date(), (name, ok, detail) => {
+        steps.push({
+          name,
+          result: ok ? "ok" : "failed",
+          detail,
+        });
+      }));
+	const provisioningAckOk = reapOk
+		? await acknowledgeResolvedProvisioningLeases(
+				resolved,
+				(name, ok, detail) => {
+					steps.push({
+						name,
+						result: ok ? "ok" : "failed",
+						detail,
+					});
+				},
+			)
+		: false;
+  reapOk = reapOk && workspaceCleanupOk && provisioningAckOk;
 
-	let dbOk = true;
+  let dbOk = reapOk;
+  if (!reapOk) {
+    steps.push({
+      name: "finalize-db",
+      result: "skipped",
+      detail: "Sandbox reap has not succeeded",
+    });
+  } else {
 	try {
-		await resolved.finalizeDb(reason, opts.finalizeOutcome);
+      const finalized = await resolved.finalizeDb(
+        reason,
+        opts.finalizeOutcome,
+        effectiveMode,
+      );
+      if (finalized === "mode_changed") {
+        dbOk = false;
+        steps.push({
+          name: "finalize-db",
+          result: "partial",
+          detail: "a stronger concurrent stop intent remains pending",
+        });
+      } else {
 		steps.push({ name: "finalize-db", result: "ok" });
+      }
 	} catch (err) {
 		dbOk = false;
 		steps.push({
@@ -312,6 +635,7 @@ export async function stopDurableRun(
 			detail: err instanceof Error ? err.message : String(err),
 		});
 	}
+  }
 
 	const confirmed = reapOk && dbOk;
 	return {
@@ -328,28 +652,124 @@ export async function stopDurableRun(
 	};
 }
 
-async function isInstanceClosed(getStatus: () => Promise<unknown>): Promise<boolean> {
+async function isInstanceClosed(
+  getStatus: () => Promise<unknown>,
+): Promise<boolean> {
 	try {
 		const s = await getStatus();
-		return s === DURABLE_RUNTIME_MISSING_STATUS || isTerminalDurableRuntimeStatus(s);
+    return (
+      s === DURABLE_RUNTIME_MISSING_STATUS || isTerminalDurableRuntimeStatus(s)
+    );
 	} catch {
 		return false; // unknown -> not yet closed
 	}
 }
 
 /** Reap the per-session Sandbox CRs and flip the owning DB rows terminal. */
+async function purgeConfirmedState(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+): Promise<boolean> {
+  try {
+    await Promise.all(
+      resolved.agentRuntimeTargets.map((target) =>
+        cascadeDeps.purgeAgentRuntime(
+          target.runtimeAppId,
+          target.instanceId,
+          target.runtimeSandboxName,
+        ),
+      ),
+    );
+    await Promise.all(
+      resolved.parentInstanceIds.map((id) => cascadeDeps.purgeParent(id)),
+    );
+    await cascadeDeps.purgeStateRows?.(
+      resolved.parentInstanceIds,
+      resolved.agentRuntimeTargets,
+      resolved.statePurgeInstanceIds,
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      "confirmDurableStop: persisted durable-state purge failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+}
+
 async function finalizeConfirmedStop(
 	resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
 	reason: string,
-): Promise<{ state: "confirmed"; scope: DurableTargetScope | null }> {
+  expectedMode?: DurableStopMode,
+): Promise<{
+  state: "confirmed" | "stopping";
+  scope: DurableTargetScope | null;
+}> {
+  if (
+    (expectedMode === "purge" || expectedMode === "reset") &&
+    !(await purgeConfirmedState(resolved))
+  ) {
+    return { state: "stopping", scope: resolved.scope };
+  }
+  let reapOk = true;
 	for (const name of resolved.sandboxNames) {
 		try {
 			await deleteKubernetesSandbox(name);
-		} catch {
-			/* best-effort reap; the sandbox-gc CronJob is the backstop */
+    } catch (err) {
+      reapOk = false;
+      console.warn(
+        `confirmDurableStop: Sandbox ${name} reap failed:`,
+        err instanceof Error ? err.message : err,
+      );
 		}
+		}
+  const destructive = expectedMode === "purge" || expectedMode === "reset";
+  const reportWorkspaceResult = (name: string, ok: boolean, detail?: string) => {
+    if (!ok) {
+      console.warn(
+        `confirmDurableStop: ${name} failed:`,
+        detail ?? "unknown cleanup failure",
+      );
+    }
+  };
+  const workspaceCleanupOk = destructive
+    ? await cleanupResolvedWorkspaces(resolved, true, reportWorkspaceResult)
+    : await retainOrCleanupResolvedWorkspaces(
+        resolved,
+        new Date(),
+        reportWorkspaceResult,
+      );
+	const provisioningAckOk = reapOk
+		? await acknowledgeResolvedProvisioningLeases(
+				resolved,
+				(name, ok, detail) => {
+					if (!ok) {
+						console.warn(
+							`confirmDurableStop: ${name} failed:`,
+							detail ?? "unknown provisioning acknowledgement failure",
+						);
+					}
+				},
+			)
+		: false;
+  reapOk = reapOk && workspaceCleanupOk && provisioningAckOk;
+  if (!reapOk) return { state: "stopping", scope: resolved.scope };
+  try {
+    const finalized = await resolved.finalizeDb(
+      reason,
+      undefined,
+      expectedMode,
+    );
+    if (finalized === "mode_changed") {
+      return { state: "stopping", scope: resolved.scope };
+    }
+  } catch (err) {
+    console.warn(
+      "confirmDurableStop: DB finalize failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return { state: "stopping", scope: resolved.scope };
 	}
-	await resolved.finalizeDb(reason);
 	return { state: "confirmed", scope: resolved.scope };
 }
 
@@ -370,9 +790,16 @@ async function finalizeConfirmedStop(
  */
 export async function confirmDurableStop(
 	target: DurableRunTarget,
-): Promise<{ state: "confirmed" | "stopping" | "notFound"; scope: DurableTargetScope | null }> {
+): Promise<{
+  state: "confirmed" | "stopping" | "notFound";
+  scope: DurableTargetScope | null;
+}> {
 	const resolved = await resolveDurableTarget(target);
 	if (resolved.notFound) return { state: "notFound", scope: null };
+  const linkageBlocked = unresolvedLinkageBlocks(
+    resolved,
+    resolved.stopRequestedAt,
+  );
 	const [parentClosedFlags, agentClosedFlags] = await Promise.all([
 		Promise.all(
 			resolved.parentInstanceIds.map((id) =>
@@ -381,14 +808,26 @@ export async function confirmDurableStop(
 		),
 		Promise.all(
 			resolved.agentRuntimeTargets.map((t) =>
-				isInstanceClosed(() => cascadeDeps.getAgentRuntimeStatus(t.runtimeAppId, t.instanceId)),
+        isInstanceClosed(() =>
+          cascadeDeps.getAgentRuntimeStatus(
+            t.runtimeAppId,
+            t.instanceId,
+            t.runtimeSandboxName,
+          ),
+        ),
 			),
 		),
 	]);
 	const parentClosed = parentClosedFlags.every(Boolean);
 	const agentClosed = agentClosedFlags.every(Boolean);
-	if (parentClosed && agentClosed) {
-		return finalizeConfirmedStop(resolved, "stop confirmed");
+  if (parentClosed && agentClosed && !linkageBlocked) {
+    return finalizeConfirmedStop(
+      resolved,
+      "stop confirmed",
+      resolved.stopRequestedAt
+        ? normalizeDurableStopMode(resolved.stopRequestedMode)
+        : undefined,
+    );
 	}
 
 	// Cross-app child wedge: a still-RUNNING parent whose durable/run agent
@@ -445,10 +884,17 @@ export async function confirmDurableStop(
 				"confirmDurableStop: force state-row purge of wedged parent failed:",
 				err instanceof Error ? err.message : err,
 			);
+      // The parent is still live until this direct state deletion succeeds.
+      // Keep the persisted intent pending so reconciliation retries instead of
+      // acknowledging a stop while durable work can still be replayed.
+      return { state: "stopping", scope: resolved.scope };
 		}
 		const finalized = await finalizeConfirmedStop(
 			resolved,
 			"stop confirmed (cross-app wedge force-finalized)",
+      resolved.stopRequestedAt
+        ? normalizeDurableStopMode(resolved.stopRequestedMode)
+        : undefined,
 		);
 		// Now that the state rows are gone the Dapr purge will 404 — best-effort.
 		// Keep this after the DB finalize so a slow/unhealthy orchestrator purge
@@ -505,7 +951,8 @@ export function convergeCrashedSession(
 ): Promise<StopDurableRunResult> {
 	return stopDurableRun(target, {
 		mode: "reset",
-		reason: opts.reason?.trim() || "Converged crashed session (liveness reconciler)",
+    reason:
+      opts.reason?.trim() || "Converged crashed session (liveness reconciler)",
 		finalizeOutcome: "crashed",
 		graceMs: 0,
 	});

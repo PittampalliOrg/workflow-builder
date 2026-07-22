@@ -334,6 +334,23 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
+  it("maps workflow stop-intent persistence failures to 503", async () => {
+    vi.mocked(executionLifecycle.stopExecution).mockResolvedValue({
+      confirmed: false,
+      notFound: false,
+      state: "stopping",
+      requested: false,
+      retryable: true,
+      steps: [],
+    });
+
+    await expect(service.stopExecution(commandInput())).resolves.toEqual({
+      status: "error",
+      httpStatus: 503,
+      message: "Stop intent could not be persisted - please retry.",
+    });
+  });
+
 	it("blocks coordinator-owned workflow execution stops", async () => {
 		vi.mocked(coordinatorOwners.getCoordinatorOwner).mockResolvedValue({
 			kind: "evalRun",
@@ -829,6 +846,64 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		expect(result).toMatchObject({
 			status: "ok",
 			body: { fromNodeId: "repair" },
+		});
+	});
+
+	it.each(["running", "pending"] as const)(
+		"rejects dynamic-script resume while a %s source only has stop intent",
+		async (status) => {
+			vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+				executionRecord({
+					status,
+					stopRequestedAt: new Date("2026-07-21T12:00:00.000Z"),
+				}),
+			);
+			vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+				workflowDefinition({ engineType: "dynamic-script" }),
+			);
+
+			const result = await service.resumeExecution(commandInput({ body: {} }));
+
+			expect(result).toEqual({
+				status: "error",
+				httpStatus: 409,
+				message:
+					"Source run is still active; stop it before resuming a dynamic-script run",
+			});
+			expect(runStarter.startWorkflowRun).not.toHaveBeenCalled();
+		},
+	);
+
+	it("resumes a dynamic script after the source is confirmed cancelled", async () => {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				status: "cancelled",
+				input: { prompt: "repair it" },
+				completedAt: new Date("2026-07-21T12:01:00.000Z"),
+				stopRequestedAt: null,
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ engineType: "dynamic-script" }),
+		);
+
+		const result = await service.resumeExecution(commandInput({ body: {} }));
+
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith({
+			workflowId: "workflow-1",
+			triggerData: { prompt: "repair it" },
+			journalImportFromExecutionId: "exec-1",
+			rerunOfExecutionId: "exec-1",
+			rerunSourceInstanceId: "instance-1",
+			triggerSource: "resume",
+		});
+		expect(result).toMatchObject({
+			status: "ok",
+			body: {
+				executionId: "exec-new",
+				sourceExecutionId: "exec-1",
+				journalImportFromExecutionId: "exec-1",
+			},
 		});
 	});
 

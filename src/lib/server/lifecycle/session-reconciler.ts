@@ -119,8 +119,17 @@ export function decideSessionReconciliation(
 	const { candidate: c, evidence: e } = input;
 
 	// (1) Evidence-free hard skips — classes we never touch regardless of state.
+  if (c.coordinatorOwned)
+    return { action: "skip", reason: "coordinator_owned" };
+
+  // A persisted stop is its own durable authority and must be re-driven for every
+  // runtime family and lifecycle projection, including paused, never-provisioned,
+  // and already-terminal rows awaiting cleanup acknowledgement. Coordinator-owned
+  // runs remain excluded above because their coordinator is the single writer.
+  if (c.stopRequested)
+    return { action: "confirm_stop", reason: "stop_requested" };
+
 	if (c.paused) return { action: "skip", reason: "paused" };
-	if (c.coordinatorOwned) return { action: "skip", reason: "coordinator_owned" };
 
 	// (1b) Stranded host rescue — scoped by MECHANISM, not runtime family: any
 	//     provisioned per-session host (interactive-CLI or dapr-agent-py
@@ -162,16 +171,15 @@ export function decideSessionReconciliation(
 			: { action: "skip", reason: "never_provisioned" };
 	}
 
-	// (2) Stop-intent → hand to the controller's confirm/wedge-sweep. Evidence-
-	//     independent: confirmDurableStop re-checks every handle itself.
-	if (c.stopRequested) return { action: "confirm_stop", reason: "stop_requested" };
-
 	// (3) Dapr reports the instance TERMINAL while the DB row is still live — a
 	//     missed status_terminated. Heal the divergence (finalize only, no
 	//     cascade). A positive KNOWN signal, so kube evidence being unknown is
 	//     irrelevant here.
 	if (e.daprTerminal) {
-		return { action: "finalize_divergence", reason: "dapr_terminal_db_nonterminal" };
+    return {
+      action: "finalize_divergence",
+      reason: "dapr_terminal_db_nonterminal",
+    };
 	}
 
 	// (4) Fail-safe gate: any unknown evidence past this point ⇒ skip. A transient
@@ -252,7 +260,12 @@ export type ReconcileSessionsDeps = {
 	now(): number;
 	/** Append a `session.reconciler_action` audit event to the session's stream. */
 	appendAudit(sessionId: string, data: ReconcileAuditData): Promise<void>;
-	/** confirmDurableStop({kind:"session"}) — used for BOTH confirm_stop and finalize_divergence. */
+  /** Reissue idempotent stop control for a row with persisted stop intent. */
+  redriveStop(
+    sessionId: string,
+    mode: "terminate" | "purge" | "reset",
+  ): Promise<void>;
+  /** confirmDurableStop({kind:"session"}) — finalize a terminal/DB-live divergence. */
 	confirmStop(sessionId: string): Promise<void>;
 	/** convergeCrashedSession({kind:"session"}) — cascade purge + reap + finalize `crashed`. */
 	convergeCrashed(sessionId: string, reason: string): Promise<void>;
@@ -324,8 +337,9 @@ export async function reconcileSessions(
 
 	// Phase 1 — gather evidence with bounded concurrency (all probes are read-only,
 	// so fanning them out is safe). Evidence-free classes (paused / coordinator /
-	// non-cli / never-provisioned) AND stop-intent rows (confirm_stop re-checks
-	// every handle itself) are decided from the row alone → they never probe.
+  // non-cli / never-provisioned) AND stop-intent rows (the lifecycle command
+  // resolves and re-drives every handle itself) are decided from the row alone →
+  // they never probe.
 	type Prepared = {
 		cand: LivenessReconcileCandidateRecord;
 		view: ReconcileCandidateView;
@@ -349,7 +363,10 @@ export async function reconcileSessions(
 				paused,
 				stopRequested,
 				provisioned,
-				ageSeconds: Math.max(0, Math.floor((now - cand.updatedAt.getTime()) / 1000)),
+        ageSeconds: Math.max(
+          0,
+          Math.floor((now - cand.updatedAt.getTime()) / 1000),
+        ),
 				silentSeconds: cand.lastEventAt
 					? Math.max(0, Math.floor((now - cand.lastEventAt.getTime()) / 1000))
 					: null,
@@ -360,10 +377,7 @@ export async function reconcileSessions(
 			// are probed too — they are eligible for the stranded-host rescue
 			// (mechanism-scoped), even though converge/finalize stay CLI-scoped.
 			const needsEvidence =
-				!paused &&
-				!stopRequested &&
-				!cand.coordinatorOwned &&
-				provisioned;
+        !paused && !stopRequested && !cand.coordinatorOwned && provisioned;
 			if (needsEvidence) {
 				const [dapr, sandboxCr, pod] = await Promise.all([
 					deps
@@ -480,10 +494,21 @@ async function executeAction(
 			// Audit-only — the warn IS the audit event above.
 			break;
 		case "confirm_stop":
+      // A previous request may have persisted intent but lost its one-shot control
+      // call to a cold/unready host. Reissue the idempotent stop command; leaving
+      // the row nonterminal makes the next tick retry any transient failure.
+      await deps
+        .redriveStop(cand.id, cand.stopRequestedMode ?? "terminate")
+        .catch((err) => {
+          console.warn(
+            `[session-reconciler] redriveStop failed for ${cand.id}:`,
+            err instanceof Error ? err.message : err,
+          );
+        });
+      break;
 		case "finalize_divergence":
-			// Both route to confirmDurableStop: for a stop-intent row it runs the
-			// cross-app wedge sweep; for a Dapr-terminal row its all-closed path
-			// finalizes the divergence. No cascade issued either way.
+      // This path has no stop intent to re-drive. It only confirms the already
+      // terminal durable handle and repairs the stale DB projection.
 			await deps.confirmStop(cand.id).catch((err) => {
 				console.warn(
 					`[session-reconciler] confirmStop failed for ${cand.id}:`,

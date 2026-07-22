@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import {
+	activateAgentWorkflowHostGeneration,
 	extractTraceContext,
 	maybeProvisionAgentWorkflowHost,
 	probeAgentWorkflowHostAppReady,
+	recreateAgentWorkflowHostGeneration,
+	sessionHostAppId,
 	waitForAgentWorkflowHostAppReady,
 } from "./agent-workflow-host";
 
@@ -166,6 +169,140 @@ describe("agent workflow host provisioning", () => {
 			podName: "agent-host-agent-session-returned-pod",
 		});
 		expect(getAgentWorkflowHostPod).not.toHaveBeenCalled();
+	});
+
+	it("derives a different host identity for every provisioning generation", () => {
+		const first = sessionHostAppId(
+			"session-generation-1",
+			new Date("2026-07-21T12:00:00.001Z"),
+		);
+		const second = sessionHostAppId(
+			"session-generation-1",
+			new Date("2026-07-21T12:00:00.002Z"),
+		);
+
+		expect(first).toMatch(/^agent-session-[a-f0-9]{20}$/);
+		expect(second).toMatch(/^agent-session-[a-f0-9]{20}$/);
+		expect(second).not.toBe(first);
+	});
+
+	it("creates lease-fenced hosts with a provider-enforced provisional TTL", async () => {
+		vi.stubEnv("AGENT_WORKFLOW_HOST_PROVISIONAL_TIMEOUT_SECONDS", "720");
+		const generation = new Date("2026-07-21T12:00:00.123Z");
+		const expectedAppId = sessionHostAppId("session-generation-2", generation);
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					agentAppId: expectedAppId,
+					sandboxName: `agent-host-${expectedAppId}`,
+					status: "queued",
+				}),
+				{ status: 202, headers: { "Content-Type": "application/json" } },
+			),
+		);
+
+		await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-generation-2",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: null,
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+			provisioningStartedAt: generation,
+		});
+
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.agentAppId).toBe(
+			sessionHostAppId("session-generation-2", generation),
+		);
+		expect(body.provisionalTimeoutSeconds).toBe(720);
+		expect(body).not.toHaveProperty("timeoutSeconds");
+	});
+
+	it("persists a versioned launch recipe without secret values and rehydrates it", async () => {
+		const generation = new Date("2026-07-21T12:00:00.124Z");
+		const expectedAppId = sessionHostAppId(
+			"session-generation-secret",
+			generation,
+		);
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({
+					agentAppId: expectedAppId,
+					sandboxName: `agent-host-${expectedAppId}`,
+					status: "queued",
+				}),
+				{ status: 202, headers: { "Content-Type": "application/json" } },
+			),
+		);
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-generation-secret",
+			agentConfig: { mcpServers: [] } as never,
+			workflowExecutionId: null,
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+			provisioningStartedAt: generation,
+			sessionSecretEnv: { KIMI_API_KEY: "never-persist-this" },
+		});
+		const launchSpec = result?.launchSpec;
+		expect(launchSpec).toMatchObject({
+			version: 1,
+			secretEnvKeys: ["KIMI_API_KEY"],
+		});
+		expect(JSON.stringify(launchSpec)).not.toContain("never-persist-this");
+		const appId = String(launchSpec?.request.agentAppId);
+		const sandboxName = `agent-host-${appId}`;
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(JSON.stringify({ agentAppId: appId, sandboxName }), {
+				status: 202,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await recreateAgentWorkflowHostGeneration({
+			agentAppId: appId,
+			sandboxName,
+			launchSpec: launchSpec!,
+			sessionSecretEnv: { KIMI_API_KEY: "fresh-secret" },
+		});
+
+		const recoveryBody = JSON.parse(
+			String(vi.mocked(fetch).mock.calls[1]?.[1]?.body ?? "{}"),
+		) as Record<string, unknown>;
+		expect(recoveryBody.agentAppId).toBe(appId);
+		expect(recoveryBody.sessionSecretEnv).toEqual({
+			KIMI_API_KEY: "fresh-secret",
+		});
+	});
+
+	it("activates the exact published generation through SEA", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(
+			new Response(JSON.stringify({ status: "activated" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await activateAgentWorkflowHostGeneration({
+			agentAppId: "agent-session-generation",
+			sandboxName: "agent-host-agent-session-generation",
+		});
+
+		expect(fetch).toHaveBeenCalledWith(
+			"http://sandbox-execution-api/api/v1/agent-workflow-hosts/agent-session-generation/activate",
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({
+					sandboxName: "agent-host-agent-session-generation",
+					generation: "agent-session-generation",
+				}),
+			}),
+		);
 	});
 
 	it("rejects a ready endpoint that does not match SEA's pod IP", async () => {
@@ -352,7 +489,7 @@ describe("agent workflow host provisioning", () => {
 			timeoutMinutes: null,
 		});
 
-		expect(result).toEqual({
+		expect(result).toMatchObject({
 			agentAppId: "dapr-agent-py",
 			sandboxName: null,
 			status: "stable-app-id",
@@ -382,7 +519,7 @@ describe("agent workflow host provisioning", () => {
 			timeoutMinutes: null,
 		});
 
-		expect(result).toEqual({
+		expect(result).toMatchObject({
 			agentAppId: "agent-session-returned",
 			sandboxName: "agent-host-agent-session-returned",
 			status: "ready",

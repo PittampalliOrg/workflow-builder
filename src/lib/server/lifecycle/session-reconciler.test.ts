@@ -11,7 +11,9 @@ import {
 
 // --- Pure decision table -----------------------------------------------------
 
-function view(overrides: Partial<ReconcileCandidateView> = {}): ReconcileCandidateView {
+function view(
+  overrides: Partial<ReconcileCandidateView> = {},
+): ReconcileCandidateView {
 	return {
 		sessionId: "s1",
 		status: "running",
@@ -27,7 +29,9 @@ function view(overrides: Partial<ReconcileCandidateView> = {}): ReconcileCandida
 	};
 }
 
-function evidence(overrides: Partial<ReconcileEvidence> = {}): ReconcileEvidence {
+function evidence(
+  overrides: Partial<ReconcileEvidence> = {},
+): ReconcileEvidence {
 	return {
 		daprRuntime: "present",
 		daprTerminal: false,
@@ -56,41 +60,94 @@ function decide(
 
 describe("decideSessionReconciliation", () => {
 	it("skips a paused session regardless of evidence", () => {
-		expect(decide(view({ paused: true }), evidence({ daprRuntime: "absent", sandboxCr: "absent", pod: "absent" })).action).toBe("skip");
+    expect(
+      decide(
+        view({ paused: true }),
+        evidence({ daprRuntime: "absent", sandboxCr: "absent", pod: "absent" }),
+      ).action,
+    ).toBe("skip");
 		expect(decide(view({ paused: true }), evidence()).reason).toBe("paused");
 	});
 
 	it("skips a benchmark/eval-owned instance", () => {
-		expect(decide(view({ coordinatorOwned: true }), evidence()).reason).toBe("coordinator_owned");
+    expect(decide(view({ coordinatorOwned: true }), evidence()).reason).toBe(
+      "coordinator_owned",
+    );
 	});
 
 	it("skips a non-CLI-family session (v1 scope)", () => {
-		expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe("non_cli_family");
+    expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe(
+      "non_cli_family",
+    );
 	});
 
 	it("skips a never-provisioned session, but warns if stuck rescheduling past min age", () => {
-		expect(decide(view({ provisioned: false, status: "idle" }), evidence()).reason).toBe("never_provisioned");
-		const warn = decide(view({ provisioned: false, status: "rescheduling", ageSeconds: 400 }), evidence());
-		expect(warn).toEqual({ action: "warn", reason: "never_provisioned_stuck_rescheduling" });
+    expect(
+      decide(view({ provisioned: false, status: "idle" }), evidence()).reason,
+    ).toBe("never_provisioned");
+    const warn = decide(
+      view({ provisioned: false, status: "rescheduling", ageSeconds: 400 }),
+      evidence(),
+    );
+    expect(warn).toEqual({
+      action: "warn",
+      reason: "never_provisioned_stuck_rescheduling",
+    });
 		// Young rescheduling → still just skip.
-		expect(decide(view({ provisioned: false, status: "rescheduling", ageSeconds: 100 }), evidence()).action).toBe("skip");
+    expect(
+      decide(
+        view({ provisioned: false, status: "rescheduling", ageSeconds: 100 }),
+        evidence(),
+      ).action,
+    ).toBe("skip");
 	});
 
 	it("routes a stop-intent row to confirm_stop, evidence-independent", () => {
-		expect(decide(view({ stopRequested: true }), evidence({ daprRuntime: "unknown", sandboxCr: "unknown", pod: "unknown" })))
-			.toEqual({ action: "confirm_stop", reason: "stop_requested" });
+    expect(
+      decide(
+        view({ stopRequested: true }),
+        evidence({
+          daprRuntime: "unknown",
+          sandboxCr: "unknown",
+          pod: "unknown",
+        }),
+      ),
+    ).toEqual({ action: "confirm_stop", reason: "stop_requested" });
+    for (const overrides of [
+      { paused: true },
+      { isCliFamily: false },
+      { provisioned: false },
+      { status: "terminated" },
+    ]) {
+      expect(
+        decide(view({ ...overrides, stopRequested: true }), evidence()),
+      ).toEqual({ action: "confirm_stop", reason: "stop_requested" });
+    }
 	});
 
 	it("heals a Dapr-terminal-but-DB-live divergence without a cascade", () => {
-		expect(decide(view(), evidence({ daprRuntime: "present", daprTerminal: true })))
-			.toEqual({ action: "finalize_divergence", reason: "dapr_terminal_db_nonterminal" });
+    expect(
+      decide(view(), evidence({ daprRuntime: "present", daprTerminal: true })),
+    ).toEqual({
+      action: "finalize_divergence",
+      reason: "dapr_terminal_db_nonterminal",
+    });
 		// Even when kube evidence is unknown (divergence heal needs no kube signal).
-		expect(decide(view(), evidence({ daprTerminal: true, sandboxCr: "unknown", pod: "unknown" })).action)
-			.toBe("finalize_divergence");
+    expect(
+      decide(
+        view(),
+        evidence({ daprTerminal: true, sandboxCr: "unknown", pod: "unknown" }),
+      ).action,
+    ).toBe("finalize_divergence");
 	});
 
 	it("converges a crash only when Dapr missing AND CR absent AND pod absent AND old enough", () => {
-		const allGone = evidence({ daprRuntime: "absent", daprTerminal: false, sandboxCr: "absent", pod: "absent" });
+    const allGone = evidence({
+      daprRuntime: "absent",
+      daprTerminal: false,
+      sandboxCr: "absent",
+      pod: "absent",
+    });
 		expect(decide(view({ ageSeconds: 600 }), allGone)).toEqual({
 			action: "converge_crashed",
 			reason: "dapr_missing_cr_absent_pod_absent",
@@ -100,24 +157,55 @@ describe("decideSessionReconciliation", () => {
 	});
 
 	it("never converges when ANY evidence source is unknown (fail-safe)", () => {
-		const base = { daprRuntime: "absent", sandboxCr: "absent", pod: "absent" } as const;
+    const base = {
+      daprRuntime: "absent",
+      sandboxCr: "absent",
+      pod: "absent",
+    } as const;
 		for (const flake of ["daprRuntime", "sandboxCr", "pod"] as const) {
 			const e = evidence({ ...base, [flake]: "unknown" });
-			expect(decide(view({ ageSeconds: 600 }), e)).toEqual({ action: "skip", reason: "evidence_unknown" });
+      expect(decide(view({ ageSeconds: 600 }), e)).toEqual({
+        action: "skip",
+        reason: "evidence_unknown",
+      });
 		}
 	});
 
 	it("does not converge a partially-present run (CR still there)", () => {
-		expect(decide(view({ ageSeconds: 600 }), evidence({ daprRuntime: "absent", sandboxCr: "present", pod: "absent" })).action)
-			.toBe("skip");
+    expect(
+      decide(
+        view({ ageSeconds: 600 }),
+        evidence({
+          daprRuntime: "absent",
+          sandboxCr: "present",
+          pod: "absent",
+        }),
+      ).action,
+    ).toBe("skip");
 	});
 
 	it("warns on a live-but-silent pod, but not before the silence window", () => {
-		expect(decide(view({ silentSeconds: 1000 }), evidence({ pod: "present" }), 300, 900))
-			.toEqual({ action: "warn", reason: "pod_present_but_silent" });
-		expect(decide(view({ silentSeconds: 100 }), evidence({ pod: "present" }), 300, 900).action).toBe("skip");
+    expect(
+      decide(
+        view({ silentSeconds: 1000 }),
+        evidence({ pod: "present" }),
+        300,
+        900,
+      ),
+    ).toEqual({ action: "warn", reason: "pod_present_but_silent" });
+    expect(
+      decide(
+        view({ silentSeconds: 100 }),
+        evidence({ pod: "present" }),
+        300,
+        900,
+      ).action,
+    ).toBe("skip");
 		// A never-eventful session (silentSeconds null) is not warned.
-		expect(decide(view({ silentSeconds: null }), evidence({ pod: "present" })).action).toBe("skip");
+    expect(
+      decide(view({ silentSeconds: null }), evidence({ pod: "present" }))
+        .action,
+    ).toBe("skip");
 	});
 
 	it("leaves a healthy running session untouched", () => {
@@ -138,18 +226,27 @@ describe("decideSessionReconciliation", () => {
 		});
 		// Dapr evidence UNKNOWN must not block the rescue (the pod's own terminal
 		// phase is the positive signal; deleting an exited pod is non-destructive).
-		expect(decide(view({ ageSeconds: 600 }), evidence({ ...stranded, daprRuntime: "unknown" })).action)
-			.toBe("rescue_stranded_host");
+    expect(
+      decide(
+        view({ ageSeconds: 600 }),
+        evidence({ ...stranded, daprRuntime: "unknown" }),
+      ).action,
+    ).toBe("rescue_stranded_host");
 		// Too young → skip (give a just-finished pod its normal teardown window).
 		expect(decide(view({ ageSeconds: 100 }), stranded).action).toBe("skip");
 	});
 
 	it("never rescues when the pod is running, the CR is gone, or Dapr says terminal", () => {
 		// Running pod (podExited=false) → not a strand.
-		expect(decide(view(), evidence({ pod: "present", podExited: false })).action).toBe("skip");
+    expect(
+      decide(view(), evidence({ pod: "present", podExited: false })).action,
+    ).toBe("skip");
 		// CR gone → no controller to recreate the host; not a rescue case.
 		expect(
-			decide(view({ ageSeconds: 600 }), evidence({ pod: "present", podExited: true, sandboxCr: "absent" })).action,
+      decide(
+        view({ ageSeconds: 600 }),
+        evidence({ pod: "present", podExited: true, sandboxCr: "absent" }),
+      ).action,
 		).toBe("skip");
 		// A FINISHED workflow needs finalizing, not a new host.
 		expect(
@@ -176,13 +273,17 @@ describe("decideSessionReconciliation", () => {
 		});
 		// A dynamic-script dapr-agent-py session is not CLI-family, but its
 		// per-session sandbox host is rescueable all the same.
-		expect(decide(view({ isCliFamily: false, ageSeconds: 600 }), stranded)).toEqual({
+    expect(
+      decide(view({ isCliFamily: false, ageSeconds: 600 }), stranded),
+    ).toEqual({
 			action: "rescue_stranded_host",
 			reason: "pod_exited_session_live",
 		});
 		// Without the rescue evidence, non-CLI sessions keep the v1 scope skip —
 		// converge/finalize remain CLI-only.
-		expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe("non_cli_family");
+    expect(decide(view({ isCliFamily: false }), evidence()).reason).toBe(
+      "non_cli_family",
+    );
 		expect(
 			decide(
 				view({ isCliFamily: false, ageSeconds: 600 }),
@@ -192,17 +293,28 @@ describe("decideSessionReconciliation", () => {
 	});
 
 	it("degrades to an audit-only warn once the rescue cap is exhausted", () => {
-		const stranded = evidence({ daprRuntime: "absent", pod: "present", podExited: true });
-		expect(decide(view({ ageSeconds: 600, rescueAttempts: 3 }), stranded)).toEqual({
+    const stranded = evidence({
+      daprRuntime: "absent",
+      pod: "present",
+      podExited: true,
+    });
+    expect(
+      decide(view({ ageSeconds: 600, rescueAttempts: 3 }), stranded),
+    ).toEqual({
 			action: "warn",
 			reason: "rescue_cap_exhausted",
 		});
 		// An unreadable rescue count arrives as +Infinity → fail safe (warn).
 		expect(
-			decide(view({ ageSeconds: 600, rescueAttempts: Number.POSITIVE_INFINITY }), stranded).action,
+      decide(
+        view({ ageSeconds: 600, rescueAttempts: Number.POSITIVE_INFINITY }),
+        stranded,
+      ).action,
 		).toBe("warn");
 		// maxRescuesPerSession=0 disables the rescue entirely.
-		expect(decide(view({ ageSeconds: 600 }), stranded, 300, 900, 0).action).toBe("warn");
+    expect(
+      decide(view({ ageSeconds: 600 }), stranded, 300, 900, 0).action,
+    ).toBe("warn");
 	});
 
 	it("handles a status='failed' row identically to any other (no special-casing)", () => {
@@ -217,10 +329,20 @@ describe("decideSessionReconciliation", () => {
 				view({ status: "failed", ageSeconds: 600 }),
 				evidence({ daprRuntime: "absent", sandboxCr: "absent", pod: "absent" }),
 			),
-		).toEqual({ action: "converge_crashed", reason: "dapr_missing_cr_absent_pod_absent" });
+    ).toEqual({
+      action: "converge_crashed",
+      reason: "dapr_missing_cr_absent_pod_absent",
+    });
 		// A probe flake on a failed row still never converges.
 		expect(
-			decide(view({ status: "failed" }), evidence({ daprRuntime: "absent", sandboxCr: "unknown", pod: "absent" })).action,
+      decide(
+        view({ status: "failed" }),
+        evidence({
+          daprRuntime: "absent",
+          sandboxCr: "unknown",
+          pod: "absent",
+        }),
+      ).action,
 		).toBe("skip");
 	});
 });
@@ -247,6 +369,7 @@ function candidateRecord(
 		runtimeSandboxName: "agent-host-agent-session-1",
 		pauseRequestedAt: null,
 		stopRequestedAt: null,
+    stopRequestedMode: null,
 		coordinatorOwned: false,
 		updatedAt: old,
 		lastEventAt: old,
@@ -262,17 +385,25 @@ function fakeDeps(
 		listCandidates: vi.fn(async () => candidates),
 		isCliFamily: vi.fn(() => true),
 		// Default probes report a crashed run (all gone).
-		probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+    probeDaprRuntime: vi.fn(async () => ({
+      runtime: "absent" as const,
+      terminal: false,
+    })),
 		probeSandboxCr: vi.fn(async () => "absent" as const),
 		probePod: vi.fn(async () => ({ state: "absent" as const, exited: false })),
 		countRescueAttempts: vi.fn(async () => 0),
 		rescueStrandedHost: vi.fn(async () => undefined),
 		now: () => Date.now(),
 		appendAudit: vi.fn(async () => undefined),
+    redriveStop: vi.fn(async () => undefined),
 		confirmStop: vi.fn(async () => undefined),
 		convergeCrashed: vi.fn(async () => undefined),
 		cleanupWorkspace: vi.fn(async () => undefined),
-		maybeAutoResume: vi.fn(async () => ({ resumed: true, reason: "non_graceful_exit", newSessionId: "s2" })),
+    maybeAutoResume: vi.fn(async () => ({
+      resumed: true,
+      reason: "non_graceful_exit",
+      newSessionId: "s2",
+    })),
 		...overrides,
 	};
 }
@@ -294,9 +425,18 @@ describe("reconcileSessions", () => {
 
 		expect(result.scanned).toBe(1);
 		expect(result.actionsTaken).toBe(1);
-		expect(result.decisions[0]).toMatchObject({ action: "converge_crashed", executed: true });
-		expect(deps.appendAudit).toHaveBeenCalledWith("s1", expect.objectContaining({ action: "converge_crashed" }));
-		expect(deps.convergeCrashed).toHaveBeenCalledWith("s1", "dapr_missing_cr_absent_pod_absent");
+    expect(result.decisions[0]).toMatchObject({
+      action: "converge_crashed",
+      executed: true,
+    });
+    expect(deps.appendAudit).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ action: "converge_crashed" }),
+    );
+    expect(deps.convergeCrashed).toHaveBeenCalledWith(
+      "s1",
+      "dapr_missing_cr_absent_pod_absent",
+    );
 		// Auto-resume OFF → never called even on a converge.
 		expect(deps.maybeAutoResume).not.toHaveBeenCalled();
 	});
@@ -307,7 +447,10 @@ describe("reconcileSessions", () => {
 
 		expect(result.dryRun).toBe(true);
 		expect(result.actionsTaken).toBe(0);
-		expect(result.decisions[0]).toMatchObject({ action: "converge_crashed", executed: false });
+    expect(result.decisions[0]).toMatchObject({
+      action: "converge_crashed",
+      executed: false,
+    });
 		expect(deps.appendAudit).not.toHaveBeenCalled();
 		expect(deps.convergeCrashed).not.toHaveBeenCalled();
 	});
@@ -318,7 +461,10 @@ describe("reconcileSessions", () => {
 			candidateRecord({ id: "s2" }),
 			candidateRecord({ id: "s3" }),
 		]);
-		const result = await reconcileSessions(deps, { ...OPTS, maxActionsPerRun: 1 });
+    const result = await reconcileSessions(deps, {
+      ...OPTS,
+      maxActionsPerRun: 1,
+    });
 
 		expect(result.scanned).toBe(3);
 		expect(result.actionsTaken).toBe(1);
@@ -334,16 +480,22 @@ describe("reconcileSessions", () => {
 		const deps = fakeDeps([candidateRecord({ pauseRequestedAt: new Date() })]);
 		const result = await reconcileSessions(deps, OPTS);
 
-		expect(result.decisions[0]).toMatchObject({ action: "skip", reason: "paused" });
+    expect(result.decisions[0]).toMatchObject({
+      action: "skip",
+      reason: "paused",
+    });
 		expect(deps.probeDaprRuntime).not.toHaveBeenCalled();
 		expect(deps.probeSandboxCr).not.toHaveBeenCalled();
 		expect(deps.convergeCrashed).not.toHaveBeenCalled();
 	});
 
-	it("routes a stop-intent row to confirmStop WITHOUT probing (evidence-independent)", async () => {
-		const deps = fakeDeps([candidateRecord({ stopRequestedAt: new Date(Date.now() - 600_000) })]);
+  it("re-drives a persisted stop intent WITHOUT probing (evidence-independent)", async () => {
+    const deps = fakeDeps([
+      candidateRecord({ stopRequestedAt: new Date(Date.now() - 600_000) }),
+    ]);
 		await reconcileSessions(deps, OPTS);
-		expect(deps.confirmStop).toHaveBeenCalledWith("s1");
+    expect(deps.redriveStop).toHaveBeenCalledWith("s1", "terminate");
+    expect(deps.confirmStop).not.toHaveBeenCalled();
 		expect(deps.convergeCrashed).not.toHaveBeenCalled();
 		// confirm_stop is decided from the row alone → the 3 probes are skipped.
 		expect(deps.probeDaprRuntime).not.toHaveBeenCalled();
@@ -351,11 +503,67 @@ describe("reconcileSessions", () => {
 		expect(deps.probePod).not.toHaveBeenCalled();
 	});
 
+  it("re-drives non-CLI, paused, and unresolved persisted stop intents", async () => {
+    const requestedAt = new Date(Date.now() - 600_000);
+    const deps = fakeDeps(
+      [
+        candidateRecord({
+          id: "pydantic",
+          agentRuntime: "pydantic-ai-agent-py",
+          stopRequestedAt: requestedAt,
+          stopRequestedMode: "reset",
+        }),
+        candidateRecord({
+          id: "paused",
+          pauseRequestedAt: requestedAt,
+          stopRequestedAt: requestedAt,
+          stopRequestedMode: "purge",
+        }),
+        candidateRecord({
+          id: "provisioning",
+          runtimeAppId: null,
+          runtimeSandboxName: null,
+          stopRequestedAt: requestedAt,
+        }),
+      ],
+      { isCliFamily: vi.fn((runtime) => runtime !== "pydantic-ai-agent-py") },
+    );
+
+    const result = await reconcileSessions(deps, OPTS);
+
+    expect(result.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: "pydantic",
+          action: "confirm_stop",
+        }),
+        expect.objectContaining({
+          sessionId: "paused",
+          action: "confirm_stop",
+        }),
+        expect.objectContaining({
+          sessionId: "provisioning",
+          action: "confirm_stop",
+        }),
+      ]),
+    );
+    expect(deps.redriveStop).toHaveBeenCalledWith("pydantic", "reset");
+    expect(deps.redriveStop).toHaveBeenCalledWith("paused", "purge");
+    expect(deps.redriveStop).toHaveBeenCalledWith("provisioning", "terminate");
+    expect(deps.probeDaprRuntime).not.toHaveBeenCalled();
+  });
+
 	it("heals a Dapr-terminal divergence via confirmStop without a cascade", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "present" as const, terminal: true })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "present" as const,
+        terminal: true,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: false })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: false,
+      })),
 		});
 		const result = await reconcileSessions(deps, OPTS);
 		expect(result.decisions[0].action).toBe("finalize_divergence");
@@ -368,16 +576,25 @@ describe("reconcileSessions", () => {
 			probeSandboxCr: vi.fn(async () => "unknown" as const),
 		});
 		const result = await reconcileSessions(deps, OPTS);
-		expect(result.decisions[0]).toMatchObject({ action: "skip", reason: "evidence_unknown" });
+    expect(result.decisions[0]).toMatchObject({
+      action: "skip",
+      reason: "evidence_unknown",
+    });
 		expect(result.actionsTaken).toBe(0);
 		expect(deps.convergeCrashed).not.toHaveBeenCalled();
 	});
 
 	it("leaves a healthy running session untouched", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "present" as const, terminal: false })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "present" as const,
+        terminal: false,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: false })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: false,
+      })),
 		});
 		const result = await reconcileSessions(deps, OPTS);
 		expect(result.decisions[0].action).toBe("skip");
@@ -407,7 +624,9 @@ describe("reconcileSessions", () => {
 					? { runtime: "present" as const, terminal: false }
 					: { runtime: "absent" as const, terminal: false },
 			),
-			probeSandboxCr: vi.fn(async (c) => (c.id === "warn-1" ? "present" : "absent")),
+      probeSandboxCr: vi.fn(async (c) =>
+        c.id === "warn-1" ? "present" : "absent",
+      ),
 			probePod: vi.fn(async (c) =>
 				c.id === "warn-1"
 					? { state: "present" as const, exited: false }
@@ -415,26 +634,42 @@ describe("reconcileSessions", () => {
 			),
 		});
 
-		const result = await reconcileSessions(deps, { ...OPTS, maxActionsPerRun: 1 });
+    const result = await reconcileSessions(deps, {
+      ...OPTS,
+      maxActionsPerRun: 1,
+    });
 
-		expect(result.decisions.find((d) => d.sessionId === "warn-1")).toMatchObject({
+    expect(
+      result.decisions.find((d) => d.sessionId === "warn-1"),
+    ).toMatchObject({
 			action: "warn",
 			executed: true,
 		});
-		expect(result.decisions.find((d) => d.sessionId === "crash-1")).toMatchObject({
+    expect(
+      result.decisions.find((d) => d.sessionId === "crash-1"),
+    ).toMatchObject({
 			action: "converge_crashed",
 			executed: true,
 		});
-		expect(deps.convergeCrashed).toHaveBeenCalledWith("crash-1", expect.any(String));
+    expect(deps.convergeCrashed).toHaveBeenCalledWith(
+      "crash-1",
+      expect.any(String),
+    );
 		// Only the converge consumed the budget.
 		expect(result.actionsTaken).toBe(1);
 	});
 
 	it("rescues a stranded host through deps with the attempt index", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "absent" as const,
+        terminal: false,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: true,
+      })),
 			countRescueAttempts: vi.fn(async () => 1),
 		});
 		const result = await reconcileSessions(deps, OPTS);
@@ -455,9 +690,15 @@ describe("reconcileSessions", () => {
 
 	it("degrades to a warn (no rescue call) once the cap is exhausted", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "absent" as const,
+        terminal: false,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: true,
+      })),
 			countRescueAttempts: vi.fn(async () => 3),
 		});
 		const result = await reconcileSessions(deps, OPTS);
@@ -472,9 +713,15 @@ describe("reconcileSessions", () => {
 
 	it("fails safe when the rescue count is unreadable (warn, no rescue)", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "absent" as const,
+        terminal: false,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: true,
+      })),
 			countRescueAttempts: vi.fn(async () => {
 				throw new Error("db unavailable");
 			}),
@@ -489,9 +736,15 @@ describe("reconcileSessions", () => {
 
 	it("dry-run records a rescue decision without touching the pod", async () => {
 		const deps = fakeDeps([candidateRecord()], {
-			probeDaprRuntime: vi.fn(async () => ({ runtime: "absent" as const, terminal: false })),
+      probeDaprRuntime: vi.fn(async () => ({
+        runtime: "absent" as const,
+        terminal: false,
+      })),
 			probeSandboxCr: vi.fn(async () => "present" as const),
-			probePod: vi.fn(async () => ({ state: "present" as const, exited: true })),
+      probePod: vi.fn(async () => ({
+        state: "present" as const,
+        exited: true,
+      })),
 		});
 		const result = await reconcileSessions(deps, { ...OPTS, dryRun: true });
 		expect(result.decisions[0]).toMatchObject({

@@ -135,6 +135,28 @@ export interface SessionSandboxDestroyer {
 	deleteWorkspaceSandbox(name: string): Promise<SessionSandboxDeleteResult>;
 }
 
+export interface SessionRuntimeCleanupPort {
+	purgeRuntimeInstance(input: {
+		runtimeAppId: string;
+		instanceId: string;
+		runtimeSandboxName: string | null;
+	}): Promise<void>;
+}
+
+export type SessionRuntimeInstanceState =
+	| "active"
+	| "terminal"
+	| "not_found"
+	| "unknown";
+
+export interface SessionRuntimeInspectionPort {
+	inspectRuntimeInstance(input: {
+		runtimeAppId: string;
+		instanceId: string;
+		runtimeSandboxName: string | null;
+	}): Promise<SessionRuntimeInstanceState>;
+}
+
 export interface SandboxProvisioner {
 	provision(input: SandboxProvisionInput): Promise<SandboxProvisionResult>;
 }

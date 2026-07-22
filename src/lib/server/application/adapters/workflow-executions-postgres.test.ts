@@ -41,6 +41,7 @@ describe("PostgresWorkflowExecutionRepository status compare-and-set", () => {
 				completed_at timestamp,
 				duration text,
 				stop_requested_at timestamp,
+				stop_requested_mode text,
 				stop_reason text
 			);
 			INSERT INTO workflow_executions (
@@ -51,7 +52,9 @@ describe("PostgresWorkflowExecutionRepository status compare-and-set", () => {
 				('winner-1', 'wf-1', 'user-1', 'project-1', 'error', 'failed', 100, 'inst-2'),
 				('terminal-1', 'wf-1', 'user-1', 'project-1', 'success', 'completed', 100, 'inst-3');
 		`);
-		repository = new PostgresWorkflowExecutionRepository(drizzle(client) as never);
+    repository = new PostgresWorkflowExecutionRepository(
+      drizzle(client) as never,
+    );
 	});
 
 	afterEach(async () => {

@@ -61,17 +61,15 @@ _TEAM_OPS = {"spawn", "task", "send", "broadcast", "status", "shutdown"}
 # policy one transient sidecar/BFF blip (observed on dev 2026-07-10: a 5s
 # read-timeout on ensure-script-team during a rollout) throws into the script
 # and fails the whole run. 4xx returns {"success": False} and never raises, so
-# deterministic failures don't retry. Same knobs as the pump's
-# _BFF_ACTIVITY_RETRY_POLICY (dynamic_script_workflow.py) — one tuning surface.
+# deterministic failures don't retry. Each activity attempt has a 60s aggregate
+# HTTP budget in team_ops.py. Twenty attempts plus 902s of durable backoff bound
+# the configured network/retry horizon at 2,102s (35m02s), including shutdown
+# fan-out, instead of adding request time on top of a 35-minute backoff horizon.
 _TEAM_OP_RETRY_POLICY = wf.RetryPolicy(
-    first_retry_interval=timedelta(
-        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_FIRST_INTERVAL_SECONDS", "2"))
-    ),
-    max_number_of_attempts=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_ATTEMPTS", "5")),
-    backoff_coefficient=float(os.environ.get("SCRIPT_EVAL_RETRY_BACKOFF_COEFFICIENT", "2")),
-    max_retry_interval=timedelta(
-        seconds=int(os.environ.get("SCRIPT_EVAL_RETRY_MAX_INTERVAL_SECONDS", "60"))
-    ),
+    first_retry_interval=timedelta(seconds=2),
+    max_number_of_attempts=20,
+    backoff_coefficient=2,
+    max_retry_interval=timedelta(seconds=60),
 )
 
 

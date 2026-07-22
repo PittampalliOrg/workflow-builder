@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import { sessionEvents } from "$lib/server/db/schema";
 import { aggregateBenchmarkSessionTimings } from "$lib/server/application/adapters/benchmark-timings";
@@ -273,7 +273,7 @@ export async function countEventsByType(
 	return Number(row?.count ?? 0);
 }
 
-/** Row shape returned by the team-event claim: just enough to raise + unclaim. */
+/** Row shape returned by a team mailbox delivery claim. */
 export type ClaimedSessionEvent = {
 	id: string;
 	sequence: number;
@@ -281,32 +281,44 @@ export type ClaimedSessionEvent = {
 };
 
 /**
- * Atomically claim unraised TEAM-ORIGIN user events for a session, oldest
- * first. `processed_at` is the "raised into the live workflow" marker, OWNED
- * EXCLUSIVELY by the team delivery path (src/lib/server/teams/team-delivery.ts):
- * no other raiser sets it, and the claim is scoped to team-origin events only —
- * widening the WHERE to all `user.%` would re-raise turns that the goal loop or
- * the UI events route already delivered inline (raised batches are NOT deduped
- * runtime-side; each raise = an agent turn).
- *
- * The single guarded UPDATE ... RETURNING is the race-safety: two concurrent
- * deliveries (JetStream redelivery, broadcast + nudge) can never claim the same
- * row — the loser sees an empty result and treats the message as delivered.
+ * Lease unraised TEAM-ORIGIN user events for a session, oldest first. Claim
+ * ownership is deliberately separate from `processed_at`: a worker can crash
+ * after the runtime durably accepts a Dapr external event but before this
+ * process records that acceptance. A stale lease can therefore be reclaimed,
+ * and the runtime deduplicates its stable event ids before starting a turn.
  */
 export async function claimUnraisedTeamEvents(
-	sessionId: string,
+	input: {
+		sessionId: string;
+		claimToken: string;
+		staleAfterSeconds: number;
+	},
 	database: Database = defaultDb,
 ): Promise<ClaimedSessionEvent[]> {
 	database = requireDb(database);
+	const claimToken = input.claimToken.trim();
+	if (!claimToken) throw new Error("Team mailbox claim token is required");
+	const staleAfterSeconds = Math.max(1, Math.trunc(input.staleAfterSeconds));
 	const rows = await database
 		.update(sessionEvents)
-		.set({ processedAt: sql`now()` })
+		.set({
+			teamDeliveryClaimToken: claimToken,
+			teamDeliveryClaimedAt: sql`now()`,
+		})
 		.where(
 			and(
-				eq(sessionEvents.sessionId, sessionId),
+				eq(sessionEvents.sessionId, input.sessionId),
 				isNull(sessionEvents.processedAt),
 				eq(sessionEvents.type, "user.message"),
-				sql`${sessionEvents.data}->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle')`,
+				sql`${sessionEvents.data}->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')`,
+				or(
+					isNull(sessionEvents.teamDeliveryClaimToken),
+					isNull(sessionEvents.teamDeliveryClaimedAt),
+					lte(
+						sessionEvents.teamDeliveryClaimedAt,
+						sql`now() - (${staleAfterSeconds} * interval '1 second')`,
+					),
+				),
 			),
 		)
 		.returning({
@@ -324,25 +336,77 @@ export async function claimUnraisedTeamEvents(
 }
 
 /**
- * Roll back a claim after a failed raise so JetStream redelivery re-flushes the
- * same rows. Only ever called with ids returned by claimUnraisedTeamEvents.
+ * Resolve an empty claim: false means the mailbox is truly empty, while true
+ * includes rows held by a fresh competing claim and therefore requires retry.
  */
-export async function unclaimSessionEvents(
+export async function hasUnprocessedTeamEvents(
 	sessionId: string,
-	ids: string[],
 	database: Database = defaultDb,
-): Promise<void> {
-	if (ids.length === 0) return;
+): Promise<boolean> {
 	database = requireDb(database);
-	await database
-		.update(sessionEvents)
-		.set({ processedAt: null })
+	const [row] = await database
+		.select({ id: sessionEvents.id })
+		.from(sessionEvents)
 		.where(
 			and(
 				eq(sessionEvents.sessionId, sessionId),
-				inArray(sessionEvents.id, ids),
+				isNull(sessionEvents.processedAt),
+				eq(sessionEvents.type, "user.message"),
+				sql`${sessionEvents.data}->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')`,
 			),
-		);
+		)
+		.limit(1);
+	return row != null;
+}
+
+/**
+ * Mark only the exact accepted claim as raised. A stale owner that resumes
+ * after another worker reclaimed the lease updates zero rows.
+ */
+export async function completeTeamEventDelivery(
+	input: { sessionId: string; claimToken: string },
+	database: Database = defaultDb,
+): Promise<number> {
+	database = requireDb(database);
+	const rows = await database
+		.update(sessionEvents)
+		.set({
+			processedAt: sql`now()`,
+			teamDeliveryClaimToken: null,
+			teamDeliveryClaimedAt: null,
+		})
+		.where(
+			and(
+				eq(sessionEvents.sessionId, input.sessionId),
+				eq(sessionEvents.teamDeliveryClaimToken, input.claimToken),
+				isNull(sessionEvents.processedAt),
+			),
+		)
+		.returning({ id: sessionEvents.id });
+	return rows.length;
+}
+
+/** Release only the exact unaccepted claim for immediate redelivery. */
+export async function releaseTeamEventDeliveryClaim(
+	input: { sessionId: string; claimToken: string },
+	database: Database = defaultDb,
+): Promise<number> {
+	database = requireDb(database);
+	const rows = await database
+		.update(sessionEvents)
+		.set({
+			teamDeliveryClaimToken: null,
+			teamDeliveryClaimedAt: null,
+		})
+		.where(
+			and(
+				eq(sessionEvents.sessionId, input.sessionId),
+				eq(sessionEvents.teamDeliveryClaimToken, input.claimToken),
+				isNull(sessionEvents.processedAt),
+			),
+		)
+		.returning({ id: sessionEvents.id });
+	return rows.length;
 }
 
 /**
@@ -724,11 +788,29 @@ export class PostgresSessionEventLog implements SessionEventLog {
 		return listEvents(sessionId, input, this.database);
 	}
 
-	claimUnraisedTeamEvents(sessionId: string): Promise<ClaimedSessionEvent[]> {
-		return claimUnraisedTeamEvents(sessionId, this.database);
+	claimUnraisedTeamEvents(input: {
+		sessionId: string;
+		claimToken: string;
+		staleAfterSeconds: number;
+	}): Promise<ClaimedSessionEvent[]> {
+		return claimUnraisedTeamEvents(input, this.database);
 	}
 
-	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void> {
-		return unclaimSessionEvents(sessionId, ids, this.database);
+	hasUnprocessedTeamEvents(sessionId: string): Promise<boolean> {
+		return hasUnprocessedTeamEvents(sessionId, this.database);
+	}
+
+	completeTeamEventDelivery(input: {
+		sessionId: string;
+		claimToken: string;
+	}): Promise<number> {
+		return completeTeamEventDelivery(input, this.database);
+	}
+
+	releaseTeamEventDeliveryClaim(input: {
+		sessionId: string;
+		claimToken: string;
+	}): Promise<number> {
+		return releaseTeamEventDeliveryClaim(input, this.database);
 	}
 }

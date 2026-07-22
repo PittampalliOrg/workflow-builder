@@ -12,6 +12,7 @@ const baseCapabilities = {
 	supportsSkills: true,
 	supportsBuiltinOpenShellTools: false,
 	supportsHooks: true,
+	supportsTeamMailboxReceipts: false,
 	hookTiming: "live",
 	supportsPermissionGating: true,
 	supportsPlugins: true,

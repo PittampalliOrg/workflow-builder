@@ -39,9 +39,7 @@ from .._callable_agents_context import get_callable_agents_context
 
 logger = logging.getLogger(__name__)
 
-_WORKFLOW_BUILDER_APP_ID = os.environ.get(
-    "WORKFLOW_BUILDER_APP_ID", "workflow-builder"
-)
+_WORKFLOW_BUILDER_APP_ID = os.environ.get("WORKFLOW_BUILDER_APP_ID", "workflow-builder")
 _INTERNAL_TOKEN_ENV = "INTERNAL_API_TOKEN"
 
 
@@ -141,6 +139,7 @@ def call_agent(name: str, prompt: str) -> str:
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
+            response_status = int(getattr(resp, "status", 200))
             body_text = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
@@ -173,10 +172,17 @@ def call_agent(name: str, prompt: str) -> str:
     except Exception:  # pragma: no cover
         response_body = {"raw": body_text}
 
-    result = {
-        "status": "dispatched"
+    status = (
+        "pending"
+        if response_status == 202 or response_body.get("pending") is True
+        else "dispatched"
         if response_body.get("daprInstanceId")
-        else response_body.get("reused", False) and "already_running" or "pending",
+        else "already_running"
+        if response_body.get("reused", False)
+        else "pending"
+    )
+    result = {
+        "status": status,
         "peer": slug,
         "peer_app_id": str(peer.get("appId") or f"agent-runtime-{slug}"),
         "child_session_id": response_body.get("sessionId") or child_session_id,
@@ -184,6 +190,7 @@ def call_agent(name: str, prompt: str) -> str:
         "registry_team": str(peer.get("team") or ctx.registry_team or ""),
         "registry_key": peer.get("registryKey"),
         "reused": bool(response_body.get("reused")),
+        "pending": status == "pending",
         "hint": (
             f"Child session is visible in the workspace sessions list as "
             f"id={response_body.get('sessionId') or child_session_id}. "

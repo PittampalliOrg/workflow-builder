@@ -264,6 +264,7 @@ class FakeCtx:
         self.execute_action_inputs: list[dict] = []
         self.cli_workspace_inputs: list[dict] = []
         self.persist_workspace_inputs: list[dict] = []
+        self.retention_arm_inputs: list[dict] = []
         # Sequenced results: pop from the front while >1 remain (last repeats) —
         # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
         self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
@@ -348,6 +349,9 @@ class FakeCtx:
         if name == "persist_workspace_session":
             self.persist_workspace_inputs.append(inp)
             return {"success": True}
+        if name == "arm_execution_workspace_retention":
+            self.retention_arm_inputs.append(inp)
+            return {"success": True, "armed": 1}
         if name == "record_script_call_pause":
             self.pause_inputs.append(inp)
             return {"success": True}
@@ -892,6 +896,47 @@ def test_script_error_is_terminal():
     assert result["success"] is False
     assert result["status"] == "script_error"
     assert "boom in script" in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("evaluator", "expected_status"),
+    [
+        (lambda _inp: plan_done({"ok": True}), "completed"),
+        (lambda _inp: plan_script_error("boom"), "script_error"),
+        (lambda _inp: plan_need([]), "script_error"),
+    ],
+)
+def test_root_terminal_outcomes_arm_workspace_retention_after_persist(
+    evaluator, expected_status
+):
+    ctx = FakeCtx(evaluator=evaluator)
+
+    result = drive(dynamic_script_workflow(ctx, base_input()), ctx, [])
+
+    assert result["status"] == expected_status
+    assert ctx.retention_arm_inputs == [
+        {
+            "executionId": "dsw-test-exec-e1",
+            "dbExecutionId": "e1",
+            "terminalAt": "2026-01-01T00:00:00Z",
+            "_otel": {},
+        }
+    ]
+    activity_names = [item[1] for item in ctx.action_log if item[0] == "activity"]
+    assert activity_names.index("persist_results_to_db") < activity_names.index(
+        "arm_execution_workspace_retention"
+    )
+
+
+def test_nested_terminal_outcome_does_not_arm_root_workspace_retention():
+    ctx = FakeCtx(evaluator=lambda _inp: plan_done({"child": True}))
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input(nested=True)), ctx, steps=[]
+    )
+
+    assert result["status"] == "completed"
+    assert ctx.retention_arm_inputs == []
 
 
 def test_replay_determinism_identical_action_log():
@@ -2268,6 +2313,31 @@ def test_cancel_without_pending_compensation_stays_terminal():
     raws = {i["callId"]: i["raw"] for i in ctx.record_inputs}
     assert raws[cid] == {"success": False, "cancelled": True}
     assert len([a for a in ctx.action_log if a[0] == "child"]) == 1  # the agent only
+
+
+def test_root_cancel_arms_workspace_retention_after_terminal_persist():
+    cid = "c" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([agent_task(cid)], "never returned"))
+
+    result = drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda current: current.fire_cancel("manual stop")],
+    )
+
+    assert result["status"] == "cancelled"
+    assert ctx.retention_arm_inputs == [
+        {
+            "executionId": "dsw-test-exec-e1",
+            "dbExecutionId": "e1",
+            "terminalAt": "2026-01-01T00:00:00Z",
+            "_otel": {},
+        }
+    ]
+    activity_names = [item[1] for item in ctx.action_log if item[0] == "activity"]
+    assert activity_names.index("persist_results_to_db") < activity_names.index(
+        "arm_execution_workspace_retention"
+    )
 
 
 def test_terminal_custom_status_is_completed_with_progress_100():

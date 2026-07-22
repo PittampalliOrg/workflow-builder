@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
 
 from src.event_publisher import publish_session_event
+from src.runtime_start_authority import authorize_session_runtime_start
 from src.session_config import apply_session_control_events
 from src.session_native import (
+    accept_team_mailbox_delivery,
     logical_turn_id,
     session_native_event_fields,
     session_workflow_instance_id,
@@ -27,6 +30,8 @@ from src.session_native import (
 from src.workflow import agent_workflow
 
 logger = logging.getLogger(__name__)
+
+_START_AUTHORITY_PENDING_DELAYS_SECONDS = (1, 2, 4, 8, 15, 30) + (60,) * 14
 
 
 def _stamp_workflow_mcp_session_token(
@@ -137,6 +142,57 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
     if not session_id:
         raise RuntimeError("session_workflow requires sessionId")
 
+    # The Dapr instance can be accepted before its session row publishes the
+    # exact runtime generation. Revalidate that persisted authority as the first
+    # durable step, before status events, model requests, or tool execution.
+    if bool(message.get("requiresStartAuthority")):
+        for pending_attempt in range(
+            len(_START_AUTHORITY_PENDING_DELAYS_SECONDS) + 1
+        ):
+            start_authority = yield ctx.call_activity(
+                authorize_session_runtime_start,
+                input={
+                    "sessionId": session_id,
+                    "workflowMcpSessionToken": message.get(
+                        "workflowMcpSessionToken"
+                    ),
+                    "runtimeAppId": message.get("runtimeAppId")
+                    or message.get("agentAppId"),
+                    "runtimeInstanceId": ctx.instance_id,
+                },
+            )
+            if isinstance(start_authority, dict) and start_authority.get(
+                "authorized"
+            ):
+                break
+            retryable_pending = bool(
+                isinstance(start_authority, dict)
+                and start_authority.get("retryable") is True
+                and start_authority.get("code")
+                in {"team_pending", "runtime_unpublished"}
+            )
+            if (
+                not retryable_pending
+                or pending_attempt >= len(_START_AUTHORITY_PENDING_DELAYS_SECONDS)
+            ):
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    "status": "cancelled",
+                    "content": "",
+                    "sessionId": session_id,
+                    "error": (
+                        "session start authority remained pending"
+                        if retryable_pending
+                        else "session start was not authorized"
+                    ),
+                }
+            yield ctx.create_timer(
+                timedelta(
+                    seconds=_START_AUTHORITY_PENDING_DELAYS_SECONDS[pending_attempt]
+                )
+            )
+
     agent_cfg = _coerce_agent_config(message.get("agentConfig"))
     # BFF-signed platform credential (top-level dispatch field, NOT an MCP
     # header): workflow-mcp-server only exposes the team tools
@@ -158,6 +214,12 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
     auto_terminate = bool(message.get("autoTerminateAfterEndTurn"))
     turn_counter = int(continuation_state["turnCounter"])
     config_revision = int(continuation_state["configRevision"])
+    accepted_team_mailbox_batch_ids = set(
+        continuation_state["teamMailboxBatchIds"]
+    )
+    accepted_team_mailbox_event_ids = set(
+        continuation_state["teamMailboxEventIds"]
+    )
     # Durable multi-turn continuity: the serialized pydantic-ai message
     # history from each turn seeds the next (held as workflow-local state,
     # durable via replay).
@@ -188,7 +250,11 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
                     "[session] %s wait_for_external_event failed: %s", session_id, exc
                 )
                 break
-            pending = list((batch or {}).get("events") or [])
+            pending = accept_team_mailbox_delivery(
+                batch,
+                accepted_batch_ids=accepted_team_mailbox_batch_ids,
+                accepted_event_ids=accepted_team_mailbox_event_ids,
+            )
             if not pending:
                 continue
 

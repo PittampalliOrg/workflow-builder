@@ -158,7 +158,7 @@ describe("internal spawn-peer route", () => {
 		);
 	});
 
-	it("maps application errors and accepted spawn failures to HTTP responses", async () => {
+  it("maps application and retriable dispatch errors to HTTP responses", async () => {
 		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValueOnce({
 			status: "error",
 			httpStatus: 404,
@@ -167,23 +167,32 @@ describe("internal spawn-peer route", () => {
 		await expectHttpStatus(Promise.resolve(POST(event(body()) as never)), 404);
 
 		mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValueOnce({
-			status: "ok",
+      status: "error",
+      httpStatus: 502,
+      message: "Dapr unavailable",
+    });
+    await expectHttpStatus(Promise.resolve(POST(event(body()) as never)), 502);
+  });
+
+  it("forwards structured provisioning contention as HTTP 202", async () => {
+    mocks.peerSessionSpawn.spawnPeerSession.mockResolvedValueOnce({
+      status: "pending",
 			httpStatus: 202,
+      code: "runtime_provisioning",
+      message: "runtime provisioning is already in progress",
 			body: {
 				sessionId: "ca-session-1",
-				agentId: "agent-peer",
-				agentVersion: 3,
-				daprInstanceId: null,
-				natsSubject: null,
-				reused: false,
-				error: "Dapr unavailable",
+        reused: true,
+        pending: true,
 			},
 		});
+
 		const response = (await POST(event(body()) as never)) as Response;
 		expect(response.status).toBe(202);
-		await expect(response.json()).resolves.toMatchObject({
+    await expect(response.json()).resolves.toEqual({
 			sessionId: "ca-session-1",
-			error: "Dapr unavailable",
+      reused: true,
+      pending: true,
 		});
 	});
 });

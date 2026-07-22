@@ -5392,6 +5392,8 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				userId: workflowExecutions.userId,
 				workflowId: workflowExecutions.workflowId,
 				projectId: workflows.projectId,
+				status: workflowExecutions.status,
+				stopRequestedAt: workflowExecutions.stopRequestedAt,
 			})
 			.from(workflowExecutions)
 			.leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
@@ -5790,12 +5792,16 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 	): Promise<ProjectWorkflowRunSummary[]> {
 		const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
 		const offset = Math.max(input.offset ?? 0, 0);
-		const conditions: SQL[] = [eq(workflowExecutions.projectId, input.projectId)];
+		const conditions: SQL[] = [
+			eq(workflowExecutions.projectId, input.projectId),
+		];
 		if (input.workflowId) {
 			conditions.push(eq(workflowExecutions.workflowId, input.workflowId));
 		}
-		if (input.status) conditions.push(eq(workflowExecutions.status, input.status));
-		if (input.since) conditions.push(gte(workflowExecutions.startedAt, input.since));
+		if (input.status)
+			conditions.push(eq(workflowExecutions.status, input.status));
+		if (input.since)
+			conditions.push(gte(workflowExecutions.startedAt, input.since));
 		if (input.q && input.q.trim().length >= 2) {
 			const needle = `%${input.q.trim()}%`;
 			const textCondition = or(

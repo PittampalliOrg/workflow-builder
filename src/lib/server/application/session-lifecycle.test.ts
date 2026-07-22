@@ -74,7 +74,8 @@ describe("ApplicationSessionLifecycleService", () => {
 				error: "coordinator_owned",
 				ownedBy: "benchmarkRun",
 				runId: "bench-1",
-				message: "This is a benchmark instance - cancel the benchmark run instead.",
+        message:
+          "This is a benchmark instance - cancel the benchmark run instead.",
 			},
 		});
 		expect(lifecycle.stopSession).not.toHaveBeenCalled();
@@ -133,6 +134,27 @@ describe("ApplicationSessionLifecycleService", () => {
 			message: "Interrupt could not be delivered right now - please retry.",
 		});
 	});
+
+  it("maps stop-intent persistence failures to unavailable", async () => {
+    vi.mocked(lifecycle.stopSession).mockResolvedValue({
+      confirmed: false,
+      notFound: false,
+      requested: false,
+      state: "stopping",
+      retryable: true,
+      steps: [],
+    });
+
+    const result = await service.stopSession({
+      ...commandInput(),
+      body: { mode: "terminate" },
+    });
+
+    expect(result).toEqual({
+      status: "unavailable",
+      message: "Stop intent could not be persisted - please retry.",
+    });
+  });
 });
 
 function commandInput() {

@@ -13,6 +13,7 @@
 import { getApplicationAdapters } from "$lib/server/application";
 import type {
 	AddMemberInput,
+  ActiveTeamMemberStatus,
 	EnsureTeamInput,
 	TeamMemberRow,
 	TeamMemberStatus,
@@ -22,7 +23,11 @@ import type {
 } from "$lib/server/application/ports";
 
 // Re-export the row shapes so existing importers of these types keep working.
-export type { TeamMemberRow, TeamRow, TeamTaskListItem } from "$lib/server/application/ports";
+export type {
+  TeamMemberRow,
+  TeamRow,
+  TeamTaskListItem,
+} from "$lib/server/application/ports";
 
 const store = () => getApplicationAdapters().teamStore;
 
@@ -48,7 +53,10 @@ export function listMembers(
 	return s.listMembers(teamId);
 }
 
-export function getTeam(teamId: string, s: TeamStore = store()): Promise<TeamRow | null> {
+export function getTeam(
+  teamId: string,
+  s: TeamStore = store(),
+): Promise<TeamRow | null> {
 	return s.getTeam(teamId);
 }
 
@@ -77,7 +85,9 @@ export function getMemberByName(
 }
 
 /** All members currently idle (across active teams) — the tick's lost-idle set. */
-export function listIdleMembers(s: TeamStore = store()): Promise<TeamMemberRow[]> {
+export function listIdleMembers(
+  s: TeamStore = store(),
+): Promise<TeamMemberRow[]> {
 	return s.listIdleMembers();
 }
 
@@ -88,12 +98,22 @@ export function getMemberBySession(
 	return s.getMemberBySession(sessionId);
 }
 
-export function setMemberStatus(
+export function transitionActiveMemberStatus(
+  input: {
+    sessionId: string;
+    expectedStatuses: readonly ActiveTeamMemberStatus[];
+    status: ActiveTeamMemberStatus;
+  },
+  s: TeamStore = store(),
+): Promise<boolean> {
+  return s.transitionActiveMemberStatus(input);
+}
+
+export function transitionMemberToFailed(
 	sessionId: string,
-	status: TeamMemberStatus,
 	s: TeamStore = store(),
-): Promise<void> {
-	return s.setMemberStatus(sessionId, status);
+): Promise<boolean> {
+  return s.transitionMemberToFailed(sessionId);
 }
 
 /** Whole-team token consumption (budget gate). */
@@ -106,9 +126,14 @@ export function getTeamTokensUsed(
 
 /** Re-point a member row at a fresh session (teammate revival). */
 export function setMemberSession(
-	input: { memberId: string; sessionId: string; status?: TeamMemberStatus },
+	input: {
+		memberId: string;
+		previousSessionId: string;
+		sessionId: string;
+		status?: TeamMemberStatus;
+	},
 	s: TeamStore = store(),
-): Promise<void> {
+): Promise<boolean> {
 	return s.setMemberSession(input);
 }
 

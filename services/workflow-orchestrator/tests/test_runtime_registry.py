@@ -241,6 +241,7 @@ def test_descriptor_capabilities_present_and_typed():
         caps = descriptor.capabilities
         assert caps["durabilityGranularity"] in {"per-activity", "per-turn", "per-session"}
         assert isinstance(caps["supportsMcp"], bool)
+        assert isinstance(caps["supportsTeamMailboxReceipts"], bool)
         assert isinstance(caps["supportedProviders"], list)
     # The verified reference runtime is per-activity + multi-provider.
     dapr = runtime_registry.registry.by_id("dapr-agent-py")
@@ -261,6 +262,20 @@ def test_descriptor_capabilities_present_and_typed():
     assert "structuredOutputMode" not in claude.capabilities
     assert "structuredOutputJsonSchemaDraft" not in claude.capabilities
     assert claude.capabilities_verified is False
+
+
+def test_team_mailbox_receipts_are_declared_only_by_receipting_runtimes():
+    capable = {
+        descriptor.id
+        for descriptor in runtime_registry.registry.list_runtimes()
+        if descriptor.capabilities["supportsTeamMailboxReceipts"]
+    }
+    assert capable == {
+        "dapr-agent-py",
+        "dapr-agent-py-testing",
+        "dapr-agent-py-juicefs",
+        "pydantic-ai-agent-py",
+    }
 
 
 def test_app_ids_resolved_from_config():

@@ -6,6 +6,7 @@ import {
 } from "drizzle-orm";
 import {
   boolean,
+  check,
   customType,
   doublePrecision,
   foreignKey,
@@ -552,6 +553,11 @@ export const workflowExecutions = pgTable(
     // the row stays non-terminal until the cascade or the terminal-status
     // reaper confirms the durable tree is closed, then finalizeDb flips status.
     stopRequestedAt: timestamp("stop_requested_at"),
+    // Persisted terminal stop mode. Requests may escalate monotonically from
+    // terminate -> purge -> reset, but retries can never downgrade the intent.
+    stopRequestedMode: text("stop_requested_mode").$type<
+      "terminate" | "purge" | "reset"
+    >(),
     stopReason: text("stop_reason"),
   },
   (table) => ({
@@ -573,6 +579,10 @@ export const workflowExecutions = pgTable(
       table.mlflowRunId,
     ),
     projectIdx: index("idx_workflow_executions_project_id").on(table.projectId),
+    stopRequestedModeCheck: check(
+      "workflow_executions_stop_requested_mode_check",
+      sql`${table.stopRequestedMode} IS NULL OR ${table.stopRequestedMode} IN ('terminate', 'purge', 'reset')`,
+    ),
     // Active-triggered-run count (concurrency gate + capacity lens).
     triggerSourceStatusIdx: index(
       "idx_workflow_executions_trigger_source_status",
@@ -3375,8 +3385,14 @@ export const sessions = pgTable(
     status: text("status").notNull().default("rescheduling"),
     stopReason: jsonb("stop_reason").$type<Record<string, unknown>>(),
     // Lifecycle stop-intent (mirrors workflow_executions.stop_requested_at):
-    // set when a stop is requested; cleared implicitly when status→terminated.
+    // set when a stop is requested and cleared atomically only after cleanup is
+    // acknowledged; terminal rows can therefore retain a retryable pending stop.
     stopRequestedAt: timestamp("stop_requested_at"),
+    // Persisted terminal stop mode. Requests may escalate monotonically from
+    // terminate -> purge -> reset; legacy null intents begin as terminate.
+    stopRequestedMode: text("stop_requested_mode").$type<
+      "terminate" | "purge" | "reset"
+    >(),
     // Lifecycle pause-intent: set when the user pauses the run (Dapr
     // suspend_workflow); cleared on resume. Stop/cleanup paths treat rows with
     // this set as an intentional hold rather than terminal cleanup candidates.
@@ -3396,6 +3412,30 @@ export const sessions = pgTable(
     workspaceSandboxName: text("workspace_sandbox_name"),
     runtimeAppId: text("runtime_app_id"),
     runtimeSandboxName: text("runtime_sandbox_name"),
+    // Native peer workflows can share their parent's runtime process. Keep
+    // routing identity while preventing child lifecycle from deleting that
+    // parent-owned Sandbox.
+    runtimeHostOwned: boolean("runtime_host_owned").notNull().default(true),
+    // Versioned, non-secret provider recipe used to recreate the exact published
+    // generation when a provisional Sandbox expires before activation.
+    runtimeHostLaunchSpec: jsonb("runtime_host_launch_spec").$type<
+      Record<string, unknown>
+    >(),
+    // Durable lease for the interval between deciding to provision a
+    // per-session runtime and publishing its actual app/Sandbox target. Keep
+    // this independent of runtimeAppId so a replacement can retain the old
+    // cleanup target while lifecycle also addresses the prospective host.
+    runtimeProvisioningStartedAt: timestamp("runtime_provisioning_started_at"),
+    // Exact unpublished dispatch target. These fields are written under the
+    // provisioning lease before an external durable start, so lifecycle can
+    // address a crash-window instance even when it runs on a shared app id.
+    runtimeProvisioningAppId: text("runtime_provisioning_app_id"),
+    runtimeProvisioningInstanceId: text("runtime_provisioning_instance_id"),
+    runtimeProvisioningSandboxName: text("runtime_provisioning_sandbox_name"),
+    runtimeProvisioningHostOwned: boolean("runtime_provisioning_host_owned"),
+    runtimeProvisioningHostLaunchSpec: jsonb(
+      "runtime_provisioning_host_launch_spec",
+    ).$type<Record<string, unknown>>(),
     workflowExecutionId: text("workflow_execution_id"),
     parentExecutionId: text("parent_execution_id"),
     // Interactive-cli conversation resume: a resumed session is a NEW row
@@ -3446,6 +3486,25 @@ export const sessions = pgTable(
     agentIdx: index("idx_sessions_agent").on(table.agentId),
     userIdx: index("idx_sessions_user").on(table.userId),
     statusIdx: index("idx_sessions_status").on(table.status),
+    stopRequestedModeCheck: check(
+      "sessions_stop_requested_mode_check",
+      sql`${table.stopRequestedMode} IS NULL OR ${table.stopRequestedMode} IN ('terminate', 'purge', 'reset')`,
+    ),
+    runtimeProvisioningTargetConsistent: check(
+      "sessions_runtime_provisioning_target_consistent",
+      sql`(
+        ${table.runtimeProvisioningAppId} IS NULL
+        AND ${table.runtimeProvisioningInstanceId} IS NULL
+        AND ${table.runtimeProvisioningSandboxName} IS NULL
+        AND ${table.runtimeProvisioningHostOwned} IS NULL
+        AND ${table.runtimeProvisioningHostLaunchSpec} IS NULL
+      ) OR (
+        ${table.runtimeProvisioningStartedAt} IS NOT NULL
+        AND ${table.runtimeProvisioningAppId} IS NOT NULL
+        AND ${table.runtimeProvisioningInstanceId} IS NOT NULL
+        AND ${table.runtimeProvisioningHostOwned} IS NOT NULL
+      )`,
+    ),
     createdIdx: index("idx_sessions_created").on(table.createdAt),
     workflowIdx: index("idx_sessions_workflow_execution").on(
       table.workflowExecutionId,
@@ -3475,6 +3534,134 @@ export const sessions = pgTable(
 );
 
 /**
+ * Durable team membership and cross-system runtime operation fences. Team
+ * launch metadata stays attached to the member until promotion or exact
+ * cleanup so a periodic reconciler can recover process crashes safely.
+ */
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    agentSlug: text("agent_slug"),
+    name: text("name").notNull(),
+    role: text("role").notNull().default("member"),
+    model: text("model"),
+    status: text("status").notNull().default("working"),
+    planModeRequired: boolean("plan_mode_required").notNull().default(false),
+    joinedAt: timestamp("joined_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    runtimeOperationId: text("runtime_operation_id"),
+    runtimeOperation: text("runtime_operation").$type<"delivery" | "suspend">(),
+    runtimeOperationStartedAt: timestamp("runtime_operation_started_at"),
+    runtimeDesiredRunning: boolean("runtime_desired_running")
+      .notNull()
+      .default(true),
+    launchOperationId: text("launch_operation_id"),
+    launchKind: text("launch_kind").$type<"spawn" | "revival">(),
+    launchStartedAt: timestamp("launch_started_at"),
+    launchCompletedAt: timestamp("launch_completed_at"),
+    launchCleanupRequestedAt: timestamp("launch_cleanup_requested_at"),
+    launchCleanupAction: text("launch_cleanup_action").$type<
+      "purge" | "unwind"
+    >(),
+    launchPreviousSessionId: text("launch_previous_session_id"),
+    launchPreviousStatus: text("launch_previous_status").$type<
+      "failed" | "shutdown"
+    >(),
+    launchDispatchRecipe: jsonb("launch_dispatch_recipe").$type<Record<
+      string,
+      unknown
+    > | null>(),
+  },
+  (table) => ({
+    teamNameUnique: unique("team_members_team_id_name_uq").on(
+      table.teamId,
+      table.name,
+    ),
+    sessionUnique: unique("team_members_session_uq").on(table.sessionId),
+    teamIdx: index("team_members_team_idx").on(table.teamId),
+    runtimeOperationConsistent: check(
+      "team_members_runtime_operation_consistent",
+      sql`(
+        (${table.runtimeOperationId} IS NULL AND ${table.runtimeOperation} IS NULL AND ${table.runtimeOperationStartedAt} IS NULL)
+        OR
+        (
+          ${table.runtimeOperationId} IS NOT NULL
+          AND ${table.runtimeOperationStartedAt} IS NOT NULL
+          AND (
+            (${table.runtimeOperation} = 'delivery' AND ${table.runtimeDesiredRunning} = true)
+            OR (${table.runtimeOperation} = 'suspend' AND ${table.runtimeDesiredRunning} = false)
+          )
+        )
+      )`,
+    ),
+    launchKindCheck: check(
+      "team_members_launch_kind_check",
+      sql`${table.launchKind} IS NULL OR ${table.launchKind} IN ('spawn', 'revival')`,
+    ),
+    launchMetadataConsistent: check(
+      "team_members_launch_metadata_consistent",
+      sql`(
+        (
+          ${table.launchOperationId} IS NULL
+          AND ${table.launchKind} IS NULL
+          AND ${table.launchStartedAt} IS NULL
+          AND ${table.launchCompletedAt} IS NULL
+          AND ${table.launchCleanupRequestedAt} IS NULL
+          AND ${table.launchCleanupAction} IS NULL
+          AND ${table.launchPreviousSessionId} IS NULL
+          AND ${table.launchPreviousStatus} IS NULL
+          AND ${table.launchDispatchRecipe} IS NULL
+        )
+        OR
+        (
+          ${table.launchOperationId} IS NOT NULL
+          AND ${table.launchKind} IS NOT NULL
+          AND ${table.launchStartedAt} IS NOT NULL
+          AND ${table.launchDispatchRecipe} IS NOT NULL
+          AND jsonb_typeof(${table.launchDispatchRecipe}) = 'object'
+          AND NOT (
+            ${table.launchCompletedAt} IS NOT NULL
+            AND ${table.launchCleanupRequestedAt} IS NOT NULL
+          )
+          AND (
+            (
+              ${table.launchCleanupRequestedAt} IS NULL
+              AND ${table.launchCleanupAction} IS NULL
+            )
+            OR (
+              ${table.launchCleanupRequestedAt} IS NOT NULL
+              AND ${table.launchCleanupAction} IS NOT NULL
+              AND ${table.launchCleanupAction} IN ('purge', 'unwind')
+            )
+          )
+          AND (
+            (
+              ${table.launchKind} = 'spawn'
+              AND ${table.launchPreviousSessionId} IS NULL
+              AND ${table.launchPreviousStatus} IS NULL
+            )
+            OR (
+              ${table.launchKind} = 'revival'
+              AND ${table.launchPreviousSessionId} IS NOT NULL
+              AND ${table.launchPreviousStatus} IS NOT NULL
+              AND ${table.launchPreviousStatus} IN ('failed', 'shutdown')
+            )
+          )
+        )
+      )`,
+    ),
+    launchReconcileIdx: index("team_members_launch_reconcile_idx")
+      .on(table.launchStartedAt, table.id)
+      .where(
+        sql`${table.status} = 'starting' AND ${table.launchOperationId} IS NOT NULL`,
+      ),
+  }),
+);
+
+/**
  * Append-only event log for a session. `sequence` is monotonic within a
  * session — the ID prefix `sevt_` matches CMA's wire convention. The SSE
  * endpoint reads this alongside NATS for replay on reconnect.
@@ -3492,6 +3679,8 @@ export const sessionEvents = pgTable(
     type: text("type").notNull(),
     data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
     processedAt: timestamp("processed_at"),
+    teamDeliveryClaimToken: text("team_delivery_claim_token"),
+    teamDeliveryClaimedAt: timestamp("team_delivery_claimed_at"),
     sourceEventId: text("source_event_id"),
     // Producer-Id triple for durable-streams-shaped idempotency. producerId
     // is the agent slug (joins with agents.slug); producerEpoch is the
@@ -3511,6 +3700,11 @@ export const sessionEvents = pgTable(
     sessionIdx: index("idx_session_events_session").on(table.sessionId),
     typeIdx: index("idx_session_events_type").on(table.type),
     createdIdx: index("idx_session_events_created").on(table.createdAt),
+    teamDeliveryClaimIdx: index("idx_session_events_team_delivery_claim")
+      .on(table.sessionId, table.teamDeliveryClaimedAt)
+      .where(
+        sql`${table.processedAt} IS NULL AND ${table.type} = 'user.message'`,
+      ),
     producerIdx: index("idx_session_events_producer").on(
       table.producerId,
       table.producerEpoch,

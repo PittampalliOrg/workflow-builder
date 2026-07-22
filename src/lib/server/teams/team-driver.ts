@@ -23,9 +23,13 @@ import {
 	listIdleMembers,
 	listMembers,
 	listTeamTasks,
-	setMemberStatus,
+  transitionActiveMemberStatus,
+  transitionMemberToFailed,
 } from "$lib/server/teams/team-repo";
-import { injectTeamMessage, TEAM_MESSAGE_TOPIC } from "$lib/server/teams/team-messaging";
+import {
+  injectTeamMessage,
+  TEAM_MESSAGE_TOPIC,
+} from "$lib/server/teams/team-messaging";
 import { runTeamSuspendTick } from "$lib/server/teams/team-suspend";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 import { refreshTeamRunStatus } from "$lib/server/teams/team-run";
@@ -50,7 +54,9 @@ async function listHeldTasks(
 ): Promise<Array<{ id: string; title: string; updated_at: string }>> {
 	const tasks = await listTeamTasks(teamId, store);
 	return tasks
-		.filter((t) => t.status === "in_progress" && t.assignee_session_id === sessionId)
+    .filter(
+      (t) => t.status === "in_progress" && t.assignee_session_id === sessionId,
+    )
 		.map((t) => ({ id: t.id, title: t.title, updated_at: t.updated_at }));
 }
 
@@ -73,7 +79,8 @@ export async function onTeamSessionEvent(
 	store: TeamStore = getApplicationAdapters().teamStore,
 ): Promise<void> {
 	try {
-		if (event.type !== "session.status_idle" && event.type !== "session.error") return;
+    if (event.type !== "session.status_idle" && event.type !== "session.error")
+      return;
 		const member = await getMemberBySession(sessionId, store);
 		if (!member || member.role === "lead") return; // only teammates notify the lead
 		// `shutdown` is TERMINAL: a stopping teammate's final turn still emits one
@@ -86,7 +93,7 @@ export async function onTeamSessionEvent(
 		// "failed" is quiescent for join/wait predicates, so the run still drains.
 		if (event.type === "session.error") {
 			const errorText = String(event.data?.error ?? "").slice(0, 300);
-			await setMemberStatus(sessionId, "failed", store);
+      if (!(await transitionMemberToFailed(sessionId, store))) return;
 			await refreshTeamRunStatus(member.team_id, store);
 			const errMembers = await listMembers(member.team_id, store);
 			const errLead = errMembers.find((m) => m.role === "lead");
@@ -106,9 +113,21 @@ export async function onTeamSessionEvent(
 		// notify the lead regardless of the specific stop reason (end_turn,
 		// goal_stop, etc.). Unlike the goal loop (which only *continues* on
 		// end_turn), a team idle notice is informational.
-		const reason = (event.data?.stop_reason as { type?: string } | undefined)?.type;
+    const reason = (event.data?.stop_reason as { type?: string } | undefined)
+      ?.type;
 
-		await setMemberStatus(sessionId, "idle", store);
+    if (
+      !(await transitionActiveMemberStatus(
+        {
+          sessionId,
+          expectedStatuses: ["working", "idle"],
+          status: "idle",
+        },
+        store,
+      ))
+    ) {
+      return;
+    }
 
 		// Recompute the container run's status from team state so the Fleet/runs
 		// list reflects the team live (no-op for teams without an execution row).
@@ -154,7 +173,9 @@ export async function onTeamSessionEvent(
 		// invisible to the claim nudge (not claimable) and blocks the join.
 		// sourceEventId keys on the TASK's updated_at (stable while held), so a
 		// stubborn holder is nudged at most once per hold — no idle→nudge loop.
-		const held = AUTO_CLAIM ? await listHeldTasks(member.team_id, sessionId, store) : [];
+    const held = AUTO_CLAIM
+      ? await listHeldTasks(member.team_id, sessionId, store)
+      : [];
 		if (held.length > 0) {
 			await injectTeamMessage({
 				recipientSessionId: sessionId,
@@ -243,7 +264,7 @@ export async function runTeamDriverTick(
 		});
 		nudged++;
 	}
-	// Delivery sweeper: re-publish a trigger for any member session holding
+	// Delivery sweeper: re-publish a trigger for any runtime-backed team session holding
 	// unraised team-origin messages older than the threshold. Heals lost pubsub
 	// deliveries (observed once on dev: JetStream acked with no route effect and
 	// zero redelivery). Duplicate triggers are harmless — the atomic claim in

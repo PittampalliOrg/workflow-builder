@@ -254,26 +254,38 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 		);
 	}
 
-	/** See PostgresSessionEventLog.claimUnraisedTeamEvents — same contract,
-	 * routed through the Dapr postgres binding. UPDATE...RETURNING keeps the
-	 * claim atomic (concurrent deliveries can never claim the same row). */
+	/** See PostgresSessionEventLog.claimUnraisedTeamEvents. The binding adapter
+	 * leases rows without changing processed_at and supports stale reclaim. */
 	async claimUnraisedTeamEvents(
-		sessionId: string,
+		input: {
+			sessionId: string;
+			claimToken: string;
+			staleAfterSeconds: number;
+		},
 	): Promise<Array<{ id: string; sequence: number; data: Record<string, unknown> }>> {
+		const claimToken = input.claimToken.trim();
+		if (!claimToken) throw new Error("Team mailbox claim token is required");
+		const staleAfterSeconds = Math.max(1, Math.trunc(input.staleAfterSeconds));
 		const result = await this.client.query({
 			summary: "session_events.claim_unraised_team_events",
 			collection: "session_events",
 			sql: `
 				UPDATE session_events
-				SET processed_at = now()
+				SET team_delivery_claim_token = $2,
+					team_delivery_claimed_at = now()
 				WHERE session_id = $1
 					AND processed_at IS NULL
 					AND type = 'user.message'
 					AND data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')
+					AND (
+						team_delivery_claim_token IS NULL
+						OR team_delivery_claimed_at IS NULL
+						OR team_delivery_claimed_at <= now() - ($3 * interval '1 second')
+					)
 				RETURNING id, sequence, data
 			`,
-			params: [sessionId],
-			paramNames: ["session_id"],
+			params: [input.sessionId, claimToken, staleAfterSeconds],
+			paramNames: ["session_id", "claim_token", "stale_after_seconds"],
 		});
 		// Binding rows are POSITIONAL arrays matching the RETURNING list.
 		return result.rows
@@ -292,23 +304,68 @@ export class DaprPostgresSessionEventLog implements SessionEventLog {
 			.sort((a, b) => a.sequence - b.sequence);
 	}
 
-	async unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void> {
-		// Per-id exec: the Dapr postgres binding JSON-serializes params, so a JS
-		// array does not bind reliably as text[]. Unclaim is a rare failure path
-		// with a handful of rows — N tiny statements is fine.
-		for (const id of ids) {
-			await this.client.exec({
-				summary: "session_events.unclaim",
+	async hasUnprocessedTeamEvents(sessionId: string): Promise<boolean> {
+		const result = await this.client.query({
+			summary: "session_events.has_unprocessed_team_events",
+			collection: "session_events",
+			sql: `
+				SELECT 1
+				FROM session_events
+				WHERE session_id = $1
+					AND processed_at IS NULL
+					AND type = 'user.message'
+					AND data->>'origin' IN ('teammate-message', 'team-broadcast', 'team-idle', 'team-error')
+				LIMIT 1
+			`,
+			params: [sessionId],
+			paramNames: ["session_id"],
+		});
+		return result.rows.length > 0;
+	}
+
+	async completeTeamEventDelivery(input: {
+		sessionId: string;
+		claimToken: string;
+	}): Promise<number> {
+		const result = await this.client.query({
+			summary: "session_events.complete_team_delivery",
 				collection: "session_events",
 				sql: `
 					UPDATE session_events
-					SET processed_at = NULL
-					WHERE session_id = $1 AND id = $2
+				SET processed_at = now(),
+					team_delivery_claim_token = NULL,
+					team_delivery_claimed_at = NULL
+				WHERE session_id = $1
+					AND team_delivery_claim_token = $2
+					AND processed_at IS NULL
+				RETURNING id
 				`,
-				params: [sessionId, id],
-				paramNames: ["session_id", "id"],
+			params: [input.sessionId, input.claimToken],
+			paramNames: ["session_id", "claim_token"],
 			});
+		return result.rows.length;
 		}
+
+	async releaseTeamEventDeliveryClaim(input: {
+		sessionId: string;
+		claimToken: string;
+	}): Promise<number> {
+		const result = await this.client.query({
+			summary: "session_events.release_team_delivery_claim",
+			collection: "session_events",
+			sql: `
+				UPDATE session_events
+				SET team_delivery_claim_token = NULL,
+					team_delivery_claimed_at = NULL
+				WHERE session_id = $1
+					AND team_delivery_claim_token = $2
+					AND processed_at IS NULL
+				RETURNING id
+			`,
+			params: [input.sessionId, input.claimToken],
+			paramNames: ["session_id", "claim_token"],
+		});
+		return result.rows.length;
 	}
 
 	private async selectBySourceEventId(

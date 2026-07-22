@@ -20,10 +20,11 @@
  */
 
 import { getApplicationAdapters } from "$lib/server/application";
-import type { TeamStore } from "$lib/server/application/ports";
-import { suspendSessionSandbox } from "$lib/server/kube/client";
+import type {
+  TeamRuntimeHostPort,
+  TeamStore,
+} from "$lib/server/application/ports";
 import { sessionHostAppId } from "$lib/server/sessions/agent-workflow-host";
-import { setMemberStatus } from "$lib/server/teams/team-repo";
 import { countClaimableTasks } from "$lib/server/teams/team-tasks";
 
 const TEAM_SUSPEND_ENABLED = () =>
@@ -34,8 +35,20 @@ const TEAM_SUSPEND_IDLE_SECONDS = () => {
 	return Number.isFinite(raw) && raw >= 60 ? Math.trunc(raw) : 900;
 };
 
+const RUNTIME_OPERATION_STALE_SECONDS = 300;
+
+const TERMINAL_SESSION_STATUSES = new Set([
+  "terminated",
+  "completed",
+  "failed",
+  "canceled",
+  "cancelled",
+  "error",
+  "crashed",
+]);
+
 export type TeamSuspendDeps = {
-	suspendSessionSandbox: typeof suspendSessionSandbox;
+  runtimeHost: TeamRuntimeHostPort;
 	appendSessionEvent: (
 		sessionId: string,
 		event: {
@@ -48,10 +61,11 @@ export type TeamSuspendDeps = {
 };
 
 function realDeps(): TeamSuspendDeps {
+  const adapters = getApplicationAdapters();
 	return {
-		suspendSessionSandbox,
+    runtimeHost: adapters.teamRuntimeHost,
 		appendSessionEvent: (sessionId, event) =>
-			getApplicationAdapters().workflowData.appendSessionEvent(sessionId, event),
+      adapters.workflowData.appendSessionEvent(sessionId, event),
 	};
 }
 
@@ -76,6 +90,8 @@ export async function runTeamSuspendTick(
 	let suspended = 0;
 	let skipped = 0;
 	for (const c of candidates) {
+		let lease: Awaited<ReturnType<TeamStore["claimRuntimeOperation"]>> = null;
+		let patchedSandboxName: string | null = null;
 		try {
 			// Claimable work pending → the nudge path owns this member (it will be
 			// nudged, claim, and go working) — suspending now would just thrash.
@@ -84,16 +100,103 @@ export async function runTeamSuspendTick(
 				continue;
 			}
 			const sandboxName =
-				c.runtime_sandbox_name ?? `agent-host-${sessionHostAppId(c.session_id)}`;
-			const result = await deps.suspendSessionSandbox(sandboxName);
-			if (result === "missing") {
-				// CR gone (session destroyed under us) — leave status alone; the
-				// liveness reconciler owns terminal convergence.
+				c.runtime_sandbox_name ??
+				`agent-host-${sessionHostAppId(c.session_id)}`;
+
+			// Own desired-suspended before changing external state. A delivery lease
+			// (or a queued unraised mailbox row) makes this claim fail atomically.
+			lease = await store.claimRuntimeOperation({
+				sessionId: c.session_id,
+				operation: "suspend",
+				staleAfterSeconds: RUNTIME_OPERATION_STALE_SECONDS,
+			});
+			if (!lease) {
 				skipped++;
 				continue;
 			}
-			await setMemberStatus(c.session_id, "suspended", store);
-			await deps.appendSessionEvent(c.session_id, {
+			const finish = (input: {
+				memberStatus?: "suspended";
+				desiredRunning?: boolean;
+			} = {}) =>
+				store.finishRuntimeOperation({
+					sessionId: c.session_id,
+					operationId: lease!.operationId,
+					operation: "suspend",
+					...input,
+				});
+			const ownsDesiredSuspended = () =>
+				store.verifyRuntimeOperation({
+					sessionId: c.session_id,
+					operationId: lease!.operationId,
+					operation: "suspend",
+					desiredRunning: false,
+				});
+
+			// Work may have arrived between candidate selection and the claim. Give
+			// the delivery path ownership without scaling its host down.
+			if ((await countClaimableTasks(c.team_id, store)) > 0) {
+				await finish({ desiredRunning: true });
+				lease = null;
+				skipped++;
+				continue;
+			}
+			if (!(await ownsDesiredSuspended())) {
+				await finish({ desiredRunning: true }).catch(() => false);
+				lease = null;
+				skipped++;
+				continue;
+			}
+
+			const result = await deps.runtimeHost.suspend(sandboxName);
+			if (result === "missing") {
+				await finish({ desiredRunning: true });
+				lease = null;
+				skipped++;
+				continue;
+			}
+			patchedSandboxName = sandboxName;
+
+			// Recheck the exact desired-state owner after the patch. An opposite
+			// delivery operation cannot steal this lease; terminal lifecycle state can
+			// only make verification fail closed.
+			const stillOwned = await ownsDesiredSuspended();
+			if (!stillOwned) {
+				await finish().catch(() => false);
+				const session = await store.getSessionDeliveryState(c.session_id);
+				// Resume only if the current durable intent is running. Stop/shutdown
+				// owns terminal cleanup and stale suspension recovery still wants zero.
+				if (
+					session &&
+					!session.stopRequested &&
+					!TERMINAL_SESSION_STATUSES.has(session.status) &&
+					session.runtimeDesiredRunning
+				) {
+					await deps.runtimeHost.resume(sandboxName);
+				}
+				lease = null;
+				patchedSandboxName = null;
+				skipped++;
+				continue;
+			}
+			const finalized = await finish({ memberStatus: "suspended" });
+			lease = null;
+			if (!finalized) {
+				const session = await store.getSessionDeliveryState(c.session_id);
+				if (
+					session &&
+					!session.stopRequested &&
+					!TERMINAL_SESSION_STATUSES.has(session.status) &&
+					session.runtimeDesiredRunning
+				) {
+					await deps.runtimeHost.resume(sandboxName);
+				}
+				patchedSandboxName = null;
+				skipped++;
+				continue;
+			}
+			patchedSandboxName = null;
+      await deps
+        .appendSessionEvent(c.session_id, {
 				type: "session.host_suspended",
 				data: {
 					source: "team-suspend-tick",
@@ -104,9 +207,51 @@ export async function runTeamSuspendTick(
 				// as a deliverable message.
 				processedAt: new Date(),
 				sourceEventId: `host-suspend:${c.session_id}:${c.last_event_at ?? c.updated_at}`,
-			});
+        })
+        .catch((auditErr) =>
+          console.warn(
+            `[team-suspend] audit append failed for ${c.session_id}:`,
+            auditErr instanceof Error ? auditErr.message : auditErr,
+          ),
+        );
 			suspended++;
 		} catch (err) {
+			const released = lease
+				? await store
+						.finishRuntimeOperation({
+							sessionId: c.session_id,
+							operationId: lease.operationId,
+							operation: "suspend",
+							desiredRunning: true,
+						})
+						.catch(() => false)
+				: false;
+			lease = null;
+			// A failed PATCH is ambiguous. The store changes desired state only for an
+			// active session; re-read that authority before compensating so stop cannot
+			// be resurrected by an in-flight suspend failure.
+			if (released) {
+				const session = await store
+					.getSessionDeliveryState(c.session_id)
+					.catch(() => null);
+				if (
+					session &&
+					!session.stopRequested &&
+					!TERMINAL_SESSION_STATUSES.has(session.status) &&
+					session.runtimeDesiredRunning
+				) {
+					const sandboxName =
+						patchedSandboxName ??
+						c.runtime_sandbox_name ??
+						`agent-host-${sessionHostAppId(c.session_id)}`;
+					await deps.runtimeHost.resume(sandboxName).catch((resumeErr) =>
+						console.error(
+							`[team-suspend] failed to compensate ${c.session_id}:`,
+							resumeErr instanceof Error ? resumeErr.message : resumeErr,
+						),
+					);
+				}
+			}
 			skipped++;
 			console.warn(
 				`[team-suspend] failed to suspend ${c.session_id}:`,

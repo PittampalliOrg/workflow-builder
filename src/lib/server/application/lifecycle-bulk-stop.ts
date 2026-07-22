@@ -101,7 +101,11 @@ export class ApplicationBulkLifecycleStopService {
 		const targets = parseTargets(body.targets);
 
 		if (targets.length === 0) {
-			return { status: "error", httpStatus: 400, message: "No valid targets provided" };
+      return {
+        status: "error",
+        httpStatus: 400,
+        message: "No valid targets provided",
+      };
 		}
 		if (targets.length > MAX_TARGETS) {
 			return {
@@ -178,7 +182,10 @@ export class ApplicationBulkLifecycleStopService {
 		} else {
 			await this.deps.evaluationRuns.cancelEvaluationRun(projectId, target.id);
 		}
-		this.deps.coordinatorCancels.scheduleCoordinatorCancel(target.kind, target.id);
+    this.deps.coordinatorCancels.scheduleCoordinatorCancel(
+      target.kind,
+      target.id,
+    );
 		return { ...target, state: "cancelled", status: 200, ok: true };
 	}
 
@@ -199,11 +206,15 @@ export class ApplicationBulkLifecycleStopService {
 		});
 		if (access.status === "not_found") return notFound(target);
 
-		const owner = await this.deps.sessionLifecycle.getCoordinatorOwner(target.id);
+    const owner = await this.deps.sessionLifecycle.getCoordinatorOwner(
+      target.id,
+    );
 		if (owner) return coordinatorOwned(target, owner);
 
 		if (input.mode === "interrupt") {
-			await this.deps.sessionLifecycle.pauseSessionGoal(target.id).catch(() => {});
+      await this.deps.sessionLifecycle
+        .pauseSessionGoal(target.id)
+        .catch(() => {});
 		}
 
 		const result = await this.deps.sessionLifecycle.stopSession(target.id, {
@@ -252,19 +263,23 @@ async function mapPool<T, R>(
 ): Promise<R[]> {
 	const results = new Array<R>(items.length);
 	let cursor = 0;
-	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
 		for (;;) {
 			const i = cursor++;
 			if (i >= items.length) return;
 			results[i] = await fn(items[i], i);
 		}
-	});
+    },
+  );
 	await Promise.all(workers);
 	return results;
 }
 
 function parseStopMode(value: unknown): SessionLifecycleStopMode {
-	return typeof value === "string" && MODES.has(value as SessionLifecycleStopMode)
+  return typeof value === "string" &&
+    MODES.has(value as SessionLifecycleStopMode)
 		? (value as SessionLifecycleStopMode)
 		: "terminate";
 }
@@ -277,7 +292,10 @@ function parseTargets(value: unknown): BulkLifecycleTarget[] {
 		if (!target || typeof target !== "object") continue;
 		const kind = (target as { kind?: unknown }).kind;
 		const id = (target as { id?: unknown }).id;
-		if (typeof kind !== "string" || !TARGET_KINDS.has(kind as BulkLifecycleTargetKind)) {
+    if (
+      typeof kind !== "string" ||
+      !TARGET_KINDS.has(kind as BulkLifecycleTargetKind)
+    ) {
 			continue;
 		}
 		if (typeof id !== "string" || !id.trim()) continue;
@@ -285,7 +303,10 @@ function parseTargets(value: unknown): BulkLifecycleTarget[] {
 		const key = `${kind}:${trimmedId}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		targets.push({ kind: kind as BulkLifecycleTargetKind, id: trimmedId } as BulkLifecycleTarget);
+    targets.push({
+      kind: kind as BulkLifecycleTargetKind,
+      id: trimmedId,
+    } as BulkLifecycleTarget);
 	}
 	return targets;
 }
@@ -316,9 +337,24 @@ function coordinatorOwned(
 
 function stopResult(
 	target: BulkLifecycleTarget,
-	result: { notFound?: boolean; confirmed: boolean; state?: string },
+  result: {
+    notFound?: boolean;
+    confirmed: boolean;
+    state?: string;
+    requested?: boolean;
+    retryable?: boolean;
+  },
 ): BulkLifecycleResult {
 	if (result.notFound) return notFound(target);
+  if (result.retryable && result.requested === false) {
+    return {
+      ...target,
+      state: "error",
+      status: 503,
+      ok: false,
+      error: "Stop intent could not be persisted - retry the request",
+    };
+  }
 	const state =
 		result.state === "confirmed"
 			? "confirmed"
@@ -331,13 +367,17 @@ function stopResult(
 	return { ...target, state, status, ok: result.confirmed };
 }
 
-function summarizeResults(results: BulkLifecycleResult[]): BulkLifecycleStopSummary {
+function summarizeResults(
+  results: BulkLifecycleResult[],
+): BulkLifecycleStopSummary {
 	return {
 		total: results.length,
 		confirmed: results.filter((result) => result.state === "confirmed").length,
 		stopping: results.filter((result) => result.state === "stopping").length,
 		cancelled: results.filter((result) => result.state === "cancelled").length,
-		coordinatorOwned: results.filter((result) => result.state === "coordinator_owned").length,
+    coordinatorOwned: results.filter(
+      (result) => result.state === "coordinator_owned",
+    ).length,
 		notFound: results.filter((result) => result.state === "notFound").length,
 		failed: results.filter((result) => result.state === "error").length,
 	};

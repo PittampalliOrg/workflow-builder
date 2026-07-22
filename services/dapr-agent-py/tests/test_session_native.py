@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.session_native import (  # noqa: E402
     SESSION_WORKFLOW_STATE_KEY,
+    accept_team_mailbox_delivery,
     build_continue_as_new_input,
     logical_turn_id,
     session_native_event_fields,
@@ -39,6 +40,8 @@ def test_session_state_round_trips_continue_as_new_counters() -> None:
                 "configRevision": "3",
                 "continuationCount": "2",
                 "controlOverrideFields": ["modelSpec", "tools", ""],
+                "teamMailboxBatchIds": ["batch-2", "batch-1", "batch-1"],
+                "teamMailboxEventIds": ["event-2", "event-1", "event-1"],
             }
         }
     )
@@ -48,6 +51,8 @@ def test_session_state_round_trips_continue_as_new_counters() -> None:
         "configRevision": 3,
         "continuationCount": 2,
         "controlOverrideFields": ["modelSpec", "tools"],
+        "teamMailboxBatchIds": ["batch-1", "batch-2"],
+        "teamMailboxEventIds": ["event-1", "event-2"],
     }
 
 
@@ -106,7 +111,101 @@ def test_build_continue_as_new_input_carries_session_metadata_not_chat_state() -
         "controlOverrideFields": ["modelSpec"],
         "continuationCount": 2,
         "lastContinueAsNewReason": "turn_threshold",
+        "teamMailboxBatchIds": [],
+        "teamMailboxEventIds": [],
     }
+
+
+def test_team_mailbox_delivery_deduplicates_same_and_regrouped_events() -> None:
+    batches: set[str] = set()
+    events: set[str] = set()
+    event_1 = {"type": "user.message", "content": [{"type": "text", "text": "a"}]}
+    event_2 = {"type": "user.message", "content": [{"type": "text", "text": "b"}]}
+
+    first = {
+        "events": [event_1],
+        "delivery": {
+            "kind": "team-mailbox",
+            "batchId": "batch-a",
+            "eventIds": ["event-1"],
+        },
+    }
+    assert accept_team_mailbox_delivery(
+        first, accepted_batch_ids=batches, accepted_event_ids=events
+    ) == [event_1]
+    assert (
+        accept_team_mailbox_delivery(
+            first, accepted_batch_ids=batches, accepted_event_ids=events
+        )
+        == []
+    )
+
+    regrouped = {
+        "events": [event_1, event_2],
+        "delivery": {
+            "kind": "team-mailbox",
+            "batchId": "batch-b",
+            "eventIds": ["event-1", "event-2"],
+        },
+    }
+    assert accept_team_mailbox_delivery(
+        regrouped, accepted_batch_ids=batches, accepted_event_ids=events
+    ) == [event_2]
+    assert batches == {"batch-a", "batch-b"}
+    assert events == {"event-1", "event-2"}
+
+
+def test_pre_runtime_team_event_receipt_starts_exactly_one_model_turn() -> None:
+    accepted_batches: set[str] = set()
+    accepted_events: set[str] = set()
+    team_event = {
+        "type": "user.message",
+        "origin": "teammate-message",
+        "content": [{"type": "text", "text": "review this"}],
+    }
+    delivery = {
+        "events": [team_event],
+        "delivery": {
+            "kind": "team-mailbox",
+            "batchId": "team-mailbox:stable",
+            "eventIds": ["pre-runtime-event-1"],
+        },
+    }
+
+    turns = [
+        pending
+        for pending in (
+            accept_team_mailbox_delivery(
+                delivery,
+                accepted_batch_ids=accepted_batches,
+                accepted_event_ids=accepted_events,
+            )
+            for _ in range(2)
+        )
+        if pending
+    ]
+
+    assert turns == [[team_event]]
+    assert accepted_batches == {"team-mailbox:stable"}
+    assert accepted_events == {"pre-runtime-event-1"}
+
+
+def test_team_mailbox_receipts_cross_continue_as_new() -> None:
+    next_input = build_continue_as_new_input(
+        message={"sessionId": "sess-1"},
+        agent_config={},
+        pending_events=[],
+        turn_counter=2,
+        config_revision=1,
+        control_override_fields=set(),
+        continuation_count=0,
+        reason="turn_threshold",
+        team_mailbox_batch_ids={"batch-a"},
+        team_mailbox_event_ids={"event-1"},
+    )
+    state = session_workflow_state_from_message(next_input)
+    assert state["teamMailboxBatchIds"] == ["batch-a"]
+    assert state["teamMailboxEventIds"] == ["event-1"]
 
 
 def test_terminal_stop_reason_from_events_handles_interrupt_before_turn() -> None:

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "$lib/types/agents";
+import type { ProvisionWorkflowSessionWorkspaceResult } from "$lib/server/application/session-commands";
 
 const mocks = vi.hoisted(() => {
 	const state = {
@@ -14,23 +15,48 @@ const mocks = vi.hoisted(() => {
 			{ token: string; expiresAt: Date | null }
 		>,
 	};
+  const leaseStartedAt = new Date("2026-07-21T20:00:00.000Z");
 
 	return {
 		state,
+    leaseStartedAt,
 		validateInternalToken: vi.fn(() => true),
+    sessionRuntimeHostRecovery: {
+      ensurePublished: vi.fn(async () => ({ recovered: false })),
+    },
 		maybeProvisionAgentWorkflowHost: vi.fn(async (params: unknown) => {
 			state.hostCalls.push(params);
 			return {
 				agentAppId: "agent-session-test",
 				sandboxName: "sandbox-test",
 				status: "ready",
+        launchSpec: { version: 1, request: {}, secretEnvKeys: [] },
 			};
 		}),
 		workflowData: {
 			getWorkflowByRef: vi.fn(
 				async (): Promise<Record<string, unknown> | null> => null,
 			),
-			getWorkflowExecutionSessionOwnerContext: vi.fn(async () => null),
+      getSessionDetail: vi.fn(
+        async (): Promise<Record<string, unknown> | null> => null,
+      ),
+      getSessionFileOwner: vi.fn(async () => ({
+        id: "session-test",
+        userId: "user-1",
+        projectId: "project-1",
+        status: "rescheduling" as const,
+        completedAt: null,
+        stopRequestedAt: null,
+      })),
+      getWorkflowExecutionSessionOwnerContext: vi.fn(
+        async (): Promise<{
+          userId: string;
+          workflowId: string;
+          projectId: string | null;
+          status?: string | null;
+          stopRequestedAt?: Date | null;
+        } | null> => null,
+      ),
 			checkBenchmarkSessionProvisioningGate: vi.fn(async () => ({
 				ok: true,
 				benchmarkExecutionClass: "benchmark-class",
@@ -71,23 +97,85 @@ const mocks = vi.hoisted(() => {
 					id: string;
 					agentId: string;
 					agentVersion: number;
+          userId: string;
+          projectId: string | null;
 					workflowExecutionId: string | null;
+          parentExecutionId: string | null;
 					vaultIds: unknown[];
 					sandboxName: string | null;
+          runtimeAppId?: string | null;
 					runtimeSandboxName: string | null;
 				} | null> => null,
 			),
-			createWorkflowEnsureSession: vi.fn(async (input: unknown) => {
+      createWorkflowEnsureSession: vi.fn(
+        async (input: unknown): Promise<{ startedAt: Date } | false> => {
 				state.inserted.push(input);
+          return { startedAt: leaseStartedAt };
+        },
+      ),
+      reserveSessionRuntimeProvisioning: vi.fn(
+        async (): Promise<{ startedAt: Date } | null> => ({
+          startedAt: leaseStartedAt,
 			}),
+      ),
 			updateWorkflowEnsureSessionRuntime: vi.fn(async (input: unknown) => {
 				state.updates.push(input);
+        return true;
 			}),
 			resolveSessionAgentByRef: vi.fn(
-				async (): Promise<{
+        async (input: {
+          id?: string;
+          version?: number;
+        }): Promise<{
+          id?: string;
+          name?: string;
+          slug?: string;
+          version?: number;
 					config: Record<string, unknown>;
 					projectId: string | null;
-				} | null> => null,
+          runtime?: string;
+          runtimeAppId?: string | null;
+          mlflowModelVersion?: string | null;
+          mlflowModelName?: string | null;
+          mlflowUri?: string | null;
+        } | null> => ({
+          id: input.id ?? "agent-test",
+          name: "Published agent",
+          slug:
+            input.id === "agent-published" ? "published-agent" : "test-agent",
+          version: input.version ?? 3,
+          config: {
+            runtime:
+              input.id === "agent-published"
+                ? "codex-cli"
+                : "pydantic-ai-agent-py",
+            modelSpec:
+              input.id === "agent-published"
+                ? "openai/gpt-5.5"
+                : "kimi/kimi-k3",
+            builtinTools: [],
+            mcpConnectionMode: "explicit",
+            mcpServers: [],
+            skills: [],
+            runtimeOverridePolicy: {
+              allowToolNarrowing: true,
+              allowServerAdditions: false,
+              allowCredentialBinding: true,
+              allowSkillAdditions: false,
+              allowSkillNarrowing: true,
+            },
+          },
+          projectId: "project-1",
+          runtime:
+            input.id === "agent-published"
+              ? "codex-cli"
+              : "pydantic-ai-agent-py",
+          runtimeAppId: null,
+          mlflowModelVersion: `model-${input.version ?? 3}`,
+          mlflowModelName:
+            input.id === "agent-published" ? "published-agent" : "test-agent",
+          mlflowUri: `models:/${input.id === "agent-published" ? "published-agent" : "test-agent"}/${input.version ?? 3}`,
+        }),
 			),
 		},
 		teamStore: {
@@ -100,8 +188,7 @@ const mocks = vi.hoisted(() => {
 		},
 		runtimeRegistry: {
 			getStructuredOutputCapability: vi.fn(async (runtimeId: string) =>
-				runtimeId === "dapr-agent-py" ||
-				runtimeId === "pydantic-ai-agent-py"
+        runtimeId === "dapr-agent-py" || runtimeId === "pydantic-ai-agent-py"
 					? { mode: "tool" as const, jsonSchemaDraft: "2020-12" as const }
 					: null,
 			),
@@ -117,6 +204,16 @@ const mocks = vi.hoisted(() => {
 			}),
 		},
 		sessionCommands: {
+      compensateStoppedRuntimeProvisioning: vi.fn(async () => true),
+      cleanupUnpublishedRuntimeProvisioning: vi.fn(async () => true),
+      provisionWorkflowSessionWorkspace: vi.fn(
+        async (): Promise<ProvisionWorkflowSessionWorkspaceResult> => ({
+          status: "ready",
+          sandboxName: "openshell-test",
+          workspaceRef: "workspace/ws-test",
+          rootPath: "/sandbox",
+        }),
+      ),
 			materializeWorkflowSessionRepositories: vi.fn(async () => undefined),
 			reapTerminatedWorkflowSessionRuntimeHosts: vi.fn(async () => undefined),
 			appendWorkflowSessionSwapDegradedEvent: vi.fn(async () => undefined),
@@ -162,6 +259,7 @@ vi.mock("$lib/server/application", () => ({
 		sessionGoals: mocks.sessionGoals,
 		cliCredentials: mocks.cliCredentials,
 		sessionCommands: mocks.sessionCommands,
+    sessionRuntimeHostRecovery: mocks.sessionRuntimeHostRecovery,
 		promptStackCompiler: mocks.promptStackCompiler,
 		workflowTargetAuth: mocks.workflowTargetAuth,
     workflowMcpSessionTokenSigner: mocks.workflowMcpSessionTokenSigner,
@@ -178,6 +276,7 @@ vi.mock("$lib/server/sessions/agent-workflow-host", () => ({
 		baggage: null,
 	}),
 	maybeProvisionAgentWorkflowHost: mocks.maybeProvisionAgentWorkflowHost,
+  sessionHostAppId: (sessionId: string) => `agent-session-${sessionId}`,
 }));
 
 vi.mock("$lib/server/sandboxes/provision", () => ({
@@ -288,6 +387,8 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
       "resolvePublishedWorkflowAgentForEnsure",
     );
 		expectSourceCall(source, "workflowData", "getWorkflowEnsureSession");
+    expectSourceCall(source, "workflowData", "getSessionDetail");
+    expectSourceCall(source, "workflowData", "getSessionFileOwner");
 		expectSourceCall(source, "workflowData", "createWorkflowEnsureSession");
     expectSourceCall(
       source,
@@ -305,6 +406,21 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			"sessionCommands",
 			"reapTerminatedWorkflowSessionRuntimeHosts",
 		);
+    expectSourceCall(
+      source,
+      "workflowData",
+      "reserveSessionRuntimeProvisioning",
+    );
+    expectSourceCall(
+      source,
+      "sessionCommands",
+      "cleanupUnpublishedRuntimeProvisioning",
+    );
+    expectSourceCall(
+      source,
+      "sessionCommands",
+      "provisionWorkflowSessionWorkspace",
+    );
 		expectSourceCall(
 			source,
 			"sessionCommands",
@@ -348,6 +464,7 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).not.toContain("agentVersions");
 		expect(source).not.toContain("from(agents)");
 		expect(source).not.toContain("from(agentVersions)");
+    expect(source).not.toContain("provisionSessionSandbox");
 		expect(source).not.toContain("registerAgentVersionInMlflow");
 		expect(source).not.toContain("benchmarkRuns");
 		expect(source).not.toContain("benchmarkRunInstances");
@@ -356,6 +473,440 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).not.toContain("db.update(sessions)");
 		expect(source).not.toContain("from(sessions)");
 	});
+
+  it("destroys a host when stop intent wins the runtime-link CAS", async () => {
+    mocks.workflowData.updateWorkflowEnsureSessionRuntime.mockResolvedValueOnce(
+      false,
+    );
+    mocks.state.credentials.kimi = {
+      token: "kimi-test-token",
+      expiresAt: null,
+    };
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-stop-race",
+        workflowId: "wf-1",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    const response = await POST({ request } as never);
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toBe("session_stopping");
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-stop-race",
+      sandboxName: "sandbox-test",
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+    expect(
+      mocks.sessionCommands.materializeWorkflowSessionRepositories,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("compensates an existing session with its exact reserved lease", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-existing-stop-race",
+      agentId: "agent-test",
+      agentVersion: 4,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "dapr-agent-py",
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.updateWorkflowEnsureSessionRuntime.mockResolvedValueOnce(
+      false,
+    );
+    mocks.state.credentials.kimi = {
+      token: "kimi-test-token",
+      expiresAt: null,
+    };
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-existing-stop-race",
+        workflowId: "wf-1",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    const response = await POST({ request } as never);
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toBe("session_stopping");
+    expect(
+      mocks.workflowData.reserveSessionRuntimeProvisioning,
+    ).toHaveBeenCalledWith({ sessionId: "sess-existing-stop-race" });
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-existing-stop-race",
+      sandboxName: "sandbox-test",
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+    expect(
+      mocks.workflowData.createWorkflowEnsureSession,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("releases an existing session lease when host provisioning throws", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-existing-host-failure",
+      agentId: "agent-test",
+      agentVersion: 4,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeSandboxName: null,
+    });
+    mocks.maybeProvisionAgentWorkflowHost.mockRejectedValueOnce(
+      new Error("host provisioning failed"),
+    );
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        provider: "kimi",
+        token: "kimi-test-token",
+      }),
+    ).rejects.toThrow("host provisioning failed");
+
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-existing-host-failure",
+      sandboxName: null,
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+    expect(
+      mocks.workflowData.updateWorkflowEnsureSessionRuntime,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("publishes and activates the exact lease generation", async () => {
+    await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+    });
+
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-pydantic-ai-agent-py",
+        provisioningStartedAt: mocks.leaseStartedAt,
+      }),
+    );
+    expect(
+      mocks.sessionRuntimeHostRecovery.ensurePublished,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-pydantic-ai-agent-py",
+        runtimeAppId: "agent-session-test",
+        runtimeSandboxName: "sandbox-test",
+      }),
+    );
+    expect(
+      mocks.workflowData.updateWorkflowEnsureSessionRuntime.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      mocks.sessionRuntimeHostRecovery.ensurePublished.mock
+        .invocationCallOrder[0],
+    );
+  });
+
+  it("reuses an existing published runtime without reserving a new generation", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-existing",
+      agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: "execution-1",
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "codex-cli",
+      runtimeAppId: "agent-session-persisted",
+      runtimeSandboxName: "sandbox-persisted",
+    });
+    mocks.workflowData.getSessionDetail.mockResolvedValueOnce({
+      daprInstanceId: "sess-codex-cli",
+      status: "running",
+      stopRequestedAt: null,
+      completedAt: null,
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "codex-cli",
+      modelSpec: "openai/gpt-5.5",
+      provider: "openai",
+      token: '{"tokens":{"refresh_token":"codex"}}',
+      body: { workflowExecutionId: "execution-1" },
+    });
+
+    expect(
+      mocks.workflowData.reserveSessionRuntimeProvisioning,
+    ).not.toHaveBeenCalled();
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+    expect(
+      mocks.sessionRuntimeHostRecovery.ensurePublished,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "sess-codex-cli",
+        runtimeAppId: "agent-session-persisted",
+        runtimeSandboxName: "sandbox-persisted",
+      }),
+    );
+    expect(
+      mocks.workflowData.updateWorkflowEnsureSessionRuntime,
+    ).not.toHaveBeenCalled();
+    expect(payload.agentAppId).toBe("agent-session-persisted");
+    expect(payload.runtimeSandboxName).toBe("sandbox-persisted");
+    expect(payload.childInput).toEqual(
+      expect.objectContaining({
+        agentAppId: "agent-session-persisted",
+        runtimeSandboxName: "sandbox-persisted",
+      }),
+    );
+    expect(
+      mocks.sessionCommands.materializeWorkflowSessionRepositories,
+    ).toHaveBeenCalled();
+  });
+
+  it("reports an active busy lease as retryable provisioning", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-busy",
+      agentId: "agent-test",
+      agentVersion: 4,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "dapr-agent-py",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.reserveSessionRuntimeProvisioning.mockResolvedValueOnce(
+      null,
+    );
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-busy",
+        workflowId: "wf-1",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    const response = await POST({ request } as never);
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(payload).toMatchObject({
+      error: "session_provisioning",
+      retryable: true,
+    });
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it("cleans up a newly provisioned host when runtime publication throws", async () => {
+    mocks.workflowData.updateWorkflowEnsureSessionRuntime.mockRejectedValueOnce(
+      new Error("runtime publication failed"),
+    );
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        provider: "kimi",
+        token: "kimi-test-token",
+      }),
+    ).rejects.toThrow("runtime publication failed");
+
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-pydantic-ai-agent-py",
+      sandboxName: "sandbox-test",
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+  });
+
+  it("releases a new session lease when goal initialization throws", async () => {
+    mocks.sessionGoals.ensureWorkflowEvaluatorGoal.mockRejectedValueOnce(
+      new Error("goal initialization failed"),
+    );
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "agy-cli",
+        modelSpec: "gemini/gemini-2.5-pro",
+        provider: "google",
+        token: "agy-bundle",
+        body: {
+          workflowExecutionId: "execution-1",
+          goal: { objective: "finish the task" },
+        },
+      }),
+    ).rejects.toThrow("goal initialization failed");
+
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-agy-cli",
+      sandboxName: null,
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it("rejects late provisioning after the parent workflow stop fence", async () => {
+    mocks.workflowData.getWorkflowExecutionSessionOwnerContext.mockResolvedValueOnce(
+      {
+        userId: "user-1",
+        workflowId: "wf-1",
+        projectId: "project-1",
+        status: "running",
+        stopRequestedAt: new Date("2026-07-21T20:00:00.000Z"),
+      },
+    );
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-parent-stop",
+        workflowId: "wf-1",
+        workflowExecutionId: "exec-stopping",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    let status = 0;
+    try {
+      await POST({ request } as never);
+    } catch (cause) {
+      status = (cause as { status?: number }).status ?? 0;
+    }
+
+    expect(status).toBe(409);
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+    expect(
+      mocks.sessionCommands.provisionWorkflowSessionWorkspace,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("compensates and rejects when stop wins during auto-workspace provisioning", async () => {
+    mocks.sessionCommands.provisionWorkflowSessionWorkspace.mockResolvedValueOnce(
+      {
+        status: "stopping",
+      },
+    );
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-workspace-stop-race",
+        workflowId: "wf-1",
+        workflowExecutionId: "exec-running",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("dapr-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    const response = await POST({ request } as never);
+    const payload = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toBe("session_stopping");
+    expect(
+      mocks.workflowData.createWorkflowEnsureSession,
+    ).toHaveBeenCalledOnce();
+    expect(
+      mocks.sessionCommands.provisionWorkflowSessionWorkspace,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-workspace-stop-race",
+      title: "Workflow run: run-agent",
+      sandboxTemplate: "base",
+    });
+    expect(
+      mocks.sessionCommands.cleanupUnpublishedRuntimeProvisioning,
+    ).toHaveBeenCalledWith({
+      sessionId: "sess-workspace-stop-race",
+      sandboxName: null,
+      leaseStartedAt: mocks.leaseStartedAt,
+    });
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the transactional parent fence loses the create race", async () => {
+    mocks.workflowData.createWorkflowEnsureSession.mockResolvedValueOnce(false);
+    const request = new Request("http://workflow-builder/internal", {
+      method: "POST",
+      headers: { Authorization: "Bearer internal" },
+      body: JSON.stringify({
+        sessionId: "sess-parent-stop-race",
+        workflowId: "wf-1",
+        workflowExecutionId: "exec-stopping",
+        nodeId: "run-agent",
+        nodeName: "Run agent",
+        userId: "user-1",
+        projectId: "project-1",
+        agentSlug: "test-agent",
+        agentConfig: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      }),
+    });
+
+    let status = 0;
+    try {
+      await POST({ request } as never);
+    } catch (cause) {
+      status = (cause as { status?: number }).status ?? 0;
+    }
+
+    expect(status).toBe(409);
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
 
 	it("uses published agent resolution from workflow-data when provided", async () => {
 		const payload = await callEnsureForWorkflow({
@@ -403,12 +954,16 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(payload.agentAppId).toBe("agent-session-test");
 
 		const childInput = payload.childInput as Record<string, unknown>;
+    expect(childInput.requiresStartAuthority).toBe(true);
+    expect(childInput.workflowMcpSessionToken).toBe(
+      "signed-workflow-mcp-session",
+    );
 		expect(childInput.agentId).toBe("agent-published");
 		expect(childInput.agentVersion).toBe(9);
 		expect(childInput.agentSlug).toBe("published-agent");
-		expect(childInput.activeModelId).toBe("model-3");
+    expect(childInput.activeModelId).toBe("model-9");
 		expect(childInput.activeModelName).toBe("published-agent");
-		expect(childInput.activeModelUri).toBe("models:/published-agent/3");
+    expect(childInput.activeModelUri).toBe("models:/published-agent/9");
 	});
 
 	it("falls back to ephemeral workflow agents when no published agent id is supplied", async () => {
@@ -450,7 +1005,10 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 			id: "sess-codex-cli",
 			agentId: "agent-existing",
 			agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
 			workflowExecutionId: "execution-1",
+      parentExecutionId: null,
 			vaultIds: [],
 			sandboxName: "codex-cli",
 			runtimeSandboxName: null,
@@ -478,6 +1036,427 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(payload.agentId).toBe("agent-existing");
 		expect(payload.agentVersion).toBe(7);
 	});
+
+  it("replays a lost response from the exact saved-agent version after latest advances", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-pinned",
+      agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: "execution-1",
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.resolveSessionAgentByRef.mockResolvedValueOnce({
+      id: "agent-pinned",
+      name: "Pinned agent",
+      slug: "pinned-agent",
+      version: 7,
+      config: {
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        reasoningEffort: "max",
+        builtinTools: [],
+        mcpConnectionMode: "explicit",
+        mcpServers: [],
+        skills: [],
+        runtimeOverridePolicy: RUNTIME_POLICY,
+      },
+      projectId: "project-1",
+      runtime: "pydantic-ai-agent-py",
+      runtimeAppId: "agent-runtime-pinned-agent",
+      mlflowModelVersion: "model-7",
+      mlflowModelName: "pinned-agent",
+      mlflowUri: "models:/pinned-agent/7",
+    });
+    // This is what an unpinned retry would resolve after the agent's latest
+    // version advanced. The existing row must bypass this lookup entirely.
+    mocks.teamStore.resolveAgentIdBySlug.mockResolvedValue({
+      id: "agent-pinned",
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "codex-cli",
+      modelSpec: "openai/gpt-5.5",
+      provider: "openai",
+      token: '{"tokens":{"refresh_token":"codex"}}',
+      body: {
+        workflowExecutionId: "execution-1",
+        resolveAgentSlug: "pinned-agent",
+        agentId: "agent-pinned",
+        agentSlug: "pinned-agent",
+      },
+    });
+
+    expect(mocks.teamStore.resolveAgentIdBySlug).not.toHaveBeenCalled();
+    expect(
+      mocks.workflowData.resolvePublishedWorkflowAgentForEnsure,
+    ).not.toHaveBeenCalled();
+    expect(mocks.workflowData.resolveSessionAgentByRef).toHaveBeenCalledWith({
+      id: "agent-pinned",
+      version: 7,
+    });
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentConfig: expect.objectContaining({
+          runtime: "pydantic-ai-agent-py",
+          modelSpec: "openai/gpt-5.5",
+          reasoningEffort: "max",
+        }),
+      }),
+    );
+    expect(payload).toMatchObject({
+      reused: true,
+      agentId: "agent-pinned",
+      agentVersion: 7,
+      agentSlug: "pinned-agent",
+    });
+    expect(payload.childInput).toEqual(
+      expect.objectContaining({
+        agentId: "agent-pinned",
+        agentVersion: 7,
+        agentSlug: "pinned-agent",
+        activeModelId: "model-7",
+        activeModelName: "pinned-agent",
+        activeModelUri: "models:/pinned-agent/7",
+        agentConfig: expect.objectContaining({
+          runtime: "pydantic-ai-agent-py",
+          modelSpec: "openai/gpt-5.5",
+          reasoningEffort: "max",
+        }),
+      }),
+    );
+  });
+
+  it("fails closed when the saved-agent resolver does not return the pinned version", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-pinned",
+      agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: "execution-1",
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "codex-cli",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.resolveSessionAgentByRef.mockResolvedValueOnce({
+      id: "agent-pinned",
+      name: "Wrong version",
+      slug: "published-agent",
+      version: 8,
+      config: agentConfig("codex-cli", "openai/gpt-5.5"),
+      projectId: "project-1",
+      runtime: "codex-cli",
+      runtimeAppId: null,
+      mlflowModelVersion: "model-8",
+      mlflowModelName: "published-agent",
+      mlflowUri: "models:/published-agent/8",
+    });
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "codex-cli",
+        modelSpec: "openai/gpt-5.5",
+        provider: "openai",
+        token: '{"tokens":{"refresh_token":"codex"}}',
+        body: { workflowExecutionId: "execution-1" },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+    expect(
+      mocks.sessionCommands.syncWorkflowSessionAgentRuntime,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("replays an archived pinned version without requiring published metadata", async () => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-archived",
+      agentVersion: 5,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.resolveSessionAgentByRef.mockResolvedValueOnce({
+      id: "agent-archived",
+      name: "Archived agent",
+      slug: "archived-agent",
+      version: 5,
+      config: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      projectId: "project-1",
+      runtime: "pydantic-ai-agent-py",
+      runtimeAppId: "agent-runtime-archived-agent",
+      mlflowModelVersion: "archived-model-5",
+      mlflowModelName: "archived-agent",
+      mlflowUri: "models:/archived-agent/5",
+    });
+
+    const payload = await callEnsureForWorkflow({
+      runtime: "pydantic-ai-agent-py",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+      body: {
+        agentId: "agent-archived",
+        agentVersion: 5,
+        agentSlug: "archived-agent",
+      },
+    });
+
+    expect(
+      mocks.workflowData.resolvePublishedWorkflowAgentForEnsure,
+    ).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      reused: true,
+      agentId: "agent-archived",
+      agentVersion: 5,
+      agentSlug: "archived-agent",
+    });
+    expect(payload.childInput).toEqual(
+      expect.objectContaining({
+        activeModelId: "archived-model-5",
+        activeModelName: "archived-agent",
+        activeModelUri: "models:/archived-agent/5",
+      }),
+    );
+  });
+
+  it("builds identical exact saved config before and after a lost response", async () => {
+    const savedAgent = {
+      id: "agent-parity",
+      name: "Parity agent",
+      slug: "parity-agent",
+      version: 7,
+      config: {
+        ...agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+        reasoningEffort: "max",
+      },
+      projectId: "project-1",
+      runtime: "pydantic-ai-agent-py",
+      runtimeAppId: "agent-runtime-parity-agent",
+      mlflowModelVersion: "model-7",
+      mlflowModelName: "parity-agent",
+      mlflowUri: "models:/parity-agent/7",
+    };
+    mocks.workflowData.getWorkflowEnsureSession
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "sess-codex-cli",
+        agentId: "agent-parity",
+        agentVersion: 7,
+        userId: "user-1",
+        projectId: "project-1",
+        workflowExecutionId: null,
+        parentExecutionId: null,
+        vaultIds: [],
+        sandboxName: "pydantic-ai-agent-py",
+        runtimeAppId: null,
+        runtimeSandboxName: null,
+      });
+    mocks.workflowData.resolveSessionAgentByRef
+      .mockResolvedValueOnce(savedAgent)
+      .mockResolvedValueOnce(savedAgent);
+    mocks.workflowData.resolvePublishedWorkflowAgentForEnsure.mockResolvedValueOnce(
+      {
+        ok: true,
+        agent: {
+          agentId: "agent-parity",
+          agentVersion: 7,
+          agentSlug: "parity-agent",
+          agentAppId: "agent-runtime-parity-agent",
+          mlflowUri: "models:/parity-agent/7",
+          mlflowModelName: "parity-agent",
+          mlflowModelVersion: "model-7",
+        },
+      },
+    );
+    const responseSchema = {
+      type: "object",
+      properties: { result: { type: "string" } },
+    };
+    const body = {
+      agentId: "agent-parity",
+      agentVersion: 7,
+      agentSlug: "parity-agent",
+      agentConfig: {
+        ...agentConfig("codex-cli", "openai/gpt-5.5"),
+        reasoningEffort: "high",
+        structuredOutputMode: "tool",
+        responseJsonSchema: responseSchema,
+      },
+    };
+
+    const initial = await callEnsureForWorkflow({
+      runtime: "codex-cli",
+      modelSpec: "openai/gpt-5.5",
+      provider: "openai",
+      token: '{"tokens":{"refresh_token":"codex"}}',
+      body,
+    });
+    const replay = await callEnsureForWorkflow({
+      runtime: "codex-cli",
+      modelSpec: "openai/gpt-5.5",
+      provider: "openai",
+      token: '{"tokens":{"refresh_token":"codex"}}',
+      body,
+    });
+
+    const initialConfig = (initial.childInput as Record<string, unknown>)
+      .agentConfig as Record<string, unknown>;
+    const replayConfig = (replay.childInput as Record<string, unknown>)
+      .agentConfig as Record<string, unknown>;
+    for (const key of [
+      "runtime",
+      "agentAppId",
+      "modelSpec",
+      "reasoningEffort",
+      "structuredOutputMode",
+      "responseJsonSchema",
+    ]) {
+      expect(replayConfig[key]).toEqual(initialConfig[key]);
+    }
+    expect(initialConfig).toMatchObject({
+      runtime: "pydantic-ai-agent-py",
+      agentAppId: "agent-runtime-parity-agent",
+      modelSpec: "openai/gpt-5.5",
+      reasoningEffort: "high",
+      structuredOutputMode: "tool",
+    });
+    expect(initial.reused).toBe(false);
+    expect(replay.reused).toBe(true);
+  });
+
+  it.each([
+    ["agent id", { agentId: "agent-other" }],
+    ["agent slug", { agentSlug: "other-agent" }],
+    ["agent version", { agentVersion: 8 }],
+    ["resolved agent ref", { resolveAgentSlug: "other-agent" }],
+    ["resolved agent version", { resolveAgentVersion: 8 }],
+  ])("rejects a replay with mismatched %s", async (_label, mismatch) => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-pinned",
+      agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: null,
+      parentExecutionId: null,
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+    mocks.workflowData.resolveSessionAgentByRef.mockResolvedValueOnce({
+      id: "agent-pinned",
+      name: "Pinned agent",
+      slug: "pinned-agent",
+      version: 7,
+      config: agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+      projectId: "project-1",
+      runtime: "pydantic-ai-agent-py",
+      runtimeAppId: null,
+      mlflowModelVersion: "model-7",
+      mlflowModelName: "pinned-agent",
+      mlflowUri: "models:/pinned-agent/7",
+    });
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        provider: "kimi",
+        token: "kimi-test-token",
+        body: {
+          agentId: "agent-pinned",
+          agentVersion: 7,
+          agentSlug: "pinned-agent",
+          ...mismatch,
+        },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mocks.workflowMcpSessionTokenSigner.sign).not.toHaveBeenCalled();
+    expect(mocks.cliCredentials.getUserCredential).not.toHaveBeenCalled();
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["owner", { userId: "user-other" }],
+    ["project", { projectId: "project-other" }],
+    ["workflow execution", { workflowExecutionId: "execution-other" }],
+    ["parent execution", { parentExecutionId: "parent-other" }],
+  ])("rejects mismatched persisted %s lineage before effects", async (_label, mismatch) => {
+    mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
+      id: "sess-codex-cli",
+      agentId: "agent-pinned",
+      agentVersion: 7,
+      userId: "user-1",
+      projectId: "project-1",
+      workflowExecutionId: "execution-1",
+      parentExecutionId: "parent-1",
+      vaultIds: [],
+      sandboxName: "pydantic-ai-agent-py",
+      runtimeAppId: null,
+      runtimeSandboxName: null,
+    });
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        provider: "kimi",
+        token: "kimi-test-token",
+        body: {
+          workflowExecutionId: "execution-1",
+          parentExecutionId: "parent-1",
+          ...mismatch,
+        },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mocks.workflowData.resolveSessionAgentByRef).not.toHaveBeenCalled();
+    expect(mocks.workflowMcpSessionTokenSigner.sign).not.toHaveBeenCalled();
+    expect(mocks.cliCredentials.getUserCredential).not.toHaveBeenCalled();
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
+
+  it("rejects an explicit body owner that conflicts with execution authority", async () => {
+    mocks.workflowData.getWorkflowExecutionSessionOwnerContext.mockResolvedValueOnce({
+      userId: "user-authoritative",
+      workflowId: "wf-1",
+      projectId: "project-1",
+      status: "running",
+      stopRequestedAt: null,
+    });
+
+    await expect(
+      callEnsureForWorkflow({
+        runtime: "pydantic-ai-agent-py",
+        modelSpec: "kimi/kimi-k3",
+        provider: "kimi",
+        token: "kimi-test-token",
+        body: {
+          workflowExecutionId: "execution-1",
+          userId: "user-other",
+        },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mocks.workflowData.resolveSessionAgentByRef).not.toHaveBeenCalled();
+    expect(mocks.promptStackCompiler.compilePromptStack).not.toHaveBeenCalled();
+    expect(mocks.workflowMcpSessionTokenSigner.sign).not.toHaveBeenCalled();
+    expect(mocks.cliCredentials.getUserCredential).not.toHaveBeenCalled();
+    expect(mocks.maybeProvisionAgentWorkflowHost).not.toHaveBeenCalled();
+  });
 
 	it("delegates evaluator goal persistence to the session goal service", async () => {
 		const payload = await callEnsureForWorkflow({
@@ -919,6 +1898,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 			id: "kimi-k3-browser-agent-id",
 		});
 		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+      id: "kimi-k3-browser-agent-id",
+      name: "Kimi browser agent",
+      slug: "kimi-k3-browser-agent",
+      version: 3,
 			config: {
 				runtime: "dapr-agent-py",
 				modelSpec: "kimi/kimi-k3",
@@ -938,13 +1921,18 @@ describe("dynamic-script spawn MCP wiring", () => {
 				runtimeOverridePolicy: RUNTIME_POLICY,
 			},
 			projectId: "project-1",
+      runtime: "dapr-agent-py",
+      runtimeAppId: null,
 		});
 		const payload = await callEnsureForWorkflow({
 			runtime: "dapr-agent-py",
 			modelSpec: "kimi/kimi-k3",
 			provider: "openai",
 			token: "unused",
-			body: { resolveAgentSlug: "kimi-k3-browser-agent" },
+      body: {
+        resolveAgentSlug: "kimi-k3-browser-agent",
+        agentSlug: "kimi-k3-browser-agent",
+      },
 		});
 		const childInput = payload.childInput as Record<string, unknown>;
 		const config = childInput.agentConfig as {
@@ -981,6 +1969,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 			id: "glm-juicefs-agent-id",
 		});
 		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+      id: "glm-juicefs-agent-id",
+      name: "Kimi JuiceFS agent",
+      slug: "kimi-k3-juicefs-builder-agent",
+      version: 3,
 			config: {
 				runtime: "dapr-agent-py-juicefs",
 				modelSpec: "kimi/kimi-k3",
@@ -1000,7 +1992,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 			modelSpec: "kimi/kimi-k3",
 			provider: "openai",
 			token: "unused",
-			body: { resolveAgentSlug: "kimi-k3-juicefs-builder-agent" },
+      body: {
+        resolveAgentSlug: "kimi-k3-juicefs-builder-agent",
+        agentSlug: "kimi-k3-juicefs-builder-agent",
+      },
 		});
 
 		expect(payload.agentAppId).toBe("agent-session-test");
@@ -1018,7 +2013,9 @@ describe("dynamic-script spawn MCP wiring", () => {
 		expect(config.reasoningEffort).toBe("max");
 		expect(config.contextWindowTokens).toBe(1_048_576);
 		expect(config.runtimeIsolation).toBe("dedicated");
-		expect(config.agentAppId).toBe("agent-runtime-kimi-k3-juicefs-builder-agent");
+    expect(config.agentAppId).toBe(
+      "agent-runtime-kimi-k3-juicefs-builder-agent",
+    );
 		expect(childInput.sandboxName).toBe("dapr-agent-py-juicefs");
 	});
 
@@ -1027,6 +2024,10 @@ describe("dynamic-script spawn MCP wiring", () => {
 			id: "unsupported-agent-id",
 		});
 		mocks.workflowData.resolveSessionAgentByRef.mockResolvedValue({
+      id: "unsupported-agent-id",
+      name: "Unsupported agent",
+      slug: "unsupported-agent",
+      version: 3,
 			config: {
 				runtime: "claude-code-cli",
 				modelSpec: "anthropic/claude-opus-4-8",
@@ -1046,6 +2047,7 @@ describe("dynamic-script spawn MCP wiring", () => {
 			token: "unused",
 			body: {
 				resolveAgentSlug: "unsupported-agent",
+        agentSlug: "unsupported-agent",
 				agentConfig: {
 					...agentConfig("dapr-agent-py", "kimi/kimi-k3"),
 					structuredOutputMode: "tool",

@@ -14,7 +14,10 @@
  * `src/lib/server/application/adapters/lifecycle-resolver.ts`.
  */
 import { createHash } from "node:crypto";
+import { sessionRuntimeGenerationInstanceId } from "$lib/server/application/session-runtime-identity";
 import type { AgentRuntimeTarget } from "./cascade";
+
+export { sessionRuntimeGenerationInstanceId } from "$lib/server/application/session-runtime-identity";
 
 export type DurableRunTarget =
 	| { kind: "workflowExecution"; id: string }
@@ -29,6 +32,40 @@ export type DurableTargetScope = { projectId: string | null; userId: string };
  * converges a dead session (→ row `failed` + stopReason:{type:"crashed"}).
  */
 export type FinalizeOutcome = "terminated" | "crashed";
+
+/** Destructive terminal modes persisted with a durable stop intent. */
+export type DurableStopMode = "terminate" | "purge" | "reset";
+
+export type PersistedStopIntent = {
+  requestedAt: Date;
+  mode: DurableStopMode;
+};
+
+/** Stable execution identity understood by a retained-workspace provider. */
+export type WorkspaceRetentionIdentity = {
+  durableExecutionId: string;
+  databaseExecutionId: string | null;
+};
+
+/**
+ * Durable evidence that a session runtime create may still be in flight. The
+ * prospective target is generation-specific, so lifecycle can control it without
+ * replacing the last authoritative runtime target stored on the session row.
+ */
+export type RuntimeProvisioningLease = {
+  sessionId: string;
+  startedAt: Date;
+  prospectiveTarget: AgentRuntimeTarget;
+};
+
+export type FinalizeDbResult = "finalized" | "mode_changed";
+
+/** Invalid/legacy persisted values always degrade to the least destructive mode. */
+export function normalizeDurableStopMode(value: unknown): DurableStopMode {
+  return value === "purge" || value === "reset" || value === "terminate"
+    ? value
+    : "terminate";
+}
 
 export type ResolvedDurableTarget = {
 	notFound: boolean;
@@ -48,11 +85,38 @@ export type ResolvedDurableTarget = {
 	 * force-clean a parent that's been asked to stop and stayed wedged.
 	 */
 	stopRequestedAt: Date | null;
+  /** Persisted monotonic terminal stop mode; null on legacy intents. */
+  stopRequestedMode: DurableStopMode | null;
 	scope: DurableTargetScope | null;
 	parentInstanceIds: string[];
 	agentRuntimeTargets: AgentRuntimeTarget[];
-	/** Per-session Sandbox CR names to delete on purge/reset. */
+  /** Active, independently aged provisioning leases for this target's sessions. */
+  runtimeProvisioningLeases: RuntimeProvisioningLease[];
+  /**
+   * Acknowledge one exact stopped lease after its generation-specific runtime
+   * has been purged and deleted. The adapter must reject a newer lease.
+   */
+  acknowledgeRuntimeProvisioningCompensation: (
+    sessionId: string,
+    expectedStartedAt: Date,
+  ) => Promise<boolean>;
+  /**
+   * Active session rows whose runtime linkage has not been persisted yet. These
+   * are common during eager provisioning: the session exists before its
+   * runtime_app_id / runtime_sandbox_name write completes. An unresolved link is
+   * uncertainty, never proof that the runtime is absent, so lifecycle callers
+   * must remain `stopping` and let the reconciler retry after provisioning
+   * publishes the linkage.
+   */
+  unresolvedRuntimeLinkages: string[];
+  /** Per-session agent-host Kubernetes Sandbox CR names to delete on terminal stop. */
 	sandboxNames: string[];
+  /** Per-session OpenShell Sandbox names owned by this durable target. */
+  workspaceSandboxNames: string[];
+  /** Typed provider identities for retained OpenShell workspace discovery. */
+  workspaceRetentionIdentities: WorkspaceRetentionIdentity[];
+  /** Workflow-scoped OpenShell executions cleaned only by purge/reset. */
+  workspaceCleanupExecutionIds: string[];
 	statePurgeInstanceIds: string[];
 	/**
 	 * Flip owning DB rows terminal. Only invoked once the cascade confirms closure.
@@ -61,7 +125,18 @@ export type ResolvedDurableTarget = {
 	 * lands `failed` + stopReason:{type:"crashed"} instead of `terminated`. Only
 	 * the session resolver honors `crashed`; workflow/eval resolvers ignore it.
 	 */
-	finalizeDb: (reason: string, outcome?: FinalizeOutcome) => Promise<void>;
+  finalizeDb: (
+    reason: string,
+    outcome?: FinalizeOutcome,
+    /**
+     * Compare-and-acknowledge fence for a persisted stop. The adapter clears the
+     * pending stop intent only when this mode is still authoritative; a stronger
+     * concurrent request returns `mode_changed` and remains eligible for redrive.
+     * Omit only when repairing a terminal-runtime/DB projection divergence that
+     * has no stop intent.
+     */
+    expectedMode?: DurableStopMode,
+  ) => Promise<FinalizeDbResult>;
 	/**
 	 * Node ids of `durable/run` child sessions that are DB-`terminated`. Used to
 	 * confirm a cross-app wedge with POSITIVE evidence: only force-finalize when
@@ -84,7 +159,10 @@ export type ResolvedDurableTarget = {
 	 * but marks it so the UI shows "Stopping…" and the status confirmation path can
 	 * finalize it later if the in-request poll window expires. Idempotent.
 	 */
-	markStopRequested: (reason: string) => Promise<void>;
+  markStopRequested: (
+    reason: string,
+    mode: DurableStopMode,
+  ) => Promise<PersistedStopIntent>;
 };
 
 export type LifecycleTargetResolver = (
@@ -98,25 +176,53 @@ export function sessionHostAppId(sessionId: string): string | null {
 	return `agent-session-${createHash("sha256").update(normalized).digest("hex").slice(0, 20)}`;
 }
 
+/**
+ * Immutable app-id for one provisioning generation. Including the lease token
+ * prevents a late creator or cleanup from touching a replacement generation.
+ */
+export function sessionRuntimeGenerationAppId(
+  sessionId: string,
+  provisioningStartedAt: Date,
+): string | null {
+  const normalized = sessionId.trim();
+  if (!normalized || !Number.isFinite(provisioningStartedAt.getTime())) {
+    return null;
+  }
+  const identity = `${normalized}\0${provisioningStartedAt.toISOString()}`;
+  return `agent-session-${createHash("sha256").update(identity).digest("hex").slice(0, 20)}`;
+}
+
 export function notFoundLifecycleTarget(): ResolvedDurableTarget {
 	return {
 		notFound: true,
 		dbActive: false,
 		dbStatus: null,
 		stopRequestedAt: null,
+    stopRequestedMode: null,
 		terminatedChildNodes: [],
 		activeChildNodes: [],
 		scope: null,
 		parentInstanceIds: [],
 		agentRuntimeTargets: [],
+    runtimeProvisioningLeases: [],
+    acknowledgeRuntimeProvisioningCompensation: async () => false,
+    unresolvedRuntimeLinkages: [],
 		sandboxNames: [],
+    workspaceSandboxNames: [],
+    workspaceRetentionIdentities: [],
+    workspaceCleanupExecutionIds: [],
 		statePurgeInstanceIds: [],
-		finalizeDb: async () => {},
-		markStopRequested: async () => {},
+    finalizeDb: async () => "finalized",
+    markStopRequested: async (_reason, mode) => ({
+      requestedAt: new Date(0),
+      mode,
+    }),
 	};
 }
 
-export function compactLifecycleIds(values: Array<string | null | undefined>): string[] {
+export function compactLifecycleIds(
+  values: Array<string | null | undefined>,
+): string[] {
 	const out: string[] = [];
 	const seen = new Set<string>();
 	for (const v of values) {
@@ -150,9 +256,17 @@ export function agentTargetForSession(row: {
 	daprInstanceId: string | null;
 	runtimeAppId: string | null;
 	runtimeSandboxName?: string | null;
+  runtimeHostOwned?: boolean | null;
 }): AgentRuntimeTarget | null {
 	const instanceId = (row.daprInstanceId ?? row.id ?? "").trim();
 	let runtimeAppId = (row.runtimeAppId ?? "").trim();
+  let runtimeSandboxName = (row.runtimeSandboxName ?? "").trim() || null;
+  // Every `agent-session-*` app id is a deterministic, per-session direct host.
+  // Older/provisioning rows can have the app id persisted before the Sandbox CR
+  // name; retain direct routing by deriving the controller's canonical name.
+  if (!runtimeSandboxName && runtimeAppId.startsWith("agent-session-")) {
+    runtimeSandboxName = `agent-host-${runtimeAppId}`;
+  }
 	if (!runtimeAppId) {
 		// Only SYNTHESIZE the deterministic per-session app-id when there's evidence
 		// the session actually runs on a per-session sandbox (its CR name is set, or
@@ -163,10 +277,125 @@ export function agentTargetForSession(row: {
 		// the agent closed. Leave it unresolved instead so the stop reports "stopping"
 		// and a later explicit status confirmation retries once the real linkage is
 		// written.
-		if ((row.runtimeSandboxName ?? "").trim()) {
+    if (runtimeSandboxName) {
 			runtimeAppId = (sessionHostAppId(row.id) ?? "").trim();
 		}
 	}
 	if (!instanceId || !runtimeAppId) return null;
-	return { runtimeAppId, instanceId };
+  return {
+    runtimeAppId,
+    instanceId,
+    runtimeSandboxName,
+    ...(row.runtimeHostOwned === false ? { ownsRuntimeSandbox: false } : {}),
+  };
+}
+
+/**
+ * Script-authored teams use an idle session row as their lead identity and
+ * mailbox anchor. That row intentionally has no durable agent runtime, so it
+ * must not enter the runtime-publication grace used by real agent sessions.
+ * If runtime identity is ever attached, treat the row as runtime-backed so a
+ * corrupted or migrated row is still cleaned conservatively.
+ */
+export function sessionRequiresRuntimeLinkage(row: {
+  agentId?: string | null;
+  status?: string | null;
+  daprInstanceId?: string | null;
+  runtimeAppId?: string | null;
+  runtimeSandboxName?: string | null;
+}): boolean {
+  const runtimeLessScriptLead =
+    row.agentId === "script-team-lead" &&
+    row.status === "idle" &&
+    !(row.daprInstanceId ?? "").trim() &&
+    !(row.runtimeAppId ?? "").trim() &&
+    !(row.runtimeSandboxName ?? "").trim();
+  return !runtimeLessScriptLead;
+}
+
+export function prospectiveAgentTargetForSession(row: {
+  id: string;
+  daprInstanceId: string | null;
+  runtimeProvisioningStartedAt?: Date | null;
+  runtimeProvisioningAppId?: string | null;
+  runtimeProvisioningInstanceId?: string | null;
+  runtimeProvisioningSandboxName?: string | null;
+  runtimeProvisioningHostOwned?: boolean | null;
+}): AgentRuntimeTarget | null {
+  if (!row.runtimeProvisioningStartedAt) return null;
+  const stagedAppId = (row.runtimeProvisioningAppId ?? "").trim();
+  const stagedInstanceId = (row.runtimeProvisioningInstanceId ?? "").trim();
+  const stagedSandboxName =
+    (row.runtimeProvisioningSandboxName ?? "").trim() || null;
+  const hasStagedFields =
+    stagedAppId.length > 0 ||
+    stagedInstanceId.length > 0 ||
+    stagedSandboxName !== null ||
+    row.runtimeProvisioningHostOwned != null;
+  if (hasStagedFields) {
+    if (
+      !stagedAppId ||
+      !stagedInstanceId ||
+      row.runtimeProvisioningHostOwned == null
+    ) {
+      return null;
+    }
+    return {
+      runtimeAppId: stagedAppId,
+      instanceId: stagedInstanceId,
+      runtimeSandboxName: stagedSandboxName,
+      ...(row.runtimeProvisioningHostOwned
+        ? {}
+        : { ownsRuntimeSandbox: false }),
+    };
+  }
+
+  // Backward compatibility for timestamp-only leases created before exact
+  // staging existed. Those launches always used the dedicated generation id.
+  const instanceId = sessionRuntimeGenerationInstanceId(
+    row.id,
+    row.runtimeProvisioningStartedAt,
+  );
+  const runtimeAppId = sessionRuntimeGenerationAppId(
+    row.id,
+    row.runtimeProvisioningStartedAt,
+  );
+  if (!instanceId || !runtimeAppId) return null;
+  return {
+    runtimeAppId,
+    instanceId,
+    runtimeSandboxName: `agent-host-${runtimeAppId}`,
+  };
+}
+
+/** Authoritative persisted target plus the generation-specific in-flight target. */
+export function agentTargetsForSession(row: {
+  id: string;
+  daprInstanceId: string | null;
+  runtimeAppId: string | null;
+  runtimeSandboxName?: string | null;
+  runtimeHostOwned?: boolean | null;
+  runtimeProvisioningStartedAt?: Date | null;
+  runtimeProvisioningAppId?: string | null;
+  runtimeProvisioningInstanceId?: string | null;
+  runtimeProvisioningSandboxName?: string | null;
+  runtimeProvisioningHostOwned?: boolean | null;
+}): AgentRuntimeTarget[] {
+  const candidates = [agentTargetForSession(row)];
+  if (row.runtimeProvisioningStartedAt) {
+    candidates.push(prospectiveAgentTargetForSession(row));
+  }
+  const seen = new Set<string>();
+  return candidates.filter((candidate): candidate is AgentRuntimeTarget => {
+    if (!candidate) return false;
+    const key = [
+      candidate.runtimeAppId.trim(),
+      candidate.instanceId.trim(),
+      candidate.runtimeSandboxName?.trim() ?? "",
+      candidate.ownsRuntimeSandbox === false ? "borrowed" : "owned",
+    ].join("\u0000");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

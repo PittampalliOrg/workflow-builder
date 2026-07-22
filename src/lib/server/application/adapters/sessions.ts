@@ -1,8 +1,12 @@
 import type {
 	AddSessionResourceInput,
+  AcknowledgeRuntimeProvisioningCompensationInput,
+  AuthorizeSessionRuntimeStartInput,
 	AttachSessionRuntimeInput,
+  CompleteSessionRuntimeHostRecoveryResult,
 	CliWorkspaceSessionCandidateRecord,
 	CreateSessionForkInput,
+  CreatePeerSessionResult,
 	CreateSessionRecordInput,
 	EnsureSessionRecordInput,
 	EnsureSessionRecordResult,
@@ -12,6 +16,13 @@ import type {
 	CreateWorkflowEnsureSessionInput,
 	LivenessReconcileCandidateRecord,
 	PeerSessionRecord,
+  ReserveSessionRuntimeProvisioningInput,
+  RuntimeProvisioningLease,
+  StageSessionRuntimeProvisioningInput,
+  StaleSessionRuntimeProvisioningTarget,
+  SessionRuntimeHostRecoveryLease,
+  SessionRuntimeHostRecoveryRecord,
+  SessionRuntimeStartAuthorizationResult,
 	SessionAgentConfigCommandPort,
 	SessionAgentConfigPatchResult,
 	SessionBrowserTarget,
@@ -35,12 +46,14 @@ import type {
 	SessionRuntimeTarget,
 	SessionRuntimeConfigReader,
 	SessionRuntimeEventRaiser,
+  SessionUserEventAcceptance,
 	SessionSandboxDeleteResult,
 	SessionSandboxDestroyer,
 	SessionUserEventCommandPort,
 	SessionListInput,
 	SessionWorkflowSpawner,
 	SessionWorkflowContext,
+  TeamMailboxDeliveryMetadata,
 	WorkflowDataService,
 	UpdateSessionStatusInput,
 	UpdateSessionStatusUnlessTerminatedInput,
@@ -58,8 +71,10 @@ import {
   inArray,
   isNotNull,
   isNull,
+  ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import { db as defaultDb } from "$lib/server/db";
 import {
@@ -86,6 +101,8 @@ import {
 } from "$lib/server/sessions/runtime-config";
 import {
 	raiseSessionUserEvents,
+  releaseSessionWorkflow,
+  reserveSessionWorkflow,
 	spawnSessionWorkflow,
 } from "$lib/server/sessions/spawn";
 import {
@@ -132,14 +149,79 @@ import type {
 
 type Database = typeof defaultDb;
 
+function activeProvisioningParentWorkflow(): SQL {
+  return sql`(
+    ${sessions.workflowExecutionId} IS NULL
+    OR EXISTS (
+      SELECT 1
+      FROM ${workflowExecutions}
+      WHERE ${workflowExecutions.id} = ${sessions.workflowExecutionId}
+        AND ${workflowExecutions.status} IN ('pending', 'running')
+        AND ${workflowExecutions.stopRequestedAt} IS NULL
+        AND ${workflowExecutions.completedAt} IS NULL
+    )
+  )`;
+}
+
+function activeProvisioningParentSession(): SQL {
+  return sql`(
+    ${sessions.parentExecutionId} IS NULL
+    OR EXISTS (
+      SELECT 1
+      FROM ${sessions} AS parent_session
+      WHERE parent_session.id = ${sessions.parentExecutionId}
+        AND parent_session.status IN ('rescheduling', 'running', 'idle')
+        AND parent_session.stop_requested_at IS NULL
+        AND parent_session.completed_at IS NULL
+    )
+  )`;
+}
+
+function runtimeProvisioningCompensationAuthority(): SQL {
+  return sql`(
+		${sessions.stopRequestedAt} IS NOT NULL
+		OR ${sessions.completedAt} IS NOT NULL
+		OR ${sessions.status} = 'terminated'
+		OR (
+			${sessions.workflowExecutionId} IS NOT NULL
+			AND NOT EXISTS (
+				SELECT 1
+				FROM ${workflowExecutions}
+				WHERE ${workflowExecutions.id} = ${sessions.workflowExecutionId}
+					AND ${workflowExecutions.status} IN ('pending', 'running')
+					AND ${workflowExecutions.stopRequestedAt} IS NULL
+					AND ${workflowExecutions.completedAt} IS NULL
+			)
+		)
+		OR (
+			${sessions.parentExecutionId} IS NOT NULL
+			AND NOT EXISTS (
+				SELECT 1
+				FROM ${sessions} AS compensation_parent_session
+				WHERE compensation_parent_session.id = ${sessions.parentExecutionId}
+					AND compensation_parent_session.status <> 'terminated'
+					AND compensation_parent_session.stop_requested_at IS NULL
+					AND compensation_parent_session.completed_at IS NULL
+			)
+		)
+	)`;
+}
+
 function requireDb(database: Database = defaultDb): Database {
 	if (!database) throw new Error("Database not configured");
 	return database;
 }
 
-function toPeerSessionRecord(session: SessionDetail): PeerSessionRecord {
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
+function toPeerSessionRecord(session: Session): PeerSessionRecord {
 	return {
 		id: session.id,
+    status: session.status as SessionStatus,
 		agentId: session.agentId,
 		agentVersion: session.agentVersion,
 		environmentId: session.environmentId,
@@ -147,22 +229,12 @@ function toPeerSessionRecord(session: SessionDetail): PeerSessionRecord {
 		vaultIds: session.vaultIds,
 		daprInstanceId: session.daprInstanceId,
 		natsSubject: session.natsSubject,
-    parentExecutionId: session.parentExecutionId,
-	};
-}
-
-function toWorkflowEnsureSessionRecord(
-	session: SessionDetail,
-): WorkflowEnsureSessionRecord {
-	return {
-		id: session.id,
-		agentId: session.agentId,
-		agentVersion: session.agentVersion,
-		vaultIds: session.vaultIds,
-		workflowExecutionId: session.workflowExecutionId,
-		sandboxName: session.sandboxName,
 		runtimeAppId: session.runtimeAppId,
-		runtimeSandboxName: session.runtimeSandboxName,
+    runtimeProvisioningStartedAt: session.runtimeProvisioningStartedAt,
+    workflowExecutionId: session.workflowExecutionId,
+    parentExecutionId: session.parentExecutionId,
+    stopRequestedAt: session.stopRequestedAt,
+    completedAt: session.completedAt,
 	};
 }
 
@@ -289,7 +361,10 @@ function shouldSkipLastEventBump(sessionId: string, nowMs: number): boolean {
 }
 
 export class CurrentSessionRepository implements SessionRepository {
-	constructor(private readonly database?: Database) {}
+  constructor(
+    private readonly database?: Database,
+    private readonly resolveAgent: typeof resolveAgentRef = resolveAgentRef,
+  ) {}
 
 	async listSessions(filter: SessionListInput = {}) {
 		const database = requireDb(this.database);
@@ -399,7 +474,7 @@ export class CurrentSessionRepository implements SessionRepository {
 
 	async createSession(input: CreateSessionRecordInput): Promise<SessionDetail> {
 		const database = requireDb(this.database);
-		const resolvedAgent = await resolveAgentRef({
+    const resolvedAgent = await this.resolveAgent({
 			id: input.agentId,
 			version: input.agentVersion,
 		});
@@ -449,7 +524,7 @@ export class CurrentSessionRepository implements SessionRepository {
     input: EnsureSessionRecordInput,
   ): Promise<EnsureSessionRecordResult> {
 		const database = requireDb(this.database);
-		const resolvedAgent = await resolveAgentRef({
+    const resolvedAgent = await this.resolveAgent({
 			id: input.agentId,
 			version: input.agentVersion,
 		});
@@ -565,16 +640,29 @@ export class CurrentSessionRepository implements SessionRepository {
 	async attachWorkspaceSandbox(input: {
 		sessionId: string;
 		workspaceSandboxName: string;
-	}): Promise<void> {
+  }): Promise<boolean> {
 		const database = requireDb(this.database);
-		await database
+    const attached = await database
 			.update(sessions)
 			.set({
 				workspaceSandboxName: input.workspaceSandboxName,
 				errorMessage: null,
 				updatedAt: new Date(),
 			})
-			.where(eq(sessions.id, input.sessionId));
+      .where(eq(sessions.id, input.sessionId))
+      .returning({
+        id: sessions.id,
+        status: sessions.status,
+        completedAt: sessions.completedAt,
+        stopRequestedAt: sessions.stopRequestedAt,
+      });
+    const row = attached[0];
+    return Boolean(
+      row &&
+      row.status !== "terminated" &&
+      row.completedAt == null &&
+      row.stopRequestedAt == null,
+    );
 	}
 
 	async recordSandboxProvisioningError(input: {
@@ -711,10 +799,756 @@ export class CurrentSessionRepository implements SessionRepository {
 		return row?.userId ?? null;
 	}
 
-	async attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void> {
+  async reserveSessionRuntimeProvisioning(
+    input: ReserveSessionRuntimeProvisioningInput,
+  ): Promise<RuntimeProvisioningLease | null> {
 		const database = requireDb(this.database);
-		const patch: Partial<Session> & { updatedAt: Date } = {
-			updatedAt: new Date(),
+    // The lease timestamp is also its immutable generation token. Advance it
+    // beyond updated_at (and any stale active token) so rapid release/reserve
+    // cycles and a wall-clock rollback cannot recreate an older generation.
+    const startedAt = sql<Date>`GREATEST(
+      date_trunc('milliseconds', clock_timestamp()),
+      date_trunc('milliseconds', ${sessions.updatedAt}) + interval '1 millisecond',
+      date_trunc('milliseconds', ${sessions.runtimeProvisioningStartedAt}) + interval '1 millisecond'
+    )`;
+    const reserved = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningStartedAt: startedAt,
+        runtimeProvisioningAppId: null,
+        runtimeProvisioningInstanceId: null,
+        runtimeProvisioningSandboxName: null,
+        runtimeProvisioningHostOwned: null,
+        runtimeProvisioningHostLaunchSpec: null,
+        updatedAt: startedAt,
+      })
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          ne(sessions.status, "terminated"),
+          isNull(sessions.completedAt),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.daprInstanceId),
+          or(
+            isNull(sessions.runtimeProvisioningStartedAt),
+            and(
+              sql`${sessions.runtimeProvisioningStartedAt} < clock_timestamp() - interval '10 minutes'`,
+              isNull(sessions.runtimeProvisioningAppId),
+              isNull(sessions.runtimeProvisioningInstanceId),
+              isNull(sessions.runtimeProvisioningSandboxName),
+              isNull(sessions.runtimeProvisioningHostOwned),
+              isNull(sessions.runtimeProvisioningHostLaunchSpec),
+            ),
+          ),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ startedAt: sessions.runtimeProvisioningStartedAt });
+    const lease = reserved[0]?.startedAt;
+    return lease ? { startedAt: lease } : null;
+  }
+
+  async stageSessionRuntimeProvisioning(
+    input: StageSessionRuntimeProvisioningInput,
+  ): Promise<boolean> {
+    const runtimeAppId = input.runtimeAppId.trim();
+    const durableInstanceId = input.durableInstanceId.trim();
+    const runtimeSandboxName = input.runtimeSandboxName?.trim() || null;
+    if (!runtimeAppId || !durableInstanceId) return false;
+    const emptyStagedTarget = and(
+      isNull(sessions.runtimeProvisioningAppId),
+      isNull(sessions.runtimeProvisioningInstanceId),
+      isNull(sessions.runtimeProvisioningSandboxName),
+      isNull(sessions.runtimeProvisioningHostOwned),
+      isNull(sessions.runtimeProvisioningHostLaunchSpec),
+    );
+    const exactStagedTarget = and(
+      eq(sessions.runtimeProvisioningAppId, runtimeAppId),
+      eq(sessions.runtimeProvisioningInstanceId, durableInstanceId),
+      runtimeSandboxName == null
+        ? isNull(sessions.runtimeProvisioningSandboxName)
+        : eq(sessions.runtimeProvisioningSandboxName, runtimeSandboxName),
+      eq(sessions.runtimeProvisioningHostOwned, input.runtimeHostOwned),
+      input.runtimeHostLaunchSpec == null
+        ? isNull(sessions.runtimeProvisioningHostLaunchSpec)
+        : sql`${sessions.runtimeProvisioningHostLaunchSpec} = ${JSON.stringify(input.runtimeHostLaunchSpec)}::jsonb`,
+    );
+
+    const database = requireDb(this.database);
+    const staged = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningAppId: runtimeAppId,
+        runtimeProvisioningInstanceId: durableInstanceId,
+        runtimeProvisioningSandboxName: runtimeSandboxName,
+        runtimeProvisioningHostOwned: input.runtimeHostOwned,
+        runtimeProvisioningHostLaunchSpec: input.runtimeHostLaunchSpec,
+        updatedAt: sql<Date>`GREATEST(
+          date_trunc('milliseconds', clock_timestamp()),
+          ${sessions.updatedAt},
+          ${input.expectedStartedAt}
+        )`,
+      })
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          ne(sessions.status, "terminated"),
+          isNull(sessions.completedAt),
+          isNull(sessions.stopRequestedAt),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+          or(emptyStagedTarget, exactStagedTarget),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return staged.length > 0;
+  }
+
+  async listStaleSessionRuntimeProvisioningTargets(input: {
+    staleBefore: Date;
+    limit: number;
+  }): Promise<StaleSessionRuntimeProvisioningTarget[]> {
+    const database = requireDb(this.database);
+    const rows = await database
+      .select({
+        sessionId: sessions.id,
+        startedAt: sessions.runtimeProvisioningStartedAt,
+        runtimeAppId: sessions.runtimeProvisioningAppId,
+        durableInstanceId: sessions.runtimeProvisioningInstanceId,
+        runtimeSandboxName: sessions.runtimeProvisioningSandboxName,
+        runtimeHostOwned: sessions.runtimeProvisioningHostOwned,
+        runtimeHostLaunchSpec: sessions.runtimeProvisioningHostLaunchSpec,
+        publishedDaprInstanceId: sessions.daprInstanceId,
+        publishedRuntimeAppId: sessions.runtimeAppId,
+        publishedRuntimeSandboxName: sessions.runtimeSandboxName,
+      })
+      .from(sessions)
+      .where(
+        and(
+          inArray(sessions.status, ["rescheduling", "running", "idle"]),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.completedAt),
+          isNotNull(sessions.runtimeProvisioningStartedAt),
+          isNotNull(sessions.runtimeProvisioningAppId),
+          isNotNull(sessions.runtimeProvisioningInstanceId),
+          isNotNull(sessions.runtimeProvisioningHostOwned),
+          sql`${sessions.runtimeProvisioningStartedAt} <= ${input.staleBefore}`,
+          sql`(
+							${sessions.workflowExecutionId} IS NULL
+							OR EXISTS (
+              SELECT 1
+              FROM ${workflowExecutions}
+              WHERE ${workflowExecutions.id} = ${sessions.workflowExecutionId}
+                AND ${workflowExecutions.status} IN ('pending', 'running')
+                AND ${workflowExecutions.stopRequestedAt} IS NULL
+                AND ${workflowExecutions.completedAt} IS NULL
+            )
+          )`,
+          activeProvisioningParentSession(),
+        ),
+      )
+      .orderBy(asc(sessions.runtimeProvisioningStartedAt))
+      .limit(Math.max(1, Math.min(Math.trunc(input.limit || 20), 200)));
+
+    return rows.flatMap((row) => {
+      const startedAt = row.startedAt;
+      const runtimeAppId = row.runtimeAppId?.trim() ?? "";
+      const durableInstanceId = row.durableInstanceId?.trim() ?? "";
+      if (
+        !startedAt ||
+        !runtimeAppId ||
+        !durableInstanceId ||
+        row.runtimeHostOwned == null
+      ) {
+        return [];
+      }
+      return [
+        {
+          sessionId: row.sessionId,
+          startedAt,
+          runtimeAppId,
+          durableInstanceId,
+          runtimeSandboxName: row.runtimeSandboxName?.trim() || null,
+          runtimeHostOwned: row.runtimeHostOwned,
+          runtimeHostLaunchSpec: row.runtimeHostLaunchSpec ?? null,
+          publishedGeneration:
+            row.publishedDaprInstanceId === durableInstanceId &&
+            row.publishedRuntimeAppId === runtimeAppId &&
+            (row.publishedRuntimeSandboxName?.trim() || null) ===
+              (row.runtimeSandboxName?.trim() || null),
+        },
+      ];
+    });
+  }
+
+  async attachStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+  }): Promise<boolean> {
+    const database = requireDb(this.database);
+    const attached = await database
+      .update(sessions)
+      .set({
+        daprInstanceId: sql<string>`${sessions.runtimeProvisioningInstanceId}`,
+        natsSubject: `session.events.${input.sessionId}`,
+        runtimeAppId: sql<string>`${sessions.runtimeProvisioningAppId}`,
+        runtimeSandboxName: sql<
+          string | null
+        >`${sessions.runtimeProvisioningSandboxName}`,
+        runtimeHostOwned: sql<boolean>`${sessions.runtimeProvisioningHostOwned}`,
+        runtimeHostLaunchSpec: sql<Record<
+          string,
+          unknown
+        > | null>`${sessions.runtimeProvisioningHostLaunchSpec}`,
+        updatedAt: sql<Date>`GREATEST(
+          date_trunc('milliseconds', clock_timestamp()),
+          ${sessions.updatedAt},
+          ${input.expectedStartedAt}
+        )`,
+      })
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          isNotNull(sessions.runtimeProvisioningAppId),
+          isNotNull(sessions.runtimeProvisioningInstanceId),
+          isNotNull(sessions.runtimeProvisioningHostOwned),
+          inArray(sessions.status, ["rescheduling", "running", "idle"]),
+          isNull(sessions.completedAt),
+          isNull(sessions.stopRequestedAt),
+          sql`(
+            ${sessions.workflowExecutionId} IS NULL
+            OR EXISTS (
+              SELECT 1
+              FROM ${workflowExecutions}
+              WHERE ${workflowExecutions.id} = ${sessions.workflowExecutionId}
+                AND ${workflowExecutions.status} IN ('pending', 'running')
+                AND ${workflowExecutions.stopRequestedAt} IS NULL
+                AND ${workflowExecutions.completedAt} IS NULL
+            )
+          )`,
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return attached.length > 0;
+  }
+
+  async completeStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+    runtimeAppId: string;
+  }): Promise<CompleteSessionRuntimeHostRecoveryResult> {
+    return this.completeSessionRuntimeHostRecovery({
+      sessionId: input.sessionId,
+      expectedRuntimeAppId: input.runtimeAppId,
+      expectedStartedAt: input.expectedStartedAt,
+    });
+  }
+
+  async inspectSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryRecord | null> {
+    const database = requireDb(this.database);
+    const [row] = await database
+      .select({
+        runtimeInstanceId: sessions.daprInstanceId,
+        runtimeAppId: sessions.runtimeAppId,
+        runtimeSandboxName: sessions.runtimeSandboxName,
+        launchSpec: sessions.runtimeHostLaunchSpec,
+        recoveryStartedAt: sessions.runtimeProvisioningStartedAt,
+        recoveryAppId: sessions.runtimeProvisioningAppId,
+        recoveryInstanceId: sessions.runtimeProvisioningInstanceId,
+        recoverySandboxName: sessions.runtimeProvisioningSandboxName,
+        recoveryHostOwned: sessions.runtimeProvisioningHostOwned,
+      })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeAppId, input.expectedRuntimeAppId),
+          eq(sessions.runtimeHostOwned, true),
+          ne(sessions.status, "terminated"),
+          isNull(sessions.completedAt),
+          isNull(sessions.stopRequestedAt),
+          sql`(
+						${sessions.workflowExecutionId} IS NULL
+						OR EXISTS (
+							SELECT 1
+							FROM ${workflowExecutions}
+							WHERE ${workflowExecutions.id} = ${sessions.workflowExecutionId}
+							  AND ${workflowExecutions.status} IN ('pending', 'running')
+							  AND ${workflowExecutions.stopRequestedAt} IS NULL
+								  AND ${workflowExecutions.completedAt} IS NULL
+							)
+						)`,
+          activeProvisioningParentSession(),
+        ),
+      )
+      .limit(1);
+    const runtimeAppId = row?.runtimeAppId?.trim() ?? "";
+    const runtimeSandboxName = row?.runtimeSandboxName?.trim() ?? "";
+    if (!runtimeAppId || !runtimeSandboxName) return null;
+    const recoveryStartedAt =
+      row?.recoveryStartedAt &&
+      row.recoveryAppId?.trim() === runtimeAppId &&
+      row.recoveryInstanceId?.trim() === row.runtimeInstanceId?.trim() &&
+      row.recoverySandboxName?.trim() === runtimeSandboxName &&
+      row.recoveryHostOwned === true
+        ? row.recoveryStartedAt
+        : null;
+    return {
+      runtimeAppId,
+      runtimeSandboxName,
+      launchSpec: row?.launchSpec ?? null,
+      recoveryStartedAt,
+    };
+  }
+
+  async beginSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryLease | null> {
+    const database = requireDb(this.database);
+    return database.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          runtimeInstanceId: sessions.daprInstanceId,
+          runtimeAppId: sessions.runtimeAppId,
+          runtimeSandboxName: sessions.runtimeSandboxName,
+          launchSpec: sessions.runtimeHostLaunchSpec,
+          startedAt: sessions.runtimeProvisioningStartedAt,
+          stagedAppId: sessions.runtimeProvisioningAppId,
+          stagedInstanceId: sessions.runtimeProvisioningInstanceId,
+          stagedSandboxName: sessions.runtimeProvisioningSandboxName,
+          stagedHostOwned: sessions.runtimeProvisioningHostOwned,
+          updatedAt: sessions.updatedAt,
+          workflowExecutionId: sessions.workflowExecutionId,
+        })
+        .from(sessions)
+        .where(
+          and(
+            eq(sessions.id, input.sessionId),
+            eq(sessions.runtimeAppId, input.expectedRuntimeAppId),
+            eq(sessions.runtimeHostOwned, true),
+            isNotNull(sessions.runtimeHostLaunchSpec),
+            ne(sessions.status, "terminated"),
+            isNull(sessions.completedAt),
+            isNull(sessions.stopRequestedAt),
+            activeProvisioningParentSession(),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!row) return null;
+      if (row.workflowExecutionId) {
+        const [parent] = await tx
+          .select({ id: workflowExecutions.id })
+          .from(workflowExecutions)
+          .where(
+            and(
+              eq(workflowExecutions.id, row.workflowExecutionId),
+              inArray(workflowExecutions.status, ["pending", "running"]),
+              isNull(workflowExecutions.stopRequestedAt),
+              isNull(workflowExecutions.completedAt),
+            ),
+          )
+          .limit(1);
+        if (!parent) return null;
+      }
+
+      const runtimeInstanceId = row.runtimeInstanceId?.trim() ?? "";
+      const runtimeAppId = row.runtimeAppId?.trim() ?? "";
+      const runtimeSandboxName = row.runtimeSandboxName?.trim() ?? "";
+      if (
+        !runtimeInstanceId ||
+        !runtimeAppId ||
+        !runtimeSandboxName ||
+        !row.launchSpec
+      ) {
+        return null;
+      }
+
+      const ownsExactRecovery =
+        row.startedAt != null &&
+        row.stagedAppId?.trim() === runtimeAppId &&
+        row.stagedInstanceId?.trim() === runtimeInstanceId &&
+        row.stagedSandboxName?.trim() === runtimeSandboxName &&
+        row.stagedHostOwned === true;
+      if (row.startedAt && !ownsExactRecovery) return null;
+
+      let startedAt = ownsExactRecovery ? row.startedAt : null;
+      if (!startedAt) {
+        const [reserved] = await tx
+          .update(sessions)
+          .set({
+            runtimeProvisioningStartedAt: sql<Date>`GREATEST(
+							date_trunc('milliseconds', clock_timestamp()),
+							date_trunc('milliseconds', ${sessions.updatedAt}) + interval '1 millisecond'
+						)`,
+            runtimeProvisioningAppId: runtimeAppId,
+            runtimeProvisioningInstanceId: runtimeInstanceId,
+            runtimeProvisioningSandboxName: runtimeSandboxName,
+            runtimeProvisioningHostOwned: true,
+            runtimeProvisioningHostLaunchSpec: row.launchSpec,
+            updatedAt: sql<Date>`GREATEST(
+							date_trunc('milliseconds', clock_timestamp()),
+							date_trunc('milliseconds', ${sessions.updatedAt}) + interval '1 millisecond'
+						)`,
+          })
+          .where(
+            and(
+              eq(sessions.id, input.sessionId),
+              eq(sessions.runtimeAppId, input.expectedRuntimeAppId),
+              isNull(sessions.runtimeProvisioningStartedAt),
+              activeProvisioningParentSession(),
+            ),
+          )
+          .returning({ startedAt: sessions.runtimeProvisioningStartedAt });
+        startedAt = reserved?.startedAt ?? null;
+      }
+      if (!startedAt) return null;
+      return {
+        startedAt,
+        runtimeAppId,
+        runtimeSandboxName,
+        launchSpec: row.launchSpec,
+      };
+    });
+  }
+
+  async completeSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+    expectedStartedAt: Date;
+  }): Promise<CompleteSessionRuntimeHostRecoveryResult> {
+    const database = requireDb(this.database);
+    return database.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          status: sessions.status,
+          stopRequestedAt: sessions.stopRequestedAt,
+          completedAt: sessions.completedAt,
+          runtimeAppId: sessions.runtimeAppId,
+          startedAt: sessions.runtimeProvisioningStartedAt,
+          workflowExecutionId: sessions.workflowExecutionId,
+          parentExecutionId: sessions.parentExecutionId,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, input.sessionId))
+        .for("update")
+        .limit(1);
+      if (
+        !row ||
+        row.runtimeAppId?.trim() !== input.expectedRuntimeAppId.trim()
+      ) {
+        return "superseded";
+      }
+      if (
+        row.status === "terminated" ||
+        row.stopRequestedAt != null ||
+        row.completedAt != null
+      ) {
+        return "stopped";
+      }
+      if (row.workflowExecutionId) {
+        const [parent] = await tx
+          .select({ id: workflowExecutions.id })
+          .from(workflowExecutions)
+          .where(
+            and(
+              eq(workflowExecutions.id, row.workflowExecutionId),
+              inArray(workflowExecutions.status, ["pending", "running"]),
+              isNull(workflowExecutions.stopRequestedAt),
+              isNull(workflowExecutions.completedAt),
+            ),
+          )
+          .limit(1);
+        if (!parent) return "stopped";
+      }
+      if (row.parentExecutionId) {
+        const [parent] = await tx
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.id, row.parentExecutionId),
+              inArray(sessions.status, ["rescheduling", "running", "idle"]),
+              isNull(sessions.stopRequestedAt),
+              isNull(sessions.completedAt),
+            ),
+          )
+          .limit(1);
+        if (!parent) return "stopped";
+      }
+      if (row.startedAt == null) return "already_completed";
+      if (row.startedAt.getTime() !== input.expectedStartedAt.getTime()) {
+        return "conflict";
+      }
+      const completed = await tx
+        .update(sessions)
+        .set({
+          runtimeProvisioningStartedAt: null,
+          runtimeProvisioningAppId: null,
+          runtimeProvisioningInstanceId: null,
+          runtimeProvisioningSandboxName: null,
+          runtimeProvisioningHostOwned: null,
+          runtimeProvisioningHostLaunchSpec: null,
+          updatedAt: sql<Date>`GREATEST(
+						date_trunc('milliseconds', clock_timestamp()),
+						${sessions.updatedAt},
+						${input.expectedStartedAt}
+					)`,
+        })
+        .where(
+          and(
+            eq(sessions.id, input.sessionId),
+            eq(sessions.runtimeAppId, input.expectedRuntimeAppId),
+            eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+            isNull(sessions.stopRequestedAt),
+            isNull(sessions.completedAt),
+            ne(sessions.status, "terminated"),
+            activeProvisioningParentWorkflow(),
+            activeProvisioningParentSession(),
+          ),
+        )
+        .returning({ id: sessions.id });
+      return completed.length > 0 ? "completed" : "conflict";
+    });
+  }
+
+  async acknowledgeRuntimeProvisioningCompensation(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean> {
+    const database = requireDb(this.database);
+    const acknowledged = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningStartedAt: null,
+        runtimeProvisioningAppId: null,
+        runtimeProvisioningInstanceId: null,
+        runtimeProvisioningSandboxName: null,
+        runtimeProvisioningHostOwned: null,
+        runtimeProvisioningHostLaunchSpec: null,
+        updatedAt: sql<Date>`GREATEST(
+          date_trunc('milliseconds', clock_timestamp()),
+          ${sessions.updatedAt},
+          ${input.expectedStartedAt}
+        )`,
+      })
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          runtimeProvisioningCompensationAuthority(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return acknowledged.length > 0;
+  }
+
+  async canCompensateRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean> {
+    const database = requireDb(this.database);
+    const [row] = await database
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          runtimeProvisioningCompensationAuthority(),
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
+  async canReleaseRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean> {
+    const database = requireDb(this.database);
+    const [row] = await database
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.completedAt),
+          ne(sessions.status, "terminated"),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
+  async claimStaleSessionRuntimeProvisioning(input: {
+    current: StaleSessionRuntimeProvisioningTarget;
+    claimedAt: Date;
+  }): Promise<boolean> {
+    const database = requireDb(this.database);
+    const { current, claimedAt } = input;
+    if (
+      current.publishedGeneration ||
+      claimedAt.getTime() <= current.startedAt.getTime()
+    ) {
+      return false;
+    }
+    const claimed = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningStartedAt: claimedAt,
+        updatedAt: sql<Date>`GREATEST(
+					date_trunc('milliseconds', clock_timestamp()),
+					${sessions.updatedAt},
+					${claimedAt}
+				)`,
+      })
+      .where(
+        and(
+          eq(sessions.id, current.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, current.startedAt),
+          eq(sessions.runtimeProvisioningAppId, current.runtimeAppId),
+          eq(sessions.runtimeProvisioningInstanceId, current.durableInstanceId),
+          current.runtimeSandboxName == null
+            ? isNull(sessions.runtimeProvisioningSandboxName)
+            : eq(
+                sessions.runtimeProvisioningSandboxName,
+                current.runtimeSandboxName,
+              ),
+          eq(sessions.runtimeProvisioningHostOwned, current.runtimeHostOwned),
+          isNull(sessions.daprInstanceId),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.completedAt),
+          ne(sessions.status, "terminated"),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return claimed.length > 0;
+  }
+
+  async prepareClaimedSessionRuntimeProvisioningRedrive(input: {
+    claimed: StaleSessionRuntimeProvisioningTarget;
+    replacement: StaleSessionRuntimeProvisioningTarget;
+  }): Promise<boolean> {
+    const database = requireDb(this.database);
+    const { claimed, replacement } = input;
+    if (
+      replacement.sessionId !== claimed.sessionId ||
+      replacement.startedAt.getTime() !== claimed.startedAt.getTime() ||
+      claimed.publishedGeneration ||
+      replacement.publishedGeneration ||
+      !replacement.runtimeAppId.trim() ||
+      !replacement.durableInstanceId.trim() ||
+      replacement.durableInstanceId === claimed.durableInstanceId ||
+      replacement.runtimeHostOwned !== claimed.runtimeHostOwned ||
+      (claimed.runtimeHostOwned &&
+        (replacement.runtimeAppId === claimed.runtimeAppId ||
+          replacement.runtimeSandboxName === claimed.runtimeSandboxName))
+    ) {
+      return false;
+    }
+    const prepared = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningAppId: replacement.runtimeAppId,
+        runtimeProvisioningInstanceId: replacement.durableInstanceId,
+        runtimeProvisioningSandboxName: replacement.runtimeSandboxName,
+        runtimeProvisioningHostOwned: replacement.runtimeHostOwned,
+        runtimeProvisioningHostLaunchSpec: replacement.runtimeHostLaunchSpec,
+        updatedAt: sql<Date>`GREATEST(
+					date_trunc('milliseconds', clock_timestamp()),
+					${sessions.updatedAt},
+					${claimed.startedAt}
+				)`,
+      })
+      .where(
+        and(
+          eq(sessions.id, claimed.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, claimed.startedAt),
+          eq(sessions.runtimeProvisioningAppId, claimed.runtimeAppId),
+          eq(sessions.runtimeProvisioningInstanceId, claimed.durableInstanceId),
+          claimed.runtimeSandboxName == null
+            ? isNull(sessions.runtimeProvisioningSandboxName)
+            : eq(
+                sessions.runtimeProvisioningSandboxName,
+                claimed.runtimeSandboxName,
+              ),
+          eq(sessions.runtimeProvisioningHostOwned, claimed.runtimeHostOwned),
+          isNull(sessions.daprInstanceId),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.completedAt),
+          ne(sessions.status, "terminated"),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return prepared.length > 0;
+  }
+
+  async releaseSessionRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean> {
+    const database = requireDb(this.database);
+    const released = await database
+      .update(sessions)
+      .set({
+        runtimeProvisioningStartedAt: null,
+        runtimeProvisioningAppId: null,
+        runtimeProvisioningInstanceId: null,
+        runtimeProvisioningSandboxName: null,
+        runtimeProvisioningHostOwned: null,
+        runtimeProvisioningHostLaunchSpec: null,
+        updatedAt: sql<Date>`GREATEST(
+          date_trunc('milliseconds', clock_timestamp()),
+          ${sessions.updatedAt},
+          ${input.expectedStartedAt}
+        )`,
+      })
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          isNull(sessions.stopRequestedAt),
+          isNull(sessions.completedAt),
+          ne(sessions.status, "terminated"),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return released.length > 0;
+  }
+
+  async attachSessionRuntime(
+    input: AttachSessionRuntimeInput,
+  ): Promise<boolean> {
+    const database = requireDb(this.database);
+    const patch: Omit<Partial<Session>, "updatedAt"> & {
+      updatedAt: SQL<Date>;
+    } = {
+      runtimeProvisioningStartedAt: null,
+      runtimeProvisioningAppId: null,
+      runtimeProvisioningInstanceId: null,
+      runtimeProvisioningSandboxName: null,
+      runtimeProvisioningHostOwned: null,
+      runtimeProvisioningHostLaunchSpec: null,
+      updatedAt: sql<Date>`GREATEST(
+        date_trunc('milliseconds', clock_timestamp()),
+        ${sessions.updatedAt},
+        ${input.expectedStartedAt}
+      )`,
 		};
 		if (input.daprInstanceId !== undefined) {
 			patch.daprInstanceId = input.daprInstanceId;
@@ -728,10 +1562,180 @@ export class CurrentSessionRepository implements SessionRepository {
 		if (input.runtimeSandboxName !== undefined) {
 			patch.runtimeSandboxName = input.runtimeSandboxName;
 		}
-		await database
+    if (input.runtimeHostOwned !== undefined) {
+      patch.runtimeHostOwned = input.runtimeHostOwned;
+    }
+    if (input.runtimeHostLaunchSpec !== undefined) {
+      patch.runtimeHostLaunchSpec = input.runtimeHostLaunchSpec;
+    }
+    const attached = await database
 			.update(sessions)
 			.set(patch)
-			.where(eq(sessions.id, input.sessionId));
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.runtimeProvisioningStartedAt, input.expectedStartedAt),
+          ne(sessions.status, "terminated"),
+          isNull(sessions.completedAt),
+          isNull(sessions.stopRequestedAt),
+          activeProvisioningParentWorkflow(),
+          activeProvisioningParentSession(),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return attached.length > 0;
+  }
+
+  async authorizeSessionRuntimeStart(
+    input: AuthorizeSessionRuntimeStartInput,
+  ): Promise<SessionRuntimeStartAuthorizationResult> {
+    const database = requireDb(this.database);
+    const initialRows = resultRows<{
+      id: string;
+      user_id: string;
+      project_id: string | null;
+      workflow_execution_id: string | null;
+      parent_execution_id: string | null;
+    }>(
+      await database.execute(sql`
+			SELECT id, user_id, project_id, workflow_execution_id, parent_execution_id
+			FROM sessions
+			WHERE id = ${input.sessionId}
+			LIMIT 1
+		`),
+    );
+    const initial = initialRows[0];
+    if (!initial) return { status: "not_found" };
+    if (
+      initial.user_id !== input.userId ||
+      initial.project_id !== input.projectId
+    ) {
+      return { status: "principal_mismatch" };
+    }
+
+    return database.transaction(async (tx) => {
+      // Match lifecycle ordering: parent workflow, parent session, child session.
+      // A stop that already owns either parent lock wins; authorization then
+      // re-evaluates against its committed stop state and is denied.
+      if (initial.workflow_execution_id) {
+        const parentWorkflow = resultRows<{ id: string }>(
+          await tx.execute(sql`
+					SELECT id
+					FROM workflow_executions
+					WHERE id = ${initial.workflow_execution_id}
+					  AND status IN ('pending', 'running')
+					  AND stop_requested_at IS NULL
+					  AND completed_at IS NULL
+					FOR UPDATE
+				`),
+        );
+        if (parentWorkflow.length === 0) {
+          return { status: "parent_inactive" as const };
+        }
+      }
+
+      if (initial.parent_execution_id) {
+        const parentSession = resultRows<{ id: string }>(
+          await tx.execute(sql`
+					SELECT id
+					FROM sessions
+					WHERE id = ${initial.parent_execution_id}
+					  AND status IN ('rescheduling', 'running', 'idle')
+					  AND stop_requested_at IS NULL
+					  AND completed_at IS NULL
+					FOR UPDATE
+				`),
+        );
+        if (parentSession.length === 0) {
+          return { status: "parent_inactive" as const };
+        }
+      }
+
+      const currentRows = resultRows<{
+        user_id: string;
+        project_id: string | null;
+        workflow_execution_id: string | null;
+        parent_execution_id: string | null;
+        status: string;
+        stop_requested_at: Date | null;
+        completed_at: Date | null;
+        runtime_provisioning_started_at: Date | null;
+        dapr_instance_id: string | null;
+        runtime_app_id: string | null;
+      }>(
+        await tx.execute(sql`
+				SELECT user_id, project_id, workflow_execution_id, parent_execution_id,
+				       status, stop_requested_at, completed_at,
+				       runtime_provisioning_started_at, dapr_instance_id, runtime_app_id
+				FROM sessions
+				WHERE id = ${input.sessionId}
+				LIMIT 1
+				FOR UPDATE
+			`),
+      );
+      const current = currentRows[0];
+      if (!current) return { status: "not_found" as const };
+      if (
+        current.user_id !== input.userId ||
+        current.project_id !== input.projectId
+      ) {
+        return { status: "principal_mismatch" as const };
+      }
+      if (
+        current.workflow_execution_id !== initial.workflow_execution_id ||
+        current.parent_execution_id !== initial.parent_execution_id ||
+        !(["rescheduling", "running", "idle"] as string[]).includes(
+          current.status,
+        ) ||
+        current.stop_requested_at != null ||
+        current.completed_at != null
+      ) {
+        return { status: "inactive" as const };
+      }
+
+      if (input.teamRole === "member") {
+        if (!input.teamId) return { status: "team_inactive" as const };
+        const memberships = resultRows<{ status: string }>(
+          await tx.execute(sql`
+					SELECT member.status
+					FROM team_members AS member
+					JOIN teams AS team ON team.id = member.team_id
+					WHERE member.session_id = ${input.sessionId}
+					  AND member.team_id = ${input.teamId}
+					  AND member.role = 'member'
+					  AND team.status = 'active'
+					  AND team.lead_session_id IS NOT DISTINCT FROM ${initial.parent_execution_id}
+					  AND team.workflow_execution_id IS NOT DISTINCT FROM ${initial.workflow_execution_id}
+					FOR UPDATE OF member
+				`),
+        );
+        const membership = memberships[0];
+        if (!membership) return { status: "team_inactive" as const };
+        if (membership.status === "starting") {
+          return { status: "team_pending" as const };
+        }
+        if (membership.status !== "working") {
+          return { status: "team_inactive" as const };
+        }
+      }
+
+      if (!current.runtime_app_id?.trim()) {
+        return { status: "runtime_unpublished" as const };
+      }
+      if (current.runtime_app_id.trim() !== input.runtimeAppId.trim()) {
+        return { status: "runtime_superseded" as const };
+      }
+      if (
+        current.runtime_provisioning_started_at != null ||
+        !current.dapr_instance_id?.trim()
+      ) {
+        return { status: "runtime_unpublished" as const };
+      }
+      if (current.dapr_instance_id.trim() !== input.runtimeInstanceId.trim()) {
+        return { status: "runtime_superseded" as const };
+      }
+      return { status: "authorized" as const };
+    });
 	}
 
 	async getSessionRuntimeTarget(input: {
@@ -920,6 +1924,7 @@ export class CurrentSessionRepository implements SessionRepository {
 				runtimeSandboxName: sessions.runtimeSandboxName,
 				pauseRequestedAt: sessions.pauseRequestedAt,
 				stopRequestedAt: sessions.stopRequestedAt,
+        stopRequestedMode: sessions.stopRequestedMode,
 				updatedAt: sessions.updatedAt,
 				lastEventAt: sessions.lastEventAt,
 				coordinatorOwned,
@@ -927,12 +1932,17 @@ export class CurrentSessionRepository implements SessionRepository {
 			.from(sessions)
 			.innerJoin(agents, eq(agents.id, sessions.agentId))
 			.where(
+        or(
+          // Pending stop intents bypass the age, status, and archive gates.
+          // Successful lifecycle finalization clears the intent as its durable
+          // acknowledgement; therefore terminal cleanup requests are retried after
+          // a process crash without making acknowledged rows permanent candidates.
+          isNotNull(sessions.stopRequestedAt),
+          and(
+            isNull(sessions.archivedAt),
 				and(
 					// `failed` is a NON-terminal ingest state (turn StopFailure leaves no
-					// completedAt) — the reconciler is its only finalizer, so a pod that
-					// dies right after status_errored must be scanned. The completedAt
-					// guard excludes rows already finalized (crash-converged or otherwise)
-					// so we never re-process a terminal `failed` row.
+              // completedAt) — the reconciler is its only finalizer.
 					inArray(sessions.status, [
 						"running",
 						"idle",
@@ -941,11 +1951,17 @@ export class CurrentSessionRepository implements SessionRepository {
 						"failed",
 					]),
 					isNull(sessions.completedAt),
-					isNull(sessions.archivedAt),
 					sql`${sessions.updatedAt} < now() - make_interval(secs => ${minAge})`,
 				),
+          ),
+        ),
+      )
+      .orderBy(
+        asc(
+          sql`CASE WHEN ${sessions.stopRequestedAt} IS NOT NULL THEN 0 ELSE 1 END`,
+        ),
+        asc(sql`COALESCE(${sessions.stopRequestedAt}, ${sessions.updatedAt})`),
 			)
-			.orderBy(asc(sessions.updatedAt))
 			.limit(limit);
 		return rows.map((row) => ({
 			...row,
@@ -1027,15 +2043,53 @@ export class CurrentSessionRepository implements SessionRepository {
 	async getWorkflowEnsureSession(
 		sessionId: string,
 	): Promise<WorkflowEnsureSessionRecord | null> {
-		const session = await this.getSession(sessionId);
-		return session ? toWorkflowEnsureSessionRecord(session) : null;
+    const database = requireDb(this.database);
+    const [session] = await database
+      .select({
+        id: sessions.id,
+        agentId: sessions.agentId,
+        agentVersion: sessions.agentVersion,
+        userId: sessions.userId,
+        projectId: sessions.projectId,
+        vaultIds: sessions.vaultIds,
+        workflowExecutionId: sessions.workflowExecutionId,
+        parentExecutionId: sessions.parentExecutionId,
+        sandboxName: sessions.sandboxName,
+        runtimeAppId: sessions.runtimeAppId,
+        runtimeSandboxName: sessions.runtimeSandboxName,
+      })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    return session ?? null;
 	}
 
   async createWorkflowEnsureSession(
     input: CreateWorkflowEnsureSessionInput,
-  ): Promise<void> {
+  ): Promise<RuntimeProvisioningLease | null> {
 		const database = requireDb(this.database);
-		await database.insert(sessions).values({
+    return database.transaction(async (tx) => {
+      const startedAt = new Date();
+      if (input.workflowExecutionId) {
+        // Serialize child creation with lifecycle markStopRequested, which locks
+        // this same execution row before stamping every existing child. Whichever
+        // transaction wins, a session can never be inserted behind a parent stop.
+        const activeParent = await tx
+          .select({ id: workflowExecutions.id })
+          .from(workflowExecutions)
+          .where(
+            and(
+              eq(workflowExecutions.id, input.workflowExecutionId),
+              inArray(workflowExecutions.status, ["pending", "running"]),
+              isNull(workflowExecutions.stopRequestedAt),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (activeParent.length === 0) return null;
+      }
+
+      await tx.insert(sessions).values({
 			id: input.id,
 			title: input.title,
 			status: "rescheduling",
@@ -1051,21 +2105,27 @@ export class CurrentSessionRepository implements SessionRepository {
 			parentExecutionId: input.parentExecutionId,
 			mlflowSessionId: input.id,
 			daprInstanceId: input.id,
+        // The parent-row lock and lease are committed together, so lifecycle
+        // either observes this child before stopping the parent or prevents
+        // the insert. The prospective target is derived from the id while the
+        // actual runtime fields remain authoritative.
+        runtimeProvisioningStartedAt: startedAt,
+      });
+      return { startedAt };
 		});
 	}
 
 	async updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
-	): Promise<void> {
-		const database = requireDb(this.database);
-		await database
-			.update(sessions)
-			.set({
+  ): Promise<boolean> {
+    return this.attachSessionRuntime({
+      sessionId: input.sessionId,
+      expectedStartedAt: input.expectedStartedAt,
 				runtimeAppId: input.runtimeAppId,
 				runtimeSandboxName: input.runtimeSandboxName,
-				updatedAt: new Date(),
-			})
-			.where(eq(sessions.id, input.sessionId));
+      runtimeHostOwned: input.runtimeHostOwned,
+      runtimeHostLaunchSpec: input.runtimeHostLaunchSpec,
+    });
 	}
 
 	async listReapableWorkflowSessionRuntimeHosts(input: {
@@ -1088,6 +2148,7 @@ export class CurrentSessionRepository implements SessionRepository {
 				and(
 					eq(sessions.workflowExecutionId, input.workflowExecutionId),
 					inArray(sessions.status, ["terminated", "failed"]),
+          eq(sessions.runtimeHostOwned, true),
 					isNotNull(sessions.runtimeAppId),
 					or(
 						isNull(workflowScriptCalls.callId),
@@ -1124,22 +2185,113 @@ export class CurrentSessionRepository implements SessionRepository {
 	}
 
 	async getPeerSession(sessionId: string): Promise<PeerSessionRecord | null> {
-		const session = await this.getSession(sessionId);
+    const database = requireDb(this.database);
+    const [session] = await database
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
 		return session ? toPeerSessionRecord(session) : null;
 	}
 
   async createPeerSession(
     input: CreatePeerSessionInput,
-  ): Promise<PeerSessionRecord> {
-		const session = await this.createSession({
+  ): Promise<CreatePeerSessionResult> {
+    const database = requireDb(this.database);
+    const resolvedAgent = await this.resolveAgent({
+      id: input.agentId,
+      version: input.agentVersion ?? undefined,
+    });
+    if (!resolvedAgent) throw new Error(`Agent ${input.agentId} not found`);
+    if (
+      input.agentVersion != null &&
+      resolvedAgent.version !== input.agentVersion
+    ) {
+      throw new Error(
+        `Agent ${input.agentId} resolved version ${resolvedAgent.version}, expected ${input.agentVersion}`,
+      );
+    }
+
+    return database.transaction(async (tx) => {
+      // Locks serialize this insert with session/workflow stop UPDATEs. If
+      // creation wins, the subsequent stop sees the linked child; if stop wins,
+      // no child row is created and no external provisioning may begin.
+      if (input.workflowExecutionId) {
+        const activeExecution = resultRows<{ id: string }>(
+          await tx.execute(sql`
+					SELECT id
+					FROM workflow_executions
+					WHERE id = ${input.workflowExecutionId}
+					  AND stop_requested_at IS NULL
+					  AND completed_at IS NULL
+					FOR UPDATE
+				`),
+        );
+        if (activeExecution.length === 0) {
+          return { status: "execution_not_active" as const };
+        }
+      }
+      if (input.parentExecutionId) {
+        const activeParent = resultRows<{ id: string }>(
+          await tx.execute(sql`
+					SELECT id
+					FROM sessions
+					WHERE id = ${input.parentExecutionId}
+					  AND stop_requested_at IS NULL
+					  AND completed_at IS NULL
+					  AND status <> 'terminated'
+					FOR UPDATE
+				`),
+        );
+        if (activeParent.length === 0) {
+          return { status: "execution_not_active" as const };
+        }
+      }
+
+      const [inserted] = await tx
+        .insert(sessions)
+        .values({
 			id: input.id,
-			agentId: input.agentId,
 			title: input.title,
+          status: "rescheduling",
+          agentId: resolvedAgent.id,
+          agentVersion: resolvedAgent.version,
+          environmentId: resolvedAgent.environmentId ?? null,
+          environmentVersion: resolvedAgent.environmentVersion ?? null,
+          vaultIds: resolvedAgent.defaultVaultIds,
 			userId: input.userId,
 			projectId: input.projectId,
+          sandboxName: DEFAULT_SANDBOX_NAME,
+          workflowExecutionId: input.workflowExecutionId,
 			parentExecutionId: input.parentExecutionId,
+          mlflowSessionId: input.id,
+        })
+        .onConflictDoNothing({ target: sessions.id })
+        .returning();
+      if (inserted) {
+        return {
+          status: "ok" as const,
+          session: toPeerSessionRecord(inserted),
+          created: true,
+        };
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(sessions)
+        .where(eq(sessions.id, input.id))
+        .limit(1);
+      if (!existing) {
+        throw new Error(
+          `Peer session ${input.id} conflicted but could not be loaded`,
+        );
+      }
+      return {
+        status: "ok" as const,
+        session: toPeerSessionRecord(existing),
+        created: false,
+      };
 		});
-		return toPeerSessionRecord(session);
 	}
 
   async findSessionIdByDaprInstanceId(
@@ -1186,6 +2338,7 @@ export class CurrentSessionRepository implements SessionRepository {
     projectId: string | null;
     status?: SessionStatus;
     completedAt?: Date | null;
+    stopRequestedAt?: Date | null;
   } | null> {
 		const database = requireDb(this.database);
 		const [row] = await database
@@ -1195,6 +2348,7 @@ export class CurrentSessionRepository implements SessionRepository {
 				projectId: sessions.projectId,
         status: sessions.status,
         completedAt: sessions.completedAt,
+        stopRequestedAt: sessions.stopRequestedAt,
 			})
 			.from(sessions)
 			.where(eq(sessions.id, sessionId))
@@ -1238,10 +2392,7 @@ export class CurrentSessionRepository implements SessionRepository {
 			patch.pauseRequestedAt = input.pauseRequestedAt;
 		}
 		if (input.markCompleted) patch.completedAt = updatedAt;
-		await database
-			.update(sessions)
-			.set(patch)
-			.where(eq(sessions.id, input.id));
+    await database.update(sessions).set(patch).where(eq(sessions.id, input.id));
 	}
 
 	async updateSessionStatusUnlessTerminated(
@@ -1433,16 +2584,31 @@ export class DaprSessionRuntimeEventRaiser implements SessionRuntimeEventRaiser 
   raiseSessionUserEvents(
     sessionId: string,
     events: UserEvent[],
-  ): Promise<void> {
-		return raiseSessionUserEvents(sessionId, events);
+    delivery?: TeamMailboxDeliveryMetadata,
+  ): Promise<SessionUserEventAcceptance> {
+    return raiseSessionUserEvents(sessionId, events, delivery);
 	}
 }
 
 export class DaprSessionWorkflowSpawner implements SessionWorkflowSpawner {
+  reserveSessionWorkflow(
+    sessionId: string,
+  ): Promise<RuntimeProvisioningLease | null> {
+    return reserveSessionWorkflow(sessionId);
+  }
+
+  releaseSessionWorkflow(
+    sessionId: string,
+    lease: RuntimeProvisioningLease,
+  ): Promise<boolean> {
+    return releaseSessionWorkflow(sessionId, lease);
+  }
+
 	spawnSessionWorkflow(
 		sessionId: string,
     options?: {
       persistentHost?: boolean;
+      provisioningLease?: RuntimeProvisioningLease;
       workflowMcpCapabilities?: {
         scriptDepth: number;
         teamId: string | null;

@@ -1,8 +1,13 @@
 import { error, json } from "@sveltejs/kit";
 import type { RequestHandler } from "./$types";
 import { getApplicationAdapters } from "$lib/server/application";
+import {
+  buildTeamMemberRevivalPrompt,
+  canonicalTeamMemberIdentity,
+  createTeamMemberSessionId,
+} from "$lib/server/application/team-member-launch";
+import type { TerminalTeamMemberStatus } from "$lib/server/application/ports";
 import { getTeamBudget } from "$lib/server/teams/team-budget";
-import { linkSessionToTeamRun } from "$lib/server/teams/team-run";
 import {
   authorizeTeamActionRequest,
   publicPeerSpawnProjection,
@@ -37,20 +42,44 @@ export const POST: RequestHandler = async ({ params, request }) => {
   );
   if (!authorization.ok)
     return error(authorization.status, authorization.error);
-  if (!body.name) {
-    return error(400, "name is required");
+  const identity = canonicalTeamMemberIdentity(body.name);
+  if (!identity) return error(400, "name is required");
+  const { name, title } = identity;
+  const application = getApplicationAdapters();
+  const replay = await application.teamMemberLaunch.inspectMemberRevivalReplay(
+    {
+      teamId: params.teamId,
+      name,
+      prompt: body.prompt,
+    },
+    authorization.principal,
+  );
+  if (replay?.status === "error") {
+    return error(replay.httpStatus, replay.message);
+  }
+  if (replay) {
+    return json(
+      {
+        ok: true,
+        name: replay.member.name,
+        sessionId: replay.member.session_id,
+        previousSessionId: replay.member.launch_previous_session_id,
+        spawn: publicPeerSpawnProjection(replay.spawn.body),
+      },
+      { status: replay.spawn.httpStatus ?? 200 },
+    );
 	}
-	const store = getApplicationAdapters().teamStore;
+  const store = application.teamStore;
 
 	const team = await store.getTeam(params.teamId);
 	if (!team) return error(404, "no such team");
 
-	const member = await store.getMemberByName(params.teamId, body.name);
-	if (!member) return error(404, `no teammate '${body.name}' in this team`);
+  const member = await store.getMemberByName(params.teamId, name);
+  if (!member) return error(404, `no teammate '${name}' in this team`);
 	if (member.status !== "shutdown" && member.status !== "failed") {
 		return error(
 			400,
-			`teammate '${body.name}' is ${member.status} — only shutdown/failed teammates can be revived`,
+      `teammate '${name}' is ${member.status} — only shutdown/failed teammates can be revived`,
 		);
 	}
 
@@ -58,14 +87,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	if (budget?.exhausted) {
 		return error(
 			400,
-			`team token budget exhausted (${budget.used}/${budget.budget}) — cannot revive '${body.name}'`,
+      `team token budget exhausted (${budget.used}/${budget.budget}) — cannot revive '${name}'`,
 		);
 	}
 
 	if (!member.agent_slug) {
     return error(
       400,
-      `teammate '${body.name}' has no recorded agent slug to respawn from`,
+      `teammate '${name}' has no recorded agent slug to respawn from`,
     );
 	}
 	const projectId = await store.getSessionProjectId(team.lead_session_id);
@@ -76,53 +105,65 @@ export const POST: RequestHandler = async ({ params, request }) => {
       404,
       `agent '${member.agent_slug}' no longer exists in this project`,
     );
+  const eligibility =
+    await application.teamMailboxEligibility.checkParticipants({
+      leadSessionId: authorization.principal.sessionId,
+      memberAgentId: agent.id,
+    });
+  if (eligibility.status === "error") {
+    return error(eligibility.httpStatus, eligibility.message);
+  }
 
 	const priorSessionId = member.session_id;
-	// Generation suffix keeps the id deterministic-ish, unique, and ≤64 chars.
-	const gen = Date.now().toString(36);
-	const newSessionId = `tm-${params.teamId}-${body.name}-r${gen}`.slice(0, 64);
+  const priorStatus: TerminalTeamMemberStatus =
+    member.status === "failed" ? "failed" : "shutdown";
+  // Retry-stable for the current predecessor. After a successful revival the
+  // member points at the new session, so a later revival gets a new generation.
+  const newSessionId = createTeamMemberSessionId({
+    teamId: params.teamId,
+    name,
+    previousSessionId: priorSessionId,
+  });
 
-	const revivalPrompt = [
-		`You are "${body.name}", REVIVED into your team after your previous session (${priorSessionId}) ${member.status === "failed" ? "failed" : "was shut down"}.`,
-		"You do not inherit that session's memory — treat the team task list and teammate messages as ground truth for what remains.",
-		"Call claim_task to pick up your next unblocked task.",
-		body.prompt?.trim() ? `\nLead's instruction: ${body.prompt.trim()}` : "",
-	]
-		.filter(Boolean)
-		.join("\n");
+  const revivalPrompt = buildTeamMemberRevivalPrompt({
+    name,
+    previousSessionId: priorSessionId,
+    previousStatus: priorStatus,
+    prompt: body.prompt,
+  });
 
-  const spawn =
-    await getApplicationAdapters().peerSessionSpawn.spawnPeerSession(
-      {
+  const launch = await application.teamMemberLaunch.reviveMember({
+    agentId: agent.id,
+    agentVersion: eligibility.agentVersion,
+    reservation: {
+      teamId: params.teamId,
+      memberId: member.id,
+      previousSessionId: priorSessionId,
+      previousStatus: priorStatus,
+      sessionId: newSessionId,
+    },
+    peerRequest: {
 		sessionId: newSessionId,
 		peerAgentId: agent.id,
+      peerAgentVersion: eligibility.agentVersion,
 		prompt: revivalPrompt,
         parentSessionId: authorization.principal.sessionId,
-		title: `teammate:${body.name}`,
+      title,
 		provisionSandbox: true,
       },
-      authorization.principal,
-      { kind: "team", teamId: params.teamId },
-    );
-	if (spawn.status === "error") return error(spawn.httpStatus, spawn.message);
-
-	// Re-point the member identity at the fresh session, roll it up under the
-	// team run, and record lineage (best-effort) for the UI.
-	await store.setMemberSession({
-		memberId: member.id,
-		sessionId: newSessionId,
-		status: "working",
+    principal: authorization.principal,
 	});
-  const execId = await store
-    .getTeamExecutionId(params.teamId)
-    .catch(() => null);
-	if (execId) await linkSessionToTeamRun(newSessionId, execId).catch(() => {});
-
-	return json({
+  if (launch.status === "error") {
+    return error(launch.httpStatus, launch.message);
+  }
+  return json(
+    {
 		ok: true,
-		name: body.name,
+      name,
 		sessionId: newSessionId,
 		previousSessionId: priorSessionId,
-    spawn: publicPeerSpawnProjection(spawn.body),
-	});
+      spawn: publicPeerSpawnProjection(launch.spawn.body),
+    },
+    { status: launch.spawn.httpStatus ?? 200 },
+  );
 };

@@ -1,6 +1,5 @@
 import { error } from "@sveltejs/kit";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { createHash } from "node:crypto";
 import { env } from "$env/dynamic/private";
 import { isPlaywrightMcpEntry } from "$lib/server/agents/mcp-sidecar";
 import { getRuntimeDescriptor } from "$lib/server/agents/runtime-registry";
@@ -8,6 +7,10 @@ import { resolveImagePin } from "$lib/server/execution/image-pins";
 import { getAgentWorkflowHostPod } from "$lib/server/kube/client";
 import { responseBodyForSpan } from "$lib/server/dapr-client";
 import { setSpanValue } from "$lib/server/observability/content";
+import {
+  sessionHostAppId as stableSessionHostAppId,
+  sessionRuntimeGenerationAppId,
+} from "$lib/server/lifecycle/resolvers";
 import type { AgentConfig } from "$lib/types/agents";
 
 /**
@@ -49,7 +52,10 @@ export function agentWorkflowHostBackendEnabled(): boolean {
 		backend === "kueue" ||
 		backend === "kueue-job" ||
 		backend === "host-execution" ||
-		truthyEnv(env.AGENT_WORKFLOW_HOSTS_ENABLED ?? process.env.AGENT_WORKFLOW_HOSTS_ENABLED)
+    truthyEnv(
+      env.AGENT_WORKFLOW_HOSTS_ENABLED ??
+        process.env.AGENT_WORKFLOW_HOSTS_ENABLED,
+    )
 	);
 }
 
@@ -76,15 +82,23 @@ export function agentConfigCanUseWorkflowHost(
 		descriptor?.capabilities?.requiresWarmPool === true ||
 		descriptor?.capabilities?.requiresBrowserSidecars === true;
 	if (needsWarmPool) {
-		const servers = Array.isArray(agentConfig.mcpServers) ? agentConfig.mcpServers : [];
+    const servers = Array.isArray(agentConfig.mcpServers)
+      ? agentConfig.mcpServers
+      : [];
 		return !servers.some((server) => isPlaywrightMcpEntry(server));
 	}
 	return true;
 }
 
-export function sessionHostAppId(sessionId: string): string {
-	const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 20);
-	return `agent-session-${digest}`;
+export function sessionHostAppId(
+  sessionId: string,
+  provisioningStartedAt?: Date | null,
+): string {
+  const appId = provisioningStartedAt
+    ? sessionRuntimeGenerationAppId(sessionId, provisioningStartedAt)
+    : stableSessionHostAppId(sessionId);
+  if (!appId) throw new Error("sessionId must be non-empty");
+  return appId;
 }
 
 function sandboxExecutionApiUrl(): string | null {
@@ -121,7 +135,9 @@ function canUseBenchmarkStableAppId(agentConfig: AgentConfig | null): boolean {
 	return runtimeDescriptor?.capabilities.interactiveTerminal !== true;
 }
 
-const hostProvisionTracer = trace.getTracer("workflow-builder.agent-workflow-host");
+const hostProvisionTracer = trace.getTracer(
+  "workflow-builder.agent-workflow-host",
+);
 
 /**
  * Span-safe copy of the provision request body: `sessionSecretEnv` carries
@@ -160,10 +176,19 @@ async function postAgentWorkflowHost(
 			span.setAttribute("workflow_builder.backend", "sandbox-execution-api");
 			setSpanValue(span, "input", redactSessionSecretEnvForSpan(requestBody));
 			try {
+        const waitReadySeconds = Number(requestBody.waitReadySeconds ?? 0);
+        const requestTimeoutMs =
+          (Math.max(
+            0,
+            Number.isFinite(waitReadySeconds) ? waitReadySeconds : 0,
+          ) +
+            30) *
+          1_000;
 				const response = await fetch(url, {
 					method: "POST",
 					headers,
 					body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(requestTimeoutMs),
 				});
 				span.setAttribute("http.response.status_code", response.status);
 				try {
@@ -186,7 +211,8 @@ async function postAgentWorkflowHost(
 				>;
 				return { response, body };
 			} catch (caught) {
-				const err = caught instanceof Error ? caught : new Error(String(caught));
+        const err =
+          caught instanceof Error ? caught : new Error(String(caught));
 				setSpanValue(span, "output", {
 					ok: false,
 					error: err.message,
@@ -206,10 +232,87 @@ export interface AgentWorkflowHostResult {
 	agentAppId: string;
 	sandboxName: string | null;
 	status: string | null;
+  /** Versioned non-secret recipe for recreating this exact app generation. */
+  launchSpec?: AgentWorkflowHostLaunchSpec;
 	/** SEA-owned ready endpoint. Present only when SEA observed the pod Ready. */
 	baseUrl?: string;
 	podIP?: string;
 	podName?: string;
+}
+
+export type AgentWorkflowHostLaunchSpec = {
+  version: 1;
+  request: Record<string, unknown>;
+  secretEnvKeys: string[];
+};
+
+/**
+ * Rotate provider-owned recovery metadata to a fresh provisional generation.
+ * Callers outside this adapter must treat the persisted launch spec as opaque.
+ */
+export function rotateAgentWorkflowHostLaunchSpecGeneration(params: {
+  sessionId: string;
+  currentAgentAppId: string;
+  currentSandboxName: string;
+  provisioningStartedAt: Date;
+  launchSpec: Record<string, unknown>;
+}): {
+  agentAppId: string;
+  sandboxName: string;
+  launchSpec: AgentWorkflowHostLaunchSpec;
+} {
+  const raw = params.launchSpec as Partial<AgentWorkflowHostLaunchSpec>;
+  if (
+    raw.version !== 1 ||
+    !raw.request ||
+    typeof raw.request !== "object" ||
+    Array.isArray(raw.request) ||
+    !Array.isArray(raw.secretEnvKeys) ||
+    raw.secretEnvKeys.some((key) => typeof key !== "string" || !key.trim())
+  ) {
+    throw new Error(
+      "invalid persisted agent workflow host launch specification",
+    );
+  }
+  const request = raw.request as Record<string, unknown>;
+  if (
+    request.sessionId !== params.sessionId ||
+    request.agentAppId !== params.currentAgentAppId ||
+    params.currentSandboxName !== `agent-host-${params.currentAgentAppId}`
+  ) {
+    throw new Error("persisted agent workflow host generation does not match");
+  }
+  const agentAppId = sessionHostAppId(
+    params.sessionId,
+    params.provisioningStartedAt,
+  );
+  return {
+    agentAppId,
+    sandboxName: `agent-host-${agentAppId}`,
+    launchSpec: {
+      version: 1,
+      request: { ...request, agentAppId },
+      secretEnvKeys: [...raw.secretEnvKeys],
+    },
+  };
+}
+
+export class AgentWorkflowHostActivationError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentWorkflowHostActivationError";
+  }
+}
+
+export function isAgentWorkflowHostAbsentError(
+  error: unknown,
+): error is AgentWorkflowHostActivationError {
+  return (
+    error instanceof AgentWorkflowHostActivationError && error.status === 404
+  );
 }
 
 export type AgentWorkflowHostAppReadyResult = {
@@ -311,7 +414,9 @@ function agentWorkflowHostPriorityClass(params: {
  * the Sandbox CR — letting traces stitch across BFF -> sandbox-execution-api
  * -> daprd -> agent_workflow.
  */
-export function extractTraceContext(request: { headers: Headers }): TraceContext {
+export function extractTraceContext(request: {
+  headers: Headers;
+}): TraceContext {
 	return {
 		traceparent: request.headers.get("traceparent"),
 		tracestate: request.headers.get("tracestate"),
@@ -370,6 +475,8 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	 * isolated instead of sharing + drifting on one subtree.
 	 */
 	seedWorkspaceFrom?: string | null;
+  /** Exact database lease generation for a lifecycle-fenced dedicated host. */
+  provisioningStartedAt?: Date | null;
 }): Promise<AgentWorkflowHostResult | null> {
 	if (!agentConfigCanUseWorkflowHost(params.agentConfig)) return null;
 	if (params.benchmarkRunId && canUseBenchmarkStableAppId(params.agentConfig)) {
@@ -391,10 +498,11 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	// explicit dedicated isolation, per-session secret env (no delivery channel
 	// on a shared pod), and persistentHost (UI sessions that pin their host).
 	if (
-		getRuntimeDescriptor((params.agentConfig as { runtime?: string } | null)?.runtime)
-			?.hostMode === "shared-pool" &&
-		(params.agentConfig as { runtimeIsolation?: string } | null)?.runtimeIsolation !==
-			"dedicated" &&
+    getRuntimeDescriptor(
+      (params.agentConfig as { runtime?: string } | null)?.runtime,
+    )?.hostMode === "shared-pool" &&
+    (params.agentConfig as { runtimeIsolation?: string } | null)
+      ?.runtimeIsolation !== "dedicated" &&
 		Object.keys(params.sessionSecretEnv ?? {}).length === 0 &&
 		params.persistentHost !== true
 	) {
@@ -408,7 +516,10 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			"SANDBOX_EXECUTION_API_URL is required when AGENT_WORKFLOW_HOST_BACKEND=kueue",
 		);
 	}
-	const agentAppId = sessionHostAppId(params.sessionId);
+  const agentAppId = sessionHostAppId(
+    params.sessionId,
+    params.provisioningStartedAt,
+  );
 	const timeoutSeconds = agentWorkflowHostTimeoutSeconds(params);
 	const waitReadySecondsRaw =
 		params.waitReadySeconds != null
@@ -479,18 +590,31 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		params.sessionSecretEnv && Object.keys(params.sessionSecretEnv).length > 0
 			? params.sessionSecretEnv
 			: null;
-	const requestBody = {
+  const requestBody: Record<string, unknown> = {
 		sessionId: params.sessionId,
 		agentAppId,
-		runId: params.benchmarkRunId ?? undefined,
+    ...(params.benchmarkRunId ? { runId: params.benchmarkRunId } : {}),
 		instanceId:
-			params.benchmarkInstanceId ?? params.workflowExecutionId ?? params.sessionId,
+      params.benchmarkInstanceId ??
+      params.workflowExecutionId ??
+      params.sessionId,
 		executionClass: agentWorkflowHostExecutionClass({
 			benchmarkRunId: params.benchmarkRunId,
 			benchmarkExecutionClass: params.benchmarkExecutionClass,
 			runtimeExecutionClass: runtimeDescriptor?.executionClass ?? null,
 		}),
 		...(timeoutSeconds === null ? {} : { timeoutSeconds }),
+    ...(params.provisioningStartedAt
+      ? {
+          provisionalTimeoutSeconds: readBoundedInt(
+            env.AGENT_WORKFLOW_HOST_PROVISIONAL_TIMEOUT_SECONDS ??
+              process.env.AGENT_WORKFLOW_HOST_PROVISIONAL_TIMEOUT_SECONDS,
+            900,
+            300,
+            1800,
+          ),
+        }
+      : {}),
 		waitReadySeconds,
 		priorityClass,
 		...(agentImage ? { agentImage } : {}),
@@ -505,6 +629,12 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			? { seedWorkspaceFrom: params.seedWorkspaceFrom }
 			: {}),
 	};
+  const { sessionSecretEnv: _secretValues, ...nonSecretRequest } = requestBody;
+  const launchSpec: AgentWorkflowHostLaunchSpec = {
+    version: 1,
+    request: nonSecretRequest,
+    secretEnvKeys: Object.keys(sessionSecretEnv ?? {}).sort(),
+  };
 	const { response, body } = await postAgentWorkflowHost(
 		baseUrl,
 		{
@@ -532,6 +662,12 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 			: typeof body.jobName === "string" && body.jobName.trim()
 				? body.jobName.trim()
 				: null;
+  if (
+    params.provisioningStartedAt &&
+    (returnedAppId !== agentAppId || sandboxName !== `agent-host-${agentAppId}`)
+  ) {
+    throw error(503, "agent workflow host returned a different generation");
+  }
 	const returnedStatus =
 		typeof body.status === "string" && body.status.trim()
 			? body.status.trim()
@@ -572,8 +708,218 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 		agentAppId: returnedAppId,
 		sandboxName,
 		status: returnedStatus,
+    launchSpec,
 		...(readyTarget ?? {}),
 	};
+}
+
+const RECOVERABLE_HOST_REQUEST_FIELDS = new Set([
+  "sessionId",
+  "agentAppId",
+  "runId",
+  "instanceId",
+  "executionClass",
+  "timeoutSeconds",
+  "provisionalTimeoutSeconds",
+  "waitReadySeconds",
+  "priorityClass",
+  "agentImage",
+  "resumeFromSessionId",
+  "sharedWorkspaceKey",
+  "seedWorkspaceFrom",
+]);
+
+function parseAgentWorkflowHostLaunchSpec(params: {
+  launchSpec: Record<string, unknown>;
+  agentAppId: string;
+  sandboxName: string;
+  sessionSecretEnv?: Record<string, string> | null;
+}): Record<string, unknown> {
+  const raw = params.launchSpec as Partial<AgentWorkflowHostLaunchSpec>;
+  if (
+    raw.version !== 1 ||
+    !raw.request ||
+    typeof raw.request !== "object" ||
+    Array.isArray(raw.request) ||
+    !Array.isArray(raw.secretEnvKeys) ||
+    raw.secretEnvKeys.some((key) => typeof key !== "string" || !key.trim())
+  ) {
+    throw new Error(
+      "invalid persisted agent workflow host launch specification",
+    );
+  }
+  const request = raw.request as Record<string, unknown>;
+  for (const key of Object.keys(request)) {
+    if (!RECOVERABLE_HOST_REQUEST_FIELDS.has(key)) {
+      throw new Error(
+        `unsupported persisted agent workflow host field: ${key}`,
+      );
+    }
+  }
+  for (const key of [
+    "sessionId",
+    "agentAppId",
+    "instanceId",
+    "executionClass",
+    "priorityClass",
+  ]) {
+    if (typeof request[key] !== "string" || !String(request[key]).trim()) {
+      throw new Error(`persisted agent workflow host field ${key} is invalid`);
+    }
+  }
+  if (request.agentAppId !== params.agentAppId) {
+    throw new Error("persisted agent workflow host generation does not match");
+  }
+  if (params.sandboxName !== `agent-host-${params.agentAppId}`) {
+    throw new Error(
+      "persisted agent workflow host Sandbox identity does not match",
+    );
+  }
+  for (const key of [
+    "timeoutSeconds",
+    "provisionalTimeoutSeconds",
+    "waitReadySeconds",
+  ]) {
+    if (
+      request[key] !== undefined &&
+      (typeof request[key] !== "number" || !Number.isFinite(request[key]))
+    ) {
+      throw new Error(`persisted agent workflow host field ${key} is invalid`);
+    }
+  }
+  if (
+    typeof request.provisionalTimeoutSeconds !== "number" ||
+    request.provisionalTimeoutSeconds < 60 ||
+    request.provisionalTimeoutSeconds > 3_600
+  ) {
+    throw new Error(
+      "persisted agent workflow host recovery must remain provider-provisional",
+    );
+  }
+  for (const key of [
+    "runId",
+    "agentImage",
+    "resumeFromSessionId",
+    "sharedWorkspaceKey",
+    "seedWorkspaceFrom",
+  ]) {
+    if (request[key] !== undefined && typeof request[key] !== "string") {
+      throw new Error(`persisted agent workflow host field ${key} is invalid`);
+    }
+  }
+  const expectedSecretKeys = [...new Set(raw.secretEnvKeys)].sort();
+  const sessionSecretEnv = params.sessionSecretEnv ?? {};
+  const actualSecretKeys = Object.keys(sessionSecretEnv).sort();
+  if (
+    expectedSecretKeys.length !== actualSecretKeys.length ||
+    expectedSecretKeys.some((key, index) => key !== actualSecretKeys[index])
+  ) {
+    throw new Error(
+      "session credentials required by the persisted runtime host are unavailable",
+    );
+  }
+  return {
+    ...request,
+    ...(actualSecretKeys.length > 0 ? { sessionSecretEnv } : {}),
+  };
+}
+
+/** Recreate only the exact generation encoded in a persisted launch recipe. */
+export async function recreateAgentWorkflowHostGeneration(params: {
+  agentAppId: string;
+  sandboxName: string;
+  launchSpec: Record<string, unknown>;
+  sessionSecretEnv?: Record<string, string> | null;
+  traceContext?: TraceContext | null;
+}): Promise<void> {
+  const baseUrl = sandboxExecutionApiUrl();
+  if (!baseUrl) {
+    throw new Error("SANDBOX_EXECUTION_API_URL is required to recover a host");
+  }
+  const token =
+    env.SANDBOX_EXECUTION_API_TOKEN ??
+    env.HOST_EXECUTION_API_TOKEN ??
+    process.env.SANDBOX_EXECUTION_API_TOKEN ??
+    process.env.HOST_EXECUTION_API_TOKEN ??
+    "";
+  const requestBody = parseAgentWorkflowHostLaunchSpec(params);
+  const traceHeaders: Record<string, string> = {};
+  if (params.traceContext?.traceparent) {
+    traceHeaders.traceparent = params.traceContext.traceparent;
+  }
+  if (params.traceContext?.tracestate) {
+    traceHeaders.tracestate = params.traceContext.tracestate;
+  }
+  if (params.traceContext?.baggage) {
+    traceHeaders.baggage = params.traceContext.baggage;
+  }
+  const { response, body } = await postAgentWorkflowHost(
+    baseUrl,
+    {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...traceHeaders,
+    },
+    requestBody,
+  );
+  if (!response.ok) {
+    throw new Error(
+      typeof body.detail === "string"
+        ? body.detail
+        : `agent workflow host recovery failed with HTTP ${response.status}`,
+    );
+  }
+  if (
+    body.agentAppId !== params.agentAppId ||
+    body.sandboxName !== params.sandboxName
+  ) {
+    throw new Error(
+      "agent workflow host recovery returned a different generation",
+    );
+  }
+}
+
+/**
+ * Promote an exact provisional host generation only after its runtime target is
+ * durably published. The provider verifies every identity component and owns
+ * the final lifetime patch; retries are idempotent.
+ */
+export async function activateAgentWorkflowHostGeneration(params: {
+  agentAppId: string;
+  sandboxName: string;
+}): Promise<void> {
+  const baseUrl = sandboxExecutionApiUrl();
+  if (!baseUrl) {
+    throw new Error("SANDBOX_EXECUTION_API_URL is required to activate a host");
+  }
+  const token =
+    env.SANDBOX_EXECUTION_API_TOKEN ??
+    env.HOST_EXECUTION_API_TOKEN ??
+    process.env.SANDBOX_EXECUTION_API_TOKEN ??
+    process.env.HOST_EXECUTION_API_TOKEN ??
+    "";
+  const response = await fetch(
+    `${baseUrl}/api/v1/agent-workflow-hosts/${encodeURIComponent(params.agentAppId)}/activate`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        sandboxName: params.sandboxName,
+        generation: params.agentAppId,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new AgentWorkflowHostActivationError(
+      response.status,
+      `agent workflow host activation failed (${response.status}): ${detail.slice(0, 200)}`,
+    );
+  }
 }
 
 async function probeAgentWorkflowHostAppReadyOnce(params: {

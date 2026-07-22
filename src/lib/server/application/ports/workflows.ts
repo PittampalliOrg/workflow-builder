@@ -142,10 +142,19 @@ import type {
 	AddSessionResourceInput,
 	AddSessionResourceResult,
 	AppendSessionEventInput,
+  ClaimTeamSessionEventsInput,
+  AcknowledgeRuntimeProvisioningCompensationInput,
 	AttachSessionRuntimeInput,
+  ReserveSessionRuntimeProvisioningInput,
+  RuntimeProvisioningLease,
+  StageSessionRuntimeProvisioningInput,
+  CompleteSessionRuntimeHostRecoveryResult,
+  SessionRuntimeHostRecoveryLease,
+  SessionRuntimeHostRecoveryRecord,
 	CreateWorkflowEnsureSessionInput,
 	EnsurePeerSessionInput,
 	EnsurePeerSessionResult,
+  FinishTeamSessionEventClaimInput,
 	IngestSessionEventInput,
 	IngestSessionEventResult,
 	ListSessionEventsInput,
@@ -1284,7 +1293,39 @@ export interface WorkflowDataService {
 		userId?: string | null;
 	}): Promise<RuntimeConfigCloudEvent | null>;
 	getSessionOwnerUserId(sessionId: string): Promise<string | null>;
-	attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void>;
+  reserveSessionRuntimeProvisioning(
+    input: ReserveSessionRuntimeProvisioningInput,
+  ): Promise<RuntimeProvisioningLease | null>;
+  stageSessionRuntimeProvisioning(
+    input: StageSessionRuntimeProvisioningInput,
+  ): Promise<boolean>;
+  attachStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+  }): Promise<boolean>;
+  inspectSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryRecord | null>;
+  beginSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryLease | null>;
+  completeSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+    expectedStartedAt: Date;
+  }): Promise<CompleteSessionRuntimeHostRecoveryResult>;
+  acknowledgeRuntimeProvisioningCompensation(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  canCompensateRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  releaseSessionRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<boolean>;
 	getSessionRuntimeTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -1377,10 +1418,10 @@ export interface WorkflowDataService {
 	): Promise<WorkflowEnsureSessionRecord | null>;
 	createWorkflowEnsureSession(
 		input: CreateWorkflowEnsureSessionInput,
-	): Promise<void>;
+  ): Promise<RuntimeProvisioningLease | null>;
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
-	): Promise<void>;
+  ): Promise<boolean>;
 	listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
@@ -1595,19 +1636,25 @@ export interface WorkflowDataService {
     projectId: string | null;
     status?: SessionStatus;
     completedAt?: Date | null;
+    stopRequestedAt?: Date | null;
   } | null>;
 	appendSessionEvent(
 		sessionId: string,
 		event: AppendSessionEventInput,
 	): Promise<SessionEventEnvelope>;
-	/** Agent Teams wake-on-deliver: atomic claim of unraised team-origin user
-	 * events (the raise-side dedup) + rollback for failed raises. */
+  /** Agent Teams wake-on-deliver mailbox claim/acceptance protocol. */
 	claimUnraisedTeamEvents(
-		sessionId: string,
+    input: ClaimTeamSessionEventsInput,
 	): Promise<
 		Array<{ id: string; sequence: number; data: Record<string, unknown> }>
 	>;
-	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
+  hasUnprocessedTeamEvents(sessionId: string): Promise<boolean>;
+  completeTeamEventDelivery(
+    input: FinishTeamSessionEventClaimInput,
+  ): Promise<number>;
+  releaseTeamEventDeliveryClaim(
+    input: FinishTeamSessionEventClaimInput,
+  ): Promise<number>;
 	getSessionEvent(input: {
 		sessionId: string;
 		eventId: string;

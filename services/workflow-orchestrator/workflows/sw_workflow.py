@@ -51,6 +51,7 @@ from core.sw_expressions import (
 )
 from core.template_resolver import resolve_templates
 from activities.execute_action import PRIVILEGED_PREVIEW_ACTION_SLUGS, execute_action
+from activities.call_agent_service import arm_execution_workspace_retention
 from activities.crawl4ai import crawl4ai_get_job_status, crawl4ai_start_job
 from activities.environment_build import check_environment_build, ensure_environment
 from activities.persist_artifact import persist_workflow_artifact
@@ -262,6 +263,17 @@ def _now_ms(ctx: wf.DaprWorkflowContext) -> int | None:
         return None
 
 
+def _workflow_terminal_at(ctx: wf.DaprWorkflowContext) -> str:
+    """Return replay-deterministic RFC3339 time from the Dapr workflow clock."""
+    current_time = getattr(ctx, "current_utc_datetime", None)
+    if current_time is None:
+        raise RuntimeError("Dapr workflow clock is unavailable at terminal transition")
+    try:
+        return current_time.isoformat().replace("+00:00", "Z")
+    except Exception as exc:
+        raise RuntimeError("Dapr workflow clock returned an invalid terminal time") from exc
+
+
 def _elapsed_ms(ctx: wf.DaprWorkflowContext, start_ms: int | None) -> int:
     if start_ms is None:
         return 0
@@ -345,6 +357,15 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
         pass
 
     return not keep_sandbox
+
+
+def _should_arm_workspace_retention(tc: "TaskContext") -> bool:
+    """True when terminal cleanup was skipped to preserve a workspace."""
+    if getattr(tc, "resumable", False):
+        return True
+    if _is_benchmark_trigger(tc.trigger_data):
+        return False
+    return not _should_cleanup_workspaces(tc)
 
 
 def _benchmark_trace_finalization_enabled() -> bool:
@@ -1076,6 +1097,21 @@ _AP_RETRY_POLICY = wf.RetryPolicy(
     backoff_coefficient=float(os.environ.get("AP_RETRY_BACKOFF_COEFFICIENT", "2")),
     max_retry_interval=timedelta(
         seconds=int(os.environ.get("AP_RETRY_MAX_INTERVAL_SECONDS", "60"))
+    ),
+)
+
+_WORKSPACE_RETENTION_RETRY_POLICY = wf.RetryPolicy(
+    first_retry_interval=timedelta(
+        seconds=int(os.environ.get("WORKSPACE_RETENTION_RETRY_FIRST_INTERVAL_SECONDS", "2"))
+    ),
+    max_number_of_attempts=int(
+        os.environ.get("WORKSPACE_RETENTION_RETRY_MAX_ATTEMPTS", "5")
+    ),
+    backoff_coefficient=float(
+        os.environ.get("WORKSPACE_RETENTION_RETRY_BACKOFF_COEFFICIENT", "2")
+    ),
+    max_retry_interval=timedelta(
+        seconds=int(os.environ.get("WORKSPACE_RETENTION_RETRY_MAX_INTERVAL_SECONDS", "60"))
     ),
 )
 
@@ -4560,6 +4596,18 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
 
+        if _should_arm_workspace_retention(tc):
+            yield ctx.call_activity(
+                arm_execution_workspace_retention,
+                input=_freeze({
+                    "executionId": execution_id,
+                    "dbExecutionId": db_execution_id,
+                    "terminalAt": _workflow_terminal_at(ctx),
+                    "_otel": tc.otel_ctx,
+                }),
+                retry_policy=_WORKSPACE_RETENTION_RETRY_POLICY,
+            )
+
         if _should_finalize_otel_trace_for_trigger(tc.trigger_data):
             yield from _finalize_otel_trace(
                 ctx,
@@ -4661,6 +4709,18 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "[SW Workflow] Workspace cleanup after failure failed (non-fatal): %s",
                     cleanup_err,
                 )
+
+        if _should_arm_workspace_retention(tc):
+            yield ctx.call_activity(
+                arm_execution_workspace_retention,
+                input=_freeze({
+                    "executionId": execution_id,
+                    "dbExecutionId": db_execution_id,
+                    "terminalAt": _workflow_terminal_at(ctx),
+                    "_otel": tc.otel_ctx,
+                }),
+                retry_policy=_WORKSPACE_RETENTION_RETRY_POLICY,
+            )
 
         if _should_finalize_otel_trace_for_trigger(tc.trigger_data):
             yield from _finalize_otel_trace(

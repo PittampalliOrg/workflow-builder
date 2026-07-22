@@ -44,6 +44,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 	const member = await store.getMemberByName(params.teamId, body.name);
 	if (!member) return error(404, `no teammate '${body.name}' in this team`);
+	if (member.status === "starting") {
+		return json(
+			{
+				ok: false,
+				state: "starting",
+				retryable: true,
+				message: `teammate '${body.name}' is still starting`,
+			},
+			{ status: 409, headers: { "retry-after": "1" } },
+		);
+	}
 	if (!member.plan_mode_required) {
     return json({
       ok: true,

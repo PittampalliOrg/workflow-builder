@@ -35,6 +35,11 @@ async function expectSuccess(response: Response) {
 	await expect(response.json()).resolves.toEqual({ status: "SUCCESS" });
 }
 
+async function expectRetry(response: Response) {
+	expect(response.status).toBe(200);
+	await expect(response.json()).resolves.toEqual({ status: "RETRY" });
+}
+
 describe("internal Dapr agent-trigger route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -81,11 +86,11 @@ describe("internal Dapr agent-trigger route", () => {
 		expect(mocks.dispatchAgentTrigger).toHaveBeenCalledWith({ body });
 	});
 
-	it("still acks when the command throws", async () => {
+	it("requests bounded redelivery when the command throws", async () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		mocks.dispatchAgentTrigger.mockRejectedValueOnce(new Error("boom"));
 
-		await expectSuccess((await POST(event({ id: "ce-1", data: {} }) as never)) as Response);
+		await expectRetry((await POST(event({ id: "ce-1", data: {} }) as never)) as Response);
 		error.mockRestore();
 	});
 });

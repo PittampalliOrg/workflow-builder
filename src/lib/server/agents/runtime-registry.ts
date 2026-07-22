@@ -49,6 +49,11 @@ export type RuntimeCapabilities = {
 	 */
 	eventDrivenInvocation?: boolean;
 	/**
+	 * The runtime accepts idempotent team-mailbox batches and returns the exact
+	 * delivery receipt before the BFF marks the source events processed.
+	 */
+	supportsTeamMailboxReceipts: boolean;
+	/**
 	 * The runtime honors a portable `agentConfig.hooks` block. dapr-agent-py
 	 * runs them natively; the interactive-cli family executes them in cli-agent-py's
 	 * HookProcessor. `false` where there is no hook execution surface (adk,

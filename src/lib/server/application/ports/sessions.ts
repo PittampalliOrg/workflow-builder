@@ -72,6 +72,8 @@ export type WorkflowExecutionSessionOwnerContext = {
 	userId: string;
 	workflowId: string;
 	projectId: string | null;
+  status?: string;
+  stopRequestedAt?: Date | null;
 };
 
 export type WorkspaceSessionBackend = "openshell" | "juicefs";
@@ -248,7 +250,7 @@ export interface SessionRepository {
 	attachWorkspaceSandbox(input: {
 		sessionId: string;
 		workspaceSandboxName: string;
-	}): Promise<void>;
+  }): Promise<boolean>;
 	recordSandboxProvisioningError(input: {
 		sessionId: string;
 		errorMessage: string;
@@ -266,7 +268,84 @@ export interface SessionRepository {
 		projectId?: string | null;
 	}): Promise<SessionContextUsageReadModel | null>;
 	getSessionOwnerUserId(input: { sessionId: string }): Promise<string | null>;
-	attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<void>;
+  /**
+   * Start or refresh a durable lease only when no durable instance is published.
+   * Returns null when publication, stop, or terminal state won the race.
+   */
+  reserveSessionRuntimeProvisioning(
+    input: ReserveSessionRuntimeProvisioningInput,
+  ): Promise<RuntimeProvisioningLease | null>;
+  /**
+   * Persist the exact unpublished runtime target under an active lease before
+   * asking that runtime to create the durable instance.
+   */
+  stageSessionRuntimeProvisioning(
+    input: StageSessionRuntimeProvisioningInput,
+  ): Promise<boolean>;
+  listStaleSessionRuntimeProvisioningTargets(input: {
+    staleBefore: Date;
+    limit: number;
+  }): Promise<StaleSessionRuntimeProvisioningTarget[]>;
+  /**
+   * Publish only the exact staged target currently held by the lease token.
+   * The staged lease remains durable until provider activation is confirmed.
+   */
+  attachStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+  }): Promise<boolean>;
+  /** Read exact published-host recovery authority without mutating it. */
+  inspectSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryRecord | null>;
+  /** Acquire or resume recovery of the same already-published generation. */
+  beginSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+  }): Promise<SessionRuntimeHostRecoveryLease | null>;
+  /**
+   * Clear the exact recovery lease only while session and parent remain active.
+   * The discriminated outcome prevents concurrent recovery from deleting a host
+   * another caller has already completed.
+   */
+  completeSessionRuntimeHostRecovery(input: {
+    sessionId: string;
+    expectedRuntimeAppId: string;
+    expectedStartedAt: Date;
+  }): Promise<CompleteSessionRuntimeHostRecoveryResult>;
+  /**
+   * Clear the exact provisioning lease whose newly-created runtime Sandbox was
+   * deleted after the child or one of its parents became terminal. The
+   * compare-and-set must reject a live lineage and a newer lease.
+   */
+  acknowledgeRuntimeProvisioningCompensation(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  /**
+   * Return true only while the exact provisioning lease belongs to a terminal
+   * child or lineage and still authorizes deletion of its deterministic host.
+   */
+  canCompensateRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  /**
+   * Return true only while the exact active provisioning lease still owns any
+   * unpublished runtime side effects. Cleanup must prove this before deleting
+   * a host or durable instance.
+   */
+  canReleaseRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  /** Release an exact active lease after setup failed before publication. */
+  releaseSessionRuntimeProvisioning(
+    input: AcknowledgeRuntimeProvisioningCompensationInput,
+  ): Promise<boolean>;
+  /**
+   * Publish the actual runtime target and clear its provisioning lease.
+   * Returns false without changing either when stop/terminal state won the race.
+   */
+  attachSessionRuntime(input: AttachSessionRuntimeInput): Promise<boolean>;
 	getSessionRuntimeTarget(input: {
 		sessionId: string;
 		projectId?: string | null;
@@ -306,16 +385,19 @@ export interface SessionRepository {
   ): Promise<WorkflowEnsureSessionRecord | null>;
   createWorkflowEnsureSession(
     input: CreateWorkflowEnsureSessionInput,
-  ): Promise<void>;
+  ): Promise<RuntimeProvisioningLease | null>;
 	updateWorkflowEnsureSessionRuntime(
 		input: UpdateWorkflowEnsureSessionRuntimeInput,
-	): Promise<void>;
+  ): Promise<boolean>;
 	listReapableWorkflowSessionRuntimeHosts(input: {
 		workflowExecutionId: string;
 	}): Promise<WorkflowSessionRuntimeHostRecord[]>;
 	createSessionFork(input: CreateSessionForkInput): Promise<{ id: string }>;
 	getPeerSession(sessionId: string): Promise<PeerSessionRecord | null>;
-	createPeerSession(input: CreatePeerSessionInput): Promise<PeerSessionRecord>;
+  /** Atomically fence the parent session/execution and insert or reuse a peer. */
+  createPeerSession(
+    input: CreatePeerSessionInput,
+  ): Promise<CreatePeerSessionResult>;
 	findSessionIdByDaprInstanceId(instanceId: string): Promise<string | null>;
 	resolveSessionIdForProvisioningEvent(input: {
 		runtimeAppId?: string | null;
@@ -327,6 +409,7 @@ export interface SessionRepository {
     projectId: string | null;
     status?: SessionStatus;
     completedAt?: Date | null;
+    stopRequestedAt?: Date | null;
   } | null>;
   getSessionWorkflowContext(
 		sessionId: string,
@@ -545,11 +628,169 @@ export type UpdateSessionStatusUnlessTerminatedInput = Omit<
 
 export type AttachSessionRuntimeInput = {
 	sessionId: string;
+  expectedStartedAt: Date;
 	daprInstanceId?: string;
 	natsSubject?: string;
 	runtimeAppId?: string | null;
 	runtimeSandboxName?: string | null;
+  /** False when this session borrows another session's runtime host. */
+  runtimeHostOwned?: boolean;
+  /** Non-secret provider recipe for exact-generation recovery. */
+  runtimeHostLaunchSpec?: SessionRuntimeHostLaunchSpec | null;
 };
+
+export type ReserveSessionRuntimeProvisioningInput = {
+  sessionId: string;
+};
+
+export type RuntimeProvisioningLease = {
+  startedAt: Date;
+};
+
+export type StageSessionRuntimeProvisioningInput = {
+  sessionId: string;
+  expectedStartedAt: Date;
+  runtimeAppId: string;
+  durableInstanceId: string;
+  runtimeSandboxName: string | null;
+  runtimeHostOwned: boolean;
+  runtimeHostLaunchSpec: SessionRuntimeHostLaunchSpec | null;
+};
+
+export type StaleSessionRuntimeProvisioningTarget = {
+  sessionId: string;
+  startedAt: Date;
+  runtimeAppId: string;
+  durableInstanceId: string;
+  runtimeSandboxName: string | null;
+  runtimeHostOwned: boolean;
+  runtimeHostLaunchSpec: SessionRuntimeHostLaunchSpec | null;
+  /** Staged target is the already-published generation's host-recovery lease. */
+  publishedGeneration: boolean;
+};
+
+export type SessionRuntimeProvisioningGeneration = Pick<
+  StaleSessionRuntimeProvisioningTarget,
+  | "runtimeAppId"
+  | "durableInstanceId"
+  | "runtimeSandboxName"
+  | "runtimeHostOwned"
+  | "runtimeHostLaunchSpec"
+>;
+
+/**
+ * Provider-owned derivation of a fresh staged generation. The application
+ * service treats runtime host launch specifications as opaque and only
+ * coordinates the returned target through the exact cleanup claim.
+ */
+export interface SessionRuntimeProvisioningGenerationFactory {
+  createReplacement(input: {
+    current: StaleSessionRuntimeProvisioningTarget;
+    startedAt: Date;
+  }): SessionRuntimeProvisioningGeneration;
+}
+
+export interface SessionRuntimeProvisioningReconciliationStore {
+  listStaleSessionRuntimeProvisioningTargets(input: {
+    staleBefore: Date;
+    limit: number;
+  }): Promise<StaleSessionRuntimeProvisioningTarget[]>;
+  attachStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+  }): Promise<boolean>;
+  completeStagedSessionRuntimeProvisioning(input: {
+    sessionId: string;
+    expectedStartedAt: Date;
+    runtimeAppId: string;
+  }): Promise<CompleteSessionRuntimeHostRecoveryResult>;
+  /**
+   * Atomically rotate an exact stale unpublished lease before deleting external
+   * state. The new timestamp is a bounded, renewable cleanup claim; only its
+   * owner may redrive the staged generation.
+   */
+  claimStaleSessionRuntimeProvisioning(input: {
+    current: StaleSessionRuntimeProvisioningTarget;
+    claimedAt: Date;
+  }): Promise<boolean>;
+  /** Replace cleaned target metadata only while the exact cleanup claim remains. */
+  prepareClaimedSessionRuntimeProvisioningRedrive(input: {
+    claimed: StaleSessionRuntimeProvisioningTarget;
+    replacement: StaleSessionRuntimeProvisioningTarget;
+  }): Promise<boolean>;
+}
+
+/**
+ * Opaque, non-secret recipe owned by the runtime-host adapter. Persistence must
+ * round-trip it without interpreting provider-specific fields. Secret values
+ * are deliberately excluded and rehydrated through the existing credential
+ * port when a published generation needs to be recreated.
+ */
+export type SessionRuntimeHostLaunchSpec = Record<string, unknown>;
+
+export type SessionRuntimeHostRecoveryRecord = {
+  runtimeAppId: string;
+  runtimeSandboxName: string;
+  launchSpec: SessionRuntimeHostLaunchSpec | null;
+  /** Exact staged recovery fence for this published generation, when present. */
+  recoveryStartedAt: Date | null;
+};
+
+export type SessionRuntimeHostRecoveryLease = Omit<
+  SessionRuntimeHostRecoveryRecord,
+  "launchSpec" | "recoveryStartedAt"
+> &
+  RuntimeProvisioningLease & {
+    launchSpec: SessionRuntimeHostLaunchSpec;
+  };
+
+export type CompleteSessionRuntimeHostRecoveryResult =
+  | "completed"
+  | "already_completed"
+  | "stopped"
+  | "superseded"
+  | "conflict";
+
+export type AcknowledgeRuntimeProvisioningCompensationInput = {
+  sessionId: string;
+  expectedStartedAt: Date;
+};
+
+export type AuthorizeSessionRuntimeStartInput = {
+  sessionId: string;
+  runtimeAppId: string;
+  runtimeInstanceId: string;
+  userId: string;
+  projectId: string;
+  teamId: string | null;
+  teamRole: "none" | "lead" | "member";
+};
+
+export type SessionRuntimeStartAuthorizationResult =
+  | { status: "authorized" }
+  | {
+      status:
+        | "not_found"
+        | "principal_mismatch"
+        | "inactive"
+        | "parent_inactive"
+        | "team_pending"
+        | "team_inactive"
+        | "runtime_superseded"
+        | "runtime_unpublished";
+    };
+
+/**
+ * Atomic start fence used by a runtime workflow that already exists but must
+ * not begin agent work until Workflow Builder confirms its durable lineage is
+ * still active. Kept separate from the broad SessionRepository contract so
+ * lifecycle authorization remains a narrow port.
+ */
+export interface SessionRuntimeStartAuthorityPort {
+  authorizeSessionRuntimeStart(
+    input: AuthorizeSessionRuntimeStartInput,
+  ): Promise<SessionRuntimeStartAuthorizationResult>;
+}
 
 export type CliWorkspaceSessionCandidateRecord = {
 	id: string;
@@ -588,6 +829,8 @@ export type LivenessReconcileCandidateRecord = {
 	runtimeSandboxName: string | null;
 	pauseRequestedAt: Date | null;
 	stopRequestedAt: Date | null;
+  /** Persisted monotonic terminal mode; null is a legacy terminate intent. */
+  stopRequestedMode: "terminate" | "purge" | "reset" | null;
 	/** true ⇒ a benchmark/eval coordinator owns this instance (skip; single stop authority). */
 	coordinatorOwned: boolean;
 	updatedAt: Date;
@@ -613,8 +856,11 @@ export type WorkflowEnsureSessionRecord = {
 	id: string;
 	agentId: string;
 	agentVersion: number | null;
+  userId: string;
+  projectId: string | null;
 	vaultIds: string[];
 	workflowExecutionId: string | null;
+  parentExecutionId: string | null;
 	sandboxName: string | null;
 	runtimeAppId: string | null;
 	runtimeSandboxName: string | null;
@@ -635,8 +881,13 @@ export type CreateWorkflowEnsureSessionInput = {
 
 export type UpdateWorkflowEnsureSessionRuntimeInput = {
 	sessionId: string;
+  expectedStartedAt: Date;
 	runtimeAppId: string;
 	runtimeSandboxName: string | null;
+  /** False for standing/shared runtime pools that this session must not reap. */
+  runtimeHostOwned?: boolean;
+  /** Non-secret provider recipe for exact-generation recovery. */
+  runtimeHostLaunchSpec?: SessionRuntimeHostLaunchSpec | null;
 };
 
 export type WorkflowSessionRuntimeHostRecord = {
@@ -646,6 +897,7 @@ export type WorkflowSessionRuntimeHostRecord = {
 
 export type PeerSessionRecord = {
 	id: string;
+  status: SessionStatus;
 	agentId: string;
 	agentVersion: number | null;
 	environmentId: string | null;
@@ -653,17 +905,32 @@ export type PeerSessionRecord = {
 	vaultIds: string[];
 	daprInstanceId: string | null;
 	natsSubject: string | null;
+  runtimeAppId: string | null;
+  runtimeProvisioningStartedAt: Date | null;
+  workflowExecutionId: string | null;
   parentExecutionId: string | null;
+  stopRequestedAt: Date | null;
+  completedAt: Date | null;
 };
 
 export type CreatePeerSessionInput = {
 	id: string;
 	agentId: string;
+  agentVersion?: number | null;
 	title: string;
 	userId: string;
 	projectId: string | null;
+  workflowExecutionId: string | null;
 	parentExecutionId: string | null;
 };
+
+export type CreatePeerSessionResult =
+  | {
+      status: "ok";
+      session: PeerSessionRecord;
+      created: boolean;
+    }
+  | { status: "execution_not_active" };
 
 export type SessionControlSettingsAgent = {
 	id: string;
@@ -779,7 +1046,10 @@ export interface SessionExperimentAgentStore {
 export type EnsurePeerSessionInput = {
 	sessionId: string;
 	peerAgentId: string;
+  /** Required by team dispatch to pin the capability-checked agent version. */
+  peerAgentVersion?: number | null;
 	prompt: string;
+  workflowExecutionId?: string | null;
 	parentSessionId?: string | null;
 	parentInstanceId?: string | null;
 	title?: string | null;
@@ -793,7 +1063,7 @@ export type EnsurePeerSessionResult =
 	  }
 	| {
 			ok: false;
-			status: 404 | 500;
+      status: 404 | 409 | 500;
 			message: string;
 	  };
 
@@ -813,11 +1083,34 @@ export type ListSessionEventsInput = {
 	preview?: boolean;
 };
 
-/** Row shape returned by the team-event claim: enough to raise + unclaim. */
+/** Row shape returned by a team mailbox claim. Event ids are also the stable
+ * receiver-side dedup keys carried in the Dapr external-event payload. */
 export type ClaimedSessionEventRecord = {
 	id: string;
 	sequence: number;
 	data: Record<string, unknown>;
+};
+
+export type ClaimTeamSessionEventsInput = {
+  sessionId: string;
+  claimToken: string;
+  staleAfterSeconds: number;
+};
+
+export type FinishTeamSessionEventClaimInput = {
+  sessionId: string;
+  claimToken: string;
+};
+
+export type TeamMailboxDeliveryMetadata = {
+  kind: "team-mailbox";
+  batchId: string;
+  eventIds: string[];
+};
+
+export type SessionUserEventAcceptance = {
+  accepted: true;
+  deliveryId: string | null;
 };
 
 export interface SessionEventLog {
@@ -833,17 +1126,30 @@ export interface SessionEventLog {
 		sessionId: string,
 		input?: ListSessionEventsInput,
 	): Promise<SessionEventEnvelope[]>;
-	/** Atomically claim unraised team-origin user events (processed_at stamp) —
-	 * the raise-side dedup for the Agent Teams wake-on-deliver path. */
+  /** Lease unraised team-origin events without marking them raised. An expired
+   * lease is reclaimable after a worker crash. */
   claimUnraisedTeamEvents(
-    sessionId: string,
+    input: ClaimTeamSessionEventsInput,
   ): Promise<ClaimedSessionEventRecord[]>;
-	/** Roll back a claim after a failed raise (JetStream will redeliver). */
-	unclaimSessionEvents(sessionId: string, ids: string[]): Promise<void>;
+  /** True when any team-origin event still awaits runtime acceptance, including
+   * rows currently leased by another delivery worker. */
+  hasUnprocessedTeamEvents(sessionId: string): Promise<boolean>;
+  /** Mark only the exact accepted claim as raised. */
+  completeTeamEventDelivery(
+    input: FinishTeamSessionEventClaimInput,
+  ): Promise<number>;
+  /** Release only the exact claim after a raise that was not acknowledged. */
+  releaseTeamEventDeliveryClaim(
+    input: FinishTeamSessionEventClaimInput,
+  ): Promise<number>;
 }
 
 export interface SessionRuntimeEventRaiser {
-	raiseSessionUserEvents(sessionId: string, events: UserEvent[]): Promise<void>;
+  raiseSessionUserEvents(
+    sessionId: string,
+    events: UserEvent[],
+    delivery?: TeamMailboxDeliveryMetadata,
+  ): Promise<SessionUserEventAcceptance>;
 }
 
 export type SessionRepositoryMountTarget = {
@@ -869,10 +1175,19 @@ export interface SessionRepositoryMounter {
 }
 
 export interface SessionWorkflowSpawner {
+  /** Persist the lifecycle fence before application-level external setup. */
+  reserveSessionWorkflow(
+    sessionId: string,
+  ): Promise<RuntimeProvisioningLease | null>;
+  releaseSessionWorkflow(
+    sessionId: string,
+    lease: RuntimeProvisioningLease,
+  ): Promise<boolean>;
 	spawnSessionWorkflow(
 		sessionId: string,
     options?: {
       persistentHost?: boolean;
+      provisioningLease?: RuntimeProvisioningLease;
       workflowMcpCapabilities?: {
         scriptDepth: number;
         teamId: string | null;

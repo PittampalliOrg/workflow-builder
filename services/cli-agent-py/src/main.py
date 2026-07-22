@@ -101,6 +101,10 @@ from src.workspace_diff_sync import sync_workspace_diff_activity  # noqa: E402
 from src.workspace_diff_sync import sync_source_bundle_activity  # noqa: E402
 from src.output_sync import sync_output_activity  # noqa: E402
 from src.run_status import AgentRunNotFoundError, resolve_agent_run_status  # noqa: E402
+from src.runtime_start_authority import (  # noqa: E402
+    AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+    authorize_session_runtime_start,
+)
 from src.seed import seed_session_activity  # noqa: E402
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
@@ -133,6 +137,10 @@ _runtime.register_activity(sync_source_bundle_activity)
 _runtime.register_activity(check_cancellation_activity)
 _runtime.register_activity(prepare_swebench_workspace_activity)
 _runtime.register_activity(extract_model_patch_activity)
+_runtime.register_activity(
+    authorize_session_runtime_start,
+    name=AUTHORIZE_SESSION_RUNTIME_START_ACTIVITY,
+)
 _runtime_running = False
 
 
@@ -180,7 +188,11 @@ async def readyz() -> Any:
     else:
         herdr_ok = await supervisor.ping(timeout=2)
     ready = _runtime_running and herdr_ok is not False
-    body = {"status": "ok" if ready else "unavailable", "running": _runtime_running, "herdr": herdr_ok}
+    body = {
+        "status": "ok" if ready else "unavailable",
+        "running": _runtime_running,
+        "herdr": herdr_ok,
+    }
     return JSONResponse(body, status_code=200 if ready else 503)
 
 
@@ -282,7 +294,9 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
     if event_name in ("user.message", "session.user_events"):
         texts = _extract_injectable_messages(event_name, payload)
         if not texts:
-            raise HTTPException(status_code=400, detail="no user.message content to inject")
+            raise HTTPException(
+                status_code=400, detail="no user.message content to inject"
+            )
         supervisor = get_supervisor()
         if supervisor is None:
             raise HTTPException(status_code=503, detail="supervisor not started")
@@ -296,7 +310,9 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
             ):
                 injected_any = True
         if not injected_any:
-            raise HTTPException(status_code=409, detail="no active CLI pane to inject into")
+            raise HTTPException(
+                status_code=409, detail="no active CLI pane to inject into"
+            )
         return {"ok": True, "injected": injected_any, "count": len(texts)}
 
     # Terminal control events: persist the cooperative-cancel flag (claude-
@@ -309,7 +325,9 @@ async def raise_session_event_endpoint(request: dict[str, Any]) -> dict[str, Any
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "[raise-event] failed to persist cancel flag for %s: %s", instance_id, exc
+                "[raise-event] failed to persist cancel flag for %s: %s",
+                instance_id,
+                exc,
             )
 
     event: dict[str, Any] = {"type": event_name}
@@ -401,7 +419,11 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
     if not isinstance(command, str) or not command.strip():
         raise HTTPException(status_code=400, detail="command (string) is required")
     extra_env = body.get("env") if isinstance(body.get("env"), dict) else {}
-    cwd = body.get("cwd") if isinstance(body.get("cwd"), str) and body.get("cwd") else None
+    cwd = (
+        body.get("cwd")
+        if isinstance(body.get("cwd"), str) and body.get("cwd")
+        else None
+    )
 
     # Optional per-request timeout (seconds) — the workflow node's `timeoutMs`
     # threaded down so a slow install/build governs the subprocess, not the
@@ -428,7 +450,10 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
     # symlink node_modules (npm reify deletes the symlink and rewrites it on
     # JuiceFS). Hot builds run in a LOCAL working copy via the GAN fixtures'
     # build-in-local-copy gate (tar source -> /sandbox/scratch/repo, build there).
-    command = "mkdir -p /sandbox/scratch/.npm /sandbox/scratch/.pnpm-store /sandbox/scratch/tmp 2>/dev/null||true; " + command
+    command = (
+        "mkdir -p /sandbox/scratch/.npm /sandbox/scratch/.pnpm-store /sandbox/scratch/tmp 2>/dev/null||true; "
+        + command
+    )
 
     def _run() -> dict[str, Any]:
         # start_new_session=True puts the command in its own process group so a
@@ -501,7 +526,9 @@ def terminate_agent_run(
         return {"success": True, "instanceId": instance_id}
     except Exception as exc:  # noqa: BLE001
         if _agent_run_already_gone(exc):
-            logger.info("[agent-runs] terminate skipped for %s: already gone", instance_id)
+            logger.info(
+                "[agent-runs] terminate skipped for %s: already gone", instance_id
+            )
             return {"success": True, "instanceId": instance_id, "alreadyGone": True}
         logger.error("[agent-runs] terminate failed for %s: %s", instance_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))

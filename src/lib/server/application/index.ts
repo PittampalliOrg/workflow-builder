@@ -9,6 +9,7 @@ import type {
   WorkflowExecutionRepository,
   WorkflowPlanArtifactStore,
   PrPreviewCommandPort,
+  TeamRuntimeHostPort,
 } from "$lib/server/application/ports";
 import {
   PostgresArtifactStore,
@@ -231,6 +232,7 @@ import {
   PostgresPromptStackPresetReadRepository,
 } from "$lib/server/application/adapters/prompt-presets";
 import { KubernetesSessionRuntimeStatusReader } from "$lib/server/application/adapters/runtime-status";
+import { DaprSessionRuntimeCleanupAdapter } from "$lib/server/application/adapters/lifecycle-cascade";
 import {
   CurrentSessionRepository,
   DaprSessionGoalLoopDriver,
@@ -251,6 +253,11 @@ import { PostgresSessionEventLog } from "$lib/server/application/adapters/sessio
 import { createDaprPostgresSessionEventLog } from "$lib/server/application/adapters/session-events-dapr-postgres";
 import { PostgresGoalLoopStore } from "$lib/server/application/adapters/goal-loop-store";
 import { PostgresTeamStore } from "$lib/server/application/adapters/team-store";
+import { KubernetesTeamRuntimeHostAdapter } from "$lib/server/application/adapters/team-runtime-host";
+import {
+  AgentWorkflowHostRecoveryProviderAdapter,
+  SessionRuntimeHostRecoveryCleanupAdapter,
+} from "$lib/server/application/adapters/session-runtime-host-recovery";
 import { PlaywrightMcpBrowserRuntimeClient } from "$lib/server/application/adapters/browser-runtime";
 import {
   RegistrySessionMcpAgentConfigReader,
@@ -313,6 +320,7 @@ import { ApplicationSandboxActiveGuardService } from "$lib/server/application/sa
 import { ApplicationCliPreviewService } from "$lib/server/application/cli-preview";
 import { ApplicationSandboxPreviewService } from "$lib/server/application/sandbox-preview";
 import { ApplicationSessionCommandService } from "$lib/server/application/session-commands";
+import { ApplicationSessionRuntimeHostRecoveryService } from "$lib/server/application/session-runtime-host-recovery";
 import { ApplicationSessionAgentConfigService } from "$lib/server/application/session-agent-config";
 import { ApplicationSessionGoalService } from "$lib/server/application/session-goals";
 import {
@@ -324,6 +332,7 @@ import { ApplicationSessionSandboxService } from "$lib/server/application/sessio
 import { ApplicationSandboxEventsService } from "$lib/server/application/sandbox-events";
 import { ApplicationSessionMcpStatusService } from "$lib/server/application/session-mcp-status";
 import { ApplicationSessionRuntimeAccessService } from "$lib/server/application/session-runtime-access";
+import { ApplicationSessionRuntimeStartAuthorityService } from "$lib/server/application/session-runtime-start-authority";
 import { ApplicationSessionBrowserService } from "$lib/server/application/session-browser";
 import { ApplicationPeerSessionSpawnService } from "$lib/server/application/peer-session-spawn";
 import { ApplicationBulkLifecycleStopService } from "$lib/server/application/lifecycle-bulk-stop";
@@ -586,6 +595,11 @@ import { ApplicationWorkflowTargetAuthService } from "$lib/server/application/wo
 import { ApplicationWorkflowMcpPrincipalService } from "$lib/server/application/workflow-mcp-principal";
 import { ApplicationInternalWorkflowPrincipalService } from "$lib/server/application/internal-workflow-principal";
 import { ApplicationTeamActionAuthorizationService } from "$lib/server/application/team-action-authorization";
+import { ApplicationTeamShutdownService } from "$lib/server/application/team-shutdown";
+import { ApplicationTeamMemberLaunchService } from "$lib/server/application/team-member-launch";
+import { ApplicationTeamMailboxEligibilityService } from "$lib/server/application/team-mailbox-eligibility";
+import { ApplicationTeamMailboxDeliveryService } from "$lib/server/application/team-mailbox-delivery";
+import { RegistryTeamMailboxRuntimeEligibilityAdapter } from "$lib/server/application/adapters/team-mailbox-runtime-eligibility";
 import { ApplicationModelCompletionService } from "$lib/server/application/model-completion";
 import { ApplicationEvaluationJudgeService } from "$lib/server/application/evaluation-judge";
 import { extractExecutionTraceIds } from "$lib/server/otel/clickhouse";
@@ -782,6 +796,9 @@ export function getApplicationAdapters(
   let repositoryMounter: WorkspaceSessionRepositoryMounter | undefined;
   let workflowSpawner: DaprSessionWorkflowSpawner | undefined;
   let sessionCommands: ApplicationSessionCommandService | undefined;
+  let sessionRuntimeHostRecovery:
+    | ApplicationSessionRuntimeHostRecoveryService
+    | undefined;
   let sessionAgentConfig: ApplicationSessionAgentConfigService | undefined;
   let sessionGoals: ApplicationSessionGoalService | undefined;
   let internalGoalControl: ApplicationInternalGoalControlService | undefined;
@@ -789,6 +806,9 @@ export function getApplicationAdapters(
   let sessionSandboxes: ApplicationSessionSandboxService | undefined;
   let sessionMcpStatus: ApplicationSessionMcpStatusService | undefined;
   let sessionRuntimeAccess: ApplicationSessionRuntimeAccessService | undefined;
+  let sessionRuntimeStartAuthority:
+    | ApplicationSessionRuntimeStartAuthorityService
+    | undefined;
   let sessionBrowser: ApplicationSessionBrowserService | undefined;
   let peerSessionSpawn: ApplicationPeerSessionSpawnService | undefined;
   let bulkLifecycleStop: ApplicationBulkLifecycleStopService | undefined;
@@ -863,6 +883,13 @@ export function getApplicationAdapters(
   let teamActionAuthorization:
     | ApplicationTeamActionAuthorizationService
     | undefined;
+  let teamShutdown: ApplicationTeamShutdownService | undefined;
+  let teamMemberLaunch: ApplicationTeamMemberLaunchService | undefined;
+  let teamMailboxEligibility:
+    | ApplicationTeamMailboxEligibilityService
+    | undefined;
+  let teamMailboxDelivery: ApplicationTeamMailboxDeliveryService | undefined;
+  let teamRuntimeHost: TeamRuntimeHostPort | undefined;
   let settingsCliTokens: ApplicationSettingsCliTokensService | undefined;
   let promptPresets: ApplicationPromptPresetService | undefined;
   let promptStackCompiler: ApplicationPromptStackCompilerService | undefined;
@@ -1294,6 +1321,8 @@ export function getApplicationAdapters(
     (sessionGoalStore ??= new PostgresSessionGoalStore(getDatabase()));
   const getGoalLoopStore = () => new PostgresGoalLoopStore(getDatabase);
   const getTeamStore = () => new PostgresTeamStore(getDatabase);
+  const getTeamRuntimeHost = () =>
+    (teamRuntimeHost ??= new KubernetesTeamRuntimeHostAdapter());
   const getPeerAgentResolver = () =>
     (peerAgentResolver ??= new RegistryPeerAgentResolver(getDatabase()));
   const getAgentSkillHydration = () =>
@@ -1604,6 +1633,9 @@ export function getApplicationAdapters(
     });
     return sessionRuntimeAccess;
   };
+  const getSessionRuntimeStartAuthority = () =>
+    (sessionRuntimeStartAuthority ??=
+      new ApplicationSessionRuntimeStartAuthorityService(getSessions()));
   const getPeerSessionSpawn = () =>
     (peerSessionSpawn ??= new ApplicationPeerSessionSpawnService({
       workflowData: getWorkflowData(),
@@ -1611,6 +1643,8 @@ export function getApplicationAdapters(
       workflowMcpSessionTokens,
       sandboxProvisioner: getSandboxProvisioner(),
       sessions: getSessions(),
+      sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
+      teamMailboxDelivery: getTeamMailboxDelivery(),
     }));
   const getCodeCheckpoints = () =>
     (codeCheckpoints ??= new PostgresWorkflowCodeCheckpointStore(
@@ -2174,8 +2208,7 @@ export function getApplicationAdapters(
     return (previewWorkflowDiagnosticsBroker ??=
       new ApplicationPreviewWorkflowDiagnosticsBrokerService({
         authority: getPreviewControlSourceAuthority(),
-        authorization:
-          new HmacPreviewWorkflowDiagnosticsAuthorizationAdapter(),
+        authorization: new HmacPreviewWorkflowDiagnosticsAuthorizationAdapter(),
         workspaces: {
           hasMembership: async ({ userId, projectId }) =>
             Boolean(
@@ -2758,12 +2791,26 @@ export function getApplicationAdapters(
       sandboxProvisioner: getSandboxProvisioner(),
       repositoryMounter: getRepositoryMounter(),
       workflowSpawner: getWorkflowSpawner(),
+      runtimeCleaner: new DaprSessionRuntimeCleanupAdapter(),
       workspaceProjects: getWorkspaceProjects(),
       sandboxDestroyer: new KubernetesSessionSandboxDestroyer(),
       workflowEphemeralAgents: new PostgresWorkflowEphemeralAgentStore(),
       agentRuntimeSync: new AgentRuntimeRegistrySyncAdapter(),
       devSessionWorkflows: getWorkflowDefinitions(),
     }));
+  const getSessionRuntimeHostRecovery = () =>
+    (sessionRuntimeHostRecovery ??=
+      new ApplicationSessionRuntimeHostRecoveryService({
+        repository: getWorkflowData(),
+        provider: new AgentWorkflowHostRecoveryProviderAdapter(),
+        cleanup: new SessionRuntimeHostRecoveryCleanupAdapter((input) =>
+          getSessionCommands().cleanupUnpublishedRuntimeProvisioning({
+            sessionId: input.sessionId,
+            sandboxName: input.runtimeSandboxName,
+            leaseStartedAt: input.leaseStartedAt,
+          }),
+        ),
+      }));
   const getSessionAgentConfig = () =>
     (sessionAgentConfig ??= new ApplicationSessionAgentConfigService({
       patches: getWorkflowData(),
@@ -2869,6 +2916,36 @@ export function getApplicationAdapters(
       workflowPrincipals: getInternalWorkflowPrincipal(),
       teams: getTeamStore(),
     }));
+  const getTeamShutdown = () =>
+    (teamShutdown ??= new ApplicationTeamShutdownService({
+      teams: getTeamStore(),
+      lifecycle: new LifecycleSessionController(
+        getSessionGoalStore(),
+        getLifecycleCoordinatorOwners(),
+      ),
+    }));
+  const getTeamMailboxEligibility = () =>
+    (teamMailboxEligibility ??= new ApplicationTeamMailboxEligibilityService(
+      new RegistryTeamMailboxRuntimeEligibilityAdapter({
+        sessions: getSessions(),
+        agents: getPeerAgentResolver(),
+      }),
+    ));
+  const getTeamMailboxDelivery = () =>
+    (teamMailboxDelivery ??= new ApplicationTeamMailboxDeliveryService({
+      sessionEvents: getSessionEvents(),
+      eventBus: getEventBusAdapter(config),
+    }));
+  const getTeamMemberLaunch = () =>
+    (teamMemberLaunch ??= new ApplicationTeamMemberLaunchService({
+      teams: getTeamStore(),
+      peers: getPeerSessionSpawn(),
+      eligibility: getTeamMailboxEligibility(),
+      lifecycle: new LifecycleSessionController(
+        getSessionGoalStore(),
+        getLifecycleCoordinatorOwners(),
+      ),
+    }));
   const getPreviewEnvironmentProvisioner = () =>
     (previewEnvironmentProvisioner ??=
       config.previewProvisionerAdapter === "kro"
@@ -2907,6 +2984,9 @@ export function getApplicationAdapters(
     get sessionCommands() {
       return getSessionCommands();
     },
+    get sessionRuntimeHostRecovery() {
+      return getSessionRuntimeHostRecovery();
+    },
     get sessionAgentConfig() {
       return getSessionAgentConfig();
     },
@@ -2921,6 +3001,9 @@ export function getApplicationAdapters(
     },
     get teamStore() {
       return getTeamStore();
+    },
+    get teamRuntimeHost() {
+      return getTeamRuntimeHost();
     },
     get internalGoalControl() {
       return getInternalGoalControl();
@@ -3078,6 +3161,18 @@ export function getApplicationAdapters(
     get teamActionAuthorization() {
       return getTeamActionAuthorization();
     },
+    get teamShutdown() {
+      return getTeamShutdown();
+    },
+    get teamMailboxEligibility() {
+      return getTeamMailboxEligibility();
+    },
+    get teamMailboxDelivery() {
+      return getTeamMailboxDelivery();
+    },
+    get teamMemberLaunch() {
+      return getTeamMemberLaunch();
+    },
     workflowMcpSessionTokenSigner: workflowMcpSessionTokens,
     get settingsCliTokens() {
       return getSettingsCliTokens();
@@ -3096,6 +3191,9 @@ export function getApplicationAdapters(
     },
     get sessionRuntimeAccess() {
       return getSessionRuntimeAccess();
+    },
+    get sessionRuntimeStartAuthority() {
+      return getSessionRuntimeStartAuthority();
     },
     get peerSessionSpawn() {
       return getPeerSessionSpawn();
