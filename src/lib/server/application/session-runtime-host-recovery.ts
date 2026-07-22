@@ -26,6 +26,10 @@ export interface SessionRuntimeHostRecoveryProviderPort {
     runtimeAppId: string;
     runtimeSandboxName: string;
   }): Promise<"active" | "absent">;
+  probeReadiness(input: {
+    runtimeAppId: string;
+    runtimeSandboxName: string;
+  }): Promise<SessionRuntimeHostReadiness>;
   recreate(input: {
     runtimeAppId: string;
     runtimeSandboxName: string;
@@ -55,6 +59,13 @@ export type EnsurePublishedSessionRuntimeHostInput = {
   runtimeSandboxName: string;
   sessionSecretEnv?: Record<string, string> | null;
   traceContext?: SessionRuntimeHostRecoveryTraceContext | null;
+};
+
+export type SessionRuntimeHostReadiness = "ready" | "not_ready";
+
+export type EnsurePublishedSessionRuntimeHostResult = {
+  recovered: boolean;
+  readiness: SessionRuntimeHostReadiness;
 };
 
 type SessionRuntimeHostRecoveryDependencies = {
@@ -138,7 +149,7 @@ async function completeActivatedRecoveryLease(
 export async function ensurePublishedSessionRuntimeHost(
   deps: SessionRuntimeHostRecoveryDependencies,
   input: EnsurePublishedSessionRuntimeHostInput,
-): Promise<{ recovered: boolean }> {
+): Promise<EnsurePublishedSessionRuntimeHostResult> {
   const published = await deps.repository.inspectSessionRuntimeHostRecovery({
     sessionId: input.sessionId,
     expectedRuntimeAppId: input.runtimeAppId,
@@ -162,7 +173,13 @@ export async function ensurePublishedSessionRuntimeHost(
         published.recoveryStartedAt,
       );
     }
-    return { recovered: false };
+    return {
+      recovered: false,
+      readiness: await deps.provider.probeReadiness({
+        runtimeAppId: input.runtimeAppId,
+        runtimeSandboxName: input.runtimeSandboxName,
+      }),
+    };
   }
   if (!published.launchSpec) {
     throw new SessionRuntimeHostRecoveryError(
@@ -217,7 +234,13 @@ export async function ensurePublishedSessionRuntimeHost(
   }
 
   await completeActivatedRecoveryLease(deps, input, recovery.startedAt);
-  return { recovered: true };
+  return {
+    recovered: true,
+    readiness: await deps.provider.probeReadiness({
+      runtimeAppId: input.runtimeAppId,
+      runtimeSandboxName: input.runtimeSandboxName,
+    }),
+  };
 }
 
 /** Application surface used by inbound adapters that need an exact host alive. */
@@ -226,7 +249,7 @@ export class ApplicationSessionRuntimeHostRecoveryService {
 
   ensurePublished(
     input: EnsurePublishedSessionRuntimeHostInput,
-  ): Promise<{ recovered: boolean }> {
+  ): Promise<EnsurePublishedSessionRuntimeHostResult> {
     return ensurePublishedSessionRuntimeHost(this.deps, input);
   }
 }

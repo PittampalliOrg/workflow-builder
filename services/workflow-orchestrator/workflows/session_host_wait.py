@@ -7,9 +7,9 @@ of every other activity during Kueue admission waves). The wait now lives in
 workflow history as the standard eternal-poll pattern: re-invoke the
 idempotent ``spawn_session_for_workflow`` activity (a single ensure POST that
 returns current host status), sleep on a durable ``ctx.create_timer`` between
-polls, and give up past a deadline derived from ``ctx.current_utc_datetime``
-(replay-safe). Timers ride the HA scheduler service instead of orchestrator
-threads, so hundreds of spawns can be pending per replica.
+polls, and give up after a replay-stable budget of recorded durable timers.
+Timers ride the HA scheduler service instead of orchestrator threads, so
+hundreds of spawns can be pending per replica.
 
 Both helpers are generators for use via ``yield from`` inside workflow code.
 """
@@ -27,6 +27,30 @@ from activities.spawn_session import (
     agent_session_host_wait_needed,
     spawn_session_for_workflow,
 )
+
+
+_REPLAY_STABLE_HOST_WAIT_BUDGET_PATCH = "agent-host-wait-budget-v1"
+
+
+def _uses_replay_stable_wait_budget(ctx) -> bool:
+    """Keep existing histories on their recorded action sequence.
+
+    Dapr's workflow clock is the timestamp of the current orchestration work
+    item. Recomputing an absolute deadline from it on every replay slides that
+    deadline forward. Fresh workflows instead bound the number of durable poll
+    timers; replay consumes the same recorded timers and therefore reconstructs
+    the same remaining budget without consulting the moving work-item clock.
+    """
+    is_patched = getattr(ctx, "is_patched", None)
+    return (
+        bool(is_patched(_REPLAY_STABLE_HOST_WAIT_BUDGET_PATCH))
+        if callable(is_patched)
+        else True
+    )
+
+
+def _host_wait_poll_budget(poll_seconds: int, timeout_seconds: int) -> int:
+    return max(0, timeout_seconds // poll_seconds)
 
 
 def _poll_and_timeout_seconds() -> tuple[int, int]:
@@ -55,22 +79,39 @@ def spawn_session_with_host_wait(ctx, bridge_payload: dict[str, Any], freeze):
     at the same call-site altitude.
     """
     poll_seconds, timeout_seconds = _poll_and_timeout_seconds()
-    deadline = ctx.current_utc_datetime + timedelta(seconds=timeout_seconds)
+    replay_stable_budget = _uses_replay_stable_wait_budget(ctx)
+    polls_remaining = _host_wait_poll_budget(poll_seconds, timeout_seconds)
+    deadline = (
+        None
+        if replay_stable_budget
+        else ctx.current_utc_datetime + timedelta(seconds=timeout_seconds)
+    )
     while True:
         result = yield ctx.call_activity(
             spawn_session_for_workflow, input=freeze(bridge_payload)
         )
         if not agent_session_host_wait_needed(result):
             return result
-        if ctx.current_utc_datetime + timedelta(seconds=poll_seconds) > deadline:
+        if replay_stable_budget:
+            timed_out = polls_remaining <= 0
+        else:
+            assert deadline is not None
+            timed_out = (
+                ctx.current_utc_datetime + timedelta(seconds=poll_seconds) > deadline
+            )
+        if timed_out:
             raise TimeoutError(
                 f"agent workflow host {result.get('agentAppId')} did not become "
                 "ready before scheduling session_workflow; last status="
                 f"{_agent_session_host_status(result)}"
             )
-        yield ctx.create_timer(
-            ctx.current_utc_datetime + timedelta(seconds=poll_seconds)
-        )
+        if replay_stable_budget:
+            polls_remaining -= 1
+            yield ctx.create_timer(timedelta(seconds=poll_seconds))
+        else:
+            yield ctx.create_timer(
+                ctx.current_utc_datetime + timedelta(seconds=poll_seconds)
+            )
 
 
 def wait_for_prepared_agent_hosts(
@@ -92,7 +133,13 @@ def wait_for_prepared_agent_hosts(
     treats bridge refusals.
     """
     poll_seconds, timeout_seconds = _poll_and_timeout_seconds()
-    deadline = ctx.current_utc_datetime + timedelta(seconds=timeout_seconds)
+    replay_stable_budget = _uses_replay_stable_wait_budget(ctx)
+    polls_remaining = _host_wait_poll_budget(poll_seconds, timeout_seconds)
+    deadline = (
+        None
+        if replay_stable_budget
+        else ctx.current_utc_datetime + timedelta(seconds=timeout_seconds)
+    )
     results = list(prepared_results)
 
     def _pending_indexes() -> list[int]:
@@ -114,7 +161,14 @@ def wait_for_prepared_agent_hosts(
         pending = _pending_indexes()
         if not pending:
             return results
-        if ctx.current_utc_datetime + timedelta(seconds=poll_seconds) > deadline:
+        if replay_stable_budget:
+            timed_out = polls_remaining <= 0
+        else:
+            assert deadline is not None
+            timed_out = (
+                ctx.current_utc_datetime + timedelta(seconds=poll_seconds) > deadline
+            )
+        if timed_out:
             for index in pending:
                 prepared = results[index]
                 results[index] = {
@@ -128,9 +182,13 @@ def wait_for_prepared_agent_hosts(
                     ),
                 }
             return results
-        yield ctx.create_timer(
-            ctx.current_utc_datetime + timedelta(seconds=poll_seconds)
-        )
+        if replay_stable_budget:
+            polls_remaining -= 1
+            yield ctx.create_timer(timedelta(seconds=poll_seconds))
+        else:
+            yield ctx.create_timer(
+                ctx.current_utc_datetime + timedelta(seconds=poll_seconds)
+            )
         checks = yield when_all(
             [
                 ctx.call_activity(

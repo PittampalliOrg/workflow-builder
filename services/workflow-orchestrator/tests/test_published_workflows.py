@@ -4003,7 +4003,12 @@ def test_spawn_session_host_wait_polls_agent_session_host_until_ready(monkeypatc
     monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "1")
     monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "10")
 
-    ctx = _FakeHostWaitCtx()
+    class _ExistingHistoryCtx(_FakeHostWaitCtx):
+        def is_patched(self, patch_name):
+            assert patch_name == "agent-host-wait-budget-v1"
+            return False
+
+    ctx = _ExistingHistoryCtx()
     start = ctx.current_utc_datetime
     gen = SESSION_HOST_WAIT.spawn_session_with_host_wait(
         ctx, {"sessionId": "child-session"}, lambda value: value
@@ -4143,8 +4148,8 @@ def test_spawn_session_activity_returns_cancelled_for_cancelled_benchmark_run(mo
 
 def test_spawn_session_host_wait_times_out_waiting_for_agent_session_host(monkeypatch):
     # Concurrency plan P2: the readiness timeout is enforced by the
-    # workflow-side durable-timer loop against ctx.current_utc_datetime, not by
-    # time.monotonic inside the activity; the TimeoutError shape is unchanged.
+    # workflow-side replay-stable durable-timer budget, not by time.monotonic
+    # inside the activity; the TimeoutError shape is unchanged.
     monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "2")
     monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "3")
 
@@ -4177,6 +4182,57 @@ def test_spawn_session_host_wait_times_out_waiting_for_agent_session_host(monkey
         gen.send(dict(queued_body))
 
     assert ctx.timers == [start + timedelta(seconds=2)]
+
+
+def test_prepared_host_wait_budget_does_not_read_a_replay_sliding_clock(monkeypatch):
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_POLL_SECONDS", "5")
+    monkeypatch.setenv("AGENT_SESSION_HOST_READY_TIMEOUT_SECONDS", "12")
+
+    class _ReplayClockCtx(_FakeHostWaitCtx):
+        def is_patched(self, patch_name):
+            assert patch_name == "agent-host-wait-budget-v1"
+            return True
+
+        @property
+        def current_utc_datetime(self):
+            raise AssertionError("fresh host waits must not rebuild a deadline from replay time")
+
+    queued = {
+        "kind": "agent",
+        "callId": "call-1",
+        "childInstanceId": "child-1",
+        "appId": "agent-session-abc123",
+        "agentHostStatus": "queued",
+        "bridgePayload": {"sessionId": "child-session"},
+    }
+    queued_body = {
+        "agentAppId": "agent-session-abc123",
+        "agentHostStatus": "queued",
+    }
+    ctx = _ReplayClockCtx()
+    gen = SESSION_HOST_WAIT.wait_for_prepared_agent_hosts(
+        ctx,
+        [queued],
+        lambda value: value,
+        lambda tasks: {"kind": "when_all", "tasks": tasks},
+    )
+
+    first_timer = next(gen)
+    assert first_timer.kind == "timer"
+    first_repoll = gen.send(None)
+    assert first_repoll["kind"] == "when_all"
+    second_timer = gen.send([queued_body])
+    assert second_timer.kind == "timer"
+    second_repoll = gen.send(None)
+    assert second_repoll["kind"] == "when_all"
+
+    with pytest.raises(StopIteration) as stop:
+        gen.send([queued_body])
+
+    result = stop.value.value
+    assert result[0]["kind"] == "dispatchError"
+    assert "within 12s" in result[0]["dispatchError"]
+    assert len(ctx.timers) == 2
 
 
 def test_spawn_session_activity_preserves_old_bff_missing_host_status(monkeypatch):

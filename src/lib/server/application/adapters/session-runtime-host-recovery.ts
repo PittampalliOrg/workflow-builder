@@ -5,6 +5,7 @@ import type {
 import {
   activateAgentWorkflowHostGeneration,
   isAgentWorkflowHostAbsentError,
+  probeAgentWorkflowHostAppReady,
   recreateAgentWorkflowHostGeneration,
 } from "$lib/server/sessions/agent-workflow-host";
 
@@ -24,6 +25,16 @@ export class AgentWorkflowHostRecoveryProviderAdapter implements SessionRuntimeH
       if (isAgentWorkflowHostAbsentError(error)) return "absent";
       throw error;
     }
+  }
+
+  async probeReadiness(input: {
+    runtimeAppId: string;
+    runtimeSandboxName: string;
+  }): Promise<"ready" | "not_ready"> {
+    const ready = await probeAgentWorkflowHostAppReady({
+      agentAppId: input.runtimeAppId,
+    });
+    return ready ? "ready" : "not_ready";
   }
 
   recreate(
