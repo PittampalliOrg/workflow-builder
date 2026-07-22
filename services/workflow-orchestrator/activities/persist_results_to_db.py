@@ -70,6 +70,10 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     workflow_output = input_data.get("workflowOutput")
     success = input_data.get("success", True)
     error = input_data.get("error")
+    requested_phase = str(input_data.get("phase") or "").strip().lower()
+    cancelled = requested_phase in {"cancelled", "canceled"}
+    status = "cancelled" if cancelled else ("success" if success else "error")
+    phase = "cancelled" if cancelled else ("completed" if success else "failed")
     duration_ms = _coerce_duration_ms(input_data.get("durationMs"))
     otel = input_data.get("_otel") or {}
     trace_id = extract_otel_trace_id(otel if isinstance(otel, dict) else None)
@@ -96,7 +100,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "workflow.execution.db_id": db_execution_id,
         "workflow.execution.id": input_data.get("executionId"),
         "workflow.success": bool(success),
-        "workflow.phase": "completed" if success else "failed",
+        "workflow.phase": phase,
         "workflow.duration_ms": duration_ms,
         "workflow.error": (error or "")[:500] if error else None,
         "workflow.outputs.size_chars": outputs_size_chars,
@@ -120,14 +124,12 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 "outputs": outputs,
                 "workflowOutput": workflow_output,
                 "durationMs": duration_ms,
-                "phase": "completed" if success else "failed",
+                "phase": phase,
             }
             final_output.update(summary_fields)
             if error:
                 final_output["error"] = error
 
-            status = "success" if success else "error"
-            phase = "completed" if success else "failed"
             progress = 100
             completed_at = datetime.now(timezone.utc)
 
@@ -148,7 +150,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 # final_output from startedAt->completedAt so output.durationMs
                 # is not null on completed runs (mirrors the duration column).
                 final_output["durationMs"] = computed_duration_ms
-            workflow_data_client.patch_execution(
+            projection = workflow_data_client.patch_execution(
                 str(db_execution_id),
                 {
                     "output": final_output,
@@ -170,6 +172,19 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     ),
                 },
             )
+
+            if projection.get("applied") is False:
+                reason = str(projection.get("reason") or "superseded")
+                logger.info(
+                    "[Persist Results] Runtime projection superseded for %s: %s",
+                    db_execution_id,
+                    reason,
+                )
+                return {
+                    "success": True,
+                    "persisted": False,
+                    "reason": reason,
+                }
 
             logger.info(
                 "[Persist Results] Successfully persisted output via workflow-data for: %s",

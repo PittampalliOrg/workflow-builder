@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkflowExecutionRuntimeProjectionResult } from "$lib/server/application/ports";
 
 const mocks = vi.hoisted(() => {
 	const workflowData = {
@@ -25,7 +26,11 @@ const mocks = vi.hoisted(() => {
 				input: { prompt: "ship it" },
 			},
 		]),
-		updateExecutionReadModel: vi.fn(async () => undefined),
+		applyExecutionRuntimeProjection: vi.fn(
+			async (): Promise<WorkflowExecutionRuntimeProjectionResult> => ({
+				applied: true,
+			}),
+		),
 		appendExecutionLog: vi.fn(async () => ({
 			id: "log-1",
 			executionId: "exec-1",
@@ -254,7 +259,7 @@ describe("internal workflow-data routes", () => {
 			}),
 		} as never);
 
-		expect(mocks.workflowData.updateExecutionReadModel).toHaveBeenCalledWith("exec-1", {
+		expect(mocks.workflowData.applyExecutionRuntimeProjection).toHaveBeenCalledWith("exec-1", {
 			phase: "running",
 			progress: 50,
 			currentNodeId: "agent",
@@ -317,6 +322,31 @@ describe("internal workflow-data routes", () => {
 			contentType: null,
 			sizeBytes: null,
 			metadata: null,
+		});
+	});
+
+	it("reports a stop-superseded runtime projection as a benign no-op", async () => {
+		mocks.workflowData.applyExecutionRuntimeProjection.mockResolvedValueOnce({
+			applied: false,
+			reason: "stop_requested",
+			currentStatus: "running",
+		});
+
+		const response = await patchExecution({
+			params: { executionId: "exec-stopping" },
+			request: jsonRequest({
+				status: "success",
+				phase: "completed",
+				progress: 100,
+			}),
+		} as never);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			ok: true,
+			applied: false,
+			reason: "stop_requested",
+			currentStatus: "running",
 		});
 	});
 

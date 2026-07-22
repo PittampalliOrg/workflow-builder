@@ -14,6 +14,7 @@ import {
 	isNull,
 	like,
 	lt,
+	ne,
 	or,
 	sql,
 	type SQL,
@@ -220,6 +221,7 @@ import type {
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRecentRunRecord,
 	WorkflowExecutionRepository,
+	WorkflowExecutionRuntimeProjectionResult,
 	WorkflowExecutionSessionOwnerContext,
 	WorkflowExecutionStatus,
 	WorkflowExecutionLineage,
@@ -6199,14 +6201,22 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		workflowSessionId?: string | null;
 		primaryTraceId?: string | null;
 	}): Promise<void> {
+		const lifecycleActive = sql`${workflowExecutions.status} IN ('pending', 'running')
+			AND ${workflowExecutions.stopRequestedAt} IS NULL`;
+		const terminalCleanupNeedsRedrive = sql`${workflowExecutions.status} IN ('success', 'error', 'cancelled')
+			AND ${workflowExecutions.stopReason} IS NOT NULL
+			AND ${workflowExecutions.stopRequestedAt} IS NULL
+			AND ${workflowExecutions.daprInstanceId} IS DISTINCT FROM ${input.instanceId}`;
 		await this.database
 			.update(workflowExecutions)
 			.set({
 				daprInstanceId: input.instanceId,
-				phase: "running",
-				progress: 0,
+				phase: sql`CASE WHEN ${lifecycleActive} THEN 'running' ELSE ${workflowExecutions.phase} END`,
+				progress: sql`CASE WHEN ${lifecycleActive} THEN 0 ELSE ${workflowExecutions.progress} END`,
 				workflowSessionId: sql`coalesce(${workflowExecutions.workflowSessionId}, ${input.workflowSessionId ?? input.executionId})`,
 				primaryTraceId: sql`coalesce(${workflowExecutions.primaryTraceId}, ${input.primaryTraceId ?? null})`,
+				stopRequestedAt: sql`CASE WHEN ${terminalCleanupNeedsRedrive} THEN now() ELSE ${workflowExecutions.stopRequestedAt} END`,
+				stopRequestedMode: sql`CASE WHEN ${terminalCleanupNeedsRedrive} THEN coalesce(${workflowExecutions.stopRequestedMode}, 'terminate') ELSE ${workflowExecutions.stopRequestedMode} END`,
 			})
 			.where(eq(workflowExecutions.id, input.executionId));
 	}
@@ -6224,7 +6234,13 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				error: input.error,
 				completedAt: new Date(),
 			})
-			.where(eq(workflowExecutions.id, input.executionId));
+			.where(
+				and(
+					eq(workflowExecutions.id, input.executionId),
+					inArray(workflowExecutions.status, ["pending", "running"]),
+					isNull(workflowExecutions.stopRequestedAt),
+				),
+			);
 	}
 
 	async listStaleRunningExecutions(input: {
@@ -6255,14 +6271,37 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 		}));
 	}
 
-	async updateReadModel(
+	async applyRuntimeProjection(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
-	): Promise<void> {
-		await this.database
+	): Promise<WorkflowExecutionRuntimeProjectionResult> {
+		if (Object.keys(patch).length === 0) return { applied: true };
+		const [applied] = await this.database
 			.update(workflowExecutions)
 			.set(patch)
-			.where(eq(workflowExecutions.id, executionId));
+			.where(
+				and(
+					eq(workflowExecutions.id, executionId),
+					inArray(workflowExecutions.status, ["pending", "running"]),
+					isNull(workflowExecutions.stopRequestedAt),
+				),
+			)
+			.returning({ id: workflowExecutions.id });
+		if (applied) return { applied: true };
+
+		const current = await this.getById(executionId);
+		if (!current) return { applied: false, reason: "not_found" };
+		return current.stopRequestedAt
+			? {
+					applied: false,
+					reason: "stop_requested",
+					currentStatus: current.status,
+				}
+			: {
+					applied: false,
+					reason: "terminal",
+					currentStatus: current.status,
+				};
 	}
 
 	async compareAndSetReadModel(
@@ -6278,6 +6317,11 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				and(
 					eq(workflowExecutions.id, input.executionId),
 					eq(workflowExecutions.status, input.expectedStatus),
+					isNull(workflowExecutions.stopRequestedAt),
+					or(
+						ne(workflowExecutions.status, "cancelled"),
+						isNull(workflowExecutions.stopReason),
+					),
 				),
 			)
 			.returning();

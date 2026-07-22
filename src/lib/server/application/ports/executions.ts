@@ -308,6 +308,14 @@ export type WorkflowExecutionReadModelPatch = Partial<
 	>
 >;
 
+export type WorkflowExecutionRuntimeProjectionResult =
+	| { applied: true }
+	| {
+			applied: false;
+			reason: "not_found" | "stop_requested" | "terminal";
+			currentStatus?: WorkflowExecutionStatus;
+		};
+
 export type CompareAndSetWorkflowExecutionReadModelInput = {
 	executionId: string;
 	expectedStatus: WorkflowExecutionStatus;
@@ -442,21 +450,35 @@ export interface WorkflowExecutionRepository {
 		maxAncestors?: number;
 	}): Promise<WorkflowExecutionUsageMetricsRow[]>;
 	create(input: CreateWorkflowExecutionInput): Promise<{ id: string }>;
+	/**
+	 * Persist scheduler lineage even after lifecycle completion. A newly discovered
+	 * terminal linkage must re-drive the last acknowledged stop mode.
+	 */
 	attachSchedulerInstance(input: {
 		executionId: string;
 		instanceId: string;
 		workflowSessionId?: string | null;
 		primaryTraceId?: string | null;
 	}): Promise<void>;
+	/** A late failure may only transition an active execution with no stop intent. */
 	markStartFailed(input: { executionId: string; error: string }): Promise<void>;
 	listStaleRunningExecutions(input: {
 		olderThanMinutes: number;
 	}): Promise<Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]>;
-	updateReadModel(
+	/**
+	 * Apply a runtime-originated projection only while the execution is active and
+	 * has no persisted stop intent. The adapter owns the atomic fence so a
+	 * lifecycle stop cannot be overwritten by a late activity or status poll.
+	 */
+	applyRuntimeProjection(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
-	): Promise<void>;
-	/** Apply only when the stored status matches; otherwise return the current winning row. */
+	): Promise<WorkflowExecutionRuntimeProjectionResult>;
+	/**
+	 * Apply only when the stored status matches, no stop intent is pending, and
+	 * lifecycle finalization has not made cancellation authoritative; otherwise
+	 * return the current winning row.
+	 */
 	compareAndSetReadModel(
 		input: CompareAndSetWorkflowExecutionReadModelInput,
 	): Promise<WorkflowExecutionRecord | null>;

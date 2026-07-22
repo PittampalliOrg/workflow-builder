@@ -55,9 +55,6 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
   }
 
   const workflowData = getApplicationAdapters().workflowData;
-  const existing = await workflowData.getExecutionById(executionId);
-  if (!existing) return error(404, `execution ${executionId} not found`);
-
   const patch: WorkflowExecutionReadModelPatch = {};
   try {
     for (const [key, value] of Object.entries(body)) {
@@ -75,6 +72,12 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
   if (Object.keys(patch).length === 0)
     return error(400, "no supported execution fields supplied");
 
-  await workflowData.updateExecutionReadModel(executionId, patch);
-  return json({ ok: true });
+  const result = await workflowData.applyExecutionRuntimeProjection(
+    executionId,
+    patch,
+  );
+  if (!result.applied && result.reason === "not_found") {
+    return error(404, `execution ${executionId} not found`);
+  }
+  return json({ ok: true, ...result });
 };

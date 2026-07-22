@@ -1432,9 +1432,9 @@ describe("SWE-bench terminal run cleanup", () => {
 		expect(calls).toEqual([
 			"parent-status:parent-1",
 			"child-status:agent-session-host/session-1",
+			"parent-cancel:parent-1",
 			"child-cancel:agent-session-host/session-1",
 			"child-status:agent-session-host/session-1",
-			"parent-cancel:parent-1",
 			"parent-status:parent-1",
 			"child-purge:agent-session-host/session-1",
 			"parent-purge:parent-1",

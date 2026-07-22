@@ -2666,7 +2666,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		} catch (err) {
 			const message = err instanceof Error ? err.message : "Unknown error";
 			console.error(`[MCP Execute] ${message}`);
-			await this.deps.workflowExecutions.updateReadModel(execution.id, {
+			await this.deps.workflowExecutions.applyRuntimeProjection(execution.id, {
 				status: "error",
 				error: message.slice(0, 500),
 			});
@@ -2680,7 +2680,7 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		if (!instanceId) {
 			const message = "Orchestrator did not return an instanceId";
 			console.error(`[MCP Execute] ${message}`);
-			await this.deps.workflowExecutions.updateReadModel(execution.id, {
+			await this.deps.workflowExecutions.applyRuntimeProjection(execution.id, {
 				status: "error",
 				error: message,
 			});
@@ -5875,11 +5875,14 @@ export class ApplicationWorkflowDataService implements WorkflowDataService {
 		return this.deps.workflowExecutions.listStaleRunningExecutions(input);
 	}
 
-	updateExecutionReadModel(
+	applyExecutionRuntimeProjection(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
 	) {
-		return this.deps.workflowExecutions.updateReadModel(executionId, patch);
+		return this.deps.workflowExecutions.applyRuntimeProjection(
+			executionId,
+			patch,
+		);
 	}
 
 	compareAndSetExecutionReadModel(

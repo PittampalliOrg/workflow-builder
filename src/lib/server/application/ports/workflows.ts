@@ -72,6 +72,7 @@ import type {
 	WorkflowExecutionOutputFiles,
 	WorkflowExecutionReadModelPatch,
 	WorkflowExecutionRecord,
+	WorkflowExecutionRuntimeProjectionResult,
 	WorkflowExecutionRunSummary,
 	WorkflowExecutionScopeInput,
 	WorkflowExecutionStatus,
@@ -1505,10 +1506,10 @@ export interface WorkflowDataService {
 	}): Promise<
 		Pick<WorkflowExecutionRecord, "id" | "daprInstanceId" | "input">[]
 	>;
-	updateExecutionReadModel(
+	applyExecutionRuntimeProjection(
 		executionId: string,
 		patch: WorkflowExecutionReadModelPatch,
-	): Promise<void>;
+	): Promise<WorkflowExecutionRuntimeProjectionResult>;
 	compareAndSetExecutionReadModel(
 		input: CompareAndSetWorkflowExecutionReadModelInput,
 	): Promise<WorkflowExecutionRecord | null>;

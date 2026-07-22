@@ -8,6 +8,7 @@ import type {
 class FakeBindingClient {
 	calls: DaprPostgresBindingCall[] = [];
 	queryRows = new Map<string, unknown[][]>();
+	execRowsAffected = 1;
 
 	async query(
 		input: Omit<DaprPostgresBindingCall, "operation">,
@@ -24,7 +25,11 @@ class FakeBindingClient {
 		input: Omit<DaprPostgresBindingCall, "operation">,
 	): Promise<DaprPostgresBindingResult> {
 		this.calls.push({ ...input, operation: "exec" });
-		return { metadata: { "rows-affected": "1" }, rows: [], rowsAffected: 1 };
+		return {
+			metadata: { "rows-affected": String(this.execRowsAffected) },
+			rows: [],
+			rowsAffected: this.execRowsAffected,
+		};
 	}
 }
 
@@ -42,6 +47,8 @@ function executionRow(overrides: {
 	output?: unknown;
 	error?: string | null;
 	completedAt?: string | null;
+	stopRequestedAt?: string | null;
+	stopReason?: string | null;
 } = {}): unknown[] {
 	return [
 		"exec-1",
@@ -73,8 +80,8 @@ function executionRow(overrides: {
 		"2026-07-09T12:00:00.000Z",
 		overrides.completedAt ?? null,
 		null,
-		null,
-		null,
+		overrides.stopRequestedAt ?? null,
+		overrides.stopReason ?? null,
 	];
 }
 
@@ -126,7 +133,7 @@ describe("DaprPostgresWorkflowExecutionRepository", () => {
 	it("updates only supported read-model fields through the binding", async () => {
 		const client = new FakeBindingClient();
 
-		await repo(client).updateReadModel("exec-1", {
+		await repo(client).applyRuntimeProjection("exec-1", {
 			status: "running",
 			output: { ok: true },
 			summaryOutput: { summary: true },
@@ -140,6 +147,35 @@ describe("DaprPostgresWorkflowExecutionRepository", () => {
 		});
 		expect(client.calls[0]?.sql).toContain("output = CAST($3 AS jsonb)");
 		expect(client.calls[0]?.sql).toContain("summary_output = CAST($4 AS jsonb)");
+		expect(client.calls[0]?.sql).toContain("status IN ('pending', 'running')");
+		expect(client.calls[0]?.sql).toContain("stop_requested_at IS NULL");
+	});
+
+	it("reports a stop-superseded runtime projection without changing the row", async () => {
+		const client = new FakeBindingClient();
+		client.execRowsAffected = 0;
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({
+				status: "running",
+				phase: "running",
+				stopRequestedAt: "2026-07-22T08:23:45.000Z",
+			}),
+		]);
+
+		await expect(
+			repo(client).applyRuntimeProjection("exec-1", {
+				status: "success",
+				phase: "completed",
+			}),
+		).resolves.toMatchObject({
+			applied: false,
+			reason: "stop_requested",
+			currentStatus: "running",
+		});
+		expect(client.calls.map((call) => call.summary)).toEqual([
+			"workflow_executions.update_read_model",
+			"workflow_executions.select_by_id",
+		]);
 	});
 
 	it("atomically reconciles an active status and returns the updated row", async () => {
@@ -177,12 +213,100 @@ describe("DaprPostgresWorkflowExecutionRepository", () => {
 			paramNames: ["id", "expected_status", "status", "phase", "progress", "output"],
 			params: ["exec-1", "running", "success", "completed", 100, '{"result":"ok"}'],
 		});
-		expect(client.calls[0]?.sql).toContain("WHERE id = $1 AND status = $2");
+		expect(client.calls[0]?.sql).toContain("AND status = $2");
+		expect(client.calls[0]?.sql).toContain("stop_requested_at IS NULL");
 		expect(client.calls[0]?.sql).not.toContain("RETURNING");
 		expect(client.calls.map((call) => call.summary)).toEqual([
 			"workflow_executions.compare_and_set_read_model",
 			"workflow_executions.select_by_id",
 		]);
+	});
+
+	it("fences runtime status reconciliation while stop intent is pending", async () => {
+		const client = new FakeBindingClient();
+		client.execRowsAffected = 0;
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({
+				status: "running",
+				phase: "running",
+				stopRequestedAt: "2026-07-22T08:23:45.000Z",
+			}),
+		]);
+
+		const record = await repo(client).compareAndSetReadModel({
+			executionId: "exec-1",
+			expectedStatus: "running",
+			patch: { status: "success", phase: "completed" },
+		});
+
+		expect(record).toMatchObject({ status: "running", phase: "running" });
+		expect(client.calls[0]?.sql).toContain("stop_requested_at IS NULL");
+	});
+
+	it("keeps acknowledged lifecycle cancellation outside runtime correction", async () => {
+		const client = new FakeBindingClient();
+		client.execRowsAffected = 0;
+		client.queryRows.set("workflow_executions.select_by_id", [
+			executionRow({
+				status: "cancelled",
+				phase: "cancelled",
+				progress: 100,
+				stopReason: "Stopped by user",
+			}),
+		]);
+
+		const record = await repo(client).compareAndSetReadModel({
+			executionId: "exec-1",
+			expectedStatus: "cancelled",
+			patch: { status: "error", phase: "failed", error: "runtime failed" },
+		});
+
+		expect(record).toMatchObject({
+			status: "cancelled",
+			phase: "cancelled",
+			stopReason: "Stopped by user",
+		});
+		expect(client.calls[0]?.sql).toContain(
+			"status <> 'cancelled' OR stop_reason IS NULL",
+		);
+	});
+
+	it("always attaches scheduler linkage while preserving lifecycle-owned fields", async () => {
+		const client = new FakeBindingClient();
+
+		await repo(client).attachSchedulerInstance({
+			executionId: "exec-1",
+			instanceId: "late-instance",
+			workflowSessionId: "late-session",
+			primaryTraceId: "late-trace",
+		});
+
+		expect(client.calls[0]).toMatchObject({
+			summary: "workflow_executions.attach_scheduler_instance",
+			params: ["exec-1", "late-instance", "late-session", "late-trace"],
+		});
+		expect(client.calls[0]?.sql).toContain("dapr_instance_id = $2");
+		expect(client.calls[0]?.sql).toContain("THEN 'running' ELSE phase END");
+		expect(client.calls[0]?.sql).toContain(
+			"dapr_instance_id IS DISTINCT FROM $2",
+		);
+		expect(client.calls[0]?.sql).toContain(
+			"THEN coalesce(stop_requested_mode, 'terminate')",
+		);
+		const normalizedSql = client.calls[0]?.sql?.replace(/\s+/g, " ").trim();
+		expect(normalizedSql).toMatch(/WHERE id = \$1$/);
+	});
+
+	it("fences a late scheduler start failure behind active lifecycle state", async () => {
+		const client = new FakeBindingClient();
+
+		await repo(client).markStartFailed({
+			executionId: "exec-1",
+			error: "scheduler returned late",
+		});
+
+		expect(client.calls[0]?.sql).toContain("status IN ('pending', 'running')");
+		expect(client.calls[0]?.sql).toContain("stop_requested_at IS NULL");
 	});
 
 	it("allows an expected terminal status to be corrected", async () => {

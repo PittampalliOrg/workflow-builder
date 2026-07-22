@@ -265,6 +265,7 @@ class FakeCtx:
         self.cli_workspace_inputs: list[dict] = []
         self.persist_workspace_inputs: list[dict] = []
         self.retention_arm_inputs: list[dict] = []
+        self.result_persist_inputs: list[dict] = []
         # Sequenced results: pop from the front while >1 remain (last repeats) —
         # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
         self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
@@ -352,6 +353,9 @@ class FakeCtx:
         if name == "arm_execution_workspace_retention":
             self.retention_arm_inputs.append(inp)
             return {"success": True, "armed": 1}
+        if name == "persist_results_to_db":
+            self.result_persist_inputs.append(inp)
+            return {"success": True}
         if name == "record_script_call_pause":
             self.pause_inputs.append(inp)
             return {"success": True}
@@ -741,6 +745,43 @@ def test_cancel_event_wins():
     assert result["cancelled"] is True
     assert result["status"] == "cancelled"
     assert "user stop" in result["error"]
+
+
+def test_cancel_completed_during_terminal_evaluation_wins_over_done():
+    """A UI stop arriving during post-child evaluation remains terminal."""
+    cid = "a" * 40 + "_0"
+    state: dict[str, Any] = {"ctx": None, "cancel_fired": False}
+
+    def evaluator(input_data):
+        known = set(input_data.get("knownCallIds") or [])
+        if cid not in known:
+            return plan_need([agent_task(cid)])
+        if not state["cancel_fired"]:
+            state["cancel_fired"] = True
+            state["ctx"].fire_cancel("late UI stop")
+        return plan_done({"completedNaturally": True})
+
+    ctx = FakeCtx(evaluator=evaluator)
+    state["ctx"] = ctx
+    result = drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda current: current.complete_child(cid, {"success": True})],
+    )
+
+    assert result["status"] == "cancelled"
+    assert result["cancelled"] is True
+    assert result["error"] == "late UI stop"
+    assert len(ctx.result_persist_inputs) == 1
+    assert ctx.result_persist_inputs[0]["success"] is False
+    assert ctx.result_persist_inputs[0]["phase"] == "cancelled"
+    # Main evaluation, post-child terminal evaluation, one compensation round.
+    evaluations = [
+        item
+        for item in ctx.action_log
+        if item[0] == "activity" and item[1] == "evaluate_script"
+    ]
+    assert len(evaluations) == 3
 
 
 def test_skip_control_event():

@@ -1,5 +1,5 @@
 {
-	"description": "Patch the execution read model (WorkflowDataClient.patch_execution).",
+	"description": "Apply a stop-fenced runtime projection (WorkflowDataClient.patch_execution).",
 	"method": "PATCH",
 	"pathTemplate": "/api/internal/workflow-data/executions/{executionId}",
 	"path": "/api/internal/workflow-data/executions/exec-1",
@@ -13,6 +13,7 @@
 		"currentNodeName": "Agent"
 	},
 	"responseBody": {
-		"ok": true
+		"ok": true,
+		"applied": true
 	}
 }

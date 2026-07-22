@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
     daprInstanceId: "sw-example-exec-exec-1",
     startedAt: new Date("2026-07-02T12:00:00.000Z"),
     completedAt: null as Date | null,
+		stopReason: null as string | null,
 	};
 	const workflow = {
     id: "wf-1",
@@ -443,5 +444,51 @@ describe("internal agent workflow execution status route", () => {
 				completedAt: "2026-07-02T12:00:44.000Z",
 			},
 		});
+	});
+
+	it("keeps a finalized UI stop authoritative when the runtime later reports failure", async () => {
+		mocks.workflowData.getExecutionById.mockResolvedValueOnce({
+			...mocks.execution,
+			status: "cancelled",
+			phase: "cancelled",
+			progress: 100,
+			output: {
+				success: false,
+				phase: "cancelled",
+				workflowOutput: null,
+			},
+			error: "Stopped by user",
+			completedAt: new Date("2026-07-02T12:00:30.000Z"),
+			stopReason: "Stopped by user",
+		});
+		mocks.daprFetch.mockResolvedValueOnce(
+			Response.json({
+				runtimeStatus: "FAILED",
+				phase: "failed",
+				progress: 100,
+				outputs: { completedNaturally: true },
+				error: "runtime failed after cancellation",
+				completedAt: "2026-07-02T12:00:31.000Z",
+			}),
+		);
+
+		const response = (await GET(event() as never)) as Response;
+		const body = await response.json();
+
+		expect(body).toMatchObject({
+			status: "cancelled",
+			error: "Stopped by user",
+			execution: {
+				status: "cancelled",
+				phase: "cancelled",
+				progress: 100,
+				output: {
+					success: false,
+					phase: "cancelled",
+					workflowOutput: null,
+				},
+			},
+		});
+		expect(mocks.workflowData.compareAndSetExecutionReadModel).not.toHaveBeenCalled();
 	});
 });
