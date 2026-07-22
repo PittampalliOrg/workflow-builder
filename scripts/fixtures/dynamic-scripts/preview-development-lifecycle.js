@@ -36,6 +36,26 @@ export const meta = {
         items: { type: "string" },
         default: ["workflow-builder"],
       },
+      builderProfile: {
+        type: "string",
+        title: "Builder profile",
+        enum: ["kimi-k3-juicefs", "pydantic-ai-k3-ui"],
+        default: "kimi-k3-juicefs",
+        description:
+          "Selects a policy-owned builder identity and runtime. Callers cannot supply an arbitrary agent slug or runtime.",
+      },
+      targetRoutes: {
+        type: "array",
+        title: "Routes to verify",
+        minItems: 1,
+        maxItems: 16,
+        uniqueItems: true,
+        items: {
+          type: "string",
+          pattern: "^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$",
+        },
+        default: ["/dashboard"],
+      },
       ttlHours: {
         type: "integer",
         title: "Preview lifetime in hours",
@@ -83,6 +103,11 @@ export const meta = {
   },
 };
 
+const DEFAULT_BUILDER_PROFILE = "kimi-k3-juicefs";
+const BUILDER_PROFILES = [
+  DEFAULT_BUILDER_PROFILE,
+  "pydantic-ai-k3-ui",
+];
 const t = args ?? {};
 const intent = typeof t.intent === "string" ? t.intent.trim() : "";
 const environmentName =
@@ -91,6 +116,10 @@ const services =
   Array.isArray(t.services) && t.services.length > 0
     ? t.services
     : ["workflow-builder"];
+const builderProfileInput =
+  t.builderProfile == null ? null : String(t.builderProfile).trim();
+const builderProfile = builderProfileInput ?? DEFAULT_BUILDER_PROFILE;
+const targetRoutes = t.targetRoutes == null ? null : t.targetRoutes;
 const ttlHours = Number.isInteger(t.ttlHours) ? t.ttlHours : 8;
 function asBoolean(value) {
   return value === true || String(value).trim().toLowerCase() === "true";
@@ -118,6 +147,23 @@ if (
 }
 if (new Set(services).size !== services.length)
   throw new Error("services must be unique");
+if (!BUILDER_PROFILES.includes(builderProfile)) {
+  throw new Error("builderProfile is not supported");
+}
+if (
+  targetRoutes !== null &&
+  (!Array.isArray(targetRoutes) ||
+    targetRoutes.length < 1 ||
+    targetRoutes.length > 16 ||
+    new Set(targetRoutes).size !== targetRoutes.length ||
+    !targetRoutes.every(
+      (route) =>
+        typeof route === "string" &&
+        /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/.test(route),
+    ))
+) {
+  throw new Error("targetRoutes must contain unique absolute application routes");
+}
 // The server gate (PREVIEW_DEV_MULTISERVICE) is the authoritative switch for
 // whether more than one service is admitted; this fixture only enforces the
 // always-on bounds (non-empty, unique, <= MAX_SERVICES) and lets the server
@@ -155,14 +201,13 @@ const POLL_FACTOR = 1.5;
 const POLL_CAP_SECONDS = 30;
 const PROVISION_BUDGET_SECONDS = 20 * 60;
 const TEARDOWN_BUDGET_SECONDS = 20 * 60;
-// The pinned GAN child's documented worst-case budget: up to 3 agent
-// iterations x 35-minute per-iteration timeout plus ~15 minutes of
-// snapshot/promote overhead. The parent may cap maxIterations below three, but
-// reserves the child's maximum documented budget so the observation schedule
-// remains conservative and deterministic. Keep this in sync with
-// preview-ui-development-gan.js.
+// Reserve the selected profile's documented worst-case iteration budget plus
+// snapshot/promote overhead. The Pydantic UI profile permits longer quality
+// passes, while the default profile keeps the proven 35-minute window. Keep
+// these values in sync with preview-ui-development-gan.js.
 const CHILD_MAX_ITERATIONS = 3;
-const CHILD_ITERATION_TIMEOUT_MINUTES = 35;
+const CHILD_ITERATION_TIMEOUT_MINUTES =
+  builderProfile === "pydantic-ai-k3-ui" ? 60 : 35;
 const CHILD_OVERHEAD_MINUTES = 15;
 // The pinned child edits + syncs EVERY requested service, so its worst-case
 // runtime scales with the service count: each of the (up to 3) agent iterations
@@ -561,6 +606,8 @@ try {
     target: environment?.target ?? launch?.target,
     intent,
     services,
+    ...(builderProfileInput !== null ? { builderProfile } : {}),
+    ...(targetRoutes !== null ? { targetRoutes } : {}),
     // Additive retention context, opt-in only: omitted entirely in the
     // default flow so the proven workflow-start payload stays byte-identical.
     // When present, the preview-side child owns freeze/handoff behavior.
@@ -654,6 +701,8 @@ try {
 return {
   environmentName,
   services,
+  builderProfile,
+  targetRoutes: targetRoutes ?? ["/dashboard"],
   retained:
     (completedNormally && retainAfterCompletion) ||
     (!completedNormally && retainOnFailure),

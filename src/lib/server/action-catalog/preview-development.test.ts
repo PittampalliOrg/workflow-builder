@@ -41,7 +41,7 @@ describe("preview development action catalog", () => {
     );
   });
 
-  it("accepts the additive retention opt-ins on workflow-start without requiring them", async () => {
+  it("accepts the complete bounded workflow-start controls without requiring them", async () => {
     const snapshot = await loadActionCatalogSnapshot(null);
     const start = snapshot.items.find(
       (item) => item.actionName === "preview/workflow-start",
@@ -62,6 +62,26 @@ describe("preview development action catalog", () => {
     });
     expect(schema?.properties?.interactiveHandoff).toEqual({
       type: "boolean",
+    });
+    expect(schema?.properties?.builderProfile).toEqual({
+      type: "string",
+      enum: ["kimi-k3-juicefs", "pydantic-ai-k3-ui"],
+    });
+    expect(schema?.properties?.targetRoutes).toMatchObject({
+      type: "array",
+      minItems: 1,
+      maxItems: 16,
+      uniqueItems: true,
+    });
+    expect(schema?.properties?.impactReview).toEqual({ type: "boolean" });
+    expect(schema?.properties?.diffScope).toMatchObject({
+      type: "array",
+      maxItems: 128,
+    });
+    expect(schema?.properties?.maxIterations).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 3,
     });
     // Opt-ins are never defaulted — absent must stay absent.
     expect(JSON.stringify(schema)).not.toContain('"default"');

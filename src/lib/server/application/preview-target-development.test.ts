@@ -169,7 +169,7 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         workflowInput: {
           intent: "x",
           services: ["workflow-builder"],
-          agentSlug: "kimi-k3-juicefs-builder-agent",
+          builderProfile: "pydantic-ai-k3-ui",
         },
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
@@ -187,27 +187,38 @@ describe("ApplicationPreviewTargetDevelopmentService", () => {
         workflowInput: {
           intent: "x",
           services: ["workflow-builder"],
-          agentSlug: "kimi-k3-juicefs-builder-agent",
+          builderProfile: "pydantic-ai-k3-ui",
         },
       }),
     ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
-  it("rejects URL, identity, and credential fields at the typed input boundary", () => {
+  it("accepts only policy-owned builder profiles and safe target routes", () => {
     expect(
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",
         services: ["workflow-builder"],
-        agentSlug: "kimi-k3-juicefs-builder-agent",
+        builderProfile: "pydantic-ai-k3-ui",
+        targetRoutes: ["/drasi"],
       }),
-    ).toMatchObject({ agentSlug: "kimi-k3-juicefs-builder-agent" });
+    ).toMatchObject({
+      builderProfile: "pydantic-ai-k3-ui",
+      targetRoutes: ["/drasi"],
+    });
     expect(() =>
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",
         services: ["workflow-builder"],
-        agentSlug: "https://attacker.invalid",
+        builderProfile: "attacker-selected-agent" as never,
       }),
     ).toThrow("workflow input is invalid");
+    expect(() =>
+      __previewTargetDevelopmentForTest.normalizeWorkflowInput({
+        intent: "x",
+        services: ["workflow-builder"],
+        targetRoutes: ["https://attacker.invalid"] as never,
+      }),
+    ).toThrow("targetRoutes");
     expect(() =>
       __previewTargetDevelopmentForTest.normalizeWorkflowInput({
         intent: "x",

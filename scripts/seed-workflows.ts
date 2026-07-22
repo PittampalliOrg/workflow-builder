@@ -59,6 +59,12 @@ import {
 } from "./upsert-pydantic-ai-k3-3blue1brown-animation-workflow";
 import PLATFORM_INCIDENT_ANALYSIS_SCRIPT from "./fixtures/dynamic-scripts/platform-incident-analysis.js?raw";
 import { PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA } from "./platform-incident-contract";
+import {
+	PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_CONFIG,
+	PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_RUNTIME,
+	PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SLUG,
+	PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT,
+} from "./preview-ui-builder-agent";
 
 const DATABASE_URL =
 	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -3963,6 +3969,8 @@ async function ensureCliShowcaseAgentFor(
 		runtime: string;
 		name: string;
 		description: string;
+		agentType?: string;
+		config?: Readonly<Record<string, unknown>>;
 		mcpServers?: unknown[];
 		// Dapr-family variants drive API-key LLMs and need an explicit modelSpec;
 		// CLI variants omit it because they use native CLI authentication.
@@ -3984,9 +3992,10 @@ async function ensureCliShowcaseAgentFor(
 	},
 ): Promise<string> {
 	const { slug, runtime, name, description } = opts;
+	const agentType = opts.agentType ?? "general";
 	const maxTurns = opts.maxTurns ?? 50;
 	const timeoutMinutes = opts.timeoutMinutes ?? 30;
-	const config = {
+	const config = opts.config ?? {
 		runtime,
 		...(opts.modelSpec ? { modelSpec: opts.modelSpec } : {}),
 		...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
@@ -4041,6 +4050,7 @@ async function ensureCliShowcaseAgentFor(
 		await sqlClient`
 			update agents
 			set name = ${name}, description = ${description}, runtime = ${runtime},
+				agent_type = coalesce(${opts.agentType ?? null}, agent_type),
 				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null},
 				max_turns = ${maxTurns}, timeout_minutes = ${timeoutMinutes}
 			where id = ${agentId}`;
@@ -4079,11 +4089,12 @@ async function ensureCliShowcaseAgentFor(
 			insert into agents (id, name, description, agent_type, max_turns, timeout_minutes, project_id, user_id, registry_status, slug, runtime, instructions)
 			values (${agentId}, ${name},
 				${description},
-				${"general"}, ${maxTurns}, ${timeoutMinutes}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
+				${agentType}, ${maxTurns}, ${timeoutMinutes}, ${projectId}, ${userId}, ${"registered"}, ${slug}, ${runtime}, ${opts.instructions ?? null})`;
 	} else {
 		await sqlClient`
 			update agents
 			set name = ${name}, description = ${description}, runtime = ${runtime},
+				agent_type = coalesce(${opts.agentType ?? null}, agent_type),
 				registry_status = ${"registered"}, instructions = ${opts.instructions ?? null},
 				max_turns = ${maxTurns}, timeout_minutes = ${timeoutMinutes}
 			where id = ${agentId}`;
@@ -4160,6 +4171,22 @@ async function seedGeneratorCriticShowcases(params: {
 		reasoningEffort: "max",
 		contextWindowTokens: 1_048_576,
 		runtimeIsolation: "dedicated",
+	});
+	await ensureCliShowcaseAgentFor(params.sqlClient, params.userId, params.projectId, {
+		slug: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SLUG,
+		runtime: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_RUNTIME,
+		agentType: "coding",
+		name: "Pydantic AI Kimi K3 Preview UI Builder",
+		description:
+			"Policy-selected Pydantic AI coding agent for cohesive, accessible Workflow Builder UI development through receiver-owned PreviewEnvironment HMR and draft-PR promotion.",
+		modelSpec: "kimi/kimi-k3",
+		reasoningEffort: "max",
+		contextWindowTokens: 1_048_576,
+		runtimeIsolation: "shared",
+		maxTurns: 40,
+		timeoutMinutes: 60,
+		instructions: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT,
+		config: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_CONFIG,
 	});
 	// Pixel reviewer for dynamic-script workflows. The BFF adds the trusted
 	// Workflow MCP connection to script-spawned sessions; this definition narrows

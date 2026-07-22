@@ -546,12 +546,33 @@ function buildPreviewDevelopmentActionDetails(): ActionCatalogDetail[] {
 					target: targetSchema,
 					intent: { type: "string", minLength: 1, maxLength: 12000 },
 					services: servicesSchema,
+					builderProfile: {
+						type: "string",
+						enum: ["kimi-k3-juicefs", "pydantic-ai-k3-ui"],
+					},
+					targetRoutes: {
+						type: "array",
+						minItems: 1,
+						maxItems: 16,
+						uniqueItems: true,
+						items: {
+							type: "string",
+							pattern: "^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$",
+						},
+					},
 					// Retention opt-ins (additive, never defaulted): only present when
 					// the parent explicitly retains, so the default payload stays
 					// byte-identical and the child receives them verbatim.
 					ttlHours: { type: "integer", minimum: 2, maximum: 24 },
 					retainAfterCompletion: { type: "boolean" },
 					interactiveHandoff: { type: "boolean" },
+					impactReview: { type: "boolean" },
+					diffScope: {
+						type: "array",
+						maxItems: 128,
+						items: { type: "string", minLength: 1, maxLength: 512 },
+					},
+					maxIterations: { type: "integer", minimum: 1, maximum: 3 },
 				},
 			},
 		},

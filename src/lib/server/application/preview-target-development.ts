@@ -34,6 +34,7 @@ import type {
   WorkspaceProjectRepository,
 } from "$lib/server/application/ports";
 import {
+	PREVIEW_DEVELOPMENT_BUILDER_PROFILES,
   PREVIEW_DEVELOPMENT_WORKFLOW_ID,
   PREVIEW_DEVELOPMENT_WORKFLOW_NAME,
 } from "$lib/server/application/ports";
@@ -44,6 +45,7 @@ import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_PROGRESS_LABEL = /^[\x20-\x7e]{1,64}$/;
 const SAFE_SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const SAFE_TARGET_ROUTE = /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/;
 const SPEC_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const RECEIPT_ID = /^pspr_[0-9a-f]{64}$/;
@@ -54,6 +56,7 @@ const MAX_INTENT_CHARS = 12_000;
 const MAX_SERVICES = 16;
 const MAX_DIFF_SCOPE_PREFIXES = 128;
 const MAX_DIFF_SCOPE_PREFIX_CHARS = 512;
+const MAX_TARGET_ROUTES = 16;
 // Services that can never be driven by a preview development run because they
 // are not preview-native adoptable (catalog previewNative is null). Rejecting
 // them here yields a precise error instead of a dead-end deeper in the runner.
@@ -313,9 +316,8 @@ function normalizeWorkflowInput(
     input.services.some(
       (service) => typeof service !== "string" || !SAFE_SERVICE.test(service),
     ) ||
-    (input.agentSlug !== undefined &&
-      (typeof input.agentSlug !== "string" ||
-        !SAFE_SERVICE.test(input.agentSlug))) ||
+    (input.builderProfile !== undefined &&
+      !PREVIEW_DEVELOPMENT_BUILDER_PROFILES.includes(input.builderProfile)) ||
     new Set(input.services).size !== input.services.length
   ) {
     return invalid("preview development workflow input is invalid");
@@ -341,6 +343,18 @@ function normalizeWorkflowInput(
     return invalid(
       `multi-service preview development is not yet supported: only 1 service may be requested (got ${input.services.length})`,
     );
+  }
+  if (
+    input.targetRoutes !== undefined &&
+    (!Array.isArray(input.targetRoutes) ||
+      input.targetRoutes.length < 1 ||
+      input.targetRoutes.length > MAX_TARGET_ROUTES ||
+      input.targetRoutes.some(
+        (route) => typeof route !== "string" || !SAFE_TARGET_ROUTE.test(route),
+      ) ||
+      new Set(input.targetRoutes).size !== input.targetRoutes.length)
+  ) {
+    return invalid("targetRoutes must contain unique absolute application routes");
   }
   if (
     input.keepPreview !== undefined &&
@@ -397,7 +411,12 @@ function normalizeWorkflowInput(
   return Object.freeze({
     intent: input.intent,
     services: Object.freeze([...input.services]),
-    ...(input.agentSlug !== undefined ? { agentSlug: input.agentSlug } : {}),
+    ...(input.builderProfile !== undefined
+      ? { builderProfile: input.builderProfile }
+      : {}),
+    ...(input.targetRoutes !== undefined
+      ? { targetRoutes: Object.freeze([...input.targetRoutes]) }
+      : {}),
     ...(input.keepPreview !== undefined
       ? {
           keepPreview:

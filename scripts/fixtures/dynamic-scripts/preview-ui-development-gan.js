@@ -1,7 +1,7 @@
 export const meta = {
   name: "preview-ui-development-gan",
   description:
-    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a deterministic dashboard contract plus the Kimi K3 JuiceFS Dapr agent to implement a dashboard UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
+    "Preview-local automated UI development loop for workflow-builder: enter the existing app-live preview's live-sync mode, use a policy-selected Kimi K3 builder profile to implement a cohesive UI change, verify the HMR-served app, snapshot the exact live-sync generation, and open a draft PR.",
   phases: [
     { title: "Dev mode" },
     { title: "Plan" },
@@ -32,15 +32,22 @@ export const meta = {
       },
       targetRoutes: {
         type: "array",
-        items: { type: "string" },
+        minItems: 1,
+        maxItems: 16,
+        uniqueItems: true,
+        items: {
+          type: "string",
+          pattern: "^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$",
+        },
         default: ["/dashboard"],
       },
       maxIterations: { type: "integer", minimum: 1, maximum: 3, default: 2 },
-      agentSlug: {
+      builderProfile: {
         type: "string",
-        default: "kimi-k3-juicefs-builder-agent",
+        enum: ["kimi-k3-juicefs", "pydantic-ai-k3-ui"],
+        default: "kimi-k3-juicefs",
         description:
-          "Server-selected agent slug. The host lifecycle supplies this; it is not preview authority.",
+          "Policy-selected builder identity and runtime. Arbitrary agent slugs and runtimes are not accepted.",
       },
       keepPreview: {
         anyOf: [{ type: "boolean" }, { type: "string", enum: ["true", "false"] }],
@@ -110,11 +117,25 @@ export const meta = {
   },
 };
 
-const DEFAULT_AGENT = "kimi-k3-juicefs-builder-agent";
 const REQUIRED_MODEL = "kimi/kimi-k3";
 const DEFAULT_SERVICE = "workflow-builder";
 const DEFAULT_ROUTES = ["/dashboard"];
 const DASHBOARD_MARKER = "Preview Development Status";
+const DEFAULT_BUILDER_PROFILE = "kimi-k3-juicefs";
+const BUILDER_PROFILES = {
+  "kimi-k3-juicefs": {
+    agentSlug: "kimi-k3-juicefs-builder-agent",
+    agentType: "dapr-agent-py-juicefs",
+    maxTurns: 24,
+    timeoutMinutes: 35,
+  },
+  "pydantic-ai-k3-ui": {
+    agentSlug: "pydantic-ai-k3-preview-ui-builder-agent",
+    agentType: "pydantic-ai-agent-py",
+    maxTurns: 40,
+    timeoutMinutes: 60,
+  },
+};
 
 // Phase 3 per-service /__run probe lanes, duplicated read-only from the
 // dev-preview registry (dev-preview-registry.ts `testCommands`). That registry
@@ -634,17 +655,19 @@ function serviceInfo(preview, service) {
   return dataOf(entry?.info ?? entry ?? base);
 }
 
-function agentOptions(label, agentSlug, extra = {}) {
+function agentOptions(label, builder, extra = {}) {
   return {
     label,
-    agent: agentSlug,
+    agent: builder.agentSlug,
+    agentType: builder.agentType,
     model: REQUIRED_MODEL,
+    effort: "max",
     isolation: "shared",
     sandbox: {
       workspaceRef: workspace,
       cwd: "/sandbox/work",
-      maxTurns: extra.maxTurns ?? 24,
-      timeoutMinutes: extra.timeoutMinutes ?? 30,
+      maxTurns: extra.maxTurns ?? builder.maxTurns,
+      timeoutMinutes: extra.timeoutMinutes ?? builder.timeoutMinutes,
     },
     ...extra,
   };
@@ -700,12 +723,30 @@ const services = asStringArray(t.services, [service]);
 // shared sync.sh generation. The server gate (PREVIEW_DEV_MULTISERVICE) is the
 // authority for whether >1 service is ever dispatched here.
 const multiService = services.length > 1;
-const routes = asStringArray(t.targetRoutes, DEFAULT_ROUTES);
+const routes = t.targetRoutes == null ? DEFAULT_ROUTES : t.targetRoutes;
+if (
+  !Array.isArray(routes) ||
+  routes.length < 1 ||
+  routes.length > 16 ||
+  new Set(routes).size !== routes.length ||
+  !routes.every(
+    (route) =>
+      typeof route === "string" &&
+      /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/.test(route),
+  )
+) {
+  throw new Error("targetRoutes must contain unique absolute application routes");
+}
 const maxIterations = Math.max(1, Math.min(3, Number(t.maxIterations ?? 2) || 2));
-const agentSlug =
-  typeof t.agentSlug === "string" && t.agentSlug.length > 0
-    ? t.agentSlug
-    : DEFAULT_AGENT;
+const builderProfile =
+  typeof t.builderProfile === "string" && t.builderProfile.length > 0
+    ? t.builderProfile
+    : DEFAULT_BUILDER_PROFILE;
+const builder = BUILDER_PROFILES[builderProfile];
+if (!builder) throw new Error("builderProfile is not supported");
+const agentSlug = builder.agentSlug;
+const agentType = builder.agentType;
+const pydanticUiProfile = builderProfile === "pydantic-ai-k3-ui";
 
 function asBoolean(value) {
   return value === true || String(value).trim().toLowerCase() === "true";
@@ -836,35 +877,82 @@ if (diffScopeInput != null && diffScopeInput.length > 0) {
   }
 }
 
-const fallbackContract = {
-  objective: intent,
-  targetRoutes: routes,
-  acceptanceCriteria: [
-    {
-      id: "visible-dashboard-enhancement",
-      description: "The dashboard visibly includes useful new functionality for understanding preview development activity.",
-      verify: "Load the dashboard route and confirm the new section or controls are present.",
-    },
-    {
-      id: "real-data-or-empty-state",
-      description: "The UI uses existing application data where available and otherwise renders an explicit graceful empty state.",
-      verify: "Inspect the implementation and dashboard response for guarded data sources and non-crashing empty states.",
-    },
-    {
-      id: "hmr-reflected",
-      description: "The change is pushed through the preview live-sync sidecar and reflected by the HMR-served preview app.",
-      verify: "Export the sidecar source after sync and smoke the live dashboard route.",
-    },
-    {
-      id: "focused-diff",
-      description: "The source diff is scoped to dashboard UI and required supporting code; auth/sign-in code is untouched.",
-      verify: "Inspect captured source and generated PR diff.",
-    },
-  ],
-  dataSources: ["existing workflow-builder dashboard, run, session, and preview-environment APIs where available"],
-  diffScope: "workflow-builder dashboard source and narrowly necessary supporting application/adapter code",
-  hmrVerification: "sync via the dev-sync sidecar, export the synced source generation, then smoke the dashboard route",
-};
+const fallbackContract = pydanticUiProfile
+  ? {
+      objective: intent,
+      targetRoutes: routes,
+      acceptanceCriteria: [
+        {
+          id: "requested-experience",
+          description:
+            "The requested UI is complete, interactive where appropriate, and visibly integrated with the existing Workflow Builder shell and theme.",
+          verify: "Load every target route and exercise its primary developer workflow.",
+        },
+        {
+          id: "real-data-or-empty-state",
+          description:
+            "Operational views use existing data contracts where available and provide honest loading, empty, degraded, and error states.",
+          verify:
+            "Inspect data loading and render each state without fabricated metrics or route failures.",
+        },
+        {
+          id: "responsive-accessible-polish",
+          description:
+            "The experience is cohesive in light and dark themes, responsive on desktop and mobile, keyboard accessible, and reduced-motion aware.",
+          verify:
+            "Inspect the implemented components and exercise the target routes at representative viewport sizes.",
+        },
+        {
+          id: "hmr-reflected",
+          description:
+            "The accepted source is applied through one or more atomic preview live-sync generations and served by the adopted HMR app.",
+          verify:
+            "Verify the latest receiver generation and smoke every target route before source capture.",
+        },
+        {
+          id: "focused-diff",
+          description:
+            "The source diff is scoped to the requested UI and narrowly necessary supporting code; auth/sign-in code is untouched.",
+          verify: "Inspect captured source and generated PR diff.",
+        },
+      ],
+      dataSources: [
+        "existing Workflow Builder application ports, route loaders, internal APIs, and explicit graceful empty states",
+      ],
+      diffScope:
+        "requested Workflow Builder UI and narrowly necessary components, application ports, adapters, and routes",
+      hmrVerification:
+        "apply fresh atomic dev-sync generations, verify receiver health, and smoke all target routes",
+    }
+  : {
+      objective: intent,
+      targetRoutes: routes,
+      acceptanceCriteria: [
+        {
+          id: "visible-dashboard-enhancement",
+          description: "The dashboard visibly includes useful new functionality for understanding preview development activity.",
+          verify: "Load the dashboard route and confirm the new section or controls are present.",
+        },
+        {
+          id: "real-data-or-empty-state",
+          description: "The UI uses existing application data where available and otherwise renders an explicit graceful empty state.",
+          verify: "Inspect the implementation and dashboard response for guarded data sources and non-crashing empty states.",
+        },
+        {
+          id: "hmr-reflected",
+          description: "The change is pushed through the preview live-sync sidecar and reflected by the HMR-served preview app.",
+          verify: "Export the sidecar source after sync and smoke the live dashboard route.",
+        },
+        {
+          id: "focused-diff",
+          description: "The source diff is scoped to dashboard UI and required supporting code; auth/sign-in code is untouched.",
+          verify: "Inspect captured source and generated PR diff.",
+        },
+      ],
+      dataSources: ["existing workflow-builder dashboard, run, session, and preview-environment APIs where available"],
+      diffScope: "workflow-builder dashboard source and narrowly necessary supporting application/adapter code",
+      hmrVerification: "sync via the dev-sync sidecar, export the synced source generation, then smoke the dashboard route",
+    };
 const fallbackContractText = JSON.stringify(fallbackContract, null, 2);
 
 phase("Plan");
@@ -873,12 +961,14 @@ const plan = fallbackContract;
 // A multi-service generation edits + syncs every requested service in one pass,
 // so give the agent more turns and time (bounded). A single-service run keeps
 // the proven {24 turns, 35 min} budget byte-for-byte.
-const generatorBudget = multiService
-  ? {
-      maxTurns: Math.min(24 * services.length, 96),
-      timeoutMinutes: Math.min(35 + 10 * (services.length - 1), 90),
-    }
-  : { maxTurns: 24, timeoutMinutes: 35 };
+const generatorBudget = pydanticUiProfile
+  ? { maxTurns: builder.maxTurns, timeoutMinutes: builder.timeoutMinutes }
+  : multiService
+    ? {
+        maxTurns: Math.min(24 * services.length, 96),
+        timeoutMinutes: Math.min(35 + 10 * (services.length - 1), 90),
+      }
+    : { maxTurns: 24, timeoutMinutes: 35 };
 
 phase("Generate");
 let accepted = false;
@@ -894,8 +984,66 @@ while (!accepted && iterations < maxIterations) {
   const feedback = lastVerdict
     ? `\nPrevious verifier feedback to address:\n${JSON.stringify(lastVerdict)}\n`
     : "";
-  const generatorPrompt = multiService
-    ? `You are the Kimi K3 builder for a workflow-builder MULTI-SERVICE preview development run.
+  const generatorPrompt = pydanticUiProfile
+    ? multiService
+      ? `You are the Pydantic AI Kimi K3 builder for a Workflow Builder MULTI-SERVICE preview development run.
+
+The isolated system is already running and its receiver-owned source is seeded into /sandbox/work. Implement the user task across these services: ${services.join(", ")}.
+
+ACTIVATION:
+- Run /sandbox/work/activate-repo.sh and confirm it reports ACTIVATED or REUSED, then work in /sandbox/work/repo.
+- Inspect the relevant app shell, navigation, design tokens, shared UI primitives, target routes, and neighboring operational surfaces before choosing the implementation.
+
+QUALITY BUILD MODE:
+- Build the complete requested experience, including real-data integration or honest empty/degraded states, responsive layouts, keyboard and screen-reader behavior, light/dark theme cohesion, and reduced-motion handling.
+- Preserve the repository's hexagonal boundaries and existing Svelte, Tailwind, shadcn, and Lucide conventions. Do not invent a parallel visual system or fake operational metrics.
+- You may inspect every relevant source file and apply multiple atomic HMR generations when that materially improves correctness or polish. Keep each generation coherent and use a fresh generation identifier.
+- After every intentional generation, run exactly \`/sandbox/work/sync.sh > /sandbox/work/sync.log 2>&1\` once. Read the persistent log and require an \`APPLIED ...\` receipt for every selected service plus \`SYNCED generation=... services=${services.length} convergence=healthy\`.
+- Smoke ${routes.join(", ")} against ${previewUrl} after the final generation and fix HTTP 500, ReferenceError, or each_key_duplicate failures before stopping.
+
+Hard rules:
+- Edit only receiver-owned source in /sandbox/work/repo. Never use Kubernetes, GitHub, broker, host, or provider credentials.
+- Do not commit or push. dev/preview-snapshot and dev/preview-promote exclusively own capture and draft-PR creation.
+- Never touch auth/sign-in code.
+- Use this contract as the source of truth:
+${fallbackContractText}
+
+User task:
+${intent}
+${feedback}`
+      : `You are the Pydantic AI Kimi K3 builder for a Workflow Builder preview UI-development run.
+
+The live application is already running with Vite HMR. Build the complete requested UI experience against receiver-owned source and leave the final accepted generation healthy at ${previewUrl}.
+
+QUALITY BUILD MODE:
+- Pull the source first, then inspect the relevant route, app shell, navigation, design tokens, shared components, and nearby operational pages. There is no five-file inspection limit for this profile.
+- Integrate with the current Svelte 5, Tailwind, shadcn, Lucide, typography, spacing, light/dark theme, and motion conventions. Aim for high information clarity and visual polish without turning an operational surface into a marketing page.
+- Use real existing APIs and application ports where available. Show explicit loading, empty, degraded, and error states instead of fabricated data.
+- Preserve hexagonal architecture, responsive behavior, semantic HTML, keyboard access, visible focus, and reduced-motion support.
+- You may apply multiple atomic HMR generations while iterating. Every sync must use a fresh generation identifier and coherent receiver-owned source bytes. Finish only after the latest generation serves all target routes cleanly.
+
+Hard rules:
+- Edit only receiver-owned source pulled from ${exportUrl}; never use Kubernetes, GitHub, broker, host, or provider credentials.
+- Keep the diff focused on the requested UI and narrowly necessary components, application ports, adapters, and routes.
+- Do not commit or push. dev/preview-snapshot and dev/preview-promote exclusively own capture and draft-PR creation.
+- Never touch auth/sign-in code.
+- Use this contract as the source of truth:
+${fallbackContractText}
+
+Required workflow:
+1. Pull source:
+   SCRATCH=/sandbox/work/preview-ui-gan-build; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/repo"; curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"; ROOTS_JSON="$(sed -n 's/^x-sync-roots:[[:space:]]*//p' "$SCRATCH/export.headers" | tr -d '\\r' | tail -1)"; test -n "$ROOTS_JSON"; tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo".
+2. Implement and verify the task under "$SCRATCH/repo". Inspect as many relevant files as needed and run focused checks available in the workspace.
+3. Push an atomic HMR generation after each coherent iteration:
+   cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && node -e 'const roots=JSON.parse(process.argv[1]); if (!Array.isArray(roots) || roots.length === 0) process.exit(2); for (const root of roots) console.log(root);' "$ROOTS_JSON" > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: ${syncCapability}" -H "x-sync-generation: $GEN" -H "x-sync-service: ${service}" -H "x-sync-roots: $ROOTS_JSON" "${syncUrl}" | tee /sandbox/work/preview-ui-gan-sync-${iterations + 1}.json.
+4. Poll ${previewUrl}/api/health until HTTP 200, then request every target route (${routes.join(", ")}). Fix HTTP 500, ReferenceError, and each_key_duplicate failures. Repeat steps 2-4 with a new generation when necessary.
+5. Stop only when the latest live generation satisfies the contract; summarize the implementation and verification without committing or pushing.
+
+User task:
+${intent}
+${feedback}`
+    : multiService
+      ? `You are the Kimi K3 builder for a workflow-builder MULTI-SERVICE preview development run.
 
 You are running inside the preview workflow with a shared JuiceFS workspace. The isolated multi-service system is already running and its source is seeded into /sandbox/work. Implement the requested change across these services and push exactly one shared live-sync generation before stopping: ${services.join(", ")}.
 
@@ -928,7 +1076,7 @@ Smoke the live app after the shared sync: poll ${previewUrl}/api/health until HT
 User task:
 ${intent}
 ${feedback}`
-    : `You are the Kimi K3 builder for a workflow-builder preview UI-development run.
+      : `You are the Kimi K3 builder for a workflow-builder preview UI-development run.
 
 You are running inside the preview workflow with a shared JuiceFS workspace. Implement the requested dashboard enhancement against the live preview and push exactly one HMR generation before stopping.
 
@@ -967,7 +1115,7 @@ ${intent}
 ${feedback}`;
   lastGenerator = await agent(
     generatorPrompt,
-    agentOptions(`generate #${iterations + 1}`, agentSlug, generatorBudget),
+    agentOptions(`generate #${iterations + 1}`, builder, generatorBudget),
   );
 
   phase("Verify");
@@ -1228,10 +1376,14 @@ const promote = await action(
     iteration: iterations,
     bestIteration: iterations,
     draft: true,
-    title: "Preview UI development: dashboard enhancement",
+    title: pydanticUiProfile
+      ? "Preview UI development: requested experience"
+      : "Preview UI development: dashboard enhancement",
     bodyMarkdown:
       "Automated draft PR from the host-orchestrated preview UI-development GAN workflow.\\n\\n" +
       `- agent: ${agentSlug}\\n` +
+      `- builder profile: ${builderProfile}\\n` +
+      `- agent runtime: ${agentType}\\n` +
       `- model: ${REQUIRED_MODEL}\\n` +
       `- services: ${services.join(", ")}\\n` +
       `- target routes: ${routes.join(", ")}\\n\\n` +
@@ -1304,7 +1456,9 @@ return {
   controlOutcome: "submitted",
   accepted,
   iterations,
+  builderProfile,
   agentSlug,
+  agentType,
   model: REQUIRED_MODEL,
   service,
   services,

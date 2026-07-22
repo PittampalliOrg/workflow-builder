@@ -32,6 +32,8 @@ describe("seed-workflows preview lifecycle schema", () => {
 		expect(child).toHaveProperty("interactiveHandoff");
 		expect(child).toHaveProperty("impactReview");
 		expect(child).toHaveProperty("diffScope");
+		expect(child).toHaveProperty("builderProfile");
+		expect(child).toHaveProperty("targetRoutes");
 	});
 
 	it("keeps the host launcher schema aligned with its fixture", () => {
@@ -40,6 +42,10 @@ describe("seed-workflows preview lifecycle schema", () => {
 		expect(properties).toHaveProperty("retainAfterCompletion");
 		expect(properties).toHaveProperty("retainOnFailure");
 		expect(properties).toHaveProperty("interactiveHandoff");
+		expect(properties.builderProfile).toMatchObject({
+			enum: ["kimi-k3-juicefs", "pydantic-ai-k3-ui"],
+		});
+		expect(properties).toHaveProperty("targetRoutes");
 		expect(properties.services).toMatchObject({ maxItems: 16 });
 	});
 });

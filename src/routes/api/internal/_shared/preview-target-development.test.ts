@@ -43,6 +43,8 @@ describe("preview development command boundary", () => {
     const input = {
       intent: "Update the dashboard",
       services: ["workflow-builder"],
+      builderProfile: "pydantic-ai-k3-ui",
+      targetRoutes: ["/drasi"],
       ttlHours: 12,
       retainAfterCompletion: true,
       interactiveHandoff: "false",
@@ -99,6 +101,8 @@ describe("preview development command boundary", () => {
     expect(parsed.command.input).not.toHaveProperty("impactReview");
     expect(parsed.command.input).not.toHaveProperty("diffScope");
     expect(parsed.command.input).not.toHaveProperty("maxIterations");
+    expect(parsed.command.input).not.toHaveProperty("builderProfile");
+    expect(parsed.command.input).not.toHaveProperty("targetRoutes");
     expect(() =>
       parsePreviewDevelopmentHostRequest({
         parentExecutionId: "parent-1",
@@ -114,6 +118,21 @@ describe("preview development command boundary", () => {
         },
       }),
     ).toThrow("workflowInput has unsupported fields: retainForever");
+    expect(() =>
+      parsePreviewDevelopmentHostRequest({
+        parentExecutionId: "parent-1",
+        command: {
+          kind: "start-workflow",
+          operationId: operationId("start-workflow"),
+          target,
+          input: {
+            intent: "Update the dashboard",
+            services: ["workflow-builder"],
+            agentSlug: "attacker-selected-agent",
+          },
+        },
+      }),
+    ).toThrow("workflowInput has unsupported fields: agentSlug");
   });
 
   it.each(["actorUserId", "targetUrl", "capability", "workflowName"])(
