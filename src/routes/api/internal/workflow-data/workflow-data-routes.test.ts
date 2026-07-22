@@ -77,9 +77,13 @@ const mocks = vi.hoisted(() => {
 	const sessionRuntimeHostCleanup = {
 		requestReap: vi.fn(),
 	};
+	const workflowExecutionRuntimeHosts = {
+		requestReap: vi.fn(),
+	};
 	return {
 		workflowData,
 		sessionRuntimeHostCleanup,
+		workflowExecutionRuntimeHosts,
 		requireInternal: vi.fn(),
 	};
 });
@@ -88,6 +92,7 @@ vi.mock("$lib/server/application", () => ({
 	getApplicationAdapters: () => ({
 		workflowData: mocks.workflowData,
 		sessionRuntimeHostCleanup: mocks.sessionRuntimeHostCleanup,
+		workflowExecutionRuntimeHosts: mocks.workflowExecutionRuntimeHosts,
 	}),
 }));
 
@@ -374,6 +379,31 @@ describe("internal workflow-data routes", () => {
 			reason: "stop_requested",
 			currentStatus: "running",
 		});
+		expect(
+			mocks.workflowExecutionRuntimeHosts.requestReap,
+		).not.toHaveBeenCalled();
+	});
+
+	it("signals workflow helper cleanup after an applied terminal projection", async () => {
+		await patchExecution({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({ status: "success", phase: "completed" }),
+		} as never);
+
+		expect(
+			mocks.workflowExecutionRuntimeHosts.requestReap,
+		).toHaveBeenCalledOnce();
+	});
+
+	it("does not signal workflow helper cleanup for an active projection", async () => {
+		await patchExecution({
+			params: { executionId: "exec-1" },
+			request: jsonRequest({ status: "running", phase: "running" }),
+		} as never);
+
+		expect(
+			mocks.workflowExecutionRuntimeHosts.requestReap,
+		).not.toHaveBeenCalled();
 	});
 
 	it("upserts workspace sessions through the workflow-data service", async () => {

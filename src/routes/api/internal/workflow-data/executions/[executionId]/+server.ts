@@ -54,7 +54,8 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
     return error(400, "JSON object body required");
   }
 
-  const workflowData = getApplicationAdapters().workflowData;
+  const { workflowData, workflowExecutionRuntimeHosts } =
+    getApplicationAdapters();
   const patch: WorkflowExecutionReadModelPatch = {};
   try {
     for (const [key, value] of Object.entries(body)) {
@@ -78,6 +79,14 @@ export const PATCH: RequestHandler = async ({ params, request }) => {
   );
   if (!result.applied && result.reason === "not_found") {
     return error(404, `execution ${executionId} not found`);
+  }
+  if (
+    result.applied &&
+    (patch.status === "success" ||
+      patch.status === "error" ||
+      patch.status === "cancelled")
+  ) {
+    workflowExecutionRuntimeHosts.requestReap();
   }
   return json({ ok: true, ...result });
 };

@@ -84,6 +84,14 @@ import type {
   TerminalRuntimeHostCleanupResult,
 } from "$lib/server/application/ports";
 import { ApplicationSessionRuntimeHostCleanupService } from "$lib/server/application/session-runtime-host-cleanup";
+import { ApplicationWorkflowExecutionRuntimeHostService } from "$lib/server/application/execution-runtime-hosts";
+import { KubernetesWorkflowExecutionRuntimeHostCleanupProvider } from "$lib/server/application/adapters/execution-runtime-host-cleaner";
+import { AgentWorkflowExecutionRuntimeHostIdentityFactory } from "$lib/server/application/adapters/execution-runtime-host-identity";
+import { PostgresWorkflowExecutionRuntimeHostRepository } from "$lib/server/application/adapters/execution-runtime-hosts";
+import type {
+  WorkflowExecutionRuntimeHostCleanupResult,
+  WorkflowExecutionRuntimeHostLifecyclePort,
+} from "$lib/server/application/ports";
 
 export type ReconcilerTickMode = "dapr-job" | "cronjob" | "off";
 
@@ -228,6 +236,83 @@ export async function runScheduledTerminalRuntimeHostCleanupPass(
       dryRun: input.dryRun,
     };
   }
+}
+
+export function createWorkflowExecutionRuntimeHostCleanupService(
+  database: Database = defaultDb,
+): WorkflowExecutionRuntimeHostLifecyclePort {
+  return new ApplicationWorkflowExecutionRuntimeHostService({
+    repository: new PostgresWorkflowExecutionRuntimeHostRepository(database),
+    provider: new KubernetesWorkflowExecutionRuntimeHostCleanupProvider({
+      sandboxes: new SandboxExecutionApiSessionSandboxDestroyer(),
+    }),
+    identities: new AgentWorkflowExecutionRuntimeHostIdentityFactory(),
+  });
+}
+
+export async function runScheduledWorkflowExecutionRuntimeHostCleanupPass(
+  cleanup: Pick<WorkflowExecutionRuntimeHostLifecyclePort, "reapPending">,
+  input: { limit: number; dryRun: boolean },
+): Promise<WorkflowExecutionRuntimeHostCleanupResult> {
+  try {
+    return await cleanup.reapPending(input);
+  } catch (error) {
+    return {
+      scanned: 0,
+      acknowledged: [],
+      failed: [
+        {
+          target: "<scan>",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      ],
+      dryRun: input.dryRun,
+    };
+	}
+}
+
+export async function runWithIndependentWorkflowExecutionRuntimeHostCleanup<
+	T extends object,
+>(
+	primary: () => Promise<T>,
+	cleanup: () => Promise<WorkflowExecutionRuntimeHostCleanupResult>,
+): Promise<
+	T & {
+		workflowExecutionRuntimeHostCleanup: WorkflowExecutionRuntimeHostCleanupResult;
+	}
+> {
+	let primaryResult: T | undefined;
+	let primaryError: unknown;
+	let primaryFailed = false;
+	try {
+		primaryResult = await primary();
+	} catch (error) {
+		primaryFailed = true;
+		primaryError = error;
+	}
+
+	let cleanupResult: WorkflowExecutionRuntimeHostCleanupResult | undefined;
+	try {
+		cleanupResult = await cleanup();
+	} catch (error) {
+		if (primaryFailed) {
+			console.warn(
+				"[session-reconciler] execution runtime-host cleanup also failed:",
+				error instanceof Error ? error.message : error,
+			);
+		} else {
+			throw error;
+		}
+	}
+
+	if (primaryFailed) throw primaryError;
+	if (!primaryResult || !cleanupResult) {
+		throw new Error("session reconciliation did not produce a result");
+	}
+	return {
+		...primaryResult,
+		workflowExecutionRuntimeHostCleanup: cleanupResult,
+	};
 }
 
 export function createTeamMemberLaunchReconcilerDeps(): TeamMemberLaunchReconcilerDeps {
@@ -568,6 +653,7 @@ export type RunSessionReconcileResult = ReconcileRunResult & {
   teamMemberLaunches: TeamMemberLaunchReconcileRunResult;
   runtimeProvisioning: SessionRuntimeProvisioningReconcileResult;
   runtimeHostCleanup: TerminalRuntimeHostCleanupResult;
+  workflowExecutionRuntimeHostCleanup: WorkflowExecutionRuntimeHostCleanupResult;
   skipped?: string;
 };
 
@@ -605,6 +691,12 @@ export async function runSessionReconcile(
         failed: [],
         dryRun: true,
       },
+      workflowExecutionRuntimeHostCleanup: {
+        scanned: 0,
+        acknowledged: [],
+        failed: [],
+        dryRun: true,
+      },
       skipped: "disabled",
     };
 	}
@@ -617,48 +709,60 @@ export async function runSessionReconcile(
 		autoResume: cfg.autoResume,
 		maxRescuesPerSession: cfg.maxRescuesPerSession,
 	};
-  // Parent stop intents run first. Their resolver atomically propagates intent to
-  // child sessions; the following session scan then sees the post-redrive state
-  // instead of issuing duplicate control from a stale snapshot.
-  const workflowStops = await reconcileWorkflowStops(
-    createWorkflowStopReconcilerDeps(),
-    {
-      dryRun: opts.dryRun,
-      limit: opts.limit,
-      maxActionsPerRun: opts.maxActionsPerRun,
-    },
-  );
-  const runtimeProvisioning = await reconcileStaleSessionRuntimeProvisioning(
-    createSessionRuntimeProvisioningReconcilerDeps(),
-    {
-      dryRun: opts.dryRun,
-      limit: opts.limit,
-      maxActionsPerRun: opts.maxActionsPerRun,
-      staleSeconds: cfg.runtimeProvisioningStaleSeconds,
-    },
-  );
-  const teamMemberLaunches = await reconcileTeamMemberLaunches(
-    createTeamMemberLaunchReconcilerDeps(),
-    {
-      dryRun: opts.dryRun,
-      limit: opts.limit,
-      maxActionsPerRun: opts.maxActionsPerRun,
-      staleSeconds: cfg.teamMemberLaunchStaleSeconds,
-    },
-  );
-  const sessions = await reconcileSessions(createSessionReconcilerDeps(), opts);
-  // Cleanup is independently scheduled, not dependent on event/node hot paths,
-  // but runs after the core convergence lanes so bounded SEA latency cannot
-  // delay stop, provisioning, team-launch, or liveness repairs.
-  const runtimeHostCleanup = await runScheduledTerminalRuntimeHostCleanupPass(
-    createTerminalRuntimeHostCleanupService(),
-    { dryRun: opts.dryRun, limit: opts.limit },
-  );
-  return {
-    ...sessions,
-    workflowStops,
-    teamMemberLaunches,
-    runtimeProvisioning,
-    runtimeHostCleanup,
-  };
+	return runWithIndependentWorkflowExecutionRuntimeHostCleanup(
+		async () => {
+			// Parent stop intents run first. Their resolver atomically propagates
+			// intent to child sessions; the following scan sees post-redrive state.
+			const workflowStops = await reconcileWorkflowStops(
+				createWorkflowStopReconcilerDeps(),
+				{
+					dryRun: opts.dryRun,
+					limit: opts.limit,
+					maxActionsPerRun: opts.maxActionsPerRun,
+				},
+			);
+			const runtimeProvisioning =
+				await reconcileStaleSessionRuntimeProvisioning(
+					createSessionRuntimeProvisioningReconcilerDeps(),
+					{
+						dryRun: opts.dryRun,
+						limit: opts.limit,
+						maxActionsPerRun: opts.maxActionsPerRun,
+						staleSeconds: cfg.runtimeProvisioningStaleSeconds,
+					},
+				);
+			const teamMemberLaunches = await reconcileTeamMemberLaunches(
+				createTeamMemberLaunchReconcilerDeps(),
+				{
+					dryRun: opts.dryRun,
+					limit: opts.limit,
+					maxActionsPerRun: opts.maxActionsPerRun,
+					staleSeconds: cfg.teamMemberLaunchStaleSeconds,
+				},
+			);
+			const sessions = await reconcileSessions(
+				createSessionReconcilerDeps(),
+				opts,
+			);
+			const runtimeHostCleanup =
+				await runScheduledTerminalRuntimeHostCleanupPass(
+					createTerminalRuntimeHostCleanupService(),
+					{ dryRun: opts.dryRun, limit: opts.limit },
+				);
+			return {
+				...sessions,
+				workflowStops,
+				teamMemberLaunches,
+				runtimeProvisioning,
+				runtimeHostCleanup,
+			};
+		},
+		// This queue has no session row, so it must run even when a prior lane
+		// throws. Keeping it last avoids putting provider latency on core repair.
+		() =>
+			runScheduledWorkflowExecutionRuntimeHostCleanupPass(
+				createWorkflowExecutionRuntimeHostCleanupService(),
+				{ dryRun: opts.dryRun, limit: opts.limit },
+			),
+	);
 }

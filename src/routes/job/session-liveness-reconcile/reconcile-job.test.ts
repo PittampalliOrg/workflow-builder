@@ -14,6 +14,12 @@ vi.mock("$lib/server/application/session-reconciler-service", () => ({
 			failed: [],
 			dryRun: true,
 		},
+		workflowExecutionRuntimeHostCleanup: {
+			scanned: 0,
+			acknowledged: [],
+			failed: [],
+			dryRun: true,
+		},
 	})),
 }));
 

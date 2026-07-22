@@ -596,6 +596,66 @@ export const workflowExecutions = pgTable(
 );
 
 /**
+ * Provider resources owned directly by a workflow execution rather than by an
+ * interactive agent session. The exact target is reserved before the external
+ * create so a crash can never leave an unaddressable Sandbox. A nullable cleanup
+ * receipt is the durable retry obligation consumed by the scheduled reconciler.
+ */
+export const workflowExecutionRuntimeHosts = pgTable(
+  "workflow_execution_runtime_hosts",
+  {
+    workflowExecutionId: text("workflow_execution_id")
+      .notNull()
+      // Fail closed: a relational execution delete must not erase an
+      // unacknowledged provider cleanup obligation. Current lifecycle purge
+      // removes Dapr state, not this relational parent row.
+      .references(() => workflowExecutions.id, { onDelete: "restrict" }),
+    purpose: text("purpose")
+      .notNull()
+      .$type<"cli-workspace-command">(),
+    helperSessionId: text("helper_session_id").notNull(),
+    generationStartedAt: timestamp("generation_started_at").notNull(),
+    runtimeAppId: text("runtime_app_id").notNull(),
+    runtimeInstanceId: text("runtime_instance_id").notNull(),
+    runtimeSandboxName: text("runtime_sandbox_name").notNull(),
+    owned: boolean("owned").notNull().default(true),
+    // Fences create/adopt through provider activation. Only the exact
+    // post-activation CAS releases it; cleanup may reclaim a stale operation.
+    operationId: text("operation_id"),
+    operationStartedAt: timestamp("operation_started_at"),
+    provisionedAt: timestamp("provisioned_at"),
+    cleanupAttemptedAt: timestamp("cleanup_attempted_at"),
+    cleanupCompletedAt: timestamp("cleanup_completed_at"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.workflowExecutionId, table.purpose],
+    }),
+    runtimeAppUnique: uniqueIndex(
+      "uq_workflow_execution_runtime_hosts_runtime_app",
+    ).on(table.runtimeAppId),
+    cleanupIdx: index("idx_workflow_execution_runtime_hosts_cleanup").on(
+      table.cleanupCompletedAt,
+      table.cleanupAttemptedAt,
+      table.operationStartedAt,
+    ),
+    operationConsistent: check(
+      "workflow_execution_runtime_hosts_operation_consistent",
+      sql`(
+        ${table.operationId} IS NULL
+        AND ${table.operationStartedAt} IS NULL
+      ) OR (
+        ${table.operationId} IS NOT NULL
+        AND ${table.operationStartedAt} IS NOT NULL
+      )`,
+    ),
+  }),
+);
+
+/**
  * Journal of `agent()`/`workflow()` calls issued by a dynamic-script (engineType
  * `dynamic-script`) execution. One row per resolved/pending script call, keyed on
  * `(workflow_execution_id, call_id)` so the orchestrator's `record_script_call_result`

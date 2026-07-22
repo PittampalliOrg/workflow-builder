@@ -2,6 +2,7 @@ import type {
 	WorkflowExecutionCoordinatorOwnerPort,
 	WorkflowExecutionLifecycleControllerPort,
 	WorkflowExecutionLifecycleStopMode,
+	WorkflowExecutionRuntimeHostLifecyclePort,
 	WorkflowSpecValidatorPort,
 	WorkflowRunStarterPort,
 	WorkflowRunStartInput,
@@ -58,6 +59,13 @@ export class LegacyWorkflowSpecValidatorPort
 export class LifecycleWorkflowExecutionControllerPort
 	implements WorkflowExecutionLifecycleControllerPort
 {
+	constructor(
+		private readonly runtimeHostCleanup?: Pick<
+			WorkflowExecutionRuntimeHostLifecyclePort,
+			"requestReap"
+		>,
+	) {}
+
 	async checkExecutionAccess(input: {
 		executionId: string;
 		userId: string;
@@ -80,7 +88,7 @@ export class LifecycleWorkflowExecutionControllerPort
 		return { status: "ok" as const, active: Boolean(inspected.active) };
 	}
 
-	stopExecution(
+	async stopExecution(
 		executionId: string,
 		opts: {
 			mode: WorkflowExecutionLifecycleStopMode;
@@ -88,13 +96,24 @@ export class LifecycleWorkflowExecutionControllerPort
 			graceMs?: number;
 		},
 	) {
-		return stopDurableRun(
+		const result = await stopDurableRun(
 			{ kind: "workflowExecution", id: executionId },
 			{ ...opts, mode: opts.mode as StopDurableRunMode },
 		);
+		if (opts.mode !== "interrupt" && result.state === "confirmed") {
+			this.runtimeHostCleanup?.requestReap();
+		}
+		return result;
 	}
 
-	confirmExecutionStop(executionId: string) {
-		return confirmDurableStop({ kind: "workflowExecution", id: executionId });
+	async confirmExecutionStop(executionId: string) {
+		const result = await confirmDurableStop({
+			kind: "workflowExecution",
+			id: executionId,
+		});
+		if (result.state === "confirmed") {
+			this.runtimeHostCleanup?.requestReap();
+		}
+		return result;
 	}
 }

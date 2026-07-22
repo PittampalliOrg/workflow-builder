@@ -12,6 +12,7 @@ export * from "./ports/dev-previews";
 export * from "./ports/deployment-capabilities";
 export * from "./ports/evaluations";
 export * from "./ports/executions";
+export * from "./ports/execution-runtime-hosts";
 export * from "./ports/gitops";
 export * from "./ports/mcp";
 export * from "./ports/model-completion";

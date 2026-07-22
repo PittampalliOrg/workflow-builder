@@ -26,10 +26,52 @@ vi.mock("$lib/server/lifecycle", async (importOriginal) => {
 
 import {
 	authenticateReconcilerJobPayload,
-  createSessionReconcilerDeps,
+	createSessionReconcilerDeps,
 	RECONCILER_JOB_NAME,
+	runScheduledWorkflowExecutionRuntimeHostCleanupPass,
+	runWithIndependentWorkflowExecutionRuntimeHostCleanup,
 	scheduleSessionReconcilerJob,
 } from "./session-reconciler-deps";
+
+describe("workflow execution runtime-host scheduled cleanup", () => {
+	it("contains a scan failure without suppressing sibling reconciler lanes", async () => {
+		const result = await runScheduledWorkflowExecutionRuntimeHostCleanupPass(
+			{
+				reapPending: vi.fn(async () => {
+					throw new Error("database unavailable");
+				}),
+			},
+			{ limit: 10, dryRun: false },
+		);
+
+		expect(result).toEqual({
+			scanned: 0,
+			acknowledged: [],
+			failed: [{ target: "<scan>", error: "database unavailable" }],
+			dryRun: false,
+		});
+	});
+
+	it("runs even when an earlier reconciler lane throws and preserves that error", async () => {
+		const primaryError = new Error("workflow stop scan failed");
+		const cleanup = vi.fn(async () => ({
+			scanned: 1,
+			acknowledged: ["execution-1:cli-workspace-command"],
+			failed: [],
+			dryRun: false,
+		}));
+
+		await expect(
+			runWithIndependentWorkflowExecutionRuntimeHostCleanup(
+				async () => {
+					throw primaryError;
+				},
+				cleanup,
+			),
+		).rejects.toBe(primaryError);
+		expect(cleanup).toHaveBeenCalledOnce();
+	});
+});
 
 describe("session stop reconciliation", () => {
   it("re-drives persisted stop intent through the vetted idempotent lifecycle command", async () => {
