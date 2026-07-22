@@ -408,9 +408,9 @@ def test_preview_native_manifest_satisfies_restricted_pod_security() -> None:
         assert security["capabilities"] == {"drop": ["ALL"]}
 
 
-def test_host_shadow_keeps_internal_grpc_port_override() -> None:
-    # The host Dapr-shadow path (needsDapr, not previewNative) keeps the 3502 override
-    # for agent-host parity.
+def test_host_shadow_omits_internal_grpc_port_override() -> None:
+    # Host Dapr-shadow sidecars invoke workflow-builder during startup, so they must
+    # use the same cluster-default internal gRPC port as every host workload.
     manifest = build_dev_preview_sandbox_manifest(
         DevPreviewRequest(
             executionId="exec-1",
@@ -422,7 +422,7 @@ def test_host_shadow_keeps_internal_grpc_port_override() -> None:
         class_config=_dev_class(),
     )
     ann = manifest["spec"]["podTemplate"]["metadata"]["annotations"]
-    assert ann["dapr.io/internal-grpc-port"] == "3502"
+    assert "dapr.io/internal-grpc-port" not in ann
 
 
 def test_wait_for_dev_preview_ready_scopes_selector_by_service() -> None:

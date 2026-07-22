@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import re
-from datetime import timedelta
+from datetime import timedelta, timezone
 from typing import Any
 
 import dapr.ext.workflow as wf
@@ -269,7 +269,9 @@ def _workflow_terminal_at(ctx: wf.DaprWorkflowContext) -> str:
     if current_time is None:
         raise RuntimeError("Dapr workflow clock is unavailable at terminal transition")
     try:
-        return current_time.isoformat().replace("+00:00", "Z")
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        return current_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     except Exception as exc:
         raise RuntimeError("Dapr workflow clock returned an invalid terminal time") from exc
 

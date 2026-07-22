@@ -369,7 +369,8 @@ class _FakeDurableClockCtx:
 class _FakeTerminalWorkflowCtx:
     instance_id = "parent-terminal-wf-1"
     is_replaying = True
-    current_utc_datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Dapr 1.18 supplies this deterministic UTC clock without tzinfo.
+    current_utc_datetime = datetime(2026, 1, 1)
 
     def __init__(self):
         self.statuses = []
@@ -1975,6 +1976,30 @@ def test_sw_workflow_retained_success_arms_terminal_workspace_ttl(monkeypatch):
 
     finalized = workflow_gen.send({"success": True, "armed": 1})
     assert finalized["activity"] == "finalize_otel_trace_root"
+
+
+def test_workflow_terminal_at_treats_naive_dapr_clock_as_utc():
+    ctx = type(
+        "NaiveClockContext",
+        (),
+        {"current_utc_datetime": datetime(2026, 7, 22, 7, 42, 35, 123456)},
+    )()
+
+    assert SW_WORKFLOW._workflow_terminal_at(ctx) == "2026-07-22T07:42:35.123456Z"
+
+
+def test_workflow_terminal_at_normalizes_aware_clock_to_utc():
+    ctx = type(
+        "OffsetClockContext",
+        (),
+        {
+            "current_utc_datetime": datetime(
+                2026, 7, 22, 3, 42, 35, 123456, tzinfo=timezone(timedelta(hours=-4))
+            )
+        },
+    )()
+
+    assert SW_WORKFLOW._workflow_terminal_at(ctx) == "2026-07-22T07:42:35.123456Z"
 
 
 def test_sw_workflow_resumable_failure_registers_then_arms_terminal_workspace_ttl(

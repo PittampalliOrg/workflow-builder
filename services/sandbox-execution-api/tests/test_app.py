@@ -224,7 +224,7 @@ def test_agent_workflow_host_sandbox_is_kueue_managed_dapr_native_sidecar() -> N
     assert annotations["dapr.io/config"] == "workflow-builder-agent-runtime"
     assert annotations["dapr.io/enable-workflow"] == "true"
     assert annotations["dapr.io/enable-native-sidecar"] == "true"
-    assert annotations["dapr.io/internal-grpc-port"] == "3502"
+    assert "dapr.io/internal-grpc-port" not in annotations
     assert annotations["dapr.io/max-body-size"] == "16Mi"
     assert annotations["prometheus.io/scrape"] == "true"
     assert annotations["prometheus.io/port"] == "9090"
