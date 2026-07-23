@@ -70,6 +70,25 @@ function scheduleReconciler(): void {
 	})();
 }
 
+/**
+ * Schedule the recurring archive-on-terminal sweep on the BFF's Dapr sidecar.
+ * Same fire-and-forget contract as {@link scheduleReconciler} — the scheduler
+ * runs its own bounded background retry and no-ops entirely unless run-archiving
+ * is enabled + the object store configured, so it must never gate readiness.
+ */
+function scheduleRunArchive(): void {
+	void (async () => {
+		try {
+			const { scheduleRunArchiveJob } = await import(
+				"$lib/server/application/run-archive-service"
+			);
+			await scheduleRunArchiveJob();
+		} catch (err) {
+			console.warn("[startup] run-archive job schedule failed:", err);
+		}
+	})();
+}
+
 export function ensureStartupReady(): Promise<void> {
 	if (!startupPromise) {
 		startupPromise = (async () => {
@@ -77,6 +96,7 @@ export function ensureStartupReady(): Promise<void> {
 				await runBackfills();
 				// Fire-and-forget — never gate request readiness on the sidecar schedule.
 				scheduleReconciler();
+				scheduleRunArchive();
 			} catch (err) {
 				console.error(
 					"[startup] boot sequence failed — requests may 500 until fixed:",
