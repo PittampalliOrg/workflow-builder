@@ -190,4 +190,113 @@ describe('preview workflow diagnostics HTTP adapter', () => {
 			'preview diagnostics broker response is too large'
 		);
 	});
+
+	it('uses the broker sentinel to report rows beyond a full span-summary budget', async () => {
+		const requests: Array<{ traceIds: string[]; limit: number; offset: number }> = [];
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			const request = body.request as { traceIds: string[]; limit: number; offset: number };
+			requests.push(request);
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					identity,
+					result: Array.from({ length: request.limit }, (_, index) => ({
+						spanId: `span-${request.offset + index}`
+					}))
+				}),
+				{ status: 200 }
+			);
+		});
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({ header: 'x-preview-control-capability', token: 'd'.repeat(64) }),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: fetchImpl as typeof fetch
+		});
+
+		const result = await adapter.loadSpanSummaries(execution, ['a'.repeat(32)], 250);
+
+		expect(requests).toEqual([
+			{ traceIds: ['a'.repeat(32)], limit: 101, offset: 0 },
+			{ traceIds: ['a'.repeat(32)], limit: 101, offset: 100 },
+			{ traceIds: ['a'.repeat(32)], limit: 51, offset: 200 }
+		]);
+		expect(result.spans).toHaveLength(250);
+		expect(result.spans.at(-1)).toMatchObject({ spanId: 'span-249' });
+		expect(result.truncated).toBe(true);
+	});
+
+	it('does not report truncation when the span-summary total exactly fills the budget', async () => {
+		const total = 250;
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			const request = body.request as { limit: number; offset: number };
+			const count = Math.max(0, Math.min(request.limit, total - request.offset));
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					identity,
+					result: Array.from({ length: count }, (_, index) => ({
+						spanId: `span-${request.offset + index}`
+					}))
+				}),
+				{ status: 200 }
+			);
+		});
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({ header: 'x-preview-control-capability', token: 'd'.repeat(64) }),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: fetchImpl as typeof fetch
+		});
+
+		const result = await adapter.loadSpanSummaries(execution, ['a'.repeat(32)], total);
+
+		expect(result.spans).toHaveLength(total);
+		expect(result.truncated).toBe(false);
+	});
+
+	it('stops span-summary pagination on a short page without reporting truncation', async () => {
+		const requests: Array<{ limit: number; offset: number }> = [];
+		const total = 215;
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			const request = body.request as { limit: number; offset: number };
+			requests.push(request);
+			const count = Math.max(0, Math.min(request.limit, total - request.offset));
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					identity,
+					result: Array.from({ length: count }, (_, index) => ({
+						spanId: `span-${request.offset + index}`
+					}))
+				}),
+				{ status: 200 }
+			);
+		});
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({ header: 'x-preview-control-capability', token: 'd'.repeat(64) }),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: fetchImpl as typeof fetch
+		});
+
+		const result = await adapter.loadSpanSummaries(execution, ['a'.repeat(32)], 500);
+
+		expect(requests.map(({ limit, offset }) => ({ limit, offset }))).toEqual([
+			{ limit: 101, offset: 0 },
+			{ limit: 101, offset: 100 },
+			{ limit: 101, offset: 200 }
+		]);
+		expect(result.spans).toHaveLength(total);
+		expect(result.truncated).toBe(false);
+	});
 });

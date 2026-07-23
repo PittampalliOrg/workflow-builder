@@ -2546,12 +2546,48 @@ def _dev_preview_activation_settings(config: dict[str, Any]) -> tuple[int, int, 
     return timeout_ms, poll_ms, max_attempts
 
 
+_DEV_PREVIEW_RECEIVER_COORDINATE_KEYS = frozenset(
+    {
+        "syncurl",
+        "synctoken",
+        "synccapability",
+        "syncagenttoken",
+        "receivertoken",
+        "agentactiontoken",
+        "x-sync-token",
+    }
+)
+
+
+def _contains_dev_preview_receiver_coordinate(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_contains_dev_preview_receiver_coordinate(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    return any(
+        (
+            isinstance(key, str)
+            and key.lower() in _DEV_PREVIEW_RECEIVER_COORDINATE_KEYS
+        )
+        or _contains_dev_preview_receiver_coordinate(child)
+        for key, child in value.items()
+    )
+
+
 def _has_exact_ready_dev_preview_services(
     data: dict[str, Any],
     *,
     execution_id: str,
     expected_services: tuple[str, ...],
 ) -> bool:
+    has_receipt_mode = "receiptMode" in data
+    receipt_mode = data.get("receiptMode")
+    if has_receipt_mode and receipt_mode != "credentialless":
+        return False
+    if receipt_mode == "credentialless" and _contains_dev_preview_receiver_coordinate(
+        data
+    ):
+        return False
     raw_services = data.get("services")
     if not isinstance(raw_services, list) or len(raw_services) != len(expected_services):
         return False
@@ -2574,8 +2610,15 @@ def _has_exact_ready_dev_preview_services(
             or not info["sandboxName"]
             or not isinstance(info.get("podIP"), str)
             or not info["podIP"]
-            or not isinstance(info.get("syncUrl"), str)
-            or not info["syncUrl"]
+            or (
+                # Marker-free raw receipts are accepted only so persisted
+                # pre-projection activity results remain replay-compatible.
+                not has_receipt_mode
+                and (
+                    not isinstance(info.get("syncUrl"), str)
+                    or not info["syncUrl"]
+                )
+            )
         ):
             return False
         received.add(service)
