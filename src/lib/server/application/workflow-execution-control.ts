@@ -9,6 +9,7 @@ import type {
 	WorkflowExecutionReadModelPort,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
+	WorkflowWorkspaceSnapshotPort,
 } from "$lib/server/application/ports";
 
 export type WorkflowExecutionControlInput = {
@@ -88,6 +89,10 @@ export class ApplicationWorkflowExecutionControlService {
 			executionReadModels: WorkflowExecutionReadModelPort;
 			runStarter: WorkflowRunStarterPort;
 			workflowSpecs: WorkflowSpecValidatorPort;
+			/** Node-boundary snapshot lookups (durability phase 3). Optional so
+			 * lite/test wiring without a snapshot store keeps working — resume then
+			 * always uses end-state seeding. */
+			workspaceSnapshots?: WorkflowWorkspaceSnapshotPort;
 			/** Dynamic-script gate lookups (cutover P1d): approve()/waitForEvent()
 			 * gates live in the call journal, not the spec. Optional so lite/test
 			 * wiring without a journal store keeps working (scripts then report
@@ -699,7 +704,30 @@ export class ApplicationWorkflowExecutionControlService {
 			);
 		}
 
-		const seedWorkspaceFrom = await this.resolveWorkspaceExecutionId(source);
+		// End-state seed (today's behavior): the source lineage's root workspace.
+		let seedWorkspaceFrom = await this.resolveWorkspaceExecutionId(source);
+		let seededFromSnapshot = false;
+		// Workspace-consistent fork (durability phase 3): if a node-boundary snapshot of
+		// the fork node exists, seed from THAT snapshot (the workspace as of `fromNodeId`)
+		// instead of the run's end state. Snapshots are written under the source run's OWN
+		// workspace key (its Dapr instance id), so look them up there. Any miss/failure
+		// falls through to the end-state seed above — never blocking the fork.
+		const snapshotKey = source.daprInstanceId;
+		if (this.deps.workspaceSnapshots && snapshotKey && fromNodeId) {
+			try {
+				const snapshots =
+					await this.deps.workspaceSnapshots.listSnapshots(snapshotKey);
+				if (snapshots.includes(fromNodeId)) {
+					seedWorkspaceFrom = `.snapshots/${snapshotKey}/${fromNodeId}`;
+					seededFromSnapshot = true;
+				}
+			} catch (err) {
+				console.warn(
+					"[resume] snapshot lookup failed; using end-state seed",
+					err,
+				);
+			}
+		}
 		const result = await this.deps.runStarter.startWorkflowRun({
 			workflowId: source.workflowId,
 			triggerData: (source.input ?? {}) as Record<string, unknown>,
@@ -722,6 +750,7 @@ export class ApplicationWorkflowExecutionControlService {
 				newInstanceId: result.instanceId,
 				fromNodeId,
 				seedWorkspaceFrom,
+				seededFromSnapshot,
 			},
 		};
 	}

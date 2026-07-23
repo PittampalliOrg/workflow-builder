@@ -4564,6 +4564,29 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 task_success = result.get("success", True)
             else:
                 task_success = True
+
+            # Node-boundary workspace snapshot (durability phase 3). A resumable run's
+            # shared `/sandbox/work` is CoW-snapshotted as each top-level node completes,
+            # so a later fork-from-this-node seeds from the workspace as of this node
+            # (consistent) instead of the run's end state. Fire-and-forget: the activity
+            # POSTs the BFF snapshot route and never raises, so a snapshot failure can't
+            # fail the node/run (a missing snapshot just falls back to end-state seeding).
+            # Only resumable runs retain their workspace + are forkable, so only they snapshot.
+            if (
+                task_success
+                and getattr(tc, "resumable", False)
+                and getattr(tc, "workspace_execution_id", None)
+            ):
+                yield ctx.call_activity(
+                    "snapshot_workspace_node",
+                    input=_freeze({
+                        "sharedWorkspaceKey": tc.workspace_execution_id,
+                        "snapshotId": task_name,
+                        "executionId": db_execution_id,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
+
             # Handle `then` flow directive
             then_directive = task_data.get("then")
 

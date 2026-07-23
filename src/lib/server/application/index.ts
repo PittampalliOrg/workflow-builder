@@ -300,6 +300,7 @@ import { PostgresGitOpsActivityEventStore } from "$lib/server/application/adapte
 import { LegacyDeploymentMetadataGateway } from "$lib/server/application/adapters/gitops-deployment";
 import { LegacyPromotionStateGateway } from "$lib/server/application/adapters/gitops-promotions";
 import { JuiceFsWorkflowExecutionWorkspaceAdapter } from "$lib/server/application/adapters/workflow-execution-workspace";
+import { JuiceFsWorkflowWorkspaceSnapshotAdapter } from "$lib/server/application/adapters/workflow-workspace-snapshot";
 import { LegacyCliPreviewGatewayPort } from "$lib/server/application/adapters/cli-preview";
 import { LegacySandboxPreviewGatewayPort } from "$lib/server/application/adapters/sandbox-preview";
 import { ConfiguredPublicApplicationUrlAdapter } from "$lib/server/application/adapters/public-application-url";
@@ -1778,6 +1779,7 @@ export function getApplicationAdapters(
         runStarter: new LegacyWorkflowRunStarterPort(),
         workflowSpecs: new LegacyWorkflowSpecValidatorPort(),
         scriptCalls: getScriptCalls(),
+        workspaceSnapshots: new JuiceFsWorkflowWorkspaceSnapshotAdapter(),
       }));
   const getTriggeredWorkflowStart = () =>
     (triggeredWorkflowStart ??= new ApplicationTriggeredWorkflowStartService({

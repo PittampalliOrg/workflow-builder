@@ -696,6 +696,18 @@ export interface WorkflowRunStarterPort {
 	): Promise<WorkflowRunStartResult>;
 }
 
+/**
+ * Node-boundary workspace snapshot lookups (durability phase 3). The resume/fork
+ * path uses this to prefer a workspace-consistent seed: when a snapshot of the fork
+ * node exists, the fork seeds from the workspace as of that node instead of the
+ * source run's end state.
+ */
+export interface WorkflowWorkspaceSnapshotPort {
+	/** Snapshot ids recorded for a workspace key. Empty when none exist or the
+	 * snapshot store is unavailable (callers then fall back to end-state seeding). */
+	listSnapshots(workspaceKey: string): Promise<string[]>;
+}
+
 export type WorkflowLaunchPolicyResult =
 	| {
 			ok: true;
