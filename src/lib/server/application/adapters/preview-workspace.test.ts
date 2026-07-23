@@ -8,6 +8,7 @@ import {
   HttpPreviewWorkspaceSourceBundleAdapter,
   OneShotPreviewWorkspaceGateway,
   OneShotPreviewWorkspaceGitBundleGateway,
+  PREVIEW_WORKSPACE_HELPER_CLEANUP_TIMEOUT_MS,
   runOneShotPreviewWorkspaceHelper,
   validatePreviewWorkspaceArchive,
 } from "./preview-workspace";
@@ -135,6 +136,11 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
     purpose: "source" as const,
     secretEnv: { GITHUB_TOKEN: "not-logged" },
   };
+
+  it("keeps its cleanup deadline outside SEA's absolute server deadline", () => {
+    expect(PREVIEW_WORKSPACE_HELPER_CLEANUP_TIMEOUT_MS).toBe(45_000);
+    expect(PREVIEW_WORKSPACE_HELPER_CLEANUP_TIMEOUT_MS).toBeGreaterThan(40_000);
+  });
 
   it("uses the ready target returned by provision", async () => {
     const baseUrl = "http://10.244.1.20:8002";

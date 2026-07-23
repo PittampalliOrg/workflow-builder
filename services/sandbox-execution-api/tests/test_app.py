@@ -1362,6 +1362,89 @@ class _SandboxNotFoundError(Exception):
     status = 404
 
 
+def test_agent_host_foreground_delete_consumes_one_absolute_deadline(
+    monkeypatch,
+) -> None:
+    now = [100.0]
+    request_timeouts: list[int] = []
+
+    class FakeCustom:
+        def delete_namespaced_custom_object(self, **kwargs) -> None:
+            request_timeouts.append(kwargs["_request_timeout"])
+
+        def get_namespaced_custom_object(self, **kwargs):
+            request_timeouts.append(kwargs["_request_timeout"])
+            return {"metadata": {"name": kwargs["name"]}}
+
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        app_module.time,
+        "sleep",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    app_module._delete_agent_host_cr_and_wait(
+        FakeCustom(),
+        "workflow-builder",
+        "agent-host-agent-session-abc123",
+        deadline=105.0,
+        reserve_seconds=1.0,
+    )
+
+    assert now[0] == pytest.approx(104.0)
+    assert request_timeouts == [3, 3, 3, 2, 1]
+    assert all(isinstance(timeout, int) for timeout in request_timeouts)
+
+
+def test_delete_agent_workflow_host_threads_shared_deadline_through_all_reads(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_EXECUTION_API_TOKEN", "token")
+    monkeypatch.delenv("SANDBOX_EXECUTION_DRY_RUN", raising=False)
+    now = [100.0]
+    request_timeouts: list[int] = []
+    delete_call: dict[str, float] = {}
+
+    class FakeCustom:
+        def __init__(self) -> None:
+            self.gets = 0
+
+        def get_namespaced_custom_object(self, **kwargs):
+            self.gets += 1
+            request_timeouts.append(kwargs["_request_timeout"])
+            if self.gets == 1:
+                return {"metadata": {"name": kwargs["name"]}}
+            raise _SandboxNotFoundError()
+
+    def fake_delete(
+        _custom,
+        _namespace,
+        _name,
+        _timeout_s=app_module.AGENT_HOST_DELETE_WAIT_TIMEOUT_SECONDS,
+        *,
+        deadline,
+        reserve_seconds,
+    ) -> None:
+        delete_call["deadline"] = deadline
+        delete_call["reserveSeconds"] = reserve_seconds
+        now[0] = 138.0
+
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        app_module, "_load_k8s_custom_objects_client", lambda: FakeCustom()
+    )
+    monkeypatch.setattr(app_module, "_delete_agent_host_cr_and_wait", fake_delete)
+
+    response = app_module.delete_agent_workflow_host(
+        SimpleNamespace(headers={"authorization": "Bearer token"}),
+        "agent-session-abc123",
+    )
+
+    assert response["outcome"] == "deleted"
+    assert delete_call == {"deadline": 140.0, "reserveSeconds": 3}
+    assert request_timeouts == [3, 2]
+
+
 def test_agent_workflow_host_pod_deadline_lands_after_graceful_shutdown(
     monkeypatch,
 ) -> None:
@@ -1438,7 +1521,7 @@ def test_delete_agent_workflow_host_deletes_and_verifies(monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,
         "_delete_agent_host_cr_and_wait",
-        lambda custom, namespace, name: deletes.append((namespace, name)),
+        lambda custom, namespace, name, **_kwargs: deletes.append((namespace, name)),
     )
 
     response = app_module.delete_agent_workflow_host(

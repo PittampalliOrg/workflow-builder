@@ -3265,6 +3265,20 @@ AGENT_HOST_FINAL_PERSISTENT_ANNOTATION = (
 AGENT_HOST_ACTIVATED_AT_ANNOTATION = (
     "agents.workflow-builder.cnoe.io/activated-at"
 )
+AGENT_HOST_DELETE_SERVER_CONTRACT_SECONDS = 40.0
+AGENT_HOST_DELETE_WAIT_TIMEOUT_SECONDS = 30.0
+AGENT_HOST_DELETE_K8S_REQUEST_TIMEOUT_SECONDS = 3
+
+
+def _agent_host_delete_request_timeout(
+    deadline: float, *, reserve_seconds: float = 0.0
+) -> int:
+    """Return a kubernetes-python total timeout inside one absolute deadline."""
+    remaining = deadline - time.monotonic() - max(0.0, reserve_seconds)
+    if remaining < 1.0:
+        raise TimeoutError("agent-host cleanup deadline exceeded")
+    # kubernetes-python ignores a scalar float here; an int is a total timeout.
+    return min(AGENT_HOST_DELETE_K8S_REQUEST_TIMEOUT_SECONDS, int(remaining))
 
 
 def _agent_host_owner_run_id(request: AgentWorkflowHostRequest) -> str:
@@ -3301,8 +3315,24 @@ def _agent_host_cr_owner_matches(
 
 
 def _delete_agent_host_cr_and_wait(
-    custom: Any, namespace: str, name: str, timeout_s: float = 30.0
+    custom: Any,
+    namespace: str,
+    name: str,
+    timeout_s: float = AGENT_HOST_DELETE_WAIT_TIMEOUT_SECONDS,
+    *,
+    deadline: float | None = None,
+    reserve_seconds: float = 0.0,
 ) -> None:
+    started_at = time.monotonic()
+    reserved_seconds = max(0.0, reserve_seconds)
+    operation_deadline = (
+        deadline
+        if deadline is not None
+        else started_at + max(0.0, timeout_s)
+    )
+    wait_budget_s = max(
+        0.0, operation_deadline - started_at - reserved_seconds
+    )
     try:
         custom.delete_namespaced_custom_object(
             group="agents.x-k8s.io",
@@ -3315,12 +3345,23 @@ def _delete_agent_host_cr_and_wait(
                 "kind": "DeleteOptions",
                 "propagationPolicy": "Foreground",
             },
+            _request_timeout=_agent_host_delete_request_timeout(
+                operation_deadline, reserve_seconds=reserved_seconds
+            ),
         )
+    except TimeoutError:
+        logger.warning("agent-host CR %s delete deadline was exhausted", name)
+        return
     except Exception as exc:
         if getattr(exc, "status", None) != 404:
             logger.warning("agent-host CR %s delete failed: %s", name, exc)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    while True:
+        try:
+            request_timeout = _agent_host_delete_request_timeout(
+                operation_deadline, reserve_seconds=reserved_seconds
+            )
+        except TimeoutError:
+            break
         try:
             custom.get_namespaced_custom_object(
                 group="agents.x-k8s.io",
@@ -3328,15 +3369,18 @@ def _delete_agent_host_cr_and_wait(
                 namespace=namespace,
                 plural="sandboxes",
                 name=name,
+                _request_timeout=request_timeout,
             )
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 return
-        time.sleep(1.0)
+        remaining = operation_deadline - time.monotonic() - reserved_seconds
+        if remaining > 0:
+            time.sleep(min(1.0, remaining))
     logger.warning(
         "agent-host CR %s still present after %ss; proceeding to recreate",
         name,
-        timeout_s,
+        wait_budget_s,
     )
 
 
@@ -5911,6 +5955,9 @@ def delete_agent_workflow_host(
         "yes",
     }:
         return {**receipt, "outcome": "deleted"}
+    cleanup_deadline = (
+        time.monotonic() + AGENT_HOST_DELETE_SERVER_CONTRACT_SECONDS
+    )
     custom = _load_k8s_custom_objects_client()
 
     def _sandbox_exists() -> bool:
@@ -5921,7 +5968,15 @@ def delete_agent_workflow_host(
                 namespace=namespace,
                 plural="sandboxes",
                 name=sandbox_name,
+                _request_timeout=_agent_host_delete_request_timeout(
+                    cleanup_deadline
+                ),
             )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="agent-host cleanup deadline exceeded",
+            ) from exc
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 return False
@@ -5935,7 +5990,13 @@ def delete_agent_workflow_host(
         response = {**receipt, "outcome": "not-found"}
         set_current_span_io("output", response)
         return response
-    _delete_agent_host_cr_and_wait(custom, namespace, sandbox_name)
+    _delete_agent_host_cr_and_wait(
+        custom,
+        namespace,
+        sandbox_name,
+        deadline=cleanup_deadline,
+        reserve_seconds=AGENT_HOST_DELETE_K8S_REQUEST_TIMEOUT_SECONDS,
+    )
     # _delete_agent_host_cr_and_wait tolerates a slow foreground delete; verify
     # so a still-terminating CR is reported instead of claimed deleted.
     if _sandbox_exists():

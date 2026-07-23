@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxExecutionApiSessionSandboxDestroyer } from "./session-sandbox-destroyer";
 
 describe("SandboxExecutionApiSessionSandboxDestroyer", () => {
@@ -10,6 +10,10 @@ describe("SandboxExecutionApiSessionSandboxDestroyer", () => {
 
 	beforeEach(() => {
 		fetchImpl.mockReset();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it.each([
@@ -101,6 +105,90 @@ describe("SandboxExecutionApiSessionSandboxDestroyer", () => {
 		).resolves.toMatchObject({
 			status: "error",
 			error: "sandbox-execution-api request timed out after 5ms",
+		});
+	});
+
+	it("normalizes an abort-aware fetch rejection to the stable timeout error", async () => {
+		vi.useFakeTimers();
+		const abortAwareFetch = vi.fn<typeof fetch>(
+			async (_input, init) =>
+				await new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) {
+						reject(new Error("test request did not receive an abort signal"));
+						return;
+					}
+					signal.addEventListener(
+						"abort",
+						() => reject(new DOMException("request aborted", "AbortError")),
+						{ once: true },
+					);
+				}),
+		);
+		const bounded = new SandboxExecutionApiSessionSandboxDestroyer(
+			abortAwareFetch,
+			() => ({ baseUrl: "http://sea:8080", token: "token" }),
+			5,
+		);
+
+		const cleanup = bounded.deleteRuntimeSandbox(
+			"agent-host-agent-session-abc",
+		);
+		await vi.advanceTimersByTimeAsync(5);
+
+		await expect(cleanup).resolves.toMatchObject({
+			status: "error",
+			error: "sandbox-execution-api request timed out after 5ms",
+		});
+	});
+
+	it("awaits a delayed authoritative receipt under a scoped 45s deadline", async () => {
+		vi.useFakeTimers();
+		const delayedFetch = vi.fn<typeof fetch>(
+			async (_input, init) =>
+				await new Promise<Response>((resolve, reject) => {
+					const timer = setTimeout(
+						() =>
+							resolve(
+								new Response(
+									JSON.stringify({
+										outcome: "deleted",
+										agentAppId: "agent-session-abc",
+										sandboxName: "agent-host-agent-session-abc",
+									}),
+									{
+										status: 200,
+										headers: { "content-type": "application/json" },
+									},
+								),
+							),
+						31_000,
+					);
+					init?.signal?.addEventListener(
+						"abort",
+						() => {
+							clearTimeout(timer);
+							reject(new DOMException("request aborted", "AbortError"));
+						},
+						{ once: true },
+					);
+				}),
+		);
+		const destroyer = new SandboxExecutionApiSessionSandboxDestroyer(
+			delayedFetch,
+			() => ({ baseUrl: "http://sea:8080", token: "token" }),
+		);
+
+		const cleanup = destroyer.deleteRuntimeSandbox(
+			"agent-host-agent-session-abc",
+			{ timeoutMs: 45_000 },
+		);
+		await vi.advanceTimersByTimeAsync(31_000);
+
+		await expect(cleanup).resolves.toEqual({
+			name: "agent-host-agent-session-abc",
+			kind: "runtime",
+			status: "deleted",
 		});
 	});
 
