@@ -149,7 +149,7 @@ describe('preview workflow diagnostics ClickHouse adapter', () => {
 			identity,
 			execution,
 			traceIds: ['a'.repeat(32)],
-			query: { limit: 10, offset: 0 }
+			query: { serviceNames: ['function-router'], limit: 10, offset: 0 }
 		});
 		await adapter.getSpan({
 			identity,
@@ -171,6 +171,9 @@ describe('preview workflow diagnostics ClickHouse adapter', () => {
 		});
 
 		expect(fetchMock).toHaveBeenCalledTimes(4);
+		expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain(
+			"ServiceName IN ('function-router')"
+		);
 		for (const [, init] of fetchMock.mock.calls) {
 			const statement = String(init?.body);
 			expect(statement).toContain("Timestamp >= '2026-07-19 11:59:55.000'");

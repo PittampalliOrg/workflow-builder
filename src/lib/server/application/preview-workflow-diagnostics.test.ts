@@ -181,6 +181,44 @@ describe('preview workflow diagnostics broker', () => {
 		).rejects.toMatchObject({ code: 'invalid-request' });
 	});
 
+	it('accepts a bounded service scope for span search and forwards its normalized value', async () => {
+		const h = harness();
+		await h.service.execute(
+			command('search-spans', {
+				traceIds: ['a'.repeat(32)],
+				query: ' router ',
+				errorsOnly: true,
+				serviceNames: [' function-router '],
+				limit: 11,
+				offset: 20
+			})
+		);
+
+		expect(h.queries.searchSpans).toHaveBeenCalledWith({
+			identity,
+			execution: command().execution,
+			traceIds: ['a'.repeat(32)],
+			query: {
+				query: 'router',
+				errorsOnly: true,
+				serviceNames: ['function-router'],
+				limit: 11,
+				offset: 20
+			}
+		});
+
+		await expect(
+			h.service.execute(
+				command('search-spans', {
+					traceIds: ['a'.repeat(32)],
+					serviceNames: ['function-router', ' function-router '],
+					limit: 11,
+					offset: 0
+				})
+			)
+		).rejects.toMatchObject({ code: 'invalid-request' });
+	});
+
 	it('accepts only explicitly bounded investigation categories and scope', async () => {
 		const h = harness();
 		await h.service.execute(

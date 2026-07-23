@@ -171,6 +171,43 @@ describe('preview workflow diagnostics HTTP adapter', () => {
 		});
 	});
 
+	it('maps service-scoped span search onto the strict broker request', async () => {
+		const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			expect(body.operation).toBe('search-spans');
+			expect(body.request).toEqual({
+				traceIds: ['a'.repeat(32)],
+				query: 'router',
+				errorsOnly: true,
+				serviceNames: ['function-router'],
+				limit: 11,
+				offset: 20
+			});
+			return new Response(JSON.stringify({ ok: true, identity, result: [] }), { status: 200 });
+		});
+		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
+			listScriptCalls: async () => [],
+			baseUrl: () => 'http://preview-control-broker:3000',
+			identity: () => identity,
+			credential: () => ({
+				header: 'x-preview-control-capability',
+				token: 'd'.repeat(64)
+			}),
+			authorization: { issue: () => 'proof', verify: () => false },
+			fetch: fetchImpl as typeof fetch
+		});
+
+		await expect(
+			adapter.searchSpans(execution, ['a'.repeat(32)], {
+				query: 'router',
+				errorsOnly: true,
+				serviceNames: ['function-router'],
+				limit: 11,
+				offset: 20
+			})
+		).resolves.toEqual([]);
+	});
+
 	it('rejects broker evidence beyond the transport response cap', async () => {
 		const adapter = new HttpPreviewWorkflowDiagnosticsReadAdapter({
 			listScriptCalls: async () => [],

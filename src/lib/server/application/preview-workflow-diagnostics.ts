@@ -238,7 +238,18 @@ export class ApplicationPreviewWorkflowDiagnosticsBrokerService {
 			}
 			case 'search-spans': {
 				const request = record(command.request);
-				exactKeys(request, ['traceIds', 'query', 'errorsOnly', 'limit', 'offset']);
+				exactKeys(request, [
+					'traceIds',
+					'query',
+					'errorsOnly',
+					'serviceNames',
+					'limit',
+					'offset'
+				]);
+				const serviceNames =
+					request.serviceNames === undefined
+						? undefined
+						: evidenceServiceNames(request.serviceNames);
 				return this.deps.queries.searchSpans({
 					identity,
 					execution,
@@ -246,6 +257,7 @@ export class ApplicationPreviewWorkflowDiagnosticsBrokerService {
 					query: {
 						query: optionalText(request.query, 'span query', 160),
 						errorsOnly: request.errorsOnly === true,
+						...(serviceNames ? { serviceNames } : {}),
 						limit: integer(request.limit, 'span limit', 1, 101),
 						offset: integer(request.offset, 'span offset', 0, 100_000)
 					}
