@@ -50,13 +50,7 @@ function harness() {
 	const authority = {
 		authorizeTraceTuple: vi.fn(async () => {
 			order.push('tuple');
-			return { owner: 'user-1' };
-		})
-	};
-	const workspaces = {
-		hasMembership: vi.fn(async () => {
-			order.push('workspace');
-			return true;
+			return { owner: 'physical-admin-1' };
 		})
 	};
 	const queries = {
@@ -106,23 +100,21 @@ function harness() {
 		order,
 		authorization,
 		authority,
-		workspaces,
 		queries,
 		service: new ApplicationPreviewWorkflowDiagnosticsBrokerService({
 			authorization,
 			authority: authority as never,
-			workspaces,
 			queries
 		})
 	};
 }
 
 describe('preview workflow diagnostics broker', () => {
-	it('authorizes proof, tuple owner, and physical workspace before querying', async () => {
+	it('authorizes the preview-local execution proof and physical tuple before querying', async () => {
 		const h = harness();
 		await h.service.execute(command());
 
-		expect(h.order).toEqual(['proof', 'tuple', 'workspace', 'query']);
+		expect(h.order).toEqual(['proof', 'tuple', 'query']);
 		expect(h.authorization.verify).toHaveBeenCalledWith('proof', {
 			identity,
 			execution: {
@@ -138,7 +130,15 @@ describe('preview workflow diagnostics broker', () => {
 		});
 	});
 
-	it('fails closed before telemetry when the execution proof or owner is wrong', async () => {
+	it('accepts preview-local principals that differ from the physical lifecycle owner', async () => {
+		const h = harness();
+		await expect(h.service.execute(command())).resolves.toEqual({ traceIds: [], warnings: [] });
+
+		expect(h.authority.authorizeTraceTuple).toHaveBeenCalledWith(identity);
+		expect(h.queries.resolveTraceIds).toHaveBeenCalledOnce();
+	});
+
+	it('fails closed before telemetry when the execution proof or physical tuple is invalid', async () => {
 		const h = harness();
 		h.authorization.verify.mockReturnValueOnce(false);
 		await expect(h.service.execute(command())).rejects.toBeInstanceOf(
@@ -148,10 +148,8 @@ describe('preview workflow diagnostics broker', () => {
 		expect(h.queries.resolveTraceIds).not.toHaveBeenCalled();
 
 		h.authorization.verify.mockReturnValueOnce(true);
-		h.authority.authorizeTraceTuple.mockResolvedValueOnce({ owner: 'user-2' } as never);
-		await expect(h.service.execute(command())).rejects.toMatchObject({
-			code: 'not-authorized'
-		});
+		h.authority.authorizeTraceTuple.mockRejectedValueOnce(new Error('tuple mismatch'));
+		await expect(h.service.execute(command())).rejects.toThrow('tuple mismatch');
 		expect(h.queries.resolveTraceIds).not.toHaveBeenCalled();
 	});
 

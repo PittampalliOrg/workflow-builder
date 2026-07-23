@@ -2256,17 +2256,6 @@ export function getApplicationAdapters(
       new ApplicationPreviewWorkflowDiagnosticsBrokerService({
         authority: getPreviewControlSourceAuthority(),
         authorization: new HmacPreviewWorkflowDiagnosticsAuthorizationAdapter(),
-        workspaces: {
-          hasMembership: async ({ userId, projectId }) =>
-            Boolean(
-              (
-                await getWorkspaceProjects().getProjectMembershipDetail({
-                  userId,
-                  projectId,
-                })
-              )?.selfRole,
-            ),
-        },
         queries: new ClickHousePreviewWorkflowDiagnosticsQueryAdapter(),
       }));
   };

@@ -133,10 +133,13 @@ journal reads, and workspace authorization in the preview BFF. Deep trace
 evidence is read through the physical preview-control broker: the BFF presents
 its five-field immutable tuple leaf plus a short-lived proof bound to the
 authorized user, workspace, execution, time window, primary trace, and session.
-The broker revalidates physical preview ownership and dev workspace membership,
-then applies the complete tuple to every span and log query. LLM rows must join
-back to a tuple-stamped trace/span pair. ClickHouse endpoints and credentials,
-workspace API keys, and Kubernetes credentials never enter the vCluster.
+Preview-local user and project ids are opaque to the physical control plane and
+are intentionally distinct from the host PreviewEnvironment lifecycle owner.
+The broker verifies the proof, revalidates that host owner and the exact physical
+generation, then applies the complete tuple to every span and log query. LLM
+rows must join back to a tuple-stamped trace/span pair. ClickHouse endpoints and
+credentials, workspace API keys, and Kubernetes credentials never enter the
+vCluster.
 
 Preview trace summaries use nested default budgets: 12 seconds for each
 physical query, 18 seconds for the broker transport, and 25 seconds for the
