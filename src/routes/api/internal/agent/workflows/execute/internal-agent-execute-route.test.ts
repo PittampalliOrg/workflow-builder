@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   validateInternalToken: vi.fn(() => true),
   authorizePrincipal: vi.fn(),
   startWorkflowRun: vi.fn(),
+  trustedInternalStartContext: vi.fn(),
 }));
 
 vi.mock("$lib/server/internal-auth", () => ({
@@ -13,6 +14,9 @@ vi.mock("$lib/server/internal-auth", () => ({
 vi.mock("$lib/server/application", () => ({
   getApplicationAdapters: () => ({
     internalWorkflowPrincipal: { authorize: mocks.authorizePrincipal },
+    workflowLaunchPolicy: {
+      trustedInternalStartContext: mocks.trustedInternalStartContext,
+    },
   }),
 }));
 
@@ -42,6 +46,7 @@ function call(req: Request) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.trustedInternalStartContext.mockReturnValue(null);
   mocks.authorizePrincipal.mockResolvedValue({
     ok: true,
     principal: {
@@ -78,6 +83,40 @@ describe("POST /api/internal/agent/workflows/execute", () => {
     );
   });
 
+  it("uses only server-derived preview launch context", async () => {
+    mocks.trustedInternalStartContext.mockReturnValue({
+      launchSurface: "dev-environment",
+      launchOrigin: "https://wfb-preview-one.tail286401.ts.net",
+    });
+    const forged = new Request(
+      "http://workflow-builder.test/api/internal/agent/workflows/execute",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "https://wfb-attacker.other-tailnet.ts.net",
+          "X-Wfb-Principal-Assertion": "signed-principal",
+        },
+        body: JSON.stringify({
+          workflowId: "workflow-1",
+          triggerData: { previewOrigin: "https://wfb-other.example" },
+          launchSurface: "forged",
+          launchOrigin: "https://wfb-other.example",
+        }),
+      },
+    );
+
+    const response = await call(forged);
+
+    expect(response.status).toBe(200);
+    expect(mocks.startWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchSurface: "dev-environment",
+        launchOrigin: "https://wfb-preview-one.tail286401.ts.net",
+      }),
+    );
+  });
+
   it("rejects calls without a principal or trusted session", async () => {
     mocks.authorizePrincipal.mockResolvedValueOnce({
       ok: false,
@@ -99,7 +138,10 @@ describe("POST /api/internal/agent/workflows/execute", () => {
     expect(startInput).toMatchObject({ workflowId: "workflow-1" });
     expect(startInput).not.toHaveProperty("userId");
     expect(startInput).not.toHaveProperty("projectId");
+    expect(startInput).not.toHaveProperty("launchSurface");
+    expect(startInput).not.toHaveProperty("launchOrigin");
     expect(mocks.authorizePrincipal).not.toHaveBeenCalled();
+    expect(mocks.trustedInternalStartContext).not.toHaveBeenCalled();
   });
 
   it("rejects ambiguous system and user context", async () => {

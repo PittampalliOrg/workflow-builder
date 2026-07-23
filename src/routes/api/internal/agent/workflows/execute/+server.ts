@@ -58,13 +58,14 @@ export const POST: RequestHandler = async ({ request }) => {
       { status: 400 },
     );
   }
+  const app = getApplicationAdapters();
 
   let principal: { userId: string; projectId: string } | null = null;
   if (!systemPrincipal) {
     const sessionId = request.headers.get("x-wfb-session-id")?.trim();
     const principalResult = await resolveInternalWorkflowPrincipal(
       request,
-      getApplicationAdapters().internalWorkflowPrincipal,
+      app.internalWorkflowPrincipal,
       {
         requiredScope: "workflow:execute",
         ...(sessionId
@@ -106,6 +107,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		triggerData: body.triggerData,
     ...(principal
       ? { userId: principal.userId, projectId: principal.projectId }
+      : {}),
+    ...(principal
+      ? (app.workflowLaunchPolicy.trustedInternalStartContext() ?? {})
       : {}),
 		...(budgetTotal !== undefined ? { budgetTotal } : {}),
     ...(executionId ? { executionId, idempotent: true } : {}),

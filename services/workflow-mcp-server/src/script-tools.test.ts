@@ -300,6 +300,13 @@ describe("run_workflow_script request body shape", () => {
 		expect((init.headers as Record<string, string>)["X-Internal-Token"]).toBe(
 			"test-token",
 		);
+		expect(init.headers as Record<string, string>).not.toHaveProperty("Origin");
+		expect(init.headers as Record<string, string>).not.toHaveProperty(
+			"X-Wfb-Launch-Origin",
+		);
+		expect(init.headers as Record<string, string>).not.toHaveProperty(
+			"Authorization",
+		);
 		expect(JSON.parse(init.body as string)).toEqual({
       workflowId: "wf-project-1",
 			triggerData: { topic: "x" },
@@ -337,6 +344,13 @@ describe("run_workflow_script request body shape", () => {
     expect(
       (init.headers as Record<string, string>)["X-Wfb-Session-Id"],
     ).toBeUndefined();
+    expect(init.headers as Record<string, string>).not.toHaveProperty("Origin");
+    expect(init.headers as Record<string, string>).not.toHaveProperty(
+      "X-Wfb-Launch-Origin",
+    );
+    expect(init.headers as Record<string, string>).not.toHaveProperty(
+      "Authorization",
+    );
 		expect(url).toMatch(/\/api\/internal\/agent\/workflows\/execute-script$/);
 		// budgetTotal omitted → JSON.stringify drops the undefined key.
 		expect(JSON.parse(init.body as string)).toEqual({

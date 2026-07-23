@@ -1,5 +1,6 @@
 import type {
   PreviewDeploymentScopePort,
+  TrustedWorkflowLaunchContext,
   WorkflowLaunchPolicyPort,
   WorkflowLaunchPolicyResult,
 } from "$lib/server/application/ports";
@@ -66,6 +67,26 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
 			};
 		},
 	) {}
+
+	trustedInternalStartContext(): TrustedWorkflowLaunchContext | null {
+		const deployment = this.scope.current();
+		if (deployment.kind === "control-plane") return null;
+
+		try {
+			const launchOrigin = canonicalPreviewOrigin(
+				deployment.preview.origin ?? "",
+			);
+			if (previewNameFromOrigin(launchOrigin) !== deployment.preview.name) {
+				return null;
+			}
+			return Object.freeze({
+				launchSurface: "dev-environment",
+				launchOrigin,
+			});
+		} catch {
+			return null;
+		}
+	}
 
   prepare(
     input: Parameters<WorkflowLaunchPolicyPort["prepare"]>[0],
