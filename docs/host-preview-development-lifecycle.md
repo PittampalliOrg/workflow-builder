@@ -59,7 +59,7 @@ profiles are:
 - `kimi-k3-juicefs`: the established Kimi K3 Dapr Agents proof builder;
 - `pydantic-ai-k3-ui`: the fixed
   `pydantic-ai-k3-preview-ui-builder-agent` on `pydantic-ai-agent-py`, with
-  shared `/sandbox/work`, max reasoning, 40 turns, and a 60-minute agent
+  shared `/sandbox/work`, max reasoning, 80 turns, and a 60-minute agent
   window.
 
 The Pydantic UI profile may inspect all relevant application and theme source

@@ -318,12 +318,13 @@ describe("preview UI development GAN child fixture", () => {
       effort: "max",
       sandbox: {
         cwd: "/sandbox/work",
-        maxTurns: 40,
+        maxTurns: 80,
         timeoutMinutes: 60,
       },
     });
     const prompt = String(generator?.prompt ?? "");
     expect(prompt).toContain("There is no five-file inspection limit");
+    expect(prompt).toContain("first 30 model iterations");
     expect(prompt).toContain("multiple atomic HMR generations");
     expect(prompt).toContain("/drasi");
     expect(prompt).toContain(

@@ -237,8 +237,8 @@ def test_iteration_override_cannot_exceed_hard_per_turn_cap():
     )
 
     assert result["success"] is False
-    assert "40-iteration budget" in result["content"]
-    assert len([entry for entry in ctx.calls if entry[0] is call_llm]) == 40
+    assert "80-iteration budget" in result["content"]
+    assert len([entry for entry in ctx.calls if entry[0] is call_llm]) == 80
 
 
 def test_structured_output_tool_finishes_with_canonical_json():

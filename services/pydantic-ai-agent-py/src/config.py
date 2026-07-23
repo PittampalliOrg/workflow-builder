@@ -113,7 +113,7 @@ TRANSCRIPT_KEEP_BYTES = min(
 
 # One iteration = one LLM message (call_llm activity); tool calls fan out as
 # their own activities. agentConfig.maxTurns/maxIterations override per run.
-MAX_ITERATIONS_PER_TURN = 40
+MAX_ITERATIONS_PER_TURN = 80
 DEFAULT_MAX_ITERATIONS = min(
     MAX_ITERATIONS_PER_TURN,
     max(1, env_int("PYDANTIC_AI_MAX_ITERATIONS", MAX_ITERATIONS_PER_TURN)),

@@ -132,7 +132,7 @@ const BUILDER_PROFILES = {
   "pydantic-ai-k3-ui": {
     agentSlug: "pydantic-ai-k3-preview-ui-builder-agent",
     agentType: "pydantic-ai-agent-py",
-    maxTurns: 40,
+    maxTurns: 80,
     timeoutMinutes: 60,
   },
 };
@@ -997,6 +997,7 @@ ACTIVATION:
 QUALITY BUILD MODE:
 - Build the complete requested experience, including real-data integration or honest empty/degraded states, responsive layouts, keyboard and screen-reader behavior, light/dark theme cohesion, and reduced-motion handling.
 - Preserve the repository's hexagonal boundaries and existing Svelte, Tailwind, shadcn, and Lucide conventions. Do not invent a parallel visual system or fake operational metrics.
+- Complete broad discovery within the first 30 model iterations. Then implement, sync, and validate instead of restarting repository exploration.
 - You may inspect every relevant source file and apply multiple atomic HMR generations when that materially improves correctness or polish. Keep each generation coherent and use a fresh generation identifier.
 - After every intentional generation, run exactly \`/sandbox/work/sync.sh > /sandbox/work/sync.log 2>&1\` once. Read the persistent log and require an \`APPLIED ...\` receipt for every selected service plus \`SYNCED generation=... services=${services.length} convergence=healthy\`.
 - Smoke ${routes.join(", ")} against ${previewUrl} after the final generation and fix HTTP 500, ReferenceError, or each_key_duplicate failures before stopping.
@@ -1017,6 +1018,7 @@ The live application is already running with Vite HMR. Build the complete reques
 
 QUALITY BUILD MODE:
 - Pull the source first, then inspect the relevant route, app shell, navigation, design tokens, shared components, and nearby operational pages. There is no five-file inspection limit for this profile.
+- Complete broad discovery within the first 30 model iterations. Then implement, sync, and validate instead of restarting repository exploration.
 - Integrate with the current Svelte 5, Tailwind, shadcn, Lucide, typography, spacing, light/dark theme, and motion conventions. Aim for high information clarity and visual polish without turning an operational surface into a marketing page.
 - Use real existing APIs and application ports where available. Show explicit loading, empty, degraded, and error states instead of fabricated data.
 - Preserve hexagonal architecture, responsive behavior, semantic HTML, keyboard access, visible focus, and reduced-motion support.
