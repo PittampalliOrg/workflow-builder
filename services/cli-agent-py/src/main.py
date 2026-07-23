@@ -78,7 +78,7 @@ from src.transcript_store import assert_transcript_store  # noqa: E402
 assert_transcript_store()
 
 from dapr.ext.workflow import DaprWorkflowClient, WorkflowRuntime  # noqa: E402
-from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, Response  # noqa: E402
 
 from src.cancellation import (  # noqa: E402
     TERMINAL_CONTROL_EVENT_TYPES,
@@ -106,6 +106,11 @@ from src.runtime_start_authority import (  # noqa: E402
     authorize_session_runtime_start,
 )
 from src.seed import seed_session_activity  # noqa: E402
+from src.preview_workspace import (  # noqa: E402
+    PreviewWorkspaceError,
+    capture_preview_workspace,
+    seed_preview_workspace,
+)
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
     get_supervisor,
@@ -498,6 +503,47 @@ async def workspace_command_endpoint(request: Request) -> dict[str, Any]:
             }
 
     return await asyncio.to_thread(_run)
+
+
+def _require_internal_token(request: Request) -> None:
+    expected = os.environ.get("INTERNAL_API_TOKEN", "")
+    provided = request.headers.get("x-internal-token", "")
+    if not expected or provided != expected:
+        raise HTTPException(status_code=401, detail="invalid internal token")
+
+
+@app.post("/internal/preview-workspace/seed")
+async def preview_workspace_seed_endpoint(request: Request) -> dict[str, Any]:
+    _require_internal_token(request)
+    try:
+        payload = await request.json()
+        return await asyncio.to_thread(seed_preview_workspace, payload)
+    except PreviewWorkspaceError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("preview workspace seed failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="preview workspace seed failed"
+        ) from exc
+
+
+@app.post("/internal/preview-workspace/capture")
+async def preview_workspace_capture_endpoint(request: Request) -> Response:
+    _require_internal_token(request)
+    try:
+        payload = await request.json()
+        envelope = await asyncio.to_thread(capture_preview_workspace, payload)
+        return Response(
+            content=envelope,
+            media_type="application/vnd.wfb.preview-workspace",
+        )
+    except PreviewWorkspaceError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("preview workspace capture failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="preview workspace capture failed"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

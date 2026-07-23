@@ -48,8 +48,20 @@ PRIVILEGED_PREVIEW_ACTION_SLUGS = frozenset(
         "dev/preview-acceptance",
         "dev/preview-build",
         "dev/preview-freeze",
+        "dev/preview-browser-evidence",
+        "dev/preview-workspace-seed",
+        "dev/preview-workspace-sync",
+        "dev/preview-sidecar-run",
     }
 )
+PREVIEW_WORKSPACE_ACTION_SLUGS = frozenset(
+    {
+        "dev/preview-workspace-seed",
+        "dev/preview-workspace-sync",
+        "dev/preview-sidecar-run",
+    }
+)
+PREVIEW_WORKSPACE_ACTION_TIMEOUT_MS = 1_350_000
 
 
 class ExecuteActionInput(BaseModel):
@@ -268,6 +280,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                     except (ValueError, TypeError):
                         pass
                     break
+            if node_timeout_ms is None and action_type in PREVIEW_WORKSPACE_ACTION_SLUGS:
+                node_timeout_ms = PREVIEW_WORKSPACE_ACTION_TIMEOUT_MS
             default_http_timeout = int(os.environ.get("EXECUTE_ACTION_TIMEOUT_SECONDS", "300"))
             http_timeout = int(node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
             logger.info(
@@ -331,6 +345,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 if action_type == "dev/preview" and status >= 500:
                     failure_result["errorClass"] = "retryable"
                     failure_result["responseStatus"] = 0
+                elif action_type == "dev/preview-sidecar-run":
+                    # A transport failure may occur after the receiver started
+                    # the command. Do not duplicate a non-idempotent gate.
+                    failure_result["errorClass"] = "permanent"
+                    failure_result["responseStatus"] = status
                 elif action_type in PRIVILEGED_PREVIEW_ACTION_SLUGS:
                     failure_result["errorClass"] = (
                         "retryable" if status >= 500 else "permanent"

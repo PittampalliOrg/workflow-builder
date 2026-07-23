@@ -785,6 +785,97 @@ function buildDevPreviewFreezeActionDetail(): ActionCatalogDetail {
 	} satisfies ActionCatalogDetail;
 }
 
+function previewWorkspaceActionsRoutable(): boolean {
+  const value = process.env.PREVIEW_WORKSPACE_ACTIONS_ENABLED ?? "";
+  return value.trim().toLowerCase() === "true";
+}
+
+function buildPreviewWorkspaceActionDetails(): ActionCatalogDetail[] {
+  const serviceProperty = {
+    type: "string",
+    pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+  };
+  const definitions = [
+    {
+      slug: "dev/preview-workspace-seed",
+      displayName: "Seed Preview Workspace",
+      description:
+        "Seed the execution-owned shared workspace at the preview's exact source revision.",
+      properties: { service: serviceProperty },
+      required: ["service"],
+    },
+    {
+      slug: "dev/preview-workspace-sync",
+      displayName: "Sync Preview Workspace",
+      description:
+        "Validate and atomically replace the catalog-owned preview service roots from the execution workspace.",
+      properties: { service: serviceProperty },
+      required: ["service"],
+    },
+    {
+      slug: "dev/preview-sidecar-run",
+      displayName: "Run Preview Service Gate",
+      description:
+        "Run one catalog-allowlisted command in the active preview service.",
+      properties: {
+        service: serviceProperty,
+        command: {
+          type: "string",
+          pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+        },
+      },
+      required: ["service", "command"],
+    },
+  ] as const;
+  return definitions.map((definition) => {
+    const taskConfig = { call: definition.slug, with: {} };
+    return {
+      id: buildActionId("builtin", definition.slug),
+      slug: definition.slug,
+      name: definition.slug,
+      displayName: definition.displayName,
+      description: definition.description,
+      providerId: "dev-preview",
+      providerLabel: "Dev Preview",
+      providerIconUrl: null,
+      category: "preview",
+      serviceId: "function-router",
+      kind: "dapr-activity",
+      visibility: "public-callable",
+      compatibility: "compatible",
+      group: "Dev Preview",
+      version: "1.0.0",
+      language: "typescript",
+      entrypoint: definition.slug,
+      sourceKind: "activity",
+      insertable: true,
+      auth: null,
+      fields: null,
+      tags: ["preview", "dynamic-script", "credentialless", "durable"],
+      doc: "The function router accepts only trusted execution context. The application service derives preview identity, source revision, catalog paths, diff scope, receiver credentials, and runtime coordinates.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: definition.properties,
+        required: definition.required,
+      },
+      outputSchema: { type: "object" },
+      semanticModel: null,
+      sourceCode: null,
+      sourceHtml: null,
+      sw: {
+        functionName: definition.slug,
+        definition: taskConfig,
+        taskConfig,
+        warnings: [],
+      },
+      runtime: buildRuntimeStatus(true, ["secure-preview-workspace"]),
+      rendered: null,
+      raw: null,
+    } satisfies ActionCatalogDetail;
+  });
+}
+
 function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
   const startTaskConfig = {
     call: "browser/start-preview",
@@ -1650,6 +1741,9 @@ async function loadRemoteActionCache(
     ...buildPreviewDevelopmentActionDetails(),
     ...(devPreviewFreezeActionRoutable()
       ? [buildDevPreviewFreezeActionDetail()]
+      : []),
+    ...(previewWorkspaceActionsRoutable()
+      ? buildPreviewWorkspaceActionDetails()
       : []),
     ...buildBrowserPreviewDetails(),
   ];

@@ -149,6 +149,7 @@ export class ApplicationDevPreviewSidecarService {
 		service: string;
 		projectId: string | null | undefined;
 		cmd: string;
+		timeoutMs?: number;
 	}): Promise<DevSidecarRunView | null> {
 		const environment = await this.resolve(input);
 		if (!environment) return null;
@@ -156,7 +157,8 @@ export class ApplicationDevPreviewSidecarService {
 			syncUrl: environment.syncUrl,
 			executionId: environment.executionId,
 			service: environment.service,
-			cmd: input.cmd
+			cmd: input.cmd,
+			timeoutMs: input.timeoutMs
 		});
 		return {
 			service: environment.service,
@@ -173,6 +175,8 @@ export class ApplicationDevPreviewSidecarService {
 		projectId: string | null | undefined;
 		archive: ArrayBuffer | Uint8Array;
 		contentType?: string | null;
+		generation?: string;
+		mode?: "merge" | "replace";
 	}): Promise<DevSidecarSyncView | null> {
 		const environment = await this.resolve(input);
 		if (!environment) return null;
@@ -181,7 +185,9 @@ export class ApplicationDevPreviewSidecarService {
 			executionId: environment.executionId,
 			service: environment.service,
 			archive: input.archive,
-			contentType: input.contentType
+			contentType: input.contentType,
+			generation: input.generation,
+			mode: input.mode
 		});
 		return {
 			service: environment.service,

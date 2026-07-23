@@ -322,6 +322,8 @@ export async function syncDevPreviewSource(input: {
 	archive: ArrayBuffer | Uint8Array;
 	credentialOptions?: DevSyncCredentialResolverOptions;
 	contentType?: string | null;
+	generation?: string;
+	mode?: 'merge' | 'replace';
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
 }): Promise<SidecarResult<SidecarSyncOutput>> {
@@ -364,7 +366,8 @@ export async function syncDevPreviewSource(input: {
 			method: 'POST',
 			headers: {
 				'content-type': input.contentType?.trim() || 'application/gzip',
-				'x-sync-generation': randomUUID(),
+				'x-sync-generation': input.generation?.trim() || randomUUID(),
+				'x-sync-mode': input.mode ?? 'merge',
 				'x-sync-service': descriptor.service,
 				'x-sync-roots': JSON.stringify(roots),
 				'x-sync-token': token

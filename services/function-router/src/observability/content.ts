@@ -27,7 +27,7 @@ const MAX_DEPTH = 12;
 const REDACTED = "[REDACTED]";
 
 const SECRET_KEY_RE =
-  /(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key)/i;
+  /(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|session[_-]?token|cookie|x-api-key|sync[_-]?url|sync[_-]?capability)/i;
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 const FALSY = new Set(["0", "false", "no", "off"]);
