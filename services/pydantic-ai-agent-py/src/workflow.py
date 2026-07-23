@@ -56,6 +56,7 @@ from src.config import (
     DURABLE_CONTEXT_MAX_BYTES,
     DURABLE_ERROR_MAX_BYTES,
     DURABLE_HISTORY_KEEP_BYTES,
+    DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
     DURABLE_HISTORY_MAX_BYTES,
     DURABLE_TOOL_CONTEXT_MAX_BYTES,
     DURABLE_TASK_MAX_BYTES,
@@ -1990,6 +1991,46 @@ def commit_tool_results(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_AGENT_WORKFLOW_STATE_KEY = "agentWorkflowState"
+
+
+def _workflow_rollover_state(wf_input: dict[str, Any]) -> tuple[int, int]:
+    raw_state = wf_input.get(_AGENT_WORKFLOW_STATE_KEY)
+    state = raw_state if isinstance(raw_state, dict) else {}
+    try:
+        iteration = max(0, int(state.get("iteration") or 0))
+    except (TypeError, ValueError):
+        iteration = 0
+    try:
+        structured_failures = max(0, int(state.get("structuredFailures") or 0))
+    except (TypeError, ValueError):
+        structured_failures = 0
+    return iteration, structured_failures
+
+
+def _build_agent_continue_as_new_input(
+    *,
+    context: dict[str, Any],
+    history_ref: str,
+    max_iterations: int,
+    next_iteration: int,
+    structured_failures: int,
+    task: str | None,
+) -> dict[str, Any]:
+    next_input: dict[str, Any] = {
+        "context": context,
+        "historyRef": history_ref,
+        "maxIterations": max_iterations,
+        _AGENT_WORKFLOW_STATE_KEY: {
+            "iteration": next_iteration,
+            "structuredFailures": structured_failures,
+        },
+    }
+    if task:
+        next_input["task"] = task
+    return next_input
+
+
 def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
     """One agent turn: LLM messages and tool calls as separate activities.
 
@@ -2009,6 +2050,8 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
     if max_iterations <= 0:
         max_iterations = DEFAULT_MAX_ITERATIONS
     max_iterations = min(max_iterations, MAX_ITERATIONS_PER_TURN)
+    iteration_offset, structured_failures = _workflow_rollover_state(wf_input)
+    iteration_offset = min(iteration_offset, max_iterations)
 
     history_ref = str(wf_input.get("historyRef") or "").strip()
     messages: list[dict] = list(wf_input.get("history") or [])
@@ -2018,8 +2061,7 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
     balanced_legacy_inline = legacy_inline
     task: str | None = str(wf_input.get("task") or "") or None
     final_text = ""
-    iterations_used = 0
-    structured_failures = 0
+    iterations_used = iteration_offset
 
     def finish(result: dict[str, Any]) -> dict[str, Any]:
         return fit_workflow_terminal_result(
@@ -2125,7 +2167,32 @@ def agent_workflow(ctx: wf.DaprWorkflowContext, wf_input: dict):
                 feedback=str(exc), code=STRUCTURED_OUTPUT_CONFIG_ERROR
             )
         )
-    for iteration in range(max_iterations):
+    for iteration in range(iteration_offset, max_iterations):
+        if iteration - iteration_offset >= DURABLE_HISTORY_ITERATIONS_PER_SEGMENT:
+            # This boundary is reached only after the previous LLM/tool wave is
+            # fully committed. No activity, timer, or tool task is outstanding.
+            if not history_ref or legacy_inline:
+                return finish(
+                    configuration_failure_result(
+                        feedback=(
+                            "The durable transcript did not provide a historyRef "
+                            "required for workflow history rollover."
+                        ),
+                        code=TRANSCRIPT_INTEGRITY_ERROR,
+                    )
+                )
+            ctx.continue_as_new(
+                _build_agent_continue_as_new_input(
+                    context=context,
+                    history_ref=history_ref,
+                    max_iterations=max_iterations,
+                    next_iteration=iteration,
+                    structured_failures=structured_failures,
+                    task=task,
+                ),
+                save_events=False,
+            )
+            return
         try:
             cancellation_input = fit_workflow_activity_input(
                 activity_name=CHECK_CANCELLATION_ACTIVITY,

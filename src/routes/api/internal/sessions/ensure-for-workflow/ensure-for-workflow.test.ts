@@ -482,6 +482,26 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(source).not.toContain("from(sessions)");
 	});
 
+	it("preserves a call-scoped iteration budget in the runtime child input", async () => {
+		const payload = await callEnsureForWorkflow({
+			runtime: "pydantic-ai-agent-py",
+			modelSpec: "kimi/kimi-k3",
+			provider: "kimi",
+			token: "kimi-test-token",
+			body: {
+				maxIterations: 20,
+				agentConfig: {
+					...agentConfig("pydantic-ai-agent-py", "kimi/kimi-k3"),
+					maxTurns: 40,
+				},
+			},
+		});
+
+		expect(
+			(payload.childInput as Record<string, unknown>).maxIterations,
+		).toBe(20);
+	});
+
   it("destroys a host when stop intent wins the runtime-link CAS", async () => {
     mocks.workflowData.updateWorkflowEnsureSessionRuntime.mockResolvedValueOnce(
       false,

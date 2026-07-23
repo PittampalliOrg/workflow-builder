@@ -58,6 +58,26 @@ def test_agent_iteration_override_is_hard_capped_per_turn():
     assert session_module._resolve_max_iterations({"maxTurns": 999}) == 80
     assert session_module._resolve_max_iterations({"maxIterations": 999}) == 80
     assert session_module._resolve_max_iterations({"maxTurns": 7}) == 7
+    assert (
+        session_module._resolve_max_iterations(
+            {"maxTurns": 40}, message={"maxIterations": 20}
+        )
+        == 20
+    )
+    assert (
+        session_module._resolve_max_iterations(
+            {"maxTurns": 7}, message={"maxIterations": 999}
+        )
+        == 80
+    )
+    assert (
+        session_module._resolve_max_iterations(
+            {"maxTurns": 4},
+            message={"maxIterations": 20},
+            control_override_fields={"maxTurns"},
+        )
+        == 4
+    )
 
 
 def test_start_authority_pending_schedule_covers_recovery_interval():
@@ -161,6 +181,20 @@ def test_publication_pending_is_durably_retried_before_child_start(monkeypatch):
     assert "history" not in child[2]
 
 
+def test_one_shot_session_forwards_trusted_per_call_iteration_budget(monkeypatch):
+    monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
+    message = _message()
+    message["maxIterations"] = 20
+    message["agentConfig"] = {"maxTurns": 40}
+    ctx = _FakeContext()
+    workflow = session_workflow(ctx, message)
+
+    assert next(workflow)[0:2] == ("activity", authorize_session_runtime_start)
+    child = workflow.send({"authorized": True})
+
+    assert child[2]["maxIterations"] == 20
+
+
 def test_one_shot_session_forwards_and_returns_only_history_reference(monkeypatch):
     monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
     message = _message()
@@ -261,6 +295,53 @@ def test_non_one_shot_session_continues_as_new_with_returned_history_reference(
     assert "history" not in captured_inputs[1]
 
 
+def test_call_iteration_budget_survives_continue_as_new(monkeypatch):
+    captured_inputs: list[dict] = []
+
+    def fake_agent_workflow(_ctx, child_input):
+        captured_inputs.append(child_input)
+        result = yield ("agent-turn", len(captured_inputs))
+        return result
+
+    monkeypatch.setattr(session_module, "agent_workflow", fake_agent_workflow)
+    monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
+    message = {
+        "sessionId": "session-1",
+        "maxIterations": 20,
+        "agentConfig": {"maxTurns": 40},
+        "initialEvents": [
+            {
+                "type": "user.message",
+                "content": [{"type": "text", "text": "first"}],
+            }
+        ],
+    }
+    ctx = _FakeContext()
+    workflow = session_workflow(ctx, message)
+
+    assert next(workflow) == ("agent-turn", 1)
+    assert captured_inputs[0]["maxIterations"] == 20
+    with pytest.raises(StopIteration):
+        workflow.send({"content": "first done"})
+
+    continuation, _save_events = ctx.continuations[0]
+    assert continuation["maxIterations"] == 20
+
+    resumed = session_workflow(_FakeContext(), continuation)
+    assert next(resumed) == ("external", "session.user_events")
+    assert resumed.send(
+        {
+            "events": [
+                {
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": "second"}],
+                }
+            ]
+        }
+    ) == ("agent-turn", 2)
+    assert captured_inputs[1]["maxIterations"] == 20
+
+
 def test_continue_as_new_preserves_config_overrides_and_mailbox_receipts(monkeypatch):
     captured_inputs: list[dict] = []
 
@@ -277,6 +358,7 @@ def test_continue_as_new_preserves_config_overrides_and_mailbox_receipts(monkeyp
     }
     message = {
         "sessionId": "session-1",
+        "maxIterations": 20,
         "agentConfig": {"modelSpec": "old", "maxTurns": 2},
         "initialEvents": [
             {
@@ -299,6 +381,7 @@ def test_continue_as_new_preserves_config_overrides_and_mailbox_receipts(monkeyp
 
     assert next(workflow) == ("agent-turn", 1)
     assert captured_inputs[0]["context"]["agentConfig"]["modelSpec"] == "kimi/kimi-k3"
+    assert captured_inputs[0]["maxIterations"] == 4
     with pytest.raises(StopIteration):
         workflow.send({"content": "done", "historyRef": "history+sha256://" + "d" * 64})
 
