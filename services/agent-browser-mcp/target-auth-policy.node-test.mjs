@@ -673,6 +673,22 @@ test("sets an HttpOnly cookie only for the exact BFF-derived origin", () => {
     ),
     false,
   );
+  assert.equal(
+    openedUrlMatchesTargetOrigin(
+      "http://10.42.7.19:3000/workspaces/default",
+      parsed.targetOrigin,
+    ),
+    false,
+    "a preview pod IP must not receive the stable Service credential",
+  );
+  assert.equal(
+    openedUrlMatchesTargetOrigin(
+      "https://wfb-preview.tail286401.ts.net/workspaces/default",
+      parsed.targetOrigin,
+    ),
+    false,
+    "the human-facing Tailscale origin must not receive the preview Service credential",
+  );
   assert.deepEqual(targetAuthCookieToolArguments(parsed), {
     name: WORKFLOW_BUILDER_ACCESS_TOKEN_COOKIE,
     value: "short-lived-owner-cookie",
