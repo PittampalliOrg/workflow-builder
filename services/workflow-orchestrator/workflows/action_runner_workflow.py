@@ -36,6 +36,7 @@ from activities.script_call_journal import record_script_call_pause
 from workflows.sw_workflow import (
     _AP_MAX_PAUSE_ROUNDS,
     _AP_RETRY_POLICY,
+    _dev_preview_activation_config,
     _expects_durable_dev_preview_activation,
     _freeze,
     _run_durable_dev_preview_activation,
@@ -68,15 +69,16 @@ def action_runner_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> Any
         else None
     )
     action_type = node_config.get("actionType") if isinstance(node_config, dict) else None
+    activation_config = _dev_preview_activation_config(node_config)
     if isinstance(action_type, str) and _expects_durable_dev_preview_activation(
-        action_type, node_config
+        action_type, activation_config
     ):
         return (
             yield from _run_durable_dev_preview_activation(
                 ctx,
                 activity_input=_freeze({**activity_input, "executionType": "BEGIN"}),
                 call_kwargs={},
-                config=node_config,
+                config=activation_config or {},
                 execution_id=str(
                     (journal.get("executionId") if isinstance(journal, dict) else "") or ""
                 ),

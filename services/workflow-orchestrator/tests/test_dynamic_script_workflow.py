@@ -1987,6 +1987,188 @@ def test_action_runner_delay_pause_uses_timer_then_resumes():
     assert ctx.pause_inputs == []  # DELAY needs no resume-target marker
 
 
+@pytest.mark.parametrize(
+    "nested_input",
+    [False, True],
+    ids=["published-flat", "dynamic-script-envelope"],
+)
+def test_action_runner_dev_preview_config_polls_until_active(nested_input):
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    class ActivationCtx(FakeCtx):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.timer_tasks: list[CompletableTask] = []
+
+        def create_timer(self, fire_at) -> CompletableTask:
+            self.action_log.append(("timer", fire_at))
+            task = CompletableTask()
+            self.timer_tasks.append(task)
+            return task
+
+    service = {
+        "service": "workflow-builder",
+        "ok": True,
+        "info": {
+            "executionId": "e1",
+            "service": "workflow-builder",
+            "ready": True,
+            "sandboxName": "dev-workflow-builder",
+            "podIP": "10.0.0.10",
+            "syncUrl": "http://dev-workflow-builder:8001/__sync",
+        },
+    }
+
+    def receipt(phase: str) -> dict:
+        active = phase == "active"
+        return {
+            "success": True,
+            "responseStatus": 200 if active else 202,
+            "data": {
+                "executionId": "e1",
+                "services": [service],
+                "ok": True,
+                "complete": active,
+                "pending": not active,
+                "activationPhase": phase,
+                "batchId": "batch-1",
+            },
+        }
+
+    ctx = ActivationCtx(
+        evaluator=make_evaluator([], {"ok": True}),
+        instance_id="runner-preview",
+    )
+    ctx.execute_action_results = [receipt("scheduled"), receipt("active")]
+    activation_input = {
+        "mode": "preview-native",
+        "services": ["workflow-builder"],
+        "activationPollSeconds": 2,
+    }
+    node_config = (
+        {"actionType": "dev/preview", "input": activation_input}
+        if nested_input
+        else {"actionType": "dev/preview", **activation_input}
+    )
+    gen = action_runner_workflow(
+        ctx,
+        {
+            "activityInput": {
+                "node": {
+                    "id": "preview",
+                    "config": node_config,
+                },
+            },
+            "journal": {"executionId": "e1", "callId": "preview"},
+        },
+    )
+
+    first_race = next(gen)
+    assert first_race.is_complete
+    first_call = first_race.get_result()
+    assert first_call.get_result()["data"]["activationPhase"] == "scheduled"
+
+    poll_race = gen.send(first_call)
+    assert not poll_race.is_complete
+    assert len(ctx.timer_tasks) == 2
+    ctx.timer_tasks[1].complete(None)
+
+    second_race = gen.send(poll_race.get_result())
+    assert second_race.is_complete
+    second_call = second_race.get_result()
+    assert second_call.get_result()["data"]["activationPhase"] == "active"
+
+    with pytest.raises(StopIteration) as stop:
+        gen.send(second_call)
+
+    assert stop.value.value["responseStatus"] == 200
+    assert len(ctx.execute_action_inputs) == 2
+    assert ctx.execute_action_inputs[0] == ctx.execute_action_inputs[1]
+    assert ctx.execute_action_inputs[0]["node"]["config"] == node_config
+    assert [
+        value for kind, value, *_rest in ctx.action_log if kind == "timer"
+    ] == [timedelta(seconds=300), timedelta(seconds=2)]
+
+
+def test_action_runner_dev_preview_nested_adopt_false_remains_single_shot():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    scheduled = {
+        "success": True,
+        "responseStatus": 202,
+        "data": {"activationPhase": "scheduled", "complete": False, "pending": True},
+    }
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}))
+    ctx.execute_action_results = [scheduled]
+    gen = action_runner_workflow(
+        ctx,
+        {
+            "activityInput": {
+                "node": {
+                    "id": "preview",
+                    "config": {
+                        "actionType": "dev/preview",
+                        "input": {
+                            "mode": "preview-native",
+                            "services": ["workflow-builder"],
+                            "adopt": False,
+                        },
+                    },
+                },
+            },
+            "journal": {"executionId": "e1", "callId": "preview"},
+        },
+    )
+
+    activity = next(gen)
+    assert isinstance(activity, CompletableTask)
+    assert not isinstance(activity, WhenAnyTask)
+    with pytest.raises(StopIteration) as stop:
+        gen.send(activity.get_result())
+
+    assert stop.value.value is scheduled
+    assert len(ctx.execute_action_inputs) == 1
+    assert not any(entry[0] == "timer" for entry in ctx.action_log)
+
+
+def test_action_runner_dev_preview_nested_rejects_duplicate_services_before_call():
+    from workflows.action_runner_workflow import action_runner_workflow
+
+    ctx = FakeCtx(evaluator=make_evaluator([], {"ok": True}))
+    gen = action_runner_workflow(
+        ctx,
+        {
+            "activityInput": {
+                "node": {
+                    "id": "preview",
+                    "config": {
+                        "actionType": "dev/preview",
+                        "input": {
+                            "mode": "preview-native",
+                            "services": [
+                                "workflow-builder",
+                                "workflow-builder",
+                            ],
+                        },
+                    },
+                },
+            },
+            "journal": {"executionId": "e1", "callId": "preview"},
+        },
+    )
+
+    with pytest.raises(StopIteration) as stop:
+        next(gen)
+
+    assert stop.value.value == {
+        "success": False,
+        "error": "dev-preview services must be a non-empty list of unique service ids",
+        "errorClass": "permanent",
+    }
+    assert ctx.execute_action_inputs == []
+    assert not any(entry[0] == "timer" for entry in ctx.action_log)
+
+
 def test_event_kind_dispatches_wait_event_child_and_resolves_payload():
     """approve()/waitForEvent() dispatches a wait_event_workflow_v1 child on a
     per-callId event name; the delivered payload journals as the gate result."""

@@ -2486,16 +2486,36 @@ def _environment_poll_ms(value: Any) -> int:
     return max(5_000, min(parsed, 120_000))
 
 
+def _dev_preview_activation_config(config: Any) -> dict[str, Any] | None:
+    """Return the action input from either supported node-config shape."""
+    if not isinstance(config, dict):
+        return None
+
+    # Published SW calls use a flat config. Dynamic-script action dispatch
+    # preserves the action arguments under `input` in its compatibility node.
+    if "mode" in config or "services" in config:
+        return config
+    nested_input = config.get("input")
+    if (
+        isinstance(nested_input, dict)
+        and nested_input.get("mode") == "preview-native"
+        and isinstance(nested_input.get("services"), list)
+    ):
+        return nested_input
+    return config
+
+
 def _expects_durable_dev_preview_activation(
     action_type: str,
     config: Any,
 ) -> bool:
+    activation_config = _dev_preview_activation_config(config)
     return (
         action_type in _DURABLE_DEV_PREVIEW_ACTION_TYPES
-        and isinstance(config, dict)
-        and config.get("mode") == "preview-native"
-        and config.get("adopt") is not False
-        and isinstance(config.get("services"), list)
+        and activation_config is not None
+        and activation_config.get("mode") == "preview-native"
+        and activation_config.get("adopt") is not False
+        and isinstance(activation_config.get("services"), list)
     )
 
 
@@ -2677,14 +2697,17 @@ def _run_durable_dev_preview_activation(
     execution_id: str,
     task_name: str,
 ) -> Any:
-    expected_services = _requested_dev_preview_services(config)
+    activation_config = _dev_preview_activation_config(config) or {}
+    expected_services = _requested_dev_preview_services(activation_config)
     if expected_services is None:
         return {
             "success": False,
             "error": "dev-preview services must be a non-empty list of unique service ids",
             "errorClass": "permanent",
         }
-    timeout_ms, poll_ms, max_attempts = _dev_preview_activation_settings(config)
+    timeout_ms, poll_ms, max_attempts = _dev_preview_activation_settings(
+        activation_config
+    )
     start_ms = _now_ms(ctx)
     deadline_at_ms = start_ms + timeout_ms if start_ms is not None else None
     deadline_task = ctx.create_timer(timedelta(milliseconds=timeout_ms))

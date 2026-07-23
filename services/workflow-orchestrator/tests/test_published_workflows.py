@@ -1516,6 +1516,7 @@ def _dev_preview_activation_generator(
     max_attempts: int = 5,
     services: list[str] | None = None,
     adopt=True,
+    nested_input: bool = False,
 ):
     workflow = types.SimpleNamespace(
         use=None,
@@ -1539,21 +1540,22 @@ def _dev_preview_activation_generator(
     )
 
     ctx = _DevPreviewActivationCtx()
+    config = {
+        "mode": "preview-native",
+        "services": services
+        if services is not None
+        else ["workflow-builder", "function-router"],
+        "adopt": adopt,
+        "activationTimeoutSeconds": 300,
+        "activationPollSeconds": 2,
+        "activationMaxAttempts": max_attempts,
+    }
     workflow_gen = SW_WORKFLOW._handle_call_task(
         ctx,
         "provision_preview",
         {
             "call": "dev/preview",
-            "with": {
-                "mode": "preview-native",
-                "services": services
-                if services is not None
-                else ["workflow-builder", "function-router"],
-                "adopt": adopt,
-                "activationTimeoutSeconds": 300,
-                "activationPollSeconds": 2,
-                "activationMaxAttempts": max_attempts,
-            },
+            "with": {"input": config} if nested_input else config,
         },
         tc,
     )
@@ -1647,6 +1649,26 @@ def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input
     assert stop.value.value["success"] is True
     assert stop.value.value["responseStatus"] == 200
     assert stop.value.value["data"]["batchId"] == "batch-1"
+
+
+def test_dev_preview_activation_nested_input_uses_same_durable_poll():
+    workflow_gen, _ctx = _dev_preview_activation_generator(nested_input=True)
+    first_race = next(workflow_gen)
+    first_call, deadline = first_race["tasks"]
+    first_call.result = _dev_preview_receipt("scheduled")
+
+    poll_race = workflow_gen.send(first_call)
+    second_race = workflow_gen.send(poll_race["tasks"][0])
+    second_call, same_deadline = second_race["tasks"]
+    assert same_deadline is deadline
+    assert second_call.input == first_call.input
+    second_call.result = _dev_preview_receipt("active")
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(second_call)
+
+    assert stop.value.value["responseStatus"] == 200
+    assert stop.value.value["data"]["activationPhase"] == "active"
 
 
 def test_dev_preview_activation_rejects_batch_identity_change():
@@ -1774,6 +1796,16 @@ def test_dev_preview_activation_adopt_uses_strict_boolean_semantics():
     )
     assert not SW_WORKFLOW._expects_durable_dev_preview_activation(
         "dev/preview", {**config, "adopt": False}
+    )
+    assert SW_WORKFLOW._expects_durable_dev_preview_activation(
+        "dev/preview", {"actionType": "dev/preview", "input": config}
+    )
+    assert not SW_WORKFLOW._expects_durable_dev_preview_activation(
+        "dev/preview",
+        {
+            "actionType": "dev/preview",
+            "input": {**config, "adopt": False},
+        },
     )
 
 
