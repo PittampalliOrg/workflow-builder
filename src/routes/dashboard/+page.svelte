@@ -17,11 +17,13 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequest,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
+		Rocket,
 		Sparkles
 	} from '@lucide/svelte';
 
@@ -65,11 +67,19 @@
 		sessionCount: number;
 	};
 
+	type PreviewStatus = {
+		executionId: string;
+		phase: string | null;
+		previewUrl: string | null;
+		sync: boolean;
+	};
+
 	let data = $state<DashboardPayload | null>(null);
 	let recentRuns = $state<RecentRun[]>([]);
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	let previewStatuses = $state<PreviewStatus[]>([]);
 
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
@@ -110,11 +120,49 @@
 				};
 				user = payload.user ?? null;
 			}
+			void loadPreviewStatuses();
 		} catch (err) {
 			errorMessage = err instanceof Error ? err.message : String(err);
 		} finally {
 			loading = false;
 		}
+	}
+
+	// Preview Development Status: reuse the existing fast-path preview GET for
+	// each recent run. 404s are expected when a run has no preview environment —
+	// those runs are simply omitted, and an explicit empty state covers the rest.
+	async function loadPreviewStatuses() {
+		if (recentRuns.length === 0) {
+			previewStatuses = [];
+			return;
+		}
+		const results = await Promise.all(
+			recentRuns.slice(0, 5).map(async (r): Promise<PreviewStatus | null> => {
+				try {
+					const res = await fetch(`/api/v1/fast-path/executions/${r.executionId}/preview`);
+					if (!res.ok) return null;
+					const payload = (await res.json()) as {
+						services?: Array<{
+							status?: string | null;
+							previewUrl?: string | null;
+							syncUrl?: string | null;
+						}>;
+					};
+					const services = payload.services ?? [];
+					if (services.length === 0) return null;
+					const svc = services.find((s) => s.previewUrl) ?? services[0];
+					return {
+						executionId: r.executionId,
+						phase: svc.status ?? null,
+						previewUrl: svc.previewUrl ?? null,
+						sync: !!svc.syncUrl
+					};
+				} catch {
+					return null;
+				}
+			})
+		);
+		previewStatuses = results.filter((r): r is PreviewStatus => r !== null);
 	}
 
 	function formatRelative(iso: string): string {
@@ -293,6 +341,139 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status: compact read-only view of preview
+		     environments, live-sync/HMR capability, and recent dev activity.
+		     All data sources are guarded; explicit empty states are rendered
+		     whenever preview/session/run data is unavailable. -->
+		<Card>
+			<CardHeader class="pb-2">
+				<CardTitle class="text-base flex items-center gap-2">
+					<Rocket class="size-4" /> Preview Development Status
+				</CardTitle>
+				<CardDescription class="text-xs">
+					Preview environments, live-sync/HMR state, and recent workflow/session activity.
+				</CardDescription>
+			</CardHeader>
+			<CardContent class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+				<!-- Live preview environments (from recent workflow runs) -->
+				<div>
+					<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+						Preview environments
+					</div>
+					{#if previewStatuses.length === 0}
+						<p class="text-xs text-muted-foreground py-3">
+							No live preview environments found for recent runs. Previews are
+							created when a workflow run provisions a dev environment.
+						</p>
+					{:else}
+						<ul class="space-y-2">
+							{#each previewStatuses as p (p.executionId)}
+								<li class="flex items-center gap-2 text-xs">
+									<Badge
+										variant="outline"
+										class={p.phase === 'ready' || p.phase === 'running'
+											? 'bg-emerald-500/10 text-emerald-600 text-[10px]'
+											: 'bg-amber-500/10 text-amber-600 text-[10px]'}
+									>
+										{p.phase ?? 'pending'}
+									</Badge>
+									<span class="font-mono text-[10px] text-muted-foreground truncate">
+										{p.executionId.slice(0, 8)}
+									</span>
+									{#if p.sync}
+										<Badge variant="outline" class="text-[9px]">HMR sync</Badge>
+									{/if}
+									{#if p.previewUrl}
+										<a
+											href={p.previewUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="ml-auto text-primary hover:underline flex items-center gap-1"
+										>
+											Open <ExternalLink class="size-3" />
+										</a>
+									{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<!-- Recent workflow activity -->
+				<div>
+					<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+						Workflow activity
+					</div>
+					{#if recentRuns.length === 0}
+						<p class="text-xs text-muted-foreground py-3">
+							No recent workflow runs yet.
+						</p>
+					{:else}
+						<ul class="space-y-1.5">
+							{#each recentRuns.slice(0, 3) as r (r.executionId)}
+								<li class="flex items-center gap-2 text-xs">
+									<Badge
+										variant="outline"
+										class={r.status === 'running' || r.status === 'pending'
+											? 'bg-blue-500/10 text-blue-600 text-[10px]'
+											: r.status === 'success'
+												? 'bg-emerald-500/10 text-emerald-600 text-[10px]'
+												: r.status === 'error'
+													? 'bg-red-500/10 text-red-600 text-[10px]'
+													: 'text-[10px]'}
+									>
+										{r.status}
+									</Badge>
+									<span class="truncate flex-1" title={r.workflowName}>{r.workflowName}</span>
+									<span class="text-[10px] text-muted-foreground whitespace-nowrap">
+										{formatRelative(r.startedAt)}
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<!-- Session activity + PR capture note -->
+				<div>
+					<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+						Session activity
+					</div>
+					{#if data.activeSessions.length === 0}
+						<p class="text-xs text-muted-foreground py-3">
+							No active sessions right now.
+						</p>
+					{:else}
+						<ul class="space-y-1.5">
+							{#each data.activeSessions.slice(0, 3) as s (s.id)}
+								<li class="flex items-center gap-2 text-xs">
+									<Badge
+										variant="outline"
+										class={s.status === 'running'
+											? 'bg-blue-500/10 text-blue-600 text-[10px]'
+											: 'bg-amber-500/10 text-amber-600 text-[10px]'}
+									>
+										{s.status}
+									</Badge>
+									<span class="truncate flex-1">{s.title ?? 'Untitled session'}</span>
+									<span class="text-[10px] text-muted-foreground whitespace-nowrap">
+										{formatRelative(s.updatedAt)}
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+					<div class="mt-3 flex items-start gap-1.5 text-[10px] text-muted-foreground">
+						<GitPullRequest class="size-3 mt-px shrink-0" />
+						<span>
+							PR capture runs automatically after preview verification; captured
+							source appears in the generated PR.
+						</span>
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
