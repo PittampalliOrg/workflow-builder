@@ -735,7 +735,13 @@ def test_non_ready_adoption_compensates_without_starting_late_cutover(
 
 
 def _provision_cutover_harness(
-    monkeypatch, deployment: str, *, staged: bool = False
+    monkeypatch,
+    deployment: str,
+    *,
+    staged: bool = False,
+    deployment_identity: dict | None = None,
+    request_env: dict[str, str] | None = None,
+    caller_inherited_env: list[dict] | None = None,
 ) -> tuple[list[str], list[dict], dict, _FakeCustom]:
     fake_custom = _FakeCustom()
     synchronous: list[str] = []
@@ -778,7 +784,11 @@ def _provision_cutover_harness(
     monkeypatch.setattr(
         app_module, "_load_k8s_coordination_client", lambda: SimpleNamespace()
     )
-    monkeypatch.setattr(app_module, "_adopt_read_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        app_module,
+        "_adopt_read_identity",
+        lambda *_a, **_k: deployment_identity,
+    )
     monkeypatch.setattr(
         app_module,
         "_acquire_dev_preview_adoption_lease",
@@ -820,10 +830,101 @@ def _provision_cutover_harness(
             adoptDeployment=deployment,
             stageAdoption=staged,
             waitReadySeconds=1,
+            env=request_env,
+            adoptInheritedEnv=caller_inherited_env,
         ),
     )
     assert response["ready"] is True
     return synchronous, deferred, response, fake_custom
+
+
+def test_provision_adoption_uses_live_deployment_capability_and_origin_env(
+    monkeypatch,
+) -> None:
+    live_origin = {
+        "valueFrom": {
+            "configMapKeyRef": {
+                "name": "preview-environment-identity",
+                "key": "public-url",
+            }
+        }
+    }
+    _, _, _, custom = _provision_cutover_harness(
+        monkeypatch,
+        "workflow-builder",
+        deployment_identity={
+            "containerEnv": [
+                {"name": "APP_PUBLIC_URL", **live_origin},
+                {"name": "ORIGIN", **live_origin},
+                {
+                    "name": "PREVIEW_FUNCTION_REGISTRY_JSON",
+                    "valueFrom": {
+                        "configMapKeyRef": {
+                            "name": "function-registry",
+                            "key": "functions.json",
+                        }
+                    },
+                },
+                {
+                    "name": "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
+                    "value": '["durable/run","dev/preview"]',
+                },
+            ]
+        },
+        request_env={
+            "APP_PUBLIC_URL": "https://wfb-dev.tailnet.example",
+            "ORIGIN": "https://wfb-dev.tailnet.example",
+            "PREVIEW_FUNCTION_REGISTRY_JSON": '{"attacker":true}',
+            "PREVIEW_NATIVE_ACTION_SLUGS_JSON": '["admin/all"]',
+        },
+        caller_inherited_env=[
+            {"name": "ORIGIN", "value": "https://caller.example"}
+        ],
+    )
+
+    manifest = custom.creates[0][4]
+    entries = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    by_name = {entry["name"]: entry for entry in entries}
+    assert by_name["APP_PUBLIC_URL"] == {"name": "APP_PUBLIC_URL", **live_origin}
+    assert by_name["ORIGIN"] == {"name": "ORIGIN", **live_origin}
+    assert by_name["PREVIEW_FUNCTION_REGISTRY_JSON"]["valueFrom"] == {
+        "configMapKeyRef": {
+            "name": "function-registry",
+            "key": "functions.json",
+        }
+    }
+    assert by_name["PREVIEW_NATIVE_ACTION_SLUGS_JSON"]["value"] == (
+        '["durable/run","dev/preview"]'
+    )
+
+
+def test_provision_adoption_drops_caller_authority_when_identity_is_missing(
+    monkeypatch,
+) -> None:
+    _, _, _, custom = _provision_cutover_harness(
+        monkeypatch,
+        "workflow-builder",
+        request_env={
+            "APP_PUBLIC_URL": "https://wfb-dev.tailnet.example",
+            "ORIGIN": "https://wfb-dev.tailnet.example",
+            "PREVIEW_FUNCTION_REGISTRY_JSON": '{"attacker":true}',
+            "PREVIEW_NATIVE_ACTION_SLUGS_JSON": '["admin/all"]',
+            "DAPR_CONFIG_STORE": "request-configstore",
+        },
+        caller_inherited_env=[
+            {
+                "name": "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
+                "value": '["admin/all"]',
+            }
+        ],
+    )
+
+    manifest = custom.creates[0][4]
+    entries = manifest["spec"]["podTemplate"]["spec"]["containers"][0]["env"]
+    by_name = {entry["name"]: entry for entry in entries}
+    for name in app_module._ADOPT_ENV_DEPLOYMENT_AUTHORITY_NAMES:
+        assert name not in by_name
+    assert by_name["DAPR_CONFIG_STORE"]["value"] == "request-configstore"
 
 
 @pytest.mark.parametrize("deployment", ["workflow-builder", "function-router"])
@@ -2577,6 +2678,37 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
             "value": "true",
         },
         {
+            "name": "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
+            "value": '["durable/run","dev/preview"]',
+        },
+        {
+            "name": "PREVIEW_FUNCTION_REGISTRY_JSON",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "function-registry",
+                    "key": "functions.json",
+                }
+            },
+        },
+        {
+            "name": "APP_PUBLIC_URL",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "preview-environment-identity",
+                    "key": "public-url",
+                }
+            },
+        },
+        {
+            "name": "ORIGIN",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "preview-environment-identity",
+                    "key": "public-url",
+                }
+            },
+        },
+        {
             "name": "PREVIEW_CONTROL_CAPABILITY_TOKEN",
             "valueFrom": {
                 "secretKeyRef": {
@@ -2663,14 +2795,18 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
     by_name = {entry["name"]: entry for entry in filtered}
     assert set(by_name) == {
         "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE",
+        "APP_PUBLIC_URL",
         "CODEX_CLI_APP_ID",
         "DAPR_CONFIG_STORE",
         "INTERNAL_API_TOKEN",
+        "ORIGIN",
         "PREVIEW_ACTION_INTERNAL_TOKEN",
         "PREVIEW_CONTROL_BROKER_URL",
         "PREVIEW_CONTROL_CAPABILITY_TOKEN",
         "PREVIEW_DEV_SYNC_MINT_TOKEN",
         "PREVIEW_ENVIRONMENT_NAME",
+        "PREVIEW_FUNCTION_REGISTRY_JSON",
+        "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
         "SANDBOX_EXECUTION_API_TOKEN",
         "WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS",
         "WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX",
@@ -2684,6 +2820,14 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
         == "wbpreview-app-live-five"
     )
     assert by_name["WORKFLOW_ORCHESTRATOR_EMIT_LIFECYCLE_EVENTS"]["value"] == "true"
+    assert (
+        by_name["PREVIEW_FUNCTION_REGISTRY_JSON"]["valueFrom"]["configMapKeyRef"]
+        == {"name": "function-registry", "key": "functions.json"}
+    )
+    assert (
+        by_name["ORIGIN"]["valueFrom"]["configMapKeyRef"]
+        == {"name": "preview-environment-identity", "key": "public-url"}
+    )
 
 
 def test_adopted_internal_token_requires_exact_secret_reference() -> None:
@@ -2722,6 +2866,42 @@ def test_adopted_internal_token_requires_exact_secret_reference() -> None:
         ]
     )
     assert filtered == [valid]
+
+
+def test_adopted_capability_and_origin_refs_require_exact_config_maps() -> None:
+    filtered = app_module._filter_adopted_container_env(
+        [
+            {
+                "name": "APP_PUBLIC_URL",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": "attacker-config",
+                        "key": "public-url",
+                    }
+                },
+            },
+            {
+                "name": "ORIGIN",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": "preview-environment-identity",
+                        "key": "wrong-key",
+                    }
+                },
+            },
+            {
+                "name": "PREVIEW_FUNCTION_REGISTRY_JSON",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": "wrong-registry",
+                        "key": "functions.json",
+                    }
+                },
+            },
+        ]
+    )
+
+    assert filtered is None
 
 
 def test_adopted_dev_manifest_overrides_inherited_sync_root_with_receiver_leaf() -> (
