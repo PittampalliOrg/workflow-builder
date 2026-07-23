@@ -195,6 +195,51 @@ def test_preview_agent_manifest_mounts_the_dynamic_claims_it_provisions(
     assert seed_pvc == source_pvc
 
 
+def test_preview_pydantic_scratch_uses_tuple_local_storage_class(monkeypatch) -> None:
+    scope = "4" * 32
+    set_preview_env(monkeypatch, scope)
+    core = FakeCore()
+    cfg = ExecutionClassConfig(
+        localQueue="agent-runtime",
+        agentHostImage="ghcr.io/example/pydantic-ai-agent-py-sandbox:git-1",
+    )
+    host = AgentWorkflowHostRequest(
+        sessionId="session-pydantic",
+        agentAppId="agent-pydantic",
+        executionClass="pydantic-ai-agent-py",
+    )
+
+    pvc_name = app_module._ensure_pydantic_scratch_pvc(
+        core, host, cfg, namespace="workflow-builder"
+    )
+
+    assert pvc_name == "pyd-scratch-agent-pydantic"
+    assert core.pvcs[pvc_name].spec.storage_class_name == f"preview-local-{scope}"
+
+
+def test_preview_pydantic_scratch_rejects_conflicting_storage_override(
+    monkeypatch,
+) -> None:
+    set_preview_env(monkeypatch, "5" * 32)
+    monkeypatch.setenv(
+        "SANDBOX_PYDANTIC_SCRATCH_STORAGE_CLASS", "preview-local-foreign"
+    )
+    cfg = ExecutionClassConfig(
+        localQueue="agent-runtime",
+        agentHostImage="ghcr.io/example/pydantic-ai-agent-py-sandbox:git-1",
+    )
+    host = AgentWorkflowHostRequest(
+        sessionId="session-pydantic",
+        agentAppId="agent-pydantic",
+        executionClass="pydantic-ai-agent-py",
+    )
+
+    with pytest.raises(app_module.HTTPException, match="conflicts with preview"):
+        app_module._ensure_pydantic_scratch_pvc(
+            FakeCore(), host, cfg, namespace="workflow-builder"
+        )
+
+
 def test_other_preview_cannot_read_or_purge_an_existing_scope(monkeypatch) -> None:
     core = FakeCore()
     cfg = storage_class()
