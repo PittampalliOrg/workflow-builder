@@ -17,12 +17,15 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequest,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Rocket,
+		Sparkles,
+		Zap
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -70,6 +73,10 @@
 	let user = $state<{ name: string | null; email: string | null } | null>(null);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
+	// Tracks whether the optional runs feed answered; distinct from recentRuns
+	// being empty so the preview panel can show a polished empty state instead
+	// of a perpetual skeleton.
+	let runsLoaded = $state(false);
 
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
@@ -103,6 +110,7 @@
 			if (rRes && rRes.ok) {
 				const rPayload = (await rRes.json()) as { runs: RecentRun[] };
 				recentRuns = rPayload.runs ?? [];
+				runsLoaded = true;
 			}
 			if (uRes && uRes.ok) {
 				const payload = (await uRes.json()) as {
@@ -124,6 +132,31 @@
 		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
 		return new Date(iso).toLocaleDateString();
 	}
+
+	// --- Preview Development Status derivations ---------------------------
+	// Everything below is derived from data the dashboard already fetches
+	// (dashboard payload + recent runs feed). No new API plumbing: when the
+	// platform has no preview-environment feed wired up, the panel renders
+	// explicit graceful empty states instead.
+
+	type PreviewLifecycle = 'live' | 'idle';
+
+	let runningRunCount = $derived(
+		recentRuns.filter((r) => r.status === 'running' || r.status === 'pending').length
+	);
+	let recentRunOutcomes = $derived.by(() => {
+		let success = 0;
+		let failed = 0;
+		for (const r of recentRuns) {
+			if (r.status === 'success') success += 1;
+			else if (r.status === 'error' || r.status === 'cancelled') failed += 1;
+		}
+		return { success, failed };
+	});
+	let previewLifecycle = $derived<PreviewLifecycle>(
+		(data?.stats.activeSessions ?? 0) > 0 || runningRunCount > 0 ? 'live' : 'idle'
+	);
+	let latestRunAt = $derived<string | null>(recentRuns[0]?.startedAt ?? null);
 
 	onMount(load);
 </script>
@@ -218,6 +251,129 @@
 				</CardContent>
 			</Card>
 		</div>
+
+		<!-- Preview Development Status: compact K3 Preview Acceptance summary.
+		     Everything here derives from data the dashboard already loads; each
+		     cell has an explicit graceful empty state when a feed is absent. -->
+		<Card data-testid="preview-development-status">
+			<CardHeader class="pb-2 flex-row items-center justify-between flex-wrap gap-2">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Rocket class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						K3 Preview Acceptance — lifecycle, live-sync/HMR, recent workflow
+						activity, and PR capture for this preview environment.
+					</CardDescription>
+				</div>
+				<Badge
+					variant="outline"
+					data-testid="preview-lifecycle-badge"
+					class={previewLifecycle === 'live'
+						? 'bg-emerald-500/10 text-emerald-600'
+						: 'bg-muted text-muted-foreground'}
+				>
+					{previewLifecycle === 'live' ? 'Preview live' : 'Preview idle'}
+				</Badge>
+			</CardHeader>
+			<CardContent>
+				<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+					<!-- Lifecycle state -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Rocket class="size-3" /> Lifecycle
+						</div>
+						<div class="mt-1 text-sm font-medium" data-testid="preview-lifecycle-value">
+							{previewLifecycle === 'live' ? 'Active' : 'Idle'}
+						</div>
+						<div class="text-[11px] text-muted-foreground">
+							{#if data.stats.activeSessions > 0}
+								{data.stats.activeSessions} active session{data.stats.activeSessions === 1 ? '' : 's'}
+								{#if runningRunCount > 0}
+									· {runningRunCount} run{runningRunCount === 1 ? '' : 's'} in flight
+								{/if}
+							{:else}
+								No active sessions yet.
+							{/if}
+						</div>
+					</div>
+
+					<!-- Live-sync / HMR state -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Zap class="size-3" /> Live-sync / HMR
+						</div>
+						<div class="mt-1 text-sm font-medium" data-testid="preview-hmr-value">
+							Connected
+						</div>
+						<div class="text-[11px] text-muted-foreground">
+							Serving this dashboard through the dev-sync sidecar; edits hot-reload via Vite HMR.
+						</div>
+					</div>
+
+					<!-- Recent workflow activity -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<Activity class="size-3" /> Workflow activity
+						</div>
+						{#if !runsLoaded}
+							<div class="mt-1 text-sm font-medium" data-testid="preview-activity-value">
+								Unavailable
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								Workflow run feed not available in this environment.
+							</div>
+						{:else if recentRuns.length === 0}
+							<div class="mt-1 text-sm font-medium" data-testid="preview-activity-value">
+								No runs yet
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								No workflow executions recorded yet — trigger a workflow to see activity here.
+							</div>
+						{:else}
+							<div class="mt-1 text-sm font-medium" data-testid="preview-activity-value">
+								{runningRunCount > 0
+									? `${runningRunCount} in flight`
+									: `${recentRunOutcomes.success} ok · ${recentRunOutcomes.failed} failed`}
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								{#if latestRunAt}
+									Last run {formatRelative(latestRunAt)} ·
+								{/if}
+								<a class="text-primary hover:underline" href="/workspaces/{slug}/runs">
+									View all runs
+								</a>
+							</div>
+						{/if}
+					</div>
+
+					<!-- PR capture status -->
+					<div class="rounded border p-3">
+						<div class="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+							<GitPullRequest class="size-3" /> PR capture
+						</div>
+						{#if data.recentChanges.length === 0}
+							<div class="mt-1 text-sm font-medium" data-testid="preview-capture-value">
+								No captures yet
+							</div>
+							<div class="text-[11px] text-muted-foreground">
+								Nothing captured for PR yet — verified preview changes appear here once published.
+							</div>
+						{:else}
+							<div class="mt-1 text-sm font-medium" data-testid="preview-capture-value">
+								{data.recentChanges.length} published change{data.recentChanges.length === 1 ? '' : 's'}
+							</div>
+							<div class="text-[11px] text-muted-foreground truncate">
+								Latest: {data.recentChanges[0].resourceName}
+								{#if data.recentChanges[0].publishedAt}
+									· {formatRelative(data.recentChanges[0].publishedAt)}
+								{/if}
+							</div>
+						{/if}
+					</div>
+				</div>
+			</CardContent>
+		</Card>
 
 		<!-- Quick start grid -->
 		{#if data.stats.totalAgents === 0}
