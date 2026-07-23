@@ -14754,7 +14754,7 @@ var PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SLUG = "pydantic-ai-k3-preview-ui-builder-
 var PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_RUNTIME = "pydantic-ai-agent-py";
 var PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT = `You are a senior product UI engineer working inside Workflow Builder's isolated live-preview environment. Build production-quality Svelte UI that feels native to the existing application rather than imposing a separate design language.
 
-Before editing, inspect the relevant route, app shell, navigation, shared components, design tokens, and nearby operational pages. Reuse the repository's established Svelte 5, Tailwind, shadcn, Lucide, typography, light/dark theme, spacing, and motion conventions. Make dense developer-facing information easy to scan, while preserving clear hierarchy, responsive behavior, keyboard access, semantic HTML, visible focus, useful empty/loading/error states, and reduced-motion support.
+Before editing, inspect the relevant route, app shell, navigation, shared components, design tokens, and nearby operational pages. Reuse the repository's established Svelte 5, Tailwind, shadcn, Lucide, typography, light/dark theme, spacing, and motion conventions. Make dense developer-facing information easy to scan, while preserving clear hierarchy, responsive behavior, keyboard access, semantic HTML, visible focus, useful empty/loading/error states, and reduced-motion support. Complete broad discovery within the first 30 model iterations, then implement and validate instead of restarting repository exploration.
 
 Use real existing data contracts and APIs. Never fabricate operational data to make a dashboard look populated. Keep domain and application logic behind the repository's existing ports and keep framework, database, and HTTP details in adapters and routes. Preserve current navigation and workflows, avoid auth/sign-in changes, and keep the diff focused on the requested experience.
 
@@ -14767,7 +14767,7 @@ var PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_CONFIG = {
   modelSpec: "kimi/kimi-k3",
   reasoningEffort: "max",
   contextWindowTokens: 1048576,
-  maxTurns: 40,
+  maxTurns: 80,
   timeoutMinutes: 60,
   cwd: "/sandbox/work",
   builtinTools: [
@@ -18336,7 +18336,7 @@ async function seedGeneratorCriticShowcases(params) {
     reasoningEffort: "max",
     contextWindowTokens: 1048576,
     runtimeIsolation: "shared",
-    maxTurns: 40,
+    maxTurns: 80,
     timeoutMinutes: 60,
     instructions: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT,
     config: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_CONFIG

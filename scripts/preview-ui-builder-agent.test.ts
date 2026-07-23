@@ -26,7 +26,7 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 			modelSpec: "kimi/kimi-k3",
 			reasoningEffort: "max",
 			contextWindowTokens: 1_048_576,
-			maxTurns: 40,
+			maxTurns: 80,
 			timeoutMinutes: 60,
 			cwd: "/sandbox/work",
 			mcpConnectionMode: "explicit",
@@ -55,6 +55,9 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 		);
 		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
 			"snapshot and draft-PR promotion path",
+		);
+		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
+			"first 30 model iterations",
 		);
 	});
 

@@ -73,8 +73,8 @@ def test_durable_limits_cannot_be_raised_by_environment(monkeypatch):
         assert loaded.DURABLE_TASK_MAX_BYTES == 512 * 1024
         assert loaded.DURABLE_CONTEXT_MAX_BYTES == 16 * 1024
         assert loaded.DURABLE_TOOL_CONTEXT_MAX_BYTES == 8 * 1024
-        assert loaded.DEFAULT_MAX_ITERATIONS == 40
-        assert loaded.MAX_ITERATIONS_PER_TURN == 40
+        assert loaded.DEFAULT_MAX_ITERATIONS == 80
+        assert loaded.MAX_ITERATIONS_PER_TURN == 80
         assert loaded.MAX_TOOL_CALLS_PER_RESPONSE == 8
         assert loaded.TOOL_DESCRIPTOR_MAX_BYTES == 256
         assert loaded.TOOL_ERROR_MAX_BYTES == 2 * 1024
