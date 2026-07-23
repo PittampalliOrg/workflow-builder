@@ -464,7 +464,7 @@ def test_each_reference_history_segment_keeps_two_mib_grpc_reserve():
         f"{max(retry_storm.logical_payload_sizes + no_tool_terminal.logical_payload_sizes + structured_terminal.logical_payload_sizes)}"
     )
 
-    assert MAX_ITERATIONS_PER_TURN == 80
+    assert MAX_ITERATIONS_PER_TURN == 120
     assert DURABLE_HISTORY_ITERATIONS_PER_SEGMENT == 40
     assert len(retry_storm.events) == 1 + (
         DURABLE_HISTORY_ITERATIONS_PER_SEGMENT * 11 * 10

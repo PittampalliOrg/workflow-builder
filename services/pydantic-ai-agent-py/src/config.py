@@ -113,7 +113,7 @@ TRANSCRIPT_KEEP_BYTES = min(
 
 # One iteration = one LLM message (call_llm activity); tool calls fan out as
 # their own activities. agentConfig.maxTurns/maxIterations override per run.
-MAX_ITERATIONS_PER_TURN = 80
+MAX_ITERATIONS_PER_TURN = 120
 # The exact Dapr protobuf budget proof leaves at least 2 MiB of gRPC headroom
 # through 40 worst-case iterations. Longer public turn budgets continue-as-new
 # only between fully committed iterations so each execution history stays safe.
