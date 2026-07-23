@@ -669,6 +669,37 @@ def test_model_context_rejection_returns_a_non_structured_terminal_failure():
     assert "structuredOutputFailure" not in result
 
 
+def test_workspace_configuration_rejection_stops_without_retry_or_history_mutation():
+    ctx = FakeCtx()
+    gen = agent_workflow(
+        ctx,
+        {
+            "task": "inspect",
+            "historyRef": "history+sha256://" + "a" * 64,
+            "context": {"agentConfig": {"cwd": "../outside"}},
+        },
+    )
+
+    _, result = drive(
+        gen,
+        [
+            {"cancelled": False},
+            {
+                "toolCalls": [],
+                "text": "",
+                "configurationError": "The requested cwd is outside the workspace.",
+                "configurationErrorCode": "workspace_configuration_error",
+            },
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["errorCode"] == "workspace_configuration_error"
+    assert result["historyRef"] == "history+sha256://" + "a" * 64
+    assert result["iterations"] == 1
+    assert [entry[0] for entry in ctx.calls] == [check_cancellation, call_llm]
+
+
 def test_unrepresentable_tool_result_returns_a_typed_terminal_failure():
     ctx = FakeCtx()
     gen = agent_workflow(ctx, {"task": "inspect", "context": {}})
@@ -883,6 +914,23 @@ def test_workflow_splits_parallel_fanout_by_aggregate_input_size(monkeypatch):
         entry[1]["call"]["toolIndex"] for entry in ctx.calls if entry[0] is execute_tool
     ] == [0, 1, 2]
     assert result["success"] is True
+
+
+def test_reduced_tool_activity_context_preserves_effective_cwd():
+    context = {
+        "sessionId": "session-1",
+        "agentConfig": {
+            "cwd": "/sandbox/work/repo",
+            "systemPrompt": "must not enter tool activity context",
+        },
+    }
+
+    reduced = wfmod._tool_activity_context(
+        context,
+        {"toolName": "read_file", "toolCallId": "tool-1", "args": {}},
+    )
+
+    assert reduced["agentConfig"] == {"cwd": "/sandbox/work/repo"}
 
 
 def test_workflow_boundary_decisions_are_deterministic():

@@ -55,6 +55,7 @@ def test_dynamic_script_sandbox_turn_budget_reaches_session_bridge(monkeypatch):
                     "sandbox": {
                         "workspaceRef": "workspace-1",
                         "maxTurns": 20,
+                        "cwd": "/sandbox/work/repo",
                     },
                 },
             },
@@ -62,5 +63,7 @@ def test_dynamic_script_sandbox_turn_budget_reaches_session_bridge(monkeypatch):
     )
 
     assert captured["maxIterations"] == 20
+    assert captured["cwd"] == "/sandbox/work/repo"
     assert result["bridgePayload"]["maxIterations"] == 20
+    assert result["bridgePayload"]["cwd"] == "/sandbox/work/repo"
     assert result["childInput"]["maxIterations"] == 20

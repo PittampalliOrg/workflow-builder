@@ -231,6 +231,12 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
             )
 
     agent_cfg = _coerce_agent_config(message.get("agentConfig"))
+    # cwd is launch authority forwarded by the workflow bridge. Overlay it on
+    # the per-session config so every durable activity rebuilds the same scoped
+    # capability set; session control events cannot mutate this field.
+    launch_cwd = message.get("cwd")
+    if isinstance(launch_cwd, str) and launch_cwd.strip():
+        agent_cfg["cwd"] = launch_cwd.strip()
     # BFF-signed platform credential (top-level dispatch field, NOT an MCP
     # header): workflow-mcp-server only exposes the team tools
     # (claim_task/update_task/…) when the MCP request carries

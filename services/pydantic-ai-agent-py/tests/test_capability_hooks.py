@@ -57,6 +57,69 @@ def test_router_cache_shared_across_activities(workspace):
     assert r3 is not r1
 
 
+def test_router_scopes_local_tools_to_requested_cwd_and_separates_cache(workspace):
+    import asyncio as aio
+
+    from PIL import Image
+
+    repo = workspace / "repo"
+    other = workspace / "other"
+    repo.mkdir()
+    other.mkdir()
+
+    repo_router = toolsets_mod.get_router({"cwd": str(repo)})
+    same_router = toolsets_mod.get_router({"cwd": "repo"})
+    other_router = toolsets_mod.get_router({"cwd": str(other)})
+
+    assert same_router is repo_router
+    assert other_router is not repo_router
+    capabilities = repo_router._capabilities
+    assert next(
+        capability.root_dir
+        for capability in capabilities
+        if type(capability).__name__ == "FileSystem"
+    ) == repo.resolve()
+    assert next(
+        capability.cwd
+        for capability in capabilities
+        if type(capability).__name__ == "Shell"
+    ) == repo.resolve()
+    assert next(
+        capability.workspace_dir
+        for capability in capabilities
+        if type(capability).__name__ == "RepoContext"
+    ) == repo.resolve()
+    aio.run(
+        repo_router.call(
+            "write_file", {"path": "scoped.txt", "content": "repo scoped"}
+        )
+    )
+    Image.new("RGB", (2, 2), color="white").save(repo / "scoped.png")
+    media = aio.run(repo_router.call("ReadMediaFile", {"path": "scoped.png"}))
+    shell_output = aio.run(repo_router.call("run_command", {"command": "pwd"}))
+
+    assert (repo / "scoped.txt").read_text(encoding="utf-8") == "repo scoped"
+    assert not (workspace / "scoped.txt").exists()
+    assert isinstance(media, list)
+    assert any(type(item).__name__ == "BinaryContent" for item in media)
+    assert str(repo.resolve()) in str(shell_output)
+
+
+def test_capability_overflow_store_stays_at_workspace_root(workspace):
+    repo = workspace / "repo"
+    repo.mkdir()
+
+    capabilities = toolsets_mod.build_capabilities({"cwd": str(repo)})
+    overflow = next(
+        capability
+        for capability in capabilities
+        if type(capability).__name__ == "OverflowingToolOutput"
+    )
+    store = overflow.store
+
+    assert store.base_dir == workspace.resolve() / ".overflow"
+
+
 def test_router_cache_changes_when_session_tool_policy_narrows(workspace):
     import asyncio as aio
 
