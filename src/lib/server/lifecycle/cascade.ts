@@ -155,6 +155,21 @@ export function isBenignDaprTerminationMiss(input: unknown): boolean {
 	);
 }
 
+/**
+ * Purge-only transport misses that are safe to ignore after the lifecycle
+ * controller has already established terminal/missing runtime status. A missing
+ * actor address is not terminal evidence and must not be used by status or
+ * termination paths.
+ */
+export function isBenignDaprPurgeMiss(input: unknown): boolean {
+	const normalized = errorText(input).toLowerCase();
+	return (
+		isBenignDaprTerminationMiss(input) ||
+		(normalized.includes("failedprecondition") &&
+			normalized.includes("did not find address for actor"))
+	);
+}
+
 export function isRecoverableDaprWorkflowTerminateError(
   input: unknown,
 ): boolean {
@@ -388,6 +403,12 @@ export type RunDurableCascadeParams = {
 	purge: boolean;
 	purgeGraceMs: number;
 	forceStatePurgeOnUnclosed?: boolean;
+	/**
+	 * Ignore Dapr's missing-parent-actor purge transport error only after the
+	 * caller has positively ruled out active children and unresolved linkages.
+	 * The cascade additionally requires every known durable handle to be closed.
+	 */
+	allowMissingParentActorPurge?: boolean;
 	concurrency?: number;
 	gracefulCancellationEnabled?: boolean;
 	gracefulCancellationWaitMs?: number;
@@ -764,7 +785,17 @@ export async function runDurableCascade(
     parentInstanceIds,
     concurrency,
     async (instanceId) => {
-		await deps.purgeParent(instanceId);
+		try {
+			await deps.purgeParent(instanceId);
+		} catch (err) {
+			if (
+				params.allowMissingParentActorPurge &&
+				isBenignDaprPurgeMiss(err)
+			) {
+				return;
+			}
+			throw err;
+		}
     },
   );
 	await deps.purgeStateRows?.(

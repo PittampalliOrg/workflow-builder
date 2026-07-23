@@ -20,6 +20,7 @@ import { raiseSessionEvent } from "$lib/server/sessions/control";
 import {
 	DURABLE_RUNTIME_MISSING_STATUS,
 	type DurableCascadeResult,
+	isBenignDaprPurgeMiss,
 	isTerminalDurableRuntimeStatus,
 	runDurableCascade,
 	shouldForceFinalizeCrossAppWedge,
@@ -176,6 +177,15 @@ function unresolvedLinkageBlocks(
     if (!graceStartedAt) return true;
     return Date.now() - graceStartedAt.getTime() < PROVISIONING_STOP_GRACE_MS;
   });
+}
+
+function hasExactParentPurgeClosureEvidence(
+  resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+): boolean {
+  return (
+    resolved.activeChildNodes.length === 0 &&
+    resolved.unresolvedRuntimeLinkages.length === 0
+  );
 }
 
 const STOP_MODE_PRIORITY: Record<DurableStopMode, number> = {
@@ -527,6 +537,8 @@ export async function stopDurableRun(
       purge: cascadePurge,
 		purgeGraceMs: 0,
       forceStatePurgeOnUnclosed: effectiveMode === "reset" && !linkageBlocked,
+      allowMissingParentActorPurge:
+        hasExactParentPurgeClosureEvidence(resolved),
 		gracefulCancellationEnabled: graceMs > 0,
 		gracefulCancellationWaitMs: graceMs,
 		deps: cascadeDeps,
@@ -692,6 +704,7 @@ async function isInstanceClosed(
 /** Reap the per-session Sandbox CRs and flip the owning DB rows terminal. */
 async function purgeConfirmedState(
   resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
+  allowMissingParentActorPurge: boolean,
 ): Promise<boolean> {
   try {
     await Promise.all(
@@ -704,7 +717,19 @@ async function purgeConfirmedState(
       ),
     );
     await Promise.all(
-      resolved.parentInstanceIds.map((id) => cascadeDeps.purgeParent(id)),
+      resolved.parentInstanceIds.map(async (id) => {
+        try {
+          await cascadeDeps.purgeParent(id);
+        } catch (err) {
+          if (
+            allowMissingParentActorPurge &&
+            isBenignDaprPurgeMiss(err)
+          ) {
+            return;
+          }
+          throw err;
+        }
+      }),
     );
     await cascadeDeps.purgeStateRows?.(
       resolved.parentInstanceIds,
@@ -725,13 +750,14 @@ async function finalizeConfirmedStop(
 	resolved: Awaited<ReturnType<typeof resolveDurableTarget>>,
 	reason: string,
   expectedMode?: DurableStopMode,
+  allowMissingParentActorPurge = false,
 ): Promise<{
   state: "confirmed" | "stopping";
   scope: DurableTargetScope | null;
 }> {
   if (
     (expectedMode === "purge" || expectedMode === "reset") &&
-    !(await purgeConfirmedState(resolved))
+    !(await purgeConfirmedState(resolved, allowMissingParentActorPurge))
   ) {
     return { state: "stopping", scope: resolved.scope };
   }
@@ -855,6 +881,7 @@ export async function confirmDurableStop(
       resolved.stopRequestedAt
         ? normalizeDurableStopMode(resolved.stopRequestedMode)
         : undefined,
+      hasExactParentPurgeClosureEvidence(resolved),
     );
 	}
 

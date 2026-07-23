@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedDurableTarget } from "./resolvers";
+import { DURABLE_RUNTIME_MISSING_STATUS } from "./cascade";
 
 const mocks = vi.hoisted(() => ({
 	resolveDurableTarget: vi.fn(),
@@ -555,6 +556,212 @@ describe("durable lifecycle convergence", () => {
       undefined,
       "purge",
     );
+  });
+
+  it.each(["purge", "reset"] as const)(
+    "finalizes a terminal parent with a reaped child once for persisted %s",
+    async (mode) => {
+      const finalizeDb = vi.fn(async () => "finalized" as const);
+      const target = resolved({
+        stopRequestedAt: new Date("2026-07-21T18:00:00.000Z"),
+        stopRequestedMode: mode,
+        parentInstanceIds: ["workflow-1"],
+        agentRuntimeTargets: [
+          {
+            runtimeAppId: "agent-session-1",
+            instanceId: "session-1",
+            runtimeSandboxName: "agent-host-agent-session-1",
+          },
+        ],
+        statePurgeInstanceIds: ["session-1"],
+        finalizeDb,
+      });
+      mocks.resolveDurableTarget
+        .mockResolvedValueOnce(target)
+        .mockResolvedValueOnce(
+          resolved({
+            notFound: true,
+            dbActive: false,
+            scope: null,
+          }),
+        );
+      mocks.cascadeDeps.getParentStatus.mockResolvedValue("TERMINATED");
+      mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue(
+        DURABLE_RUNTIME_MISSING_STATUS,
+      );
+      mocks.cascadeDeps.purgeParent.mockRejectedValue(
+        new Error(
+          "Failed to purge workflow workflow-1: rpc error: code = FailedPrecondition desc = did not find address for actor workflow-1",
+        ),
+      );
+
+      await expect(
+        confirmDurableStop({
+          kind: "workflowExecution",
+          id: "workflow-1",
+        }),
+      ).resolves.toMatchObject({ state: "confirmed" });
+      await expect(
+        confirmDurableStop({
+          kind: "workflowExecution",
+          id: "workflow-1",
+        }),
+      ).resolves.toMatchObject({ state: "notFound" });
+
+      expect(mocks.cascadeDeps.purgeAgentRuntime).toHaveBeenCalledOnce();
+      expect(mocks.cascadeDeps.purgeParent).toHaveBeenCalledOnce();
+      expect(mocks.cascadeDeps.purgeStateRows).toHaveBeenCalledOnce();
+      expect(finalizeDb).toHaveBeenCalledOnce();
+      expect(
+        mocks.cascadeDeps.purgeParent.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        mocks.cascadeDeps.purgeStateRows.mock.invocationCallOrder[0],
+      );
+      expect(
+        mocks.cascadeDeps.purgeStateRows.mock.invocationCallOrder[0],
+      ).toBeLessThan(finalizeDb.mock.invocationCallOrder[0]);
+    },
+  );
+
+  it("does not finalize a terminal parent while a cross-app child is live", async () => {
+    const target = resolved({
+      stopRequestedAt: new Date("2026-07-21T18:00:00.000Z"),
+      stopRequestedMode: "reset",
+      parentInstanceIds: ["workflow-1"],
+      agentRuntimeTargets: [
+        {
+          runtimeAppId: "agent-session-1",
+          instanceId: "session-1",
+          runtimeSandboxName: "agent-host-agent-session-1",
+        },
+      ],
+      statePurgeInstanceIds: ["session-1"],
+    });
+    mocks.resolveDurableTarget.mockResolvedValue(target);
+    mocks.cascadeDeps.getParentStatus.mockResolvedValue("TERMINATED");
+    mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue("RUNNING");
+
+    await expect(
+      confirmDurableStop({
+        kind: "workflowExecution",
+        id: "workflow-1",
+      }),
+    ).resolves.toMatchObject({ state: "stopping" });
+
+    expect(mocks.cascadeDeps.purgeAgentRuntime).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.purgeParent).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
+    expect(target.finalizeDb).not.toHaveBeenCalled();
+  });
+
+  it("does not finalize closed handles while runtime linkage is unresolved", async () => {
+    const target = resolved({
+      stopRequestedAt: new Date(),
+      stopRequestedMode: "reset",
+      parentInstanceIds: ["workflow-1"],
+      agentRuntimeTargets: [
+        {
+          runtimeAppId: "agent-session-1",
+          instanceId: "session-1",
+          runtimeSandboxName: "agent-host-agent-session-1",
+        },
+      ],
+      unresolvedRuntimeLinkages: ["session-unlinked"],
+      statePurgeInstanceIds: ["session-1"],
+    });
+    mocks.resolveDurableTarget.mockResolvedValue(target);
+    mocks.cascadeDeps.getParentStatus.mockResolvedValue("TERMINATED");
+    mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue(
+      DURABLE_RUNTIME_MISSING_STATUS,
+    );
+
+    await expect(
+      confirmDurableStop({
+        kind: "workflowExecution",
+        id: "workflow-1",
+      }),
+    ).resolves.toMatchObject({ state: "stopping" });
+
+    expect(mocks.cascadeDeps.purgeAgentRuntime).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.purgeParent).not.toHaveBeenCalled();
+    expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
+    expect(target.finalizeDb).not.toHaveBeenCalled();
+  });
+
+  it("does not normalize a parent actor miss for an aged unresolved linkage", async () => {
+    const target = resolved({
+      stopRequestedAt: new Date(Date.now() - 20 * 60_000),
+      stopRequestedMode: "purge",
+      parentInstanceIds: ["workflow-1"],
+      agentRuntimeTargets: [
+        {
+          runtimeAppId: "agent-session-1",
+          instanceId: "session-1",
+          runtimeSandboxName: "agent-host-agent-session-1",
+        },
+      ],
+      unresolvedRuntimeLinkages: ["session-unlinked"],
+      statePurgeInstanceIds: ["session-1"],
+    });
+    mocks.resolveDurableTarget.mockResolvedValue(target);
+    mocks.cascadeDeps.getParentStatus.mockResolvedValue("TERMINATED");
+    mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue(
+      DURABLE_RUNTIME_MISSING_STATUS,
+    );
+    mocks.cascadeDeps.purgeParent.mockRejectedValue(
+      new Error(
+        "Failed to purge workflow workflow-1: rpc error: code = FailedPrecondition desc = did not find address for actor workflow-1",
+      ),
+    );
+
+    await expect(
+      confirmDurableStop({
+        kind: "workflowExecution",
+        id: "workflow-1",
+      }),
+    ).resolves.toMatchObject({ state: "stopping" });
+
+    expect(mocks.cascadeDeps.purgeParent).toHaveBeenCalledOnce();
+    expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
+    expect(target.finalizeDb).not.toHaveBeenCalled();
+  });
+
+  it("does not normalize a parent actor miss while a DB child remains active", async () => {
+    const target = resolved({
+      stopRequestedAt: new Date("2026-07-21T18:00:00.000Z"),
+      stopRequestedMode: "reset",
+      parentInstanceIds: ["workflow-1"],
+      agentRuntimeTargets: [
+        {
+          runtimeAppId: "agent-session-1",
+          instanceId: "session-1",
+          runtimeSandboxName: "agent-host-agent-session-1",
+        },
+      ],
+      activeChildNodes: ["agent-node"],
+      statePurgeInstanceIds: ["session-1"],
+    });
+    mocks.resolveDurableTarget.mockResolvedValue(target);
+    mocks.cascadeDeps.getParentStatus.mockResolvedValue("TERMINATED");
+    mocks.cascadeDeps.getAgentRuntimeStatus.mockResolvedValue(
+      DURABLE_RUNTIME_MISSING_STATUS,
+    );
+    mocks.cascadeDeps.purgeParent.mockRejectedValue(
+      new Error(
+        "Failed to purge workflow workflow-1: rpc error: code = FailedPrecondition desc = did not find address for actor workflow-1",
+      ),
+    );
+
+    await expect(
+      confirmDurableStop({
+        kind: "workflowExecution",
+        id: "workflow-1",
+      }),
+    ).resolves.toMatchObject({ state: "stopping" });
+
+    expect(mocks.cascadeDeps.purgeParent).toHaveBeenCalledOnce();
+    expect(mocks.cascadeDeps.purgeStateRows).not.toHaveBeenCalled();
+    expect(target.finalizeDb).not.toHaveBeenCalled();
   });
 
   it("does not acknowledge delayed purge when durable-state cleanup fails", async () => {
