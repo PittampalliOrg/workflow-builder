@@ -88,6 +88,38 @@ describe("api io capture helpers", () => {
     expect(clone).toHaveBeenCalledOnce();
   });
 
+  it("omits successful binary responses without cloning the body", async () => {
+    const url = new URL(
+      "https://app.test/api/internal/preview-control/environment/workspace-source",
+    );
+    const response = new Response(new Uint8Array([0, 1, 2, 3]), {
+      headers: { "content-type": "application/vnd.git.bundle" },
+    });
+    const clone = vi.spyOn(response, "clone");
+
+    await expect(responsePayloadForSpan(response, url)).resolves.toEqual({
+      status: 200,
+      contentType: "application/vnd.git.bundle",
+      body: "[non-text response body]",
+    });
+    expect(clone).not.toHaveBeenCalled();
+  });
+
+  it("retains body inspection for successful responses without a content type", async () => {
+    const url = new URL("https://app.test/api/workflows/abc/status");
+    const response = new Response(
+      new TextEncoder().encode("untyped response body"),
+    );
+    const clone = vi.spyOn(response, "clone");
+
+    await expect(responsePayloadForSpan(response, url)).resolves.toEqual({
+      status: 200,
+      contentType: undefined,
+      body: "[non-text response body]",
+    });
+    expect(clone).toHaveBeenCalledOnce();
+  });
+
   it("omits browser artifact upload pixels without cloning the body", async () => {
     const url = new URL("https://app.test/api/internal/browser-artifacts");
     const pixels = "iVBORw0KGgo-sensitive-upload-pixels";

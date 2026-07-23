@@ -139,6 +139,14 @@ export async function responsePayloadForSpan(
       body: response.body == null ? "" : "[streaming response omitted]",
     };
   }
+  if (
+    response.ok &&
+    contentType &&
+    !contentType.includes("json") &&
+    !contentType.includes("text/")
+  ) {
+    return { ...base, body: "[non-text response body]" };
+  }
 
   try {
     const text = await response.clone().text();

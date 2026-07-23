@@ -22,6 +22,7 @@ Endpoint surface (parity with claude-agent-py where applicable):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
@@ -107,9 +108,12 @@ from src.runtime_start_authority import (  # noqa: E402
 )
 from src.seed import seed_session_activity  # noqa: E402
 from src.preview_workspace import (  # noqa: E402
+    MAX_SOURCE_BUNDLE_BYTES,
     PreviewWorkspaceError,
     capture_preview_workspace,
+    import_preview_workspace_bundle,
     seed_preview_workspace,
+    source_preview_workspace_bundle,
 )
 from src.session_supervisor import (  # noqa: E402
     SessionSupervisor,
@@ -524,6 +528,78 @@ async def preview_workspace_seed_endpoint(request: Request) -> dict[str, Any]:
         logger.warning("preview workspace seed failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=500, detail="preview workspace seed failed"
+        ) from exc
+
+
+@app.post("/internal/preview-workspace/source-bundle")
+async def preview_workspace_source_bundle_endpoint(request: Request) -> Response:
+    _require_internal_token(request)
+    try:
+        payload = await request.json()
+        bundle, file_count = await asyncio.to_thread(
+            source_preview_workspace_bundle, payload
+        )
+        repository = str(payload.get("repository", ""))
+        revision = str(payload.get("sourceRevision", ""))
+        return Response(
+            content=bundle,
+            media_type="application/vnd.git.bundle",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Wfb-Preview-Source-Sha256": (
+                    f"sha256:{hashlib.sha256(bundle).hexdigest()}"
+                ),
+                "X-Wfb-Preview-Source-File-Count": str(file_count),
+                "X-Wfb-Preview-Source-Repository": repository,
+                "X-Wfb-Preview-Source-Revision": revision,
+            },
+        )
+    except PreviewWorkspaceError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("preview workspace source bundle failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="preview workspace source bundle failed"
+        ) from exc
+
+
+@app.post("/internal/preview-workspace/import")
+async def preview_workspace_import_endpoint(request: Request) -> dict[str, Any]:
+    _require_internal_token(request)
+    try:
+        if not request.headers.get("content-type", "").startswith(
+            "application/vnd.git.bundle"
+        ):
+            raise PreviewWorkspaceError(400, "source bundle content type is invalid")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > MAX_SOURCE_BUNDLE_BYTES:
+                raise PreviewWorkspaceError(413, "source bundle exceeds byte limit")
+            chunks.append(chunk)
+        payload = {
+            "repository": request.headers.get("x-wfb-preview-source-repository", ""),
+            "sourceRevision": request.headers.get("x-wfb-preview-source-revision", ""),
+            "repoSubdir": request.headers.get("x-wfb-preview-source-repo-subdir", ""),
+            "bundleSha256": request.headers.get("x-wfb-preview-source-sha256", ""),
+            "sourceFileCount": int(
+                request.headers.get("x-wfb-preview-source-file-count", "-1")
+            ),
+        }
+        return await asyncio.to_thread(
+            import_preview_workspace_bundle, b"".join(chunks), payload
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail="source bundle receipt is invalid"
+        ) from exc
+    except PreviewWorkspaceError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("preview workspace import failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="preview workspace import failed"
         ) from exc
 
 

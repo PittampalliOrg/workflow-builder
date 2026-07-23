@@ -89,7 +89,13 @@ export interface PreviewWorkflowDiagnosticsQueryPort {
 		identity: PreviewControlIdentity;
 		execution: WorkflowDiagnosticsExecution;
 		traceIds: string[];
-		query: { query?: string; errorsOnly?: boolean; limit: number; offset: number };
+		query: {
+			query?: string;
+			errorsOnly?: boolean;
+			serviceNames?: string[];
+			limit: number;
+			offset: number;
+		};
 	}>): Promise<ObservabilityTraceSpan[]>;
 	getSpan(input: Readonly<{
 		identity: PreviewControlIdentity;

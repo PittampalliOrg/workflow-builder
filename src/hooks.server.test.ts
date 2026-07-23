@@ -56,6 +56,10 @@ describe("preview-control broker edge", () => {
       "POST",
       "/api/internal/preview-control/environment/observe",
     ]);
+    expect(PREVIEW_CONTROL_BROKER_ROUTES).toContainEqual([
+      "POST",
+      "/api/internal/preview-control/environment/workspace-source",
+    ]);
     expect(
       previewControlBrokerModeResponse(
         "/api/internal/preview-control/environment/observe",

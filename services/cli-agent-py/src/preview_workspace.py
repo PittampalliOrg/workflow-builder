@@ -13,12 +13,14 @@ import io
 import json
 import os
 import re
+import selectors
 import shutil
 import stat
 import struct
 import subprocess
 import tarfile
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,6 +29,7 @@ CHECKOUT = Path("/sandbox/work/repo")
 SEED_LOCK = Path("/sandbox/work/.wfb-preview-workspace-seed.lock")
 ALLOWED_REPOSITORY = "PittampalliOrg/workflow-builder"
 MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
+MAX_SOURCE_BUNDLE_BYTES = 64 * 1024 * 1024
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_MEMBERS = 20_000
@@ -140,30 +143,45 @@ def _git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> bytes
         ) from exc
 
 
-def _checkout_receipt(revision: str, repository_url: str) -> dict[str, Any]:
-    _assert_plain_directory(CHECKOUT, "canonical checkout")
-    _assert_plain_directory(CHECKOUT / ".git", "canonical checkout metadata")
-    head = _git(["rev-parse", "HEAD"], CHECKOUT).decode().strip()
-    remote = _git(["remote", "get-url", "origin"], CHECKOUT).decode().strip()
+def _checkout_receipt_at(
+    checkout: Path, revision: str, repository_url: str
+) -> dict[str, Any]:
+    _assert_plain_directory(checkout, "canonical checkout")
+    _assert_plain_directory(checkout / ".git", "canonical checkout metadata")
+    head = _git(["rev-parse", "HEAD"], checkout).decode().strip()
+    remote = _git(["remote", "get-url", "origin"], checkout).decode().strip()
     if head != revision or remote != repository_url:
         raise PreviewWorkspaceError(409, "canonical checkout identity changed")
     file_count = 0
-    for root, dirs, files in os.walk(CHECKOUT, followlinks=False):
+    member_count = 0
+    total_bytes = 0
+    for root, dirs, files in os.walk(checkout, followlinks=False):
         root_path = Path(root)
-        if root_path == CHECKOUT:
+        if root_path == checkout:
             dirs[:] = [name for name in dirs if name != ".git"]
         for name in [*dirs, *files]:
+            member_count += 1
+            if member_count > MAX_MEMBERS:
+                raise PreviewWorkspaceError(
+                    413, "canonical checkout exceeds member limit"
+                )
             info = (root_path / name).lstat()
             if stat.S_ISLNK(info.st_mode):
                 raise PreviewWorkspaceError(
                     409, "canonical checkout contains a symbolic link"
                 )
+            if stat.S_ISREG(info.st_mode):
+                total_bytes += info.st_size
         file_count += len(files)
-        if file_count > MAX_MEMBERS:
-            raise PreviewWorkspaceError(413, "canonical checkout exceeds file limit")
+        if total_bytes > MAX_EXPANDED_BYTES:
+            raise PreviewWorkspaceError(413, "canonical checkout exceeds byte limit")
     if file_count < 1:
         raise PreviewWorkspaceError(409, "canonical checkout is empty")
     return {"reused": True, "fileCount": file_count}
+
+
+def _checkout_receipt(revision: str, repository_url: str) -> dict[str, Any]:
+    return _checkout_receipt_at(CHECKOUT, revision, repository_url)
 
 
 @contextmanager
@@ -226,7 +244,7 @@ def seed_preview_workspace(payload: Any) -> dict[str, Any]:
             git_env = _git_environment({"GIT_ASKPASS": str(askpass)})
             _git(["init", "-q"], staging, git_env)
             _git(["remote", "add", "origin", repository_url], staging, git_env)
-            _git(["fetch", "-q", "--depth=1", "origin", revision], staging, git_env)
+            _git(["fetch", "-q", "origin", revision], staging, git_env)
             _git(["checkout", "-q", "--detach", "FETCH_HEAD"], staging, git_env)
             if _git(["rev-parse", "HEAD"], staging).decode().strip() != revision:
                 raise PreviewWorkspaceError(
@@ -243,6 +261,247 @@ def seed_preview_workspace(payload: Any) -> dict[str, Any]:
         finally:
             if askpass is not None:
                 askpass.unlink(missing_ok=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+
+
+def _validate_source_bundle_header(bundle: bytes, revision: str) -> None:
+    header_end = bundle.find(b"\n\n")
+    if header_end < 1 or header_end > 16 * 1024:
+        raise PreviewWorkspaceError(409, "source bundle header is invalid")
+    try:
+        lines = bundle[:header_end].decode("ascii").splitlines()
+    except UnicodeDecodeError as exc:
+        raise PreviewWorkspaceError(409, "source bundle header is invalid") from exc
+    if not lines or lines[0] not in {"# v2 git bundle", "# v3 git bundle"}:
+        raise PreviewWorkspaceError(409, "source bundle format is unsupported")
+    refs: list[tuple[str, str]] = []
+    for line in lines[1:]:
+        if line.startswith("-"):
+            raise PreviewWorkspaceError(409, "source bundle has prerequisites")
+        if line.startswith("@"):
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) != 2 or not FULL_SHA.fullmatch(parts[0]):
+            raise PreviewWorkspaceError(409, "source bundle header is invalid")
+        refs.append((parts[0], parts[1]))
+    if refs != [(revision, "HEAD")]:
+        raise PreviewWorkspaceError(
+            409, "source bundle must advertise only the exact revision"
+        )
+
+
+def _source_tree_receipt_at(checkout: Path, revision: str) -> dict[str, int]:
+    process = subprocess.Popen(  # noqa: S603
+        ["git", "ls-tree", "-rlzt", "--full-tree", revision],
+        cwd=checkout,
+        env=_git_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        raise PreviewWorkspaceError(409, "exact source tree inspection failed")
+
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    deadline = time.monotonic() + 300
+    pending = bytearray()
+    member_count = 0
+    file_count = 0
+    total_bytes = 0
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PreviewWorkspaceError(
+                    409, "exact source tree inspection timed out"
+                )
+            events = selector.select(remaining)
+            if not events:
+                if process.poll() is not None:
+                    break
+                raise PreviewWorkspaceError(
+                    409, "exact source tree inspection timed out"
+                )
+            chunk = os.read(process.stdout.fileno(), 64 * 1024)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            while True:
+                separator = pending.find(b"\0")
+                if separator < 0:
+                    if len(pending) > 8 * 1024:
+                        raise PreviewWorkspaceError(409, "source tree entry is invalid")
+                    break
+                record = bytes(pending[:separator])
+                del pending[: separator + 1]
+                try:
+                    metadata, raw_path = record.split(b"\t", 1)
+                    mode, object_type, object_id, raw_size = metadata.decode(
+                        "ascii"
+                    ).split()
+                    path = raw_path.decode("utf-8")
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise PreviewWorkspaceError(
+                        409, "source tree entry is invalid"
+                    ) from exc
+                if not FULL_SHA.fullmatch(object_id):
+                    raise PreviewWorkspaceError(409, "source tree entry is invalid")
+                _safe_relative_path(path, "source tree path")
+                member_count += 1
+                if member_count > MAX_MEMBERS:
+                    raise PreviewWorkspaceError(413, "source tree exceeds member limit")
+                if mode == "040000" and object_type == "tree" and raw_size == "-":
+                    continue
+                if (
+                    mode not in {"100644", "100755"}
+                    or object_type != "blob"
+                    or not raw_size.isdigit()
+                ):
+                    raise PreviewWorkspaceError(
+                        409, "source tree contains an unsafe entry"
+                    )
+                file_count += 1
+                total_bytes += int(raw_size)
+                if total_bytes > MAX_EXPANDED_BYTES:
+                    raise PreviewWorkspaceError(
+                        413, "source tree exceeds expanded byte limit"
+                    )
+
+        if pending:
+            raise PreviewWorkspaceError(409, "source tree entry is invalid")
+        remaining = max(0.001, deadline - time.monotonic())
+        try:
+            status = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise PreviewWorkspaceError(
+                409, "exact source tree inspection timed out"
+            ) from exc
+        if status != 0:
+            raise PreviewWorkspaceError(409, "exact source tree inspection failed")
+        if file_count < 1:
+            raise PreviewWorkspaceError(409, "source tree is empty")
+        return {"fileCount": file_count, "memberCount": member_count}
+    finally:
+        selector.close()
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def source_preview_workspace_bundle(payload: Any) -> tuple[bytes, int]:
+    body = _object(payload)
+    _exact_keys(body, {"repository", "sourceRevision"})
+    repository = _repository(body["repository"])
+    revision = _revision(body["sourceRevision"])
+    repository_url = f"https://github.com/{repository}.git"
+    receipt = _checkout_receipt(revision, repository_url)
+    with tempfile.TemporaryDirectory(prefix="wfb-source-") as bundle_directory:
+        bundle_path = Path(bundle_directory) / "source.bundle"
+        _git(["bundle", "create", str(bundle_path), "HEAD"], CHECKOUT)
+        info = bundle_path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_size < 1
+            or info.st_size > MAX_SOURCE_BUNDLE_BYTES
+        ):
+            raise PreviewWorkspaceError(413, "source bundle exceeds byte limit")
+        bundle = bundle_path.read_bytes()
+        _validate_source_bundle_header(bundle, revision)
+        return bundle, int(receipt["fileCount"])
+
+
+def import_preview_workspace_bundle(
+    bundle: bytes,
+    payload: Any,
+) -> dict[str, Any]:
+    body = _object(payload)
+    _exact_keys(
+        body,
+        {
+            "repository",
+            "sourceRevision",
+            "repoSubdir",
+            "bundleSha256",
+            "sourceFileCount",
+        },
+    )
+    repository = _repository(body["repository"])
+    revision = _revision(body["sourceRevision"])
+    _safe_subdir(body["repoSubdir"])
+    bundle_sha256 = body["bundleSha256"]
+    source_file_count = body["sourceFileCount"]
+    if (
+        not isinstance(bundle, bytes)
+        or not 0 < len(bundle) <= MAX_SOURCE_BUNDLE_BYTES
+        or not isinstance(bundle_sha256, str)
+        or bundle_sha256 != f"sha256:{hashlib.sha256(bundle).hexdigest()}"
+        or not isinstance(source_file_count, int)
+        or isinstance(source_file_count, bool)
+        or not 0 < source_file_count <= MAX_MEMBERS
+    ):
+        raise PreviewWorkspaceError(409, "source bundle receipt is invalid")
+    _validate_source_bundle_header(bundle, revision)
+    repository_url = f"https://github.com/{repository}.git"
+
+    if CHECKOUT.exists() or CHECKOUT.is_symlink():
+        receipt = _checkout_receipt(revision, repository_url)
+        if receipt["fileCount"] != source_file_count:
+            raise PreviewWorkspaceError(409, "canonical checkout file count changed")
+        return receipt
+
+    with _seed_lock():
+        staging: Path | None = None
+        bundle_path: Path | None = None
+        try:
+            if CHECKOUT.exists() or CHECKOUT.is_symlink():
+                receipt = _checkout_receipt(revision, repository_url)
+                if receipt["fileCount"] != source_file_count:
+                    raise PreviewWorkspaceError(
+                        409, "canonical checkout file count changed"
+                    )
+                return receipt
+            staging = Path(tempfile.mkdtemp(prefix=".wfb-seed-", dir=CHECKOUT.parent))
+            fd, bundle_name = tempfile.mkstemp(
+                prefix="wfb-source-", suffix=".bundle", dir="/tmp"
+            )
+            bundle_path = Path(bundle_name)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(bundle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            bundle_path.chmod(0o600)
+            _git(["init", "-q"], staging)
+            _git(["bundle", "verify", str(bundle_path)], staging)
+            _git(["fetch", "-q", str(bundle_path), revision], staging)
+            tree_receipt = _source_tree_receipt_at(staging, revision)
+            if tree_receipt["fileCount"] != source_file_count:
+                raise PreviewWorkspaceError(409, "source bundle file count changed")
+            _git(["checkout", "-q", "--detach", revision], staging)
+            _git(["fsck", "--strict", "--no-dangling"], staging)
+            _git(["remote", "add", "origin", repository_url], staging)
+            if _git(["rev-parse", "HEAD"], staging).decode().strip() != revision:
+                raise PreviewWorkspaceError(
+                    409, "exact source checkout verification failed"
+                )
+            receipt = _checkout_receipt_at(staging, revision, repository_url)
+            if receipt["fileCount"] != source_file_count:
+                raise PreviewWorkspaceError(409, "source bundle file count changed")
+            if CHECKOUT.exists() or CHECKOUT.is_symlink():
+                raise PreviewWorkspaceError(
+                    409, "canonical checkout path already exists"
+                )
+            staging.rename(CHECKOUT)
+            staging = None
+            return {**receipt, "reused": False}
+        finally:
+            if bundle_path is not None:
+                bundle_path.unlink(missing_ok=True)
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
 
@@ -395,9 +654,7 @@ def _changed_paths(
             changed.add(path)
     untracked = sorted(workspace.difference(baseline))
     changed.update(untracked)
-    ignored = _ignored_paths(
-        [path for path in untracked if _in_scope(path, roots)]
-    )
+    ignored = _ignored_paths([path for path in untracked if _in_scope(path, roots)])
     ordered = sorted(changed)
     if len(ordered) > MAX_CHANGED_PATHS:
         raise PreviewWorkspaceError(413, "workspace has too many changed paths")

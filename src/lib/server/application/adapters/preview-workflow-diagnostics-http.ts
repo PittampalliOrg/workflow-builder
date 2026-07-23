@@ -395,7 +395,14 @@ export class HttpPreviewWorkflowDiagnosticsReadAdapter implements WorkflowDiagno
 		traceIds: string[],
 		query: Parameters<WorkflowDiagnosticsReadPort['searchSpans']>[2]
 	): Promise<ObservabilityTraceSpan[]> {
-		const result = await this.call('search-spans', execution, { traceIds, ...query });
+		const result = await this.call('search-spans', execution, {
+			traceIds,
+			query: query.query,
+			errorsOnly: query.errorsOnly,
+			serviceNames: query.serviceNames,
+			limit: query.limit,
+			offset: query.offset
+		});
 		if (!Array.isArray(result)) {
 			throw new PreviewWorkflowDiagnosticsTransportError('preview diagnostics spans are invalid');
 		}

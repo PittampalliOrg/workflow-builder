@@ -19,7 +19,9 @@ describe("preview control hexagonal boundary", () => {
       "src/lib/server/application/ports/preview-artifact-transfer.ts",
       "src/lib/server/application/ports/preview-read-broker.ts",
       "src/lib/server/application/ports/preview-runtime.ts",
+      "src/lib/server/application/ports/preview-workspace.ts",
       "src/lib/server/application/preview-pr-adoption.ts",
+      "src/lib/server/application/preview-workspace-source-broker.ts",
     ];
 
     expect(controlPort).toContain("export type PreviewControlIdentity");

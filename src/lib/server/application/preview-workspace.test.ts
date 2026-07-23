@@ -87,6 +87,13 @@ function harness(
   localIdentity: PreviewControlIdentity = IDENTITY,
   deployment: "preview" | "control-plane" = "preview",
 ) {
+  const fetchExact = vi.fn(async () => ({
+    repository: SOURCE_PLAN.repository,
+    sourceRevision: SOURCE,
+    bundle: new Uint8Array([7, 8, 9]),
+    bundleSha256: `sha256:${"f".repeat(64)}` as const,
+    fileCount: 42,
+  }));
   const seed = vi.fn(async () => ({ reused: false, fileCount: 42 }));
   const capture = vi.fn(async () => ({
     archive: new Uint8Array([1, 2, 3]),
@@ -152,6 +159,7 @@ function harness(
       allowsPreviewName: (name) => name === localIdentity.previewName,
     },
     catalog: { resolve: () => SOURCE_PLAN },
+    source: { fetchExact },
     workspace: { seed, capture },
     sidecar: {
       status: async () => ({
@@ -167,7 +175,7 @@ function harness(
       allowedCommands: () => ["check"],
     },
   });
-  return { service, seed, capture, sync, run };
+  return { service, fetchExact, seed, capture, sync, run };
 }
 
 describe("ApplicationPreviewWorkspaceService", () => {
@@ -190,6 +198,9 @@ describe("ApplicationPreviewWorkspaceService", () => {
       repository: "PittampalliOrg/workflow-builder",
       sourceRevision: SOURCE,
       repoSubdir: ".",
+      sourceBundle: new Uint8Array([7, 8, 9]),
+      sourceBundleSha256: `sha256:${"f".repeat(64)}`,
+      sourceFileCount: 42,
     });
   });
 
