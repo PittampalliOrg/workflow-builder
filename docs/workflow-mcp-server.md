@@ -179,6 +179,15 @@ forwarding remain deliberately disabled. A preview-local MCP endpoint is a
 separate audience and must not receive the dev workspace key through these
 tools.
 
+When a client connects directly to that preview-local endpoint,
+`run_workflow_script` can start a saved or inline dynamic script whose
+`meta.launch.surface` is `dev-environment`. The preview BFF derives the launch
+surface and canonical origin from its immutable deployment identity, then runs
+the normal workflow launch policy. Clients do not send an `Origin`,
+`previewOrigin`, or source revision to establish this authority. The same
+internal MCP start on the control-plane deployment remains generic and cannot
+impersonate the target-aware Dev launcher.
+
 On that direct preview connection, execution overview and authorization remain
 preview-local. Digest, span, LLM-turn, and correlated-log reads use the
 tuple-bound physical diagnostics adapter, so the normal trace tools work

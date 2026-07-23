@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
 		}),
 	);
 	const validateInternalToken = vi.fn(() => true);
+  const trustedInternalStartContext = vi.fn();
   const getExecutionById = vi.fn(
     async (): Promise<{
       id: string;
@@ -38,6 +39,7 @@ const mocks = vi.hoisted(() => {
     getExecutionById,
     createWorkflow,
     validateInternalToken,
+    trustedInternalStartContext,
     startWorkflowRun,
   };
 });
@@ -50,6 +52,9 @@ vi.mock("$lib/server/application", () => ({
     },
     workflowExecutions: { getById: mocks.getExecutionById },
 		workflowDefinitionCommands: { createWorkflow: mocks.createWorkflow },
+    workflowLaunchPolicy: {
+      trustedInternalStartContext: mocks.trustedInternalStartContext,
+    },
 	}),
 }));
 
@@ -84,6 +89,7 @@ function assertion() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.validateInternalToken.mockReturnValue(true);
+  mocks.trustedInternalStartContext.mockReturnValue(null);
   mocks.authorizePrincipal.mockResolvedValue({
     ok: true,
     principal: {
@@ -147,6 +153,34 @@ describe("POST /api/internal/agent/workflows/execute-script", () => {
       expect.objectContaining({
         userId: "user-1",
         projectId: "proj-1",
+      }),
+    );
+  });
+
+  it("uses deployment-owned launch context for inline scripts", async () => {
+    mocks.trustedInternalStartContext.mockReturnValue({
+      launchSurface: "dev-environment",
+      launchOrigin: "https://wfb-preview-one.tail286401.ts.net",
+    });
+    const res = await call(
+      req(
+        {
+          script: SCRIPT,
+          launchSurface: "forged",
+          launchOrigin: "https://wfb-other.example",
+        },
+        {
+          Origin: "https://wfb-attacker.other-tailnet.ts.net",
+          "X-Wfb-Principal-Assertion": assertion(),
+        },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.startWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchSurface: "dev-environment",
+        launchOrigin: "https://wfb-preview-one.tail286401.ts.net",
       }),
     );
   });

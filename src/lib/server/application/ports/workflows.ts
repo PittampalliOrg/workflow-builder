@@ -693,7 +693,17 @@ export type WorkflowLaunchPolicyResult =
 	| { ok: true; triggerData: unknown }
 	| { ok: false; status: number; error: string };
 
+export type TrustedWorkflowLaunchContext = Readonly<{
+	launchSurface: "dev-environment";
+	launchOrigin: string;
+}>;
+
 export interface WorkflowLaunchPolicyPort {
+	/**
+	 * Resolve deployment-owned launch provenance for authenticated internal
+	 * starts. No request values participate in this decision.
+	 */
+	trustedInternalStartContext(): TrustedWorkflowLaunchContext | null;
 	prepare(input: {
 		workflow: Pick<WorkflowDefinition, "name" | "spec">;
 		triggerData: unknown;

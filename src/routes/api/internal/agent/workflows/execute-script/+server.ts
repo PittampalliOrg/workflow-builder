@@ -146,6 +146,7 @@ export const POST: RequestHandler = async ({ request }) => {
 		triggerData: body.args,
 		userId: owner.userId,
     projectId: owner.projectId,
+		...(app.workflowLaunchPolicy.trustedInternalStartContext() ?? {}),
 		...(budgetTotal !== undefined ? { budgetTotal } : {}),
     ...(executionId ? { executionId, idempotent: true } : {}),
 	});
