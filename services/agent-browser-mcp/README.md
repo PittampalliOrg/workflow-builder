@@ -32,7 +32,9 @@ persists across calls within the session). On top of plain proxying it adds:
    `mcpServers` entry as `X-Wfb-Execution-Id` / `X-Wfb-Workflow-Id` / `X-Wfb-Node-Id`
    headers; after every artifact-producing tool call the bridge reads the produced file and
    POSTs it to `/api/internal/browser-artifacts`. They render on the run page's **Browser**
-   tab (screenshots + video inline, PDF/HAR as downloads).
+   tab (screenshots + video inline, PDF/HAR as downloads). A persisted screenshot keeps its
+   original MCP image block and appends one machine-readable
+   `WFB_ARTIFACT_REF=<storageRef>` text block from the server-returned execution scope.
 2. **Auto-capture.** The bridge is itself an MCP client of the child, so it starts a network
    HAR and a WebM video recording right after the agent's first successful
    `agent_browser_open`, and stops + persists both when the agent calls
@@ -40,9 +42,10 @@ persists across calls within the session). On top of plain proxying it adds:
    session teardown). LLMs — especially smaller ones — reliably stall on choreographing
    `record_start`/`record_stop` pairs; taking capture out of the LLM's hands entirely makes
    video + HAR unconditional.
-3. **Curated tool surface.** The child runs the full `core,network,debug,state` profiles (the
-   bridge needs the record/HAR/cookie tools), but both `tools/list` and `tools/call` are
-   restricted to a small action set (`AGENT_BROWSER_EXPOSED_TOOLS`, default 21 tools) with
+3. **Curated tool surface.** The child runs the `core,network,debug,state,mobile` profiles (the
+   bridge needs the record/HAR/cookie tools, while mobile supplies typed viewport/media
+   emulation), but both `tools/list` and `tools/call` are restricted to a small action set
+   (`AGENT_BROWSER_EXPOSED_TOOLS`, default 23 tools) with
    per-tool schemas pruned to public properties. Call arguments are rebuilt from the same
    allowlist, so hidden child plumbing such as session, namespace, restore state, headers,
    and output paths cannot override the bridge-owned lane. Configuration can narrow but
@@ -130,8 +133,8 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | var | default | meaning |
 | --- | --- | --- |
 | `PORT` | `8000` | HTTP port for the MCP endpoint |
-| `AGENT_BROWSER_TOOLS` | `core,network,debug,state` | child profiles; record/HAR/state are used only by bridge internals unless their tools are in the curated public set |
-| `AGENT_BROWSER_EXPOSED_TOOLS` | 21 curated tools | comma-separated subset allowed through `tools/list` and `tools/call`; empty restores the curated default |
+| `AGENT_BROWSER_TOOLS` | `core,network,debug,state,mobile` | child profiles; record/HAR/state remain bridge-internal while the curated viewport/media tools use the mobile profile |
+| `AGENT_BROWSER_EXPOSED_TOOLS` | 23 curated tools | comma-separated subset allowed through `tools/list` and `tools/call`; empty restores the curated default |
 | `AGENT_BROWSER_ARGS` | `--no-sandbox` | Chrome launch arguments for the pod-local fallback; the process itself runs as the unprivileged `node` image user |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |

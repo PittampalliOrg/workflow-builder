@@ -50,6 +50,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { renderDemo, readAndRm } from "./render.mjs";
 import {
+	appendPersistedArtifactReference,
+	persistedArtifactReferenceFromResponse,
+} from "./artifact-reference.mjs";
+import {
 	DEFAULT_EXPOSED_TOOLS,
 	inlineImage,
 	isExternallyCallableTool,
@@ -87,7 +91,8 @@ import { postBrowserLease } from "./browserstation-lease-client.mjs";
 
 const PORT = Number(process.env.PORT || 8000);
 // state = cookies/storage (the bridge's own target-auth cookie injection).
-const TOOLS = process.env.AGENT_BROWSER_TOOLS || "core,network,debug,state";
+const TOOLS =
+	process.env.AGENT_BROWSER_TOOLS || "core,network,debug,state,mobile";
 const BFF =
 	process.env.WORKFLOW_BUILDER_URL ||
 	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
@@ -337,7 +342,7 @@ async function persistBlob(
 	{ bucket, kind, payloadBase64, contentType, fileName },
 	signal,
 ) {
-	if (!ctx?.executionId || !TOKEN) return;
+	if (!ctx?.executionId || !TOKEN) return null;
 	const body = {
 		workflowExecutionId: ctx.executionId,
 		workflowId: ctx.workflowId,
@@ -364,15 +369,32 @@ async function persistBlob(
 		console.error(
 			`[artifact] ${fileName} (${contentType}) exec=${ctx.executionId} http=${resp.status}`,
 		);
+		if (!resp.ok) {
+			await resp.body?.cancel().catch(() => {});
+			return null;
+		}
+		const responseBody = await resp.json();
+		const persisted = persistedArtifactReferenceFromResponse(responseBody, {
+			executionId: ctx.executionId,
+			expectedKind: kind,
+		});
+		if (!persisted) {
+			console.error(
+				`[artifact] invalid persistence response for ${fileName} exec=${ctx.executionId}`,
+			);
+			return null;
+		}
+		return persisted;
 	} catch (err) {
 		if (signal?.aborted) throw signal.reason ?? err;
 		console.error(`[artifact] POST failed for ${fileName}: ${err?.message}`);
+		return null;
 	}
 }
 
 async function persistArtifact(ctx, seen, toolName, result, signal) {
 	const spec = ARTIFACT_TOOLS[toolName];
-	if (!spec || !ctx?.executionId || !TOKEN) return;
+	if (!spec || !ctx?.executionId || !TOKEN) return null;
 
 	let payloadBase64;
 	let contentType = spec.ct;
@@ -387,18 +409,18 @@ async function persistArtifact(ctx, seen, toolName, result, signal) {
 	}
 	if (!payloadBase64) {
 		const p = pathFromResult(result);
-		if (!p || seen.has(p)) return; // nothing new produced
+		if (!p || seen.has(p)) return null; // nothing new produced
 		seen.add(p);
 		try {
 			payloadBase64 = (await readFile(p, { signal })).toString("base64");
 		} catch (err) {
 			if (signal?.aborted) throw signal.reason ?? err;
 			console.error(`[artifact] read ${p} failed: ${err?.message}`);
-			return;
+			return null;
 		}
 		fileName = p.split("/").pop();
 	}
-	await persistBlob(
+	return persistBlob(
 		ctx,
 		{
 			bucket: spec.bucket,
@@ -1558,9 +1580,10 @@ async function makeProxy(ctxRef, browserContext) {
 					throw err;
 				}
 			}
+			let persistedArtifact = null;
 			if (ARTIFACT_TOOLS[name]) {
 				try {
-					await persistArtifact(
+					persistedArtifact = await persistArtifact(
 						ctxRef.value,
 						seenPaths,
 						name,
@@ -1570,6 +1593,12 @@ async function makeProxy(ctxRef, browserContext) {
 				} catch (err) {
 					console.error(`[artifact] persist error: ${err?.message}`);
 				}
+			}
+			if (
+				name === "agent_browser_screenshot" &&
+				persistedArtifact
+			) {
+				result = appendPersistedArtifactReference(result, persistedArtifact);
 			}
 			if (
 				name === "agent_browser_open" &&
