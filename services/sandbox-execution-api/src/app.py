@@ -2406,6 +2406,7 @@ def _cli_transcript_enabled(class_config: ExecutionClassConfig) -> bool:
 class PreviewStorageContext:
     scope_id: str
     storage_class: str
+    local_storage_class: str
 
 
 _PREVIEW_IDENTITY_ENV = (
@@ -2490,7 +2491,11 @@ def _preview_storage_context() -> PreviewStorageContext | None:
             status_code=503,
             detail="preview storage class does not match the issued scope id",
         )
-    return PreviewStorageContext(scope_id=scope_id, storage_class=expected_class)
+    return PreviewStorageContext(
+        scope_id=scope_id,
+        storage_class=expected_class,
+        local_storage_class=f"preview-local-{scope_id}",
+    )
 
 
 def _preview_storage_logical_key(value: str | None, *, field: str) -> str:
@@ -2858,7 +2863,22 @@ def _ensure_pydantic_scratch_pvc(
             }
         },
     }
-    storage_class = os.environ.get("SANDBOX_PYDANTIC_SCRATCH_STORAGE_CLASS", "").strip()
+    configured_storage_class = os.environ.get(
+        "SANDBOX_PYDANTIC_SCRATCH_STORAGE_CLASS", ""
+    ).strip()
+    preview_storage = _preview_storage_context()
+    if preview_storage is not None:
+        if (
+            configured_storage_class
+            and configured_storage_class != preview_storage.local_storage_class
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pydantic scratch storage class conflicts with preview storage identity",
+            )
+        storage_class = preview_storage.local_storage_class
+    else:
+        storage_class = configured_storage_class
     if storage_class:
         spec["storageClassName"] = storage_class
     body = {
