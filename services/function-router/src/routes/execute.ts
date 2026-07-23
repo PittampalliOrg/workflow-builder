@@ -971,6 +971,7 @@ export const PRIVILEGED_PREVIEW_ACTION_SLUGS = [
 	"dev/preview-acceptance",
 	"dev/preview-build",
 	"dev/preview-freeze",
+	"dev/preview-browser-evidence",
 ] as const;
 
 export type PreviewDevelopmentActionSlug = (typeof PREVIEW_DEVELOPMENT_ACTION_SLUGS)[number];
@@ -1555,7 +1556,14 @@ type DevPreviewProxyMode =
   | "promote"
   | "acceptance"
   | "build"
-  | "freeze";
+  | "freeze"
+  | "browser-evidence";
+
+export function buildBrowserEvidencePayload(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  return { evidence: input.evidence };
+}
 
 function expectsDurableDevPreviewActivation(
   input: Record<string, unknown>,
@@ -1850,6 +1858,16 @@ async function executeDevPreview(
           "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
         },
         body: JSON.stringify(freeze),
+      });
+    } else if (mode === "browser-evidence") {
+      res = await fetch(`${url}/browser-evidence`, {
+        method: "POST",
+				signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+        },
+        body: JSON.stringify(buildBrowserEvidencePayload(input)),
       });
     } else {
       const payload: Record<string, unknown> = {};
@@ -2978,7 +2996,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       functionSlug === "dev/preview-promote" ||
       functionSlug === "dev/preview-acceptance" ||
       functionSlug === "dev/preview-build" ||
-      functionSlug === "dev/preview-freeze"
+      functionSlug === "dev/preview-freeze" ||
+      functionSlug === "dev/preview-browser-evidence"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
@@ -2994,7 +3013,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   ? "build"
                   : functionSlug === "dev/preview-freeze"
                     ? "freeze"
-                    : "ensure",
+                    : functionSlug === "dev/preview-browser-evidence"
+                      ? "browser-evidence"
+                      : "ensure",
         body.db_execution_id,
       );
       // A staged dev/preview activation carries retryability and the target HTTP

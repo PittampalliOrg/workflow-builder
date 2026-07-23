@@ -26,7 +26,7 @@ RUN npm install -g agent-browser@0.31.2
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY bridge.mjs browser-lane-policy.mjs browserstation-lease-client.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
+COPY artifact-reference.mjs bridge.mjs browser-lane-policy.mjs browserstation-lease-client.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
 
 # Pre-download Chrome for Testing as the same unprivileged user that runs the
 # bridge. agent-browser stores both the browser and its daemon state below
@@ -39,9 +39,9 @@ USER node
 RUN agent-browser install
 
 # core = navigation/snapshot/screenshot/interaction; network = HAR; debug = video
-# recording + DevTools trace/profiler. Needed so agents can produce those artifacts.
+# recording + DevTools trace/profiler; mobile = typed viewport/media emulation.
 ENV PORT=8000 \
-	AGENT_BROWSER_TOOLS=core,network,debug,state \
+	AGENT_BROWSER_TOOLS=core,network,debug,state,mobile \
 	NODE_ENV=production
 EXPOSE 8000
 

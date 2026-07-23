@@ -399,6 +399,7 @@ import { ApplicationEvaluationRunDetailService } from "$lib/server/application/e
 import { ApplicationWorkflowDefinitionCommandService } from "$lib/server/application/workflow-definition-commands";
 import { ApplicationWorkflowExportService } from "$lib/server/application/workflow-export";
 import { ApplicationWorkflowBrowserArtifactsService } from "$lib/server/application/workflow-browser-artifacts";
+import { ApplicationWorkflowBrowserEvidenceService } from "$lib/server/application/workflow-browser-evidence";
 import { ApplicationWorkflowExecutionArtifactDiffService } from "$lib/server/application/workflow-execution-artifact-diff";
 import { ApplicationWorkflowExecutionArtifactsService } from "$lib/server/application/workflow-execution-artifacts";
 import { ApplicationScriptCallsService } from "$lib/server/application/script-calls";
@@ -1104,6 +1105,9 @@ export function getApplicationAdapters(
     | undefined;
   let workflowBrowserArtifacts:
     | ApplicationWorkflowBrowserArtifactsService
+    | undefined;
+  let workflowBrowserEvidence:
+    | ApplicationWorkflowBrowserEvidenceService
     | undefined;
   let workflowCodeCheckpoints:
     | ApplicationWorkflowCodeCheckpointService
@@ -2761,6 +2765,11 @@ export function getApplicationAdapters(
       new ApplicationWorkflowBrowserArtifactsService({
         workflowData: getWorkflowData(),
       }));
+  const getWorkflowBrowserEvidence = () =>
+    (workflowBrowserEvidence ??=
+      new ApplicationWorkflowBrowserEvidenceService({
+        workflowData: getWorkflowData(),
+      }));
   const getWorkflowCodeCheckpoints = () =>
     (workflowCodeCheckpoints ??= new ApplicationWorkflowCodeCheckpointService({
       checkpoints: getCodeCheckpoints(),
@@ -3449,6 +3458,9 @@ export function getApplicationAdapters(
     },
     get workflowBrowserArtifacts() {
       return getWorkflowBrowserArtifacts();
+    },
+    get workflowBrowserEvidence() {
+      return getWorkflowBrowserEvidence();
     },
     get workflowCodeCheckpoints() {
       return getWorkflowCodeCheckpoints();

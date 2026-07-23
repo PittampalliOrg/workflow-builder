@@ -45,6 +45,20 @@ describe("preview development action binding", () => {
     expect(
       previewActionRequestAuthorized("dev/preview-freeze", "token", "token"),
     ).toBe(true);
+		expect(
+			previewActionRequestAuthorized(
+				"dev/preview-browser-evidence",
+				undefined,
+				"token",
+			),
+		).toBe(false);
+		expect(
+			previewActionRequestAuthorized(
+				"dev/preview-browser-evidence",
+				"token",
+				"token",
+			),
+		).toBe(true);
     expect(
       previewActionRequestAuthorized("workspace/command", undefined, "token"),
     ).toBe(true);
