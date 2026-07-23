@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requirePreviewActionInternal: vi.fn(),
   resolveCanonicalExecutionId: vi.fn(async () => "exec-1"),
-	verifyBrowserEvidence: vi.fn(async () => ({
+  verifyBrowserEvidence: vi.fn(async (): Promise<unknown> => ({
     status: "ok" as const,
     body: {
       ok: true as const,
