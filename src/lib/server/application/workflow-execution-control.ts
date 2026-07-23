@@ -707,19 +707,28 @@ export class ApplicationWorkflowExecutionControlService {
 		// End-state seed (today's behavior): the source lineage's root workspace.
 		let seedWorkspaceFrom = await this.resolveWorkspaceExecutionId(source);
 		let seededFromSnapshot = false;
-		// Workspace-consistent fork (durability phase 3): if a node-boundary snapshot of
-		// the fork node exists, seed from THAT snapshot (the workspace as of `fromNodeId`)
-		// instead of the run's end state. Snapshots are written under the source run's OWN
-		// workspace key (its Dapr instance id), so look them up there. Any miss/failure
-		// falls through to the end-state seed above — never blocking the fork.
+		// Workspace-consistent fork (durability phase 3). Fork-from-N RE-EXECUTES node N —
+		// the interpreter skips only the prefix BEFORE N — so a consistent fork needs the
+		// workspace as it was BEFORE N ran. Snapshots are taken at node COMPLETION, so
+		// snapshot[N] is N's OWN output (wrong to feed back into N) and, in the common
+		// resume-after-failure case, snapshot[N] doesn't exist at all (N never completed).
+		// So seed from the NEAREST snapshot of a node strictly BEFORE `fromNodeId` in the
+		// interpreter's top-level order — i.e. the latest predecessor whose completion we
+		// captured. Snapshots live under the source run's OWN workspace key (its Dapr
+		// instance id). Any miss/failure falls through to the end-state seed above.
 		const snapshotKey = source.daprInstanceId;
 		if (this.deps.workspaceSnapshots && snapshotKey && fromNodeId) {
 			try {
-				const snapshots =
-					await this.deps.workspaceSnapshots.listSnapshots(snapshotKey);
-				if (snapshots.includes(fromNodeId)) {
-					seedWorkspaceFrom = `.snapshots/${snapshotKey}/${fromNodeId}`;
-					seededFromSnapshot = true;
+				const snapshots = new Set(
+					await this.deps.workspaceSnapshots.listSnapshots(snapshotKey),
+				);
+				const forkIndex = nodeIds.indexOf(fromNodeId);
+				for (let i = forkIndex - 1; i >= 0; i--) {
+					if (snapshots.has(nodeIds[i])) {
+						seedWorkspaceFrom = `.snapshots/${snapshotKey}/${nodeIds[i]}`;
+						seededFromSnapshot = true;
+						break;
+					}
 				}
 			} catch (err) {
 				console.warn(
