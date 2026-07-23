@@ -993,6 +993,7 @@ _ADOPT_ENV_LITERAL_NAMES = frozenset(
         "FUNCTION_ROUTER_DEV_IMAGE",
         "OPENSHELL_AGENT_RUNTIME_API_BASE_URL",
         "PREVIEW_CONTROL_BROKER_URL",
+        "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
         "SANDBOX_EXECUTION_API_URL",
         "SANDBOX_EXECUTION_CLASSES_FILE",
         "SANDBOX_EXECUTION_CLASSES_JSON",
@@ -1023,7 +1024,12 @@ _ADOPT_ENV_SECRET_NAMES = frozenset(
 _ADOPT_ENV_EXACT_SECRET_REFS = {
     "INTERNAL_API_TOKEN": ("workflow-builder-secrets", "INTERNAL_API_TOKEN"),
 }
-_ADOPT_ENV_IDENTITY_NAMES = frozenset(
+_ADOPT_ENV_EXACT_CONFIG_MAP_REFS = {
+    "APP_PUBLIC_URL": ("preview-environment-identity", "public-url"),
+    "ORIGIN": ("preview-environment-identity", "public-url"),
+    "PREVIEW_FUNCTION_REGISTRY_JSON": ("function-registry", "functions.json"),
+}
+_ADOPT_ENV_CONFIG_MAP_NAMES = frozenset(
     {
         "PREVIEW_ENVIRONMENT_CATALOG_DIGEST",
         "PREVIEW_ENVIRONMENT_NAME",
@@ -1031,6 +1037,14 @@ _ADOPT_ENV_IDENTITY_NAMES = frozenset(
         "PREVIEW_ENVIRONMENT_REQUEST_ID",
         "PREVIEW_ENVIRONMENT_SERVICES_JSON",
         "PREVIEW_ENVIRONMENT_SOURCE_REVISION",
+    }
+)
+_ADOPT_ENV_DEPLOYMENT_AUTHORITY_NAMES = frozenset(
+    {
+        "APP_PUBLIC_URL",
+        "ORIGIN",
+        "PREVIEW_FUNCTION_REGISTRY_JSON",
+        "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
     }
 )
 
@@ -1094,7 +1108,14 @@ def _filter_adopted_container_env(
                 ref = safe_ref["secretKeyRef"]
                 if ref["name"] != expected_name or ref["key"] != expected_key:
                     safe_ref = None
-        elif name in _ADOPT_ENV_IDENTITY_NAMES:
+        elif name in _ADOPT_ENV_EXACT_CONFIG_MAP_REFS:
+            safe_ref = _adopt_env_key_ref(value_from, "configMapKeyRef")
+            expected_name, expected_key = _ADOPT_ENV_EXACT_CONFIG_MAP_REFS[name]
+            if safe_ref is not None:
+                ref = safe_ref["configMapKeyRef"]
+                if ref["name"] != expected_name or ref["key"] != expected_key:
+                    safe_ref = None
+        elif name in _ADOPT_ENV_CONFIG_MAP_NAMES:
             safe_ref = _adopt_env_key_ref(value_from, "configMapKeyRef")
         else:
             safe_ref = None
@@ -4624,18 +4645,27 @@ def build_dev_preview_sandbox_manifest(
         if key not in overridden
     )
     # Preview-native adopt: merge the inherited prod Deployment inline env UNDERNEATH
-    # the dev env above (deduped by name; the dev env wins on collisions like
-    # NODE_ENV=development). This carries the prod CLI-runtime app-ids/images +
-    # DAPR_* secret/config-store knobs so the adopted BFF can dispatch CLI agent
-    # sandboxes instead of wedging interactive sessions. Preserves valueFrom entries.
-    if request.adoptInheritedEnv:
+    # the dev env above (deduped by name; the dev env wins on ordinary collisions
+    # like NODE_ENV=development). Deployment-owned public identity and capability
+    # registry entries are the exception: they must remain server-derived instead
+    # of accepting the caller's generic fallback. This also preserves valueFrom
+    # entries instead of serializing their values into the provisioning request.
+    deployment_authority = bool(request.previewNative and request.adoptDeployment)
+    if request.adoptInheritedEnv or deployment_authority:
         by_name: dict[str, dict[str, Any]] = {}
-        for entry in request.adoptInheritedEnv:
+        for entry in _filter_adopted_container_env(request.adoptInheritedEnv) or []:
             if isinstance(entry, dict) and entry.get("name"):
                 by_name[entry["name"]] = entry
-        for entry in env:  # dev env overrides the inherited prod env
-            if entry.get("name"):
-                by_name[entry["name"]] = entry
+        for entry in env:
+            name = entry.get("name")
+            if not name:
+                continue
+            # Never fall back to request.env for deployment-owned authority. If
+            # the live Deployment omitted or malformed one of these entries, the
+            # adopted pod also omits it and its capability adapter fails closed.
+            if deployment_authority and name in _ADOPT_ENV_DEPLOYMENT_AUTHORITY_NAMES:
+                continue
+            by_name[name] = entry
         env = list(by_name.values())
     # envFrom (configMapRef/secretRef) for a functional preview that reuses the
     # prod app's config + secrets. Request sources carry the service-specific
