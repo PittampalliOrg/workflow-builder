@@ -3,6 +3,7 @@ import http from "node:http";
 import { gzipSync } from "node:zlib";
 import * as tar from "tar-stream";
 import { describe, expect, it, vi } from "vitest";
+import { sessionHostAppId } from "$lib/server/sessions/agent-workflow-host";
 import {
   HttpPreviewWorkspaceSourceBundleAdapter,
   OneShotPreviewWorkspaceGateway,
@@ -135,6 +136,97 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
     secretEnv: { GITHUB_TOKEN: "not-logged" },
   };
 
+  it("uses the ready target returned by provision without a second wait", async () => {
+    const baseUrl = "http://10.244.1.20:8002";
+    let expectedSandboxName = "";
+    const provision = vi.fn(
+      async (params: {
+        sessionId: string;
+        provisioningStartedAt?: Date | null;
+      }) => {
+        const agentAppId = sessionHostAppId(
+          params.sessionId,
+          params.provisioningStartedAt,
+        );
+        expectedSandboxName = `agent-host-${agentAppId}`;
+        return {
+          agentAppId,
+          sandboxName: expectedSandboxName,
+          status: "ready",
+          baseUrl,
+          podIP: "10.244.1.20",
+        };
+      },
+    );
+    const wait = vi.fn();
+    const destroy = vi.fn(async (name: string) => ({
+      name,
+      kind: "runtime" as const,
+      status: "deleted" as const,
+    }));
+    const use = vi.fn(async (target: string) => `used ${target}`);
+
+    await expect(
+      runOneShotPreviewWorkspaceHelper(request, use, {
+        provision,
+        wait,
+        destroy,
+      }),
+    ).resolves.toBe(`used ${baseUrl}`);
+
+    expect(wait).not.toHaveBeenCalled();
+    expect(use).toHaveBeenCalledOnce();
+    expect(use).toHaveBeenCalledWith(baseUrl);
+    expect(destroy).toHaveBeenCalledWith(expectedSandboxName);
+  });
+
+  it("waits for readiness when provision does not return a ready target", async () => {
+    const baseUrl = "http://10.244.1.21:8002";
+    let expectedAppId = "";
+    const provision = vi.fn(
+      async (params: {
+        sessionId: string;
+        provisioningStartedAt?: Date | null;
+      }) => {
+        expectedAppId = sessionHostAppId(
+          params.sessionId,
+          params.provisioningStartedAt,
+        );
+        return {
+          agentAppId: expectedAppId,
+          sandboxName: `agent-host-${expectedAppId}`,
+          status: "queued",
+        };
+      },
+    );
+    const wait = vi.fn(async () => ({
+      ok: true as const,
+      attempts: 2,
+      status: 200,
+      baseUrl,
+      podName: "helper-pod",
+      podIP: "10.244.1.21",
+    }));
+    const destroy = vi.fn(async (name: string) => ({
+      name,
+      kind: "runtime" as const,
+      status: "deleted" as const,
+    }));
+    const use = vi.fn(async (target: string) => `used ${target}`);
+
+    await expect(
+      runOneShotPreviewWorkspaceHelper(request, use, {
+        provision,
+        wait,
+        destroy,
+      }),
+    ).resolves.toBe(`used ${baseUrl}`);
+
+    expect(wait).toHaveBeenCalledOnce();
+    expect(wait).toHaveBeenCalledWith({ agentAppId: expectedAppId });
+    expect(use).toHaveBeenCalledWith(baseUrl);
+  });
+
   it("cleans the expected generation when provisioning throws ambiguously", async () => {
     const destroy = vi.fn(async (name: string) => ({
       name,
@@ -163,18 +255,22 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
       status: "deleted" as const,
     }));
     const wait = vi.fn();
+    const use = vi.fn(async () => "unused");
     await expect(
-      runOneShotPreviewWorkspaceHelper(request, async () => "unused", {
+      runOneShotPreviewWorkspaceHelper(request, use, {
         provision: vi.fn(async () => ({
           agentAppId: "agent-attacker",
           sandboxName: "agent-host-agent-attacker",
           status: "ready",
+          baseUrl: "http://10.244.1.99:8002",
+          podIP: "10.244.1.99",
         })),
         wait,
         destroy,
       }),
     ).rejects.toThrow("mismatched identity");
     expect(wait).not.toHaveBeenCalled();
+    expect(use).not.toHaveBeenCalled();
     expect(destroy).toHaveBeenCalledOnce();
     expect(destroy).not.toHaveBeenCalledWith("agent-host-agent-attacker");
   });

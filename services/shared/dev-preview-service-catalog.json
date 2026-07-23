@@ -1,5 +1,5 @@
 {
-  "catalogDigest": "sha256:7c092c51706e53d1de568a3f72ab6576c467a63dc5d05866087db7708d507cff",
+  "catalogDigest": "sha256:04e770070563d014dfff0d984bea5943326658b133f0e96bb63fc885c36363e7",
   "pathPolicy": {
     "ignoredPathPrefixes": [
       ".dependency-cruiser.cjs",
@@ -523,6 +523,7 @@
           "check": "export NODE_OPTIONS=--max-old-space-size=3072; node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json",
           "contract": "node_modules/.bin/vitest run src/routes/api/internal/workflow-data/workflow-data-contract.test.ts",
           "migrate": "node scripts/db-migrate-runtime.mjs",
+          "test-drasi": "node_modules/.bin/vitest run drasi",
           "test-unit": "node_modules/.bin/vitest run src/routes/api/v1/dashboard/dashboard-route.test.ts src/routes/api/internal/preview-development/target/preview-target-development-route.test.ts src/lib/dev-preview-checkpoint-promotion.test.ts"
         },
         "workdir": "/app"

@@ -298,10 +298,15 @@ export async function runOneShotPreviewWorkspaceHelper<T>(
         "preview workspace helper returned a mismatched identity",
       );
     }
-    const ready = await lifecycle.wait({
-      agentAppId: expectedAppId,
-    });
-    result = await use(ready.baseUrl);
+    const baseUrl =
+      provisioned.status === "ready" && provisioned.baseUrl
+        ? provisioned.baseUrl
+        : (
+            await lifecycle.wait({
+              agentAppId: expectedAppId,
+            })
+          ).baseUrl;
+    result = await use(baseUrl);
   } catch (cause) {
     failure = cause;
   }
