@@ -158,11 +158,13 @@ wins over the provider env default). Each provider clamps to its accepted set:
 | DeepSeek | `high` | `max` |
 | OpenAI (gpt-5/o-series) | as given | `high` |
 | Anthropic               | ignored               | ignored       |
-| Kimi K3                 | `max`                 | `max`         |
+| Kimi K3                 | `low`/`high` preserved; `medium` → `max` | `max` preserved; `xhigh` → `max` |
 
-Kimi K3 always uses max thinking. For GLM/DeepSeek, `effort` differentiates between the
-≤`high` band and `xhigh`/`max`; OpenAI accepts low/medium/high. The requested value still
-participates in the callId hash, so changing it between resume attempts re-runs that call.
+Kimi K3 accepts `low`, `high`, and `max`; unset or unsupported agent-level values fall
+back to the deployed `max` default. Direct preview-runtime wire requests are stricter and
+reject K3 effort values outside that set. For GLM/DeepSeek, `effort` differentiates between
+the ≤`high` band and `xhigh`/`max`; OpenAI accepts low/medium/high. The requested value
+still participates in the callId hash, so changing it between resume attempts re-runs that call.
 
 ### 5. `budget` counts more than output tokens
 

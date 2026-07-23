@@ -1,9 +1,12 @@
 import type {
   PreviewDeploymentScopePort,
+  PreviewLocalControlIdentityPort,
+  PreviewWorkspaceExecutionBinding,
   TrustedWorkflowLaunchContext,
   WorkflowLaunchPolicyPort,
   WorkflowLaunchPolicyResult,
 } from "$lib/server/application/ports";
+import { PREVIEW_WORKSPACE_ACTION_SLUGS } from "$lib/server/application/ports";
 import {
   canonicalPreviewOrigin,
   previewNameFromOrigin,
@@ -12,6 +15,9 @@ import { getWorkflowLaunchSurface, getWorkflowLaunchTarget } from "$lib/utils/wo
 import { parseScriptStructure } from "$lib/utils/script-graph-adapter";
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
+const EXECUTION_BOUND_PREVIEW_ACTIONS = new Set<string>(
+	PREVIEW_WORKSPACE_ACTION_SLUGS,
+);
 
 function trustedTailnetSuffix(raw: string | null | undefined): string | null {
   if (!raw?.trim()) return null;
@@ -66,6 +72,7 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
 				message: string | null;
 			};
 		},
+		private readonly identity?: PreviewLocalControlIdentityPort,
 	) {}
 
 	trustedInternalStartContext(): TrustedWorkflowLaunchContext | null {
@@ -91,7 +98,8 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
   prepare(
     input: Parameters<WorkflowLaunchPolicyPort["prepare"]>[0],
   ): WorkflowLaunchPolicyResult {
-		for (const slug of declaredActionSlugs(input.workflow.spec)) {
+		const actionSlugs = declaredActionSlugs(input.workflow.spec);
+		for (const slug of actionSlugs) {
 			const availability = this.capabilities?.actionAvailability(slug);
 			if (availability && !availability.available) {
 				return policyError(
@@ -100,8 +108,17 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
 				);
 			}
 		}
+		const requiresPreviewWorkspaceBinding = actionSlugs.some((slug) =>
+			EXECUTION_BOUND_PREVIEW_ACTIONS.has(slug),
+		);
     const requiredSurface = getWorkflowLaunchSurface(input.workflow.spec);
     if (requiredSurface === "generic") {
+			if (requiresPreviewWorkspaceBinding) {
+				return policyError(
+					409,
+					"Execution-bound preview workspace actions require a target-aware Dev launch.",
+				);
+			}
       return { ok: true, triggerData: input.triggerData };
     }
     if (input.launchSurface !== requiredSurface) {
@@ -123,6 +140,12 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
 			return { ok: true, triggerData };
 		}
     if (deployment.kind === "control-plane") {
+			if (requiresPreviewWorkspaceBinding) {
+				return policyError(
+					409,
+					"Execution-bound preview workspace actions require an app-live preview deployment.",
+				);
+			}
       const hostTriggerData = { ...triggerData };
       delete hostTriggerData.previewOrigin;
       delete hostTriggerData.sourceRevision;
@@ -167,6 +190,45 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
       );
     }
 
+		let previewWorkspaceBinding: PreviewWorkspaceExecutionBinding | undefined;
+		if (requiresPreviewWorkspaceBinding) {
+			const expectedPlatformRevision =
+				deployment.preview.platformRevision?.trim() ?? "";
+			if (!FULL_GIT_SHA.test(expectedPlatformRevision)) {
+				return policyError(
+					409,
+					"The target preview does not expose an exact platform revision",
+				);
+			}
+			let local;
+			try {
+				local = this.identity?.current(deployment.preview.name);
+			} catch {
+				local = undefined;
+			}
+			if (
+				!local ||
+				local.previewName !== deployment.preview.name ||
+				local.environmentSourceRevision !== expectedRevision ||
+				local.environmentPlatformRevision !== expectedPlatformRevision
+			) {
+				return policyError(
+					409,
+					"The local preview workspace identity does not match the current immutable preview generation.",
+				);
+			}
+			previewWorkspaceBinding = Object.freeze({
+				version: 1 as const,
+				target: Object.freeze({
+					previewName: local.previewName,
+					environmentRequestId: local.environmentRequestId,
+					platformRevision: local.environmentPlatformRevision,
+					sourceRevision: local.environmentSourceRevision,
+					catalogDigest: local.catalogDigest,
+				}),
+			});
+		}
+
     return {
       ok: true,
       triggerData: {
@@ -175,6 +237,7 @@ export class ApplicationWorkflowLaunchPolicyService implements WorkflowLaunchPol
         previewOrigin: expectedOrigin,
         sourceRevision: expectedRevision,
       },
+			...(previewWorkspaceBinding ? { previewWorkspaceBinding } : {}),
     };
   }
 }

@@ -484,6 +484,7 @@ def _call_gateway_chat(
     tool_choice: Any = None,
     native_json_schema: dict[str, Any] | None = None,
     structured_output_tool: bool = False,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """Issue a single request to the configured OpenAI-compatible gateway."""
 
@@ -552,6 +553,7 @@ def _call_gateway_chat(
             body,
             response_format=response_format,
             native_json_schema=(native_json_schema if not tool_mode else None),
+            reasoning_effort=reasoning_effort,
         )
     elif response_format is not None:
         # Generic OpenAI shim accepts response_format as JSON-object hint.
@@ -955,6 +957,11 @@ def patch_for_gateway(llm_client: Any) -> None:
                 gateway_model == "kimi-k3"
                 and response_format is None
                 and getattr(self, "_structured_output_mode", None) == "tool"
+            ),
+            reasoning_effort=(
+                getattr(self, "_reasoning_effort", None)
+                if gateway_model == "kimi-k3"
+                else None
             ),
         )
 

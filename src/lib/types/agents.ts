@@ -245,10 +245,9 @@ export type AgentConfig = {
 
 	/**
 	 * Per-agent reasoning effort, resolved per turn into the effective config
-	 * and stamped onto the provider adapter's chat call (each adapter maps the
-	 * vocabulary to its accepted values — e.g. kimi-k3 currently accepts only
-	 * `"max"`, so other values clamp with a warning). Unset uses the provider
-	 * default.
+	 * and stamped onto the provider adapter's chat call. Each adapter maps the
+	 * vocabulary to its accepted values. Kimi K3 preserves low/high/max and
+	 * defaults unsupported or unset agent-level values to max.
 	 */
 	reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 

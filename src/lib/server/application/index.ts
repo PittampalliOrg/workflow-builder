@@ -1998,6 +1998,7 @@ export function getApplicationAdapters(
   const workflowLaunchPolicy = new ApplicationWorkflowLaunchPolicyService(
     previewDeploymentScope,
     deploymentCapabilities,
+    new EnvironmentPreviewLocalControlIdentityAdapter(),
   );
   const getPreviewAccess = () =>
     (previewAccess ??= new ApplicationPreviewAccessService({
@@ -2198,6 +2199,7 @@ export function getApplicationAdapters(
         getWorkflowData().getExecutionById(executionId),
       isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
       identity: getPreviewLocalControlIdentity(),
+      scope: previewDeploymentScope,
       catalog: new LocalPreviewWorkspaceCatalogAdapter(),
       workspace: new OneShotPreviewWorkspaceGateway(),
       sidecar: getDevPreviewSidecar(),

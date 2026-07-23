@@ -107,6 +107,36 @@ def test_kimi_k3_gateway_uses_max_reasoning_and_completion_defaults(monkeypatch)
     assert result["reasoning_content"] == "I checked the result."
 
 
+def test_kimi_k3_gateway_forwards_supported_per_agent_reasoning_effort(monkeypatch) -> None:
+    requests = []
+    monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+
+    def urlopen(req, timeout: int):
+        requests.append(req)
+        return _Response({
+            "choices": [{
+                "message": {"role": "assistant", "content": "done"},
+                "finish_reason": "stop",
+            }],
+        })
+
+    monkeypatch.setattr(adapter.urllib.request, "urlopen", urlopen)
+
+    for effort in ("low", "high"):
+        adapter._call_gateway_chat(
+            "llm-kimi-k3",
+            "kimi-k3",
+            [{"role": "user", "content": "Finish the task."}],
+            reasoning_effort=effort,
+        )
+
+    assert [json.loads(request.data)["reasoning_effort"] for request in requests] == [
+        "low",
+        "high",
+    ]
+
+
 def test_kimi_k3_gateway_replays_reasoning_with_tool_history(monkeypatch) -> None:
     requests = []
     monkeypatch.setenv("LLM_GATEWAY_OPENAI_BASE_URL", "http://gateway.test/v1")
@@ -340,6 +370,7 @@ def test_gateway_patch_threads_kimi_schema_and_tool_modes(monkeypatch) -> None:
     try:
         client = DaprChatClient(component_name="llm-kimi-k3")
         client._llm_component = "llm-kimi-k3"
+        client._reasoning_effort = "low"
         client._response_json_schema = schema
         adapter.patch_for_gateway(client)
         response = client.generate([{"role": "user", "content": "Decide."}])
@@ -355,8 +386,10 @@ def test_gateway_patch_threads_kimi_schema_and_tool_modes(monkeypatch) -> None:
     assert captured[0]["native_json_schema"] == schema
     assert captured[0]["structured_output_tool"] is False
     assert captured[0]["gateway_model"] == "kimi-k3"
+    assert captured[0]["reasoning_effort"] == "low"
     assert captured[1]["native_json_schema"] == schema
     assert captured[1]["structured_output_tool"] is True
+    assert captured[1]["reasoning_effort"] == "low"
     stored = response.get_message().model_dump()
     assert stored["content"] == '{"ok":true}'
     assert stored["reasoning_content"] == "The result satisfies the schema."

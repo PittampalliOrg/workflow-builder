@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ApplicationWorkflowLaunchPolicyService } from "$lib/server/application/workflow-launch-policy";
-import type { PreviewDeploymentScopePort } from "$lib/server/application/ports";
+import { PREVIEW_WORKSPACE_ACTION_SLUGS } from "$lib/server/application/ports";
+import type {
+  PreviewDeploymentScopePort,
+  PreviewLocalControlIdentityPort,
+} from "$lib/server/application/ports";
 
 const spec = {
   document: {
@@ -14,6 +18,14 @@ const hostLifecycleSpec = {
 		launch: { surface: "dev-environment", target: "control-plane" },
 	},
 };
+const securePreviewSpec = {
+  engine: "dynamic-script",
+  meta: {
+    launch: { surface: "dev-environment" },
+  },
+  script:
+    "export const meta = { name: 'secure preview', launch: { surface: 'dev-environment' } }; return action('dev/preview-workspace-seed', { service: 'workflow-builder' });",
+};
 
 function scope(
   current: ReturnType<PreviewDeploymentScopePort["current"]>,
@@ -22,6 +34,23 @@ function scope(
     current: () => current,
     isControlPlane: () => current.kind === "control-plane",
     allowsPreviewName: () => true,
+  };
+}
+
+function identity(
+  overrides: Partial<
+    ReturnType<PreviewLocalControlIdentityPort["current"]>
+  > = {},
+): PreviewLocalControlIdentityPort {
+  return {
+    current: () => ({
+      previewName: "feature-one",
+      environmentRequestId: "request-1",
+      environmentPlatformRevision: "b".repeat(40),
+      environmentSourceRevision: revision,
+      catalogDigest: `sha256:${"c".repeat(64)}`,
+      ...overrides,
+    }),
   };
 }
 
@@ -158,6 +187,187 @@ describe("ApplicationWorkflowLaunchPolicyService", () => {
         sourceRevision: revision,
       },
     });
+  });
+
+  it("returns immutable execution authority for secure preview workspace actions", () => {
+    const forgedContext = {
+      target: {
+        previewName: "forged",
+        environmentRequestId: "forged",
+      },
+    };
+    const service = new ApplicationWorkflowLaunchPolicyService(
+      scope({
+        kind: "preview",
+        preview: {
+          name: "feature-one",
+          profile: "app-live",
+          platformRevision: "b".repeat(40),
+          sourceRevision: revision,
+          origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+        },
+      }),
+      undefined,
+      identity(),
+    );
+
+    expect(
+      service.prepare({
+        workflow: { name: "secure", spec: securePreviewSpec },
+        launchSurface: "dev-environment",
+        launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+        triggerData: {
+          intent: "change",
+          __previewDevelopment: forgedContext,
+        },
+      }),
+    ).toEqual({
+      ok: true,
+      triggerData: {
+        intent: "change",
+        __previewDevelopment: forgedContext,
+        mode: "preview-native",
+        previewOrigin: "https://wfb-feature-one.tail286401.ts.net",
+        sourceRevision: revision,
+      },
+      previewWorkspaceBinding: {
+        version: 1,
+        target: {
+          previewName: "feature-one",
+          environmentRequestId: "request-1",
+          platformRevision: "b".repeat(40),
+          sourceRevision: revision,
+          catalogDigest: `sha256:${"c".repeat(64)}`,
+        },
+      },
+    });
+  });
+
+  it("fails closed when secure action authority cannot be derived locally", () => {
+    const deployment = scope({
+      kind: "preview",
+      preview: {
+        name: "feature-one",
+        profile: "app-live",
+        platformRevision: "b".repeat(40),
+        sourceRevision: revision,
+        origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+      },
+    });
+    const missing = new ApplicationWorkflowLaunchPolicyService(deployment);
+    const stale = new ApplicationWorkflowLaunchPolicyService(
+      deployment,
+      undefined,
+      identity({ environmentSourceRevision: "d".repeat(40) }),
+    );
+    const stalePlatform = new ApplicationWorkflowLaunchPolicyService(
+      deployment,
+      undefined,
+      identity({ environmentPlatformRevision: "e".repeat(40) }),
+    );
+
+    for (const service of [missing, stale, stalePlatform]) {
+      expect(
+        service.prepare({
+          workflow: { name: "secure", spec: securePreviewSpec },
+          launchSurface: "dev-environment",
+          launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+          triggerData: {},
+        }),
+      ).toMatchObject({ ok: false, status: 409 });
+    }
+  });
+
+  it("requires an exact platform revision before deriving workspace authority", () => {
+    const service = new ApplicationWorkflowLaunchPolicyService(
+      scope({
+        kind: "preview",
+        preview: {
+          name: "feature-one",
+          profile: "app-live",
+          platformRevision: null,
+          sourceRevision: revision,
+          origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+        },
+      }),
+      undefined,
+      identity(),
+    );
+
+    expect(
+      service.prepare({
+        workflow: { name: "secure", spec: securePreviewSpec },
+        launchSurface: "dev-environment",
+        launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+        triggerData: {},
+      }),
+    ).toEqual({
+      ok: false,
+      status: 409,
+      error: "The target preview does not expose an exact platform revision",
+    });
+  });
+
+  it("keeps policy coverage aligned with every preview workspace action", () => {
+    expect(PREVIEW_WORKSPACE_ACTION_SLUGS).toEqual([
+      "dev/preview-workspace-seed",
+      "dev/preview-workspace-sync",
+      "dev/preview-sidecar-run",
+    ]);
+    const service = new ApplicationWorkflowLaunchPolicyService(
+      scope({
+        kind: "preview",
+        preview: {
+          name: "feature-one",
+          profile: "app-live",
+          platformRevision: "b".repeat(40),
+          sourceRevision: revision,
+          origin: "https://workflow-builder-ryzen.tail286401.ts.net",
+        },
+      }),
+      undefined,
+      identity(),
+    );
+
+    for (const slug of PREVIEW_WORKSPACE_ACTION_SLUGS) {
+      expect(
+        service.prepare({
+          workflow: {
+            name: slug,
+            spec: {
+              engine: "dynamic-script",
+              meta: { launch: { surface: "dev-environment" } },
+              script: `export const meta = { name: 'secure', launch: { surface: 'dev-environment' } }; return action('${slug}', { service: 'workflow-builder' });`,
+            },
+          },
+          launchSurface: "dev-environment",
+          launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+          triggerData: {},
+        }),
+      ).toMatchObject({
+        ok: true,
+        previewWorkspaceBinding: { version: 1 },
+      });
+    }
+  });
+
+  it("rejects secure preview workspace actions on a generic launch", () => {
+    const service = new ApplicationWorkflowLaunchPolicyService(
+      scope({ kind: "control-plane" }),
+    );
+    const genericSecureSpec = {
+      ...securePreviewSpec,
+      meta: { name: "generic secure" },
+      script:
+        "export const meta = { name: 'generic secure' }; return action('dev/preview-workspace-seed', { service: 'workflow-builder' });",
+    };
+
+    expect(
+      service.prepare({
+        workflow: { name: "secure", spec: genericSecureSpec },
+        triggerData: {},
+      }),
+    ).toMatchObject({ ok: false, status: 409 });
   });
 
   it("rejects a request origin on a different Tailnet", () => {

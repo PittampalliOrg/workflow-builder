@@ -45,7 +45,7 @@ PLATFORM RULES (get these right):
 3. opts.isolation: use 'shared' to put agents on ONE shared workspace; default is per-agent
    isolated. 'worktree' is a no-op here.
 4. opts.effort ('low'|'medium'|'high'|'xhigh'|'max') is honored, clamped per provider.
-   Kimi K3 always runs at max thinking regardless of the requested value.
+   Kimi K3 preserves low/high/max and defaults unsupported or unset values to max.
 5. budget.spent() counts input+output+cache_creation (net of cache reads), NOT output-only.
    Exhaustion makes unresolved agent() calls throw; in-flight agents still finish.
    Guard loops: while (budget.total && budget.remaining() > N) {...}.

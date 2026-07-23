@@ -210,10 +210,11 @@ that reason, documented here per the granularity escape hatch.
 ## Model: kimi-k3 (only v1 provider)
 
 `KIMI_BASE_URL` (default `https://api.kimi.com/coding/v1`) + `KIMI_API_KEY`;
-kimi-k3 accepts only `temperature=1`, `frequency_penalty=0`, and always runs
-max reasoning (`extra_body.reasoning_effort=max`) — enforced in
-`build_model_settings()`. The same settings apply to ordinary and structured
-output calls. Replay-safe K3 history compaction reserves K3's configured
+kimi-k3 requires `temperature=1` and `frequency_penalty=0`, and accepts
+`reasoning_effort=low|high|max`. `build_model_settings(agentConfig)` derives
+that value per agent; unset or unsupported agent-level values use the deployed
+`max` default. The same settings apply to ordinary and structured output calls.
+Replay-safe K3 history compaction reserves K3's configured
 131,072-token completion budget plus a 13,000-token provider/tool-schema safety
 buffer inside the provider-capped 1,048,576-token context window
 (`KIMI_CONTEXT_WINDOW`). Near the estimated boundary, the request adapter

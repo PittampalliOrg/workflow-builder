@@ -197,6 +197,7 @@ def test_tool_builds_with_spec_carrying_description():
         "parallel(thunks)",
         "Date.now()",
         "opts.schema",
+        "Kimi K3 preserves low/high/max",
         "exactly ONE of",
         "ONE level only",
     ):

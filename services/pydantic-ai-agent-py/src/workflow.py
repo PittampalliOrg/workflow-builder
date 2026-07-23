@@ -27,7 +27,7 @@ import urllib.request
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import dapr.ext.workflow as wf
 from dapr.ext.workflow._durabletask.task import NonRetryableError
@@ -858,9 +858,31 @@ def _kimi_model_profile(base: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_model_settings() -> dict[str, Any]:
-    """kimi-k3 accepts only temperature=1 / frequency_penalty=0 and always
-    runs max reasoning (verified against the live Kimi-for-Coding endpoint)."""
+def resolve_kimi_reasoning_effort(
+    agent_config: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve the per-agent K3 effort over the operator default."""
+    configured = (agent_config or {}).get("reasoningEffort")
+    raw = (
+        configured
+        if configured is not None and str(configured).strip()
+        else os.environ.get("KIMI_REASONING_EFFORT", "max")
+    )
+    effort = str(raw).strip().lower()
+    if effort in {"low", "high", "max"}:
+        return effort
+    logger.warning(
+        "[kimi-chat] unsupported reasoning_effort=%r requested for kimi-k3; "
+        "defaulting to 'max'",
+        effort,
+    )
+    return "max"
+
+
+def build_model_settings(
+    agent_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build K3's fixed sampling settings plus its per-agent thinking level."""
     from pydantic_ai.settings import ModelSettings
 
     return ModelSettings(
@@ -868,7 +890,9 @@ def build_model_settings() -> dict[str, Any]:
         frequency_penalty=0,
         max_tokens=KIMI_MAX_COMPLETION_TOKENS,
         timeout=float(KIMI_TIMEOUT_SECONDS),
-        extra_body={"reasoning_effort": "max"},
+        extra_body={
+            "reasoning_effort": resolve_kimi_reasoning_effort(agent_config),
+        },
     )
 
 
@@ -1229,7 +1253,7 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
         request_context = ModelRequestContext(
             model=model,
             messages=messages,
-            model_settings=build_model_settings(),
+            model_settings=build_model_settings(agent_cfg),
             model_request_parameters=params,
         )
         # Capability hook chain, hosted inside this durable activity:

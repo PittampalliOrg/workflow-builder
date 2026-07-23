@@ -343,7 +343,7 @@ export function registerWorkflowTools(
 					.enum(["low", "medium", "high", "xhigh", "max"])
 					.optional()
 					.describe(
-						"Per-agent reasoning effort (agentConfig.reasoningEffort), resolved per turn into the provider request. NOTE: kimi-k3 currently accepts only 'max' — other values clamp with a warning until lower levels ship.",
+						"Per-agent reasoning effort (agentConfig.reasoningEffort), resolved per turn into the provider request. Kimi K3 accepts 'low', 'high', and 'max'; unset or unsupported K3 values use the deployed 'max' default.",
 					),
 				mcp_servers: z
 					.array(
