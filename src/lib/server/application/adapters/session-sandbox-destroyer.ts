@@ -10,6 +10,10 @@ type SandboxExecutionApiConfig = {
 	token: string;
 };
 
+type RuntimeSandboxDeleteOptions = Readonly<{
+	timeoutMs?: number;
+}>;
+
 const DEFAULT_SANDBOX_DELETE_TIMEOUT_MS = 8_000;
 
 function sandboxExecutionApiConfig(): SandboxExecutionApiConfig | null {
@@ -66,27 +70,29 @@ export class SandboxExecutionApiSessionSandboxDestroyer
 		private readonly fetchImpl: typeof fetch = fetch,
 		private readonly resolveConfig: () => SandboxExecutionApiConfig | null =
 			sandboxExecutionApiConfig,
-		private readonly requestTimeoutMs = DEFAULT_SANDBOX_DELETE_TIMEOUT_MS,
+		private readonly defaultRequestTimeoutMs = DEFAULT_SANDBOX_DELETE_TIMEOUT_MS,
 	) {}
 
 	private async fetchJsonWithTimeout(
 		url: string,
 		init: RequestInit,
+		requestTimeoutMs: number,
 	): Promise<{
 		response: Response;
 		body: Record<string, unknown>;
 	}> {
-		const timeoutMs = Math.max(1, Math.trunc(this.requestTimeoutMs));
+		const timeoutMs = Math.max(1, Math.trunc(requestTimeoutMs));
 		const controller = new AbortController();
+		const timeoutError = new Error(
+			`sandbox-execution-api request timed out after ${timeoutMs}ms`,
+		);
+		let timedOut = false;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			timeout = setTimeout(() => {
-				controller.abort();
-				reject(
-					new Error(
-						`sandbox-execution-api request timed out after ${timeoutMs}ms`,
-					),
-				);
+				timedOut = true;
+				reject(timeoutError);
+				controller.abort(timeoutError);
 			}, timeoutMs);
 		});
 		try {
@@ -110,6 +116,11 @@ export class SandboxExecutionApiSessionSandboxDestroyer
 				requestPromise,
 				timeoutPromise,
 			]);
+		} catch (error) {
+			// abort() can make an abort-aware fetch reject before Promise.race
+			// observes timeoutPromise. Normalize either winner to one contract.
+			if (timedOut) throw timeoutError;
+			throw error;
 		} finally {
 			if (timeout) clearTimeout(timeout);
 		}
@@ -117,6 +128,7 @@ export class SandboxExecutionApiSessionSandboxDestroyer
 
 	async deleteRuntimeSandbox(
 		name: string,
+		options: RuntimeSandboxDeleteOptions = {},
 	): Promise<SessionSandboxDeleteResult> {
 		const normalized = name.trim();
 		const agentAppId = runtimeAgentAppId(normalized);
@@ -140,6 +152,7 @@ export class SandboxExecutionApiSessionSandboxDestroyer
 						? { Authorization: `Bearer ${config.token}` }
 						: {},
 				},
+				options.timeoutMs ?? this.defaultRequestTimeoutMs,
 			);
 			if (!response.ok) {
 				throw new Error(

@@ -35,6 +35,8 @@ const MAX_RESPONSE_BYTES = 4 + MAX_METADATA_BYTES + MAX_ARCHIVE_BYTES;
 const SOURCE_BUNDLE_CONTENT_TYPE = "application/vnd.git.bundle";
 const SAFE_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SAFE_REVISION = /^[0-9a-f]{40}$/;
+// SEA enforces a 40s absolute deadline for authoritative host deletion.
+export const PREVIEW_WORKSPACE_HELPER_CLEANUP_TIMEOUT_MS = 45_000;
 
 type HelperRequest = Readonly<{
   executionId: string;
@@ -61,7 +63,10 @@ function defaultHelperLifecycle(): HelperLifecycle {
   const destroyer = new SandboxExecutionApiSessionSandboxDestroyer();
   return {
     provision: maybeProvisionAgentWorkflowHost,
-    destroy: (sandboxName) => destroyer.deleteRuntimeSandbox(sandboxName),
+    destroy: (sandboxName) =>
+      destroyer.deleteRuntimeSandbox(sandboxName, {
+        timeoutMs: PREVIEW_WORKSPACE_HELPER_CLEANUP_TIMEOUT_MS,
+      }),
   };
 }
 

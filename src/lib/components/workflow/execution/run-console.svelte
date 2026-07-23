@@ -30,6 +30,7 @@
 	} from '$lib/components/workflow/execution/run-metrics-bar.svelte';
 	import ProvisioningStepper from '$lib/components/workflow/execution/provisioning-stepper.svelte';
 	import ScriptPhaseRail from '$lib/components/workflow/execution/script-phase-rail.svelte';
+	import { createSessionListRefreshCoordinator } from '$lib/components/workflow/execution/session-list-refresh';
 	import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '$lib/components/ui/collapsible';
 	import { fmtTokens } from '$lib/utils/format-tokens';
 	import {
@@ -123,8 +124,8 @@
 			} else {
 				tokensPerSec = null;
 			}
-			// New snapshot is a good moment to refresh the authoritative session list.
-			if (s.snapshot) void refreshSessions();
+			// A genuinely new snapshot is a good moment to refresh the authoritative session list.
+			void sessionListRefresh.refreshForSnapshot(s.snapshot);
 		});
 		return () => {
 			unsub();
@@ -145,6 +146,8 @@
 		}
 	}
 
+	const sessionListRefresh = createSessionListRefreshCoordinator(refreshSessions);
+
 	const runActive = $derived(
 		runStatus === 'running' ||
 			runStatus === 'pending' ||
@@ -154,9 +157,9 @@
 	);
 
 	$effect(() => {
-		void refreshSessions();
+		void sessionListRefresh.refresh();
 		if (!runActive) return;
-		const t = setInterval(refreshSessions, 4000);
+		const t = setInterval(() => void sessionListRefresh.refresh(), 4000);
 		return () => clearInterval(t);
 	});
 
