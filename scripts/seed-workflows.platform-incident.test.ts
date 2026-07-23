@@ -76,7 +76,7 @@ describe("platform incident analysis seed", () => {
     expect(contractSource).toContain("enum: PLATFORM_INCIDENT_QUERY_IDS");
     expect(contractSource).toContain("properties: platformIncidentEvidenceProperties");
     for (const schemaSource of [contractSource, script, bundle]) {
-      expect(schemaSource).toContain('eventId: { type: "string", maxLength: 512 }');
+      expect(schemaSource).toContain('eventId: { type: "string", maxLength: 256 }');
     }
     expect(script).toContain('agent: "platform-incident-analyst-agent"');
     expect(script).toContain('additionalProperties: false');
@@ -128,7 +128,7 @@ describe("platform incident analysis seed", () => {
     }
   });
 
-  it("keeps every normalized incident compatible with the persisted schema", () => {
+  it("accepts normalized trigger data with optional injected CloudEvent provenance", () => {
     const normalized = normalizeDrasiIncident(
       {
         queryId: "workflow-execution-stalled",
@@ -148,9 +148,18 @@ describe("platform incident analysis seed", () => {
         PLATFORM_INCIDENT_ANALYSIS_INPUT_SCHEMA,
         fixtureMeta().input,
       ]) {
+        expect(
+          validateArgsAgainstMetaInput(schema, normalized.envelope.triggerData),
+        ).toMatchObject({ ok: true });
         expect(validateArgsAgainstMetaInput(schema, triggeredArgs)).toMatchObject({
           ok: true,
         });
+        expect(
+          validateArgsAgainstMetaInput(schema, {
+            ...normalized.envelope.triggerData,
+            eventId: "x".repeat(257),
+          }),
+        ).toMatchObject({ ok: false });
       }
     }
   });
@@ -243,6 +252,7 @@ describe("platform incident analysis seed", () => {
 
     expect(prompt).toContain('"queryId":"dapr-resource-drift"');
     expect(prompt).toContain('"reason":"DuplicateActorStateStore"');
+    expect(prompt).not.toContain('"eventId"');
     expect(prompt).not.toContain("dapr-cloud-event-1");
   });
 

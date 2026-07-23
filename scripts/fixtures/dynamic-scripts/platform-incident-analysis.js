@@ -67,7 +67,7 @@ export const meta = {
         title: "Severity",
         enum: ["info", "warning", "critical"],
       },
-      eventId: { type: "string", maxLength: 512 },
+      eventId: { type: "string", maxLength: 256 },
       subject: { type: "string", title: "Subject", maxLength: 500 },
       executionId: { type: "string", maxLength: 256, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
       sessionId: { type: "string", maxLength: 256, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
