@@ -7,32 +7,40 @@ import { gunzipSync } from "node:zlib";
 import * as tar from "tar-stream";
 import { env } from "$env/dynamic/private";
 import type {
+  PreviewGitHubInstallationTokenPort,
   PreviewWorkspaceCaptureCommand,
   PreviewWorkspaceCaptureResult,
   PreviewWorkspaceGatewayPort,
+  PreviewWorkspaceGitBundlePort,
   PreviewWorkspaceSeedCommand,
   PreviewWorkspaceSeedResult,
+  PreviewWorkspaceSourceBundlePort,
+  PreviewWorkspaceSourceBundleRequest,
 } from "$lib/server/application/ports";
+import { PreviewWorkspaceGatewayError } from "$lib/server/application/ports";
 import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/application/adapters/session-sandbox-destroyer";
 import {
   maybeProvisionAgentWorkflowHost,
   sessionHostAppId,
   waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
-import { resolveWorkflowGithubToken } from "$lib/server/workflows/github-token";
+import { localPreviewControlCapability } from "$lib/server/preview-control-capability";
 import type { AgentConfig } from "$lib/types/agents";
 
 const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
+const MAX_SOURCE_BUNDLE_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
 const MAX_METADATA_BYTES = 2 * 1024 * 1024;
 const MAX_MEMBERS = 20_000;
 const MAX_RESPONSE_BYTES = 4 + MAX_METADATA_BYTES + MAX_ARCHIVE_BYTES;
+const SOURCE_BUNDLE_CONTENT_TYPE = "application/vnd.git.bundle";
 const SAFE_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SAFE_REVISION = /^[0-9a-f]{40}$/;
 
 type HelperRequest = Readonly<{
   executionId: string;
-  workspaceKey: string;
+  workspaceKey: string | null;
+  purpose: "seed" | "sync" | "source";
   secretEnv: Record<string, string> | null;
 }>;
 
@@ -140,10 +148,21 @@ function assertCaptureCommand(input: PreviewWorkspaceCaptureCommand): void {
 async function requestBytes(input: {
   baseUrl: string;
   path: string;
-  body: unknown;
+  body: unknown | Uint8Array;
+  contentType?: string;
+  headers?: Readonly<Record<string, string>>;
   maxBytes: number;
-}): Promise<{ status: number; contentType: string; bytes: Buffer }> {
-  const payload = Buffer.from(JSON.stringify(input.body), "utf8");
+}): Promise<{
+  status: number;
+  contentType: string;
+  bytes: Buffer;
+  headers: http.IncomingHttpHeaders;
+}> {
+  const body = input.body;
+  const binary = body instanceof Uint8Array;
+  const payload = binary
+    ? Buffer.from(body)
+    : Buffer.from(JSON.stringify(body), "utf8");
   const url = new URL(input.path, input.baseUrl);
   const transport = url.protocol === "https:" ? https : http;
   return await new Promise((resolve, reject) => {
@@ -154,9 +173,12 @@ async function requestBytes(input: {
         path: `${url.pathname}${url.search}`,
         method: "POST",
         headers: {
-          "content-type": "application/json",
+          "content-type":
+            input.contentType ??
+            (binary ? "application/octet-stream" : "application/json"),
           "content-length": String(payload.byteLength),
           ...(internalToken() ? { "x-internal-token": internalToken() } : {}),
+          ...input.headers,
         },
       },
       (response) => {
@@ -191,6 +213,7 @@ async function requestBytes(input: {
             status: response.statusCode ?? 500,
             contentType: String(response.headers["content-type"] ?? ""),
             bytes: Buffer.concat(chunks),
+            headers: response.headers,
           }),
         );
       },
@@ -206,7 +229,7 @@ async function requestBytes(input: {
 function helperError(
   response: { status: number; bytes: Buffer },
   fallback: string,
-): Error {
+): PreviewWorkspaceGatewayError {
   let detail = "";
   try {
     const parsed = JSON.parse(response.bytes.toString("utf8")) as {
@@ -216,7 +239,17 @@ function helperError(
   } catch {
     // Fixed fallback below; never surface arbitrary helper bytes.
   }
-  return new Error(
+  const status =
+    response.status === 409
+      ? 409
+      : response.status === 413
+        ? 413
+        : response.status === 503
+          ? 503
+          : 502;
+  return new PreviewWorkspaceGatewayError(
+    status === 409 || status === 413 ? "helper-rejected" : "helper-unavailable",
+    status,
     detail === "workspace contains changes outside the execution diff scope"
       ? detail
       : fallback,
@@ -230,7 +263,7 @@ export async function runOneShotPreviewWorkspaceHelper<T>(
 ): Promise<T> {
   const suffix = createHash("sha256")
     .update(
-      `${input.executionId}\0${input.workspaceKey}\0${input.secretEnv ? "seed" : "sync"}\0${randomUUID()}`,
+      `${input.executionId}\0${input.workspaceKey ?? ""}\0${input.purpose}\0${randomUUID()}`,
     )
     .digest("hex")
     .slice(0, 24);
@@ -247,7 +280,8 @@ export async function runOneShotPreviewWorkspaceHelper<T>(
         runtime: "claude-code-cli",
         runtimeIsolation: "dedicated",
       } as AgentConfig,
-      workflowExecutionId: input.executionId,
+      workflowExecutionId:
+        input.purpose === "source" ? null : input.executionId,
       benchmarkRunId: null,
       benchmarkInstanceId: null,
       timeoutMinutes: 20,
@@ -358,6 +392,314 @@ export async function validatePreviewWorkspaceArchive(
   return { fileCount, memberCount, expandedBytes: totalBytes };
 }
 
+function headerValue(headers: http.IncomingHttpHeaders, name: string): string {
+  const value = headers[name];
+  return (Array.isArray(value) ? value[0] : (value ?? "")).trim();
+}
+
+function validateSourceBundleReceipt(input: {
+  bytes: Uint8Array;
+  contentType: string;
+  repository: string;
+  sourceRevision: string;
+  bundleSha256: string;
+  fileCount: string;
+  returnedRepository: string;
+  returnedSourceRevision: string;
+}) {
+  const digest = `sha256:${createHash("sha256")
+    .update(input.bytes)
+    .digest("hex")}` as const;
+  const fileCount = Number(input.fileCount);
+  if (
+    input.bytes.byteLength < 1 ||
+    input.bytes.byteLength > MAX_SOURCE_BUNDLE_BYTES ||
+    !input.contentType.startsWith(SOURCE_BUNDLE_CONTENT_TYPE) ||
+    input.returnedRepository !== input.repository ||
+    input.returnedSourceRevision !== input.sourceRevision ||
+    input.bundleSha256 !== digest ||
+    !Number.isSafeInteger(fileCount) ||
+    fileCount < 1 ||
+    fileCount > MAX_MEMBERS
+  ) {
+    throw new PreviewWorkspaceGatewayError(
+      "helper-invalid-receipt",
+      502,
+      "preview workspace source bundle receipt is invalid",
+    );
+  }
+  return Object.freeze({
+    repository: input.repository,
+    sourceRevision: input.sourceRevision,
+    bundle: new Uint8Array(input.bytes),
+    bundleSha256: digest,
+    fileCount,
+  });
+}
+
+async function readFetchBytesBounded(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new PreviewWorkspaceGatewayError(
+      "source-rejected",
+      413,
+      "preview workspace source bundle exceeds its byte limit",
+    );
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new PreviewWorkspaceGatewayError(
+        "source-rejected",
+        413,
+        "preview workspace source bundle exceeds its byte limit",
+      );
+    }
+    chunks.push(value);
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+async function runGatewayHelper<T>(
+  runner: HelperSessionRunner,
+  request: HelperRequest,
+  use: (baseUrl: string) => Promise<T>,
+  fallback: string,
+): Promise<T> {
+  try {
+    return await runner(request, use);
+  } catch (cause) {
+    if (cause instanceof PreviewWorkspaceGatewayError) throw cause;
+    const cleanupFailure =
+      cause instanceof Error && cause.message.includes("helper cleanup failed");
+    throw new PreviewWorkspaceGatewayError(
+      cleanupFailure ? "helper-cleanup-failed" : "helper-unavailable",
+      502,
+      cleanupFailure ? "preview workspace helper cleanup failed" : fallback,
+      { cause },
+    );
+  }
+}
+
+export class OneShotPreviewWorkspaceGitBundleGateway implements PreviewWorkspaceGitBundlePort {
+  constructor(
+    private readonly credentials: PreviewGitHubInstallationTokenPort,
+    private readonly runHelper: HelperSessionRunner = runOneShotPreviewWorkspaceHelper,
+  ) {}
+
+  async fetchExact(command: { repository: string; sourceRevision: string }) {
+    if (
+      !SAFE_REPOSITORY.test(command.repository) ||
+      !SAFE_REVISION.test(command.sourceRevision)
+    ) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-rejected",
+        409,
+        "preview workspace source coordinates are invalid",
+      );
+    }
+    let token: string;
+    try {
+      token = (await this.credentials.token()).trim();
+    } catch (cause) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-unavailable",
+        503,
+        "preview workspace source credential is unavailable",
+        { cause },
+      );
+    }
+    if (!token) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-unavailable",
+        503,
+        "preview workspace source credential is unavailable",
+      );
+    }
+    const coordinate = createHash("sha256")
+      .update(`${command.repository}\0${command.sourceRevision}`)
+      .digest("hex")
+      .slice(0, 32);
+    return await runGatewayHelper(
+      this.runHelper,
+      {
+        executionId: `preview-source-${coordinate}`,
+        workspaceKey: null,
+        purpose: "source",
+        secretEnv: { GITHUB_TOKEN: token },
+      },
+      async (baseUrl) => {
+        const seeded = await requestBytes({
+          baseUrl,
+          path: "/internal/preview-workspace/seed",
+          body: {
+            repository: command.repository,
+            sourceRevision: command.sourceRevision,
+            repoSubdir: ".",
+          },
+          maxBytes: 64 * 1024,
+        });
+        if (seeded.status < 200 || seeded.status >= 300) {
+          throw helperError(
+            seeded,
+            "preview workspace physical source checkout failed",
+          );
+        }
+        const response = await requestBytes({
+          baseUrl,
+          path: "/internal/preview-workspace/source-bundle",
+          body: {
+            repository: command.repository,
+            sourceRevision: command.sourceRevision,
+          },
+          maxBytes: MAX_SOURCE_BUNDLE_BYTES,
+        });
+        if (response.status < 200 || response.status >= 300) {
+          throw helperError(
+            response,
+            "preview workspace source bundle creation failed",
+          );
+        }
+        return validateSourceBundleReceipt({
+          bytes: response.bytes,
+          contentType: response.contentType,
+          repository: command.repository,
+          sourceRevision: command.sourceRevision,
+          bundleSha256: headerValue(
+            response.headers,
+            "x-wfb-preview-source-sha256",
+          ),
+          fileCount: headerValue(
+            response.headers,
+            "x-wfb-preview-source-file-count",
+          ),
+          returnedRepository: headerValue(
+            response.headers,
+            "x-wfb-preview-source-repository",
+          ),
+          returnedSourceRevision: headerValue(
+            response.headers,
+            "x-wfb-preview-source-revision",
+          ),
+        });
+      },
+      "preview workspace physical source helper failed",
+    );
+  }
+}
+
+export type HttpPreviewWorkspaceSourceBundleOptions = Readonly<{
+  baseUrl?: () => string;
+  token?: () => string;
+  fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+}>;
+
+/** Preview-local, tuple-bound client for the physical source broker. */
+export class HttpPreviewWorkspaceSourceBundleAdapter implements PreviewWorkspaceSourceBundlePort {
+  private readonly fetchImpl: typeof globalThis.fetch;
+
+  constructor(
+    private readonly options: HttpPreviewWorkspaceSourceBundleOptions = {},
+  ) {
+    this.fetchImpl = options.fetch ?? globalThis.fetch;
+  }
+
+  async fetchExact(input: PreviewWorkspaceSourceBundleRequest) {
+    const baseUrl = (
+      this.options.baseUrl?.() ??
+      env.PREVIEW_CONTROL_BROKER_URL ??
+      process.env.PREVIEW_CONTROL_BROKER_URL ??
+      ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    const token = (
+      this.options.token?.() ?? localPreviewControlCapability()
+    ).trim();
+    if (!baseUrl) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-unavailable",
+        503,
+        "preview workspace source broker is unavailable",
+      );
+    }
+    if (!token) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-unavailable",
+        503,
+        "preview workspace source capability is unavailable",
+      );
+    }
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${baseUrl}/api/internal/preview-control/environment/workspace-source`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Preview-Control-Capability": token,
+          },
+          body: JSON.stringify({ ...input.identity, service: input.service }),
+          signal: AbortSignal.timeout(this.options.timeoutMs ?? 12 * 60_000),
+        },
+      );
+    } catch (cause) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-unavailable",
+        503,
+        "preview workspace source broker is unavailable",
+        { cause },
+      );
+    }
+    if (!response.ok) {
+      const status = ([400, 403, 404, 409, 413, 502, 503] as const).includes(
+        response.status as never,
+      )
+        ? (response.status as 400 | 403 | 404 | 409 | 413 | 502 | 503)
+        : 502;
+      throw new PreviewWorkspaceGatewayError(
+        status === 413 ? "source-rejected" : "source-unavailable",
+        status,
+        "preview workspace source broker rejected the exact source request",
+      );
+    }
+    const bytes = await readFetchBytesBounded(
+      response,
+      MAX_SOURCE_BUNDLE_BYTES,
+    );
+    return validateSourceBundleReceipt({
+      bytes,
+      contentType: response.headers.get("content-type") ?? "",
+      repository: response.headers.get("x-wfb-preview-source-repository") ?? "",
+      sourceRevision: input.identity.environmentSourceRevision,
+      bundleSha256: response.headers.get("x-wfb-preview-source-sha256") ?? "",
+      fileCount: response.headers.get("x-wfb-preview-source-file-count") ?? "",
+      returnedRepository:
+        response.headers.get("x-wfb-preview-source-repository") ?? "",
+      returnedSourceRevision:
+        response.headers.get("x-wfb-preview-source-revision") ?? "",
+    });
+  }
+}
+
 export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPort {
   constructor(
     private readonly runHelper: HelperSessionRunner = runOneShotPreviewWorkspaceHelper,
@@ -373,22 +715,43 @@ export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPo
       throw new Error("preview workspace seed coordinates are invalid");
     }
     assertRelativePath(command.repoSubdir, "repoSubdir", { dot: true });
-    const githubToken = await resolveWorkflowGithubToken();
-    if (!githubToken) throw new Error("GitHub credential is unavailable");
-    return await this.runHelper(
+    const computedBundleSha256 = `sha256:${createHash("sha256")
+      .update(command.sourceBundle)
+      .digest("hex")}`;
+    if (
+      command.sourceBundle.byteLength < 1 ||
+      command.sourceBundle.byteLength > MAX_SOURCE_BUNDLE_BYTES ||
+      command.sourceBundleSha256 !== computedBundleSha256 ||
+      !Number.isSafeInteger(command.sourceFileCount) ||
+      command.sourceFileCount < 1 ||
+      command.sourceFileCount > MAX_MEMBERS
+    ) {
+      throw new PreviewWorkspaceGatewayError(
+        "source-rejected",
+        409,
+        "preview workspace source bundle is invalid",
+      );
+    }
+    return await runGatewayHelper(
+      this.runHelper,
       {
         executionId: command.executionId,
         workspaceKey: command.workspaceKey,
-        secretEnv: { GITHUB_TOKEN: githubToken },
+        purpose: "seed",
+        secretEnv: null,
       },
       async (baseUrl) => {
         const response = await requestBytes({
           baseUrl,
-          path: "/internal/preview-workspace/seed",
-          body: {
-            repository: command.repository,
-            sourceRevision: command.sourceRevision,
-            repoSubdir: command.repoSubdir,
+          path: "/internal/preview-workspace/import",
+          body: command.sourceBundle,
+          contentType: SOURCE_BUNDLE_CONTENT_TYPE,
+          headers: {
+            "x-wfb-preview-source-repository": command.repository,
+            "x-wfb-preview-source-revision": command.sourceRevision,
+            "x-wfb-preview-source-repo-subdir": command.repoSubdir,
+            "x-wfb-preview-source-sha256": command.sourceBundleSha256,
+            "x-wfb-preview-source-file-count": String(command.sourceFileCount),
           },
           maxBytes: 64 * 1024,
         });
@@ -412,7 +775,8 @@ export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPo
           typeof receipt.fileCount !== "number" ||
           !Number.isSafeInteger(receipt.fileCount) ||
           receipt.fileCount < 1 ||
-          receipt.fileCount > MAX_MEMBERS
+          receipt.fileCount > MAX_MEMBERS ||
+          receipt.fileCount !== command.sourceFileCount
         ) {
           throw new Error("preview workspace seed returned an invalid receipt");
         }
@@ -421,6 +785,7 @@ export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPo
           fileCount: receipt.fileCount,
         };
       },
+      "preview workspace exact-revision seed failed",
     );
   }
 
@@ -428,10 +793,12 @@ export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPo
     command: PreviewWorkspaceCaptureCommand,
   ): Promise<PreviewWorkspaceCaptureResult> {
     assertCaptureCommand(command);
-    return await this.runHelper(
+    return await runGatewayHelper(
+      this.runHelper,
       {
         executionId: command.executionId,
         workspaceKey: command.workspaceKey,
+        purpose: "sync",
         secretEnv: null,
       },
       async (baseUrl) => {
@@ -511,6 +878,7 @@ export class OneShotPreviewWorkspaceGateway implements PreviewWorkspaceGatewayPo
           fileCount: validated.fileCount,
         };
       },
+      "preview workspace archive preparation failed",
     );
   }
 }

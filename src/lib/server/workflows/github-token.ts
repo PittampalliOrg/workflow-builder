@@ -32,9 +32,8 @@ export async function resolveWorkflowGithubToken(): Promise<string | null> {
 	} catch {
 		/* fall through to the env PAT */
 	}
-	// No usable app-connection (e.g. a Tier-2 preview's fresh DB has none) → fall
-	// back to the BFF process PAT. The preview's `workflow-builder-secrets` carries
-	// `GITHUB_TOKEN` (staged verbatim) and the BFF envFroms it, so promote works
-	// in-preview without an app-connection.
+	// Ordinary control-plane sessions may use the process PAT fallback. Preview
+	// workspace source acquisition uses the physical source broker instead; host
+	// credentials are intentionally absent from preview deployments.
 	return envGithubToken();
 }

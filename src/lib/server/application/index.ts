@@ -472,6 +472,7 @@ import { ApplicationPreviewDevelopmentEnvironmentService } from "$lib/server/app
 import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
 import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
 import { ApplicationPreviewWorkspaceService } from "$lib/server/application/preview-workspace";
+import { ApplicationPreviewWorkspaceSourceBrokerService } from "$lib/server/application/preview-workspace-source-broker";
 import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/application/dev-preview-source-capture";
 import { ApplicationPreviewSessionContinuationService } from "$lib/server/application/preview-session-continuation";
 import { ApplicationDevEnvironmentTeardownService } from "$lib/server/application/dev-environment-teardown";
@@ -481,7 +482,11 @@ import {
 } from "$lib/server/application/adapters/dev-previews";
 import { LegacyDevPreviewSourceCaptureAdapter } from "$lib/server/application/adapters/dev-preview-source-capture";
 import { LocalPreviewWorkspaceCatalogAdapter } from "$lib/server/application/adapters/preview-workspace-catalog";
-import { OneShotPreviewWorkspaceGateway } from "$lib/server/application/adapters/preview-workspace";
+import {
+  HttpPreviewWorkspaceSourceBundleAdapter,
+  OneShotPreviewWorkspaceGateway,
+  OneShotPreviewWorkspaceGitBundleGateway,
+} from "$lib/server/application/adapters/preview-workspace";
 import {
   GithubPreviewEnvironmentRevisionResolver,
   HttpPreviewEnvironmentLaunchBrokerAdapter,
@@ -1095,6 +1100,9 @@ export function getApplicationAdapters(
     | undefined;
   let devPreviewSidecar: ApplicationDevPreviewSidecarService | undefined;
   let previewWorkspace: ApplicationPreviewWorkspaceService | undefined;
+  let previewWorkspaceSourceBroker:
+    | ApplicationPreviewWorkspaceSourceBrokerService
+    | undefined;
   let devPreviewSourceCapture:
     | ApplicationDevPreviewSourceCaptureService
     | undefined;
@@ -2201,6 +2209,7 @@ export function getApplicationAdapters(
       identity: getPreviewLocalControlIdentity(),
       scope: previewDeploymentScope,
       catalog: new LocalPreviewWorkspaceCatalogAdapter(),
+      source: new HttpPreviewWorkspaceSourceBundleAdapter(),
       workspace: new OneShotPreviewWorkspaceGateway(),
       sidecar: getDevPreviewSidecar(),
     }));
@@ -2232,6 +2241,21 @@ export function getApplicationAdapters(
         expectedPlatformRepository: config.previewPlatformRepository,
         expectedSourceRepository: config.previewSourceRepository,
       }));
+  const getPreviewWorkspaceSourceBroker = () => {
+    if (!isPreviewControlBroker()) {
+      throw new Error(
+        "preview workspace source is available only in broker mode",
+      );
+    }
+    return (previewWorkspaceSourceBroker ??=
+      new ApplicationPreviewWorkspaceSourceBrokerService({
+        authority: getPreviewControlSourceAuthority(),
+        catalog: new LocalPreviewWorkspaceCatalogAdapter(),
+        git: new OneShotPreviewWorkspaceGitBundleGateway(
+          getPreviewGithubReadToken(),
+        ),
+      }));
+  };
   const getPreviewEnvironmentObservationBroker = () => {
     if (!isPreviewControlBroker()) {
       throw new Error(
@@ -3471,6 +3495,9 @@ export function getApplicationAdapters(
     },
     get previewWorkspace() {
       return getPreviewWorkspace();
+    },
+    get previewWorkspaceSourceBroker() {
+      return getPreviewWorkspaceSourceBroker();
     },
     get devPreviewSourceCapture() {
       return getDevPreviewSourceCapture();

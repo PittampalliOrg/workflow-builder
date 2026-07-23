@@ -8,8 +8,10 @@ import type {
   PreviewWorkspaceAuthority,
   PreviewWorkspaceCatalogPort,
   PreviewWorkspaceGatewayPort,
+  PreviewWorkspaceSourceBundlePort,
   WorkflowExecutionRecord,
 } from "$lib/server/application/ports";
+import { PreviewWorkspaceGatewayError } from "$lib/server/application/ports";
 
 const SAFE_SERVICE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const SAFE_OPERATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
@@ -48,6 +50,7 @@ export type PreviewWorkspaceServiceDeps = Readonly<{
   identity: PreviewLocalControlIdentityPort;
   scope: PreviewDeploymentScopePort;
   catalog: PreviewWorkspaceCatalogPort;
+  source: PreviewWorkspaceSourceBundlePort;
   workspace: PreviewWorkspaceGatewayPort;
   sidecar: {
     status(input: {
@@ -371,13 +374,45 @@ export class ApplicationPreviewWorkspaceService {
       throw new PreviewWorkspaceContractError(400, "operation id is invalid");
     }
     const authority = await this.authorize(input.executionId, input.service);
-    const result = await this.deps.workspace.seed({
-      executionId: authority.executionId,
-      workspaceKey: authority.workspaceKey,
-      repository: authority.source.repository,
-      sourceRevision: authority.sourceRevision,
-      repoSubdir: authority.source.repoSubdir,
-    });
+    let source;
+    try {
+      source = await this.deps.source.fetchExact({
+        identity: authority.identity,
+        service: authority.service,
+      });
+    } catch (cause) {
+      if (cause instanceof PreviewWorkspaceGatewayError) {
+        throw new PreviewWorkspaceContractError(cause.status, cause.message);
+      }
+      throw cause;
+    }
+    if (
+      source.repository !== authority.source.repository ||
+      source.sourceRevision !== authority.sourceRevision
+    ) {
+      throw new PreviewWorkspaceContractError(
+        409,
+        "preview workspace source does not match the authorized baseline",
+      );
+    }
+    let result;
+    try {
+      result = await this.deps.workspace.seed({
+        executionId: authority.executionId,
+        workspaceKey: authority.workspaceKey,
+        repository: authority.source.repository,
+        sourceRevision: authority.sourceRevision,
+        repoSubdir: authority.source.repoSubdir,
+        sourceBundle: source.bundle,
+        sourceBundleSha256: source.bundleSha256,
+        sourceFileCount: source.fileCount,
+      });
+    } catch (cause) {
+      if (cause instanceof PreviewWorkspaceGatewayError) {
+        throw new PreviewWorkspaceContractError(cause.status, cause.message);
+      }
+      throw cause;
+    }
     return Object.freeze({
       ok: true as const,
       receiptMode: "credentialless" as const,
@@ -398,15 +433,23 @@ export class ApplicationPreviewWorkspaceService {
       throw new PreviewWorkspaceContractError(400, "operation id is invalid");
     }
     const authority = await this.authorize(input.executionId, input.service);
-    const captured = await this.deps.workspace.capture({
-      executionId: authority.executionId,
-      workspaceKey: authority.workspaceKey,
-      sourceRevision: authority.sourceRevision,
-      repoSubdir: authority.source.repoSubdir,
-      syncPaths: authority.source.syncPaths,
-      stageMappings: authority.source.stageMappings,
-      diffScope: authority.diffScope,
-    });
+    let captured;
+    try {
+      captured = await this.deps.workspace.capture({
+        executionId: authority.executionId,
+        workspaceKey: authority.workspaceKey,
+        sourceRevision: authority.sourceRevision,
+        repoSubdir: authority.source.repoSubdir,
+        syncPaths: authority.source.syncPaths,
+        stageMappings: authority.source.stageMappings,
+        diffScope: authority.diffScope,
+      });
+    } catch (cause) {
+      if (cause instanceof PreviewWorkspaceGatewayError) {
+        throw new PreviewWorkspaceContractError(cause.status, cause.message);
+      }
+      throw cause;
+    }
     if (
       authority.diffScope &&
       captured.changedPaths.some(
