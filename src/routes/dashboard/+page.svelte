@@ -294,6 +294,8 @@
 			</Card>
 		{/if}
 
+		<!-- Preview Development Status: retained preview trace proof moved to Development. -->
+
 		<!-- Two-column: active sessions + recent changes -->
 		<div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
 			<Card>
