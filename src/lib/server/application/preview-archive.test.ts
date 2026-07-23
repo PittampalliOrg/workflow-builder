@@ -142,6 +142,7 @@ describe('ApplicationPreviewArchiveService', () => {
 		expect(result.executionCount).toBe(2);
 		expect(result.bundleCount).toBe(1); // promoted bundle skipped
 		expect(result.bundleErrors).toBe(0);
+		expect(result.activeExecutionIds).toEqual([]);
 		expect(result.summaryFileId).toBe('host-file-2');
 
 		// Bundle copy, then summary — both tagged with the preview scope.
@@ -192,6 +193,7 @@ describe('ApplicationPreviewArchiveService', () => {
 		});
 		expect(result).toMatchObject({
 			archived: false,
+			activeExecutionIds: null,
 			reason: 'executions-unreachable'
 		});
 		expect(files.createFile).not.toHaveBeenCalled();
@@ -207,6 +209,7 @@ describe('ApplicationPreviewArchiveService', () => {
 		const result = await service.archivePreview({ name: 'ghost', userId: 'u' });
 		expect(result).toMatchObject({
 			archived: false,
+			activeExecutionIds: null,
 			reason: 'preview-not-found'
 		});
 		expect(files.createFile).not.toHaveBeenCalled();
@@ -472,6 +475,7 @@ describe('ApplicationPreviewArchiveService', () => {
 		});
 		expect(result).toMatchObject({
 			archived: false,
+			activeExecutionIds: [active.id],
 			reason: 'incomplete:active-generation-unverified'
 		});
 		expect(result.notes?.join(' ')).toContain('active execution source generation is not frozen');

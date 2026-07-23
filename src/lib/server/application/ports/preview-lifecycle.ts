@@ -1,6 +1,8 @@
 export type PreviewArchiveResult = Readonly<{
   archived: boolean;
   preview: string;
+  /** null means the preview execution inventory could not be verified. */
+  activeExecutionIds?: readonly string[] | null;
   reason?: string;
   summaryFileId?: string;
   executionCount?: number;

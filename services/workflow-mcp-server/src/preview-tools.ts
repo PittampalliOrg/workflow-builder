@@ -275,7 +275,7 @@ export function registerPreviewEnvironmentTools(
   register(
     "read",
     "list_preview_environments",
-    "List the dev preview fleet with capacity, lifecycle, readiness, exact revisions, and service selection. Requires platform-admin authorization in Workflow Builder.",
+    "List the dev preview fleet with capacity, lifecycle, readiness, read-only operator protection, workflow origin, exact revisions, and service selection. Requires platform-admin authorization in Workflow Builder.",
     {
       title: "List Preview Environments",
       inputSchema: {},
@@ -294,7 +294,7 @@ export function registerPreviewEnvironmentTools(
   register(
     "read",
     "get_preview_environment",
-    "Read one authorized preview's lifecycle and immutable generation tuple. Use the returned requestId and sourceRevision for any teardown.",
+    "Read one authorized preview's lifecycle, read-only protected flag, trusted origin, and immutable generation tuple. Use the returned requestId and sourceRevision for any teardown.",
     {
       title: "Get Preview Environment",
       inputSchema: { name: NAME },
@@ -417,7 +417,7 @@ export function registerPreviewEnvironmentTools(
   register(
     "execute",
     "launch_preview_environment",
-    "Launch an isolated dev app-live vCluster preview. The BFF derives identity, platform revision, capabilities, provenance, and cold placement; this tool never accepts cluster credentials or image overrides.",
+    "Launch a user-owned isolated dev app-live vCluster preview. For agentic development that must remain bound to a running workflow, use the host dynamic-script preview lifecycle action instead. The BFF derives identity, platform revision, capabilities, provenance, and cold placement; this tool never accepts cluster credentials or image overrides.",
     {
       title: "Launch Preview Environment",
       inputSchema: {
@@ -472,7 +472,7 @@ export function registerPreviewEnvironmentTools(
   register(
     "execute",
     "teardown_preview_environment",
-    "Request teardown of one exact preview generation. The required requestId and sourceRevision fence against deleting a recreated preview; archive and cleanup policy remain BFF-owned.",
+    "Request teardown of one exact preview generation. The required requestId and sourceRevision fence against deleting a recreated preview; the BFF refuses operator-protected previews and previews with active or unverified workflow ownership.",
     {
       title: "Teardown Preview Environment",
       inputSchema: {
@@ -487,7 +487,9 @@ export function registerPreviewEnvironmentTools(
         discardUnarchived: z
           .boolean()
           .optional()
-          .describe("Explicit platform-admin data-loss authorization."),
+          .describe(
+            "Explicit platform-admin archive-loss authorization. This never overrides protected or active-use checks.",
+          ),
       },
       annotations: DESTRUCTIVE,
     },

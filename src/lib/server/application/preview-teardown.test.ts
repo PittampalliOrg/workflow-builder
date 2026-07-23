@@ -7,6 +7,7 @@ import type { PreviewTeardownInput } from "$lib/server/application/preview-teard
 import type {
   PreviewAccessPolicyPort,
   PreviewArchivePort,
+  PreviewArchiveResult,
   VclusterPreviewGatewayPort,
   VclusterPreviewRuntimeSnapshot,
 } from "$lib/server/application/ports";
@@ -57,12 +58,9 @@ function harness(
   overrides: Readonly<{
     preview?: VclusterPreviewRecord;
     archiveOnTeardownEnabled?: boolean;
-    archiveResult?: {
-      archived: boolean;
-      preview: string;
-      reason?: string;
-      summaryFileId?: string;
-    };
+    archiveResult?: PreviewArchiveResult;
+    parentExecution?: Readonly<{ id: string; status: string }> | null;
+    parentExecutionError?: Error;
     runtime?: Awaited<ReturnType<VclusterPreviewGatewayPort["runtime"]>>;
   }> = {},
 ) {
@@ -82,10 +80,13 @@ function harness(
     archivePreview: vi.fn(async () => {
       events.push("archive");
       return (
-        overrides.archiveResult ?? {
-          archived: true,
-          preview: authoritative.name,
-          summaryFileId: "summary-complete",
+        {
+          activeExecutionIds: [],
+          ...(overrides.archiveResult ?? {
+            archived: true,
+            preview: authoritative.name,
+            summaryFileId: "summary-complete",
+          }),
         }
       );
     }),
@@ -154,12 +155,19 @@ function harness(
   const commands = {
     request: requestTeardown,
   };
+  const executions = {
+    getById: vi.fn(async () => {
+      if (overrides.parentExecutionError) throw overrides.parentExecutionError;
+      return (overrides.parentExecution ?? null) as never;
+    }),
+  };
   const application = new ApplicationPreviewTeardownService({
     access,
     admins,
     archive,
     commands,
     previews,
+    executions,
     scope,
     archiveOnTeardownEnabled: overrides.archiveOnTeardownEnabled ?? false,
     now: () => new Date(NOW),
@@ -181,6 +189,7 @@ function harness(
     events,
     scope,
     admins,
+    executions,
     service: {
       teardown: (input: HarnessInput) =>
         application.teardown({
@@ -257,6 +266,64 @@ describe("ApplicationPreviewTeardownService", () => {
     expect(h.previews.teardown).not.toHaveBeenCalled();
   });
 
+  it("refuses teardown of an operator-protected preview", async () => {
+    const h = harness({ preview: record({ protected: true }) });
+
+    await expect(
+      h.service.teardown({ name: "failed-five", actorUserId: "owner-1" }),
+    ).rejects.toMatchObject({ code: "protected", status: 409 });
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
+  it("refuses teardown while the trusted parent workflow is active", async () => {
+    const h = harness({
+      preview: record({
+        origin: { kind: "workflow", reference: "parent-active" },
+      }),
+      parentExecution: { id: "parent-active", status: "running" },
+    });
+
+    await expect(
+      h.service.teardown({ name: "failed-five", actorUserId: "owner-1" }),
+    ).rejects.toMatchObject({ code: "active-use", status: 409 });
+    expect(h.executions.getById).toHaveBeenCalledWith("parent-active");
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
+  it("allows teardown after the trusted parent workflow is terminal", async () => {
+    const h = harness({
+      preview: record({
+        phase: "ready",
+        ready: true,
+        origin: { kind: "workflow", reference: "parent-terminal" },
+      }),
+      parentExecution: { id: "parent-terminal", status: "success" },
+    });
+
+    await expect(
+      h.service.teardown({ name: "failed-five", actorUserId: "owner-1" }),
+    ).resolves.toMatchObject({ preview: { phase: "terminating" } });
+    expect(h.archive.archivePreview).toHaveBeenCalledOnce();
+    expect(h.previews.teardown).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when trusted parent workflow status is unavailable", async () => {
+    const h = harness({
+      preview: record({
+        origin: { kind: "workflow", reference: "parent-unknown" },
+      }),
+      parentExecutionError: new Error("database unavailable"),
+    });
+
+    await expect(
+      h.service.teardown({ name: "failed-five", actorUserId: "owner-1" }),
+    ).rejects.toMatchObject({ code: "active-use-unverified", status: 409 });
+    expect(h.archive.archivePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
   it("refuses a normal mutable teardown when the archive is incomplete", async () => {
     const h = harness({
       archiveResult: {
@@ -288,6 +355,7 @@ describe("ApplicationPreviewTeardownService", () => {
       archiveResult: {
         archived: false,
         preview: "failed-five",
+        activeExecutionIds: [],
         reason: "incomplete:artifact-listing",
         summaryFileId: "summary-incomplete",
       },
@@ -344,6 +412,51 @@ describe("ApplicationPreviewTeardownService", () => {
         summaryFileId: "summary-quarantine",
       },
     });
+  });
+
+  it("does not let admin discard bypass an active preview workflow", async () => {
+    const h = harness({
+      preview: record({ phase: "ready", ready: true }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        activeExecutionIds: ["preview-execution-active"],
+        reason: "incomplete:active-generation-unverified",
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "admin-1",
+        discardUnarchived: true,
+      }),
+    ).rejects.toMatchObject({ code: "active-use", status: 409 });
+    expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
+  });
+
+  it("does not let admin discard bypass unverified preview workflow activity", async () => {
+    const h = harness({
+      preview: record({ phase: "ready", ready: true }),
+      archiveResult: {
+        archived: false,
+        preview: "failed-five",
+        activeExecutionIds: null,
+        reason: "executions-unreachable",
+      },
+    });
+
+    await expect(
+      h.service.teardown({
+        name: "failed-five",
+        actorUserId: "admin-1",
+        discardUnarchived: true,
+        forceFailed: true,
+      }),
+    ).rejects.toMatchObject({ code: "active-use-unverified", status: 409 });
+    expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+    expect(h.previews.teardown).not.toHaveBeenCalled();
   });
 
   it("enforces platform-admin authorization inside the teardown application service", async () => {

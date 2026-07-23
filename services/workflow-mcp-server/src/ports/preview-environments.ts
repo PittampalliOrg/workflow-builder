@@ -5,6 +5,10 @@ export type PreviewEnvironmentSummary = {
   url: string | null;
   targetCluster: string;
   lifecycle: string | null;
+  /** Operator-owned deletion exemption. Read-only through Workflow MCP. */
+  protected: boolean;
+  /** Trusted lifecycle owner; workflow references are host execution ids. */
+  origin: { kind: string; reference?: string } | null;
   expiresAt: string | null;
   platformRevision: string | null;
   sourceRevision: string | null;
