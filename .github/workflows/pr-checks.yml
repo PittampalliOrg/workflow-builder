@@ -87,9 +87,6 @@ jobs:
       - name: Run dev-sync transport tests
         run: pnpm test:dev-sync
 
-      - name: Run unit tests
-        run: pnpm test:unit --run
-
       # Pre-merge smoke build, PATH-GATED: only when the build-config surface
       # changed (see build_surface above). On pushes to main the Tekton
       # outer-loop builds the same commit authoritatively (inside the
@@ -102,6 +99,64 @@ jobs:
           # default ~4 GiB heap for the current server bundle.
           NODE_OPTIONS: --max-old-space-size=8192
         if: github.event_name == 'pull_request' && steps.build_surface.outputs.build == 'true'
+
+  # Unit tests are the long pole (~292s serial for ~865 files). Vitest's
+  # `--shard=i/N` deterministically partitions the file set, so running the
+  # shards on parallel runners produces the SAME pass/fail outcome in a
+  # fraction of the wall-clock. Bump SHARD_TOTAL below AND the matrix list
+  # together if the suite grows.
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARD_TOTAL: 4
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same generated inputs the unit tests relied on when they ran inside the
+      # `checks` job (plugin registry, db-script bundles, SvelteKit types).
+      - name: Generate plugin registry
+        run: pnpm discover-plugins
+
+      - name: Build database script bundles
+        run: pnpm build:db-scripts
+
+      - name: Sync SvelteKit types
+        run: pnpm exec svelte-kit sync
+
+      - name: Run unit tests (shard ${{ matrix.shard }}/${{ env.SHARD_TOTAL }})
+        run: pnpm test:unit --run --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }}
 
   orchestrator-tests:
     runs-on: ubuntu-latest
