@@ -1,7 +1,10 @@
 <script lang="ts">
+	import { onMount } from "svelte";
 	import {
 		AlertTriangle,
 		Inbox as InboxIcon,
+		LoaderCircle,
+		RefreshCw,
 		RotateCcw,
 	} from "@lucide/svelte";
 	import { Badge } from "$lib/components/ui/badge";
@@ -9,22 +12,24 @@
 	import * as Table from "$lib/components/ui/table";
 	import { drasiQueryName, listQueryRows, resolveDrasiQueryId } from "$lib/drasi/catalog";
 	import { shortenId } from "$lib/drasi/format";
-	import type { DrasiIncident, DrasiIncidentSeverity } from "$lib/types/drasi";
+	import type {
+		DrasiIncident,
+		DrasiIncidentsResponse,
+		DrasiIncidentSeverity,
+	} from "$lib/types/drasi";
 	import { relativeTime } from "$lib/utils/gitops-display";
 
-	type LoadState = "ok" | "empty" | "unavailable";
+	type LoadState = "loading" | "ok" | "empty" | "error";
 
-	/**
-	 * The incident *read* API is intentionally not connected in this
-	 * environment: the repository ships the protected ingest endpoint
-	 * (`POST /api/internal/drasi/incidents/ingest`) but no incident query
-	 * route. This view therefore starts — and stays — in an honest
-	 * `unavailable` state derived from known configuration. It issues zero
-	 * network requests and synthesizes zero incidents; the filters and table
-	 * below activate unchanged the moment a real read API exists.
-	 */
-	let loadState = $state<LoadState>("unavailable");
+	const REFRESH_INTERVAL_MS = 30_000;
+
+	let loadState = $state<LoadState>("loading");
 	let incidents = $state<DrasiIncident[]>([]);
+	let truncated = $state(false);
+	let refreshing = $state(false);
+	let loadError = $state("");
+	let refreshError = $state("");
+	let requestController: AbortController | null = null;
 
 	let severityFilter = $state<"all" | DrasiIncidentSeverity>("all");
 	let queryFilter = $state<string>("all");
@@ -62,6 +67,75 @@
 			return "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200";
 		return "text-muted-foreground";
 	}
+
+	function isIncidentResponse(value: unknown): value is DrasiIncidentsResponse {
+		return Boolean(
+			value &&
+				typeof value === "object" &&
+				Array.isArray((value as DrasiIncidentsResponse).incidents) &&
+				typeof (value as DrasiIncidentsResponse).truncated === "boolean",
+		);
+	}
+
+	async function refreshIncidents(initial = false) {
+		requestController?.abort();
+		requestController = new AbortController();
+		const controller = requestController;
+
+		if (initial) {
+			loadState = "loading";
+			loadError = "";
+		} else {
+			refreshing = true;
+			refreshError = "";
+		}
+
+		try {
+			const response = await fetch("/api/admin/drasi/incidents?limit=100", {
+				cache: "no-store",
+				signal: controller.signal,
+			});
+			if (!response.ok) {
+				throw new Error(
+					response.status === 403
+						? "Admin access is required to read the incident feed."
+						: `Incident feed request failed (${response.status}).`,
+				);
+			}
+
+			const payload: unknown = await response.json();
+			if (!isIncidentResponse(payload)) {
+				throw new Error("Incident feed returned an invalid response.");
+			}
+
+			incidents = payload.incidents;
+			truncated = payload.truncated;
+			loadState = incidents.length > 0 ? "ok" : "empty";
+		} catch (error) {
+			if (controller.signal.aborted) return;
+			const message = error instanceof Error ? error.message : "Incident feed is unavailable.";
+			if (initial || incidents.length === 0) {
+				loadError = message;
+				loadState = "error";
+			} else {
+				refreshError = message;
+			}
+		} finally {
+			if (requestController === controller) {
+				requestController = null;
+				refreshing = false;
+			}
+		}
+	}
+
+	onMount(() => {
+		void refreshIncidents(true);
+		const refreshTimer = window.setInterval(() => void refreshIncidents(), REFRESH_INTERVAL_MS);
+		return () => {
+			window.clearInterval(refreshTimer);
+			requestController?.abort();
+		};
+	});
 </script>
 
 <div class="flex min-h-0 min-w-0 max-w-full flex-1 flex-col">
@@ -123,43 +197,53 @@
 				<span class="text-[0.7rem] text-muted-foreground">
 					{filtered.length} of {incidents.length} shown
 				</span>
-			{:else if loadState === "unavailable"}
-				<!-- Override Badge's shrink-0/whitespace-nowrap/overflow-hidden so the
-					status wraps inside extremely narrow containers instead of clipping. -->
-				<Badge
-					variant="outline"
-					class="h-auto min-h-5 max-w-full shrink overflow-visible whitespace-normal break-words px-1.5 py-0.5 text-center text-[0.65rem] font-medium leading-tight text-muted-foreground"
-				>
-					Read API not connected
-				</Badge>
 			{/if}
+			{#if refreshError}
+				<span class="text-[0.7rem] text-destructive" title={refreshError}>Refresh failed</span>
+			{/if}
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-7 shrink-0"
+				aria-label="Refresh incident feed"
+				title="Refresh incident feed"
+				disabled={refreshing || loadState === "loading"}
+				onclick={() => void refreshIncidents()}
+			>
+				<RefreshCw class="size-3.5 {refreshing ? 'animate-spin' : ''}" />
+			</Button>
 		</div>
 	</div>
 
-	{#if loadState === "unavailable"}
+	{#if loadState === "loading"}
 		<div
 			class="flex min-w-0 max-w-full flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center @max-md:px-4 @max-md:py-10"
 			role="status"
 		>
-			<AlertTriangle class="size-5 shrink-0 text-muted-foreground" />
+			<LoaderCircle class="size-5 shrink-0 animate-spin text-muted-foreground" />
+			<p class="text-sm font-medium">Loading incident feed</p>
+		</div>
+	{:else if loadState === "error"}
+		<div
+			class="flex min-w-0 max-w-full flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center @max-md:px-4 @max-md:py-10"
+			role="alert"
+		>
+			<AlertTriangle class="size-5 shrink-0 text-destructive" />
 			<div class="min-w-0 max-w-full space-y-1">
-				<p class="text-sm font-medium">Incident feed · Unavailable</p>
+				<p class="text-sm font-medium">Incident feed unavailable</p>
 				<p class="max-w-md text-xs leading-relaxed text-muted-foreground">
-					The reaction forwards added results to
-					<span class="break-all font-mono text-[0.7rem]">POST /api/internal/drasi/incidents/ingest</span>,
-					the protected ingest endpoint. This environment exposes no incident read API, so
-					this view intentionally makes no request and synthesizes no incidents. The filters
-					above stay in place and apply unchanged once a read API is connected.
+					{loadError}
 				</p>
 			</div>
-			<!-- Override Badge's shrink-0/whitespace-nowrap/overflow-hidden so the
-				honest-state pill wraps instead of clipping at ~166px containers. -->
-			<Badge
+			<Button
 				variant="outline"
-				class="h-auto min-h-5 max-w-full shrink overflow-visible whitespace-normal break-words px-1.5 py-0.5 text-[0.65rem] font-medium leading-tight"
+				size="sm"
+				class="h-7 gap-1.5"
+				onclick={() => void refreshIncidents(true)}
 			>
-				Not connected · 0 requests issued
-			</Badge>
+				<RefreshCw class="size-3" />
+				Retry
+			</Button>
 		</div>
 	{:else if loadState === "empty"}
 		<div
@@ -169,14 +253,18 @@
 			<div class="min-w-0 max-w-full space-y-1">
 				<p class="text-sm font-medium">No incidents ingested</p>
 				<p class="max-w-md text-xs leading-relaxed text-muted-foreground">
-					When a continuous query produces added results, the reaction posts them to
-					Workflow Builder, which validates, correlates, deduplicates, and starts
-					<span class="break-all font-mono text-[0.7rem]">platform-incident-analysis</span>
-					with a read-only incident analyst. Nothing has been ingested yet.
+					When a continuous query produces added results, the Drasi reaction sends them
+					through the incident trigger path for validation, correlation, deduplication,
+					and analysis.
 				</p>
 			</div>
 		</div>
 	{:else}
+		{#if truncated}
+			<div class="border-b bg-muted/30 px-5 py-1.5 text-[0.7rem] text-muted-foreground">
+				Showing the newest 100 incidents.
+			</div>
+		{/if}
 		<!-- Dense table for comfortable widths. -->
 		<div class="min-h-0 flex-1 overflow-auto @max-md:hidden">
 			<Table.Root>
