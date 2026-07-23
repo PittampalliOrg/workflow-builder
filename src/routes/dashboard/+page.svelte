@@ -17,12 +17,15 @@
 		Activity,
 		Bot,
 		ExternalLink,
+		GitPullRequest,
 		KeyRound,
 		Layers,
 		MessageSquare,
 		MessagesSquare,
 		Plus,
-		Sparkles
+		Rocket,
+		Sparkles,
+		Zap
 	} from '@lucide/svelte';
 
 	type DashboardPayload = {
@@ -125,6 +128,28 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
+	// Preview Development Status derivations — read-only, derived entirely from
+	// data the dashboard already loads (stats, activeSessions, recentChanges,
+	// recentRuns). No new API plumbing; each tile falls back to an explicit
+	// graceful empty state when its underlying data is absent.
+	let liveRuns = $derived(
+		recentRuns.filter((r) => r.status === 'running' || r.status === 'pending')
+	);
+	let lastRun = $derived(recentRuns.length > 0 ? recentRuns[0] : null);
+	let runningSessions = $derived(
+		data ? data.activeSessions.filter((s) => s.status === 'running') : []
+	);
+	let lastPublishedChange = $derived.by(() => {
+		if (!data) return null;
+		const published = data.recentChanges.filter((c) => c.publishedAt !== null);
+		return published.length > 0 ? published[0] : null;
+	});
+	let hasAnyPreviewActivity = $derived(
+		recentRuns.length > 0 ||
+			(data !== null && data.activeSessions.length > 0) ||
+			(data !== null && data.recentChanges.length > 0)
+	);
+
 	onMount(load);
 </script>
 
@@ -218,6 +243,144 @@
 				</CardContent>
 			</Card>
 		</div>
+
+		<!-- Preview Development Status — compact read-only summary of preview
+		     environment, live-sync/HMR activity, recent workflow/session
+		     activity, and publish (PR capture) state. Derived entirely from
+		     data the dashboard already loads; every tile has an explicit
+		     graceful empty state. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Rocket class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Live-sync and recent development activity for this workspace.
+					</CardDescription>
+				</div>
+				{#if hasAnyPreviewActivity}
+					<Badge variant="outline" class="bg-emerald-500/10 text-emerald-600">
+						<Zap class="size-3" /> Active
+					</Badge>
+				{:else}
+					<Badge variant="outline" class="bg-muted text-muted-foreground">Idle</Badge>
+				{/if}
+			</CardHeader>
+			<CardContent>
+				{#if !hasAnyPreviewActivity}
+					<p class="text-sm text-muted-foreground py-6 text-center">
+						No preview development activity yet. Run a workflow or start a session and
+						this panel will summarize live-sync state, recent runs, and publish status.
+					</p>
+				{:else}
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+						<!-- Live-sync / HMR state -->
+						<div class="rounded border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+								Live-sync
+							</div>
+							{#if liveRuns.length > 0}
+								<div class="text-sm font-medium flex items-center gap-1.5">
+									<span class="inline-block size-2 rounded-full bg-blue-500 animate-pulse"></span>
+									{liveRuns.length} run{liveRuns.length === 1 ? '' : 's'} in flight
+								</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									HMR-connected preview is processing changes.
+								</div>
+							{:else if runningSessions.length > 0}
+								<div class="text-sm font-medium flex items-center gap-1.5">
+									<span class="inline-block size-2 rounded-full bg-blue-500 animate-pulse"></span>
+									{runningSessions.length} session{runningSessions.length === 1 ? '' : 's'} running
+								</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									Live sessions are streaming to the preview.
+								</div>
+							{:else}
+								<div class="text-sm font-medium flex items-center gap-1.5">
+									<span class="inline-block size-2 rounded-full bg-muted-foreground/50"></span>
+									No live runs
+								</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									Nothing is currently syncing.
+								</div>
+							{/if}
+						</div>
+
+						<!-- Recent workflow activity -->
+						<div class="rounded border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+								Recent workflow activity
+							</div>
+							{#if lastRun}
+								<a
+									href="/workspaces/{slug}/workflows/{lastRun.workflowId}/runs/{lastRun.executionId}"
+									class="text-sm font-medium hover:underline truncate block"
+									title={lastRun.workflowName}
+								>
+									{lastRun.workflowName}
+								</a>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									{lastRun.status} · {formatRelative(lastRun.startedAt)}
+								</div>
+							{:else}
+								<div class="text-sm font-medium">No workflow runs yet</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									Recent executions will appear here.
+								</div>
+							{/if}
+						</div>
+
+						<!-- Recent session activity -->
+						<div class="rounded border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+								Session activity
+							</div>
+							{#if data.activeSessions.length > 0}
+								<div class="text-sm font-medium">
+									{data.stats.activeSessions} active session{data.stats.activeSessions === 1
+										? ''
+										: 's'}
+								</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									{data.stats.sessionsToday} started today
+								</div>
+							{:else}
+								<div class="text-sm font-medium">No active sessions</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									Start a session to see it here.
+								</div>
+							{/if}
+						</div>
+
+						<!-- PR capture / publish status -->
+						<div class="rounded border p-3">
+							<div class="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+								Publish status
+							</div>
+							{#if lastPublishedChange}
+								<div class="text-sm font-medium flex items-center gap-1.5 truncate">
+									<GitPullRequest class="size-3.5 text-muted-foreground shrink-0" />
+									<span class="truncate" title={lastPublishedChange.resourceName}>
+										{lastPublishedChange.resourceName}
+									</span>
+								</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									{lastPublishedChange.kind} v{lastPublishedChange.version} · {lastPublishedChange.publishedAt
+										? formatRelative(lastPublishedChange.publishedAt)
+										: 'unpublished'}
+								</div>
+							{:else}
+								<div class="text-sm font-medium">Nothing published yet</div>
+								<div class="text-[11px] text-muted-foreground mt-0.5">
+									Published agents and environments will appear here.
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</CardContent>
+		</Card>
 
 		<!-- Quick start grid -->
 		{#if data.stats.totalAgents === 0}
