@@ -81,5 +81,8 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 
 		expect(bundle).toContain(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SLUG);
 		expect(bundle).toContain(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_RUNTIME);
+		expect(bundle).toContain("no more than eight repository files");
+		expect(bundle).toContain("no later than model iteration 25");
+		expect(bundle).toMatch(/maxTurns:\s*120/);
 	});
 });

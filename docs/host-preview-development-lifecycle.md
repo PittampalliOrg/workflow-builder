@@ -59,12 +59,14 @@ profiles are:
 - `kimi-k3-juicefs`: the established Kimi K3 Dapr Agents proof builder;
 - `pydantic-ai-k3-ui`: the fixed
   `pydantic-ai-k3-preview-ui-builder-agent` on `pydantic-ai-agent-py`, with
-  shared `/sandbox/work`, max reasoning, 80 turns, and a 60-minute agent
+  shared `/sandbox/work`, max reasoning, 120 turns, and a 60-minute agent
   window.
 
-The Pydantic UI profile may inspect all relevant application and theme source
-and apply multiple fresh atomic HMR generations. The default profile retains
-its one-generation, five-file proof constraints.
+The Pydantic UI profile inspects no more than eight application and theme files
+before producing a thin live route, then applies bounded atomic HMR refinements.
+Its durable history rolls over in three 40-iteration segments without changing
+the 80-turn default for other Pydantic agents. The default preview profile
+retains its one-generation, five-file proof constraints.
 
 ## Exact Target
 

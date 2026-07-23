@@ -132,7 +132,7 @@ const BUILDER_PROFILES = {
   "pydantic-ai-k3-ui": {
     agentSlug: "pydantic-ai-k3-preview-ui-builder-agent",
     agentType: "pydantic-ai-agent-py",
-    maxTurns: 80,
+    maxTurns: 120,
     timeoutMinutes: 60,
   },
 };
@@ -995,9 +995,11 @@ ACTIVATION:
 - Inspect the relevant app shell, navigation, design tokens, shared UI primitives, target routes, and neighboring operational surfaces before choosing the implementation.
 
 QUALITY BUILD MODE:
+- Treat the task's product and system contract as authoritative. Inspect no more than eight repository files before the first source write.
+- Build a complete thin vertical slice first: target route, navigation, first viewport, primary interaction, and honest unavailable states. Apply and verify it by model iteration 25.
+- This is a hard ordering constraint. Do not inspect database schemas, workflow internals, secondary adapters, tests, or optional APIs until the first receiver-owned HMR generation is healthy.
 - Build the complete requested experience, including real-data integration or honest empty/degraded states, responsive layouts, keyboard and screen-reader behavior, light/dark theme cohesion, and reduced-motion handling.
 - Preserve the repository's hexagonal boundaries and existing Svelte, Tailwind, shadcn, and Lucide conventions. Do not invent a parallel visual system or fake operational metrics.
-- Complete broad discovery within the first 30 model iterations. Then implement, sync, and validate instead of restarting repository exploration.
 - You may inspect every relevant source file and apply multiple atomic HMR generations when that materially improves correctness or polish. Keep each generation coherent and use a fresh generation identifier.
 - After every intentional generation, run exactly \`/sandbox/work/sync.sh > /sandbox/work/sync.log 2>&1\` once. Read the persistent log and require an \`APPLIED ...\` receipt for every selected service plus \`SYNCED generation=... services=${services.length} convergence=healthy\`.
 - Smoke ${routes.join(", ")} against ${previewUrl} after the final generation and fix HTTP 500, ReferenceError, or each_key_duplicate failures before stopping.
@@ -1017,8 +1019,9 @@ ${feedback}`
 The live application is already running with Vite HMR. Build the complete requested UI experience against receiver-owned source and leave the final accepted generation healthy at ${previewUrl}.
 
 QUALITY BUILD MODE:
-- Pull the source first, then inspect the relevant route, app shell, navigation, design tokens, shared components, and nearby operational pages. There is no five-file inspection limit for this profile.
-- Complete broad discovery within the first 30 model iterations. Then implement, sync, and validate instead of restarting repository exploration.
+- Treat the task's product and system contract as authoritative. After pulling source, inspect no more than eight repository files: the target route or closest operational page, navigation, app shell, design tokens, and one relevant shared component.
+- Build a complete thin vertical slice first: target route, navigation, first viewport, primary interaction, and honest unavailable states. Apply and verify it by model iteration 25.
+- This is a hard ordering constraint. Do not inspect database schemas, workflow internals, secondary adapters, tests, or optional APIs until the first receiver-owned HMR generation is healthy.
 - Integrate with the current Svelte 5, Tailwind, shadcn, Lucide, typography, spacing, light/dark theme, and motion conventions. Aim for high information clarity and visual polish without turning an operational surface into a marketing page.
 - Use real existing APIs and application ports where available. Show explicit loading, empty, degraded, and error states instead of fabricated data.
 - Preserve hexagonal architecture, responsive behavior, semantic HTML, keyboard access, visible focus, and reduced-motion support.
@@ -1035,7 +1038,7 @@ ${fallbackContractText}
 Required workflow:
 1. Pull source:
    SCRATCH=/sandbox/work/preview-ui-gan-build; rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/repo"; curl -sS -H "x-sync-token: ${syncCapability}" -D "$SCRATCH/export.headers" "${exportUrl}" -o "$SCRATCH/source.tgz"; ROOTS_JSON="$(sed -n 's/^x-sync-roots:[[:space:]]*//p' "$SCRATCH/export.headers" | tr -d '\\r' | tail -1)"; test -n "$ROOTS_JSON"; tar -xzf "$SCRATCH/source.tgz" -C "$SCRATCH/repo".
-2. Implement and verify the task under "$SCRATCH/repo". Inspect as many relevant files as needed and run focused checks available in the workspace.
+2. Implement the thin vertical slice under "$SCRATCH/repo" after inspecting no more than eight repository files, then proceed directly to step 3. Broaden the data boundary and run focused checks only after the first healthy sync.
 3. Push an atomic HMR generation after each coherent iteration:
    cd "$SCRATCH/repo" && GEN="$(cat /proc/sys/kernel/random/uuid)" && node -e 'const roots=JSON.parse(process.argv[1]); if (!Array.isArray(roots) || roots.length === 0) process.exit(2); for (const root of roots) console.log(root);' "$ROOTS_JSON" > "$SCRATCH/declared-roots" && : > "$SCRATCH/existing-roots" && while IFS= read -r p; do [ ! -e "$p" ] || printf '%s\\n' "$p" >> "$SCRATCH/existing-roots"; done < "$SCRATCH/declared-roots" && tar -czf "$SCRATCH/sync.tgz" -T "$SCRATCH/existing-roots" && curl -sS -X POST --data-binary @"$SCRATCH/sync.tgz" -H 'content-type: application/gzip' -H "x-sync-token: ${syncCapability}" -H "x-sync-generation: $GEN" -H "x-sync-service: ${service}" -H "x-sync-roots: $ROOTS_JSON" "${syncUrl}" | tee /sandbox/work/preview-ui-gan-sync-${iterations + 1}.json.
 4. Poll ${previewUrl}/api/health until HTTP 200, then request every target route (${routes.join(", ")}). Fix HTTP 500, ReferenceError, and each_key_duplicate failures. Repeat steps 2-4 with a new generation when necessary.

@@ -318,13 +318,14 @@ describe("preview UI development GAN child fixture", () => {
       effort: "max",
       sandbox: {
         cwd: "/sandbox/work",
-        maxTurns: 80,
+        maxTurns: 120,
         timeoutMinutes: 60,
       },
     });
     const prompt = String(generator?.prompt ?? "");
-    expect(prompt).toContain("There is no five-file inspection limit");
-    expect(prompt).toContain("first 30 model iterations");
+    expect(prompt).toContain("no more than eight repository files");
+    expect(prompt).toContain("model iteration 25");
+    expect(prompt).toContain("This is a hard ordering constraint");
     expect(prompt).toContain("multiple atomic HMR generations");
     expect(prompt).toContain("/drasi");
     expect(prompt).toContain(
@@ -332,6 +333,7 @@ describe("preview UI development GAN child fixture", () => {
     );
     expect(prompt).not.toContain("SCRATCH=/tmp/preview-ui-gan-build");
     expect(prompt).not.toContain("Inspect at most five source files");
+    expect(prompt).not.toContain("There is no five-file inspection limit");
     expect(result.returnValue).toMatchObject({
       builderProfile: "pydantic-ai-k3-ui",
       agentSlug: "pydantic-ai-k3-preview-ui-builder-agent",
