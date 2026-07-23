@@ -114,9 +114,35 @@ def _compose_turn_task(events: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _resolve_max_iterations(agent_cfg: dict[str, Any]) -> int | None:
-    for key in ("maxTurns", "maxIterations"):
-        raw = agent_cfg.get(key)
+def _resolve_max_iterations(
+    agent_cfg: dict[str, Any],
+    *,
+    message: dict[str, Any] | None = None,
+    control_override_fields: set[str] | None = None,
+) -> int | None:
+    """Resolve one turn's bounded iteration budget.
+
+    The BFF places a trusted per-call budget at top-level ``maxIterations``.
+    Session control events remain authoritative for subsequent turns, while the
+    saved agent config is the fallback when the call does not specify a budget.
+    """
+    overrides = control_override_fields or set()
+    if "maxTurns" in overrides:
+        candidates = (agent_cfg.get("maxTurns"), agent_cfg.get("maxIterations"))
+    elif "maxIterations" in overrides:
+        candidates = (agent_cfg.get("maxIterations"), agent_cfg.get("maxTurns"))
+    else:
+        launch = message or {}
+        candidates = (
+            launch.get("maxIterations"),
+            launch.get("maxTurns"),
+            agent_cfg.get("maxTurns"),
+            agent_cfg.get("maxIterations"),
+        )
+
+    for raw in candidates:
+        if isinstance(raw, bool):
+            continue
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -347,7 +373,11 @@ def session_workflow(ctx: wf.DaprWorkflowContext, message: dict):
         child_input = {
             "task": task_text,
             "historyRef": history_ref,
-            "maxIterations": _resolve_max_iterations(agent_cfg),
+            "maxIterations": _resolve_max_iterations(
+                agent_cfg,
+                message=message,
+                control_override_fields=control_override_fields,
+            ),
             "context": {
                 "sessionId": session_id,
                 "agentConfig": agent_cfg,

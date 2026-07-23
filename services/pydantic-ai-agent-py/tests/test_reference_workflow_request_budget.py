@@ -12,6 +12,7 @@ from google.protobuf import timestamp_pb2, wrappers_pb2
 
 from src.config import (
     DURABLE_CONTEXT_MAX_BYTES,
+    DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
     DURABLE_TASK_MAX_BYTES,
     DURABLE_TOOL_CONTEXT_MAX_BYTES,
     MAX_ITERATIONS_PER_TURN,
@@ -138,9 +139,7 @@ class _WorkflowHistory:
                 ),
             )
         )
-        self._append(
-            timerFired=pb.TimerFiredEvent(fireAt=fire_at, timerId=timer_id)
-        )
+        self._append(timerFired=pb.TimerFiredEvent(fireAt=fire_at, timerId=timer_id))
 
     def _complete(
         self,
@@ -331,7 +330,7 @@ def _retry_storm_history() -> _WorkflowHistory:
     task = _max_size_task()
     history = _new_history(llm_context, task)
     current_ref = _ref("history", "initial")
-    for iteration in range(MAX_ITERATIONS_PER_TURN):
+    for iteration in range(DURABLE_HISTORY_ITERATIONS_PER_SEGMENT):
         current_ref = _run_iteration(
             history,
             iteration=iteration,
@@ -357,7 +356,7 @@ def _structured_terminal_history() -> _WorkflowHistory:
     history = _new_history(llm_context, task)
     current_ref = _ref("history", "initial")
     ordinary_iterations = (
-        MAX_ITERATIONS_PER_TURN - MAX_STRUCTURED_OUTPUT_NUDGES - 1
+        DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - MAX_STRUCTURED_OUTPUT_NUDGES - 1
     )
     for iteration in range(ordinary_iterations):
         current_ref = _run_iteration(
@@ -370,7 +369,9 @@ def _structured_terminal_history() -> _WorkflowHistory:
             task=task if iteration == 0 else None,
             tool_count=MAX_TOOL_CALLS_PER_RESPONSE,
         )
-    for iteration in range(ordinary_iterations, MAX_ITERATIONS_PER_TURN - 1):
+    for iteration in range(
+        ordinary_iterations, DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1
+    ):
         current_ref = _run_iteration(
             history,
             iteration=iteration,
@@ -384,7 +385,7 @@ def _structured_terminal_history() -> _WorkflowHistory:
         )
     _run_iteration(
         history,
-        iteration=MAX_ITERATIONS_PER_TURN - 1,
+        iteration=DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1,
         current_history_ref=current_ref,
         llm_context=llm_context,
         ordinary_context=ordinary_context,
@@ -405,7 +406,7 @@ def _no_tool_terminal_history() -> _WorkflowHistory:
     task = _max_size_task()
     history = _new_history(llm_context, task)
     current_ref = _ref("history", "initial")
-    for iteration in range(MAX_ITERATIONS_PER_TURN - 1):
+    for iteration in range(DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1):
         current_ref = _run_iteration(
             history,
             iteration=iteration,
@@ -427,7 +428,7 @@ def _no_tool_terminal_history() -> _WorkflowHistory:
             "task": None,
             "historyRef": current_ref,
             "context": llm_context,
-            "iteration": MAX_ITERATIONS_PER_TURN - 1,
+            "iteration": DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1,
         },
         {
             "historyRef": _ref("history", "final-text"),
@@ -439,7 +440,7 @@ def _no_tool_terminal_history() -> _WorkflowHistory:
     return history
 
 
-def test_reference_retry_histories_keep_two_mib_grpc_reserve():
+def test_each_reference_history_segment_keeps_two_mib_grpc_reserve():
     retry_storm = _retry_storm_history()
     no_tool_terminal = _no_tool_terminal_history()
     structured_terminal = _structured_terminal_history()
@@ -463,9 +464,17 @@ def test_reference_retry_histories_keep_two_mib_grpc_reserve():
         f"{max(retry_storm.logical_payload_sizes + no_tool_terminal.logical_payload_sizes + structured_terminal.logical_payload_sizes)}"
     )
 
-    assert len(retry_storm.events) == 1 + (40 * 11 * 10)
-    assert len(no_tool_terminal.events) == 4_311
-    assert len(structured_terminal.events) == 4_331
+    assert MAX_ITERATIONS_PER_TURN == 80
+    assert DURABLE_HISTORY_ITERATIONS_PER_SEGMENT == 40
+    assert len(retry_storm.events) == 1 + (
+        DURABLE_HISTORY_ITERATIONS_PER_SEGMENT * 11 * 10
+    )
+    assert len(no_tool_terminal.events) == 1 + (
+        (DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1) * 11 * 10
+    ) + (2 * 10)
+    assert len(structured_terminal.events) == 1 + (
+        (DURABLE_HISTORY_ITERATIONS_PER_SEGMENT - 1) * 11 * 10
+    ) + (4 * 10)
     assert retry_request.count(b"FIRST-TURN-TASK:") == 4
     assert b"history+sha256://" in retry_request
     assert b"message+sha256://" in retry_request

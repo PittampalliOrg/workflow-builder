@@ -31,6 +31,11 @@ session_workflow (platform contract wrapper, literal name)
   returns, and usage survive replay faithfully.
 - Retry policy on every activity: 3 attempts, 2s first interval, 2.0 backoff,
   30s cap (`src/workflow.py:RETRY_POLICY`).
+- The public per-turn cap is 80 iterations. The child workflow checkpoints with
+  `continue_as_new` every 40 completed iterations, carrying only its immutable
+  transcript reference, iteration counters, structured-output retry state, and
+  static turn context. The checkpoint runs before the next cancellation/LLM
+  activity is scheduled, so it never discards an incomplete tool wave.
 - The iteration-0 `call_llm` **bootstraps** the message list (system prompt =
   `agentConfig.systemPrompt` + capability instructions) so the workflow body
   stays deterministic/pure — the workflow never does I/O.

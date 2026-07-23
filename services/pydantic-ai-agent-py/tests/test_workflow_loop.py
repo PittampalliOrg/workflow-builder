@@ -15,18 +15,29 @@ import pytest
 
 import src.workflow as wfmod
 from src.adapters.dapr_durable_payload_codec import DaprDurablePayloadCodecAdapter
-from src.workflow import agent_workflow, call_llm, check_cancellation, execute_tool
+from src.workflow import (
+    agent_workflow,
+    call_llm,
+    check_cancellation,
+    commit_tool_results,
+    execute_tool,
+)
 from src.structured_output import MAX_STRUCTURED_OUTPUT_NUDGES, STRUCTURED_OUTPUT_NUDGE
 
 
 class FakeCtx:
-    def __init__(self):
+    def __init__(self, *, is_replaying=False):
         self.instance_id = "inst-1"
+        self.is_replaying = is_replaying
         self.calls: list[tuple[Any, dict, Any]] = []
+        self.continuations: list[tuple[dict, bool]] = []
 
     def call_activity(self, activity, *, input=None, retry_policy=None):
         self.calls.append((activity, input, retry_policy))
         return ("activity", activity, input, retry_policy)
+
+    def continue_as_new(self, new_input, *, save_events=False):
+        self.continuations.append((new_input, save_events))
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +73,34 @@ def llm_response(text="", tool_calls=None, messages=None):
         "toolCalls": projected_calls,
         "text": text,
     }
+
+
+def reference_tool_responses(start: int, count: int, call: dict | None = None):
+    responses = []
+    base_call = call or {
+        "toolName": "run_command",
+        "toolCallId": "tool",
+        "args": {},
+    }
+    for iteration in range(start, start + count):
+        projected_call = {
+            **base_call,
+            "toolCallId": f"{base_call['toolCallId']}-{iteration}",
+            "isStructuredOutput": base_call.get("toolName") == "StructuredOutput",
+        }
+        responses.extend(
+            [
+                {"cancelled": False},
+                {
+                    "historyRef": f"history-assistant-{iteration}",
+                    "toolCalls": [projected_call],
+                    "text": "",
+                },
+                [{"messageRef": f"message-tool-{iteration}"}],
+                {"historyRef": f"history-committed-{iteration}"},
+            ]
+        )
+    return responses
 
 
 def test_single_llm_message_no_tools():
@@ -216,29 +255,139 @@ def test_iteration_budget_exhaustion():
 
 
 def test_iteration_override_cannot_exceed_hard_per_turn_cap():
-    ctx = FakeCtx()
-    call = {"toolName": "run_command", "toolCallId": "t", "args": {}}
-    responses = []
-    for _ in range(wfmod.MAX_ITERATIONS_PER_TURN):
-        responses.extend(
-            [
-                {"cancelled": False},
-                llm_response(tool_calls=[call]),
-                [{"message": {"kind": "request"}}],
-            ]
-        )
-
-    _, result = drive(
+    first_ctx = FakeCtx()
+    _, first_result = drive(
         agent_workflow(
-            ctx,
+            first_ctx,
             {"task": "loop", "context": {}, "maxIterations": 999},
         ),
-        responses,
+        reference_tool_responses(0, wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT),
+    )
+    assert first_result is None
+    assert first_ctx.calls[-1][0] is commit_tool_results
+    assert len(first_ctx.continuations) == 1
+    continuation, save_events = first_ctx.continuations[0]
+    assert save_events is False
+    assert continuation == {
+        "context": {"workflowInstanceId": "inst-1"},
+        "historyRef": "history-committed-39",
+        "maxIterations": 80,
+        "agentWorkflowState": {
+            "iteration": 40,
+            "structuredFailures": 0,
+        },
+    }
+    assert "history" not in continuation
+
+    replay_ctx = FakeCtx(is_replaying=True)
+    _, replay_result = drive(
+        agent_workflow(
+            replay_ctx,
+            {"task": "loop", "context": {}, "maxIterations": 999},
+        ),
+        reference_tool_responses(0, wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT),
+    )
+    assert replay_result is None
+    assert replay_ctx.calls == first_ctx.calls
+    assert replay_ctx.continuations == first_ctx.continuations
+
+    resumed_ctx = FakeCtx()
+    _, result = drive(
+        agent_workflow(resumed_ctx, continuation),
+        reference_tool_responses(
+            wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+            wfmod.MAX_ITERATIONS_PER_TURN
+            - wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+        ),
     )
 
     assert result["success"] is False
     assert "80-iteration budget" in result["content"]
-    assert len([entry for entry in ctx.calls if entry[0] is call_llm]) == 80
+    assert (
+        len(
+            [
+                entry
+                for entry in [*first_ctx.calls, *resumed_ctx.calls]
+                if entry[0] is call_llm
+            ]
+        )
+        == 80
+    )
+
+
+def test_structured_output_state_survives_history_rollover():
+    schema = {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {"summary": {"type": "string"}},
+    }
+    context = {
+        "agentConfig": {
+            "structuredOutputMode": "tool",
+            "responseJsonSchema": schema,
+        }
+    }
+    first_ctx = FakeCtx()
+    responses = reference_tool_responses(0, 38)
+    for iteration in (38, 39):
+        responses.extend(
+            [
+                {"cancelled": False},
+                {
+                    "historyRef": f"history-assistant-{iteration}",
+                    "toolCalls": [],
+                    "text": "",
+                },
+            ]
+        )
+
+    _, first_result = drive(
+        agent_workflow(
+            first_ctx,
+            {
+                "task": "produce structured output",
+                "context": context,
+                "maxIterations": 80,
+            },
+        ),
+        responses,
+    )
+    assert first_result is None
+    continuation, _save_events = first_ctx.continuations[0]
+    assert continuation["historyRef"] == "history-assistant-39"
+    assert continuation["task"] == STRUCTURED_OUTPUT_NUDGE
+    assert continuation["agentWorkflowState"] == {
+        "iteration": 40,
+        "structuredFailures": 2,
+    }
+
+    resumed_ctx = FakeCtx()
+    output_call = {
+        "toolName": "StructuredOutput",
+        "toolCallId": "structured",
+        "args": {"summary": "done"},
+    }
+    resumed_responses = reference_tool_responses(40, 1, output_call)
+    resumed_responses[2] = [
+        {
+            "messageRef": "message-structured-40",
+            "structuredOutputAttempt": True,
+            "structuredOutput": '{"summary":"done"}',
+        }
+    ]
+    _, result = drive(
+        agent_workflow(resumed_ctx, continuation),
+        resumed_responses,
+    )
+
+    resumed_llm_input = next(
+        entry[1] for entry in resumed_ctx.calls if entry[0] is call_llm
+    )
+    assert resumed_llm_input["iteration"] == 40
+    assert resumed_llm_input["task"] == STRUCTURED_OUTPUT_NUDGE
+    assert result["success"] is True
+    assert result["content"] == '{"summary":"done"}'
+    assert result["iterations"] == 41
 
 
 def test_structured_output_tool_finishes_with_canonical_json():
@@ -697,9 +846,7 @@ def test_workflow_splits_parallel_fanout_by_aggregate_input_size(monkeypatch):
         for item in fanout_yields
     )
     assert [
-        entry[1]["call"]["toolIndex"]
-        for entry in ctx.calls
-        if entry[0] is execute_tool
+        entry[1]["call"]["toolIndex"] for entry in ctx.calls if entry[0] is execute_tool
     ] == [0, 1, 2]
     assert result["success"] is True
 

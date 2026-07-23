@@ -49,7 +49,8 @@ A runtime is registry-eligible iff it satisfies all of:
 
 ### 2. Input (`childInput`, produced by the BFF `ensure-for-workflow` bridge)
 MUST accept and honor: `sessionId`, `agentConfig.{modelSpec, maxTurns,
-permissionMode}`, `instructionBundle.rendered.system`, `autoTerminateAfterEndTurn`
+permissionMode}`, the trusted per-call top-level `maxIterations`,
+`instructionBundle.rendered.system`, `autoTerminateAfterEndTurn`
 (hard-coded `true` for `durable/run`). Runtime-OPTIONAL (honor iff the matching
 capability is `true`): `agentConfig.{mcpServers, hooks, plugins, contextStrategy}`.
 A runtime that does not honor an optional field MUST declare the corresponding
