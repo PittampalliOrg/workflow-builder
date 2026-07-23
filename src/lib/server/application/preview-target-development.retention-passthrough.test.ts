@@ -43,7 +43,13 @@ async function startLocalChild(
       workflowId: "preview-ui-development-gan",
       projectId: "preview-project",
       input: input.triggerData as Record<string, unknown>,
-      executionIr: { spec, triggerData: input.triggerData },
+      executionIr: {
+        spec,
+        triggerData: input.triggerData,
+        authority: {
+          previewDevelopment: input.trustedPreviewDevelopmentBinding,
+        },
+      },
       daprInstanceId: "instance-1",
     } as WorkflowExecutionRecord;
     return {
