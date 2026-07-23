@@ -24,6 +24,20 @@ export type PreviewDevelopmentTarget = Readonly<{
   catalogDigest: `sha256:${string}`;
 }>;
 
+/**
+ * Immutable preview-development lineage persisted by the canonical workflow
+ * starter. Workflow args may mirror this data for script compatibility, but
+ * privileged consumers must use this server-owned binding.
+ */
+export type PreviewDevelopmentExecutionBinding = Readonly<{
+  version: 2;
+  parentExecutionId: string;
+  remoteActorUserId: string;
+  operationId: string;
+  target: PreviewDevelopmentTarget;
+  workflowSpecDigest: `sha256:${string}`;
+}>;
+
 /** User-authored fields accepted by the preview development workflow. */
 export type PreviewDevelopmentWorkflowInput = Readonly<{
   intent: string;

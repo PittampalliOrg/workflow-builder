@@ -11,6 +11,7 @@ import type {
   PreviewDevelopmentBrokerStatusInput,
   PreviewDevelopmentBrokerVerifyPromotionInput,
   PreviewDevelopmentControlAction,
+  PreviewDevelopmentExecutionBinding,
   PreviewDevelopmentPromotionVerificationResult,
   PreviewDevelopmentSignalResult,
   PreviewDevelopmentStartResult,
@@ -40,6 +41,7 @@ import {
 } from "$lib/server/application/ports";
 import { validatePreviewControlIdentity } from "$lib/server/application/preview-control-identity";
 import { previewDevelopmentParentBindingPrefix } from "$lib/server/application/preview-development-environment";
+import { readPreviewDevelopmentExecutionBinding } from "$lib/server/application/workflow-execution-authority";
 import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
@@ -939,57 +941,6 @@ function executionSpecDigest(executionIr: unknown): `sha256:${string}` | null {
   return record.spec === undefined ? null : workflowSpecDigest(record.spec);
 }
 
-type StoredDevelopmentContext = Readonly<{
-  version: 2;
-  parentExecutionId: string;
-  remoteActorUserId: string;
-  operationId: string;
-  target: PreviewDevelopmentTarget;
-  workflowSpecDigest: `sha256:${string}`;
-}>;
-
-function readStoredContext(
-  input: Record<string, unknown> | null,
-): StoredDevelopmentContext {
-  const raw = input?.[CONTEXT_KEY];
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new PreviewTargetDevelopmentError(
-      "contract-mismatch",
-      "child execution is not bound to a preview development command",
-    );
-  }
-  const value = raw as Record<string, unknown>;
-  const target = value.target as PreviewDevelopmentTarget;
-  if (
-    value.version !== 2 ||
-    typeof value.parentExecutionId !== "string" ||
-    !SAFE_ID.test(value.parentExecutionId) ||
-    typeof value.remoteActorUserId !== "string" ||
-    !SAFE_ID.test(value.remoteActorUserId) ||
-    typeof value.operationId !== "string" ||
-    !OPERATION_ID.test(value.operationId) ||
-    !value.operationId.startsWith("pdt-start-workflow-") ||
-    typeof value.workflowSpecDigest !== "string" ||
-    !SPEC_DIGEST.test(value.workflowSpecDigest) ||
-    !target ||
-    typeof target !== "object"
-  ) {
-    throw new PreviewTargetDevelopmentError(
-      "contract-mismatch",
-      "child execution has an invalid preview development binding",
-    );
-  }
-  asIdentity(target);
-  return {
-    version: 2,
-    parentExecutionId: value.parentExecutionId,
-    remoteActorUserId: value.remoteActorUserId,
-    operationId: value.operationId,
-    target,
-    workflowSpecDigest: value.workflowSpecDigest as `sha256:${string}`,
-  };
-}
-
 type HostDeps = Readonly<{
   executions: Pick<WorkflowExecutionRepository, "getById">;
   definitions: Pick<WorkflowDefinitionRepository, "getByRef">;
@@ -1360,7 +1311,7 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
       );
     }
     const workflowInput = normalizeWorkflowInput(input.workflowInput);
-    const storedContext: StoredDevelopmentContext = Object.freeze({
+    const storedContext: PreviewDevelopmentExecutionBinding = Object.freeze({
       version: 2,
       parentExecutionId: input.parentExecutionId,
       remoteActorUserId: input.actorUserId,
@@ -1374,6 +1325,7 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
         ...workflowInput,
         [CONTEXT_KEY]: storedContext,
       },
+      trustedPreviewDevelopmentBinding: storedContext,
       executionId: workflow.executionId,
       idempotent: true,
       launchSurface: "dev-environment",
@@ -1576,7 +1528,15 @@ export class ApplicationPreviewTargetDevelopmentLocalService implements PreviewT
     const definition = await this.deps.definitions.getByRef({
       workflowId: execution.workflowId,
     });
-    const context = readStoredContext(execution.input);
+    const context = readPreviewDevelopmentExecutionBinding(
+      execution.executionIr,
+    );
+    if (!context) {
+      throw new PreviewTargetDevelopmentError(
+        "contract-mismatch",
+        "child execution has no valid server-owned preview development binding",
+      );
+    }
     const executedDigest = executionSpecDigest(execution.executionIr);
     const expectedExecutionId = childExecutionId({
       parentExecutionId: context.parentExecutionId,

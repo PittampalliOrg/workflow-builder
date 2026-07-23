@@ -276,7 +276,13 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         workflowId: "preview-ui-development-gan",
         projectId: "preview-project",
         input: input.triggerData as Record<string, unknown>,
-        executionIr: { spec, triggerData: input.triggerData },
+        executionIr: {
+          spec,
+          triggerData: input.triggerData,
+          authority: {
+            previewDevelopment: input.trustedPreviewDevelopmentBinding,
+          },
+        },
         daprInstanceId: "instance-1",
         currentNodeId: "await_control",
         phase: "awaiting-control",
@@ -366,6 +372,14 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
         launchSurface: "dev-environment",
         launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
         expectedWorkflowSpecDigest: digest,
+        trustedPreviewDevelopmentBinding: {
+          version: 2,
+          parentExecutionId: "parent-execution",
+          remoteActorUserId: "admin-1",
+          operationId: startOperation,
+          target,
+          workflowSpecDigest: digest,
+        },
       }),
     );
     expect(startWorkflowRun.mock.calls[0]![0]).not.toHaveProperty("userId");
@@ -421,7 +435,21 @@ describe("ApplicationPreviewTargetDevelopmentLocalService", () => {
 
     execution = {
       ...execution!,
-      executionIr: { args: execution!.input },
+      input: {
+        ...execution!.input,
+        __previewDevelopment: {
+          parentExecutionId: "forged-parent",
+          remoteActorUserId: "forged-actor",
+        },
+      },
+      executionIr: {
+        args: execution!.input,
+        authority: (
+          execution!.executionIr as {
+            authority: unknown;
+          }
+        ).authority,
+      },
     } as WorkflowExecutionRecord;
 
     const status = await service.getWorkflowStatus({

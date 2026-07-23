@@ -24,8 +24,9 @@ import {
 } from "$lib/server/agents/resolver";
 import { getApplicationAdapters } from "$lib/server/application";
 import type {
-	PreviewWorkspaceExecutionBinding,
+	PreviewDevelopmentExecutionBinding,
 	WorkflowDefinition,
+	WorkflowExecutionAuthority,
 } from "$lib/server/application/ports";
 import {
 	applyWorkflowInputDefaults,
@@ -44,6 +45,10 @@ import {
   validateWithEvaluator,
 } from "$lib/server/workflows/dynamic-script-validation";
 import { workflowSpecDigest } from "$lib/server/application/workflow-spec-digest";
+import {
+	buildWorkflowExecutionAuthority,
+	matchesWorkflowExecutionAuthority,
+} from "$lib/server/application/workflow-execution-authority";
 
 export function isSWWorkflow(spec: unknown): boolean {
   if (typeof spec !== "object" || spec === null) return false;
@@ -119,6 +124,8 @@ export interface StartWorkflowOptions {
 	launchOrigin?: string | null;
 	/** Exact executable spec expected by a tuple-bound remote caller. */
 	expectedWorkflowSpecDigest?: `sha256:${string}`;
+	/** Server-derived preview lineage; never sourced from workflow args. */
+	trustedPreviewDevelopmentBinding?: PreviewDevelopmentExecutionBinding;
 }
 
 export async function startWorkflowRun(
@@ -183,6 +190,10 @@ export async function startWorkflowRun(
     launchOrigin: opts.launchOrigin,
 	});
 	if (!launch.ok) return launch;
+	const executionAuthority = buildWorkflowExecutionAuthority({
+		previewWorkspace: launch.previewWorkspaceBinding,
+		previewDevelopment: opts.trustedPreviewDevelopmentBinding,
+	});
 
 	// Idempotency: a deterministic id that already exists → return it (no-op).
 	if (opts.executionId && opts.idempotent) {
@@ -198,6 +209,19 @@ export async function startWorkflowRun(
           error: "Execution id already belongs to a different workflow scope",
         };
       }
+			if (
+				!matchesWorkflowExecutionAuthority(
+					existing.executionIr,
+					executionAuthority,
+				)
+			) {
+				return {
+					ok: false,
+					status: 409,
+					error:
+						"Existing execution preview authority does not match this launch",
+				};
+			}
 			return {
 				ok: true,
 				executionId: existing.id,
@@ -221,7 +245,7 @@ export async function startWorkflowRun(
 				...opts,
 				triggerData: launch.triggerData,
 			},
-			launch.previewWorkspaceBinding,
+			executionAuthority,
 		);
 	}
 
@@ -314,7 +338,11 @@ export async function startWorkflowRun(
 		// fork — has the exact spec it ran, enabling per-branch "what changed vs
 		// parent" diffs. Evals/benchmarks create their own rows with a richer
 		// executionIr, so this generic path never clobbers them.
-		executionIr: { spec, triggerData },
+		executionIr: {
+			spec,
+			triggerData,
+			...(executionAuthority ? { authority: executionAuthority } : {}),
+		},
     executionIrVersion: "sw-1.0.0",
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),
     ...(opts.rerunOfExecutionId
@@ -419,7 +447,7 @@ async function startDynamicScriptRun(
 	app: ReturnType<typeof getApplicationAdapters>,
 	workflow: WorkflowDefinition,
   opts: StartWorkflowOptions,
-	previewWorkspaceBinding?: PreviewWorkspaceExecutionBinding,
+	executionAuthority?: WorkflowExecutionAuthority,
 ): Promise<StartWorkflowResult> {
 	const spec = (workflow.spec ?? null) as Record<string, unknown> | null;
 	const validation = validateDynamicScriptSpec(spec);
@@ -490,13 +518,7 @@ async function startDynamicScriptRun(
       args,
       budgetTotal,
       dispatchMode,
-			...(previewWorkspaceBinding
-				? {
-						authority: {
-							previewWorkspace: previewWorkspaceBinding,
-						},
-					}
-				: {}),
+			...(executionAuthority ? { authority: executionAuthority } : {}),
     },
     executionIrVersion: "dynamic-script-2",
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),

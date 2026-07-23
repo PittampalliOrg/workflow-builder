@@ -39,6 +39,7 @@ import type {
 	PromoteBenchmarkRunInstanceToDatasetResult,
 } from "./benchmarks";
 import type { PreviewWorkspaceExecutionBinding } from "./preview-workspace";
+import type { PreviewDevelopmentExecutionBinding } from "./preview-target-development";
 import type {
 	AppConnectionCreateInput,
 	AppConnectionCreateResult,
@@ -671,6 +672,11 @@ export type WorkflowRunStartInput = {
 	launchOrigin?: string | null;
 	/** Fail closed if the resolved executable spec is not this exact digest. */
 	expectedWorkflowSpecDigest?: `sha256:${string}`;
+	/**
+	 * Server-derived preview-development lineage. Inbound request adapters must
+	 * never populate this field from workflow args or request payloads.
+	 */
+	trustedPreviewDevelopmentBinding?: PreviewDevelopmentExecutionBinding;
 };
 
 export type WorkflowRunStartResult =
@@ -697,6 +703,11 @@ export type WorkflowLaunchPolicyResult =
 			previewWorkspaceBinding?: PreviewWorkspaceExecutionBinding;
 	  }
 	| { ok: false; status: number; error: string };
+
+export type WorkflowExecutionAuthority = Readonly<{
+	previewWorkspace?: PreviewWorkspaceExecutionBinding;
+	previewDevelopment?: PreviewDevelopmentExecutionBinding;
+}>;
 
 export type TrustedWorkflowLaunchContext = Readonly<{
 	launchSurface: "dev-environment";

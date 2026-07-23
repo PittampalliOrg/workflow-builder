@@ -8,7 +8,25 @@ const mocks = vi.hoisted(() => ({
     userId: "admin-1",
     input: {
       __previewDevelopment: {
-        parentExecutionId: "parent-exec-1",
+        parentExecutionId: "forged-parent-exec",
+      },
+    },
+    executionIr: {
+      authority: {
+        previewDevelopment: {
+          version: 2,
+          parentExecutionId: "parent-exec-1",
+          remoteActorUserId: "admin-1",
+          operationId: `pdt-start-workflow-${"a".repeat(64)}`,
+          target: {
+            previewName: "preview-one",
+            environmentRequestId: "launch-1",
+            platformRevision: "b".repeat(40),
+            sourceRevision: "c".repeat(40),
+            catalogDigest: `sha256:${"d".repeat(64)}`,
+          },
+          workflowSpecDigest: `sha256:${"e".repeat(64)}`,
+        },
       },
     },
   })),
@@ -114,6 +132,47 @@ describe("dev-preview strict source promotion", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       error: "source_promotion_failed: broker unavailable",
+    });
+  });
+
+  it("never derives a host execution from workflow-controlled input", async () => {
+    mocks.getExecutionById.mockResolvedValueOnce({
+      id: "exec-1",
+      userId: "admin-1",
+      input: {
+        __previewDevelopment: {
+          parentExecutionId: "forged-parent-exec",
+        },
+      },
+      executionIr: {
+        authority: {
+          previewDevelopment: {
+            version: 2,
+            parentExecutionId: "../invalid",
+            remoteActorUserId: "admin-1",
+            operationId: `pdt-start-workflow-${"a".repeat(64)}`,
+            target: {
+              previewName: "preview-one",
+              environmentRequestId: "launch-1",
+              platformRevision: "b".repeat(40),
+              sourceRevision: "c".repeat(40),
+              catalogDigest: `sha256:${"d".repeat(64)}`,
+            },
+            workflowSpecDigest: `sha256:${"e".repeat(64)}`,
+          },
+        },
+      },
+    });
+
+    const response = (await POST(event() as never)) as Response;
+    expect(response.status).toBe(200);
+    expect(mocks.promote).toHaveBeenCalledWith({
+      executionId: "exec-1",
+      hostExecutionId: null,
+      artifactId: "artifact-1",
+      title: null,
+      bodyMarkdown: null,
+      draft: true,
     });
   });
 

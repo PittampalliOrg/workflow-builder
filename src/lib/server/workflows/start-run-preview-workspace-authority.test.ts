@@ -31,8 +31,18 @@ const binding = {
   },
 };
 
+const developmentBinding = {
+  version: 2 as const,
+  parentExecutionId: "parent-execution",
+  remoteActorUserId: "admin-1",
+  operationId: `pdt-start-workflow-${"d".repeat(64)}`,
+  target: binding.target,
+  workflowSpecDigest: `sha256:${"e".repeat(64)}` as const,
+};
+
 describe("startWorkflowRun preview workspace authority", () => {
   const create = vi.fn();
+  const getById = vi.fn();
   const prepare = vi.fn();
 
   beforeEach(() => {
@@ -53,6 +63,7 @@ describe("startWorkflowRun preview workspace authority", () => {
       ...input,
       id: "execution-1",
     }));
+    getById.mockResolvedValue(null);
     mocks.getApplicationAdapters.mockReturnValue({
       workflowData: {
         assertExecutionReadModelReady: vi.fn(async () => undefined),
@@ -74,7 +85,7 @@ describe("startWorkflowRun preview workspace authority", () => {
         })),
       },
       workflowExecutions: {
-        getById: vi.fn(async () => null),
+        getById,
         create,
         markStartFailed: vi.fn(),
         attachSchedulerInstance: vi.fn(async () => undefined),
@@ -111,5 +122,116 @@ describe("startWorkflowRun preview workspace authority", () => {
     expect(persisted.executionIr.authority).toEqual({
       previewWorkspace: binding,
     });
+  });
+
+  it("persists server-derived preview development lineage beside workspace authority", async () => {
+    const result = await startWorkflowRun({
+      workflowId: "workflow-1",
+      userId: "admin-1",
+      projectId: "project-1",
+      triggerData: { intent: "untrusted input" },
+      launchSurface: "dev-environment",
+      launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+      trustedPreviewDevelopmentBinding: developmentBinding,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(create.mock.calls[0]![0].executionIr.authority).toEqual({
+      previewWorkspace: binding,
+      previewDevelopment: developmentBinding,
+    });
+  });
+
+  it("reuses an execution only when its immutable preview authority matches exactly", async () => {
+    getById.mockResolvedValueOnce({
+      id: "execution-1",
+      workflowId: "workflow-1",
+      projectId: "project-1",
+      daprInstanceId: "script-instance-1",
+      executionIr: {
+        authority: {
+          previewWorkspace: binding,
+          previewDevelopment: developmentBinding,
+        },
+      },
+    });
+
+    const result = await startWorkflowRun({
+      workflowId: "workflow-1",
+      userId: "admin-1",
+      projectId: "project-1",
+      triggerData: { intent: "untrusted input" },
+      executionId: "execution-1",
+      idempotent: true,
+      launchSurface: "dev-environment",
+      launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+      trustedPreviewDevelopmentBinding: developmentBinding,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      executionId: "execution-1",
+      reused: true,
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "legacy execution with no authority",
+      {
+        engine: "dynamic-script",
+      },
+    ],
+    [
+      "stale preview generation",
+      {
+        authority: {
+          previewWorkspace: {
+            ...binding,
+            target: {
+              ...binding.target,
+              environmentRequestId: "replacement-request",
+            },
+          },
+          previewDevelopment: developmentBinding,
+        },
+      },
+    ],
+    [
+      "missing preview development lineage",
+      {
+        authority: {
+          previewWorkspace: binding,
+        },
+      },
+    ],
+  ])("rejects idempotent reuse of a %s", async (_label, executionIr) => {
+    getById.mockResolvedValueOnce({
+      id: "execution-1",
+      workflowId: "workflow-1",
+      projectId: "project-1",
+      daprInstanceId: "script-instance-1",
+      executionIr,
+    });
+
+    const result = await startWorkflowRun({
+      workflowId: "workflow-1",
+      userId: "admin-1",
+      projectId: "project-1",
+      triggerData: { intent: "untrusted input" },
+      executionId: "execution-1",
+      idempotent: true,
+      launchSurface: "dev-environment",
+      launchOrigin: "https://wfb-feature-one.tail286401.ts.net",
+      trustedPreviewDevelopmentBinding: developmentBinding,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: "Existing execution preview authority does not match this launch",
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 });
