@@ -186,7 +186,12 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 		const previews = await this.deps.listPreviews();
 		const target = previews.find((p) => p.name.toLowerCase() === name.toLowerCase()) ?? null;
 		if (!target) {
-			return { archived: false, preview: name, reason: 'preview-not-found' };
+			return {
+				archived: false,
+				preview: name,
+				activeExecutionIds: null,
+				reason: 'preview-not-found'
+			};
 		}
 
 		const list = await this.deps.proxy.listExecutions({
@@ -197,6 +202,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			return {
 				archived: false,
 				preview: name,
+				activeExecutionIds: null,
 				reason: `executions-${list.reason}`,
 				...(list.message ? { notes: [list.message] } : {})
 			};
@@ -353,6 +359,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 		return {
 			archived: archiveComplete,
 			preview: name,
+			activeExecutionIds: activeExecutions.map((execution) => execution.id),
 			...(archiveComplete
 				? {}
 				: {
@@ -430,6 +437,7 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			archived: false,
 			quarantined: true,
 			preview: name,
+			activeExecutionIds: attempted?.activeExecutionIds ?? null,
 			reason: `${disposition}:${input.reason}`,
 			summaryFileId: stored.file.id,
 			executionCount: attempted?.executionCount,

@@ -2,10 +2,12 @@ import type {
 	PreviewArchivePort,
 	PreviewArchiveResult,
 	PreviewDeploymentScopePort,
-	VclusterPreviewGatewayPort
+	VclusterPreviewGatewayPort,
+	WorkflowExecutionRepository
 } from '$lib/server/application/ports';
 import type { VclusterPreviewRecord } from '$lib/types/dev-previews';
 import { PreviewDeploymentScopeDeniedError } from '$lib/server/application/preview-deployment-scope';
+import { inspectPreviewParentWorkflowUse } from '$lib/server/application/preview-active-use';
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_ARCHIVE_RETRY_GRACE_MS = 60 * 60_000;
@@ -17,6 +19,7 @@ export type PreviewLifecycleReapItem = Readonly<{
 	status:
 		| 'teardown-started'
 		| 'archive-retry'
+		| 'active-use-retry'
 		| 'wake-retry'
 		| 'invalid-owner'
 		| 'teardown-failed'
@@ -42,6 +45,7 @@ export type PreviewLifecycleReapResult = Readonly<{
 type PreviewLifecycleReaperDeps = Readonly<{
 	previews: Pick<VclusterPreviewGatewayPort, 'listWithCounts' | 'get' | 'touch' | 'teardown'>;
 	archive: Pick<PreviewArchivePort, 'archivePreview' | 'quarantinePreview'>;
+	executions: Pick<WorkflowExecutionRepository, 'getById'>;
 	scope: Pick<PreviewDeploymentScopePort, 'isControlPlane'>;
 	now?: () => Date;
 	sleep?: (milliseconds: number) => Promise<void>;
@@ -91,6 +95,23 @@ export class ApplicationPreviewLifecycleReaperService {
 					status: 'invalid-owner',
 					archive: null,
 					detail: 'teardown ownership tuple is incomplete'
+				});
+				continue;
+			}
+
+			const parentUse = await inspectPreviewParentWorkflowUse(
+				candidate,
+				this.deps.executions
+			);
+			if (parentUse.state === 'active' || parentUse.state === 'unverified') {
+				items.push({
+					name: candidate.name,
+					status: 'active-use-retry',
+					archive: null,
+					detail:
+						parentUse.state === 'active'
+							? `parent workflow ${parentUse.executionId} is active`
+							: `parent workflow ownership is unverified: ${parentUse.detail}`
 				});
 				continue;
 			}
@@ -165,6 +186,17 @@ export class ApplicationPreviewLifecycleReaperService {
 				archiveFailure = `archive-error:${this.errorDetail(cause)}`;
 			}
 
+			if ((archive?.activeExecutionIds?.length ?? 0) > 0) {
+				items.push({
+					name: wake.preview.name,
+					status: 'active-use-retry',
+					archive,
+					detail: `active preview workflows: ${archive?.activeExecutionIds?.join(', ')}`,
+					graceExpiredAt
+				});
+				continue;
+			}
+
 			if (archive?.archived) {
 				items.push(
 					await this.teardown(wake.preview.name, { ...guard, archiveConfirmed: true }, archive)
@@ -202,7 +234,7 @@ export class ApplicationPreviewLifecycleReaperService {
 			['teardown-failed', 'quarantine-teardown-failed'].includes(item.status)
 		).length;
 		const retryDeferred = items.filter((item) =>
-			['archive-retry', 'wake-retry'].includes(item.status)
+			['archive-retry', 'wake-retry', 'active-use-retry'].includes(item.status)
 		).length;
 		return Object.freeze({
 			expired: expired.length,

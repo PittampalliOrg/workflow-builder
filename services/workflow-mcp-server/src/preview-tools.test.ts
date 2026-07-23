@@ -40,6 +40,8 @@ function useCases(
         url: null,
         targetCluster: "dev",
         lifecycle: "retained",
+        protected: false,
+        origin: { kind: "user" },
         expiresAt: null,
         platformRevision: "a".repeat(40),
         sourceRevision: "b".repeat(40),
@@ -56,6 +58,8 @@ function useCases(
         url: null,
         targetCluster: "dev",
         lifecycle: "retained",
+        protected: false,
+        origin: { kind: "user" },
         expiresAt: null,
         platformRevision: "a".repeat(40),
         sourceRevision: "b".repeat(40),
@@ -169,6 +173,8 @@ describe("preview environment tools", () => {
       name: "preview-one",
       ttlHours: 12,
     });
+    expect(tool?.config.description).toContain("user-owned");
+    expect(tool?.config.description).toContain("dynamic-script preview lifecycle");
     expect(result.structuredContent).toMatchObject({
       ok: true,
       telemetry: { state: "pending", refreshAfterMs: 5_000 },
@@ -179,6 +185,26 @@ describe("preview environment tools", () => {
         },
       ],
     });
+  });
+
+  it("documents read-only protection and active-use teardown interlocks", () => {
+    const { server, captured } = fakeServer();
+    registerPreviewEnvironmentTools(server as any, {
+      principal: principal(["workflow:read", "workflow:execute"]),
+      previews: useCases(),
+    });
+
+    expect(
+      captured.find((entry) => entry.name === "get_preview_environment")
+        ?.config.description,
+    ).toContain("protected flag");
+    const teardown = captured.find(
+      (entry) => entry.name === "teardown_preview_environment",
+    );
+    expect(teardown?.config.description).toContain("active or unverified workflow ownership");
+    expect(
+      teardown?.config.inputSchema.discardUnarchived.description,
+    ).toContain("never overrides protected or active-use checks");
   });
 
   it("returns the signed teardown ticket to the caller without putting it in span output", async () => {

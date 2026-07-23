@@ -2019,6 +2019,7 @@ export function getApplicationAdapters(
       archive: getPreviewArchive(),
       commands: getVclusterPreviewGateway(),
       previews: getVclusterPreviewGateway(),
+      executions: getWorkflowExecutions(),
       scope: previewDeploymentScope,
       archiveOnTeardownEnabled: config.previewArchiveOnTeardownEnabled,
       now: () => new Date(),
@@ -2033,6 +2034,7 @@ export function getApplicationAdapters(
       new ApplicationPreviewLifecycleReaperService({
         previews: getVclusterPreviewGateway(),
         archive: getPreviewArchive(),
+        executions: getWorkflowExecutions(),
         scope: previewDeploymentScope,
         batchSize: 3,
         wakeTimeoutMs: 120_000,

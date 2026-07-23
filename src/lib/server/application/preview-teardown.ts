@@ -6,6 +6,7 @@ import type {
   PreviewDeploymentScopePort,
   PreviewEnvironmentTeardownCommandPort,
   VclusterPreviewGatewayPort,
+  WorkflowExecutionRepository,
 } from "$lib/server/application/ports";
 import type {
   VclusterPreviewRecord,
@@ -13,6 +14,7 @@ import type {
 } from "$lib/types/dev-previews";
 import { PreviewAccessDeniedError } from "$lib/server/application/preview-access";
 import { PreviewDeploymentScopeDeniedError } from "$lib/server/application/preview-deployment-scope";
+import { inspectPreviewParentWorkflowUse } from "$lib/server/application/preview-active-use";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const CANONICAL_REQUESTED_AT =
@@ -25,6 +27,9 @@ const FAILED_LAUNCH_RECEIPT_TTL_MS = 30 * 60_000;
 export type PreviewTeardownRefusalCode =
   | "ownership-incomplete"
   | "ownership-changed"
+  | "protected"
+  | "active-use"
+  | "active-use-unverified"
   | "archive-required"
   | "failed-quarantine-ineligible"
   | "failed-quarantine-runtime-unavailable"
@@ -68,6 +73,7 @@ type PreviewTeardownDeps = Readonly<{
   archive: PreviewArchivePort;
   commands: PreviewEnvironmentTeardownCommandPort;
   previews: VclusterPreviewGatewayPort;
+  executions: Pick<WorkflowExecutionRepository, "getById">;
   scope: Pick<PreviewDeploymentScopePort, "isControlPlane">;
   archiveOnTeardownEnabled: boolean;
   now?: () => Date;
@@ -112,12 +118,35 @@ export class ApplicationPreviewTeardownService {
         "Preview generation changed; refresh before tearing it down",
       );
     }
+    if (access.preview.protected) {
+      throw new PreviewTeardownRefusedError(
+        "protected",
+        "Preview is operator-protected; teardown refused",
+      );
+    }
     if (
       input.discardUnarchived === true &&
       !(await this.deps.admins.isPlatformAdmin(actorUserId))
     ) {
       throw new PreviewAccessDeniedError(
         "explicit unarchived preview discard requires a platform administrator",
+      );
+    }
+
+    const parentUse = await inspectPreviewParentWorkflowUse(
+      access.preview,
+      this.deps.executions,
+    );
+    if (parentUse.state === "active") {
+      throw new PreviewTeardownRefusedError(
+        "active-use",
+        `Preview parent workflow ${parentUse.executionId} is active; teardown refused`,
+      );
+    }
+    if (parentUse.state === "unverified") {
+      throw new PreviewTeardownRefusedError(
+        "active-use-unverified",
+        `Preview parent workflow ownership cannot be verified; teardown refused: ${parentUse.detail}`,
       );
     }
 
@@ -148,8 +177,22 @@ export class ApplicationPreviewTeardownService {
       }
     }
 
+    const activeExecutionIds = archive?.activeExecutionIds ?? null;
+    if (activeExecutionIds && activeExecutionIds.length > 0) {
+      throw new PreviewTeardownRefusedError(
+        "active-use",
+        `Preview has active workflow executions (${activeExecutionIds.join(", ")}); teardown refused`,
+      );
+    }
+
     if (archiveRequired && archive?.archived !== true) {
       if (input.discardUnarchived === true) {
+        if (activeExecutionIds === null) {
+          throw new PreviewTeardownRefusedError(
+            "active-use-unverified",
+            "Preview workflow activity could not be verified; admin discard cannot bypass active-use protection",
+          );
+        }
         const discardedAt = (this.deps.now?.() ?? new Date()).toISOString();
         return this.persistQuarantineAndTeardown({
           preview: access.preview,

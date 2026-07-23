@@ -76,13 +76,16 @@ function harness(
 		)
 	};
 	const scope = { isControlPlane: vi.fn(() => true) };
+	const executions = { getById: vi.fn(async () => null) };
 	return {
 		previews,
 		archive,
 		scope,
+		executions,
 		service: new ApplicationPreviewLifecycleReaperService({
 			previews: previews as never,
 			archive,
+			executions: executions as never,
 			scope,
 			now: options.now ?? (() => new Date('2026-07-09T21:00:00.000Z')),
 			batchSize: options.batchSize ?? 3,
@@ -158,7 +161,8 @@ describe('preview lifecycle archive reaper', () => {
 		h.archive.archivePreview.mockResolvedValueOnce({
 			archived: false,
 			preview: 'expired-one',
-			reason: 'incomplete:active-generation-unverified',
+			activeExecutionIds: [],
+			reason: 'incomplete:artifact-listing',
 			summaryFileId: 'partial-summary',
 			executionCount: 1
 		} as never);
@@ -178,7 +182,7 @@ describe('preview lifecycle archive reaper', () => {
 		});
 		expect(h.archive.quarantinePreview).toHaveBeenCalledWith(
 			expect.objectContaining({
-				reason: 'incomplete:active-generation-unverified',
+				reason: 'incomplete:artifact-listing',
 				forcedAt: '2026-07-09T22:00:00.001Z',
 				graceExpiredAt: '2026-07-09T22:00:00.000Z'
 			})
@@ -191,7 +195,7 @@ describe('preview lifecycle archive reaper', () => {
 			archiveQuarantine: {
 				forcedAt: '2026-07-09T22:00:00.001Z',
 				graceExpiredAt: '2026-07-09T22:00:00.000Z',
-				reason: 'incomplete:active-generation-unverified',
+				reason: 'incomplete:artifact-listing',
 				summaryFileId: 'quarantine-expired-one'
 			}
 		});
@@ -202,6 +206,7 @@ describe('preview lifecycle archive reaper', () => {
 		h.archive.archivePreview.mockResolvedValueOnce({
 			archived: false,
 			preview: 'expired-one',
+			activeExecutionIds: ['preview-execution-active'],
 			reason: 'incomplete:active-generation-unverified',
 			summaryFileId: 'active-partial-summary',
 			executionCount: 1
@@ -211,13 +216,64 @@ describe('preview lifecycle archive reaper', () => {
 			quarantineTeardownStarted: 0,
 			items: [
 				{
-					status: 'archive-retry',
-					detail: 'incomplete:active-generation-unverified',
+					status: 'active-use-retry',
+					detail: 'active preview workflows: preview-execution-active',
 					graceExpiredAt: '2026-07-09T22:00:00.000Z'
 				}
 			]
 		});
 		expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+		expect(h.previews.teardown).not.toHaveBeenCalled();
+	});
+
+	it('keeps retrying active preview workflows after archive grace expires', async () => {
+		const h = harness([record()], {
+			now: () => new Date('2026-07-09T22:00:00.001Z'),
+			archiveRetryGraceMs: 2 * 60 * 60_000
+		});
+		h.archive.archivePreview.mockResolvedValueOnce({
+			archived: false,
+			preview: 'expired-one',
+			activeExecutionIds: ['preview-execution-active'],
+			reason: 'incomplete:active-generation-unverified',
+			summaryFileId: 'active-partial-summary',
+			executionCount: 1
+		} as never);
+
+		await expect(h.service.reapExpired()).resolves.toMatchObject({
+			retryDeferred: 1,
+			quarantineTeardownStarted: 0,
+			items: [
+				{
+					status: 'active-use-retry',
+					detail: 'active preview workflows: preview-execution-active'
+				}
+			]
+		});
+		expect(h.archive.quarantinePreview).not.toHaveBeenCalled();
+		expect(h.previews.teardown).not.toHaveBeenCalled();
+	});
+
+	it('defers expiry while the trusted parent workflow remains active', async () => {
+		const h = harness([
+			record({ origin: { kind: 'workflow', reference: 'parent-active' } })
+		]);
+		h.executions.getById.mockResolvedValueOnce({
+			id: 'parent-active',
+			status: 'running'
+		} as never);
+
+		await expect(h.service.reapExpired()).resolves.toMatchObject({
+			retryDeferred: 1,
+			teardownStarted: 0,
+			items: [
+				{
+					status: 'active-use-retry',
+					detail: 'parent workflow parent-active is active'
+				}
+			]
+		});
+		expect(h.archive.archivePreview).not.toHaveBeenCalled();
 		expect(h.previews.teardown).not.toHaveBeenCalled();
 	});
 
