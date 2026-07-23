@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   bindDevPreviewExecutionId,
   buildBrowserStartPreviewProxyRequest,
+  buildBrowserEvidencePayload,
   buildDevPreviewBuildPayload,
   buildPreviewAcceptancePayload,
   buildWorkspaceCommandPayload,
@@ -330,6 +331,43 @@ describe("dev preview freeze proxy envelope", () => {
       success: false,
       errorClass: "retryable",
       responseStatus: 502,
+    });
+  });
+});
+
+describe("dev preview browser evidence proxy", () => {
+  it("forwards only claims and excludes caller-controlled authority", () => {
+    const evidence = [
+      {
+        storageRef: "workflow-browser-artifacts/exec-1/bwf_1/screenshot.png",
+        width: 1440,
+        height: 1000,
+      },
+    ];
+    expect(
+      buildBrowserEvidencePayload({
+        evidence,
+        executionId: "caller-controlled",
+        principalAssertion: "secret",
+      }),
+    ).toEqual({ evidence });
+  });
+
+  it("classifies invalid evidence as permanent", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "browser-evidence",
+        requestInput: { evidence: [] },
+        executionId: "db-exec-1",
+        status: 422,
+        parsed: {
+          error: "Screenshot evidence dimensions do not match the claim",
+        },
+      }),
+    ).toMatchObject({
+      success: false,
+      errorClass: "permanent",
+      responseStatus: 422,
     });
   });
 });
