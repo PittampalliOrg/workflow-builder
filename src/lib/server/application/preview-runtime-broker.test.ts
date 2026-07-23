@@ -3,6 +3,7 @@ import type {
   PreviewRuntimeBudgetLimits,
   PreviewRuntimeBudgetReservation,
   PreviewRuntimeBudgetReservationPort,
+  PreviewRuntimeCompletionResponse,
 } from "$lib/server/application/ports";
 import {
   ApplicationPreviewRuntimeBrokerService,
@@ -46,6 +47,7 @@ function harness(
     budgetLimits?: Partial<PreviewRuntimeBudgetLimits>;
     budgetResult?: PreviewRuntimeBudgetReservation;
     budgetError?: Error;
+    now?: () => number;
   } = {},
 ) {
   const audit = vi.fn();
@@ -61,12 +63,14 @@ function harness(
     })),
   };
   const upstream = {
-    complete: vi.fn(async () => ({
-      status: 200,
-      contentType: "application/json",
-      requestId: "upstream-1",
-      body: null,
-    })),
+    complete: vi.fn(
+      async (): Promise<PreviewRuntimeCompletionResponse> => ({
+        status: 200,
+        contentType: "application/json",
+        requestId: "upstream-1",
+        body: null,
+      }),
+    ),
   };
   const reserve = vi.fn(
     async (
@@ -95,6 +99,7 @@ function harness(
     allowedModels: ["deepseek-v4-pro", "kimi-k3"],
     maxConcurrency: input.maxConcurrency ?? 2,
     audit,
+    now: input.now,
   });
   return { service, authority, upstream, budget, audit };
 }
@@ -143,6 +148,51 @@ const request = {
   capability: "d".repeat(64),
   payload: gatewayPayload,
 };
+
+const streamingRequest = {
+  ...request,
+  payload: { ...gatewayPayload, stream: true },
+};
+
+function sseResponse(body: ReadableStream<Uint8Array>) {
+  return {
+    status: 200,
+    contentType: "text/event-stream; charset=utf-8",
+    requestId: "upstream-stream-1",
+    body,
+  };
+}
+
+async function expectExactlyOneCapacitySlot(
+  h: ReturnType<typeof harness>,
+): Promise<void> {
+  const callsBeforeProbe = h.upstream.complete.mock.calls.length;
+  let releaseProbe!: () => void;
+  h.upstream.complete.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releaseProbe = () =>
+          resolve({
+            status: 200,
+            contentType: "application/json",
+            requestId: "upstream-probe",
+            body: null,
+          });
+      }),
+  );
+  const occupying = h.service.complete(request);
+  await vi.waitFor(() =>
+    expect(h.upstream.complete).toHaveBeenCalledTimes(callsBeforeProbe + 1),
+  );
+  try {
+    await expect(h.service.complete(request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+  } finally {
+    releaseProbe();
+    await occupying;
+  }
+}
 
 describe("preview runtime broker application policy", () => {
   it("rejects a mismatched capability before physical inspection", async () => {
@@ -665,6 +715,215 @@ describe("preview runtime broker application policy", () => {
     h.upstream.complete.mockRejectedValueOnce(new Error("gateway failed"));
     await expect(h.service.complete(request)).rejects.toThrow("gateway failed");
     expect(h.budget.reserve).toHaveBeenCalledOnce();
+  });
+
+  it("holds capacity and terminal audit until an SSE body closes", async () => {
+    let currentTime = 1_000;
+    let sourceController!: ReadableStreamDefaultController<Uint8Array>;
+    const sourcePull = vi.fn();
+    const upstreamBody = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          sourceController = controller;
+        },
+        pull() {
+          sourcePull();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const h = harness({
+      maxConcurrency: 1,
+      now: () => currentTime,
+    });
+    h.upstream.complete.mockResolvedValueOnce(sseResponse(upstreamBody));
+
+    const response = await h.service.complete(streamingRequest);
+    expect(sourcePull).not.toHaveBeenCalled();
+    expect(h.audit.mock.calls.map(([record]) => record.status)).toEqual([
+      "accepted",
+    ]);
+    await expect(h.service.complete(request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+
+    const reader = response.body!.getReader();
+    const firstRead = reader.read();
+    await vi.waitFor(() => expect(sourcePull).toHaveBeenCalledOnce());
+    const chunk = new TextEncoder().encode('data: {"id":"chunk-1"}\n\n');
+    sourceController.enqueue(chunk);
+    await expect(firstRead).resolves.toEqual({ done: false, value: chunk });
+    expect(sourcePull).toHaveBeenCalledOnce();
+
+    const finalRead = reader.read();
+    await vi.waitFor(() => expect(sourcePull).toHaveBeenCalledTimes(2));
+    currentTime = 1_450;
+    sourceController.close();
+    await expect(finalRead).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(
+      h.audit.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.status !== "accepted"),
+    ).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        upstreamStatus: 200,
+        durationMs: 450,
+      }),
+    ]);
+
+    await expectExactlyOneCapacitySlot(h);
+  });
+
+  it("cancels an open SSE upstream and finalizes its audit once", async () => {
+    let currentTime = 2_000;
+    const sourcePull = vi.fn();
+    const sourceCancel = vi.fn();
+    const upstreamBody = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          sourcePull();
+        },
+        cancel(reason) {
+          sourceCancel(reason);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const h = harness({
+      maxConcurrency: 1,
+      now: () => currentTime,
+    });
+    h.upstream.complete.mockResolvedValueOnce(sseResponse(upstreamBody));
+
+    const response = await h.service.complete(streamingRequest);
+    const reader = response.body!.getReader();
+    const pendingRead = reader.read();
+    await vi.waitFor(() => expect(sourcePull).toHaveBeenCalledOnce());
+    await expect(h.service.complete(request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+
+    currentTime = 2_300;
+    await reader.cancel("downstream disconnected");
+    await expect(pendingRead).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(sourceCancel).toHaveBeenCalledOnce();
+    expect(sourceCancel).toHaveBeenCalledWith("downstream disconnected");
+    expect(
+      h.audit.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.status !== "accepted"),
+    ).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        upstreamStatus: 200,
+        durationMs: 300,
+      }),
+    ]);
+
+    await expectExactlyOneCapacitySlot(h);
+  });
+
+  it("propagates an SSE read error and releases capacity exactly once", async () => {
+    let currentTime = 3_000;
+    let sourceController!: ReadableStreamDefaultController<Uint8Array>;
+    const sourcePull = vi.fn();
+    const upstreamBody = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          sourceController = controller;
+        },
+        pull() {
+          sourcePull();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const h = harness({
+      maxConcurrency: 1,
+      now: () => currentTime,
+    });
+    h.upstream.complete.mockResolvedValueOnce(sseResponse(upstreamBody));
+
+    const response = await h.service.complete(streamingRequest);
+    const reader = response.body!.getReader();
+    const pendingRead = reader.read();
+    await vi.waitFor(() => expect(sourcePull).toHaveBeenCalledOnce());
+    await expect(h.service.complete(request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+
+    currentTime = 3_125;
+    const upstreamError = new Error("upstream SSE failed");
+    sourceController.error(upstreamError);
+    await expect(pendingRead).rejects.toBe(upstreamError);
+    expect(
+      h.audit.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.status !== "accepted"),
+    ).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        upstreamStatus: 200,
+        durationMs: 125,
+      }),
+    ]);
+
+    await expectExactlyOneCapacitySlot(h);
+  });
+
+  it("keeps non-streaming responses on immediate terminal accounting", async () => {
+    let currentTime = 4_000;
+    const sourceCancel = vi.fn();
+    const jsonBody = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        sourceCancel(reason);
+      },
+    });
+    const h = harness({
+      maxConcurrency: 1,
+      now: () => currentTime,
+    });
+    h.upstream.complete.mockImplementationOnce(async () => {
+      currentTime = 4_025;
+      return {
+        status: 200,
+        contentType: "application/json",
+        requestId: "upstream-json-1",
+        body: jsonBody,
+      };
+    });
+
+    const response = await h.service.complete(request);
+    expect(
+      h.audit.mock.calls
+        .map(([record]) => record)
+        .filter((record) => record.status !== "accepted"),
+    ).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        upstreamStatus: 200,
+        durationMs: 25,
+      }),
+    ]);
+    await expect(h.service.complete(request)).resolves.toMatchObject({
+      status: 200,
+    });
+    await response.body?.cancel("test cleanup");
+    expect(sourceCancel).toHaveBeenCalledWith("test cleanup");
+    expect(
+      h.audit.mock.calls.filter(
+        ([record]) =>
+          record.requestId === identity.environmentRequestId &&
+          record.status === "completed",
+      ),
+    ).toHaveLength(2);
   });
 
   it("bounds in-process concurrency in addition to the distributed budget", async () => {
