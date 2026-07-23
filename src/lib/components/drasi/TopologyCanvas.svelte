@@ -1,0 +1,122 @@
+<script lang="ts">
+	import {
+		SvelteFlow,
+		Background,
+		BackgroundVariant,
+		Controls,
+		MarkerType,
+		type Node,
+		type Edge,
+		type NodeTypes,
+		type EdgeTypes,
+	} from "@xyflow/svelte";
+	import "@xyflow/svelte/dist/style.css";
+	import { DRASI_EDGES, DRASI_NODES } from "$lib/drasi/catalog";
+	import type { DrasiSelection } from "$lib/types/drasi";
+	import TopologyNode from "./TopologyNode.svelte";
+	import TopologyEdge from "./TopologyEdge.svelte";
+
+	let { onSelect }: { onSelect?: (selection: DrasiSelection | null) => void } = $props();
+
+	const nodeTypes: NodeTypes = { drasi: TopologyNode };
+	const edgeTypes: EdgeTypes = { drasi: TopologyEdge };
+
+	const NODE_W = 232;
+
+	// The topology is curated configuration — nodes/edges are built once and
+	// never change at runtime. `$state.raw` because we never mutate entries.
+	let nodes = $state.raw<Node[]>(
+		DRASI_NODES.map((spec) => ({
+			id: spec.id,
+			type: "drasi",
+			position: { x: spec.x, y: spec.y },
+			width: NODE_W,
+			data: { spec },
+			draggable: false,
+			connectable: false,
+		})),
+	);
+	let edges = $state.raw<Edge[]>(
+		DRASI_EDGES.map((spec) => ({
+			id: spec.id,
+			source: spec.source,
+			target: spec.target,
+			type: "drasi",
+			animated: spec.animated,
+			data: { spec },
+			selectable: true,
+			markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "var(--border)" },
+		})),
+	);
+
+	let colorMode = $derived<"light" | "dark" | "system">("system");
+</script>
+
+<div class="relative h-full w-full">
+	<div
+		class="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/50 bg-background/80 px-2.5 py-1.5 backdrop-blur"
+	>
+		<span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+			Flow
+		</span>
+		<span class="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+			<span class="h-0 w-4 border-t-2 border-solid border-muted-foreground/60" aria-hidden="true"></span>
+			rows / CDC
+		</span>
+		<span class="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+			<span class="h-0 w-4 border-t-2 border-dashed border-primary/70" aria-hidden="true"></span>
+			added results → governed ingest
+		</span>
+	</div>
+	<div
+		class="pointer-events-none absolute bottom-3 right-3 z-10 rounded-md border border-border/50 bg-background/80 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur"
+	>
+		Pan · zoom · select a node or edge for detail
+	</div>
+	<SvelteFlow
+		bind:nodes
+		bind:edges
+		{nodeTypes}
+		{edgeTypes}
+		{colorMode}
+		nodesDraggable={false}
+		nodesConnectable={false}
+		elementsSelectable={true}
+		nodesFocusable={true}
+		edgesFocusable={true}
+		zoomOnDoubleClick={false}
+		minZoom={0.2}
+		maxZoom={1.75}
+		fitView
+		fitViewOptions={{ padding: 0.12, maxZoom: 1 }}
+		onnodeclick={({ node }) => onSelect?.({ kind: "node", id: node.id })}
+		onedgeclick={({ edge }) => onSelect?.({ kind: "edge", id: edge.id })}
+		onpaneclick={() => onSelect?.(null)}
+	>
+		<Controls showLock={false} />
+		<Background
+			variant={BackgroundVariant.Dots}
+			bgColor="var(--background)"
+			patternColor="var(--border)"
+			gap={24}
+			size={2}
+		/>
+	</SvelteFlow>
+</div>
+
+<style>
+	/* Marching-dash animation respects reduced motion. */
+	@media (prefers-reduced-motion: reduce) {
+		:global(.svelte-flow__edge.animated .svelte-flow__edge-path) {
+			animation: none !important;
+		}
+	}
+	:global(.svelte-flow__node:focus-visible) {
+		outline: 2px solid var(--ring);
+		outline-offset: 2px;
+		border-radius: calc(var(--radius) + 4px);
+	}
+	:global(.svelte-flow__edge:focus-visible .svelte-flow__edge-path) {
+		stroke: var(--ring);
+	}
+</style>
