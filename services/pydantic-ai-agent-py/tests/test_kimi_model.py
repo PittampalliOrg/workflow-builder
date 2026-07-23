@@ -20,6 +20,7 @@ from src.workflow import (
     build_model,
     build_model_settings,
     is_provider_context_window_error,
+    resolve_kimi_reasoning_effort,
 )
 
 
@@ -39,13 +40,31 @@ def test_build_model_is_pydantic_ai_openai_chat_model(monkeypatch):
     assert model.provider.client.max_retries == 0
 
 
-def test_model_settings_enforce_kimi_contract():
+def test_model_settings_enforce_kimi_contract(monkeypatch):
+    monkeypatch.delenv("KIMI_REASONING_EFFORT", raising=False)
     settings = build_model_settings()
     assert settings["temperature"] == 1
     assert settings["frequency_penalty"] == 0
     assert settings["max_tokens"] == 131_072
     assert settings["extra_body"] == {"reasoning_effort": "max"}
     assert settings["timeout"] > 0
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+def test_model_settings_honor_per_agent_kimi_reasoning_effort(monkeypatch, effort: str):
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "max")
+    settings = build_model_settings({"reasoningEffort": effort.upper()})
+    assert settings["extra_body"] == {"reasoning_effort": effort}
+
+
+def test_kimi_reasoning_effort_uses_env_default_and_rejects_unsupported(
+    monkeypatch, caplog
+):
+    monkeypatch.setenv("KIMI_REASONING_EFFORT", "high")
+    assert resolve_kimi_reasoning_effort() == "high"
+    assert resolve_kimi_reasoning_effort({"reasoningEffort": "low"}) == "low"
+    assert resolve_kimi_reasoning_effort({"reasoningEffort": "medium"}) == "max"
+    assert "defaulting to 'max'" in caplog.text
 
 
 def test_context_budget_reserves_completion_and_reduces_it_near_limit():

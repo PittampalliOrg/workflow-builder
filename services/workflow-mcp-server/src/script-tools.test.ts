@@ -261,6 +261,9 @@ describe("get_workflow_script_spec tool", () => {
 		expect(text).toContain("PLATFORM DELTAS");
 		expect(text).toContain("agentType");
 		expect(text).toContain("isolation");
+		expect(text).toContain("Kimi K3 preserves low/high/max");
+		expect(text).toContain("defaults unsupported or unset values to max");
+		expect(text).not.toContain("Kimi K3 always runs at max thinking");
 	});
 });
 

@@ -74,7 +74,10 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
             "messages": [],
             "context": {
                 "sessionId": None,
-                "agentConfig": {"systemPrompt": "You are a test agent."},
+                "agentConfig": {
+                    "systemPrompt": "You are a test agent.",
+                    "reasoningEffort": "low",
+                },
             },
             "iteration": 0,
         },
@@ -85,7 +88,7 @@ def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     assert settings["temperature"] == 1
     assert settings["frequency_penalty"] == 0
     assert settings["max_tokens"] == 131_072
-    assert settings["extra_body"] == {"reasoning_effort": "max"}
+    assert settings["extra_body"] == {"reasoning_effort": "low"}
 
     # harness tools were offered to the model as pydantic-ai ToolDefinitions
     tool_names = {t.name for t in captured["params"].function_tools}

@@ -401,25 +401,32 @@ def test_resolve_llm_metadata_carries_valid_reasoning_effort():
     assert "reasoningEffort" not in llm
 
 
-def test_resolve_llm_metadata_kimi_k3_drops_unsupported_reasoning_effort():
-    # Only API-valid effort values are recorded for kimi-k3 (today: only
-    # "max"); anything else is dropped rather than propagated.
-    llm = resolve_llm_metadata(
-        agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "High"}
-    )
-    assert "reasoningEffort" not in llm
-    assert llm["contextWindowTokens"] == 1_048_576
+def test_resolve_llm_metadata_kimi_k3_normalizes_supported_reasoning_effort():
+    for configured, expected in (("LOW", "low"), ("High", "high"), ("max", "max")):
+        llm = resolve_llm_metadata(
+            agent_config={
+                "modelSpec": "kimi/kimi-k3",
+                "reasoningEffort": configured,
+            }
+        )
+        assert llm["reasoningEffort"] == expected
+        assert llm["contextWindowTokens"] == 1_048_576
+
     assert (
         resolve_llm_metadata(agent_config={"modelSpec": "kimi/kimi-k3"})[
             "reasoningEffort"
         ]
         == "max"
     )
-    assert (
-        "reasoningEffort"
-        not in resolve_llm_metadata(
-            agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "bogus"}
-        )
+    assert all(
+        resolve_llm_metadata(
+            agent_config={
+                "modelSpec": "kimi/kimi-k3",
+                "reasoningEffort": unsupported,
+            }
+        )["reasoningEffort"]
+        == "max"
+        for unsupported in ("medium", "xhigh", "bogus")
     )
 
 
@@ -480,20 +487,13 @@ def test_platform_default_is_kimi_k3():
 
 
 def test_kimi_k3_records_only_api_valid_reasoning_effort():
-    # kimi-k3 currently accepts only "max" — a configured non-max effort is
-    # dropped, not propagated (the snapshot carries only API-valid values).
-    llm = resolve_llm_metadata(
-        agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "low"}
-    )
-    assert llm["contextWindowTokens"] == 1_048_576
-    assert "reasoningEffort" not in llm
-    # The valid value and the unset default both record "max".
-    assert (
-        resolve_llm_metadata(
-            agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": "max"}
-        )["reasoningEffort"]
-        == "max"
-    )
+    for effort in ("low", "high", "max"):
+        llm = resolve_llm_metadata(
+            agent_config={"modelSpec": "kimi/kimi-k3", "reasoningEffort": effort}
+        )
+        assert llm["contextWindowTokens"] == 1_048_576
+        assert llm["reasoningEffort"] == effort
+
     assert (
         resolve_llm_metadata(agent_config={"modelSpec": "kimi/kimi-k3"})[
             "reasoningEffort"

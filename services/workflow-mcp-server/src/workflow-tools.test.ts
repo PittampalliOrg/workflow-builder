@@ -23,17 +23,22 @@ const principal: WorkflowMcpPrincipal = {
 function fakeServer() {
   const captured: Array<{
     name: string;
+    config: { inputSchema?: Record<string, unknown> };
     handler: (args?: unknown) => Promise<{
       content: Array<{ type: "text"; text: string }>;
       isError?: boolean;
     }>;
   }> = [];
-	const server = {
-    registerTool(name: string, _config: unknown, handler: never) {
-      captured.push({ name, handler });
-		},
-	};
-	return { server, captured };
+  const server = {
+    registerTool(
+      name: string,
+      config: { inputSchema?: Record<string, unknown> },
+      handler: never,
+    ) {
+      captured.push({ name, config, handler });
+    },
+  };
+  return { server, captured };
 }
 
 function fakePersistence(
@@ -90,6 +95,32 @@ describe("workflow tools registration", () => {
 		expect(names).not.toContain("approve_workflow");
 		expect(names).not.toContain("get_workflow_observability");
 	});
+
+  it("documents Kimi K3 low, high, and max effort on create_agent", () => {
+    const { server, captured } = fakeServer();
+    registerWorkflowTools(server as any, {
+      persistence: fakePersistence(),
+      principal,
+    });
+
+    const createAgent = captured.find((tool) => tool.name === "create_agent");
+    const effortSchema = createAgent?.config.inputSchema?.reasoning_effort as
+      | {
+          description?: string;
+          safeParse(value: unknown): { success: boolean };
+        }
+      | undefined;
+
+    expect(effortSchema?.description).toContain(
+      "Kimi K3 accepts 'low', 'high', and 'max'",
+    );
+    expect(effortSchema?.description).toContain(
+      "unset or unsupported K3 values use the deployed 'max' default",
+    );
+    for (const effort of ["low", "high", "max"]) {
+      expect(effortSchema?.safeParse(effort).success).toBe(true);
+    }
+  });
 
   it("registers only tools granted by the connection scopes", () => {
     const { server, captured } = fakeServer();

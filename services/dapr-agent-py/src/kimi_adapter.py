@@ -1091,20 +1091,19 @@ def _reasoning_effort(override: str | None = None) -> str:
 
     ``override`` is the per-agent ``agentConfig.reasoningEffort`` (stamped onto
     the chat client by call_llm from the per-turn effective-config snapshot) and
-    WINS over the env default. Kimi currently accepts only "max" for kimi-k3
-    (lower levels are documented as coming soon), so any other level clamps to
-    "max" with a warning — the per-agent config path is live for when lower
-    levels ship.
+    wins over the env default. Kimi accepts ``low``, ``high``, and ``max`` for
+    kimi-k3. Unsupported values fail closed to the platform's ``max`` default.
     """
     effort = (
-        override or os.environ.get("KIMI_REASONING_EFFORT", "max")
-    ).strip().lower()
-    if effort != "max":
-        logger.warning(
-            "[kimi-chat] reasoning_effort=%r requested, but kimi-k3 currently "
-            "supports only 'max'; clamping to 'max'",
-            effort,
-        )
+        (override or os.environ.get("KIMI_REASONING_EFFORT", "max")).strip().lower()
+    )
+    if effort in {"low", "high", "max"}:
+        return effort
+    logger.warning(
+        "[kimi-chat] unsupported reasoning_effort=%r requested for kimi-k3; "
+        "defaulting to 'max'",
+        effort,
+    )
     return "max"
 
 
@@ -1507,8 +1506,7 @@ def patch_for_kimi(llm_client: Any) -> None:
                 ),
                 # Per-agent reasoning effort (agentConfig.reasoningEffort),
                 # stamped onto the client by call_llm alongside _llm_component;
-                # the env default applies only when unset. kimi-k3 currently
-                # accepts only "max"; other values clamp with a warning.
+                # the env default applies only when unset.
                 reasoning_effort=getattr(self, "_reasoning_effort", None),
             )
 

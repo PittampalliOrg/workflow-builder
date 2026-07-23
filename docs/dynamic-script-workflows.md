@@ -110,8 +110,9 @@ Five Workflow-tool alignment gaps were closed (evaluator 1.1.0 + orchestrator + 
   `resolve_llm_metadata` → `effectiveAgentConfig.llm.reasoningEffort` → call_llm stamps
   `self.llm._reasoning_effort` (set/restored alongside `_llm_component` at BOTH seams) → zai/
   deepseek/openai adapters take it as an override to their env default ({low,medium,high}→high,
-  {xhigh,max}→max on GLM/DeepSeek; low/medium/high on OpenAI). Kimi K3 always uses
-  `max`; Anthropic ignores this field.
+  {xhigh,max}→max on GLM/DeepSeek; low/medium/high on OpenAI). Kimi K3 preserves
+  `low`/`high`/`max`; unset or unsupported agent-level values use the deployed `max`
+  default. Anthropic ignores this field.
 - **meta.phases[].model is honored**: `_build_agent_config` resolves
   `opts.model → meta.phases[task.phase].model → defaults.model` (last gated to dapr-agent-py).
 

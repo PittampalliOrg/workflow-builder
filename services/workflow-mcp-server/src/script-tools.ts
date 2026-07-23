@@ -123,7 +123,7 @@ PLATFORM DELTAS (differ from the Claude Code spec — get these right):
    'worktree' is a no-op here.
 4. opts.effort ('low'|'medium'|'high'|'xhigh'|'max') is honored, clamped per provider:
    GLM/DeepSeek {low,medium,high}->high, {xhigh,max}->max; OpenAI low/medium/high (xhigh/max->high);
-   Anthropic ignores it; Kimi K3 always runs at max thinking regardless of the requested value.
+   Anthropic ignores it; Kimi K3 preserves low/high/max and defaults unsupported or unset values to max.
    It is part of the resume cache key.
 5. budget.spent() counts input+output+cache_creation (net of cache reads), NOT output-only — a budget
    sized for Claude Code is reached SOONER here. Exhaustion makes unresolved agent() calls throw;

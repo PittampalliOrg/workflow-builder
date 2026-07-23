@@ -172,7 +172,7 @@ describe("preview runtime broker application policy", () => {
     ).rejects.toMatchObject({ code: "invalid-request" });
   });
 
-  it("forces Kimi K3 max reasoning and preserves bounded assistant reasoning", async () => {
+  it("preserves supported Kimi K3 effort and bounded assistant reasoning", async () => {
     const h = harness();
     const kimiPayload = {
       model: "kimi-k3",
@@ -207,9 +207,24 @@ describe("preview runtime broker application policy", () => {
       payload: {
         ...kimiPayload,
         max_completion_tokens: 512,
-        reasoning_effort: "max",
+        reasoning_effort: "low",
       },
     });
+
+    for (const reasoning_effort of ["high", "max"]) {
+      await h.service.complete({
+        ...request,
+        payload: { ...kimiPayload, reasoning_effort },
+      });
+      expect(h.upstream.complete).toHaveBeenLastCalledWith({
+        identity,
+        payload: {
+          ...kimiPayload,
+          reasoning_effort,
+          max_completion_tokens: 512,
+        },
+      });
+    }
 
     const { reasoning_effort: _reasoningEffort, ...kimiWithoutReasoning } =
       kimiPayload;
@@ -227,7 +242,18 @@ describe("preview runtime broker application policy", () => {
       },
     });
 
+    await expect(
+      h.service.complete({
+        ...request,
+        payload: { ...kimiPayload, reasoning_effort: "medium" },
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid-request",
+      message: "kimi-k3 reasoning_effort must be low, high, or max",
+    });
+
     for (const payload of [
+      { ...kimiPayload, reasoning_effort: "xhigh" },
       { ...kimiPayload, reasoning_effort: "ultra" },
       { ...kimiPayload, thinking: { type: "disabled" } },
       {

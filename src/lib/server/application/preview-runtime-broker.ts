@@ -57,6 +57,7 @@ const encoder = new TextEncoder();
 export const KIMI_K3_MODEL = "kimi-k3";
 export const KIMI_K3_CONTEXT_TOKENS = 1_048_576;
 export const KIMI_K3_MAX_COMPLETION_TOKENS = 131_072;
+const KIMI_K3_REASONING_EFFORTS = new Set(["low", "high", "max"]);
 // A transport byte bound cannot predict provider tokenization. Sixteen bytes
 // per context token leaves room for the full K3 window while staying below the
 // preview broker's BODY_SIZE_LIMIT=25M process ceiling.
@@ -301,7 +302,14 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
     validateTools(payload.tools, limits);
     validateToolChoice(payload.tool_choice);
     validateResponseFormat(payload.response_format, limits.maxToolBytes);
-    validateReasoningEffort(payload.reasoning_effort);
+    let kimiReasoningEffort: string | undefined;
+    if (model === KIMI_K3_MODEL) {
+      kimiReasoningEffort = normalizeKimiK3ReasoningEffort(
+        payload.reasoning_effort,
+      );
+    } else {
+      validateReasoningEffort(payload.reasoning_effort);
+    }
     if (model === KIMI_K3_MODEL && payload.thinking !== undefined) {
       return invalid("kimi-k3 does not accept the legacy thinking field");
     }
@@ -330,7 +338,7 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
     const normalized: Record<string, unknown> = { ...payload, model };
     normalized[tokenKey ?? "max_completion_tokens"] = outputTokens;
     if (model === KIMI_K3_MODEL) {
-      normalized.reasoning_effort = "max";
+      normalized.reasoning_effort = kimiReasoningEffort;
       delete normalized.thinking;
     }
     // One token per encoded UTF-8 byte is deliberately conservative for every
@@ -740,6 +748,16 @@ function validateReasoningEffort(value: unknown): void {
   ) {
     return invalid("reasoning_effort is invalid");
   }
+}
+
+function normalizeKimiK3ReasoningEffort(value: unknown): string {
+  if (value === undefined) return "max";
+  // This is a provider-wire trust boundary, so invalid direct payloads are
+  // rejected instead of receiving the agent-config fallback used upstream.
+  if (typeof value !== "string" || !KIMI_K3_REASONING_EFFORTS.has(value)) {
+    return invalid("kimi-k3 reasoning_effort must be low, high, or max");
+  }
+  return value;
 }
 
 function validateThinking(value: unknown): void {
