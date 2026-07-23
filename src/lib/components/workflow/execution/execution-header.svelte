@@ -1,6 +1,15 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { CheckCircle2, XCircle, Loader2, Clock, Copy, Check, ExternalLink } from '@lucide/svelte';
+	import {
+		CheckCircle2,
+		XCircle,
+		Loader2,
+		Clock,
+		Copy,
+		Check,
+		ExternalLink,
+		ChevronRight
+	} from '@lucide/svelte';
 	import { resolveStatusTone, statusTonePillClass } from '$lib/utils/status-tone';
 
 	interface Props {
@@ -15,18 +24,27 @@
 
 	let { status, duration, startedAt, executionId, instanceId, traceId, workflowName }: Props = $props();
 
-	let copyFeedback = $state(false);
+	let copiedKey = $state<string | null>(null);
+	let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const isRunning = $derived(
 		status.toUpperCase() === 'RUNNING' || status.toUpperCase() === 'PENDING'
 	);
 
+	const identifiers = $derived(
+		[
+			{ key: 'execution', label: 'Execution ID', value: executionId },
+			instanceId ? { key: 'instance', label: 'Dapr Instance ID', value: instanceId } : null,
+			traceId ? { key: 'trace', label: 'Trace ID', value: traceId } : null
+		].filter((id): id is { key: string; label: string; value: string } => id !== null)
+	);
 
-	async function copyId() {
+	async function copyIdentifier(key: string, value: string) {
 		try {
-			await navigator.clipboard.writeText(executionId);
-			copyFeedback = true;
-			setTimeout(() => (copyFeedback = false), 1500);
+			await navigator.clipboard.writeText(value);
+			copiedKey = key;
+			clearTimeout(feedbackTimer);
+			feedbackTimer = setTimeout(() => (copiedKey = null), 1500);
 		} catch {
 			// Clipboard not available
 		}
@@ -34,9 +52,9 @@
 </script>
 
 <div class="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border">
-	<div class="flex items-center gap-2">
+	<div class="flex items-center gap-2 min-w-0">
 		{#if workflowName}
-			<span class="text-sm font-semibold">{workflowName}</span>
+			<span class="truncate text-sm font-semibold">{workflowName}</span>
 			<span class="text-muted-foreground">/</span>
 		{/if}
 		<span class="text-sm font-medium">Execution</span>
@@ -70,33 +88,48 @@
 		</span>
 	{/if}
 
-	<div class="flex items-center gap-1">
-		<code class="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-			{executionId.slice(0, 8)}
-		</code>
-		<button
-			class="rounded p-1 text-muted-foreground hover:text-foreground transition-colors"
-			onclick={copyId}
-			title="Copy execution ID"
+	<details class="group relative">
+		<summary
+			class="flex cursor-pointer list-none items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"
 		>
-			{#if copyFeedback}
-				<Check size={12} class="text-green-500" />
-			{:else}
-				<Copy size={12} />
-			{/if}
-		</button>
-	</div>
-
-	{#if instanceId}
-		<code class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title="Dapr Instance ID">
-			{instanceId.slice(0, 12)}
-		</code>
-	{/if}
+			<ChevronRight size={12} class="transition-transform group-open:rotate-90" />
+			Run IDs
+		</summary>
+		<div
+			class="absolute left-0 top-full z-20 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
+		>
+			<ul class="flex flex-col gap-1">
+				{#each identifiers as id (id.key)}
+					<li class="flex items-center gap-2">
+						<span class="w-28 shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+							{id.label}
+						</span>
+						<code class="max-w-64 truncate rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+							{id.value}
+						</code>
+						<button
+							type="button"
+							class="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							onclick={() => copyIdentifier(id.key, id.value)}
+							aria-label="Copy {id.label}"
+							title="Copy {id.label}"
+						>
+							{#if copiedKey === id.key}
+								<Check size={12} class="text-green-500" />
+							{:else}
+								<Copy size={12} />
+							{/if}
+						</button>
+					</li>
+				{/each}
+			</ul>
+		</div>
+	</details>
 
 	<div class="ml-auto flex items-center gap-1">
 		{#if traceId}
 			<button
-				class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors"
+				class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 				onclick={() => goto(`/observability/${traceId}`)}
 			>
 				<ExternalLink size={12} />
