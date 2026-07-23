@@ -1,11 +1,18 @@
 import { createHash } from "node:crypto";
 import { redactDiagnosticEvidence } from "$lib/server/application/diagnostic-redaction";
+import type { WorkflowExecutionListItem } from "$lib/server/application/ports";
+import type {
+  DrasiIncident,
+  DrasiIncidentsResponse,
+  DrasiIncidentSeverity,
+} from "$lib/types/drasi";
 
 const MAX_INCIDENT_BYTES = 32_768;
 const MAX_KEY_LENGTH = 256;
 const MAX_SUBJECT_LENGTH = 500;
 const MAX_EVIDENCE_STRING_LENGTH = 2_000;
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const RFC3339 =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const DRASI_POSTGRES_LOCAL_DATETIME =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?$/;
 const CORRELATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
@@ -25,6 +32,19 @@ export const DRASI_INCIDENT_QUERY_IDS = [
 
 type DrasiIncidentQueryId = (typeof DRASI_INCIDENT_QUERY_IDS)[number];
 type EvidenceValue = string | number | boolean | null;
+
+const DRASI_INCIDENT_QUERY_LABELS: Record<DrasiIncidentQueryId, string> = {
+  "workflow-execution-stalled": "Workflow execution stalled",
+  "session-failure-storm": "Session failure storm",
+  "sandbox-provisioning-stalled": "Sandbox provisioning stalled",
+  "kueue-admission-stalled": "Kueue admission stalled",
+  "dapr-resource-warning": "Dapr resource warning",
+  "dapr-resource-drift": "Dapr resource drift",
+};
+
+const MAX_INCIDENT_FEED_LIMIT = 200;
+const MAX_INCIDENT_FEED_EVIDENCE = 3;
+const MAX_INCIDENT_FEED_EVIDENCE_LENGTH = 240;
 
 const INPUT_KEYS = new Set([
   "queryId",
@@ -134,9 +154,12 @@ function optionalString(
   name: string,
   maxLength: number,
 ): { ok: true; value?: string } | { ok: false; error: string } {
-  if (value === undefined || value === null || value === "") return { ok: true };
+  if (value === undefined || value === null || value === "")
+    return { ok: true };
   const result = requiredString(value, name, maxLength);
-  return result.ok ? { ok: true, value: redactDrasiText(result.value) } : result;
+  return result.ok
+    ? { ok: true, value: redactDrasiText(result.value) }
+    : result;
 }
 
 function canonicalTimestamp(
@@ -165,17 +188,26 @@ export function redactDrasiText(value: string): string {
 function sanitizeEvidence(
   value: unknown,
   queryId: DrasiIncidentQueryId,
-): { ok: true; value: Record<string, EvidenceValue> } | { ok: false; error: string } {
+):
+  | { ok: true; value: Record<string, EvidenceValue> }
+  | { ok: false; error: string } {
   if (value === undefined || value === null) return { ok: true, value: {} };
-  if (!isRecord(value)) return { ok: false, error: "evidence must be an object" };
+  if (!isRecord(value))
+    return { ok: false, error: "evidence must be an object" };
 
   const allowed = EVIDENCE_KEYS[queryId];
   const sanitized: Record<string, EvidenceValue> = {};
   for (const [key, item] of Object.entries(value)) {
     if (!allowed.has(key)) {
-      return { ok: false, error: `evidence.${key} is not allowed for ${queryId}` };
+      return {
+        ok: false,
+        error: `evidence.${key} is not allowed for ${queryId}`,
+      };
     }
-    if (item !== null && !["string", "number", "boolean"].includes(typeof item)) {
+    if (
+      item !== null &&
+      !["string", "number", "boolean"].includes(typeof item)
+    ) {
       return { ok: false, error: `evidence.${key} must be a primitive value` };
     }
     if (typeof item === "number" && !Number.isFinite(item)) {
@@ -199,9 +231,7 @@ function sanitizeEvidence(
 function validateCorrelation(
   body: Record<string, unknown>,
   queryId: DrasiIncidentQueryId,
-):
-  | { ok: true; value: Record<string, string> }
-  | { ok: false; error: string } {
+): { ok: true; value: Record<string, string> } | { ok: false; error: string } {
   const fields = [
     "executionId",
     "sessionId",
@@ -223,10 +253,16 @@ function validateCorrelation(
   }
 
   if (queryId === "workflow-execution-stalled" && !value.executionId) {
-    return { ok: false, error: "executionId is required for workflow-execution-stalled" };
+    return {
+      ok: false,
+      error: "executionId is required for workflow-execution-stalled",
+    };
   }
   if (queryId === "session-failure-storm" && !value.sessionId) {
-    return { ok: false, error: "sessionId is required for session-failure-storm" };
+    return {
+      ok: false,
+      error: "sessionId is required for session-failure-storm",
+    };
   }
   if (
     queryId !== "workflow-execution-stalled" &&
@@ -235,7 +271,8 @@ function validateCorrelation(
   ) {
     return {
       ok: false,
-      error: "resourceKind, resourceNamespace, and resourceName are required for resource incidents",
+      error:
+        "resourceKind, resourceNamespace, and resourceName are required for resource incidents",
     };
   }
   return { ok: true, value };
@@ -248,7 +285,10 @@ function incidentKeyFor(
 ): string {
   if (queryId === "workflow-execution-stalled") {
     const nodeIdentity = evidence.nodeId
-      ? createHash("sha256").update(String(evidence.nodeId)).digest("hex").slice(0, 24)
+      ? createHash("sha256")
+          .update(String(evidence.nodeId))
+          .digest("hex")
+          .slice(0, 24)
       : "execution";
     return [queryId, correlation.executionId, nodeIdentity].join(":");
   }
@@ -280,20 +320,28 @@ export function normalizeDrasiIncident(
     return { ok: false, error: `body exceeds ${MAX_INCIDENT_BYTES} bytes` };
   }
   const unknownField = Object.keys(body).find((key) => !INPUT_KEYS.has(key));
-  if (unknownField) return { ok: false, error: `${unknownField} is not allowed` };
+  if (unknownField)
+    return { ok: false, error: `${unknownField} is not allowed` };
 
   const queryId = requiredString(body.queryId, "queryId", 80);
   if (!queryId.ok) return queryId;
-  if (!DRASI_INCIDENT_QUERY_IDS.includes(queryId.value as DrasiIncidentQueryId)) {
+  if (
+    !DRASI_INCIDENT_QUERY_IDS.includes(queryId.value as DrasiIncidentQueryId)
+  ) {
     return { ok: false, error: "queryId is not allowlisted" };
   }
   const typedQueryId = queryId.value as DrasiIncidentQueryId;
 
-  const episodeStartedAt = canonicalTimestamp(body.episodeStartedAt, "episodeStartedAt");
+  const episodeStartedAt = canonicalTimestamp(
+    body.episodeStartedAt,
+    "episodeStartedAt",
+  );
   if (!episodeStartedAt.ok) return episodeStartedAt;
 
   const severity =
-    typeof body.severity === "string" ? body.severity.trim().toLowerCase() : "warning";
+    typeof body.severity === "string"
+      ? body.severity.trim().toLowerCase()
+      : "warning";
   if (!["info", "warning", "critical"].includes(severity)) {
     return { ok: false, error: "severity must be info, warning, or critical" };
   }
@@ -311,7 +359,10 @@ export function normalizeDrasiIncident(
 
   const cluster = options.cluster.trim() || "dev";
   if (cluster.length > MAX_KEY_LENGTH || !CLUSTER_ID.test(cluster)) {
-    return { ok: false, error: "cluster contains unsupported characters or is too long" };
+    return {
+      ok: false,
+      error: "cluster contains unsupported characters or is too long",
+    };
   }
   const episodeDigest = createHash("sha256")
     .update(`${incidentKey}\n${episodeStartedAt.value}`)
@@ -339,5 +390,132 @@ export function normalizeDrasiIncident(
         evidence: evidence.value,
       },
     },
+  };
+}
+
+function boundedStoredString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = redactDrasiText(value.trim());
+  if (!normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function storedCorrelationId(value: unknown): string | null {
+  const normalized = boundedStoredString(value, 512);
+  return normalized && CORRELATION_ID.test(normalized) ? normalized : null;
+}
+
+function storedSeverity(value: unknown): DrasiIncidentSeverity {
+  return value === "critical" || value === "info" ? value : "warning";
+}
+
+function storedTimestamp(value: unknown, fallback: Date): string {
+  const normalized = boundedStoredString(value, 64);
+  if (normalized) {
+    const milliseconds = Date.parse(normalized);
+    if (!Number.isNaN(milliseconds))
+      return new Date(milliseconds).toISOString();
+  }
+  return fallback.toISOString();
+}
+
+function storedEvidence(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const snippets: string[] = [];
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    if (snippets.length >= MAX_INCIDENT_FEED_EVIDENCE) break;
+    const key = boundedStoredString(rawKey, 80);
+    if (!key) continue;
+    if (
+      rawValue !== null &&
+      !["string", "number", "boolean"].includes(typeof rawValue)
+    ) {
+      continue;
+    }
+    const rendered =
+      rawValue === null
+        ? "null"
+        : typeof rawValue === "string"
+          ? boundedStoredString(rawValue, MAX_EVIDENCE_STRING_LENGTH)
+          : String(rawValue);
+    if (!rendered) continue;
+    snippets.push(
+      `${key}: ${rendered}`.slice(0, MAX_INCIDENT_FEED_EVIDENCE_LENGTH),
+    );
+  }
+  return snippets;
+}
+
+function incidentFromExecution(
+  execution: WorkflowExecutionListItem,
+): DrasiIncident | null {
+  const input = execution.input;
+  if (!isRecord(input) || input.source !== "drasi") return null;
+
+  const queryId = boundedStoredString(input.queryId, 80);
+  if (
+    !queryId ||
+    !DRASI_INCIDENT_QUERY_IDS.includes(queryId as DrasiIncidentQueryId)
+  ) {
+    return null;
+  }
+  const typedQueryId = queryId as DrasiIncidentQueryId;
+  const executionId = storedCorrelationId(input.executionId);
+  const sessionId = storedCorrelationId(input.sessionId);
+  const resourceName = storedCorrelationId(input.resourceName);
+  const configuredSubject = boundedStoredString(
+    input.subject,
+    MAX_SUBJECT_LENGTH,
+  );
+  const defaultTitle = resourceName
+    ? `${DRASI_INCIDENT_QUERY_LABELS[typedQueryId]}: ${resourceName}`
+    : executionId || sessionId
+      ? `${DRASI_INCIDENT_QUERY_LABELS[typedQueryId]}: ${executionId || sessionId}`
+      : DRASI_INCIDENT_QUERY_LABELS[typedQueryId];
+
+  return {
+    id: boundedStoredString(execution.id, MAX_KEY_LENGTH) || execution.id,
+    correlationId:
+      storedCorrelationId(input.dedupKey) ||
+      storedCorrelationId(input.incidentKey) ||
+      execution.id,
+    queryId: typedQueryId,
+    severity: storedSeverity(input.severity),
+    title:
+      configuredSubject && configuredSubject !== typedQueryId
+        ? configuredSubject
+        : defaultTitle,
+    occurredAt: storedTimestamp(input.episodeStartedAt, execution.startedAt),
+    workflowExecutionId:
+      boundedStoredString(execution.id, MAX_KEY_LENGTH) || execution.id,
+    sessionId,
+    evidence: storedEvidence(input.evidence),
+  };
+}
+
+/**
+ * Build the admin incident feed from the existing durable execution projection.
+ *
+ * Ingested Drasi incidents already become idempotent
+ * `platform-incident-analysis` workflow executions. Reusing that projection
+ * keeps one durable source of truth and avoids a second incident table.
+ */
+export function buildDrasiIncidentsResponse(
+  executions: WorkflowExecutionListItem[],
+  requestedLimit: number,
+): DrasiIncidentsResponse {
+  const limit = Math.max(
+    1,
+    Math.min(
+      Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 100,
+      MAX_INCIDENT_FEED_LIMIT,
+    ),
+  );
+  return {
+    incidents: executions
+      .slice(0, limit)
+      .map(incidentFromExecution)
+      .filter((incident): incident is DrasiIncident => incident !== null),
+    truncated: executions.length >= limit,
   };
 }
