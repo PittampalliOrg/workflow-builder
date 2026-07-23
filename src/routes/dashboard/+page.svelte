@@ -71,6 +71,11 @@
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 
+	// Captured once per module evaluation. Under the preview dev-sync sidecar this
+	// changes on every HMR/live-sync generation, so it doubles as a cheap
+	// "which build am I looking at" signal when validating preview syncs.
+	const BUILD_TIMESTAMP = new Date().toISOString();
+
 	let greeting = $derived.by(() => {
 		const hour = new Date().getHours();
 		if (hour < 12) return 'Good morning';
@@ -445,4 +450,36 @@
 			</button>
 		</div>
 	{/if}
+
+	<!-- Footer: preview development status + build caption. Uses only data
+	     already fetched above (recentRuns / dashboard payload); when nothing
+	     is available it renders explicit empty-state text instead of hiding. -->
+	<footer class="mt-auto border-t pt-3 pb-1">
+		<div
+			class="flex items-center justify-between gap-3 flex-wrap text-[11px] text-muted-foreground"
+		>
+			<div class="flex items-center gap-2 min-w-0">
+				<Activity class="size-3 shrink-0" />
+				<span class="font-medium text-foreground/80">Preview Development Status</span>
+				{#if loading}
+					<span>&middot; checking live-sync&hellip;</span>
+				{:else if errorMessage}
+					<span>&middot; live-sync active &middot; dashboard data unavailable ({errorMessage})</span>
+				{:else if recentRuns.length > 0}
+					{@const latest = recentRuns[0]}
+					<span>
+						&middot; live-sync active &middot; latest run
+						<span class="font-medium">{latest.workflowName}</span>
+						<span class="font-medium">({latest.status})</span>
+						{formatRelative(latest.startedAt)}
+					</span>
+				{:else}
+					<span>&middot; live-sync active &middot; no recent workflow runs yet</span>
+				{/if}
+			</div>
+			<span class="whitespace-nowrap" title="Module evaluation time of this dashboard bundle">
+				Build {BUILD_TIMESTAMP}
+			</span>
+		</div>
+	</footer>
 </div>
