@@ -471,6 +471,7 @@ import {
 import { ApplicationPreviewDevelopmentEnvironmentService } from "$lib/server/application/preview-development-environment";
 import { ApplicationVclusterPreviewService } from "$lib/server/application/vcluster-previews";
 import { ApplicationDevPreviewSidecarService } from "$lib/server/application/dev-preview-sidecar";
+import { ApplicationPreviewWorkspaceService } from "$lib/server/application/preview-workspace";
 import { ApplicationDevPreviewSourceCaptureService } from "$lib/server/application/dev-preview-source-capture";
 import { ApplicationPreviewSessionContinuationService } from "$lib/server/application/preview-session-continuation";
 import { ApplicationDevEnvironmentTeardownService } from "$lib/server/application/dev-environment-teardown";
@@ -479,6 +480,8 @@ import {
   LegacyDevPreviewSidecarGateway,
 } from "$lib/server/application/adapters/dev-previews";
 import { LegacyDevPreviewSourceCaptureAdapter } from "$lib/server/application/adapters/dev-preview-source-capture";
+import { LocalPreviewWorkspaceCatalogAdapter } from "$lib/server/application/adapters/preview-workspace-catalog";
+import { OneShotPreviewWorkspaceGateway } from "$lib/server/application/adapters/preview-workspace";
 import {
   GithubPreviewEnvironmentRevisionResolver,
   HttpPreviewEnvironmentLaunchBrokerAdapter,
@@ -1091,6 +1094,7 @@ export function getApplicationAdapters(
     | ApplicationPreviewSourcePromotionAcceptanceService
     | undefined;
   let devPreviewSidecar: ApplicationDevPreviewSidecarService | undefined;
+  let previewWorkspace: ApplicationPreviewWorkspaceService | undefined;
   let devPreviewSourceCapture:
     | ApplicationDevPreviewSourceCaptureService
     | undefined;
@@ -2187,6 +2191,16 @@ export function getApplicationAdapters(
     (devPreviewSidecar ??= new ApplicationDevPreviewSidecarService({
       sidecar: new LegacyDevPreviewSidecarGateway(),
       listEnvironments: (input) => getWorkflowData().listDevEnvironments(input),
+    }));
+  const getPreviewWorkspace = () =>
+    (previewWorkspace ??= new ApplicationPreviewWorkspaceService({
+      getExecution: (executionId) =>
+        getWorkflowData().getExecutionById(executionId),
+      isPlatformAdmin: (userId) => getWorkflowData().isPlatformAdmin(userId),
+      identity: getPreviewLocalControlIdentity(),
+      catalog: new LocalPreviewWorkspaceCatalogAdapter(),
+      workspace: new OneShotPreviewWorkspaceGateway(),
+      sidecar: getDevPreviewSidecar(),
     }));
   const getDevPreviewSourceCapture = () =>
     (devPreviewSourceCapture ??= new ApplicationDevPreviewSourceCaptureService({
@@ -3452,6 +3466,9 @@ export function getApplicationAdapters(
     },
     get devPreviewSidecar() {
       return getDevPreviewSidecar();
+    },
+    get previewWorkspace() {
+      return getPreviewWorkspace();
     },
     get devPreviewSourceCapture() {
       return getDevPreviewSourceCapture();

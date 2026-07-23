@@ -3,7 +3,8 @@ import {
 	allowedSidecarCommands,
 	fetchSidecarStatus,
 	runSidecarCommand,
-	sidecarBaseUrl
+	sidecarBaseUrl,
+	syncDevPreviewSource
 } from '$lib/server/workflows/dev-preview-sidecar';
 
 beforeEach(() => {
@@ -205,4 +206,30 @@ describe('runSidecarCommand', () => {
 			message: 'exec bridge unavailable: bridge unreachable'
 		});
 	});
+});
+
+describe("syncDevPreviewSource", () => {
+  it("forwards a stable generation and explicit replace mode", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    await syncDevPreviewSource({
+      syncUrl: "http://10.0.0.5:8001/__sync",
+      executionId: "exec-1",
+      service: "workflow-builder",
+      archive: new Uint8Array([1, 2, 3]),
+      generation: "pws-stable-generation",
+      mode: "replace",
+      fetchImpl,
+    });
+    const headers = (fetchImpl.mock.calls[0][1] as RequestInit)
+      .headers as Record<string, string>;
+    expect(headers["x-sync-generation"]).toBe("pws-stable-generation");
+    expect(headers["x-sync-mode"]).toBe("replace");
+    expect(headers["x-sync-token"]).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

@@ -168,7 +168,9 @@ export class LegacyVclusterPreviewGateway
   }
 
   async observeRuntime(
-    identity: Parameters<PreviewEnvironmentObservationReaderPort["observeRuntime"]>[0],
+    identity: Parameters<
+      PreviewEnvironmentObservationReaderPort["observeRuntime"]
+    >[0],
   ) {
     const observed = await this.runtimeForIdentity(identity);
     if (!observed.preview) {
@@ -239,6 +241,7 @@ export class LegacyDevPreviewSidecarGateway implements DevPreviewSidecarPort {
     executionId: string;
     service: string;
     cmd: string;
+    timeoutMs?: number;
   }): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>> {
     return runSidecarCommand({
       ...input,
@@ -252,6 +255,8 @@ export class LegacyDevPreviewSidecarGateway implements DevPreviewSidecarPort {
     service: string;
     archive: ArrayBuffer | Uint8Array;
     contentType?: string | null;
+    generation?: string;
+    mode?: "merge" | "replace";
   }): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>> {
     return syncDevPreviewSource({
       ...input,

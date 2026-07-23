@@ -37,7 +37,7 @@ _FALSY = {"0", "false", "no", "off"}
 _REDACT_KEY_RE = re.compile(
     r"(token|secret|password|passwd|api[_-]?key|authorization|auth|credential|"
     r"bearer|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|"
-    r"session[_-]?token|cookie|x-api-key)",
+    r"session[_-]?token|cookie|x-api-key|sync[_-]?url|sync[_-]?capability)",
     re.IGNORECASE,
 )
 

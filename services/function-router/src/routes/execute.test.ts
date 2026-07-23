@@ -6,9 +6,11 @@ import {
   buildBrowserEvidencePayload,
   buildDevPreviewBuildPayload,
   buildPreviewAcceptancePayload,
+  buildPreviewWorkspaceActionPayload,
   buildWorkspaceCommandPayload,
   buildWorkspaceMaterializeFilesPayload,
   classifyDevPreviewProxyResponse,
+  credentiallessDevPreviewReceipt,
   dispatchErrorPayload,
   executeBrowserStartPreviewAction,
   resolveWorkspaceUtilityTimeoutMs,
@@ -102,6 +104,76 @@ describe("dev preview execution binding", () => {
         headSha: "b".repeat(40),
       },
     });
+  });
+});
+
+describe("credentialless preview workspace routing", () => {
+  it("accepts only server-selectable action fields", () => {
+    expect(
+      buildPreviewWorkspaceActionPayload(
+        { service: "workflow-builder" },
+        "workspace-sync",
+      ),
+    ).toEqual({
+      ok: true,
+      payload: { service: "workflow-builder" },
+    });
+    expect(
+      buildPreviewWorkspaceActionPayload(
+        {
+          service: "workflow-builder",
+          executionId: "caller-execution",
+          syncUrl: "http://caller",
+        },
+        "workspace-sync",
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("strips nested receiver coordinates without mutating nested shapes", () => {
+    const projected = credentiallessDevPreviewReceipt({
+      ok: true,
+      syncUrl: "http://receiver/fingerprint",
+      services: [
+        {
+          service: "workflow-builder",
+          syncCapability: "capability-fingerprint",
+          nested: {
+            syncToken: "token-fingerprint",
+            agentActionToken: "agent-fingerprint",
+            value: "kept",
+          },
+        },
+      ],
+    });
+    expect(projected).toMatchObject({
+      ok: true,
+      receiptMode: "credentialless",
+      services: [
+        {
+          service: "workflow-builder",
+          nested: { value: "kept" },
+        },
+      ],
+    });
+    expect(JSON.stringify(projected)).not.toMatch(
+      /fingerprint|syncUrl|syncCapability|syncToken|agentActionToken/,
+    );
+    expect(
+      (projected as { services: Array<Record<string, unknown>> }).services[0],
+    ).not.toHaveProperty("receiptMode");
+  });
+
+  it("never retries an ambiguous sidecar command response", () => {
+    expect(
+      classifyDevPreviewProxyResponse({
+        mode: "sidecar-run",
+        requestInput: { service: "workflow-builder", command: "check" },
+        executionId: "db-exec-1",
+        status: 502,
+        parsed: { error: "receiver response was lost" },
+      }),
+    ).toMatchObject({ success: false, errorClass: "permanent" });
   });
 });
 

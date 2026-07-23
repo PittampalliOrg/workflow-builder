@@ -85,6 +85,7 @@ const PREVIEW_ACTION_INTERNAL_TOKEN =
   process.env.PREVIEW_ACTION_INTERNAL_TOKEN?.trim() || "";
 const PREVIEW_DEVELOPMENT_PROXY_TIMEOUT_MS = 90_000;
 const DEV_PREVIEW_PROXY_TIMEOUT_MS = 15 * 60_000;
+const PREVIEW_WORKSPACE_PROXY_TIMEOUT_MS = 20 * 60_000;
 const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
 const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
 const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
@@ -972,6 +973,9 @@ export const PRIVILEGED_PREVIEW_ACTION_SLUGS = [
 	"dev/preview-build",
 	"dev/preview-freeze",
 	"dev/preview-browser-evidence",
+	"dev/preview-workspace-seed",
+	"dev/preview-workspace-sync",
+	"dev/preview-sidecar-run",
 ] as const;
 
 export type PreviewDevelopmentActionSlug = (typeof PREVIEW_DEVELOPMENT_ACTION_SLUGS)[number];
@@ -1557,7 +1561,85 @@ type DevPreviewProxyMode =
   | "acceptance"
   | "build"
   | "freeze"
-  | "browser-evidence";
+  | "browser-evidence"
+  | "workspace-seed"
+  | "workspace-sync"
+  | "sidecar-run";
+
+const PREVIEW_RECEIPT_SECRET_KEYS = new Set([
+  "syncurl",
+  "synctoken",
+  "synccapability",
+  "syncagenttoken",
+  "receivertoken",
+  "agentactiontoken",
+  "x-sync-token",
+]);
+
+function stripDevPreviewCredentials(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripDevPreviewCredentials);
+  if (!isPlainObject(value)) return value;
+  const projected: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (PREVIEW_RECEIPT_SECRET_KEYS.has(key.toLowerCase())) continue;
+    projected[key] = stripDevPreviewCredentials(child);
+  }
+  return projected;
+}
+
+/** No dynamic workflow may receive or journal a raw receiver coordinate. */
+export function credentiallessDevPreviewReceipt(value: unknown): unknown {
+  const projected = stripDevPreviewCredentials(value);
+  return isPlainObject(projected)
+    ? { ...projected, receiptMode: "credentialless" }
+    : projected;
+}
+
+export function buildPreviewWorkspaceActionPayload(
+  input: Record<string, unknown>,
+  mode: Extract<
+    DevPreviewProxyMode,
+    "workspace-seed" | "workspace-sync" | "sidecar-run"
+  >,
+):
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; error: string } {
+  const allowed = mode === "sidecar-run" ? ["service", "command"] : ["service"];
+  if (
+    !exactObjectKeys(input, allowed) ||
+    typeof input.service !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.service) ||
+    (mode === "sidecar-run" &&
+      (typeof input.command !== "string" ||
+        !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.command)))
+  ) {
+    return {
+      ok: false,
+      error: `dev/preview-${mode}: input must contain only server-selectable action fields`,
+    };
+  }
+  return {
+    ok: true,
+    payload:
+      mode === "sidecar-run"
+        ? { service: input.service, command: input.command }
+        : { service: input.service },
+  };
+}
+
+export function previewWorkspaceOperationId(input: {
+  executionId: string;
+  mode: string;
+  idempotencyKey?: string | null;
+}): string {
+  const idempotencyKey =
+    input.idempotencyKey?.trim() || `${input.executionId}:${input.mode}`;
+  return `pws-${createHash("sha256")
+    .update(
+      `preview-workspace-action/v1\0${input.executionId}\0${input.mode}\0${idempotencyKey}`,
+    )
+    .digest("hex")}`;
+}
 
 export function buildBrowserEvidencePayload(
   input: Record<string, unknown>,
@@ -1639,7 +1721,14 @@ export function classifyDevPreviewProxyResponse(input: {
   parsed: unknown;
   durationMs?: number;
 }): ExecuteResponse {
-  const data = isPlainObject(input.parsed) ? input.parsed : {};
+  const rawData = isPlainObject(input.parsed) ? input.parsed : {};
+  const data =
+    input.mode === "ensure" ||
+    input.mode === "workspace-seed" ||
+    input.mode === "workspace-sync" ||
+    input.mode === "sidecar-run"
+      ? (credentiallessDevPreviewReceipt(rawData) as Record<string, unknown>)
+      : rawData;
   const duration_ms = input.durationMs ?? 0;
   const activationExpected = expectsDurableDevPreviewActivation(
     input.requestInput,
@@ -1648,31 +1737,32 @@ export function classifyDevPreviewProxyResponse(input: {
 
   if (activationExpected && input.status >= 200 && input.status < 300) {
     const requestedServices = requestedDevPreviewServices(input.requestInput);
-    const phase = data.activationPhase;
-    const batchId = typeof data.batchId === "string" ? data.batchId.trim() : "";
+    const phase = rawData.activationPhase;
+    const batchId =
+      typeof rawData.batchId === "string" ? rawData.batchId.trim() : "";
     const validBatchId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(batchId);
     const exactReadyServices =
       requestedServices !== null &&
       hasExactReadyDevPreviewServices({
-        data,
+        data: rawData,
         executionId: input.executionId,
         requestedServices,
       });
     const pending =
       input.status === 202 &&
-      data.executionId === input.executionId &&
-      data.ok === true &&
-      data.complete === false &&
-      data.pending === true &&
+      rawData.executionId === input.executionId &&
+      rawData.ok === true &&
+      rawData.complete === false &&
+      rawData.pending === true &&
       (phase === "scheduled" || phase === "activating") &&
       validBatchId &&
       exactReadyServices;
     const active =
       input.status === 200 &&
-      data.executionId === input.executionId &&
-      data.ok === true &&
-      data.complete === true &&
-      data.pending === false &&
+      rawData.executionId === input.executionId &&
+      rawData.ok === true &&
+      rawData.complete === true &&
+      rawData.pending === false &&
       phase === "active" &&
       validBatchId &&
       exactReadyServices;
@@ -1696,15 +1786,17 @@ export function classifyDevPreviewProxyResponse(input: {
         : `dev/preview ${input.mode} failed (${input.status})`;
     const explicitActivationFailure =
       activationExpected &&
-      (data.activationPhase === "failed" || data.ok === false);
+      (rawData.activationPhase === "failed" || rawData.ok === false);
     return {
       success: false,
       data,
       error: message,
-			errorClass:
-				!explicitActivationFailure && TRANSIENT_DEV_PREVIEW_STATUSES.has(input.status)
-					? ("retryable" as const)
-					: ("permanent" as const),
+      errorClass:
+        input.mode !== "sidecar-run" &&
+        !explicitActivationFailure &&
+        TRANSIENT_DEV_PREVIEW_STATUSES.has(input.status)
+          ? ("retryable" as const)
+          : ("permanent" as const),
       responseStatus: input.status,
       duration_ms,
     };
@@ -1722,6 +1814,7 @@ async function executeDevPreview(
   input: Record<string, unknown>,
   mode: DevPreviewProxyMode,
   dbExecutionId: string | null | undefined,
+  idempotencyKey?: string | null,
 ): Promise<ExecuteResponse> {
   const started = Date.now();
   const binding = bindDevPreviewExecutionId(input, dbExecutionId);
@@ -1761,13 +1854,55 @@ async function executeDevPreview(
     } as ExecuteResponse;
   }
   const executionId = binding.executionId;
-  const signal = AbortSignal.timeout(DEV_PREVIEW_PROXY_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(
+    mode === "workspace-seed" ||
+      mode === "workspace-sync" ||
+      mode === "sidecar-run"
+      ? PREVIEW_WORKSPACE_PROXY_TIMEOUT_MS
+      : DEV_PREVIEW_PROXY_TIMEOUT_MS,
+  );
   const url = `${WORKFLOW_BUILDER_URL}/api/internal/workflows/executions/${encodeURIComponent(
     executionId,
   )}/dev-preview`;
   try {
     let res: Response;
-    if (mode === "teardown") {
+    if (
+      mode === "workspace-seed" ||
+      mode === "workspace-sync" ||
+      mode === "sidecar-run"
+    ) {
+      const built = buildPreviewWorkspaceActionPayload(input, mode);
+      if (!built.ok) {
+        return {
+          success: false,
+          data: {},
+          error: built.error,
+          errorClass: "permanent",
+          responseStatus: 0,
+          duration_ms: Date.now() - started,
+        };
+      }
+      const suffix =
+        mode === "workspace-seed"
+          ? "workspace-seed"
+          : mode === "workspace-sync"
+            ? "workspace-sync"
+            : "sidecar-run";
+      res = await fetch(`${url}/${suffix}`, {
+        method: "POST",
+        signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Preview-Action-Token": PREVIEW_ACTION_INTERNAL_TOKEN,
+          "X-Idempotency-Key": previewWorkspaceOperationId({
+            executionId,
+            mode,
+            idempotencyKey,
+          }),
+        },
+        body: JSON.stringify(built.payload),
+      });
+    } else if (mode === "teardown") {
       const sandboxName =
         typeof input.sandboxName === "string" ? input.sandboxName.trim() : "";
       const qs = sandboxName
@@ -1917,7 +2052,10 @@ async function executeDevPreview(
       success: false,
       data: {},
       error: err instanceof Error ? err.message : String(err),
-			errorClass: "retryable" as const,
+      errorClass:
+        mode === "sidecar-run"
+          ? ("permanent" as const)
+          : ("retryable" as const),
       responseStatus: 0,
       duration_ms: Date.now() - started,
     } as ExecuteResponse;
@@ -2997,7 +3135,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       functionSlug === "dev/preview-acceptance" ||
       functionSlug === "dev/preview-build" ||
       functionSlug === "dev/preview-freeze" ||
-      functionSlug === "dev/preview-browser-evidence"
+      functionSlug === "dev/preview-browser-evidence" ||
+      functionSlug === "dev/preview-workspace-seed" ||
+      functionSlug === "dev/preview-workspace-sync" ||
+      functionSlug === "dev/preview-sidecar-run"
     ) {
       const devResponse = await executeDevPreview(
         body.input as Record<string, unknown>,
@@ -3015,8 +3156,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     ? "freeze"
                     : functionSlug === "dev/preview-browser-evidence"
                       ? "browser-evidence"
-                      : "ensure",
+                      : functionSlug === "dev/preview-workspace-seed"
+                        ? "workspace-seed"
+                        : functionSlug === "dev/preview-workspace-sync"
+                          ? "workspace-sync"
+                          : functionSlug === "dev/preview-sidecar-run"
+                            ? "sidecar-run"
+                            : "ensure",
         body.db_execution_id,
+        body.idempotency_key,
       );
       // A staged dev/preview activation carries retryability and the target HTTP
       // status in its action envelope. Keep the router request successful so the

@@ -1361,7 +1361,15 @@ def test_execute_action_passes_sanitized_materialize_dapr_trace(monkeypatch):
 
 @pytest.mark.parametrize(
     "action_type",
-    ["preview/environment-launch", "dev/preview-promote", "dev/preview-freeze"],
+    [
+        "preview/environment-launch",
+        "dev/preview-promote",
+        "dev/preview-freeze",
+        "dev/preview-browser-evidence",
+        "dev/preview-workspace-seed",
+        "dev/preview-workspace-sync",
+        "dev/preview-sidecar-run",
+    ],
 )
 def test_execute_action_authenticates_only_privileged_preview_actions(
     monkeypatch, action_type
@@ -1374,6 +1382,7 @@ def test_execute_action_authenticates_only_privileged_preview_actions(
 
     def fake_dapr_invoke(_app_id, _method, _payload, **kwargs):
         captured["metadata"] = kwargs.get("metadata")
+        captured["timeout"] = kwargs.get("timeout")
         return 200, {"success": True, "data": {"ok": True}}, "{}"
 
     monkeypatch.setenv("PREVIEW_ACTION_INTERNAL_TOKEN", "preview-purpose-token")
@@ -1390,11 +1399,25 @@ def test_execute_action_authenticates_only_privileged_preview_actions(
     )
     assert result["success"] is True
     assert captured["metadata"]["x-preview-action-token"] == "preview-purpose-token"
+    if action_type in {
+        "dev/preview-workspace-seed",
+        "dev/preview-workspace-sync",
+        "dev/preview-sidecar-run",
+    }:
+        assert captured["timeout"] == 1_380
 
 
 @pytest.mark.parametrize(
     "action_type",
-    ["preview/environment-launch", "dev/preview-promote", "dev/preview-freeze"],
+    [
+        "preview/environment-launch",
+        "dev/preview-promote",
+        "dev/preview-freeze",
+        "dev/preview-browser-evidence",
+        "dev/preview-workspace-seed",
+        "dev/preview-workspace-sync",
+        "dev/preview-sidecar-run",
+    ],
 )
 def test_execute_action_fails_closed_when_preview_action_token_is_missing(
     monkeypatch, action_type
@@ -1493,6 +1516,37 @@ def test_execute_action_classifies_router_replacement_for_dev_preview(monkeypatc
     assert result["success"] is False
     assert result["errorClass"] == "retryable"
     assert result["responseStatus"] == 0
+
+
+def test_execute_action_does_not_retry_ambiguous_sidecar_run_transport(monkeypatch):
+    execute_action_module = _load_module(
+        "workflow_orchestrator_execute_action_sidecar_run_transport_test",
+        "activities/execute_action.py",
+    )
+    monkeypatch.setattr(
+        execute_action_module,
+        "dapr_invoke",
+        lambda *_args, **_kwargs: (500, {"error": "router unavailable"}, ""),
+    )
+    monkeypatch.setenv("PREVIEW_ACTION_INTERNAL_TOKEN", "preview-purpose-token")
+
+    result = execute_action_module.execute_action(
+        None,
+        {
+            "node": {
+                "id": "gate",
+                "config": {"actionType": "dev/preview-sidecar-run"},
+            },
+            "nodeOutputs": {},
+            "executionId": "sw-exec-1",
+            "workflowId": "wf-1",
+            "dbExecutionId": "db-exec-1",
+        },
+    )
+
+    assert result["success"] is False
+    assert result["errorClass"] == "permanent"
+    assert result["responseStatus"] == 500
 
 
 class _DevPreviewActivationCtx:

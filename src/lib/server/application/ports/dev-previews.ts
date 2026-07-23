@@ -260,6 +260,8 @@ export interface DevPreviewSidecarPort {
     executionId: string;
     service: string;
     cmd: string;
+    /** Server-owned bound for a named command; callers cannot choose shell text. */
+    timeoutMs?: number;
   }): Promise<DevPreviewSidecarResult<DevPreviewSidecarRunOutput>>;
   sync(input: {
     syncUrl: string | null | undefined;
@@ -267,6 +269,10 @@ export interface DevPreviewSidecarPort {
     service: string;
     archive: ArrayBuffer | Uint8Array;
     contentType?: string | null;
+    /** Stable application-owned receiver generation for idempotent retries. */
+    generation?: string;
+    /** Full catalog-root snapshot; missing members delete receiver-owned paths. */
+    mode?: "merge" | "replace";
   }): Promise<DevPreviewSidecarResult<DevPreviewSidecarSyncOutput>>;
   /** Registry-declared allowlisted command names for a service (deny = []). */
   allowedCommands(service: string): string[];
