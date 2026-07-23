@@ -23,7 +23,10 @@ import {
   resolveSpecAgentRefs,
 } from "$lib/server/agents/resolver";
 import { getApplicationAdapters } from "$lib/server/application";
-import type { WorkflowDefinition } from "$lib/server/application/ports";
+import type {
+	PreviewWorkspaceExecutionBinding,
+	WorkflowDefinition,
+} from "$lib/server/application/ports";
 import {
 	applyWorkflowInputDefaults,
   getPromptExpansionConfig,
@@ -211,10 +214,15 @@ export async function startWorkflowRun(
 	// agent-ref resolution, no trigger-field validation, no SW spec gate. The JS
 	// script runs in the orchestrator's re-execution pump against the evaluator.
 	if (workflow.engineType === "dynamic-script") {
-		return startDynamicScriptRun(app, workflow, {
-			...opts,
-      triggerData: launch.triggerData,
-		});
+		return startDynamicScriptRun(
+			app,
+			workflow,
+			{
+				...opts,
+				triggerData: launch.triggerData,
+			},
+			launch.previewWorkspaceBinding,
+		);
 	}
 
 	// SW 1.0 trigger inputs are field-keyed objects; coerce non-objects to {}.
@@ -411,6 +419,7 @@ async function startDynamicScriptRun(
 	app: ReturnType<typeof getApplicationAdapters>,
 	workflow: WorkflowDefinition,
   opts: StartWorkflowOptions,
+	previewWorkspaceBinding?: PreviewWorkspaceExecutionBinding,
 ): Promise<StartWorkflowResult> {
 	const spec = (workflow.spec ?? null) as Record<string, unknown> | null;
 	const validation = validateDynamicScriptSpec(spec);
@@ -481,6 +490,13 @@ async function startDynamicScriptRun(
       args,
       budgetTotal,
       dispatchMode,
+			...(previewWorkspaceBinding
+				? {
+						authority: {
+							previewWorkspace: previewWorkspaceBinding,
+						},
+					}
+				: {}),
     },
     executionIrVersion: "dynamic-script-2",
 		...(opts.triggerSource ? { triggerSource: opts.triggerSource } : {}),

@@ -3,6 +3,7 @@ import type {
   DevPreviewSidecarRunOutput,
   DevPreviewSidecarSyncOutput,
   PreviewControlIdentity,
+  PreviewDeploymentScopePort,
   PreviewLocalControlIdentityPort,
   PreviewWorkspaceAuthority,
   PreviewWorkspaceCatalogPort,
@@ -45,6 +46,7 @@ export type PreviewWorkspaceServiceDeps = Readonly<{
   getExecution(executionId: string): Promise<WorkflowExecutionRecord | null>;
   isPlatformAdmin(userId: string): Promise<boolean>;
   identity: PreviewLocalControlIdentityPort;
+  scope: PreviewDeploymentScopePort;
   catalog: PreviewWorkspaceCatalogPort;
   workspace: PreviewWorkspaceGatewayPort;
   sidecar: {
@@ -267,25 +269,42 @@ export class ApplicationPreviewWorkspaceService {
         "platform admin approval is required for preview workspace actions",
       );
     }
-    const input = record(execution.input);
-    const context = record(input?.__previewDevelopment);
-    const target = record(context?.target);
-    if (!target) {
+    const executionIr = record(execution.executionIr);
+    const authority = record(executionIr?.authority);
+    const binding = record(authority?.previewWorkspace);
+    const target = record(binding?.target);
+    if (binding?.version !== 1 || !target) {
       throw new PreviewWorkspaceContractError(
         409,
-        "workflow execution is not bound to preview development",
+        "workflow execution has no immutable preview workspace authority",
       );
     }
-    const local = this.deps.identity.current();
+    const deployment = this.deps.scope.current();
+    if (
+      deployment.kind !== "preview" ||
+      deployment.preview.profile !== "app-live"
+    ) {
+      throw new PreviewWorkspaceContractError(
+        409,
+        "preview workspace actions require an app-live preview deployment",
+      );
+    }
+    const local = this.deps.identity.current(deployment.preview.name);
     if (
       !sameIdentity(target, local) ||
-      !FULL_SHA.test(local.environmentSourceRevision)
+      !FULL_SHA.test(local.environmentSourceRevision) ||
+      deployment.preview.name !== local.previewName ||
+      deployment.preview.sourceRevision !==
+        local.environmentSourceRevision ||
+      deployment.preview.platformRevision !==
+        local.environmentPlatformRevision
     ) {
       throw new PreviewWorkspaceContractError(
         409,
         "preview workspace generation does not match the local environment",
       );
     }
+    const input = record(execution.input);
     const service =
       typeof requestedService === "string" ? requestedService.trim() : "";
     if (!SAFE_SERVICE.test(service)) {

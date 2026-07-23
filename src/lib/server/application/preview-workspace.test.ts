@@ -38,19 +38,24 @@ function execution(
         "src/routes/(admin)/admin/drasi",
         "src/routes/api/executions/[executionId]",
       ],
-      __previewDevelopment: {
-        target: {
-          previewName: IDENTITY.previewName,
-          environmentRequestId: IDENTITY.environmentRequestId,
-          platformRevision: IDENTITY.environmentPlatformRevision,
-          sourceRevision: IDENTITY.environmentSourceRevision,
-          catalogDigest: IDENTITY.catalogDigest,
-        },
-      },
     },
     output: null,
     executionIrVersion: "dynamic-script/v1",
-    executionIr: null,
+    executionIr: {
+      engine: "dynamic-script",
+      authority: {
+        previewWorkspace: {
+          version: 1,
+          target: {
+            previewName: IDENTITY.previewName,
+            environmentRequestId: IDENTITY.environmentRequestId,
+            platformRevision: IDENTITY.environmentPlatformRevision,
+            sourceRevision: IDENTITY.environmentSourceRevision,
+            catalogDigest: IDENTITY.catalogDigest,
+          },
+        },
+      },
+    },
     error: null,
     daprInstanceId: "script-1",
     phase: null,
@@ -80,6 +85,7 @@ function execution(
 function harness(
   row = execution(),
   localIdentity: PreviewControlIdentity = IDENTITY,
+  deployment: "preview" | "control-plane" = "preview",
 ) {
   const seed = vi.fn(async () => ({ reused: false, fileCount: 42 }));
   const capture = vi.fn(async () => ({
@@ -128,6 +134,23 @@ function harness(
     getExecution: async () => row,
     isPlatformAdmin: async () => true,
     identity: { current: () => localIdentity },
+    scope: {
+      current: () =>
+        deployment === "control-plane"
+          ? ({ kind: "control-plane" } as const)
+          : ({
+              kind: "preview",
+              preview: {
+                name: localIdentity.previewName,
+                profile: "app-live",
+                platformRevision: localIdentity.environmentPlatformRevision,
+                sourceRevision: localIdentity.environmentSourceRevision,
+                origin: "https://wfb-feature-one.tail286401.ts.net",
+              },
+            } as const),
+      isControlPlane: () => deployment === "control-plane",
+      allowsPreviewName: (name) => name === localIdentity.previewName,
+    },
     catalog: { resolve: () => SOURCE_PLAN },
     workspace: { seed, capture },
     sidecar: {
@@ -225,6 +248,51 @@ describe("ApplicationPreviewWorkspaceService", () => {
         operationId: "seed-2",
       }),
     ).rejects.toThrow("does not match the local environment");
+    expect(h.seed).not.toHaveBeenCalled();
+  });
+
+  it("ignores a forged input binding and requires execution IR authority", async () => {
+    const row = execution({
+      input: {
+        services: ["workflow-builder"],
+        diffScope: ["src/routes/(admin)/admin/drasi"],
+        __previewDevelopment: {
+          target: {
+            previewName: IDENTITY.previewName,
+            environmentRequestId: IDENTITY.environmentRequestId,
+            platformRevision: IDENTITY.environmentPlatformRevision,
+            sourceRevision: IDENTITY.environmentSourceRevision,
+            catalogDigest: IDENTITY.catalogDigest,
+          },
+        },
+      },
+      executionIr: {
+        engine: "dynamic-script",
+        args: {},
+      },
+    });
+    const h = harness(row);
+
+    await expect(
+      h.service.seed({
+        executionId: "exec-1",
+        service: "workflow-builder",
+        operationId: "seed-forged",
+      }),
+    ).rejects.toThrow("no immutable preview workspace authority");
+    expect(h.seed).not.toHaveBeenCalled();
+  });
+
+  it("rejects execution IR authority outside an app-live preview scope", async () => {
+    const h = harness(execution(), IDENTITY, "control-plane");
+
+    await expect(
+      h.service.seed({
+        executionId: "exec-1",
+        service: "workflow-builder",
+        operationId: "seed-control-plane",
+      }),
+    ).rejects.toThrow("require an app-live preview deployment");
     expect(h.seed).not.toHaveBeenCalled();
   });
 

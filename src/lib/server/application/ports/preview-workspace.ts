@@ -1,5 +1,23 @@
 import type { PreviewControlIdentity } from "./preview-control";
 
+/** Action catalog entries backed by ApplicationPreviewWorkspaceService. */
+export const PREVIEW_WORKSPACE_ACTION_SLUGS = [
+  "dev/preview-workspace-seed",
+  "dev/preview-workspace-sync",
+  "dev/preview-sidecar-run",
+] as const;
+
+export type PreviewWorkspaceExecutionBinding = Readonly<{
+  version: 1;
+  target: Readonly<{
+    previewName: string;
+    environmentRequestId: string;
+    platformRevision: string;
+    sourceRevision: string;
+    catalogDigest: `sha256:${string}`;
+  }>;
+}>;
+
 export type PreviewWorkspaceStageMapping = Readonly<{
   from: string;
   to: string;

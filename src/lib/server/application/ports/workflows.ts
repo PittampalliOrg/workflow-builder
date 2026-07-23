@@ -38,6 +38,7 @@ import type {
 	BenchmarkSessionProvisioningGateResult,
 	PromoteBenchmarkRunInstanceToDatasetResult,
 } from "./benchmarks";
+import type { PreviewWorkspaceExecutionBinding } from "./preview-workspace";
 import type {
 	AppConnectionCreateInput,
 	AppConnectionCreateResult,
@@ -690,7 +691,11 @@ export interface WorkflowRunStarterPort {
 }
 
 export type WorkflowLaunchPolicyResult =
-	| { ok: true; triggerData: unknown }
+	| {
+			ok: true;
+			triggerData: unknown;
+			previewWorkspaceBinding?: PreviewWorkspaceExecutionBinding;
+	  }
 	| { ok: false; status: number; error: string };
 
 export type TrustedWorkflowLaunchContext = Readonly<{
