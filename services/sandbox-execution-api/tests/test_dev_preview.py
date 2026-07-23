@@ -869,6 +869,10 @@ def test_provision_adoption_uses_live_deployment_capability_and_origin_env(
                     "name": "PREVIEW_NATIVE_ACTION_SLUGS_JSON",
                     "value": '["durable/run","dev/preview"]',
                 },
+                {"name": "DYNAMIC_SCRIPT_ACTIONS_ENABLED", "value": "true"},
+                {"name": "DYNAMIC_SCRIPT_DEFAULT_MODEL", "value": "kimi/kimi-k3"},
+                {"name": "DYNAMIC_SCRIPT_MAX_BYTES", "value": "262144"},
+                {"name": "DYNAMIC_SCRIPT_MAX_CONCURRENCY", "value": "24"},
             ]
         },
         request_env={
@@ -876,6 +880,10 @@ def test_provision_adoption_uses_live_deployment_capability_and_origin_env(
             "ORIGIN": "https://wfb-dev.tailnet.example",
             "PREVIEW_FUNCTION_REGISTRY_JSON": '{"attacker":true}',
             "PREVIEW_NATIVE_ACTION_SLUGS_JSON": '["admin/all"]',
+            "DYNAMIC_SCRIPT_ACTIONS_ENABLED": "false",
+            "DYNAMIC_SCRIPT_DEFAULT_MODEL": "attacker/model",
+            "DYNAMIC_SCRIPT_MAX_BYTES": "999999999",
+            "DYNAMIC_SCRIPT_MAX_CONCURRENCY": "999999999",
         },
         caller_inherited_env=[
             {"name": "ORIGIN", "value": "https://caller.example"}
@@ -896,6 +904,10 @@ def test_provision_adoption_uses_live_deployment_capability_and_origin_env(
     assert by_name["PREVIEW_NATIVE_ACTION_SLUGS_JSON"]["value"] == (
         '["durable/run","dev/preview"]'
     )
+    assert by_name["DYNAMIC_SCRIPT_ACTIONS_ENABLED"]["value"] == "true"
+    assert by_name["DYNAMIC_SCRIPT_DEFAULT_MODEL"]["value"] == "kimi/kimi-k3"
+    assert by_name["DYNAMIC_SCRIPT_MAX_BYTES"]["value"] == "262144"
+    assert by_name["DYNAMIC_SCRIPT_MAX_CONCURRENCY"]["value"] == "24"
 
 
 def test_provision_adoption_drops_caller_authority_when_identity_is_missing(
@@ -909,6 +921,10 @@ def test_provision_adoption_drops_caller_authority_when_identity_is_missing(
             "ORIGIN": "https://wfb-dev.tailnet.example",
             "PREVIEW_FUNCTION_REGISTRY_JSON": '{"attacker":true}',
             "PREVIEW_NATIVE_ACTION_SLUGS_JSON": '["admin/all"]',
+            "DYNAMIC_SCRIPT_ACTIONS_ENABLED": "true",
+            "DYNAMIC_SCRIPT_DEFAULT_MODEL": "attacker/model",
+            "DYNAMIC_SCRIPT_MAX_BYTES": "999999999",
+            "DYNAMIC_SCRIPT_MAX_CONCURRENCY": "999999999",
             "DAPR_CONFIG_STORE": "request-configstore",
         },
         caller_inherited_env=[
@@ -2668,6 +2684,10 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
         {"name": "AGENT_RUNTIME_CODEX_CLI_DEFAULT_IMAGE", "value": "image@sha256:x"},
         {"name": "CODEX_CLI_APP_ID", "value": "cli-agent-py"},
         {"name": "DAPR_CONFIG_STORE", "value": "configstore"},
+        {"name": "DYNAMIC_SCRIPT_ACTIONS_ENABLED", "value": "true"},
+        {"name": "DYNAMIC_SCRIPT_DEFAULT_MODEL", "value": "kimi/kimi-k3"},
+        {"name": "DYNAMIC_SCRIPT_MAX_BYTES", "value": "262144"},
+        {"name": "DYNAMIC_SCRIPT_MAX_CONCURRENCY", "value": "24"},
         {"name": "PREVIEW_CONTROL_BROKER_URL", "value": "http://broker:3000"},
         {
             "name": "WORKFLOW_ORCHESTRATOR_EVENT_TOPIC_PREFIX",
@@ -2798,6 +2818,10 @@ def test_adopted_container_env_retains_only_operational_config_and_scoped_leaves
         "APP_PUBLIC_URL",
         "CODEX_CLI_APP_ID",
         "DAPR_CONFIG_STORE",
+        "DYNAMIC_SCRIPT_ACTIONS_ENABLED",
+        "DYNAMIC_SCRIPT_DEFAULT_MODEL",
+        "DYNAMIC_SCRIPT_MAX_BYTES",
+        "DYNAMIC_SCRIPT_MAX_CONCURRENCY",
         "INTERNAL_API_TOKEN",
         "ORIGIN",
         "PREVIEW_ACTION_INTERNAL_TOKEN",
