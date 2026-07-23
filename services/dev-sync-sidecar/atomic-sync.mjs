@@ -131,14 +131,20 @@ async function inspectArchive(archivePath, declaredRoots) {
 		if (totalBytes > MAX_ARCHIVE_TOTAL_BYTES) throw new Error('archive expands beyond size limit');
 	}
 	const entries = rawEntries.map(normalizeArchiveEntry);
-	for (const listedEntry of entries) {
+	for (const [index, listedEntry] of entries.entries()) {
 		const entry = listedEntry.endsWith('/') ? listedEntry.slice(0, -1) : listedEntry;
+		const withinDeclaredRoot = declaredRoots.some((root) => entryIsWithinRoot(entry, root));
+		// USTAR writers emit parent directories for file-granular roots. Those
+		// entries are structural only; files and siblings still require a root.
+		const structuralParentDirectory =
+			typeLines[index][0] === 'd' &&
+			declaredRoots.some((root) => root.startsWith(`${entry}/`));
 		if (
 			!entry ||
 			entry.startsWith('/') ||
 			entry.includes('\\') ||
 			entry.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
-			!declaredRoots.some((root) => entryIsWithinRoot(entry, root))
+			(!withinDeclaredRoot && !structuralParentDirectory)
 		) {
 			throw new Error(`archive entry is outside declared roots: ${entry || '<empty>'}`);
 		}

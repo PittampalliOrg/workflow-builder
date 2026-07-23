@@ -77,6 +77,7 @@ export type SidecarSyncOutput = {
 const STATUS_TIMEOUT_MS = 3_000;
 const RUN_TIMEOUT_MS = 180_000;
 const SYNC_TIMEOUT_MS = 180_000;
+const SYNC_ERROR_DETAIL_LIMIT = 2_000;
 
 function parseSyncTimings(raw: unknown): SidecarSyncTimings | null {
 	if (!raw || typeof raw !== 'object') return null;
@@ -386,10 +387,11 @@ export async function syncDevPreviewSource(input: {
 		return { ok: false, reason: 'forbidden', message: 'sync token rejected' };
 	const body = await parseSyncResponse(response);
 	if (!response.ok) {
+		const detail = boundedSyncErrorDetail(body);
 		return {
 			ok: false,
 			reason: 'bad-response',
-			message: `HTTP ${response.status}${typeof body === 'string' && body ? `: ${body}` : ''}`
+			message: `HTTP ${response.status}${detail ? `: ${detail}` : ''}`
 		};
 	}
 	return {
@@ -403,12 +405,28 @@ export async function syncDevPreviewSource(input: {
 	};
 }
 
+function boundedSyncErrorDetail(body: unknown): string | null {
+	const raw =
+		typeof body === 'string'
+			? body
+			: body && typeof body === 'object' && typeof (body as Record<string, unknown>).error === 'string'
+				? ((body as Record<string, unknown>).error as string)
+				: '';
+	const detail = raw.trim();
+	if (!detail) return null;
+	return detail.length > SYNC_ERROR_DETAIL_LIMIT
+		? `${detail.slice(0, SYNC_ERROR_DETAIL_LIMIT)}...`
+		: detail;
+}
+
 async function parseSyncResponse(response: Response): Promise<unknown> {
 	const contentType = response.headers.get('content-type') ?? '';
 	try {
 		if (contentType.includes('application/json')) return await response.json();
 		const text = await response.text();
-		return text.length > 2_000 ? `${text.slice(0, 2_000)}...` : text;
+		return text.length > SYNC_ERROR_DETAIL_LIMIT
+			? `${text.slice(0, SYNC_ERROR_DETAIL_LIMIT)}...`
+			: text;
 	} catch (err) {
 		return err instanceof Error ? err.message : String(err);
 	}

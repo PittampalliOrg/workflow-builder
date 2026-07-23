@@ -749,6 +749,90 @@ test('POST /__sync requires the exact receiver root contract', async (t) => {
 	assert.ok(!fs.existsSync(path.join(s.dest, 'src')));
 });
 
+test('POST /__sync accepts structural directory ancestors of file roots', async (t) => {
+	const roots = [
+		'.preview-capture/development.Dockerfile',
+		'.preview-capture/production.Dockerfile'
+	];
+	const s = await startSidecar({
+		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
+	});
+	t.after(() => s.stop());
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('structural-parent-1', SERVICE, roots),
+		body: makeTarGz(
+			{
+				'.preview-capture/development.Dockerfile': 'FROM node:22-alpine AS development\n',
+				'.preview-capture/production.Dockerfile': 'FROM node:22-alpine\n'
+			},
+			{},
+			['.preview-capture']
+		)
+	});
+
+	assert.equal(response.status, 200);
+	assert.equal(
+		fs.readFileSync(path.join(s.dest, '.preview-capture/development.Dockerfile'), 'utf8'),
+		'FROM node:22-alpine AS development\n'
+	);
+});
+
+test('POST /__sync rejects undeclared siblings below a structural ancestor', async (t) => {
+	const roots = [
+		'.preview-capture/development.Dockerfile',
+		'.preview-capture/production.Dockerfile'
+	];
+	const s = await startSidecar({
+		DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
+	});
+	t.after(() => s.stop());
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('structural-sibling-1', SERVICE, roots),
+		body: makeTarGz(
+			{
+				'.preview-capture/development.Dockerfile': 'FROM node:22-alpine AS development\n',
+				'.preview-capture/production.Dockerfile': 'FROM node:22-alpine\n',
+				'.preview-capture/undeclared.txt': 'outside the receiver contract\n'
+			},
+			{},
+			['.preview-capture']
+		)
+	});
+
+	assert.equal(response.status, 400);
+	assert.match(
+		(await response.json()).error,
+		/archive entry is outside declared roots: \.preview-capture\/undeclared\.txt/
+	);
+	assert.ok(!fs.existsSync(path.join(s.dest, '.preview-capture/undeclared.txt')));
+});
+
+test('POST /__sync rejects a regular file that is only an ancestor of a declared root', async (t) => {
+	const roots = ['.preview-capture/development.Dockerfile'];
+	const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dev-sync-dest-'));
+	fs.mkdirSync(path.join(dest, '.preview-capture'), { recursive: true });
+	const s = await startSidecar(
+		{
+			DEV_SYNC_ALLOWED_ROOTS_JSON: JSON.stringify(roots)
+		},
+		dest
+	);
+	t.after(() => s.stop());
+	const response = await fetch(`${s.base}/__sync`, {
+		method: 'POST',
+		headers: syncHeaders('structural-file-1', SERVICE, roots),
+		body: makeTarGz({ '.preview-capture': 'not a directory\n' })
+	});
+
+	assert.equal(response.status, 400);
+	assert.match(
+		(await response.json()).error,
+		/archive entry is outside declared roots: \.preview-capture/
+	);
+});
+
 test('file-granular reconciliation propagates deletions without replacing kept files', async (t) => {
 	const roots = ['config', 'src'];
 	const s = await startSidecar({

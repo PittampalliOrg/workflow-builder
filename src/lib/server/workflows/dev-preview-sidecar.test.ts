@@ -209,28 +209,70 @@ describe('runSidecarCommand', () => {
 	});
 });
 
-describe("syncDevPreviewSource", () => {
-  it("forwards a stable generation and explicit replace mode", async () => {
-    const fetchImpl = vi.fn(
-      async (_url: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-    );
-    await syncDevPreviewSource({
-      syncUrl: "http://10.0.0.5:8001/__sync",
-      executionId: "exec-1",
-      service: "workflow-builder",
-      archive: new Uint8Array([1, 2, 3]),
-      generation: "pws-stable-generation",
-      mode: "replace",
-      fetchImpl,
-    });
-    const headers = (fetchImpl.mock.calls[0][1] as RequestInit)
-      .headers as Record<string, string>;
-    expect(headers["x-sync-generation"]).toBe("pws-stable-generation");
-    expect(headers["x-sync-mode"]).toBe("replace");
-    expect(headers["x-sync-token"]).toMatch(/^[0-9a-f]{64}$/);
-  });
+describe('syncDevPreviewSource', () => {
+	it('forwards a stable generation and explicit replace mode', async () => {
+		const fetchImpl = vi.fn(
+			async (_url: RequestInfo | URL, _init?: RequestInit) =>
+				new Response(JSON.stringify({ ok: true }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+		);
+		await syncDevPreviewSource({
+			syncUrl: 'http://10.0.0.5:8001/__sync',
+			executionId: 'exec-1',
+			service: 'workflow-builder',
+			archive: new Uint8Array([1, 2, 3]),
+			generation: 'pws-stable-generation',
+			mode: 'replace',
+			fetchImpl
+		});
+		const headers = (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+		expect(headers['x-sync-generation']).toBe('pws-stable-generation');
+		expect(headers['x-sync-mode']).toBe('replace');
+		expect(headers['x-sync-token']).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('surfaces a bounded JSON receiver error detail', async () => {
+		const receiverError =
+			'archive validation failed: archive entry is outside declared roots: .preview-capture';
+		const result = await syncDevPreviewSource({
+			syncUrl: 'http://10.0.0.5:8001/__sync',
+			executionId: 'exec-1',
+			service: 'workflow-builder',
+			archive: new Uint8Array([1, 2, 3]),
+			fetchImpl: vi.fn(
+				async () =>
+					new Response(JSON.stringify({ ok: false, error: receiverError }), {
+						status: 400,
+						headers: { 'content-type': 'application/json' }
+					})
+			)
+		});
+		expect(result).toEqual({
+			ok: false,
+			reason: 'bad-response',
+			message: `HTTP 400: ${receiverError}`
+		});
+
+		const oversizedError = 'x'.repeat(2_001);
+		const oversized = await syncDevPreviewSource({
+			syncUrl: 'http://10.0.0.5:8001/__sync',
+			executionId: 'exec-1',
+			service: 'workflow-builder',
+			archive: new Uint8Array([1, 2, 3]),
+			fetchImpl: vi.fn(
+				async () =>
+					new Response(JSON.stringify({ ok: false, error: oversizedError }), {
+						status: 400,
+						headers: { 'content-type': 'application/json' }
+					})
+			)
+		});
+		expect(oversized).toEqual({
+			ok: false,
+			reason: 'bad-response',
+			message: `HTTP 400: ${'x'.repeat(2_000)}...`
+		});
+	});
 });
