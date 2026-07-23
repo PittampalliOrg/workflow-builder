@@ -465,6 +465,49 @@ describe("Dapr lifecycle cascade agent-runtime transport", () => {
     );
   });
 
+  it("falls back to the state.postgresql/v1 state table when the prefixed workflow table is absent", async () => {
+    const missingPrefixedTable = new Error("query failed", {
+      cause: Object.assign(
+        new Error('relation "wfstate_state" does not exist'),
+        {
+          code: "42P01",
+        },
+      ),
+    });
+    const database = {
+      execute: vi
+        .fn()
+        .mockRejectedValueOnce(missingPrefixedTable)
+        .mockResolvedValue(undefined),
+    } as unknown as NonNullable<Parameters<typeof createDaprCascadeDeps>[1]>;
+    const deps = createDaprCascadeDeps({}, database);
+
+    await expect(
+      deps.purgeStateRows?.(["workflow-1", "workflow-2"], [], []),
+    ).resolves.toBeUndefined();
+
+    // Missing wfstate_state, then legacy state for both workflow ids, followed
+    // by agent_py_state for both ids.
+    expect(database.execute).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps state cleanup fail-closed when both workflow state tables are absent", async () => {
+    const missingTable = () =>
+      Object.assign(new Error("query failed"), { code: "42P01" });
+    const database = {
+      execute: vi
+        .fn()
+        .mockRejectedValueOnce(missingTable())
+        .mockRejectedValueOnce(missingTable()),
+    } as unknown as NonNullable<Parameters<typeof createDaprCascadeDeps>[1]>;
+    const deps = createDaprCascadeDeps({}, database);
+
+    await expect(deps.purgeStateRows?.(["workflow-1"], [], [])).rejects.toThrow(
+      "Failed to delete Dapr state rows from state",
+    );
+    expect(database.execute).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps CR read failures and pending pods unknown", async () => {
     mocks.getKubernetesSandbox.mockRejectedValueOnce(
       new Error("kube unavailable"),

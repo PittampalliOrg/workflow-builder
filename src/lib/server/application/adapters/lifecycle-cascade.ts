@@ -43,9 +43,27 @@ import {
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_WAIT_MS = 90_000;
 const DEFAULT_WAIT_POLL_MS = 1_000;
-const DAPR_STATE_ROW_TABLES = ["wfstate_state", "agent_py_state"] as const;
+const WORKFLOW_STATE_ROW_TABLE = "wfstate_state";
+const LEGACY_WORKFLOW_STATE_ROW_TABLE = "state";
+const AGENT_STATE_ROW_TABLE = "agent_py_state";
 
 type Database = typeof defaultDb;
+
+function postgresErrorCode(error: unknown): string | null {
+	const visited = new Set<object>();
+	let current: unknown = error;
+	while (current && typeof current === "object" && !visited.has(current)) {
+		visited.add(current);
+		const code = Reflect.get(current, "code");
+		if (typeof code === "string") return code;
+		current = Reflect.get(current, "cause");
+	}
+	return null;
+}
+
+function isUndefinedTableError(error: unknown): boolean {
+	return postgresErrorCode(error) === "42P01";
+}
 
 export type CreateDaprCascadeDepsOptions = {
 	requestTimeoutMs?: number;
@@ -698,27 +716,53 @@ export function createDaprCascadeDeps(
 			if (normalized) ids.add(normalized);
 		}
 		if (ids.size === 0 || !database) return;
-		for (const table of DAPR_STATE_ROW_TABLES) {
-			for (const instanceId of ids) {
-				// Boundary-anchored match: the instanceId must be a whole token in
-				// the Dapr key — preceded by `||` (wfstate) or `_workflow_`
-				// (agent_py_state) and followed by `||`, `__turn__` (turn
-				// sub-instance), or end-of-key. A bare substring match would let a
-				// deterministic id be a PREFIX of a sibling's: `..._run__1` would also
-				// delete `..._run__10`/`..._run__11` state. agent_py_state lowercases
-				// the id, so compare lowercased on both sides.
-				const pattern = daprStateKeyMatchPattern(instanceId);
-				try {
-					await database.execute(sql`
-						delete from ${sql.raw(table)}
-						where lower(key) ~ ${pattern}
-					`);
-				} catch (err) {
-          throw new Error(
-            `Failed to delete Dapr state rows from ${table} for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`,
-					);
-				}
+		const instanceIds = [...ids];
+
+		async function deleteRows(
+			table: string,
+			instanceId: string,
+		): Promise<void> {
+			const pattern = daprStateKeyMatchPattern(instanceId);
+			try {
+				await database.execute(sql`
+					delete from ${sql.raw(table)}
+					where lower(key) ~ ${pattern}
+				`);
+			} catch (err) {
+				throw new Error(
+					`Failed to delete Dapr state rows from ${table} for ${instanceId}: ${err instanceof Error ? err.message : String(err)}`,
+					{ cause: err },
+				);
 			}
+		}
+
+		// state.postgresql/v2 honors tablePrefix (`wfstate_state`). Older preview
+		// environments used v1, which ignored that prefix and created `state`.
+		// Fall back only when PostgreSQL proves the v2 table is absent; all other
+		// failures remain fail-closed so lifecycle confirmation keeps retrying.
+		let workflowTable = WORKFLOW_STATE_ROW_TABLE;
+		for (const instanceId of instanceIds) {
+			try {
+				await deleteRows(workflowTable, instanceId);
+			} catch (err) {
+				if (
+					workflowTable !== WORKFLOW_STATE_ROW_TABLE ||
+					!isUndefinedTableError(err)
+				) {
+					throw err;
+				}
+				workflowTable = LEGACY_WORKFLOW_STATE_ROW_TABLE;
+				await deleteRows(workflowTable, instanceId);
+			}
+		}
+
+		// Boundary-anchored match: the instanceId must be a whole token in the
+		// Dapr key — preceded by `||` (workflow state) or `_workflow_` (agent
+		// application state) and followed by `||`, `__turn__` (turn sub-instance),
+		// or end-of-key. A bare substring match would let `..._run__1` also delete
+		// sibling state for `..._run__10`/`..._run__11`.
+		for (const instanceId of instanceIds) {
+			await deleteRows(AGENT_STATE_ROW_TABLE, instanceId);
 		}
 	}
 
