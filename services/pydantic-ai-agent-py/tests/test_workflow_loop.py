@@ -271,7 +271,7 @@ def test_iteration_override_cannot_exceed_hard_per_turn_cap():
     assert continuation == {
         "context": {"workflowInstanceId": "inst-1"},
         "historyRef": "history-committed-39",
-        "maxIterations": 80,
+        "maxIterations": 120,
         "agentWorkflowState": {
             "iteration": 40,
             "structuredFailures": 0,
@@ -291,27 +291,61 @@ def test_iteration_override_cannot_exceed_hard_per_turn_cap():
     assert replay_ctx.calls == first_ctx.calls
     assert replay_ctx.continuations == first_ctx.continuations
 
-    resumed_ctx = FakeCtx()
-    _, result = drive(
-        agent_workflow(resumed_ctx, continuation),
+    second_ctx = FakeCtx()
+    _, second_result = drive(
+        agent_workflow(second_ctx, continuation),
         reference_tool_responses(
             wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
-            wfmod.MAX_ITERATIONS_PER_TURN
-            - wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+            wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+        ),
+    )
+    assert second_result is None
+    assert second_ctx.calls[-1][0] is commit_tool_results
+    assert len(second_ctx.continuations) == 1
+    second_continuation, second_save_events = second_ctx.continuations[0]
+    assert second_save_events is False
+    assert second_continuation == {
+        "context": {"workflowInstanceId": "inst-1"},
+        "historyRef": "history-committed-79",
+        "maxIterations": 120,
+        "agentWorkflowState": {
+            "iteration": 80,
+            "structuredFailures": 0,
+        },
+    }
+
+    second_replay_ctx = FakeCtx(is_replaying=True)
+    _, second_replay_result = drive(
+        agent_workflow(second_replay_ctx, continuation),
+        reference_tool_responses(
+            wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+            wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+        ),
+    )
+    assert second_replay_result is None
+    assert second_replay_ctx.calls == second_ctx.calls
+    assert second_replay_ctx.continuations == second_ctx.continuations
+
+    third_ctx = FakeCtx()
+    _, result = drive(
+        agent_workflow(third_ctx, second_continuation),
+        reference_tool_responses(
+            2 * wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
+            wfmod.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT,
         ),
     )
 
     assert result["success"] is False
-    assert "80-iteration budget" in result["content"]
+    assert "120-iteration budget" in result["content"]
     assert (
         len(
             [
                 entry
-                for entry in [*first_ctx.calls, *resumed_ctx.calls]
+                for entry in [*first_ctx.calls, *second_ctx.calls, *third_ctx.calls]
                 if entry[0] is call_llm
             ]
         )
-        == 80
+        == 120
     )
 
 

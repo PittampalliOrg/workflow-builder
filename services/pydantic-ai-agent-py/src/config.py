@@ -113,14 +113,14 @@ TRANSCRIPT_KEEP_BYTES = min(
 
 # One iteration = one LLM message (call_llm activity); tool calls fan out as
 # their own activities. agentConfig.maxTurns/maxIterations override per run.
-MAX_ITERATIONS_PER_TURN = 80
+MAX_ITERATIONS_PER_TURN = 120
 # The exact Dapr protobuf budget proof leaves at least 2 MiB of gRPC headroom
 # through 40 worst-case iterations. Longer public turn budgets continue-as-new
 # only between fully committed iterations so each execution history stays safe.
 DURABLE_HISTORY_ITERATIONS_PER_SEGMENT = 40
 DEFAULT_MAX_ITERATIONS = min(
     MAX_ITERATIONS_PER_TURN,
-    max(1, env_int("PYDANTIC_AI_MAX_ITERATIONS", MAX_ITERATIONS_PER_TURN)),
+    max(1, env_int("PYDANTIC_AI_MAX_ITERATIONS", 80)),
 )
 MAX_TOOL_CALLS_PER_RESPONSE = min(
     8,

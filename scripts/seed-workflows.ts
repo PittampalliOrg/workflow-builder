@@ -4183,7 +4183,7 @@ async function seedGeneratorCriticShowcases(params: {
 		reasoningEffort: "max",
 		contextWindowTokens: 1_048_576,
 		runtimeIsolation: "shared",
-		maxTurns: 80,
+		maxTurns: 120,
 		timeoutMinutes: 60,
 		instructions: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT,
 		config: PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_CONFIG,

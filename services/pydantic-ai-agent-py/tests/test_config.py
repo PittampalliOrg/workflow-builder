@@ -65,6 +65,15 @@ def test_durable_history_reserves_activity_envelope_headroom():
     assert config.DURABLE_HISTORY_KEEP_BYTES == 12 * 1024 * 1024
 
 
+def test_default_iteration_budget_stays_below_preview_override(monkeypatch):
+    with monkeypatch.context() as env:
+        env.delenv("PYDANTIC_AI_MAX_ITERATIONS", raising=False)
+        loaded = importlib.reload(config)
+        assert loaded.DEFAULT_MAX_ITERATIONS == 80
+        assert loaded.MAX_ITERATIONS_PER_TURN == 120
+    importlib.reload(config)
+
+
 def test_durable_limits_cannot_be_raised_by_environment(monkeypatch):
     with monkeypatch.context() as env:
         for name in _DURABLE_LIMIT_ENV_NAMES:
@@ -73,8 +82,8 @@ def test_durable_limits_cannot_be_raised_by_environment(monkeypatch):
         assert loaded.DURABLE_TASK_MAX_BYTES == 512 * 1024
         assert loaded.DURABLE_CONTEXT_MAX_BYTES == 16 * 1024
         assert loaded.DURABLE_TOOL_CONTEXT_MAX_BYTES == 8 * 1024
-        assert loaded.DEFAULT_MAX_ITERATIONS == 80
-        assert loaded.MAX_ITERATIONS_PER_TURN == 80
+        assert loaded.DEFAULT_MAX_ITERATIONS == 120
+        assert loaded.MAX_ITERATIONS_PER_TURN == 120
         assert loaded.DURABLE_HISTORY_ITERATIONS_PER_SEGMENT == 40
         assert loaded.MAX_TOOL_CALLS_PER_RESPONSE == 8
         assert loaded.TOOL_DESCRIPTOR_MAX_BYTES == 256

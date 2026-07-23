@@ -26,7 +26,7 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 			modelSpec: "kimi/kimi-k3",
 			reasoningEffort: "max",
 			contextWindowTokens: 1_048_576,
-			maxTurns: 80,
+			maxTurns: 120,
 			timeoutMinutes: 60,
 			cwd: "/sandbox/work",
 			mcpConnectionMode: "explicit",
@@ -57,10 +57,13 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 			"snapshot and draft-PR promotion path",
 		);
 		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
-			"at most 20 pre-write tool calls",
+			"no more than eight repository files",
 		);
 		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
-			"no later than model iteration 45",
+			"no later than model iteration 25",
+		);
+		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
+			"This is a hard ordering constraint",
 		);
 		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
 			"APPLIED receipt",
@@ -78,5 +81,8 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 
 		expect(bundle).toContain(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SLUG);
 		expect(bundle).toContain(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_RUNTIME);
+		expect(bundle).toContain("no more than eight repository files");
+		expect(bundle).toContain("no later than model iteration 25");
+		expect(bundle).toMatch(/maxTurns:\s*120/);
 	});
 });

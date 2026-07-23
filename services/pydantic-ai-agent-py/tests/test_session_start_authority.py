@@ -55,8 +55,8 @@ def _message() -> dict:
 
 
 def test_agent_iteration_override_is_hard_capped_per_turn():
-    assert session_module._resolve_max_iterations({"maxTurns": 999}) == 80
-    assert session_module._resolve_max_iterations({"maxIterations": 999}) == 80
+    assert session_module._resolve_max_iterations({"maxTurns": 999}) == 120
+    assert session_module._resolve_max_iterations({"maxIterations": 999}) == 120
     assert session_module._resolve_max_iterations({"maxTurns": 7}) == 7
     assert (
         session_module._resolve_max_iterations(
@@ -68,7 +68,7 @@ def test_agent_iteration_override_is_hard_capped_per_turn():
         session_module._resolve_max_iterations(
             {"maxTurns": 7}, message={"maxIterations": 999}
         )
-        == 80
+        == 120
     )
     assert (
         session_module._resolve_max_iterations(
