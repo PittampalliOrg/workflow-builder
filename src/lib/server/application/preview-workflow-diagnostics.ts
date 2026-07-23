@@ -5,7 +5,6 @@ import type {
 	PreviewWorkflowDiagnosticsBrokerResult,
 	PreviewWorkflowDiagnosticsOperation,
 	PreviewWorkflowDiagnosticsQueryPort,
-	PreviewWorkflowDiagnosticsWorkspaceAuthorizationPort,
 	WorkflowDiagnosticsExecution
 } from '$lib/server/application/ports';
 import {
@@ -43,7 +42,6 @@ export type PreviewWorkflowDiagnosticsBrokerCommand = Readonly<{
 type BrokerDeps = Readonly<{
 	authority: PreviewTraceSourceAuthorityPort;
 	authorization: PreviewWorkflowDiagnosticsAuthorizationPort;
-	workspaces: PreviewWorkflowDiagnosticsWorkspaceAuthorizationPort;
 	queries: PreviewWorkflowDiagnosticsQueryPort;
 }>;
 
@@ -195,24 +193,11 @@ export class ApplicationPreviewWorkflowDiagnosticsBrokerService {
 				'preview diagnostics authorization is invalid or expired'
 			);
 		}
-		const source = await this.deps.authority.authorizeTraceTuple(identity);
-		if (source.owner !== command.execution.userId) {
-			throw new PreviewWorkflowDiagnosticsError(
-				'not-authorized',
-				'preview diagnostics execution owner does not match the environment owner'
-			);
-		}
-		if (
-			!(await this.deps.workspaces.hasMembership({
-				userId: command.execution.userId,
-				projectId
-			}))
-		) {
-			throw new PreviewWorkflowDiagnosticsError(
-				'not-found',
-				'preview diagnostics workspace is not available'
-			);
-		}
+		// Execution ownership was already resolved inside the preview by the
+		// workspace-scoped route that issued the proof. The physical environment
+		// owner is a separate lifecycle principal, so its id must not be compared
+		// with preview-local user/project ids or used for host workspace lookups.
+		await this.deps.authority.authorizeTraceTuple(identity);
 		if (!this.deps.queries.isConfigured()) {
 			throw new PreviewWorkflowDiagnosticsError(
 				'unavailable',

@@ -35,15 +35,13 @@ export type PreviewWorkflowDiagnosticsAuthorizationInput = Readonly<{
 	operation: PreviewWorkflowDiagnosticsOperation;
 }>;
 
-/** Short-lived proof that the preview BFF authorized one workspace execution. */
+/**
+ * Short-lived proof that the preview BFF authorized one preview-local workspace
+ * execution. User and project ids are opaque outside that preview's trust domain.
+ */
 export interface PreviewWorkflowDiagnosticsAuthorizationPort {
 	issue(input: PreviewWorkflowDiagnosticsAuthorizationInput): string;
 	verify(token: string, input: PreviewWorkflowDiagnosticsAuthorizationInput): boolean;
-}
-
-/** Physical workspace membership check; execution existence remains preview-local. */
-export interface PreviewWorkflowDiagnosticsWorkspaceAuthorizationPort {
-	hasMembership(input: Readonly<{ userId: string; projectId: string }>): Promise<boolean>;
 }
 
 export type PreviewWorkflowDiagnosticsDigestLlmSpan = Readonly<{

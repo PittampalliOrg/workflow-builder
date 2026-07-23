@@ -24,6 +24,8 @@ describe('preview workflow diagnostics hexagonal boundary', () => {
 			expect(source).not.toContain('CLICKHOUSE_');
 			expect(source).not.toContain('PREVIEW_CONTROL_CAPABILITY_ROOT_TOKEN');
 		}
+		expect(application).not.toContain('getProjectMembershipDetail');
+		expect(port).not.toContain('PreviewWorkflowDiagnosticsWorkspaceAuthorizationPort');
 	});
 
 	it('keeps the HTTP route as a thin authenticated application adapter', () => {
