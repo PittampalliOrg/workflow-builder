@@ -20,6 +20,7 @@ import {
 	Server,
 	Container,
 	Network,
+	Radar,
 	Layers,
 	Library as LibraryIcon,
 	KeyRound,
@@ -365,6 +366,13 @@ export const NAV_GROUPS: NavGroup[] = [
 				icon: GitBranch,
 				href: () => "/admin/gitops",
 				match: prefix("/admin/gitops"),
+			},
+			{
+				id: "admin-drasi",
+				label: "Drasi",
+				icon: Radar,
+				href: () => "/admin/drasi",
+				match: prefix("/admin/drasi"),
 			},
 			{
 				id: "admin-dapr",
