@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
+from src.adapters.confined_workspace_scope import ConfinedWorkspaceScopeAdapter
 from src.adapters.dapr_durable_payload_codec import DaprDurablePayloadCodecAdapter
 from src.adapters.filesystem_durable_history import FilesystemDurableHistoryAdapter
 from src.adapters.harness_durable_media import HarnessDurableMediaAdapter
@@ -18,6 +19,7 @@ from src.ports.durable_media import DurableMediaPort
 from src.ports.durable_payload_codec import DurablePayloadCodecPort
 from src.ports.runtime_start_authority import RuntimeStartAuthorityPort
 from src.ports.workspace_image import WorkspaceImagePort
+from src.ports.workspace_scope import WorkspaceScopePort
 
 
 @lru_cache(maxsize=16)
@@ -41,6 +43,11 @@ def durable_payload_codec_port() -> DurablePayloadCodecPort:
 @lru_cache(maxsize=16)
 def workspace_image_port(workspace_root: str) -> WorkspaceImagePort:
     return PillowWorkspaceImageAdapter(workspace_root)
+
+
+@lru_cache(maxsize=16)
+def workspace_scope_port(workspace_root: str) -> WorkspaceScopePort:
+    return ConfinedWorkspaceScopeAdapter(workspace_root)
 
 
 @lru_cache(maxsize=1)

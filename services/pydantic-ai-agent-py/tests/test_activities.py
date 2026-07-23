@@ -48,6 +48,80 @@ def make_fake_model(captured: dict, responses: list):
     return FakeModel()
 
 
+def test_invalid_workspace_cwd_fails_before_provider_request(monkeypatch, workspace):
+    provider_called = False
+
+    def unexpected_model():
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(wfmod, "build_model", unexpected_model)
+    outside = workspace.parent / "outside"
+    outside.mkdir()
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {
+            "task": "inspect",
+            "messages": [],
+            "context": {"agentConfig": {"cwd": str(outside)}},
+            "iteration": 0,
+        },
+    )
+
+    assert provider_called is False
+    assert out["configurationErrorCode"] == "workspace_configuration_error"
+    assert "outside the workspace root" in out["configurationError"]
+
+
+def test_malformed_workspace_cwd_fails_before_provider_request(monkeypatch, workspace):
+    provider_called = False
+
+    def unexpected_model():
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(wfmod, "build_model", unexpected_model)
+
+    out = call_llm(
+        FakeActivityCtx(),
+        {
+            "task": "inspect",
+            "messages": [],
+            "context": {"agentConfig": {"cwd": "bad\x00path"}},
+            "iteration": 0,
+        },
+    )
+
+    assert provider_called is False
+    assert out["configurationErrorCode"] == "workspace_configuration_error"
+    assert "does not exist" in out["configurationError"]
+
+
+def test_invalid_workspace_cwd_fails_tool_without_execution(workspace):
+    outside = workspace.parent / "outside-tool"
+    outside.mkdir()
+
+    out = execute_tool(
+        FakeActivityCtx(),
+        {
+            "call": {
+                "toolName": "write_file",
+                "toolCallId": "tool-1",
+                "args": {"path": "should-not-exist.txt", "content": "no"},
+            },
+            "context": {"agentConfig": {"cwd": str(outside)}},
+            "iteration": 0,
+        },
+    )
+
+    assert out["toolSucceeded"] is False
+    assert out["configurationErrorCode"] == "workspace_configuration_error"
+    assert not (workspace / "should-not-exist.txt").exists()
+
+
 def test_call_llm_bootstraps_and_extracts_tool_calls(monkeypatch, workspace):
     from pydantic_ai.messages import TextPart, ToolCallPart
 

@@ -195,6 +195,31 @@ def test_one_shot_session_forwards_trusted_per_call_iteration_budget(monkeypatch
     assert child[2]["maxIterations"] == 20
 
 
+def test_one_shot_session_overlays_launch_cwd_on_effective_agent_config(monkeypatch):
+    monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
+    message = _message()
+    message["cwd"] = "/sandbox/work/repo"
+    message["agentConfig"] = {"cwd": "/sandbox/stale"}
+    workflow = session_workflow(_FakeContext(), message)
+
+    assert next(workflow)[0:2] == ("activity", authorize_session_runtime_start)
+    child = workflow.send({"authorized": True})
+
+    assert child[2]["context"]["agentConfig"]["cwd"] == "/sandbox/work/repo"
+
+
+def test_one_shot_session_keeps_saved_cwd_when_launch_has_no_override(monkeypatch):
+    monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
+    message = _message()
+    message["agentConfig"] = {"cwd": "repo"}
+    workflow = session_workflow(_FakeContext(), message)
+
+    assert next(workflow)[0:2] == ("activity", authorize_session_runtime_start)
+    child = workflow.send({"authorized": True})
+
+    assert child[2]["context"]["agentConfig"]["cwd"] == "repo"
+
+
 def test_one_shot_session_forwards_and_returns_only_history_reference(monkeypatch):
     monkeypatch.setattr(session_module, "publish_session_event", lambda *_args: None)
     message = _message()
@@ -238,6 +263,7 @@ def test_non_one_shot_session_continues_as_new_with_returned_history_reference(
     next_ref = "history+sha256://" + "b" * 64
     message = {
         "sessionId": "session-1",
+        "cwd": "/sandbox/work/repo",
         "historyRef": initial_ref,
         "initialEvents": [
             {
@@ -265,6 +291,8 @@ def test_non_one_shot_session_continues_as_new_with_returned_history_reference(
     continuation, save_events = ctx.continuations[0]
     assert save_events is True
     assert continuation["historyRef"] == next_ref
+    assert continuation["cwd"] == "/sandbox/work/repo"
+    assert continuation["agentConfig"]["cwd"] == "/sandbox/work/repo"
     assert "history" not in continuation
     assert continuation["initialEvents"] == []
     assert continuation["sessionWorkflowState"] == {
@@ -292,6 +320,9 @@ def test_non_one_shot_session_continues_as_new_with_returned_history_reference(
     )
     assert second == ("agent-turn", 2)
     assert captured_inputs[1]["historyRef"] == next_ref
+    assert captured_inputs[1]["context"]["agentConfig"]["cwd"] == (
+        "/sandbox/work/repo"
+    )
     assert "history" not in captured_inputs[1]
 
 

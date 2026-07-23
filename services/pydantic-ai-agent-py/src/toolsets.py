@@ -153,7 +153,11 @@ def _run_context(messages: list[Any] | None = None, model: Any = None) -> RunCon
     return ctx
 
 
-def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
+def build_capabilities(
+    agent_config: dict[str, Any] | None,
+    *,
+    workspace_dir: Path | None = None,
+) -> list[Any]:
     """Tool + hook capabilities, in application order.
 
     Order matters for the model-request hook chain: KimiHistoryWindow bounds
@@ -163,9 +167,18 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
     from pydantic_ai_harness import FileSystem, Shell
 
     cfg = agent_config or {}
-    root = Path(WORKSPACE_ROOT)
-    root.mkdir(parents=True, exist_ok=True)
 
+    from src.composition import workspace_scope_port
+
+    workspace_scope = workspace_scope_port(WORKSPACE_ROOT)
+    workspace_root = workspace_scope.resolve()
+    requested_workspace = (
+        str(workspace_dir) if workspace_dir is not None else cfg.get("cwd")
+    )
+    root = workspace_scope.resolve(requested_workspace)
+
+    # Shell receives the selected starting directory. The pod sandbox remains
+    # the filesystem security boundary for commands and absolute paths.
     capabilities: list[Any] = [
         FileSystem(root_dir=root),
         # denied_env_patterns scrubs credential names from the shell
@@ -287,7 +300,9 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
             # restarts and is readable by read_tool_result from any later
             # activity on this pod.
             capabilities.append(
-                OverflowingToolOutput(store=LocalFileStore(base_dir=root / ".overflow"))
+                OverflowingToolOutput(
+                    store=LocalFileStore(base_dir=workspace_root / ".overflow")
+                )
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[toolsets] OverflowingToolOutput unavailable: %s", exc)
@@ -304,8 +319,15 @@ def build_capabilities(agent_config: dict[str, Any] | None) -> list[Any]:
 class ToolRouter:
     """Name→toolset routing + hook-chain application over the capabilities."""
 
-    def __init__(self, agent_config: dict[str, Any] | None) -> None:
-        self._capabilities = build_capabilities(agent_config)
+    def __init__(
+        self,
+        agent_config: dict[str, Any] | None,
+        *,
+        workspace_dir: Path | None = None,
+    ) -> None:
+        self._capabilities = build_capabilities(
+            agent_config, workspace_dir=workspace_dir
+        )
         self._runtime_tool_ceiling = _runtime_tool_ceiling(agent_config)
         self._local_tool_allowlist = _configured_local_tool_allowlist(agent_config)
         self._toolsets: list[Any] = []
@@ -763,10 +785,16 @@ class ToolRouter:
 _ROUTERS: dict[str, ToolRouter] = {}
 
 
-def _config_key(agent_config: dict[str, Any] | None) -> str:
+def _config_key(
+    agent_config: dict[str, Any] | None,
+    *,
+    workspace_root: Path,
+    workspace_dir: Path,
+) -> str:
     config = agent_config or {}
     relevant = {
-        "workspace": WORKSPACE_ROOT,
+        "workspaceRoot": str(workspace_root),
+        "cwd": str(workspace_dir),
         "mcpServers": config.get("mcpServers") or [],
         # Session control events can narrow tools between turns. Preserve
         # presence and empty lists so a router built under an older ceiling is
@@ -787,9 +815,19 @@ def get_router(agent_config: dict[str, Any] | None) -> ToolRouter:
     is shared across activities on this pod. Construction stays deterministic
     from the serializable agentConfig, so a fresh process rebuilds an
     equivalent router on retry."""
-    key = _config_key(agent_config)
+    from src.composition import workspace_scope_port
+
+    config = agent_config or {}
+    workspace_scope = workspace_scope_port(WORKSPACE_ROOT)
+    workspace_root = workspace_scope.resolve()
+    workspace_dir = workspace_scope.resolve(config.get("cwd"))
+    key = _config_key(
+        config,
+        workspace_root=workspace_root,
+        workspace_dir=workspace_dir,
+    )
     router = _ROUTERS.get(key)
     if router is None:
-        router = ToolRouter(agent_config)
+        router = ToolRouter(config, workspace_dir=workspace_dir)
         _ROUTERS[key] = router
     return router

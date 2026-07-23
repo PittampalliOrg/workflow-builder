@@ -106,6 +106,7 @@ from src.ports.durable_history import (
     DurableHistoryInvalidReferenceError,
     DurableHistorySerializationError,
 )
+from src.ports.workspace_scope import WorkspaceScopeError
 from src.structured_output import (
     MAX_STRUCTURED_OUTPUT_NUDGES,
     STRUCTURED_OUTPUT_NUDGE,
@@ -144,6 +145,7 @@ STRUCTURED_OUTPUT_EXHAUSTED = "error_max_structured_output_retries"
 STRUCTURED_OUTPUT_CONFIG_ERROR = "structured_output_config_error"
 MODEL_CONTEXT_WINDOW_ERROR = "model_context_window_error"
 MODEL_CONFIGURATION_ERROR = "model_configuration_error"
+WORKSPACE_CONFIGURATION_ERROR = "workspace_configuration_error"
 MODEL_PROVIDER_REQUEST_ERROR = "model_provider_request_error"
 MODEL_TOOL_CALL_LIMIT_ERROR = "model_tool_call_limit_error"
 MODEL_TOOL_DESCRIPTOR_LIMIT_ERROR = "model_tool_descriptor_limit_error"
@@ -255,7 +257,14 @@ def _tool_activity_context(
     agent_config = dict(context.get("agentConfig") or {})
     tool_config = {
         key: agent_config[key]
-        for key in ("mcpServers", "tools", "allowedTools", "builtinTools", "modelSpec")
+        for key in (
+            "mcpServers",
+            "tools",
+            "allowedTools",
+            "builtinTools",
+            "modelSpec",
+            "cwd",
+        )
         if key in agent_config
     }
     if _uses_structured_output_context(context, call):
@@ -1060,7 +1069,23 @@ def call_llm(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     )
 
     async def run(span) -> dict:
-        router = get_router(agent_cfg)
+        try:
+            router = get_router(agent_cfg)
+        except WorkspaceScopeError as exc:
+            return _fit_small_activity_result(
+                {
+                    "toolCalls": [],
+                    "text": "",
+                    "configurationError": str(exc),
+                    "configurationErrorCode": WORKSPACE_CONFIGURATION_ERROR,
+                    **(
+                        {"historyRef": known_balanced_history_ref}
+                        if known_balanced_history_ref
+                        else {}
+                    ),
+                },
+                payload_size_bytes=payload_codec.size_bytes,
+            )
         media = durable_media_port(WORKSPACE_ROOT)
 
         def post_provider_failure(
@@ -1532,6 +1557,18 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
     )
     turn_id = str(context.get("turnId") or "turn")
 
+    try:
+        router = get_router(agent_cfg)
+    except WorkspaceScopeError as exc:
+        return _fit_small_activity_result(
+            {
+                "toolSucceeded": False,
+                "configurationError": str(exc),
+                "configurationErrorCode": WORKSPACE_CONFIGURATION_ERROR,
+            },
+            payload_size_bytes=payload_codec.size_bytes,
+        )
+
     name = str(call.get("toolName") or "")
     tool_call_id = str(call.get("toolCallId") or "")
     args = call.get("args") or {}
@@ -1619,7 +1656,6 @@ def execute_tool(ctx: wf.WorkflowActivityContext, payload: dict) -> dict:
             result = f"Tool {name} arguments {args_error}"
             return result, result
 
-        router = get_router(agent_cfg)
         try:
             result = await router.call(name, args)
             # Capability after_tool_execute chain (OverflowingToolOutput
