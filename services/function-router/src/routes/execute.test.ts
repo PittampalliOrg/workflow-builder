@@ -238,8 +238,37 @@ describe("durable dev preview activation envelope", () => {
     ).toMatchObject({
       success: true,
       responseStatus: 200,
-      data: { batchId: "batch-1", activationPhase: "active" },
+      data: {
+        batchId: "batch-1",
+        activationPhase: "active",
+        receiptMode: "credentialless",
+        services: requestInput.services.map((service) => ({
+          service,
+          ok: true,
+          info: {
+            executionId,
+            service,
+            ready: true,
+            sandboxName: `dev-${service}`,
+            podIP:
+              service === "workflow-builder" ? "10.0.0.10" : "10.0.0.11",
+          },
+        })),
+      },
     });
+    const active = classifyDevPreviewProxyResponse({
+      mode: "ensure",
+      requestInput,
+      executionId,
+      status: 200,
+      parsed: {
+        ...lifecycle,
+        complete: true,
+        pending: false,
+        activationPhase: "active",
+      },
+    });
+    expect(JSON.stringify(active.data)).not.toContain("syncUrl");
   });
 
   it.each([
@@ -263,6 +292,22 @@ describe("durable dev preview activation envelope", () => {
         {
           ...serviceResult("function-router"),
           info: { ...serviceResult("function-router").info, ready: false },
+        },
+      ],
+    ],
+    [
+      "missing receiver coordinate",
+      [
+        serviceResult("workflow-builder"),
+        {
+          ...serviceResult("function-router"),
+          info: {
+            executionId,
+            service: "function-router",
+            ready: true,
+            sandboxName: "dev-function-router",
+            podIP: "10.0.0.11",
+          },
         },
       ],
     ],

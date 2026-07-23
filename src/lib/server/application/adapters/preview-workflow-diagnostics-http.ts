@@ -28,6 +28,7 @@ import type {
 } from '$lib/types/observability';
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const PREVIEW_SPAN_PAGE_SIZE = 100;
 
 type Credential = Readonly<{ header: string; token: string }>;
 
@@ -447,11 +448,30 @@ export class HttpPreviewWorkflowDiagnosticsReadAdapter implements WorkflowDiagno
 		traceIds: string[],
 		limit: number
 	): Promise<{ spans: ObservabilityTraceSpan[]; truncated: boolean }> {
-		const spans = await this.searchSpans(execution, traceIds, {
-			limit,
-			offset: 0
-		});
-		return { spans, truncated: spans.length >= limit };
+		if (!Number.isSafeInteger(limit) || limit < 1) {
+			throw new PreviewWorkflowDiagnosticsTransportError(
+				'preview diagnostics span summary limit must be a positive integer'
+			);
+		}
+		const spans: ObservabilityTraceSpan[] = [];
+		while (spans.length < limit) {
+			const pageLimit = Math.min(PREVIEW_SPAN_PAGE_SIZE, limit - spans.length);
+			// The broker permits 101 rows. Use the extra row as a bounded
+			// sentinel so an exact caller budget is not reported as truncated.
+			const requestLimit = pageLimit + 1;
+			const page = await this.searchSpans(execution, traceIds, {
+				limit: requestLimit,
+				offset: spans.length
+			});
+			spans.push(...page.slice(0, pageLimit));
+			if (page.length <= pageLimit) {
+				return { spans, truncated: false };
+			}
+			if (spans.length >= limit) {
+				return { spans, truncated: true };
+			}
+		}
+		return { spans, truncated: false };
 	}
 
 	async searchToolSpans(

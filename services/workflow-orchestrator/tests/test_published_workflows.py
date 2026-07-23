@@ -1661,6 +1661,14 @@ def _dev_preview_receipt(
     }
 
 
+def _credentialless_dev_preview_receipt(phase: str):
+    receipt = _dev_preview_receipt(phase)
+    receipt["data"]["receiptMode"] = "credentialless"
+    for service in receipt["data"]["services"]:
+        service["info"].pop("syncUrl")
+    return json.loads(json.dumps(receipt))
+
+
 def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input():
     workflow_gen, _ctx = _dev_preview_activation_generator()
     first_race = next(workflow_gen)
@@ -1670,7 +1678,7 @@ def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input
     assert deadline.kind == "timer"
     assert deadline.timeout == timedelta(seconds=300)
 
-    first_call.result = _dev_preview_receipt("scheduled")
+    first_call.result = _credentialless_dev_preview_receipt("scheduled")
     first_poll_race = workflow_gen.send(first_call)
     first_poll, same_deadline = first_poll_race["tasks"]
     assert first_poll.timeout == timedelta(seconds=2)
@@ -1695,7 +1703,7 @@ def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input
     third_call, same_deadline = third_race["tasks"]
     assert third_call.input == first_call.input
     assert same_deadline is deadline
-    third_call.result = _dev_preview_receipt("active")
+    third_call.result = _credentialless_dev_preview_receipt("active")
 
     with pytest.raises(StopIteration) as stop:
         workflow_gen.send(third_call)
@@ -1703,6 +1711,67 @@ def test_dev_preview_activation_uses_durable_timers_and_identical_activity_input
     assert stop.value.value["success"] is True
     assert stop.value.value["responseStatus"] == 200
     assert stop.value.value["data"]["batchId"] == "batch-1"
+
+
+def test_dev_preview_activation_accepts_exact_credentialless_service_proof():
+    observation, batch_id, detail = SW_WORKFLOW._dev_preview_activation_observation(
+        _credentialless_dev_preview_receipt("active"),
+        execution_id="db-exec-1",
+        expected_services=("workflow-builder", "function-router"),
+        expected_batch_id=None,
+    )
+
+    assert observation == "active"
+    assert batch_id == "batch-1"
+    assert detail is None
+
+
+def test_dev_preview_activation_rejects_unmarked_stripped_service_receipt():
+    receipt = _credentialless_dev_preview_receipt("active")
+    receipt["data"].pop("receiptMode")
+
+    observation, _batch_id, detail = SW_WORKFLOW._dev_preview_activation_observation(
+        receipt,
+        execution_id="db-exec-1",
+        expected_services=("workflow-builder", "function-router"),
+        expected_batch_id=None,
+    )
+
+    assert observation == "invalid"
+    assert detail == "activation result does not prove the exact ready service set"
+
+
+@pytest.mark.parametrize("receipt_mode", [None, "credentialless-v2"])
+def test_dev_preview_activation_rejects_unknown_receipt_mode(receipt_mode):
+    receipt = _dev_preview_receipt("active")
+    receipt["data"]["receiptMode"] = receipt_mode
+
+    observation, _batch_id, detail = SW_WORKFLOW._dev_preview_activation_observation(
+        receipt,
+        execution_id="db-exec-1",
+        expected_services=("workflow-builder", "function-router"),
+        expected_batch_id=None,
+    )
+
+    assert observation == "invalid"
+    assert detail == "activation result does not prove the exact ready service set"
+
+
+def test_dev_preview_activation_rejects_credentialless_receipt_with_raw_coordinate():
+    receipt = _credentialless_dev_preview_receipt("active")
+    receipt["data"]["services"][0]["info"]["syncUrl"] = (
+        "http://dev-workflow-builder:8001/__sync"
+    )
+
+    observation, _batch_id, detail = SW_WORKFLOW._dev_preview_activation_observation(
+        receipt,
+        execution_id="db-exec-1",
+        expected_services=("workflow-builder", "function-router"),
+        expected_batch_id=None,
+    )
+
+    assert observation == "invalid"
+    assert detail == "activation result does not prove the exact ready service set"
 
 
 def test_dev_preview_activation_nested_input_uses_same_durable_poll():
