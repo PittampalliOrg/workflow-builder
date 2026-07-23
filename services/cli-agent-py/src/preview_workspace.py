@@ -184,6 +184,40 @@ def _checkout_receipt(revision: str, repository_url: str) -> dict[str, Any]:
     return _checkout_receipt_at(CHECKOUT, revision, repository_url)
 
 
+def _require_workspace_root() -> None:
+    try:
+        info = CHECKOUT.parent.lstat()
+    except OSError as exc:
+        raise PreviewWorkspaceError(
+            503, "preview workspace root is unavailable"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise PreviewWorkspaceError(503, "preview workspace root is unavailable")
+
+
+def _require_import_workspace_root() -> None:
+    if os.environ.get("CLI_SHARED_WORKSPACE_MOUNT") != str(CHECKOUT.parent):
+        raise PreviewWorkspaceError(503, "preview workspace mount is unavailable")
+    _require_workspace_root()
+
+
+def _prepare_source_workspace_root() -> None:
+    # The dedicated source helper can race with its trusted same-UID Playwright
+    # startup process creating /sandbox/work, so EEXIST is benign. No caller-
+    # controlled code runs before this one-shot operation. If that sequencing
+    # changes, convert locking and publication to dir_fd-relative operations.
+    root = CHECKOUT.parent
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise PreviewWorkspaceError(
+            503, "preview workspace root is unavailable"
+        ) from exc
+    _require_workspace_root()
+
+
 @contextmanager
 def _seed_lock() -> Any:
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
@@ -192,17 +226,28 @@ def _seed_lock() -> Any:
         fd = os.open(SEED_LOCK, flags, 0o600)
     except OSError as exc:
         raise PreviewWorkspaceError(
-            409, "preview workspace seed lock is unsafe"
+            503, "preview workspace seed lock is unavailable"
         ) from exc
     try:
-        info = os.fstat(fd)
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            raise PreviewWorkspaceError(
+                503, "preview workspace seed lock is unavailable"
+            ) from exc
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise PreviewWorkspaceError(409, "preview workspace seed lock is unsafe")
+            raise PreviewWorkspaceError(
+                503, "preview workspace seed lock is unavailable"
+            )
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise PreviewWorkspaceError(
                 409, "preview workspace seed is already in progress"
+            ) from exc
+        except OSError as exc:
+            raise PreviewWorkspaceError(
+                503, "preview workspace seed lock is unavailable"
             ) from exc
         yield
     finally:
@@ -217,6 +262,7 @@ def seed_preview_workspace(payload: Any) -> dict[str, Any]:
     _safe_subdir(body["repoSubdir"])
     repository_url = f"https://github.com/{repository}.git"
 
+    _prepare_source_workspace_root()
     if CHECKOUT.exists() or CHECKOUT.is_symlink():
         return _checkout_receipt(revision, repository_url)
 
@@ -449,6 +495,7 @@ def import_preview_workspace_bundle(
     _validate_source_bundle_header(bundle, revision)
     repository_url = f"https://github.com/{repository}.git"
 
+    _require_import_workspace_root()
     if CHECKOUT.exists() or CHECKOUT.is_symlink():
         receipt = _checkout_receipt(revision, repository_url)
         if receipt["fileCount"] != source_file_count:
