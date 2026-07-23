@@ -36,6 +36,32 @@ function packageName(specifier) {
 }
 
 describe("agent-browser production image contract", () => {
+	it("installs and runs local Chrome as the unprivileged runtime user", () => {
+		const dockerfile = source("Dockerfile");
+		const runtimeUser = dockerfile.indexOf("USER node");
+		const browserInstall = dockerfile.indexOf("RUN agent-browser install");
+		const command = dockerfile.indexOf('CMD ["node", "bridge.mjs"]');
+
+		assert.match(
+			dockerfile,
+			/ENV HOME=\/home\/node \\\n\tAGENT_BROWSER_ARGS=--no-sandbox/,
+		);
+		assert.ok(runtimeUser >= 0, "Dockerfile must select the non-root node user");
+		assert.ok(
+			runtimeUser < browserInstall,
+			"Chrome must be installed by the runtime user",
+		);
+		assert.ok(
+			browserInstall < command,
+			"Chrome installation must precede the bridge command",
+		);
+		assert.equal(
+			dockerfile.slice(runtimeUser).match(/^USER /gm)?.length,
+			1,
+			"the image must not switch back to root",
+		);
+	});
+
 	it("copies every local bridge startup module", () => {
 		const copied = copiedFiles();
 		const pending = ["bridge.mjs"];

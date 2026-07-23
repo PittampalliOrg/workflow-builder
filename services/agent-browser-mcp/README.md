@@ -132,6 +132,7 @@ Screenshots and PDFs it takes, plus the automatic video + HAR, land on the run's
 | `PORT` | `8000` | HTTP port for the MCP endpoint |
 | `AGENT_BROWSER_TOOLS` | `core,network,debug,state` | child profiles; record/HAR/state are used only by bridge internals unless their tools are in the curated public set |
 | `AGENT_BROWSER_EXPOSED_TOOLS` | 21 curated tools | comma-separated subset allowed through `tools/list` and `tools/call`; empty restores the curated default |
+| `AGENT_BROWSER_ARGS` | `--no-sandbox` | Chrome launch arguments for the pod-local fallback; the process itself runs as the unprivileged `node` image user |
 | `AGENT_BROWSER_AUTO_CAPTURE` | `video,har` | what the bridge records automatically; empty disables |
 | `AGENT_BROWSER_AUTO_CAPTURE_IDLE_MS` | `300000` | stop+persist recordings after this idle gap (agent abandoned the session) |
 | `WORKFLOW_BUILDER_URL` | in-cluster BFF | fixed artifact and target-auth exchange base URL |

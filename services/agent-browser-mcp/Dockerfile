@@ -28,7 +28,14 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY bridge.mjs browser-lane-policy.mjs browserstation-lease-client.mjs mcp-session-lifecycle.mjs render.mjs target-auth-policy.mjs vision-contract.mjs ./
 
-# Pre-download Chrome for Testing into the image (version-matched to the CLI).
+# Pre-download Chrome for Testing as the same unprivileged user that runs the
+# bridge. agent-browser stores both the browser and its daemon state below
+# $HOME; installing as root would make the local fallback unusable when
+# Kubernetes enforces Restricted Pod Security.
+RUN install -d -o node -g node /home/node/.agent-browser
+ENV HOME=/home/node \
+	AGENT_BROWSER_ARGS=--no-sandbox
+USER node
 RUN agent-browser install
 
 # core = navigation/snapshot/screenshot/interaction; network = HAR; debug = video
