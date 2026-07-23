@@ -31,6 +31,7 @@ describe('allowedSidecarCommands', () => {
 			'contract',
 			'deps',
 			'migrate',
+			'test-drasi',
 			'test-unit'
 		]);
 	});

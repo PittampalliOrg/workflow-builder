@@ -136,7 +136,7 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
     secretEnv: { GITHUB_TOKEN: "not-logged" },
   };
 
-  it("uses the ready target returned by provision without a second wait", async () => {
+  it("uses the ready target returned by provision", async () => {
     const baseUrl = "http://10.244.1.20:8002";
     let expectedSandboxName = "";
     const provision = vi.fn(
@@ -158,7 +158,6 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
         };
       },
     );
-    const wait = vi.fn();
     const destroy = vi.fn(async (name: string) => ({
       name,
       kind: "runtime" as const,
@@ -169,62 +168,69 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
     await expect(
       runOneShotPreviewWorkspaceHelper(request, use, {
         provision,
-        wait,
         destroy,
       }),
     ).resolves.toBe(`used ${baseUrl}`);
 
-    expect(wait).not.toHaveBeenCalled();
     expect(use).toHaveBeenCalledOnce();
     expect(use).toHaveBeenCalledWith(baseUrl);
     expect(destroy).toHaveBeenCalledWith(expectedSandboxName);
   });
 
-  it("waits for readiness when provision does not return a ready target", async () => {
-    const baseUrl = "http://10.244.1.21:8002";
-    let expectedAppId = "";
+  it.each([
+    { label: "queued", status: "queued", baseUrl: undefined },
+    { label: "starting", status: "starting", baseUrl: undefined },
+    {
+      label: "starting with an unusable target",
+      status: "starting",
+      baseUrl: "http://10.244.1.21:8002",
+    },
+    {
+      label: "ready without a validated target",
+      status: "ready",
+      baseUrl: undefined,
+    },
+  ])("fails fast when provision returns $label", async ({ status, baseUrl }) => {
+    let expectedSandboxName = "";
     const provision = vi.fn(
       async (params: {
         sessionId: string;
         provisioningStartedAt?: Date | null;
       }) => {
-        expectedAppId = sessionHostAppId(
+        const agentAppId = sessionHostAppId(
           params.sessionId,
           params.provisioningStartedAt,
         );
+        expectedSandboxName = `agent-host-${agentAppId}`;
         return {
-          agentAppId: expectedAppId,
-          sandboxName: `agent-host-${expectedAppId}`,
-          status: "queued",
+          agentAppId,
+          sandboxName: expectedSandboxName,
+          status,
+          ...(baseUrl ? { baseUrl, podIP: "10.244.1.21" } : {}),
         };
       },
     );
-    const wait = vi.fn(async () => ({
-      ok: true as const,
-      attempts: 2,
-      status: 200,
-      baseUrl,
-      podName: "helper-pod",
-      podIP: "10.244.1.21",
-    }));
     const destroy = vi.fn(async (name: string) => ({
       name,
       kind: "runtime" as const,
       status: "deleted" as const,
     }));
-    const use = vi.fn(async (target: string) => `used ${target}`);
+    const use = vi.fn(async () => "unused");
 
     await expect(
       runOneShotPreviewWorkspaceHelper(request, use, {
         provision,
-        wait,
         destroy,
       }),
-    ).resolves.toBe(`used ${baseUrl}`);
+    ).rejects.toMatchObject({
+      code: "helper-unavailable",
+      status: 503,
+      message: "preview workspace helper did not return a ready target",
+    });
 
-    expect(wait).toHaveBeenCalledOnce();
-    expect(wait).toHaveBeenCalledWith({ agentAppId: expectedAppId });
-    expect(use).toHaveBeenCalledWith(baseUrl);
+    expect(use).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledWith(expectedSandboxName);
   });
 
   it("cleans the expected generation when provisioning throws ambiguously", async () => {
@@ -238,7 +244,6 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
         provision: vi.fn(async () => {
           throw new Error("provision response was lost");
         }),
-        wait: vi.fn(),
         destroy,
       }),
     ).rejects.toThrow("provision response was lost");
@@ -254,7 +259,6 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
       kind: "runtime" as const,
       status: "deleted" as const,
     }));
-    const wait = vi.fn();
     const use = vi.fn(async () => "unused");
     await expect(
       runOneShotPreviewWorkspaceHelper(request, use, {
@@ -265,11 +269,9 @@ describe("runOneShotPreviewWorkspaceHelper", () => {
           baseUrl: "http://10.244.1.99:8002",
           podIP: "10.244.1.99",
         })),
-        wait,
         destroy,
       }),
     ).rejects.toThrow("mismatched identity");
-    expect(wait).not.toHaveBeenCalled();
     expect(use).not.toHaveBeenCalled();
     expect(destroy).toHaveBeenCalledOnce();
     expect(destroy).not.toHaveBeenCalledWith("agent-host-agent-attacker");

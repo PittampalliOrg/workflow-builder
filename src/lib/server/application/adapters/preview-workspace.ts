@@ -22,7 +22,6 @@ import { SandboxExecutionApiSessionSandboxDestroyer } from "$lib/server/applicat
 import {
   maybeProvisionAgentWorkflowHost,
   sessionHostAppId,
-  waitForAgentWorkflowHostAppReady,
 } from "$lib/server/sessions/agent-workflow-host";
 import { localPreviewControlCapability } from "$lib/server/preview-control-capability";
 import type { AgentConfig } from "$lib/types/agents";
@@ -51,7 +50,6 @@ type HelperSessionRunner = <T>(
 
 type HelperLifecycle = Readonly<{
   provision: typeof maybeProvisionAgentWorkflowHost;
-  wait: typeof waitForAgentWorkflowHostAppReady;
   destroy(
     sandboxName: string,
   ): ReturnType<
@@ -63,7 +61,6 @@ function defaultHelperLifecycle(): HelperLifecycle {
   const destroyer = new SandboxExecutionApiSessionSandboxDestroyer();
   return {
     provision: maybeProvisionAgentWorkflowHost,
-    wait: waitForAgentWorkflowHostAppReady,
     destroy: (sandboxName) => destroyer.deleteRuntimeSandbox(sandboxName),
   };
 }
@@ -298,15 +295,14 @@ export async function runOneShotPreviewWorkspaceHelper<T>(
         "preview workspace helper returned a mismatched identity",
       );
     }
-    const baseUrl =
-      provisioned.status === "ready" && provisioned.baseUrl
-        ? provisioned.baseUrl
-        : (
-            await lifecycle.wait({
-              agentAppId: expectedAppId,
-            })
-          ).baseUrl;
-    result = await use(baseUrl);
+    if (provisioned.status !== "ready" || !provisioned.baseUrl) {
+      throw new PreviewWorkspaceGatewayError(
+        "helper-unavailable",
+        503,
+        "preview workspace helper did not return a ready target",
+      );
+    }
+    result = await use(provisioned.baseUrl);
   } catch (cause) {
     failure = cause;
   }
