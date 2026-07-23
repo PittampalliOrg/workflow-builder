@@ -57,7 +57,16 @@ describe("Pydantic AI Kimi K3 preview UI builder seed", () => {
 			"snapshot and draft-PR promotion path",
 		);
 		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
-			"first 30 model iterations",
+			"at most 20 pre-write tool calls",
+		);
+		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
+			"no later than model iteration 45",
+		);
+		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
+			"APPLIED receipt",
+		);
+		expect(PYDANTIC_AI_K3_PREVIEW_UI_BUILDER_SYSTEM_PROMPT).toContain(
+			"SYNCED generation receipt",
 		);
 	});
 
