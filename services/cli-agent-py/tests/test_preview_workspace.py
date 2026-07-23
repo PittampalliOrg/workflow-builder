@@ -194,14 +194,25 @@ def import_payload(bundle: bytes, file_count: int, revision: str) -> dict[str, o
     }
 
 
+def configure_import_workspace(monkeypatch: pytest.MonkeyPatch, checkout: Path) -> None:
+    monkeypatch.setattr(workspace, "CHECKOUT", checkout)
+    monkeypatch.setattr(
+        workspace,
+        "SEED_LOCK",
+        checkout.parent / ".wfb-preview-workspace-seed.lock",
+    )
+    monkeypatch.setenv("CLI_SHARED_WORKSPACE_MOUNT", str(checkout.parent))
+
+
 def test_source_bundle_imports_exact_self_contained_checkout_without_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
-    destination = tmp_path / "imported"
+    workspace_root = tmp_path / "import-work"
+    workspace_root.mkdir()
+    destination = workspace_root / "repo"
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
 
     receipt = workspace.import_preview_workspace_bundle(
         bundle, import_payload(bundle, file_count, revision)
@@ -213,11 +224,14 @@ def test_source_bundle_imports_exact_self_contained_checkout_without_credentials
         f"https://github.com/{workspace.ALLOWED_REPOSITORY}.git"
     )
     assert (destination / ".git").is_dir()
-    assert not list(tmp_path.glob(".wfb-seed-*"))
+    assert not list(workspace_root.glob(".wfb-seed-*"))
 
 
+@pytest.mark.parametrize("preexisting_root", [False, True])
 def test_non_root_source_seed_exports_a_self_contained_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preexisting_root: bool,
 ) -> None:
     origin = tmp_path / "origin.git"
     source = tmp_path / "source"
@@ -236,13 +250,19 @@ def test_non_root_source_seed_exports_a_self_contained_bundle(
     git(source, "push", "-q", "origin", "HEAD:main")
 
     physical_checkout = tmp_path / "physical" / "repo"
-    physical_checkout.parent.mkdir()
+    if preexisting_root:
+        physical_checkout.parent.mkdir()
     monkeypatch.setattr(workspace, "CHECKOUT", physical_checkout)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "physical-seed.lock")
+    monkeypatch.setattr(
+        workspace,
+        "SEED_LOCK",
+        physical_checkout.parent / ".wfb-preview-workspace-seed.lock",
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "test-only")
     real_git = workspace._git
     fetch_calls: list[tuple[str, ...]] = []
     repository_url = f"https://github.com/{workspace.ALLOWED_REPOSITORY}.git"
+    assert physical_checkout.parent.exists() is preexisting_root
 
     def local_source_git(
         args: list[str], cwd: Path, env: dict[str, str] | None = None
@@ -272,13 +292,14 @@ def test_non_root_source_seed_exports_a_self_contained_bundle(
     )
 
     assert seed_receipt == {"reused": False, "fileCount": file_count}
+    assert physical_checkout.parent.is_dir()
+    assert not physical_checkout.parent.is_symlink()
     assert fetch_calls == [("fetch", "-q", "origin", revision)]
     assert git(physical_checkout, "rev-list", "--count", "HEAD") == "2"
 
     monkeypatch.setattr(workspace, "_git", real_git)
     destination = tmp_path / "imported"
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
     receipt = workspace.import_preview_workspace_bundle(
@@ -290,13 +311,171 @@ def test_non_root_source_seed_exports_a_self_contained_bundle(
     subprocess.check_call(["git", "fsck", "--strict", "--no-dangling"], cwd=destination)
 
 
+@pytest.mark.parametrize("root_kind", ["symlink", "file"])
+def test_source_seed_rejects_unsafe_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_kind: str
+) -> None:
+    workspace_root = tmp_path / "work"
+    symlink_target = tmp_path / "symlink-target"
+    if root_kind == "symlink":
+        symlink_target.mkdir()
+        workspace_root.symlink_to(symlink_target, target_is_directory=True)
+    else:
+        workspace_root.write_text("not a directory\n")
+    monkeypatch.setattr(workspace, "CHECKOUT", workspace_root / "repo")
+    monkeypatch.setattr(
+        workspace,
+        "SEED_LOCK",
+        workspace_root / ".wfb-preview-workspace-seed.lock",
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+
+    with pytest.raises(PreviewWorkspaceError, match="preview workspace root") as exc:
+        workspace.seed_preview_workspace(
+            {
+                "repository": workspace.ALLOWED_REPOSITORY,
+                "sourceRevision": "a" * 40,
+                "repoSubdir": ".",
+            }
+        )
+
+    assert exc.value.status == 503
+    assert not workspace.SEED_LOCK.exists()
+    assert not (symlink_target / "repo").exists()
+
+
+def test_source_seed_maps_workspace_root_creation_failure_to_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "work"
+    monkeypatch.setattr(workspace, "CHECKOUT", workspace_root / "repo")
+    monkeypatch.setattr(
+        workspace,
+        "SEED_LOCK",
+        workspace_root / ".wfb-preview-workspace-seed.lock",
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+    real_mkdir = Path.mkdir
+
+    def fail_workspace_root_mkdir(
+        path: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        if path == workspace_root:
+            raise PermissionError("test-only")
+        real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", fail_workspace_root_mkdir)
+
+    with pytest.raises(PreviewWorkspaceError) as exc:
+        workspace.seed_preview_workspace(
+            {
+                "repository": workspace.ALLOWED_REPOSITORY,
+                "sourceRevision": "a" * 40,
+                "repoSubdir": ".",
+            }
+        )
+
+    assert exc.value.status == 503
+    assert str(exc.value) == "preview workspace root is unavailable"
+    assert not workspace_root.exists()
+
+
+@pytest.mark.parametrize("lock_kind", ["symlink", "hardlink"])
+def test_source_seed_maps_unsafe_lock_to_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lock_kind: str
+) -> None:
+    workspace_root = tmp_path / "work"
+    workspace_root.mkdir()
+    lock = workspace_root / ".wfb-preview-workspace-seed.lock"
+    lock_target = workspace_root / "lock-target"
+    lock_target.write_text("test-only\n")
+    if lock_kind == "symlink":
+        lock.symlink_to(lock_target)
+    else:
+        lock.hardlink_to(lock_target)
+    monkeypatch.setattr(workspace, "CHECKOUT", workspace_root / "repo")
+    monkeypatch.setattr(workspace, "SEED_LOCK", lock)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-only")
+
+    with pytest.raises(PreviewWorkspaceError) as exc:
+        workspace.seed_preview_workspace(
+            {
+                "repository": workspace.ALLOWED_REPOSITORY,
+                "sourceRevision": "a" * 40,
+                "repoSubdir": ".",
+            }
+        )
+
+    assert exc.value.status == 503
+    assert str(exc.value) == "preview workspace seed lock is unavailable"
+    assert not workspace.CHECKOUT.exists()
+
+
+@pytest.mark.parametrize("mount_marker", [None, "/sandbox/other"])
+def test_source_bundle_import_requires_server_owned_mount_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mount_marker: str | None,
+) -> None:
+    bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
+    workspace_root = tmp_path / "import-work"
+    workspace_root.mkdir()
+    monkeypatch.setattr(workspace, "CHECKOUT", workspace_root / "repo")
+    monkeypatch.setattr(
+        workspace,
+        "SEED_LOCK",
+        workspace_root / ".wfb-preview-workspace-seed.lock",
+    )
+    if mount_marker is None:
+        monkeypatch.delenv("CLI_SHARED_WORKSPACE_MOUNT", raising=False)
+    else:
+        monkeypatch.setenv("CLI_SHARED_WORKSPACE_MOUNT", mount_marker)
+
+    with pytest.raises(PreviewWorkspaceError) as exc:
+        workspace.import_preview_workspace_bundle(
+            bundle, import_payload(bundle, file_count, revision)
+        )
+
+    assert exc.value.status == 503
+    assert str(exc.value) == "preview workspace mount is unavailable"
+    assert not workspace.CHECKOUT.exists()
+    assert not workspace.SEED_LOCK.exists()
+
+
+@pytest.mark.parametrize("root_kind", ["missing", "symlink", "file"])
+def test_source_bundle_import_requires_existing_plain_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_kind: str
+) -> None:
+    bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
+    workspace_root = tmp_path / f"import-{root_kind}"
+    symlink_target = tmp_path / "import-symlink-target"
+    if root_kind == "symlink":
+        symlink_target.mkdir()
+        workspace_root.symlink_to(symlink_target, target_is_directory=True)
+    elif root_kind == "file":
+        workspace_root.write_text("not a directory\n")
+    configure_import_workspace(monkeypatch, workspace_root / "repo")
+
+    with pytest.raises(PreviewWorkspaceError, match="preview workspace root") as exc:
+        workspace.import_preview_workspace_bundle(
+            bundle, import_payload(bundle, file_count, revision)
+        )
+
+    assert exc.value.status == 503
+    assert not workspace.CHECKOUT.exists()
+    assert not workspace.SEED_LOCK.exists()
+    assert not (symlink_target / "repo").exists()
+
+
 def test_source_bundle_reuse_requires_unchanged_exact_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
     destination = tmp_path / "imported"
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
     request = import_payload(bundle, file_count, revision)
     workspace.import_preview_workspace_bundle(bundle, request)
 
@@ -333,8 +512,7 @@ def test_source_bundle_rejects_prerequisites_and_multiple_refs(
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
     changed = mutate(bundle, revision)  # type: ignore[operator]
-    monkeypatch.setattr(workspace, "CHECKOUT", tmp_path / "imported")
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, tmp_path / "imported")
 
     with pytest.raises(PreviewWorkspaceError, match=match):
         workspace.import_preview_workspace_bundle(
@@ -347,8 +525,7 @@ def test_source_bundle_rejects_digest_size_and_file_count_before_publish(
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
     destination = tmp_path / "imported"
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
     wrong_digest = import_payload(bundle, file_count, revision)
     wrong_digest["bundleSha256"] = f"sha256:{'0' * 64}"
     with pytest.raises(PreviewWorkspaceError, match="receipt is invalid"):
@@ -373,8 +550,7 @@ def test_source_bundle_counts_directories_before_checkout(
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
     destination = tmp_path / "imported"
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
     monkeypatch.setattr(workspace, "MAX_MEMBERS", file_count)
     real_git = workspace._git
     calls: list[tuple[str, ...]] = []
@@ -419,8 +595,7 @@ def test_source_bundle_checks_expanded_bytes_before_checkout(
 ) -> None:
     bundle, file_count, revision = source_bundle(tmp_path, monkeypatch)
     destination = tmp_path / "imported"
-    monkeypatch.setattr(workspace, "CHECKOUT", destination)
-    monkeypatch.setattr(workspace, "SEED_LOCK", tmp_path / "import.lock")
+    configure_import_workspace(monkeypatch, destination)
     monkeypatch.setattr(workspace, "MAX_EXPANDED_BYTES", 1)
     real_git = workspace._git
     calls: list[tuple[str, ...]] = []
