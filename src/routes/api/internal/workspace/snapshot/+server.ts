@@ -25,7 +25,8 @@ function sandboxBaseUrl(): string {
 export const POST: RequestHandler = async ({ request, url }) => {
 	requireInternal(request);
 	const baseUrl = sandboxBaseUrl();
-	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
+	const token =
+		env.SANDBOX_EXECUTION_API_TOKEN ?? process.env.SANDBOX_EXECUTION_API_TOKEN ?? "";
 	const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 
 	const isPrune = url.searchParams.has("prune");
