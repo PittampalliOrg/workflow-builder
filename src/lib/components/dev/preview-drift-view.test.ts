@@ -15,6 +15,7 @@ import {
   driftEntryFor,
   driftSummaryChips,
   latestReceipt,
+  previewCheckpointIndicator,
   pinVersionChip,
   reattachHref,
   receiptsTouchMigrations,
@@ -280,5 +281,30 @@ describe("deep links", () => {
       ],
     });
     expect(latestReceipt(withReceipts)?.prNumber).toBe(2);
+  });
+
+  it("derives a checkpoint indicator from receipts", () => {
+    expect(previewCheckpointIndicator(null)).toEqual({
+      promotedCount: 0,
+      latestPrNumber: null,
+      latestPrUrl: null,
+      latestCapturedAt: null,
+      promoted: false,
+    });
+    const indicator = previewCheckpointIndicator(
+      entry({
+        receipts: [
+          { prNumber: 2, prUrl: "u2", commitSha: "c2", createdAt: "2026-07-17T11:00:00Z" },
+          { prNumber: 1, prUrl: "u1", commitSha: "c1", createdAt: "2026-07-16T11:00:00Z" },
+        ],
+      }),
+    );
+    expect(indicator).toEqual({
+      promotedCount: 2,
+      latestPrNumber: 2,
+      latestPrUrl: "u2",
+      latestCapturedAt: "2026-07-17T11:00:00Z",
+      promoted: true,
+    });
   });
 });
