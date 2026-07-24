@@ -13,6 +13,7 @@ import pytest  # noqa: E402
 from src.openshell_runtime import (  # noqa: E402
     LocalWorkspaceRuntime,
     OpenShellRuntime,
+    effective_sandbox_name,
     new_runtime,
     require_local_runtime_for_shared_workspace,
 )
@@ -53,6 +54,19 @@ def test_non_shared_workspace_never_fails() -> None:
     # Pod-local / non-ws_script sessions are unaffected on either runtime.
     require_local_runtime_for_shared_workspace(OpenShellRuntime(), None)
     require_local_runtime_for_shared_workspace(OpenShellRuntime(), "workspace/other")
+
+
+def test_local_runtime_ignores_any_sandbox_name() -> None:
+    # A stray sandbox name must never route a local-mode session to a remote sandbox.
+    assert effective_sandbox_name(LocalWorkspaceRuntime(), "ws-script-exec-1") == ""
+    assert effective_sandbox_name(LocalWorkspaceRuntime(), "dapr-agent-py-juicefs") == ""
+    assert effective_sandbox_name(LocalWorkspaceRuntime(), None) == ""
+
+
+def test_openshell_runtime_keeps_its_sandbox_name() -> None:
+    assert (
+        effective_sandbox_name(OpenShellRuntime(), "sbx-1") == "sbx-1"
+    )
 
 
 def test_default_cwd_is_local_root(monkeypatch) -> None:
