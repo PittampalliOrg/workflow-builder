@@ -26,6 +26,10 @@ import { connectionBelongsToProject } from "$lib/server/app-connection-scope";
 import { SWEBENCH_SUITES } from "$lib/server/benchmarks/swebench";
 import { generateId } from "$lib/server/utils/id";
 import {
+	resolveFilesBlobRuntime,
+	type FilesBlobRuntime,
+} from "$lib/server/storage/files-blob-backend";
+import {
 	AppConnectionScope,
 	AppConnectionStatus,
 	AppConnectionType,
@@ -6487,7 +6491,16 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 }
 
 export class PostgresWorkflowFileStore implements WorkflowFileStore {
-	constructor(private readonly database: Database = requirePostgresDb()) {}
+	private readonly blob: FilesBlobRuntime;
+
+	constructor(
+		private readonly database: Database = requirePostgresDb(),
+		blob?: FilesBlobRuntime,
+	) {
+		// Lazily resolve the blob backend so a store built without an object store
+		// configured stays byte-identical to the Postgres-only path.
+		this.blob = blob ?? resolveFilesBlobRuntime();
+	}
 
 	async createFile(input: CreateWorkflowFileInput): Promise<{
 		file: WorkflowFileRecord;
@@ -6518,7 +6531,36 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 			}
 		}
 
+		// Every file row owns a unique storage_ref; on the s3 path it is only a
+		// row handle (the bytes live at object_key), on the postgres path it also
+		// keys the file_payloads bytea.
 		const storageRef = `file_${generateId()}`;
+		if (this.blob.backend === "s3" && this.blob.objectStore) {
+			// Content-addressed key (`sha1/<sha1>`) preserves dedup: identical bytes
+			// collapse to one object. Idempotent PUT — a re-write is the same bytes.
+			const objectKey = this.blob.objectKeyForSha1(sha1);
+			await this.blob.objectStore.putObject(objectKey, input.bytes, {
+				contentType: input.contentType ?? undefined,
+			});
+			const [row] = await this.database
+				.insert(files)
+				.values({
+					userId: input.userId,
+					projectId: input.projectId ?? null,
+					name: input.name,
+					purpose: input.purpose,
+					scopeId: input.scopeId ?? null,
+					contentType: input.contentType ?? null,
+					sizeBytes: input.bytes.byteLength,
+					storageRef,
+					storageBackend: "s3",
+					objectKey,
+					sha1,
+				})
+				.returning();
+			return { file: mapWorkflowFile(row), deduplicated: false };
+		}
+
 		await this.database.insert(filePayloads).values({
 			storageRef,
 			payloadBytes: input.bytes,
@@ -6595,6 +6637,18 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
       .where(eq(files.id, id))
       .limit(1);
 		if (!row) return null;
+		// Resolve bytes from the backend the row was written with — old rows keep
+		// reading from Postgres even after the s3 backend is enabled (lazy migration).
+		if (row.storageBackend === "s3" && row.objectKey) {
+			if (!this.blob.objectStore) {
+				throw new Error(
+					`file ${id} is s3-backed but the object store is not configured`,
+				);
+			}
+			const bytes = await this.blob.objectStore.getObject(row.objectKey);
+			if (!bytes) return null;
+			return { summary: mapWorkflowFile(row), bytes };
+		}
 		const [payload] = await this.database
 			.select({ bytes: filePayloads.payloadBytes })
 			.from(filePayloads)
@@ -6615,15 +6669,32 @@ export class PostgresWorkflowFileStore implements WorkflowFileStore {
 
 	async deleteFile(input: { id: string; userId: string }): Promise<boolean> {
 		const [row] = await this.database
-			.select({ storageRef: files.storageRef })
+			.select({
+				storageRef: files.storageRef,
+				storageBackend: files.storageBackend,
+				objectKey: files.objectKey,
+			})
 			.from(files)
 			.where(and(eq(files.id, input.id), eq(files.userId, input.userId)))
 			.limit(1);
 		if (!row) return false;
 		await this.database.delete(files).where(eq(files.id, input.id));
-		await this.database
-			.delete(filePayloads)
-			.where(eq(filePayloads.storageRef, row.storageRef));
+		if (row.storageBackend === "s3" && row.objectKey) {
+			// Content-addressed objects are shared across rows (dedup). Only reclaim
+			// the object when NO other file row still points at the same key.
+			const [survivor] = await this.database
+				.select({ id: files.id })
+				.from(files)
+				.where(eq(files.objectKey, row.objectKey))
+				.limit(1);
+			if (!survivor && this.blob.objectStore) {
+				await this.blob.objectStore.deleteObject(row.objectKey);
+			}
+		} else {
+			await this.database
+				.delete(filePayloads)
+				.where(eq(filePayloads.storageRef, row.storageRef));
+		}
 		return true;
 	}
 }

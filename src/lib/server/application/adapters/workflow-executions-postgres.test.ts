@@ -42,7 +42,8 @@ describe("PostgresWorkflowExecutionRepository status compare-and-set", () => {
 				duration text,
 				stop_requested_at timestamp,
 				stop_requested_mode text,
-				stop_reason text
+				stop_reason text,
+				archived_at timestamp
 			);
 			INSERT INTO workflow_executions (
 				id, workflow_id, user_id, project_id, status, phase, progress,

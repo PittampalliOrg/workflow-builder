@@ -559,6 +559,12 @@ export const workflowExecutions = pgTable(
       "terminate" | "purge" | "reset"
     >(),
     stopReason: text("stop_reason"),
+    // Durability phase 4: set once the archive-on-terminal reconciler has written
+    // this run's durable bundle to object storage (execution row + lineage,
+    // linked session_events, script-call journal, artifact metadata, OTLP spans)
+    // — well before Dapr's 24h workflow-history purge + ClickHouse's ~7d TTL.
+    // NULL = not yet archived (a terminal run is a candidate on the next scan).
+    archivedAt: timestamp("archived_at"),
   },
   (table) => ({
     workflowStartedIdx: index("idx_workflow_executions_workflow_started").on(
@@ -569,6 +575,12 @@ export const workflowExecutions = pgTable(
       table.status,
       table.startedAt,
     ),
+    // Archive-on-terminal scan: terminal runs not yet archived, newest-eligible
+    // first. Partial (archived_at IS NULL) so it stays tiny — an archived run
+    // drops out of the index entirely.
+    archiveScanIdx: index("idx_workflow_executions_archive_scan")
+      .on(table.status, table.completedAt)
+      .where(sql`${table.archivedAt} IS NULL`),
     daprInstanceIdx: index("idx_workflow_executions_dapr_instance").on(
       table.daprInstanceId,
     ),
@@ -914,6 +926,14 @@ export const files = pgTable(
     contentType: text("content_type"),
     sizeBytes: integer("size_bytes").notNull().default(0),
     storageRef: text("storage_ref").notNull(),
+    // Blob offload (durability phase 4): where this file's BYTES live. NULL or
+    // `postgres` = `file_payloads` bytea keyed by `storage_ref` (the original
+    // path); `s3` = an object at `object_key` in the configured object store.
+    // Lazy migration — existing rows stay NULL and keep reading from Postgres.
+    storageBackend: text("storage_backend").$type<"postgres" | "s3">(),
+    // Object key when `storage_backend='s3'` (`sha1/<sha1>`, content-addressed so
+    // dedup collapses identical bytes to one object). NULL for Postgres rows.
+    objectKey: text("object_key"),
     sha1: text("sha1"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     archivedAt: timestamp("archived_at"),
