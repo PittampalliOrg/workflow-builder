@@ -58,7 +58,8 @@
 	import DropTarget from './drop-target.svelte';
 	import ContextMenu from './context-menu.svelte';
 	import ForkDialog from './execution/fork-dialog.svelte';
-	import { forkRun, bareNodeName } from '$lib/workflows/fork';
+	import { forkRun, bareNodeName, type ForkMode } from '$lib/workflows/fork';
+	import { buildForkSteps } from '$lib/utils/fork-steps';
 	import CommandPalette from './command-palette.svelte';
 	import ExecutionDemo from './execution-demo.svelte';
 	import ExecutionTracker from './execution-tracker.svelte';
@@ -297,13 +298,12 @@
 	);
 	let forkDialogOpen = $state(false);
 	let forkNode = $state<string | null>(null);
+	let forkMode = $state<ForkMode>('fork');
 	let forkBusy = $state(false);
 	let forkError = $state<string | null>(null);
-	const forkSplit = $derived.by(() => {
-		const idx = forkNode ? forkNodeNames.indexOf(forkNode) : -1;
-		if (idx < 0) return { skipped: [] as string[], rerun: forkNodeNames };
-		return { skipped: forkNodeNames.slice(0, idx), rerun: forkNodeNames.slice(idx) };
-	});
+	// Forkable steps for the dialog picker. The canvas has no per-call usage, so the
+	// reuse summary degrades to a step count.
+	const forkSteps = $derived(buildForkSteps(forkNodeNames, null, null));
 
 	function handleForkFromNode(event: Event) {
 		const detail = (event as CustomEvent).detail as { nodeId: string };
@@ -312,6 +312,7 @@
 			return;
 		}
 		forkNode = bareNodeName(detail.nodeId) ?? null;
+		forkMode = 'fork';
 		forkError = null;
 		forkDialogOpen = true;
 	}
@@ -345,7 +346,7 @@
 					store.isSaving = false;
 				}
 			}
-			const r = await forkRun(source, forkNode);
+			const r = await forkRun(source, forkNode, forkMode);
 			if (!r.ok || !r.executionId) {
 				forkError = r.error ?? 'Fork failed';
 				return;
@@ -580,9 +581,9 @@
 <ForkDialog
 	bind:open={forkDialogOpen}
 	verb="Fork"
-	effectiveNode={forkNode}
-	skipped={forkSplit.skipped}
-	rerun={forkSplit.rerun}
+	steps={forkSteps}
+	bind:selectedStepId={forkNode}
+	bind:mode={forkMode}
 	busy={forkBusy}
 	error={forkError}
 	onConfirm={confirmFork}

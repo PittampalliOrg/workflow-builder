@@ -204,6 +204,12 @@ export type WorkflowExecutionListItem = {
 	startedAt: Date;
 	completedAt: Date | null;
 	duration: string | null;
+	// Fork/reproduce provenance — lets list rows render the shared provenance chips
+	// without an extra per-row detail fetch.
+	triggerSource?: string | null;
+	rerunOfExecutionId?: string | null;
+	resumeFromNode?: string | null;
+	seedWorkspaceFrom?: string | null;
 	input?: Record<string, unknown> | null;
 	output?: unknown;
 };
