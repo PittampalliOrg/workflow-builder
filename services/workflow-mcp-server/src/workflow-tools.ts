@@ -69,7 +69,6 @@ const WORKFLOW_TOOL_SCOPES: Record<string, WorkflowMcpScope> = {
   create_agent: "agent:write",
   execute_workflow: "workflow:execute",
   get_execution_status: "workflow:read",
-  get_execution_results: "workflow:read",
 };
 
 function scopedToolServer(
@@ -598,63 +597,6 @@ export function registerWorkflowTools(
 	tools.push({
 		name: "get_execution_status",
 		description: "Poll workflow execution status through the BFF",
-	});
-
-	// ── get_execution_results ─────────────────────────────
-  (toolServer as any).registerTool(
-		"get_execution_results",
-		{
-			title: "Get Execution Results",
-			description:
-				"Get per-node execution results with input/output data for a completed workflow run. Accepts execution_id or the legacy Dapr instance_id.",
-			inputSchema: {
-				execution_id: z
-					.string()
-					.optional()
-					.describe("workflow_executions.id from execute_workflow"),
-				instance_id: z
-					.string()
-					.optional()
-					.describe("Legacy Dapr workflow instanceId"),
-				target: targetInput,
-			},
-		},
-		async (args: {
-			execution_id?: string;
-			instance_id?: string;
-			target?: string;
-		}) => {
-			try {
-        const actor = requirePrincipal(principal);
-        if (!actor) {
-          return errorResult(
-            "Workspace authentication is required. Call get_workflow_context for setup guidance.",
-          );
-        }
-				const proxied = await proxyTargetTool(
-					"get_execution_results",
-					args as Record<string, unknown>,
-          actor,
-				);
-				if (proxied) return proxied;
-				const ref = resolveExecutionRef(args);
-				if (!ref) {
-					return errorResult("Provide execution_id or instance_id.");
-				}
-        const execution = await persistence.findExecution(ref, actor.projectId);
-				if (!execution) {
-					return errorResult(`Execution not found for "${ref}"`);
-				}
-        const logs = await persistence.listExecutionLogs(execution.id);
-				return textResult({ execution, logs });
-			} catch (err) {
-				return errorResult(`Failed to get execution results: ${err}`);
-			}
-		},
-	);
-	tools.push({
-		name: "get_execution_results",
-		description: "Get per-node execution results",
 	});
 
 	return tools;
