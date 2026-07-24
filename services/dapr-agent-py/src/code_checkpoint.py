@@ -310,13 +310,18 @@ CHECKPOINT_SCRIPT = dedent(
         return truncated, total
 
     def add_no_proxy_hosts():
+        # Legacy direct-DNS gitea entries only. Deliberately NO generic
+        # ".svc"/".svc.cluster.local" wildcards: sandbox egress is
+        # proxy-only (direct DNS + connections to cluster services are
+        # blocked by the OpenShell policy proxy), so the in-cluster
+        # checkpoint-git remote MUST route through the proxy allowlist —
+        # a .svc no_proxy wildcard forces a direct connection that can
+        # never resolve.
         hosts = [
             "gitea-http",
             "gitea-http.gitea",
             "gitea-http.gitea.svc",
             "gitea-http.gitea.svc.cluster.local",
-            ".svc",
-            ".svc.cluster.local",
         ]
         existing = []
         for key in ("no_proxy", "NO_PROXY"):
@@ -820,13 +825,18 @@ RESTORE_SCRIPT = dedent(
     os.environ.setdefault("GIT_SSL_NO_VERIFY", "true")
 
     def add_no_proxy_hosts():
+        # Legacy direct-DNS gitea entries only. Deliberately NO generic
+        # ".svc"/".svc.cluster.local" wildcards: sandbox egress is
+        # proxy-only (direct DNS + connections to cluster services are
+        # blocked by the OpenShell policy proxy), so the in-cluster
+        # checkpoint-git remote MUST route through the proxy allowlist —
+        # a .svc no_proxy wildcard forces a direct connection that can
+        # never resolve.
         hosts = [
             "gitea-http",
             "gitea-http.gitea",
             "gitea-http.gitea.svc",
             "gitea-http.gitea.svc.cluster.local",
-            ".svc",
-            ".svc.cluster.local",
         ]
         existing = []
         for key in ("no_proxy", "NO_PROXY"):
