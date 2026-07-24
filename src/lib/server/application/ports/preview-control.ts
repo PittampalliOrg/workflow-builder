@@ -116,6 +116,9 @@ export interface PreviewControlSourceAuthorityPort {
   authorizeRuntimeTuple(
     input: PreviewControlIdentity,
   ): Promise<AuthorizedPreviewControlSource>;
+  authorizeReadTuple(
+    input: PreviewControlIdentity,
+  ): Promise<AuthorizedPreviewControlSource>;
   authorizeCurrent(
     input: Readonly<{
       previewName: string;

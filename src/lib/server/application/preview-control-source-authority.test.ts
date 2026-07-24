@@ -219,6 +219,43 @@ describe("ApplicationPreviewControlSourceAuthorityService", () => {
     });
   });
 
+  it("keeps a retained preview readable after the current catalog rotates", async () => {
+    const historicalDigest = `sha256:${"d".repeat(64)}` as const;
+    const h = harness({ catalogDigest: historicalDigest });
+    const historicalIdentity = {
+      previewName: input.previewName,
+      environmentRequestId: input.environmentRequestId,
+      environmentPlatformRevision: input.environmentPlatformRevision,
+      environmentSourceRevision: input.environmentSourceRevision,
+      catalogDigest: historicalDigest,
+    };
+
+    await expect(
+      h.service.authorizeRuntimeTuple(historicalIdentity),
+    ).rejects.toMatchObject({ code: "contract-mismatch" });
+    await expect(
+      h.service.authorizeReadTuple(historicalIdentity),
+    ).resolves.toMatchObject({
+      previewName: input.previewName,
+      catalogDigest: historicalDigest,
+      services: ["function-router", "workflow-builder"],
+    });
+  });
+
+  it("rejects a read request for a different retained catalog generation", async () => {
+    const h = harness();
+
+    await expect(
+      h.service.authorizeReadTuple({
+        previewName: input.previewName,
+        environmentRequestId: input.environmentRequestId,
+        environmentPlatformRevision: input.environmentPlatformRevision,
+        environmentSourceRevision: input.environmentSourceRevision,
+        catalogDigest: `sha256:${"d".repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({ code: "contract-mismatch" });
+  });
+
   it("rejects a trace request for a different immutable generation", async () => {
     const h = harness({
       ready: false,

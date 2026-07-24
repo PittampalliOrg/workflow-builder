@@ -194,10 +194,16 @@ export class ApplicationPreviewArchiveService implements PreviewArchivePort {
 			};
 		}
 
-		const list = await this.deps.proxy.listExecutions({
+		const executionListInput = {
 			target,
 			limit: this.deps.executionLimit ?? DEFAULT_EXECUTION_LIMIT
-		});
+		};
+		let list = await this.deps.proxy.listExecutions(executionListInput);
+		// One bounded retry absorbs the observed transient broker/preview timeout.
+		// Authorization and contract failures remain single-attempt and fail closed.
+		if (!list.ok && list.reason === 'unreachable' && Date.now() <= deadline) {
+			list = await this.deps.proxy.listExecutions(executionListInput);
+		}
 		if (!list.ok) {
 			return {
 				archived: false,
