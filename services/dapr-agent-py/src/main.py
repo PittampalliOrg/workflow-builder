@@ -114,6 +114,7 @@ from src.openshell_runtime import (
     DEFAULT_CWD,
     OpenShellRuntime,
     bind_runtime,
+    effective_sandbox_name,
     get_runtime,
     new_runtime,
     require_local_runtime_for_shared_workspace,
@@ -4399,6 +4400,16 @@ class OpenShellDurableAgent(DurableAgent):
             runtime,
             message.get("workspaceRef") or metadata.get("workspace_ref"),
         )
+        # LocalWorkspaceRuntime runs tools in-pod against the CSI mount, so drop any
+        # sandbox name (a stray one must never route the agent to a remote OpenShell
+        # sandbox where its writes would be lost).
+        _effective_sandbox = effective_sandbox_name(runtime, sandbox_name)
+        if _effective_sandbox != sandbox_name:
+            logger.info(
+                "[workspace] local mode: ignoring sandbox %r (tools run in-pod)",
+                sandbox_name,
+            )
+        sandbox_name = _effective_sandbox
         runtime.set_sandbox_name(sandbox_name)
         # When a workflow node supplies cwd, honor it for both modes. Otherwise
         # let each runtime keep its own default (openshell → /sandbox; local →
