@@ -122,6 +122,8 @@
 		eventType,
 		mergeTimelineEvents
 	} from '$lib/utils/execution-timeline';
+	import { injectCheckpointMarkers } from '$lib/utils/checkpoint-timeline';
+	import { checkpointGitChangeLabel, checkpointLineDelta } from '$lib/utils/code-checkpoints';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
 	import EndNode from '$lib/components/workflow/nodes/sw/end-node.svelte';
@@ -1210,6 +1212,15 @@
 		return false;
 	}
 	let timelineItems = $derived(allTimelineItems.filter((item) => itemMatchesFilter(item, timelineFilter)));
+	// Interleave code-checkpoint markers into the rendered feed. Markers select the
+	// checkpoint in the Code tab on click; they ride alongside the current filter.
+	let timelineEntries = $derived(injectCheckpointMarkers(timelineItems, codeCheckpoints));
+
+	// Jump from a Timeline checkpoint marker to that checkpoint in the Code tab.
+	function openCheckpointInCodeTab(checkpointId: string) {
+		selectedCodeCheckpointId = checkpointId;
+		activeTab = 'code';
+	}
 
 	// Turn outline — each `llm_complete` / `agent.message` marks a turn
 	// boundary. We collect per-turn context (assistant preview + tools used in
@@ -2700,14 +2711,38 @@
 							</div>
 						</div>
 					{/if}
-					{#if timelineItems.length > 0}
+					{#if timelineEntries.length > 0}
 						<ChatContainerContent class="w-full max-w-none divide-y divide-border/60 rounded-lg border bg-card/40 shadow-sm">
-							{#each timelineItems as item, i (item.key)}
-								{@const turnAnchor = turnNav.byKey.get(item.key)}
-								<div
-									class="px-4 py-3 md:px-5"
-									data-turn-anchor={turnAnchor ?? undefined}
-								>
+							{#each timelineEntries as entry (entry.key)}
+								{#if entry.kind === 'checkpoint'}
+									{@const cp = entry.checkpoint}
+									{@const delta = checkpointLineDelta(cp)}
+									<div class="px-4 py-2 md:px-5">
+										<button
+											type="button"
+											onclick={() => openCheckpointInCodeTab(cp.id)}
+											class="flex w-full items-center gap-2 rounded-md border border-violet-500/25 bg-violet-500/5 px-3 py-1.5 text-left text-xs transition-colors hover:bg-violet-500/10"
+											title="Open this checkpoint in the Code tab"
+										>
+											<Camera class="size-3.5 shrink-0 text-violet-500" />
+											<span class="font-medium text-foreground">Checkpoint</span>
+											<code class="min-w-0 truncate text-muted-foreground">{cp.toolName}</code>
+											{#if cp.status === 'error'}
+												<span class="ml-auto shrink-0 rounded bg-red-500/10 px-1.5 py-0.5 font-mono text-[10px] text-red-500">error</span>
+											{:else if delta.additions > 0 || delta.deletions > 0}
+												<span class="ml-auto shrink-0 font-mono text-[10px]"><span class="text-emerald-600 dark:text-emerald-400">+{delta.additions}</span> <span class="text-red-600 dark:text-red-400">-{delta.deletions}</span></span>
+											{:else if checkpointGitChangeLabel(cp)}
+												<span class="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{checkpointGitChangeLabel(cp)}</span>
+											{/if}
+										</button>
+									</div>
+								{:else}
+									{@const item = entry.item}
+									{@const turnAnchor = turnNav.byKey.get(item.key)}
+									<div
+										class="px-4 py-3 md:px-5"
+										data-turn-anchor={turnAnchor ?? undefined}
+									>
 								{#if item.kind === 'tool'}
 									<div class="flex flex-col gap-2">
 										<ToolEventRenderer
@@ -2738,7 +2773,8 @@
 								{:else}
 									<EventRenderer event={item.event} variant="card" {agentModel} />
 								{/if}
-								</div>
+									</div>
+								{/if}
 							{/each}
 							{#if isRunning}
 								<div class="px-4 py-3 md:px-5">
