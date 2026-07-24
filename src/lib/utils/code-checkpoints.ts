@@ -150,17 +150,48 @@ export function resolveCheckpointStepId(checkpoint: CodeCheckpoint): string | nu
 	return raw.includes('/') ? (raw.split('/').filter(Boolean).pop() ?? raw) : raw;
 }
 
-/** Whether a checkpoint belongs to the given session (linkage-aware; permissive). */
+export type CheckpointSessionFilter = {
+	sessionId?: string | null;
+	sandboxName?: string | null;
+};
+
+/** True when the filter selects nothing (no session/sandbox to scope by). */
+export function isEmptySessionFilter(filter: CheckpointSessionFilter | null | undefined): boolean {
+	return !filter || (!filter.sessionId && !filter.sandboxName);
+}
+
+/**
+ * Whether a checkpoint belongs to the session described by `filter` — matched by
+ * explicit session id or by sandbox name (sessions and their sandboxes are 1:1).
+ * Checkpoints carrying neither identifier never match a non-empty filter.
+ */
 export function checkpointMatchesSession(
 	checkpoint: CodeCheckpoint,
-	sessionId: string | null | undefined
+	filter: CheckpointSessionFilter | null | undefined
 ): boolean {
-	if (!sessionId) return true;
-	// Prefer the explicit session linkage; fall back to sandbox name (sessions and
-	// their sandboxes are 1:1 in practice) so older rows still filter sensibly.
-	if (checkpoint.sessionId) return checkpoint.sessionId === sessionId;
-	if (checkpoint.sandboxName) return checkpoint.sandboxName === sessionId;
+	if (isEmptySessionFilter(filter)) return true;
+	if (filter!.sessionId && checkpoint.sessionId && checkpoint.sessionId === filter!.sessionId) {
+		return true;
+	}
+	if (filter!.sandboxName && checkpoint.sandboxName && checkpoint.sandboxName === filter!.sandboxName) {
+		return true;
+	}
 	return false;
+}
+
+/**
+ * Apply a session filter to a checkpoint list. When the filter is empty, or when
+ * NO checkpoint in the set carries any session/sandbox linkage (older rows), the
+ * full list is returned so the panel degrades to "show all" rather than blank.
+ */
+export function filterCheckpointsForSession(
+	checkpoints: CodeCheckpoint[],
+	filter: CheckpointSessionFilter | null | undefined
+): CodeCheckpoint[] {
+	if (isEmptySessionFilter(filter)) return checkpoints;
+	const anyLinkage = checkpoints.some((c) => c.sessionId || c.sandboxName);
+	if (!anyLinkage) return checkpoints;
+	return checkpoints.filter((c) => checkpointMatchesSession(c, filter));
 }
 
 export async function readApiError(response: Response, fallback: string): Promise<string> {

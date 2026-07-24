@@ -50,6 +50,8 @@
 	import SessionPulse from '$lib/components/sessions/session-pulse.svelte';
 	import SessionResourcesPanel from '$lib/components/sessions/session-resources-panel.svelte';
 	import SessionOutputsPanel from '$lib/components/sessions/session-outputs-panel.svelte';
+	import CodeCheckpointsPanel from '$lib/components/workflow/execution/code-checkpoints-panel.svelte';
+	import { fetchCodeCheckpoints, type CodeCheckpoint } from '$lib/utils/code-checkpoints';
 	import SessionCapacityCard from '$lib/components/capacity/session-capacity-card.svelte';
 	import BrowserStatePanel from '$lib/components/sessions/browser-state-panel.svelte';
 	import PodShellPanel from '$lib/components/sessions/pod-shell-panel.svelte';
@@ -428,6 +430,39 @@
 	const primarySandboxName = $derived(
 		session?.runtimeSandboxName ?? session?.workspaceSandboxName ?? session?.sandboxName ?? null
 	);
+
+	// Code & Changes: the parent execution's git checkpoints, filtered to this
+	// session's work. Collapsible + lazy — only fetched when the panel is opened.
+	let codePanelOpen = $state(false);
+	let sessionCheckpoints = $state<CodeCheckpoint[]>([]);
+	let sessionCheckpointsLoaded = $state(false);
+	let sessionCheckpointsLoading = $state(false);
+	let sessionCheckpointsError = $state<string | null>(null);
+	let selectedSessionCheckpointId = $state<string | null>(null);
+	const sessionRunExecutionId = $derived(session?.workflowExecutionId ?? null);
+	const sessionCodeTabHref = $derived(
+		session?.workflowId && sessionRunExecutionId
+			? `/workspaces/${slug}/workflows/${session.workflowId}/runs/${sessionRunExecutionId}?tab=code`
+			: null
+	);
+	async function loadSessionCheckpoints(force = false): Promise<void> {
+		const execId = sessionRunExecutionId;
+		if (!execId) return;
+		if (sessionCheckpointsLoaded && !force) return;
+		sessionCheckpointsLoading = true;
+		sessionCheckpointsError = null;
+		try {
+			sessionCheckpoints = await fetchCodeCheckpoints(execId);
+			sessionCheckpointsLoaded = true;
+		} catch (err) {
+			sessionCheckpointsError = err instanceof Error ? err.message : 'Failed to load checkpoints';
+		} finally {
+			sessionCheckpointsLoading = false;
+		}
+	}
+	$effect(() => {
+		if (codePanelOpen && !sessionCheckpointsLoaded) void loadSessionCheckpoints();
+	});
 	const hasDestroyableSessionSandbox = $derived(
 		Boolean(session?.runtimeSandboxName || session?.workspaceSandboxName)
 	);
@@ -1401,6 +1436,39 @@
 			workflowId={workflowRunContext.workflowId}
 			highlightNode={sessionNodeLabel}
 		/>
+
+		<!-- Code & Changes: the parent run's git checkpoints, scoped to this session.
+		     Collapsible + lazy so the transcript stays the focus by default. -->
+		<div class="border-b">
+			<button
+				type="button"
+				onclick={() => (codePanelOpen = !codePanelOpen)}
+				class="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-medium text-muted-foreground hover:bg-muted/40"
+			>
+				<Code2 class="size-3.5" />
+				<span>Code &amp; Changes</span>
+				{#if sessionCheckpointsLoaded && sessionCheckpoints.length > 0}
+					<span class="rounded bg-muted px-1.5 py-0.5 text-[10px] tabular-nums">{sessionCheckpoints.length}</span>
+				{/if}
+				<ChevronDown class="ml-auto size-4 transition-transform {codePanelOpen ? 'rotate-180' : ''}" />
+			</button>
+			{#if codePanelOpen}
+				<div class="h-[28rem] border-t px-4 py-3">
+					<CodeCheckpointsPanel
+						executionId={workflowRunContext.executionId}
+						checkpoints={sessionCheckpoints}
+						loading={sessionCheckpointsLoading}
+						error={sessionCheckpointsError}
+						onRefresh={() => loadSessionCheckpoints(true)}
+						bind:selectedCheckpointId={selectedSessionCheckpointId}
+						sessionFilter={{ sessionId, sandboxName: primarySandboxName }}
+						activeSandboxName={primarySandboxName}
+						runHref={sessionCodeTabHref}
+						compact
+					/>
+				</div>
+			{/if}
+		</div>
 	{/if}
 
 	<!-- Title + inline metadata pill row. Matches CMA: session id (big),

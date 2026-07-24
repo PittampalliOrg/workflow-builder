@@ -6,6 +6,7 @@ import {
 	checkpointMatchesSession,
 	checkpointRemoteLabel,
 	checkpointShaRange,
+	filterCheckpointsForSession,
 	resolveCheckpointStepId,
 	shortSha,
 	type CodeCheckpoint
@@ -107,17 +108,41 @@ describe('resolveCheckpointStepId', () => {
 });
 
 describe('checkpointMatchesSession', () => {
-	it('matches by explicit session id when present', () => {
-		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: 's1' }), 's1')).toBe(true);
-		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: 's1' }), 's2')).toBe(false);
+	it('matches by explicit session id', () => {
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: 's1' }), { sessionId: 's1' })).toBe(true);
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: 's1' }), { sessionId: 's2' })).toBe(false);
 	});
 
-	it('falls back to sandbox name when no session id', () => {
-		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: 's1' }), 's1')).toBe(true);
-		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: 'other' }), 's1')).toBe(false);
+	it('matches by sandbox name', () => {
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: 'box' }), { sandboxName: 'box' })).toBe(true);
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: 'other' }), { sandboxName: 'box' })).toBe(false);
 	});
 
-	it('returns all when no session filter is given', () => {
+	it('matches on either identifier and returns all for an empty filter', () => {
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: 's1', sandboxName: 'box' }), { sessionId: 'x', sandboxName: 'box' })).toBe(true);
 		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: null }), null)).toBe(true);
+		expect(checkpointMatchesSession(makeCheckpoint({ sessionId: null, sandboxName: null }), {})).toBe(true);
+	});
+});
+
+describe('filterCheckpointsForSession', () => {
+	const withLinkage = makeCheckpoint({ id: 'a', sessionId: 's1', sandboxName: 'box-s1' });
+	const otherSession = makeCheckpoint({ id: 'b', sessionId: 's2', sandboxName: 'box-s2' });
+
+	it('filters to the matching session when linkage exists', () => {
+		const out = filterCheckpointsForSession([withLinkage, otherSession], { sessionId: 's1' });
+		expect(out.map((c) => c.id)).toEqual(['a']);
+	});
+
+	it('shows all when no checkpoint carries linkage (older rows)', () => {
+		const bare = [
+			makeCheckpoint({ id: 'a', sessionId: null, sandboxName: null }),
+			makeCheckpoint({ id: 'b', sessionId: null, sandboxName: null })
+		];
+		expect(filterCheckpointsForSession(bare, { sessionId: 's1' }).map((c) => c.id)).toEqual(['a', 'b']);
+	});
+
+	it('shows all for an empty filter', () => {
+		expect(filterCheckpointsForSession([withLinkage, otherSession], null)).toHaveLength(2);
 	});
 });

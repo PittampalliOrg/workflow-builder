@@ -17,17 +17,17 @@
 	import { stripDiffStatPreamble } from '$lib/utils/unified-diff';
 	import {
 		type CodeCheckpoint,
-		type CodeCheckpointFile,
+		type CheckpointSessionFilter,
 		checkpointFilePath,
 		checkpointFileStatusLabel,
 		checkpointFileSummary,
 		checkpointGitChangeLabel,
 		checkpointGitRemoteLabel,
 		checkpointIsDurable,
-		checkpointMatchesSession,
 		checkpointRemoteLabel,
 		checkpointShaRange,
 		checkpointShouldShowRemoteError,
+		filterCheckpointsForSession,
 		fetchCheckpointDiff,
 		restoreCheckpointToSandbox,
 		shortSha
@@ -47,7 +47,7 @@
 		/** When set, renders "Fork from this checkpoint" and hands the checkpoint back. */
 		onForkCheckpoint?: ((checkpoint: CodeCheckpoint) => void) | null;
 		/** When set, filters checkpoints to a single session (session-detail panel). */
-		sessionFilter?: string | null;
+		sessionFilter?: CheckpointSessionFilter | null;
 		/** When set, renders an "Open in run page → Code tab" cross-link. */
 		runHref?: string | null;
 		/** Compact chrome (drop the header row) for embedding in a session panel. */
@@ -68,9 +68,7 @@
 		compact = false
 	}: Props = $props();
 
-	const visibleCheckpoints = $derived(
-		checkpoints.filter((checkpoint) => checkpointMatchesSession(checkpoint, sessionFilter))
-	);
+	const visibleCheckpoints = $derived(filterCheckpointsForSession(checkpoints, sessionFilter));
 	const changeCount = $derived(
 		visibleCheckpoints.filter((checkpoint) => checkpoint.status === 'created').length
 	);

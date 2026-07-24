@@ -302,7 +302,18 @@
 	let previewActionError = $state<string | null>(null);
 
 	// Active tab — the unified Live console (run-console) is the default landing.
-	let activeTab = $state('overview');
+	// A `?tab=<name>` deep link (e.g. the session page's "Open in run page → Code
+	// tab") lands directly on that tab when it is a known tab.
+	const DEEP_LINK_TABS = new Set([
+		'overview', 'outputs', 'changes', 'timeline', 'canvas', 'code', 'plan',
+		'agents', 'browser', 'files', 'preview', 'graph', 'trace'
+	]);
+	let activeTab = $state(
+		(() => {
+			const t = page.url.searchParams.get('tab');
+			return t && DEEP_LINK_TABS.has(t) ? t : 'overview';
+		})()
+	);
 	// Deep-link from the canvas launchpad: `?node=<name>` focuses that node's activity
 	// in the run console (review mode lands on the node you clicked).
 	const deepLinkNode = $derived(page.url.searchParams.get('node'));
@@ -970,7 +981,7 @@
 			activeTab === 'steps' ||
 			(activeTab === 'agents' && !hasAgentsTab) ||
 			(activeTab === 'browser' && !hasBrowserTab) ||
-			(activeTab === 'code' && !hasCodeTab) ||
+			(activeTab === 'code' && codeCheckpointsLoaded && !hasCodeTab) ||
 			(activeTab === 'plan' && !hasPlanTab) ||
 			(activeTab === 'changes' && !hasChangesTab) ||
 			(activeTab === 'preview' && !hasPreviewTab) ||
