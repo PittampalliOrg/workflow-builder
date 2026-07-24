@@ -667,6 +667,23 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
     );
   });
 
+  it("passes sharedWorkspaceKey to the host for a juicefs runtime with a shared workspaceRef", async () => {
+    // Regression for the dynamic-script isolation:'shared' drop: a juicefs-shared
+    // runtime dispatched with workspaceRef=ws_script_<exec> MUST provision a
+    // dedicated host carrying that sharedWorkspaceKey (→ SEA mounts the CSI subPath).
+    await callEnsureForWorkflow({
+      runtime: "dapr-agent-py-juicefs",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+      body: { workspaceRef: "ws_script_exec-1" },
+    });
+
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+      expect.objectContaining({ sharedWorkspaceKey: "ws_script_exec-1" }),
+    );
+  });
+
   it("keeps a newly published host queued until post-activation readiness is proven", async () => {
     mocks.sessionRuntimeHostRecovery.ensurePublished.mockResolvedValueOnce({
       recovered: false,
@@ -1218,6 +1235,57 @@ describe("ensure-for-workflow interactive CLI dispatch", () => {
 		expect(payload.agentId).toBe("agent-existing");
 		expect(payload.agentVersion).toBe(7);
 	});
+
+  it("passes sharedWorkspaceKey for a dynamic-script named saved agent on the juicefs runtime", async () => {
+    // The live bug: a dynamic-script agent({agent:'ui-proof-kimi-juicefs',
+    // isolation:'shared'}) resolved the saved agent (runtime dapr-agent-py-juicefs)
+    // onto a dedicated host but WITHOUT sharedWorkspaceKey → no CSI mount → empty
+    // ws_script_. Assert the resolved-slug path carries the key end to end.
+    mocks.teamStore.resolveAgentIdBySlug.mockResolvedValueOnce({
+      id: "agent-juicefs",
+    });
+    mocks.workflowData.resolveSessionAgentByRef.mockResolvedValueOnce({
+      id: "agent-juicefs",
+      name: "UI proof kimi juicefs",
+      slug: "ui-proof-kimi-juicefs",
+      version: 3,
+      config: {
+        runtime: "dapr-agent-py-juicefs",
+        modelSpec: "kimi/kimi-k3",
+        builtinTools: [],
+        mcpConnectionMode: "explicit",
+        mcpServers: [],
+        skills: [],
+        runtimeOverridePolicy: RUNTIME_POLICY,
+      },
+      projectId: "project-1",
+      runtime: "dapr-agent-py-juicefs",
+      runtimeAppId: null,
+      mlflowModelVersion: null,
+      mlflowModelName: null,
+      mlflowUri: null,
+    });
+
+    await callEnsureForWorkflow({
+      runtime: "dapr-agent-py-juicefs",
+      modelSpec: "kimi/kimi-k3",
+      provider: "kimi",
+      token: "kimi-test-token",
+      body: {
+        workflowExecutionId: "execution-1",
+        resolveAgentSlug: "ui-proof-kimi-juicefs",
+        agentSlug: "ui-proof-kimi-juicefs",
+        workspaceRef: "ws_script_exec-1",
+      },
+    });
+
+    expect(mocks.maybeProvisionAgentWorkflowHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sharedWorkspaceKey: "ws_script_exec-1",
+        agentConfig: expect.objectContaining({ runtime: "dapr-agent-py-juicefs" }),
+      }),
+    );
+  });
 
   it("replays a lost response from the exact saved-agent version after latest advances", async () => {
     mocks.workflowData.getWorkflowEnsureSession.mockResolvedValueOnce({
