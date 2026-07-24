@@ -1045,8 +1045,10 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	});
 
 	function dynamicScriptService(
-		scriptCalls: { listInternal: ReturnType<typeof vi.fn> },
-		workspaceSnapshots: { listSnapshots: ReturnType<typeof vi.fn> },
+		scriptCalls: {
+			listInternal: (id: string) => Promise<Array<{ callId: string; status: string }>>;
+		},
+		workspaceSnapshots: { listSnapshots: (key: string) => Promise<string[]> },
 	) {
 		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
 			executionRecord({
