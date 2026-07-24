@@ -19,16 +19,27 @@ export function bareNodeName(nodeId: string | null | undefined): string | undefi
 	return nodeId.includes('/') ? (nodeId.split('/').filter(Boolean).pop() ?? nodeId) : nodeId;
 }
 
+/**
+ * Replay intent. Both call the same resume endpoint; `reproduce` re-runs the
+ * selected suffix unchanged (deterministic baseline), `fork` iterates on the
+ * current — possibly edited — spec. The mode is advisory metadata on the request
+ * (the server labels the run when it persists a trigger source).
+ */
+export type ForkMode = 'fork' | 'reproduce';
+
 export async function forkRun(
 	sourceExecutionId: string,
-	fromNodeId?: string | null
+	fromNodeId?: string | null,
+	mode: ForkMode = 'fork'
 ): Promise<ForkResult> {
 	const node = bareNodeName(fromNodeId);
 	try {
+		const body: Record<string, unknown> = { mode };
+		if (node) body.fromNodeId = node;
 		const res = await fetch(`/api/workflows/executions/${sourceExecutionId}/resume`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(node ? { fromNodeId: node } : {})
+			body: JSON.stringify(body)
 		});
 		const b = (await res.json().catch(() => ({}))) as {
 			ok?: boolean;

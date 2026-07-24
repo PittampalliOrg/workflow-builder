@@ -52,7 +52,8 @@
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import ForkSpecDiff from '$lib/components/workflow/execution/fork-spec-diff.svelte';
-	import { forkRun } from '$lib/workflows/fork';
+	import { forkRun, type ForkMode } from '$lib/workflows/fork';
+	import { buildForkSteps, type ScriptCallLike } from '$lib/utils/fork-steps';
 	import WorkflowQuickSwitcher from '$lib/components/workflow/workflow-quick-switcher.svelte';
 	import RunQuickSwitcher from '$lib/components/workflow/run-quick-switcher.svelte';
 	import RunProgressBand from '$lib/components/workflow/execution/run-progress-band.svelte';
@@ -1126,27 +1127,54 @@
 			.map((id) => id.split('/').filter(Boolean).pop() ?? id)
 			.filter((name, i, arr) => name && arr.indexOf(name) === i)
 	);
-	// Resume/fork preview dialog (replaces a blocking native confirm). `null` node = auto
-	// (the failed step). The dialog previews which steps are skipped vs re-run.
+	// Resume/fork preview dialog (replaces a blocking native confirm). The dialog
+	// owns the fork-point picker + Reproduce/Fork mode and previews skipped vs re-run.
 	let resumeDialogOpen = $state(false);
+	// The chosen fork point (bare step name). Bound to the dialog's step picker.
 	let resumeDialogNode = $state<string | null>(null);
+	let resumeMode = $state<ForkMode>('fork');
 	let resumeError = $state<string | null>(null);
 	// Fork-lineage tree (ancestors + every fork), revealed from the lineage bar.
 	let lineageOpen = $state(false);
 	// Per-branch spec diff (this fork vs its parent), revealed from the lineage bar.
 	let diffOpen = $state(false);
-	// Effective node being resumed from: explicit pick, else the in-flight (failed) node.
-	const resumeEffectiveNode = $derived(
-		resumeDialogNode ?? snapshot?.currentNodeId ?? resumableNodeIds[0] ?? null
+
+	// Dynamic-script call journal — supplies per-step token usage for the fork
+	// dialog's reuse summary. Empty for SW runs (the summary degrades to counts).
+	let scriptCalls = $state<ScriptCallLike[]>([]);
+	let scriptCallsLoaded = $state(false);
+	async function loadScriptCalls(): Promise<void> {
+		if (scriptCallsLoaded || !isDynamicScript) return;
+		scriptCallsLoaded = true;
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/script-calls`);
+			if (!res.ok) return;
+			const data = await res.json();
+			scriptCalls = (data.scriptCalls ?? []) as ScriptCallLike[];
+		} catch {
+			/* best-effort — reuse summary just falls back to step counts */
+		}
+	}
+
+	// Completed forkable steps (SW nodes / script calls) in execution order, with
+	// per-step token usage where known. The failed node is flagged for the picker.
+	const forkSteps = $derived(
+		buildForkSteps(resumableNodeIds, isDynamicScript ? scriptCalls : null, snapshot?.currentNodeId ?? null)
 	);
-	const resumeSplit = $derived.by(() => {
-		const idx = resumeEffectiveNode ? resumableNodeIds.indexOf(resumeEffectiveNode) : -1;
-		if (idx < 0) return { skipped: [] as string[], rerun: resumableNodeIds };
-		return { skipped: resumableNodeIds.slice(0, idx), rerun: resumableNodeIds.slice(idx) };
-	});
+	// Default fork point when opened without an explicit step: a failed run defaults
+	// to the failed step; a successful run defaults to the LAST completed step (not
+	// the first — the previous default silently pinned every header fork to step 1).
+	const defaultForkStepId = $derived(
+		isTerminalFailed
+			? (snapshot?.currentNodeId ?? resumableNodeIds[0] ?? null)
+			: (resumableNodeIds[resumableNodeIds.length - 1] ?? null)
+	);
+
 	function openResume(fromNodeId?: string) {
-		resumeDialogNode = fromNodeId ?? null;
+		resumeDialogNode = fromNodeId ?? defaultForkStepId;
+		resumeMode = 'fork';
 		resumeError = null;
+		void loadScriptCalls();
 		resumeDialogOpen = true;
 	}
 	async function confirmResume() {
@@ -1154,7 +1182,7 @@
 		resumeBusy = true;
 		resumeError = null;
 		try {
-			const r = await forkRun(executionId, resumeDialogNode);
+			const r = await forkRun(executionId, resumeDialogNode, resumeMode);
 			if (!r.ok || !r.executionId) {
 				resumeError = r.error ?? 'Request failed';
 				return;
@@ -3125,9 +3153,9 @@
 <ForkDialog
 	bind:open={resumeDialogOpen}
 	verb={resumeVerb}
-	effectiveNode={resumeEffectiveNode}
-	skipped={resumeSplit.skipped}
-	rerun={resumeSplit.rerun}
+	steps={forkSteps}
+	bind:selectedStepId={resumeDialogNode}
+	bind:mode={resumeMode}
 	busy={resumeBusy}
 	error={resumeError}
 	onConfirm={confirmResume}
