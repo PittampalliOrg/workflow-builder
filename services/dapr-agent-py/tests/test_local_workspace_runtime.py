@@ -13,8 +13,10 @@ import pytest  # noqa: E402
 from src.openshell_runtime import (  # noqa: E402
     LocalWorkspaceRuntime,
     OpenShellRuntime,
+    bind_runtime,
     new_runtime,
     require_local_runtime_for_shared_workspace,
+    reset_runtime,
 )
 
 
@@ -61,6 +63,43 @@ def test_default_cwd_is_local_root(monkeypatch) -> None:
     rt = LocalWorkspaceRuntime()
     assert rt.cwd == "/tmp"
     assert rt.sandbox_name == "local"
+
+
+def test_platform_fallback_cwd_stays_on_workspace_root(monkeypatch) -> None:
+    # The turn handler stamps cwd="/sandbox" as a fallback on every message
+    # (main.py) and bind_runtime forwards it as if explicit. In local mode
+    # that would strand writes on the pod-local emptyDir, so the fallback
+    # must be ignored in favor of the workspace root.
+    monkeypatch.setenv("DAPR_AGENT_PY_LOCAL_WORKSPACE_ROOT", "/tmp/ws")
+    monkeypatch.delenv("OPENSHELL_CWD", raising=False)
+    rt = LocalWorkspaceRuntime()
+    rt.set_cwd("/sandbox")
+    assert rt.cwd == "/tmp/ws"
+    rt.set_cwd("/sandbox/")
+    assert rt.cwd == "/tmp/ws"
+    rt.set_cwd(None)
+    assert rt.cwd == "/tmp/ws"
+
+
+def test_explicit_workflow_cwd_still_wins(monkeypatch) -> None:
+    # A deliberate `with.cwd` other than the platform fallback is preserved.
+    monkeypatch.setenv("DAPR_AGENT_PY_LOCAL_WORKSPACE_ROOT", "/tmp/ws")
+    monkeypatch.delenv("OPENSHELL_CWD", raising=False)
+    rt = LocalWorkspaceRuntime()
+    rt.set_cwd("/sandbox/work/repo")
+    assert rt.cwd == "/sandbox/work/repo"
+
+
+def test_bind_runtime_fallback_cwd_local_mode(monkeypatch) -> None:
+    monkeypatch.setenv("DAPR_AGENT_PY_WORKSPACE_MODE", "local")
+    monkeypatch.setenv("DAPR_AGENT_PY_LOCAL_WORKSPACE_ROOT", "/tmp/ws")
+    monkeypatch.delenv("OPENSHELL_CWD", raising=False)
+    rt, token = bind_runtime(sandbox_name=None, cwd="/sandbox", session_id="s1")
+    try:
+        assert isinstance(rt, LocalWorkspaceRuntime)
+        assert rt.cwd == "/tmp/ws"
+    finally:
+        reset_runtime(token)
 
 
 def test_execute_runs_local_shell(tmp_path) -> None:

@@ -545,6 +545,19 @@ class LocalWorkspaceRuntime(OpenShellRuntime):
         # No remote session in local mode.
         return None
 
+    def set_cwd(self, cwd: str | None) -> None:  # type: ignore[override]
+        # The platform stamps ``/sandbox`` as the fallback cwd on every turn
+        # message (agent config, child dispatch, bind_runtime). In local mode
+        # /sandbox is the pod-local emptyDir, so honoring that fallback would
+        # strand the agent's writes outside the shared workspace mount. Treat
+        # it as "no explicit cwd" and stay on the workspace root; any other
+        # value is a deliberate workflow `with.cwd` and wins.
+        raw = (cwd or "").strip()
+        if not raw or posixpath.normpath(raw) == DEFAULT_CWD:
+            self._cwd = self._local_root
+            return
+        super().set_cwd(cwd)
+
     @property
     def sandbox_name(self) -> str:  # type: ignore[override]
         return self._sandbox_name or "local"
