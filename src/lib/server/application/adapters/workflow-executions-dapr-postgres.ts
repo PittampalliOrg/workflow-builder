@@ -239,9 +239,8 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 		include?: "summary" | "full";
 	}): Promise<WorkflowExecutionListItem[]> {
 		const includeFull = input.include === "full";
-		const columns = includeFull
-			? `id, workflow_id, status, dapr_instance_id, started_at, completed_at, duration, input, output`
-			: `id, workflow_id, status, dapr_instance_id, started_at, completed_at, duration`;
+		const baseColumns = `id, workflow_id, status, dapr_instance_id, started_at, completed_at, duration, trigger_source, rerun_of_execution_id, resume_from_node, seed_workspace_from`;
+		const columns = includeFull ? `${baseColumns}, input, output` : baseColumns;
 		const result = await this.client.query({
 			summary: "workflow_executions.select_by_workflow",
 			collection: "workflow_executions",
@@ -263,10 +262,14 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 			startedAt: dateValue(row[4]),
 			completedAt: dateOrNull(row[5]),
 			duration: stringOrNull(row[6]),
+			triggerSource: stringOrNull(row[7]),
+			rerunOfExecutionId: stringOrNull(row[8]),
+			resumeFromNode: stringOrNull(row[9]),
+			seedWorkspaceFrom: stringOrNull(row[10]),
 			...(includeFull
 				? {
-						input: jsonValue<Record<string, unknown> | null>(row[7], null),
-						output: jsonValue(row[8], null),
+						input: jsonValue<Record<string, unknown> | null>(row[11], null),
+						output: jsonValue(row[12], null),
 					}
 				: {}),
 		}));

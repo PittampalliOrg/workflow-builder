@@ -13,6 +13,7 @@
 	import { formatDistanceToNow } from 'date-fns';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
 	import RunFocusPanel from '$lib/components/workflow/execution/run-focus-panel.svelte';
+	import ProvenanceChips from '$lib/components/workflow/execution/provenance-chips.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -59,6 +60,11 @@
 		completedAt?: string;
 		duration?: number;
 		output?: Record<string, unknown>;
+		// Fork/reproduce provenance (summary list fields) — drives the row chips.
+		rerunOfExecutionId?: string | null;
+		resumeFromNode?: string | null;
+		seedWorkspaceFrom?: string | null;
+		triggerSource?: string | null;
 	}
 
 	interface StepLog {
@@ -466,7 +472,16 @@
 								class="min-w-0 flex-1 text-left hover:opacity-80 transition-opacity"
 								onclick={() => selectExecution(exec)}
 							>
-								<div class="text-[11px] font-semibold text-foreground">Run #{executions.length - index}</div>
+								<div class="flex items-center gap-1.5">
+									<div class="text-[11px] font-semibold text-foreground">Run #{executions.length - index}</div>
+									<ProvenanceChips
+										size="xs"
+										rerunOfExecutionId={exec.rerunOfExecutionId}
+										resumeFromNode={exec.resumeFromNode}
+										seedWorkspaceFrom={exec.seedWorkspaceFrom}
+										triggerSource={exec.triggerSource}
+									/>
+								</div>
 								<div class="font-mono text-[10px] text-muted-foreground truncate">
 									{relativeTime(exec.startedAt)} · {computeDuration(exec)} · <span class="capitalize">{exec.status.toLowerCase() === 'completed' ? 'Completed' : exec.status.toLowerCase()}</span>
 								</div>

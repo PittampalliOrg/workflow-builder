@@ -50,6 +50,7 @@
 	} from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import ForkDialog from '$lib/components/workflow/execution/fork-dialog.svelte';
+	import ProvenanceChips from '$lib/components/workflow/execution/provenance-chips.svelte';
 	import RunLineageTree from '$lib/components/workflow/execution/run-lineage-tree.svelte';
 	import ForkSpecDiff from '$lib/components/workflow/execution/fork-spec-diff.svelte';
 	import { forkRun, type ForkMode } from '$lib/workflows/fork';
@@ -116,7 +117,6 @@
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { withAgentNodeMetrics } from '$lib/utils/agent-node-metrics';
 	import { fmtTokens, modelContextWindow } from '$lib/utils/format-tokens';
-	import { isSnapshotSeedPath } from '$lib/utils/snapshot-seed';
 	import { specToGraph } from '$lib/utils/spec-graph-adapter';
 	import {
 		buildTimelineItems,
@@ -1118,7 +1118,9 @@
 	// snapshot; `resumeFromNode` is the fork point (@<node> in the badge).
 	let seedWorkspaceFrom = $state<string | null>(null);
 	let resumeFromNode = $state<string | null>(null);
-	const seededFromSnapshot = $derived(isSnapshotSeedPath(seedWorkspaceFrom));
+	// Trigger source (e.g. "reproduce") when the backend persisted it — drives the
+	// reproduce provenance chip.
+	let runTriggerSource = $state<string | null>(null);
 	const isTerminalFailed = $derived(
 		['error', 'failed', 'cancelled', 'canceled'].includes(executionStatus.toLowerCase())
 	);
@@ -1445,6 +1447,10 @@
 				resumeFromNode =
 					typeof executionData?.resumeFromNode === 'string'
 						? executionData.resumeFromNode
+						: null;
+				runTriggerSource =
+					typeof executionData?.triggerSource === 'string'
+						? executionData.triggerSource
 						: null;
 				const ir = executionData?.executionIr;
 				if (ir && typeof ir === 'object' && (ir as Record<string, unknown>).engine === 'team-run') {
@@ -2300,17 +2306,13 @@
 						This run can be forked from any completed step — branches reuse its workspace.
 					{/if}
 				</span>
-				{#if seededFromSnapshot}
-					<span
-						class="inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-500/12 px-2 py-0.5 font-medium text-violet-600 dark:text-violet-300"
-						title={seedWorkspaceFrom
-							? `Seeded from node snapshot ${seedWorkspaceFrom}`
-							: 'Seeded from a node-boundary snapshot'}
-					>
-						<Camera class="size-3" />
-						forked from snapshot{#if resumeFromNode}&nbsp;@{resumeFromNode}{/if}
-					</span>
-				{/if}
+				<ProvenanceChips
+					class="shrink-0"
+					rerunOfExecutionId={forkedFromExecutionId}
+					resumeFromNode={resumeFromNode}
+					seedWorkspaceFrom={seedWorkspaceFrom}
+					triggerSource={runTriggerSource}
+				/>
 				{#if forkedFromExecutionId}
 					<a
 						class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 font-medium text-foreground hover:bg-accent"
