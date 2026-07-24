@@ -1,14 +1,16 @@
 <!--
-	Unified run-diff for a dev execution: a collapsible that lazy-fetches the
-	execution's per-node `diff` artifacts and renders the aggregated unified diff
-	with the same `RenderedPatch` primitive the run-page Changes tab uses, plus a
-	cross-link into the full master-detail Changes tab.
+	Decoupled run-diff view for the dev checkpoints panel: a collapsible that
+	lazy-fetches the execution's per-node `diff` artifacts and renders the
+	aggregated unified diff with the same `RenderedPatch` primitive the run-page
+	Changes tab uses, plus a cross-link into the full master-detail Changes tab.
 
 	Code checkpoints (source bundles) are opaque tar overlays with no per-version
-	patch; the meaningful "what changed" view for a run is this cumulative diff,
-	so it sits alongside the checkpoint list rather than inside it.
+	patch, so the meaningful "what changed" view for a run is this cumulative
+	diff. Kept standalone (wraps RenderedPatch) so it can later be unified with
+	the run page's shared code-checkpoints panel.
 -->
 <script lang="ts">
+	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
 	import {
 		ChevronDown,
@@ -25,8 +27,8 @@
 		runChangesHref
 	}: {
 		executionId: string;
-		/** Deep link to the owning run's detail page (Changes tab). */
-		runChangesHref: string;
+		/** Override the run-detail deep link; defaults to the slug-scoped shim. */
+		runChangesHref?: string;
 	} = $props();
 
 	type ArtifactRecord = {
@@ -36,6 +38,13 @@
 		inlinePayload: unknown;
 		createdAt: string;
 	};
+
+	// The executionId shim (/workflows/runs/[executionId]) redirects to the
+	// canonical run-detail URL, so we don't need the workflowId here.
+	const runHref = $derived(
+		runChangesHref ??
+			`/workspaces/${page.params.slug ?? 'default'}/workflows/runs/${executionId}`
+	);
 
 	let open = $state(false);
 	let phase = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -84,7 +93,7 @@
 			<FileDiff class="size-4 text-muted-foreground" /> Run changes
 		</button>
 		<a
-			href={runChangesHref}
+			href={runHref}
 			class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
 			title="Open the full master-detail Changes tab for this run"
 		>

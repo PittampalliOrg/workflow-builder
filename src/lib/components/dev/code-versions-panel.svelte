@@ -22,6 +22,7 @@
 		type StrictCheckpointPromotionProgress
 	} from '$lib/dev-preview-checkpoint-promotion';
 	import CodePromotionChain from '../workflow/code/code-promotion-chain.svelte';
+	import VersionDiffView from './version-diff-view.svelte';
 
 	type PullRequestReceipt = {
 		repository?: string | null;
@@ -683,4 +684,8 @@
 			{/each}
 		</ul>
 	{/if}
+
+	<div class="border-t pt-2">
+		<VersionDiffView {executionId} />
+	</div>
 </div>

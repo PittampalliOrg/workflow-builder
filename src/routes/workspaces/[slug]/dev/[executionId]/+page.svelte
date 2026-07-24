@@ -28,7 +28,6 @@
 	import DevPreviewStatusCard from '$lib/components/dev/dev-preview-status-card.svelte';
 	import DevServiceCard from '$lib/components/dev/dev-service-card.svelte';
 	import CodeVersionsPanel from '$lib/components/dev/code-versions-panel.svelte';
-	import DevRunChanges from '$lib/components/dev/dev-run-changes.svelte';
 	import SyncGenerationTimeline from '$lib/components/dev/sync-generation-timeline.svelte';
 	import type { SyncTimelineVersionInput } from '$lib/components/dev/sync-generation-timeline';
 	import type { DevEnvironmentSummary } from '$lib/components/dev/dev-environment-card.svelte';
@@ -478,10 +477,6 @@
 				}}
 			/>
 			<SyncGenerationTimeline versions={timelineVersions} loading={!timelineLoaded} />
-			<DevRunChanges
-				executionId={environment.executionId}
-				runChangesHref={`/workspaces/${slug}/workflows/runs/${environment.executionId}`}
-			/>
 		</aside>
 
 		<!-- Interactive session column -->
