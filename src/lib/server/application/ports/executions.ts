@@ -120,6 +120,10 @@ export type CreateWorkflowExecutionInput = {
 	rerunOfExecutionId?: string;
 	rerunSourceInstanceId?: string;
 	resumeFromNode?: string;
+	/** Workspace this run was seeded from. `.snapshots/<key>/<node>` = seeded
+	 * from a node-boundary snapshot (durability phase 3); any other value = an
+	 * end-state seed. NULL for normal (non-fork) runs. */
+	seedWorkspaceFrom?: string;
 	workflowSessionId?: string | null;
 };
 
@@ -149,6 +153,7 @@ export type WorkflowExecutionRecord = {
 	rerunOfExecutionId: string | null;
 	rerunSourceInstanceId: string | null;
 	resumeFromNode: string | null;
+	seedWorkspaceFrom: string | null;
 	triggerSource: string | null;
 	rerunFromEventId: number | null;
 	startedAt: Date;
@@ -173,6 +178,12 @@ export type WorkflowExecutionLineageNode = {
 	completedAt: string | null;
 	durationMs: number | null;
 	isCurrent: boolean;
+	/** True when this branch was seeded from a node-boundary snapshot (durability
+	 * phase 3) rather than the source lineage's end-state workspace. */
+	seededFromSnapshot: boolean;
+	/** The `.snapshots/<key>/<node>` path this run was seeded from, when
+	 * snapshot-seeded (else null). Surfaced as the badge tooltip. */
+	snapshotPath: string | null;
 };
 
 export type WorkflowExecutionLineage = {

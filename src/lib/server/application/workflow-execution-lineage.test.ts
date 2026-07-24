@@ -82,6 +82,8 @@ function lineage() {
 				completedAt: "2026-01-01T00:01:00.000Z",
 				durationMs: 60_000,
 				isCurrent: false,
+				seededFromSnapshot: false,
+				snapshotPath: null,
 			},
 			{
 				id: "exec-1",
@@ -92,6 +94,8 @@ function lineage() {
 				completedAt: null,
 				durationMs: null,
 				isCurrent: true,
+				seededFromSnapshot: true,
+				snapshotPath: ".snapshots/instance-root/plan",
 			},
 		],
 	};

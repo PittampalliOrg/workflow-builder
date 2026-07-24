@@ -35,6 +35,7 @@ describe("PostgresWorkflowExecutionRepository status compare-and-set", () => {
 				rerun_of_execution_id text,
 				rerun_source_instance_id text,
 				resume_from_node text,
+				seed_workspace_from text,
 				trigger_source text,
 				rerun_from_event_id integer,
 				started_at timestamp NOT NULL DEFAULT now(),
