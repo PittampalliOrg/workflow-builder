@@ -263,6 +263,10 @@ network_policies:
       - host: checkpoint-git-dev.tail286401.ts.net
         port: 443
         access: full
+        # SSRF exemption: supervisor counts Tailscale CGNAT (100.64/10) as
+        # internal and rejects even allowlisted hosts; allowed_ips replaces
+        # that check with this allowlist (NetworkEndpointDef.allowed_ips).
+        allowed_ips: ["100.64.0.0/10"]
     binaries:
       - { path: /usr/bin/git }
       - { path: /usr/lib/git-core/git-remote-https }
