@@ -6,6 +6,8 @@ import {
 	daprStateKeyMatchPattern,
 	dedupeAgentRuntimeTargets,
 	durableRuntimeStatusFromBody,
+	isBenignDaprPurgeMiss,
+	isBenignDaprTerminationMiss,
 	isTerminalDurableRuntimeStatus,
 	runDurableCascade,
 	runWithConcurrency,
@@ -56,6 +58,18 @@ describe("pure helpers", () => {
 		for (const s of ["RUNNING", "PENDING", "SUSPENDED", "", null, undefined]) {
 			expect(isTerminalDurableRuntimeStatus(s)).toBe(false);
 		}
+	});
+
+	it("classifies a missing actor address only as a purge miss", () => {
+		const exact =
+			"rpc error: code = FailedPrecondition desc = did not find address for actor workflow-1";
+		expect(isBenignDaprPurgeMiss(exact)).toBe(true);
+		expect(isBenignDaprTerminationMiss(exact)).toBe(false);
+		expect(
+			isBenignDaprPurgeMiss(
+				"did not find address for actor workflow-1",
+			),
+		).toBe(false);
 	});
 
 	it("durableRuntimeStatusFromBody unwraps nested status shapes", () => {
@@ -463,6 +477,57 @@ describe("runDurableCascade", () => {
       "agent-host-app",
     );
 		expect(deps.purgeStateRows).toHaveBeenCalledTimes(1);
+	});
+
+	it("continues from a missing parent actor to mandatory state-row purge only with caller proof", async () => {
+		const actorMiss = new Error(
+			"Failed to purge workflow p1: rpc error: code = FailedPrecondition desc = did not find address for actor p1",
+		);
+		const blockedDeps = makeDeps({
+			getParentStatus: vi.fn(async () => "TERMINATED"),
+			getAgentRuntimeStatus: vi.fn(async () => "COMPLETED"),
+			purgeParent: vi.fn(async () => {
+				throw actorMiss;
+			}),
+		});
+
+		await expect(
+			runDurableCascade({
+				parentInstanceIds: ["p1"],
+				agentRuntimeTargets: [{ runtimeAppId: "app", instanceId: "i1" }],
+				reason: "test",
+				purge: true,
+				purgeGraceMs: 0,
+				deps: blockedDeps,
+			}),
+		).rejects.toThrow("did not find address for actor");
+		expect(blockedDeps.purgeStateRows).not.toHaveBeenCalled();
+
+		const provenDeps = makeDeps({
+			getParentStatus: vi.fn(async () => "TERMINATED"),
+			getAgentRuntimeStatus: vi.fn(async () => "COMPLETED"),
+			purgeParent: vi.fn(async () => {
+				throw actorMiss;
+			}),
+			purgeStateRows: vi.fn(async () => {}),
+		});
+		await expect(
+			runDurableCascade({
+				parentInstanceIds: ["p1"],
+				agentRuntimeTargets: [{ runtimeAppId: "app", instanceId: "i1" }],
+				reason: "test",
+				purge: true,
+				purgeGraceMs: 0,
+				allowMissingParentActorPurge: true,
+				deps: provenDeps,
+			}),
+		).resolves.toMatchObject({ allClosed: true });
+		expect(provenDeps.purgeStateRows).toHaveBeenCalledOnce();
+		expect(
+			vi.mocked(provenDeps.purgeParent).mock.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(provenDeps.purgeStateRows!).mock.invocationCallOrder[0],
+		);
 	});
 
 	it("is fail-closed: does not purge when a terminate fails", async () => {

@@ -452,6 +452,35 @@ describe("Dapr lifecycle cascade agent-runtime transport", () => {
     ).rejects.toThrow("agent runtime purge failed with 500");
   });
 
+  it("does not treat missing actor placement as terminal evidence", async () => {
+    const deps = createDaprCascadeDeps();
+    const missingActorResponse = () =>
+      new Response(
+        JSON.stringify({
+          detail: JSON.stringify({
+            errorCode: "ERR_ACTOR_INSTANCE_MISSING",
+            message:
+              "rpc error: code = FailedPrecondition desc = did not find address for actor workflow-1",
+          }),
+        }),
+        { status: 500 },
+      );
+    mocks.daprFetch
+      .mockResolvedValueOnce(missingActorResponse())
+      .mockResolvedValueOnce(missingActorResponse())
+      .mockResolvedValueOnce(missingActorResponse());
+
+    await expect(deps.getParentStatus("workflow-1")).rejects.toThrow(
+      "status request failed with 500",
+    );
+    await expect(
+      deps.terminateParent("workflow-1", "stop requested"),
+    ).resolves.toBe("failed");
+    await expect(deps.purgeParent("workflow-1")).rejects.toThrow(
+      "workflow purge failed with 500",
+    );
+  });
+
   it("propagates state-row purge failures for lifecycle retry", async () => {
     const database = {
       execute: vi.fn(async () => {
