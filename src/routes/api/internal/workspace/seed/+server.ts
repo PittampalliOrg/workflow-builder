@@ -23,7 +23,8 @@ function sandboxBaseUrl(): string {
 export const POST: RequestHandler = async ({ request, url }) => {
 	requireInternal(request);
 	const baseUrl = sandboxBaseUrl();
-	const token = env.INTERNAL_API_TOKEN ?? process.env.INTERNAL_API_TOKEN ?? "";
+	const token =
+		env.SANDBOX_EXECUTION_API_TOKEN ?? process.env.SANDBOX_EXECUTION_API_TOKEN ?? "";
 
 	// `?status` → poll an in-flight seed Job: body { job, namespace? }.
 	if (url.searchParams.has("status")) {
