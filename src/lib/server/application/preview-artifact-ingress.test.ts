@@ -141,6 +141,7 @@ function harness() {
 		})),
 		authorizeRuntime: vi.fn(),
 		authorizeRuntimeTuple: vi.fn(),
+		authorizeReadTuple: vi.fn(),
 		authorizeCurrent: vi.fn(),
 	};
 	const store: PreviewControlArtifactStorePort = {

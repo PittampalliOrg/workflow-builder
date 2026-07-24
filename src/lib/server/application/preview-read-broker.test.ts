@@ -49,7 +49,7 @@ function record(
 function harness(overrides: Partial<VclusterPreviewRecord> = {}) {
   const previews = { get: vi.fn(async () => record(overrides)) };
   const authority = {
-    authorizeRuntimeTuple: vi.fn(async () => ({
+    authorizeReadTuple: vi.fn(async () => ({
       previewName: "feature-one",
       requestId: "request-1",
       owner: "admin-1",
@@ -83,7 +83,7 @@ describe("central preview read broker", () => {
       identity,
       command: { kind: "list-executions", limit: 25, status: null },
     });
-    expect(h.authority.authorizeRuntimeTuple).toHaveBeenCalledWith(identity);
+    expect(h.authority.authorizeReadTuple).toHaveBeenCalledWith(identity);
     expect(h.capabilities.mintControl).toHaveBeenCalledWith(
       expect.objectContaining({ previewName: "feature-one" }),
     );
@@ -130,7 +130,7 @@ describe("central preview read broker", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "invalid-request" });
-    expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+    expect(h.authority.authorizeReadTuple).not.toHaveBeenCalled();
   });
 
   it("accepts URL-safe Nanoid file identifiers", async () => {
@@ -169,7 +169,7 @@ describe("central preview read broker", () => {
           },
         }),
       ).rejects.toMatchObject({ code: "invalid-request" });
-      expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+      expect(h.authority.authorizeReadTuple).not.toHaveBeenCalled();
     },
   );
 
@@ -182,7 +182,7 @@ describe("central preview read broker", () => {
         command: { kind: "list-executions", limit: 25, status: null },
       }),
     ).rejects.toMatchObject({ code: "contract-mismatch" });
-    expect(h.authority.authorizeRuntimeTuple).not.toHaveBeenCalled();
+    expect(h.authority.authorizeReadTuple).not.toHaveBeenCalled();
     expect(h.capabilities.mintControl).not.toHaveBeenCalled();
     expect(h.transport.execute).not.toHaveBeenCalled();
   });

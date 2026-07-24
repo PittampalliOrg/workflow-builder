@@ -116,6 +116,32 @@ export class ApplicationPreviewControlSourceAuthorityService implements PreviewC
   }
 
   /**
+   * Read-only access remains bound to the environment's immutable catalog
+   * generation. A later catalog rollout must not make a retained preview's
+   * execution history unreadable.
+   */
+  async authorizeReadTuple(input: PreviewControlIdentity) {
+    if (
+      !FULL_SHA.test(input.environmentPlatformRevision) ||
+      !FULL_SHA.test(input.environmentSourceRevision)
+    ) {
+      throw new PreviewControlSourceAuthorityError(
+        "contract-mismatch",
+        "preview read authority requires full baseline Git SHAs",
+      );
+    }
+    return this.authorizeEnvironment({
+      previewName: input.previewName,
+      expectedRequestId: input.environmentRequestId,
+      expectedPlatformRevision: input.environmentPlatformRevision,
+      expectedSourceRevision: input.environmentSourceRevision,
+      expectedCatalogDigest: input.catalogDigest,
+      allowedModes: ["live", "reconciled"],
+      validateServices: false,
+    });
+  }
+
+  /**
    * Read-only telemetry authority. Unlike runtime egress, an exact preview
    * generation remains observable while provisioning or after a failed
    * reconcile, and manifest candidates are valid trace producers.

@@ -173,12 +173,13 @@ describe('ApplicationPreviewArchiveService', () => {
 	});
 
 	it('reports archived:false (and writes nothing) when the preview is unreachable', async () => {
+		const listExecutions = vi.fn(async () => ({
+			ok: false as const,
+			reason: 'unreachable' as const,
+			message: 'timeout'
+		}));
 		const proxy = fakeProxy({
-			listExecutions: vi.fn(async () => ({
-				ok: false as const,
-				reason: 'unreachable' as const,
-				message: 'timeout'
-			}))
+			listExecutions
 		});
 		const files = fakeFiles();
 		const service = new ApplicationPreviewArchiveService({
@@ -196,6 +197,61 @@ describe('ApplicationPreviewArchiveService', () => {
 			activeExecutionIds: null,
 			reason: 'executions-unreachable'
 		});
+		expect(listExecutions).toHaveBeenCalledTimes(2);
+		expect(files.createFile).not.toHaveBeenCalled();
+	});
+
+	it('retries one transient execution-list timeout before archiving', async () => {
+		const listExecutions = vi
+			.fn()
+			.mockResolvedValueOnce({
+				ok: false as const,
+				reason: 'unreachable' as const,
+				message: 'timeout'
+			})
+			.mockResolvedValueOnce({
+				ok: true as const,
+				data: { executions: [], total: 0 }
+			});
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy({ listExecutions }),
+			listPreviews,
+			files
+		});
+
+		await expect(
+			service.archivePreview({ name: 'myfeature', userId: 'u' })
+		).resolves.toMatchObject({
+			archived: true,
+			activeExecutionIds: [],
+			executionCount: 0
+		});
+		expect(listExecutions).toHaveBeenCalledTimes(2);
+		expect(files.createFile).toHaveBeenCalledOnce();
+	});
+
+	it('does not retry a contract-invalid execution-list response', async () => {
+		const listExecutions = vi.fn(async () => ({
+			ok: false as const,
+			reason: 'bad-response' as const,
+			message: 'broker returned HTTP 409'
+		}));
+		const files = fakeFiles();
+		const service = new ApplicationPreviewArchiveService({
+			proxy: fakeProxy({ listExecutions }),
+			listPreviews,
+			files
+		});
+
+		await expect(
+			service.archivePreview({ name: 'myfeature', userId: 'u' })
+		).resolves.toMatchObject({
+			archived: false,
+			activeExecutionIds: null,
+			reason: 'executions-bad-response'
+		});
+		expect(listExecutions).toHaveBeenCalledOnce();
 		expect(files.createFile).not.toHaveBeenCalled();
 	});
 

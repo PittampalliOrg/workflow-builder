@@ -27,7 +27,7 @@ export class PreviewReadBrokerError extends Error {
 
 type PreviewReadBrokerDeps = Readonly<{
   previews: Pick<VclusterPreviewGatewayPort, "get">;
-  authority: Pick<PreviewControlSourceAuthorityPort, "authorizeRuntimeTuple">;
+  authority: Pick<PreviewControlSourceAuthorityPort, "authorizeReadTuple">;
   capabilities: PreviewControlCapabilityMintPort;
   transport: PreviewCapabilityReadTransportPort;
 }>;
@@ -112,7 +112,7 @@ export class ApplicationPreviewReadBrokerService implements PreviewReadBrokerPor
         "preview read generation changed",
       );
     }
-    await this.deps.authority.authorizeRuntimeTuple(input.identity);
+    await this.deps.authority.authorizeReadTuple(input.identity);
     const capability = this.deps.capabilities.mintControl(input.identity);
     const result = await this.deps.transport.execute({
       target: { name: preview.name, url: preview.url, pool: null },
