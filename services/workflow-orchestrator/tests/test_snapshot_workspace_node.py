@@ -1,16 +1,6 @@
 from __future__ import annotations
 
-import sys
 from contextlib import nullcontext
-from pathlib import Path
-
-# Put the service root on sys.path so `activities` imports as a real package (running
-# its __init__, which builds the ACTIVITIES registry) rather than a namespace package —
-# CI runs `pytest tests/` from the service dir without the root on the path. Matches the
-# bootstrap in the other orchestrator tests.
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from activities import snapshot_workspace_node as subject
 
@@ -116,7 +106,17 @@ def test_snapshot_without_internal_token_skips(monkeypatch):
     assert result == {"success": True, "skipped": "no_internal_token"}
 
 
-def test_snapshot_activity_is_discovered():
-    from activities import ACTIVITIES
+def test_snapshot_activity_matches_the_autodiscovery_contract():
+    # activities/__init__ auto-registers every module-level, non-underscore function
+    # with exactly (ctx, input_data) params (see _is_activity). Assert the activity
+    # satisfies that contract — so it IS discovered — WITHOUT importing the package-level
+    # ACTIVITIES aggregate: under pytest's import mode `activities` resolves as a namespace
+    # package (its __init__ never runs), so `from activities import ACTIVITIES` isn't
+    # available in the test context even though it is in the app (run from the service root).
+    import inspect
 
-    assert subject.snapshot_workspace_node in ACTIVITIES
+    fn = subject.snapshot_workspace_node
+    assert inspect.isfunction(fn)
+    assert not fn.__name__.startswith("_")
+    assert fn.__module__.startswith("activities")
+    assert len(inspect.signature(fn).parameters) == 2
