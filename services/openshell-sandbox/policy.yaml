@@ -262,6 +262,9 @@ network_policies:
       # gitea VIPs did.
       - host: checkpoint-git-dev.tail286401.ts.net
         port: 443
+        # tls: skip = end-to-end TLS passthrough (proxy MITM would reject the
+        # self-signed tailnet cert upstream — reset mid-handshake).
+        tls: skip
         access: full
         # SSRF exemption: supervisor counts Tailscale CGNAT (100.64/10) as
         # internal and rejects even allowlisted hosts; allowed_ips replaces
