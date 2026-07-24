@@ -125,6 +125,34 @@
 		return new Date(iso).toLocaleDateString();
 	}
 
+	function formatDuration(ms: number): string {
+		if (ms < 1000) return `${Math.round(ms)}ms`;
+		if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+		const m = Math.floor(ms / 60_000);
+		const s = Math.round((ms % 60_000) / 1000);
+		return `${m}m ${s}s`;
+	}
+
+	// Elapsed time for a run: prefer the server-reported durationMs, fall back
+	// to wall-clock since startedAt for in-flight runs.
+	function runElapsed(r: RecentRun): string {
+		if (r.durationMs != null) return formatDuration(r.durationMs);
+		const elapsed = Date.now() - new Date(r.startedAt).getTime();
+		return formatDuration(Math.max(0, elapsed));
+	}
+
+	// Run-health tallies for the compact Preview Development Status strip.
+	let runHealth = $derived.by(() => {
+		const totals = { success: 0, error: 0, running: 0, other: 0 };
+		for (const r of recentRuns) {
+			if (r.status === 'success') totals.success++;
+			else if (r.status === 'error') totals.error++;
+			else if (r.status === 'running' || r.status === 'pending') totals.running++;
+			else totals.other++;
+		}
+		return totals;
+	});
+
 	onMount(load);
 </script>
 
@@ -235,6 +263,96 @@
 				</CardContent>
 			</Card>
 		{/if}
+
+		<!-- Preview Development Status — compact run-health summary strip for the
+		     most recent workflow executions (status dot, elapsed time, outcome).
+		     Always rendered: shows an explicit empty state when no runs exist. -->
+		<Card>
+			<CardHeader class="pb-2 flex-row items-center justify-between">
+				<div>
+					<CardTitle class="text-base flex items-center gap-2">
+						<Activity class="size-4" /> Preview Development Status
+					</CardTitle>
+					<CardDescription class="text-xs">
+						Run health for the most recent workflow executions.
+					</CardDescription>
+				</div>
+				{#if recentRuns.length > 0}
+					<div class="flex items-center gap-2 text-[11px] text-muted-foreground">
+						{#if runHealth.success > 0}
+							<span class="flex items-center gap-1">
+								<span class="size-2 rounded-full bg-emerald-500 inline-block"></span>
+								{runHealth.success} ok
+							</span>
+						{/if}
+						{#if runHealth.error > 0}
+							<span class="flex items-center gap-1">
+								<span class="size-2 rounded-full bg-red-500 inline-block"></span>
+								{runHealth.error} failed
+							</span>
+						{/if}
+						{#if runHealth.running > 0}
+							<span class="flex items-center gap-1">
+								<span class="size-2 rounded-full bg-blue-500 inline-block animate-pulse"></span>
+								{runHealth.running} live
+							</span>
+						{/if}
+					</div>
+				{/if}
+			</CardHeader>
+			<CardContent>
+				{#if recentRuns.length === 0}
+					<p class="text-sm text-muted-foreground py-4 text-center">
+						No workflow executions yet. Run a workflow to see its health here.
+					</p>
+				{:else}
+					<ul class="flex flex-wrap gap-2">
+						{#each recentRuns as r (r.executionId)}
+							<li>
+								<a
+									href="/workspaces/{slug}/workflows/{r.workflowId}/runs/{r.executionId}"
+									class="flex items-center gap-2 rounded border px-2.5 py-1.5 hover:border-primary/50 hover:bg-muted/30 transition-colors"
+									title="{r.workflowName} — {r.status}"
+								>
+									<span
+										class="size-2.5 rounded-full inline-block shrink-0 {r.status ===
+											'running' || r.status === 'pending'
+											? 'bg-blue-500 animate-pulse'
+											: r.status === 'success'
+												? 'bg-emerald-500'
+												: r.status === 'error'
+													? 'bg-red-500'
+													: 'bg-muted-foreground/40'}"
+									></span>
+									<span class="text-xs font-medium max-w-32 truncate">
+										{r.workflowName}
+									</span>
+									<Badge
+										variant="outline"
+										class="text-[10px] {r.status === 'running' || r.status === 'pending'
+											? 'bg-blue-500/10 text-blue-600'
+											: r.status === 'success'
+												? 'bg-emerald-500/10 text-emerald-600'
+												: r.status === 'error'
+													? 'bg-red-500/10 text-red-600'
+													: 'bg-muted text-muted-foreground'}"
+									>
+										{r.status === 'success'
+											? '✓'
+											: r.status === 'error'
+												? '✗'
+												: r.status}
+									</Badge>
+									<span class="text-[10px] text-muted-foreground whitespace-nowrap">
+										{runElapsed(r)}
+									</span>
+								</a>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</CardContent>
+		</Card>
 
 		<!-- Recent runs (workflow executions) — added for Phase C to expose
 		     the /runs feed without making users drill into a specific workflow. -->
