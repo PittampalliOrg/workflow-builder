@@ -38,6 +38,7 @@ import {
 } from "./workflow-tools.js";
 import { registerTraceTools } from "./trace-tools.js";
 import { registerPreviewEnvironmentTools } from "./preview-tools.js";
+import { registerCodeLifecycleTools } from "./code-lifecycle-tools.js";
 import {
 	registerScriptTools,
 	shouldSuppressScriptTools,
@@ -285,6 +286,11 @@ function createMcpServer(
     ),
   });
 
+  // Run code-lifecycle tools (checkpoints/diff read on workflow:read;
+  // restore/resume/promote on workflow:execute). Individual registration is
+  // scope-gated inside the module.
+  registerCodeLifecycleTools(mcpServer, { principal });
+
 	// Dynamic workflow script tool — also UI-independent. Suppressed inside
 	// script-spawned sessions (recursion guard) via suppressScriptTools.
 	if (opts?.suppressScriptTools !== true) {
@@ -514,6 +520,20 @@ async function main(): Promise<void> {
 						principal: TOOL_CATALOG_PRINCIPAL,
 					}),
 				),
+			}),
+		];
+	}
+	// Count the run code-lifecycle tools. Individual runtime registration still
+	// honors workflow:read / workflow:execute scopes.
+	{
+		const dryCodeLifecycleServer = new McpServer(
+			{ name: "dry-run-code-lifecycle", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = [
+			...registeredTools,
+			...registerCodeLifecycleTools(dryCodeLifecycleServer, {
+				principal: TOOL_CATALOG_PRINCIPAL,
 			}),
 		];
 	}

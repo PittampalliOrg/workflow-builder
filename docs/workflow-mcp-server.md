@@ -103,6 +103,44 @@ returned by the tools, and repeat the compact inspection before requesting more
 span or log pages. A lack of matching spans is not by itself proof that a
 running workflow is stuck.
 
+Per-node input/output evidence comes from this trace suite
+(`debug_workflow_execution`, then `trace_get_tool_calls` / `trace_get_llm_turn`),
+which is bounded and workspace-scoped. The former `get_execution_results` tool —
+which returned the whole execution row plus every log line — was removed in
+favor of these bounded reads.
+
+## Inspect and replay a run's code
+
+A run's code-mutating tool calls each produce a durable **code checkpoint** (one
+commit in the run's sandbox, pushed to the in-cluster checkpoint remote). These
+tools give a coding agent first-class access to that surface without the Changes
+UI. They call workspace-scoped internal BFF routes
+(`/api/internal/executions/<id>/...`) authorized by the same signed principal as
+the rest of the MCP surface; the BFF confirms the execution belongs to the
+caller's workspace. Read tools require `workflow:read`; the three mutating tools
+require `workflow:execute`.
+
+1. `list_code_checkpoints` — the per-tool-call checkpoints for a run (compact
+   rows: id, seq, toolName, nodeId, status, remoteStatus, `durable` (pushed and
+   therefore restorable), fileCount, changed file paths, sandboxName, short
+   before/afterSha). This is the programmatic form of the run's Changes tab.
+2. `get_checkpoint_diff` — the unified diff one checkpoint recorded, whole or for
+   a single `path`. Large patches are truncated.
+3. `restore_checkpoint` — DESTRUCTIVE: hard-reset a live sandbox's workspace to a
+   durable checkpoint's commit. Pass the target `sandboxName`.
+4. `resume_workflow_execution` — fork/resume a run as a NEW execution that reuses
+   the source run's work. SW-graph runs fork from a node (`fromNodeId`, omit to
+   auto-pick the node in-flight when the run stopped); dynamic-script runs
+   resume-after-edit (re-run the current, possibly edited script, importing the
+   source's done-call journal so only changed calls re-dispatch — the source must
+   be terminal). Returns the new `executionId`.
+5. `promote_run_to_pr` — open a REAL GitHub PR (or push a branch) from a run's
+   captured code version. With no `artifactId` it auto-promotes the single
+   unpromoted version, or returns the version list when the choice is ambiguous.
+
+Snapshot and run-archive browsing are deliberately NOT exposed as MCP tools;
+they remain internal-only surfaces.
+
 ## Optional session attachment
 
 Set `WFB_MCP_SESSION_ID` only when intentionally attaching an existing Workflow

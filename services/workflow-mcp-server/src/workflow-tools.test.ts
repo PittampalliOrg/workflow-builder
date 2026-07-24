@@ -87,7 +87,6 @@ describe("workflow tools registration", () => {
 			"create_agent",
 			"execute_workflow",
 			"get_execution_status",
-			"get_execution_results",
 		]);
 		expect(names).toContain("create_agent");
 		expect(names).not.toContain("create_workflow");
@@ -134,7 +133,6 @@ describe("workflow tools registration", () => {
       "get_workflow",
       "list_available_actions",
       "get_execution_status",
-      "get_execution_results",
     ]);
   });
 
