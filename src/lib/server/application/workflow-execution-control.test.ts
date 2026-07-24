@@ -957,6 +957,72 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
+	it("persists the last-reused call's snapshot seed on a dynamic-script resume fork (#16)", async () => {
+		// Dynamic-script resume-after-edit seeds the fresh run's empty workspace from
+		// the node-boundary snapshot of the source run's LAST terminally-`done` call,
+		// so the value reaches startWorkflowRun (which writes seed_workspace_from onto
+		// the created execution row).
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["call-a", "call-b"]) };
+		const scriptCalls = {
+			listInternal: vi.fn(async () => [
+				{ callId: "call-a", seq: 1, status: "done" },
+				{ callId: "call-b", seq: 2, status: "done" },
+				{ callId: "call-c", seq: 3, status: "pending" },
+			]),
+		};
+		const withSnapshots = new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners,
+			executionLifecycle,
+			executionReadModels,
+			runStarter,
+			workflowSpecs,
+			workspaceSnapshots,
+			scriptCalls,
+		});
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				id: "exec-src",
+				status: "completed",
+				executionIrVersion: "dynamic-script-2",
+				daprInstanceId: "instance-src",
+				input: { topic: "x" },
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ engineType: "dynamic-script" }),
+		);
+
+		const result = await withSnapshots.resumeExecution({
+			executionId: "exec-src",
+			userId: "user-1",
+			projectId: "project-1",
+			body: {},
+		});
+
+		// Snapshots are looked up under the source's SHARED script workspace key, and
+		// the seed points at the highest-seq DONE call ("call-b", not the pending
+		// "call-c"). rerunOf + triggerSource link the fork to its source.
+		expect(workspaceSnapshots.listSnapshots).toHaveBeenCalledWith("ws_script_exec-src");
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workflowId: "workflow-1",
+				journalImportFromExecutionId: "exec-src",
+				rerunOfExecutionId: "exec-src",
+				triggerSource: "resume",
+				seedWorkspaceFrom: ".snapshots/ws_script_exec-src/call-b",
+			}),
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: {
+				seededFromSnapshot: true,
+				seedWorkspaceFrom: ".snapshots/ws_script_exec-src/call-b",
+			},
+		});
+	});
+
 	it("auto-resumes from the source current node when no node is supplied", async () => {
 		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
 			executionRecord({
