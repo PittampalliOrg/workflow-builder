@@ -417,6 +417,41 @@ describe("agent workflow host provisioning", () => {
 		expect(body.sharedWorkspaceKey).toBe("sw-workflow-exec-exact");
 	});
 
+	it("skips the per-session host for a shared-pool runtime (routes to the pool)", async () => {
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-pool-1",
+			agentConfig: { runtime: "dapr-agent-py", mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+		});
+		expect(result).toBeNull();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("forces a dedicated host when a shared-pool runtime needs a CSI-mounted shared workspace", async () => {
+		// A pool pod has a fixed spec and can't mount a per-key subPath, so a shared
+		// workspace bind must override the shared-pool skip (durability fix).
+		const result = await maybeProvisionAgentWorkflowHost({
+			sessionId: "session-pool-shared-ws-1",
+			agentConfig: { runtime: "dapr-agent-py", mcpServers: [] } as never,
+			workflowExecutionId: "exec-1",
+			sharedWorkspaceKey: "ws_script_exec-1",
+			benchmarkRunId: null,
+			benchmarkInstanceId: null,
+			timeoutMinutes: null,
+		});
+		expect(result).not.toBeNull();
+		expect(fetch).toHaveBeenCalled();
+		const call = vi.mocked(fetch).mock.calls[0];
+		const body = JSON.parse(String(call?.[1]?.body ?? "{}")) as Record<
+			string,
+			unknown
+		>;
+		expect(body.sharedWorkspaceKey).toBe("ws_script_exec-1");
+	});
+
 	it("honors explicit host timeouts", async () => {
 		await maybeProvisionAgentWorkflowHost({
 			sessionId: "session-direct-2",

@@ -1457,6 +1457,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	}
     childRuntimeSandboxName = sessionHost?.sandboxName ?? null;
+	// Fail loud (durability guard): a runtime that mounts the run's shared workspace
+	// (juicefs-shared / interactive-cli) needs a DEDICATED host that CSI-mounts the
+	// per-key subPath at /sandbox/work. If we didn't get one (host provisioning
+	// disabled/failed, or a pool fallback), refuse rather than dispatch pod-local —
+	// otherwise the agent writes to an ephemeral pod dir, the shared JuiceFS subtree
+	// stays empty, and node-boundary snapshots/forks silently capture nothing.
+	if (
+		runtimeUsesSharedWorkspace(swapTarget?.capabilities) &&
+		!childRuntimeSandboxName &&
+		!benchmarkRunId
+	) {
+		await cleanupProvisioning();
+		return error(
+			503,
+			`Session ${sessionId} runtime "${swapTarget?.id}" requires a CSI-mounted shared ` +
+				`workspace but no dedicated AgentWorkflowHost was provisioned ` +
+				`(AGENT_WORKFLOW_HOST_BACKEND must be enabled and the runtime must not be ` +
+				`pool-routed). Refusing to dispatch pod-local — the shared workspace would be empty.`,
+		);
+	}
 	if (childAgentAppId) {
       const attached = await workflowData.updateWorkflowEnsureSessionRuntime({
 			sessionId,
