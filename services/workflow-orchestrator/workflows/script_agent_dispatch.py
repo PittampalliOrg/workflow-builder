@@ -140,6 +140,19 @@ def resolve_call_workspace_ref(spec: dict[str, Any], exec_id: str) -> str | None
     return None
 
 
+def runtime_mounts_shared_workspace(capabilities: Any) -> bool:
+    """True if a runtime actually CSI-mounts the run's shared workspace at
+    /sandbox/work — i.e. a shared workspaceRef (`ws_script_<exec>`) reaches the real
+    JuiceFS subtree. Only ``juicefs-shared`` and interactive-CLI runtimes do; the
+    default openshell dapr-agent-py does NOT (it uses a per-session OpenShell sandbox),
+    so a shared bind on it is silently ignored (writes go pod-local)."""
+    caps = capabilities or {}
+    return (
+        caps.get("workspaceBackend") == "juicefs-shared"
+        or caps.get("interactiveTerminal") is True
+    )
+
+
 def _native_structured_enabled() -> bool:
     """Kill-switch for provider-native structured output (default ON)."""
     raw = os.environ.get("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", "true").strip().lower()
@@ -502,6 +515,26 @@ def _start_script_call(
     sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
     sandbox_opt = _substitute_workspace(sandbox_opt, script_run_shared_workspace_key(exec_id))
     workspace_ref = resolve_call_workspace_ref(spec, exec_id)
+    # Fail loud (durability guard): a shared-workspace bind (opts.isolation:'shared' →
+    # `ws_script_<exec>`, or an explicit sandbox.workspaceRef) only reaches the real
+    # ws_script_ JuiceFS subtree on a runtime that CSI-MOUNTS it (juicefs-shared /
+    # interactive CLI). On any other runtime (e.g. the default openshell dapr-agent-py)
+    # the ref is silently ignored — the agent writes pod-local, nothing lands in
+    # ws_script_, and node-boundary snapshots/forks capture an empty tree. Reject the
+    # call with a clear message instead of diverging silently.
+    if workspace_ref:
+        _bind_caps = runtime_registry.resolve(flattened_args, agent_config)[1].capabilities
+        if not runtime_mounts_shared_workspace(_bind_caps):
+            return {
+                "dispatchError": (
+                    f"agent() call {call_id} requests a shared workspace "
+                    f"(isolation:'shared' / sandbox.workspaceRef) but runtime {_name!r} "
+                    f"does not mount it (workspaceBackend="
+                    f"{(_bind_caps or {}).get('workspaceBackend')!r}). Use a juicefs-shared "
+                    "runtime (e.g. agentType:'dapr-agent-py-juicefs') for a durable shared "
+                    "workspace, or drop isolation:'shared' for a pod-local run."
+                )
+            }
     timeout_minutes = None
     try:
         timeout_minutes = int(defaults.get("timeoutMinutes")) if defaults.get("timeoutMinutes") else 30

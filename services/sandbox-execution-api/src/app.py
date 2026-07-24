@@ -4033,6 +4033,34 @@ def build_agent_workflow_host_sandbox_manifest(
             if entry.get("name") not in overridden
         ]
         pod_spec["containers"][0]["env"] = [*base_env, *class_agent_host_env]
+    # Couple the dapr-agent-py workspace RUNTIME MODE to the actual CSI mount. A session
+    # whose shared JuiceFS workspace is mounted MUST run LocalWorkspaceRuntime (its file/
+    # bash tools then execute in-pod against /sandbox/work → the ws_script_ subtree), never
+    # OpenShellRuntime (per-tool RPC to a throwaway remote sandbox whose writes never reach
+    # the shared subtree — snapshots/forks would see an empty tree). The class agentHostEnv
+    # normally sets DAPR_AGENT_PY_WORKSPACE_MODE=local, but forcing it HERE — keyed on the
+    # same condition that adds the mount — makes the mode impossible to diverge from the
+    # mount under class-config drift. Only dapr-agent-py images consume this env (CLI/adk/
+    # claude images have their own workspace handling).
+    if (
+        _cli_shared_workspace_enabled(class_config)
+        and (request.sharedWorkspaceKey or "").strip()
+        and "dapr-agent-py" in image
+    ):
+        forced_ws_env = [
+            {"name": "DAPR_AGENT_PY_WORKSPACE_MODE", "value": "local"},
+            {
+                "name": "DAPR_AGENT_PY_LOCAL_WORKSPACE_ROOT",
+                "value": class_config.sharedWorkspaceStoreMountPath or "/sandbox/work",
+            },
+        ]
+        forced_names = {entry["name"] for entry in forced_ws_env}
+        base_env = [
+            entry
+            for entry in pod_spec["containers"][0]["env"]
+            if entry.get("name") not in forced_names
+        ]
+        pod_spec["containers"][0]["env"] = [*base_env, *forced_ws_env]
     if request.sessionSecretEnv:
         # Inject per-session credentials as secretKeyRef only — the plaintext
         # value must never be embedded in the Sandbox CR manifest.

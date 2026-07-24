@@ -494,10 +494,18 @@ export async function maybeProvisionAgentWorkflowHost(params: {
 	// ensure-for-workflow fall back to runtimeRoute.appId, which
 	// resolveAgentRuntimeRoute routes to the standing pool Deployment for the
 	// runtime class. Sessions multiplex there as workflow instances; per-session
-	// config rides childInput. Three overrides force the dedicated host anyway:
+	// config rides childInput. FOUR overrides force the dedicated host anyway:
 	// explicit dedicated isolation, per-session secret env (no delivery channel
-	// on a shared pod), and persistentHost (UI sessions that pin their host).
+	// on a shared pod), persistentHost (UI sessions that pin their host), and — the
+	// durability fix — a required shared-workspace CSI mount: a pool pod has a fixed
+	// spec and CANNOT mount a per-key `sharedWorkspaceKey` subPath, so a session that
+	// needs one MUST get its own dedicated host (else it writes pod-local and the
+	// shared JuiceFS subtree stays empty).
+	const requiresSharedWorkspaceMount =
+		typeof params.sharedWorkspaceKey === "string" &&
+		params.sharedWorkspaceKey.trim().length > 0;
 	if (
+    !requiresSharedWorkspaceMount &&
     getRuntimeDescriptor(
       (params.agentConfig as { runtime?: string } | null)?.runtime,
     )?.hostMode === "shared-pool" &&

@@ -991,8 +991,13 @@ def test_nested_terminal_outcome_does_not_arm_root_workspace_retention():
 
 
 def _shared_agent_task(call_id, **kw):
+    # isolation:'shared' binds ws_script_<exec>; that only reaches the real JuiceFS
+    # subtree on a runtime that CSI-mounts it, so pin the juicefs runtime (the
+    # non-juicefs case is rejected by the dispatch guard — see
+    # test_shared_isolation_on_non_juicefs_runtime_fails_loud).
     t = agent_task(call_id, **kw)
     t["opts"]["isolation"] = "shared"
+    t["opts"]["agentType"] = "dapr-agent-py-juicefs"
     return t
 
 
@@ -1097,6 +1102,50 @@ def test_resolve_call_workspace_ref_variants():
     )
     # action kind → not a forkable agent workspace.
     assert resolve_call_workspace_ref(action_task("c" * 40 + "_0", "http/get"), "e1") is None
+
+
+def test_runtime_mounts_shared_workspace_helper():
+    from workflows.script_agent_dispatch import runtime_mounts_shared_workspace
+
+    assert runtime_mounts_shared_workspace({"workspaceBackend": "juicefs-shared"}) is True
+    assert runtime_mounts_shared_workspace({"interactiveTerminal": True}) is True
+    assert runtime_mounts_shared_workspace({"workspaceBackend": "openshell-shared"}) is False
+    assert runtime_mounts_shared_workspace({}) is False
+    assert runtime_mounts_shared_workspace(None) is False
+
+
+def test_shared_isolation_on_non_juicefs_runtime_fails_loud():
+    # isolation:'shared' on the DEFAULT runtime (dapr-agent-py, openshell-shared) does
+    # NOT mount ws_script_ — the dispatch must reject the call (fail loud), never
+    # dispatch a child, and never snapshot the (empty) shared workspace.
+    cid = "a" * 40 + "_0"
+    task = agent_task(cid)
+    task["opts"]["isolation"] = "shared"  # no juicefs agentType → default runtime
+    ctx = FakeCtx(evaluator=make_evaluator([task], {"ok": True}))
+    drive(dynamic_script_workflow(ctx, base_input()), ctx, [])
+
+    # Journaled as an error carrying the guidance; no child; no snapshot.
+    assert len(ctx.record_inputs) == 1
+    raw = ctx.record_inputs[0]["raw"]
+    assert raw.get("success") is False
+    assert "does not mount it" in str(raw.get("error"))
+    assert ctx.children == {}
+    assert ctx.snapshot_inputs == []
+
+
+def test_shared_isolation_on_juicefs_runtime_dispatches_and_snapshots():
+    # The SAME call on a juicefs-shared runtime passes the guard: it dispatches a
+    # child and, on done, snapshots the shared workspace.
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([_shared_agent_task(cid)], {"ok": True}))
+    drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": True, "content": "x"})],
+    )
+    assert len(ctx.children) == 1  # dispatched (child keyed by child_instance_id)
+    assert len(ctx.snapshot_inputs) == 1
+    assert ctx.snapshot_inputs[0]["sharedWorkspaceKey"] == "ws_script_e1"
 
 
 def test_replay_determinism_identical_action_log():

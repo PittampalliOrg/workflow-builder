@@ -686,6 +686,29 @@ def new_runtime() -> OpenShellRuntime:
     return OpenShellRuntime()
 
 
+def require_local_runtime_for_shared_workspace(
+    runtime: OpenShellRuntime, workspace_ref: str | None
+) -> None:
+    """Fail loud when a session bound to the run's SHARED JuiceFS workspace
+    (``workspaceRef=ws_script_<exec>``) did NOT resolve to :class:`LocalWorkspaceRuntime`.
+
+    Such a session's tools must execute in-pod against the CSI-mounted /sandbox/work so
+    writes land in the ``ws_script_`` subtree. If it fell back to
+    :class:`OpenShellRuntime` (``DAPR_AGENT_PY_WORKSPACE_MODE`` not ``local`` — e.g. the
+    host env didn't get set), the agent would write to a throwaway remote sandbox and its
+    files would never reach the shared subtree (node-boundary snapshots + forks would
+    silently capture nothing). Refuse instead of diverging. SEA now forces the mode
+    alongside the mount, so this only fires on a genuine regression."""
+    ref = str(workspace_ref or "").strip()
+    if ref.startswith("ws_script_") and not isinstance(runtime, LocalWorkspaceRuntime):
+        raise RuntimeError(
+            f"shared workspace {ref!r} requires LocalWorkspaceRuntime "
+            "(DAPR_AGENT_PY_WORKSPACE_MODE=local) but the runtime resolved to "
+            f"{type(runtime).__name__}; refusing to run against a throwaway sandbox "
+            "whose writes never reach the shared /sandbox/work subtree."
+        )
+
+
 _DEFAULT_RUNTIME = new_runtime()
 _RUNTIME_CONTEXT: contextvars.ContextVar[OpenShellRuntime | None] = (
     contextvars.ContextVar("openshell_runtime", default=None)
