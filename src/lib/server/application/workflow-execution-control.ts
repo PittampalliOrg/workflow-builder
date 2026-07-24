@@ -9,6 +9,7 @@ import type {
 	WorkflowExecutionReadModelPort,
 	WorkflowRunStarterPort,
 	WorkflowSpecValidatorPort,
+	WorkflowWorkspaceSnapshotPort,
 } from "$lib/server/application/ports";
 
 export type WorkflowExecutionControlInput = {
@@ -88,6 +89,10 @@ export class ApplicationWorkflowExecutionControlService {
 			executionReadModels: WorkflowExecutionReadModelPort;
 			runStarter: WorkflowRunStarterPort;
 			workflowSpecs: WorkflowSpecValidatorPort;
+			/** Node-boundary snapshot lookups (durability phase 3). Optional so
+			 * lite/test wiring without a snapshot store keeps working — resume then
+			 * always uses end-state seeding. */
+			workspaceSnapshots?: WorkflowWorkspaceSnapshotPort;
 			/** Dynamic-script gate lookups (cutover P1d): approve()/waitForEvent()
 			 * gates live in the call journal, not the spec. Optional so lite/test
 			 * wiring without a journal store keeps working (scripts then report
@@ -699,7 +704,39 @@ export class ApplicationWorkflowExecutionControlService {
 			);
 		}
 
-		const seedWorkspaceFrom = await this.resolveWorkspaceExecutionId(source);
+		// End-state seed (today's behavior): the source lineage's root workspace.
+		let seedWorkspaceFrom = await this.resolveWorkspaceExecutionId(source);
+		let seededFromSnapshot = false;
+		// Workspace-consistent fork (durability phase 3). Fork-from-N RE-EXECUTES node N —
+		// the interpreter skips only the prefix BEFORE N — so a consistent fork needs the
+		// workspace as it was BEFORE N ran. Snapshots are taken at node COMPLETION, so
+		// snapshot[N] is N's OWN output (wrong to feed back into N) and, in the common
+		// resume-after-failure case, snapshot[N] doesn't exist at all (N never completed).
+		// So seed from the NEAREST snapshot of a node strictly BEFORE `fromNodeId` in the
+		// interpreter's top-level order — i.e. the latest predecessor whose completion we
+		// captured. Snapshots live under the source run's OWN workspace key (its Dapr
+		// instance id). Any miss/failure falls through to the end-state seed above.
+		const snapshotKey = source.daprInstanceId;
+		if (this.deps.workspaceSnapshots && snapshotKey && fromNodeId) {
+			try {
+				const snapshots = new Set(
+					await this.deps.workspaceSnapshots.listSnapshots(snapshotKey),
+				);
+				const forkIndex = nodeIds.indexOf(fromNodeId);
+				for (let i = forkIndex - 1; i >= 0; i--) {
+					if (snapshots.has(nodeIds[i])) {
+						seedWorkspaceFrom = `.snapshots/${snapshotKey}/${nodeIds[i]}`;
+						seededFromSnapshot = true;
+						break;
+					}
+				}
+			} catch (err) {
+				console.warn(
+					"[resume] snapshot lookup failed; using end-state seed",
+					err,
+				);
+			}
+		}
 		const result = await this.deps.runStarter.startWorkflowRun({
 			workflowId: source.workflowId,
 			triggerData: (source.input ?? {}) as Record<string, unknown>,
@@ -722,6 +759,7 @@ export class ApplicationWorkflowExecutionControlService {
 				newInstanceId: result.instanceId,
 				fromNodeId,
 				seedWorkspaceFrom,
+				seededFromSnapshot,
 			},
 		};
 	}

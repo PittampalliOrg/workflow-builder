@@ -3135,6 +3135,202 @@ def _seed_clone_cmd() -> str:
     )
 
 
+# Node-boundary workspace snapshots (durability phase 3). As each top-level node of a
+# resumable run completes, its `/sandbox/work` is CoW-cloned into `.snapshots/<key>/<nodeId>`
+# so a later fork-from-node-N can seed from the workspace as it was AT node N (consistent)
+# instead of the run's END state. Snapshots live at the JuiceFS ROOT next to the per-run
+# subPaths, so one root mount reaches both source and snapshot (same as the seed clone).
+_SNAPSHOTS_ROOT_DIR = ".snapshots"
+_SNAPSHOT_MAX_PER_KEY = 20
+# A snapshot key is a workspace key (a Dapr instance id) and a snapshot id is a top-level
+# node id — each indexes ONE filesystem path segment, so validate strictly: a single
+# segment, no separators or traversal, bounded charset + length.
+_SNAPSHOT_COMPONENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.@:-]{0,200}")
+
+
+def _validate_snapshot_component(value: str | None, *, field: str) -> str:
+    v = (value or "").strip()
+    if (
+        not v
+        or v in {".", ".."}
+        or "/" in v
+        or "\\" in v
+        or not _SNAPSHOT_COMPONENT_RE.fullmatch(v)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field} must be a single path segment without path syntax",
+        )
+    return v
+
+
+def _snapshot_subpath(shared_key: str, snapshot_id: str) -> str:
+    """Root-relative subPath of one node snapshot (call with VALIDATED components).
+
+    This is the value the BFF threads as `seedWorkspaceFrom` when forking from a node
+    whose snapshot exists — the existing seed-clone path root-mounts and clones
+    `/jfs/<this>` into the fork's fresh workspace, so no seed-side change is needed."""
+    return f"{_SNAPSHOTS_ROOT_DIR}/{shared_key}/{snapshot_id}"
+
+
+def _snapshot_clone_cmd() -> str:
+    """A juicefs `sh -c` body for the root-mounted snapshot Job: CoW-clone a run's live
+    workspace `/jfs/$KEY` into `/jfs/.snapshots/$KEY/$SNAP`.
+
+    Idempotent: an existing snapshot dir is a no-op success (a node id is snapshotted at
+    most once). `juicefs clone` is metadata-only CoW; when the FUSE clone ioctl does not
+    pass through the CSI bind mount it fails per-file → fall back to `cp --reflink=auto`
+    then a plain `cp -a` (clone failure is EXPECTED, not an error). Build-artifact dirs are
+    pruned one level under each top-level dir (same set as the seed clone) so a snapshot is
+    source-only and cheap. The clone stages into a hidden temp dir and `mv`s into place so a
+    fork never observes a half-written snapshot as complete. After writing, if more than
+    $CAP snapshots exist for the key, the oldest (by mtime) are pruned in the same Job.
+    Missing source (no workspace yet) is a no-op success."""
+    excl = "node_modules .svelte-kit build dist .next .cache .turbo .vite"
+    return (
+        'r() { ls -A "$1" 2>/dev/null | ' + _JFS_MAGIC_FILTER + "; }; "
+        'c() { juicefs clone "$1" "$2" 2>/dev/null || cp -a --reflink=auto "$1" "$2" 2>/dev/null || cp -a "$1" "$2"; }; '
+        'S="/jfs/$KEY"; SNAPDIR="/jfs/' + _SNAPSHOTS_ROOT_DIR + '/$KEY"; D="$SNAPDIR/$SNAP"; '
+        '[ -d "$S" ] || { echo source-missing; exit 0; }; '
+        'mkdir -p "$SNAPDIR"; '
+        'if [ -d "$D" ]; then echo already-exists; else '
+        'TMP="$SNAPDIR/.tmp-$SNAP.$$"; rm -rf "$TMP"; mkdir -p "$TMP"; '
+        'EXCL="' + excl + '"; '
+        'skip() { for x in $EXCL; do [ "$1" = "$x" ] && return 0; done; return 1; }; '
+        "rc=0; "
+        'for f in $(r "$S"); do '
+        'if [ -d "$S/$f" ]; then mkdir -p "$TMP/$f"; '
+        'for g in $(r "$S/$f"); do skip "$g" && continue; c "$S/$f/$g" "$TMP/$f/$g" || rc=1; done; '
+        'else c "$S/$f" "$TMP/$f" || rc=1; fi; '
+        "done; "
+        '[ "$rc" = 0 ] && mv "$TMP" "$D" || { rm -rf "$TMP"; echo snapshot-failed; exit 1; }; '
+        "echo snapshotted; fi; "
+        # Cap: keep the newest $CAP snapshot dirs for this key; prune older by mtime.
+        # `ls` (no -A) skips the .tmp-* staging dirs of any concurrent Job.
+        'n=$(ls -1 "$SNAPDIR" 2>/dev/null | wc -l); '
+        'if [ "$n" -gt "$CAP" ]; then '
+        'ls -1t "$SNAPDIR" | tail -n +$((CAP+1)) | while read old; do rm -rf "$SNAPDIR/$old"; done; '
+        "fi; true"
+    )
+
+
+def _snapshot_prune_cmd() -> str:
+    """A `sh -c` body for the root-mounted snapshot-prune Job. Removes snapshot dirs under
+    `.snapshots/$KEY`. Env modes: PRUNE_ALL=1 removes the whole key dir; otherwise every id
+    NOT in the space-separated KEEP list is removed. Missing dir is a no-op success."""
+    return (
+        'SNAPDIR="/jfs/' + _SNAPSHOTS_ROOT_DIR + '/$KEY"; '
+        '[ -d "$SNAPDIR" ] || { echo nothing-to-prune; exit 0; }; '
+        'if [ "${PRUNE_ALL:-0}" = "1" ]; then rm -rf "$SNAPDIR"; echo pruned-all; exit 0; fi; '
+        'for d in $(ls -1 "$SNAPDIR" 2>/dev/null); do '
+        'keep=0; for k in $KEEP; do [ "$d" = "$k" ] && keep=1; done; '
+        '[ "$keep" = 0 ] && rm -rf "$SNAPDIR/$d"; done; echo pruned; true'
+    )
+
+
+# Shared root PVC name for snapshot create/prune Jobs (root mount so source + `.snapshots`
+# are visible together). Distinct from the seed clone's `wsseed-root`; both are idempotent
+# RWX/Retain root binds.
+_SNAPSHOT_ROOT_PVC = "wssnap-root"
+
+
+def _build_snapshot_job(
+    *,
+    name: str,
+    namespace: str,
+    command: str,
+    command_env: dict[str, str],
+    execution_id: str | None,
+    action: str,
+) -> dict[str, Any]:
+    """Build a short-lived root-mounted snapshot Job (create or prune). Plain Job — no
+    Kueue: snapshots are tiny and must run outside the sandbox admission queues."""
+    seed_image = os.environ.get(
+        "WORKSPACE_SEED_JUICEFS_IMAGE", "juicedata/mount:ce-v1.3.1"
+    )
+    try:
+        ttl = int(os.environ.get("SNAPSHOT_JOB_TTL_SECONDS", "600"))
+    except (TypeError, ValueError):
+        ttl = 600
+    labels = {
+        "app": "cli-workspace-snapshot",
+        "snapshot.workflow-builder.cnoe.io/action": action,
+    }
+    if execution_id:
+        labels["workflow-builder.cnoe.io/execution-id"] = _safe_name(
+            execution_id, max_length=63
+        )
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
+        "spec": {
+            "backoffLimit": 1,
+            "ttlSecondsAfterFinished": ttl,
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "snapshot",
+                            "image": seed_image,
+                            "command": ["sh", "-c", command],
+                            "env": [
+                                {"name": k, "value": v}
+                                for k, v in command_env.items()
+                            ],
+                            "volumeMounts": [{"name": "root", "mountPath": "/jfs"}],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "root",
+                            "persistentVolumeClaim": {"claimName": _SNAPSHOT_ROOT_PVC},
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+def _start_snapshot_prune_job(
+    batch: Any,
+    core: Any,
+    *,
+    namespace: str,
+    class_config: ExecutionClassConfig,
+    shared_key: str,
+    keep: list[str] | None = None,
+    prune_all: bool = False,
+    execution_id: str | None = None,
+) -> str:
+    """Ensure the root PV, then submit a snapshot-prune Job. Returns the Job name.
+    Caller validates `shared_key`/`keep`. Reused by the prune endpoint and workspace purge."""
+    job_name = (
+        f"snapx-{sha256(shared_key.encode()).hexdigest()[:12]}-{uuid4().hex[:6]}"
+    )
+    command_env = {"KEY": shared_key}
+    if prune_all:
+        command_env["PRUNE_ALL"] = "1"
+    else:
+        command_env["KEEP"] = " ".join(keep or [])
+    job_body = _build_snapshot_job(
+        name=job_name,
+        namespace=namespace,
+        command=_snapshot_prune_cmd(),
+        command_env=command_env,
+        execution_id=execution_id,
+        action="prune",
+    )
+    _ensure_root_pv(
+        core, name=_SNAPSHOT_ROOT_PVC, class_config=class_config, namespace=namespace
+    )
+    batch.create_namespaced_job(namespace=namespace, body=job_body)
+    return job_name
+
+
 def _ensure_cli_seed_workspace_volume(
     core: Any,
     request: AgentWorkflowHostRequest,
@@ -3456,6 +3652,9 @@ def build_agent_workflow_host_sandbox_manifest(
             [
                 {"secretRef": {"name": "dapr-agent-py-secrets", "optional": True}},
                 {"secretRef": {"name": "workflow-checkpoint-gitea", "optional": True}},
+                # Phase-2 in-cluster git-checkpoint remote creds (stacks#4956). Optional so
+                # pods still start before the Secret exists.
+                {"secretRef": {"name": "checkpoint-git-creds", "optional": True}},
             ]
         )
     user_home = (class_config.agentHostUserHome or "").rstrip("/") or None
@@ -8854,7 +9053,25 @@ def purge_workspace_data(
         if getattr(exc, "status", None) != 409:
             raise
     batch.create_namespaced_job(namespace=namespace, body=job_body)
-    return {"success": True, "job": job_name, "subPath": shared_key}
+    # Reap this workspace's node-boundary snapshots alongside the workspace data (they
+    # live at the ROOT `.snapshots/<key>/`, which the subPath-mounted purge Job above
+    # can't reach). Best-effort: a failed prune must never fail the purge.
+    snapshot_prune_job: str | None = None
+    try:
+        snapshot_prune_job = _start_snapshot_prune_job(
+            batch,
+            core,
+            namespace=namespace,
+            class_config=class_config,
+            shared_key=shared_key,
+            prune_all=True,
+        )
+    except Exception as exc:
+        logger.warning("snapshot prune on purge failed for %s: %s", shared_key, exc)
+    result: dict[str, Any] = {"success": True, "job": job_name, "subPath": shared_key}
+    if snapshot_prune_job:
+        result["snapshotPruneJob"] = snapshot_prune_job
+    return result
 
 
 def _ensure_temp_subpath_pv(
@@ -9261,6 +9478,229 @@ def seed_workspace_data_status(
         "failed": failed,
         "active": int(getattr(st, "active", 0) or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Node-boundary CLI-workspace snapshots (durability phase 3). See
+# `_snapshot_clone_cmd` above for the mechanism.
+# ---------------------------------------------------------------------------
+
+
+class CliWorkspaceSnapshotRequest(BaseModel):
+    """Create one node-boundary snapshot of a run's CLI shared workspace."""
+
+    sharedWorkspaceKey: str
+    snapshotId: str
+    executionId: str | None = None
+    executionClass: str | None = None
+
+
+class CliWorkspaceSnapshotPruneRequest(BaseModel):
+    """Prune snapshots for one workspace key. `all` wins over `keep`."""
+
+    sharedWorkspaceKey: str
+    keep: list[str] | None = None
+    all: bool = False
+    executionId: str | None = None
+    executionClass: str | None = None
+
+
+def _juicefs_webdav_config() -> tuple[str, str, str] | None:
+    """(base_url, user, password) for the in-cluster juicefs-webdav gateway, or None when
+    no password is resolvable. The password mirrors the BFF derivation
+    (`sha256("webdav:wfbcli:<DATABASE_URL>")[:32]`) so the two agree without extra config."""
+    base = os.environ.get(
+        "JUICEFS_WEBDAV_URL",
+        "http://juicefs-webdav.workflow-builder.svc.cluster.local:9007",
+    ).rstrip("/")
+    user = os.environ.get("JUICEFS_WEBDAV_USER", "wfbwebdav")
+    password = os.environ.get("JUICEFS_WEBDAV_PASSWORD", "")
+    if not password:
+        db = os.environ.get("DATABASE_URL", "")
+        if db:
+            password = sha256(f"webdav:wfbcli:{db}".encode()).hexdigest()[:32]
+    if not password:
+        return None
+    return base, user, password
+
+
+def _parse_webdav_child_dir_names(xml_text: str, *, self_path: str) -> list[str]:
+    """Pull immediate child directory names out of a `PROPFIND Depth:1` multistatus body.
+    `self_path` is the collection's own decoded path (excluded from the result)."""
+    from urllib.parse import unquote
+
+    names: list[str] = []
+    self_norm = "/" + self_path.strip("/") + "/"
+    for raw in re.findall(r"<[a-zA-Z]*:?href>([^<]*)</[a-zA-Z]*:?href>", xml_text):
+        try:
+            href = unquote(raw)
+        except Exception:
+            href = raw
+        path = href.split("://", 1)[-1]
+        path = path[path.index("/"):] if "/" in path else path
+        norm = "/" + path.strip("/") + "/"
+        if norm == self_norm:
+            continue
+        if not norm.startswith(self_norm):
+            continue
+        leaf = norm[len(self_norm):].strip("/")
+        if leaf and "/" not in leaf:
+            names.append(leaf)
+    return names
+
+
+@app.post("/internal/cli-workspace/snapshots", status_code=status.HTTP_200_OK)
+def create_cli_workspace_snapshot(
+    request: Request, body: CliWorkspaceSnapshotRequest
+) -> dict[str, Any]:
+    """Create (idempotently) a node-boundary CoW snapshot of a run's CLI shared workspace at
+    `.snapshots/<key>/<snapshotId>`. Returns immediately with the Job name; the Job is
+    fire-and-forget (the orchestrator does not poll — a missing snapshot only costs a
+    fallback to end-state seeding). Idempotent: a re-POST for an existing snapshot no-ops."""
+    _require_internal(request)
+    shared_key = _validate_snapshot_component(
+        body.sharedWorkspaceKey, field="sharedWorkspaceKey"
+    )
+    snapshot_id = _validate_snapshot_component(body.snapshotId, field="snapshotId")
+    class_config = _resolve_juicefs_class(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=409, detail="no juicefs-shared execution class configured"
+        )
+    if _preview_storage_context() is not None:
+        # Snapshots need a root mount, which preview storage forbids (and a preview seed
+        # PV cannot express a nested subPath). Previews fall back to end-state seeding.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="snapshots unavailable under preview storage",
+        )
+    namespace = _agent_workflow_host_namespace()
+    job_name = (
+        "snap-"
+        f"{sha256(f'{shared_key}/{snapshot_id}'.encode()).hexdigest()[:12]}"
+        f"-{uuid4().hex[:6]}"
+    )
+    job_body = _build_snapshot_job(
+        name=job_name,
+        namespace=namespace,
+        command=_snapshot_clone_cmd(),
+        command_env={
+            "KEY": shared_key,
+            "SNAP": snapshot_id,
+            "CAP": str(_SNAPSHOT_MAX_PER_KEY),
+        },
+        execution_id=body.executionId,
+        action="create",
+    )
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {
+            "dryRun": True,
+            "job": job_name,
+            "key": shared_key,
+            "snapshotId": snapshot_id,
+        }
+    batch, core = _load_k8s_clients()
+    _ensure_root_pv(
+        core, name=_SNAPSHOT_ROOT_PVC, class_config=class_config, namespace=namespace
+    )
+    batch.create_namespaced_job(namespace=namespace, body=job_body)
+    return {
+        "success": True,
+        "job": job_name,
+        "namespace": namespace,
+        "key": shared_key,
+        "snapshotId": snapshot_id,
+    }
+
+
+@app.get(
+    "/internal/cli-workspace/snapshots/{shared_workspace_key}",
+    status_code=status.HTTP_200_OK,
+)
+def list_cli_workspace_snapshots(
+    request: Request, shared_workspace_key: str
+) -> dict[str, Any]:
+    """List the snapshot ids recorded for a workspace key. Read-only + Job-free: PROPFINDs
+    `.snapshots/<key>/` on the juicefs-webdav gateway (Depth:1). `available:false` (never an
+    error) when the gateway is unconfigured/unreachable so callers fall back to end-state
+    seeding rather than fail the fork."""
+    _require_internal(request)
+    import requests  # noqa: PLC0415 — optional/lazy; only this read path needs it
+
+    key = _validate_snapshot_component(
+        shared_workspace_key, field="sharedWorkspaceKey"
+    )
+    cfg = _juicefs_webdav_config()
+    if cfg is None:
+        return {"key": key, "snapshots": [], "available": False}
+    base, user, password = cfg
+    rel = f"{_SNAPSHOTS_ROOT_DIR}/{key}/"
+    url = f"{base}/{rel}"
+    try:
+        resp = requests.request(
+            "PROPFIND",
+            url,
+            headers={"Depth": "1"},
+            auth=(user, password),
+            timeout=15,
+        )
+    except Exception as exc:
+        logger.warning("snapshot list PROPFIND failed for %s: %s", key, exc)
+        return {"key": key, "snapshots": [], "available": False}
+    if resp.status_code == 404:
+        return {"key": key, "snapshots": [], "available": True}
+    if resp.status_code >= 400:
+        logger.warning(
+            "snapshot list PROPFIND %s → HTTP %s", key, resp.status_code
+        )
+        return {"key": key, "snapshots": [], "available": False}
+    ids = _parse_webdav_child_dir_names(resp.text, self_path=rel)
+    return {"key": key, "snapshots": sorted(ids), "available": True}
+
+
+@app.post("/internal/cli-workspace/snapshots/prune", status_code=status.HTTP_200_OK)
+def prune_cli_workspace_snapshots(
+    request: Request, body: CliWorkspaceSnapshotPruneRequest
+) -> dict[str, Any]:
+    """Prune snapshots for a workspace key: `all=true` drops every snapshot, else every id
+    NOT in `keep` is removed. Starts a short root-mounted Job; returns its name."""
+    _require_internal(request)
+    shared_key = _validate_snapshot_component(
+        body.sharedWorkspaceKey, field="sharedWorkspaceKey"
+    )
+    keep = [
+        _validate_snapshot_component(k, field="keep entry") for k in (body.keep or [])
+    ]
+    class_config = _resolve_juicefs_class(body.executionClass)
+    if class_config is None:
+        raise HTTPException(
+            status_code=409, detail="no juicefs-shared execution class configured"
+        )
+    if _preview_storage_context() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="snapshots unavailable under preview storage",
+        )
+    namespace = _agent_workflow_host_namespace()
+    if os.environ.get("SANDBOX_EXECUTION_DRY_RUN", "").lower() in {"1", "true", "yes"}:
+        return {
+            "dryRun": True,
+            "key": shared_key,
+            "all": bool(body.all),
+            "keep": keep,
+        }
+    batch, core = _load_k8s_clients()
+    job_name = _start_snapshot_prune_job(
+        batch,
+        core,
+        namespace=namespace,
+        class_config=class_config,
+        shared_key=shared_key,
+        keep=keep,
+        prune_all=bool(body.all),
+        execution_id=body.executionId,
+    )
+    return {"success": True, "job": job_name, "namespace": namespace, "key": shared_key}
 
 
 # ---------------------------------------------------------------------------

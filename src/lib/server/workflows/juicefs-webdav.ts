@@ -52,7 +52,35 @@ export function createJuiceFsWebdavClient(config: JuiceFsWebdavConfig = {}) {
     ) => listWorkspaceTreeWithConfig(baseUrl, auth, instanceId, opts),
     readWorkspaceFile: (instanceId: string, relPath: string) =>
       readWorkspaceFileWithConfig(baseUrl, auth, instanceId, relPath),
+    /**
+     * List the node-boundary snapshot ids recorded for one workspace key
+     * (durability phase 3). Snapshots live at the filesystem ROOT under
+     * `.snapshots/<key>/<snapshotId>/`, alongside the per-instance workspaces —
+     * a single `Depth:1` PROPFIND lists them. Returns [] when the key has no
+     * snapshots (the `.snapshots/<key>` dir is absent → 404).
+     */
+    listSnapshots: (workspaceKey: string) =>
+      listSnapshotsWithConfig(baseUrl, auth, workspaceKey),
   };
+}
+
+async function listSnapshotsWithConfig(
+  baseUrl: string,
+  auth: string | null,
+  workspaceKey: string,
+): Promise<string[]> {
+  // `.snapshots` is the collection; `workspaceKey` its child dir. listDir treats
+  // its 3rd arg as the first path segment, so pass ".snapshots" there and the key
+  // as the subpath → PROPFIND `/.snapshots/<key>/`.
+  const children = await listDir(baseUrl, auth, ".snapshots", workspaceKey);
+  if (children === null) return [];
+  const out: string[] = [];
+  for (const c of children) {
+    if (!c.isDir) continue;
+    const leaf = c.path.split("/").pop() ?? "";
+    if (leaf) out.push(leaf);
+  }
+  return out;
 }
 
 function decodeHref(href: string): string {

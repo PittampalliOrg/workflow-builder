@@ -816,7 +816,144 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 				newInstanceId: "instance-new",
 				fromNodeId: "repair",
 				seedWorkspaceFrom: "instance-root",
+				seededFromSnapshot: false,
 			},
+		});
+	});
+
+	const THREE_NODE_SPEC = {
+		do: [
+			{ plan: { call: "agent.run" } },
+			{ build: { call: "agent.run" } },
+			{ repair: { call: "agent.run" } },
+		],
+	};
+
+	it("seeds the fork from the immediate predecessor's snapshot (fork re-executes the node)", async () => {
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["plan", "build"]) };
+		const withSnapshots = new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners,
+			executionLifecycle,
+			executionReadModels,
+			runStarter,
+			workflowSpecs,
+			workspaceSnapshots,
+		});
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				id: "exec-src",
+				daprInstanceId: "instance-src",
+				currentNodeId: "repair",
+				input: { repoUrl: "owner/repo" },
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ spec: THREE_NODE_SPEC }),
+		);
+
+		const result = await withSnapshots.resumeExecution({
+			executionId: "exec-src",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { fromNodeId: "repair" },
+		});
+
+		// Looked up under the source run's OWN workspace key; seeds "build" (the node
+		// BEFORE "repair"), NOT "repair" — fork-from-repair re-runs repair.
+		expect(workspaceSnapshots.listSnapshots).toHaveBeenCalledWith("instance-src");
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumeFromNode: "repair",
+				seedWorkspaceFrom: ".snapshots/instance-src/build",
+			}),
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { seededFromSnapshot: true, seedWorkspaceFrom: ".snapshots/instance-src/build" },
+		});
+	});
+
+	it("walks back past a missing predecessor snapshot (resume-after-failure: fork node never completed)", async () => {
+		// The failed node "repair" has no snapshot (it never completed) and "build" has
+		// none either; the walk skips both and seeds from "plan".
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["plan"]) };
+		const withSnapshots = new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners,
+			executionLifecycle,
+			executionReadModels,
+			runStarter,
+			workflowSpecs,
+			workspaceSnapshots,
+		});
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				id: "exec-src",
+				daprInstanceId: "instance-src",
+				currentNodeId: "repair",
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ spec: THREE_NODE_SPEC }),
+		);
+
+		const result = await withSnapshots.resumeExecution({
+			executionId: "exec-src",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { fromNodeId: "repair" },
+		});
+
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({ seedWorkspaceFrom: ".snapshots/instance-src/plan" }),
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { seededFromSnapshot: true, seedWorkspaceFrom: ".snapshots/instance-src/plan" },
+		});
+	});
+
+	it("falls back to end-state seeding when no predecessor of the fork node has a snapshot", async () => {
+		// Forking from the FIRST node has no predecessor to seed from.
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["build"]) };
+		const withSnapshots = new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners,
+			executionLifecycle,
+			executionReadModels,
+			runStarter,
+			workflowSpecs,
+			workspaceSnapshots,
+		});
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				id: "exec-src",
+				daprInstanceId: "instance-src",
+				currentNodeId: "plan",
+				rerunOfExecutionId: null,
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ spec: THREE_NODE_SPEC }),
+		);
+
+		const result = await withSnapshots.resumeExecution({
+			executionId: "exec-src",
+			userId: "user-1",
+			projectId: "project-1",
+			body: { fromNodeId: "plan" },
+		});
+
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({ seedWorkspaceFrom: "instance-src" }),
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { seededFromSnapshot: false, seedWorkspaceFrom: "instance-src" },
 		});
 	});
 
