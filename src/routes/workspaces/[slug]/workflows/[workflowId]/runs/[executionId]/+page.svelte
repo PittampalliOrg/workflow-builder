@@ -82,8 +82,12 @@
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import PlanReview from '$lib/components/workflow/execution/plan-review.svelte';
-	import RenderedPatch from '$lib/components/benchmarks/rendered-patch.svelte';
-	import { stripDiffStatPreamble } from '$lib/utils/unified-diff';
+	import CodeCheckpointsPanel from '$lib/components/workflow/execution/code-checkpoints-panel.svelte';
+	import {
+		type CodeCheckpoint,
+		fetchCodeCheckpoints,
+		resolveCheckpointStepId
+	} from '$lib/utils/code-checkpoints';
 	import { EventRenderer, ToolEventRenderer } from '$lib/components/events';
 	import { ChatContainerRoot, ChatContainerContent, ChatContainerScrollAnchor } from '$lib/components/ui/prompt-kit/chat-container';
 	import { ScrollButton } from '$lib/components/ui/prompt-kit/scroll-button';
@@ -304,50 +308,14 @@
 	let planArtifacts = $state<Array<{ id: string; status: string; goal: string; planMarkdown: string | null; planJson: unknown; nodeId: string; createdAt: string; updatedAt: string }>>([]);
 	let planArtifactsLoaded = $state(false);
 
-	type CodeCheckpointFile = {
-		path?: string;
-		status?: string;
-		previousPath?: string | null;
-		additions?: number | null;
-		deletions?: number | null;
-		binary?: boolean;
-	};
-
-	type CodeCheckpoint = {
-		id: string;
-		seq: number | null;
-		toolName: string;
-		status: 'created' | 'no_changes' | 'skipped' | 'error';
-		beforeSha: string | null;
-		afterSha: string | null;
-		remoteUrl: string | null;
-		remoteRef: string | null;
-		remoteStatus: string | null;
-		remoteError: string | null;
-		remotePushedAt: string | null;
-		changedFiles: CodeCheckpointFile[];
-		fileCount: number;
-		sourceEventId: string;
-		sandboxName: string | null;
-		repoPath: string;
-		error: string | null;
-		createdAt: string;
-	};
-
+	// Checkpoint model + helpers now live in $lib/utils/code-checkpoints and the
+	// master-detail UI in CodeCheckpointsPanel. The page still owns the list (the
+	// Timeline markers + tab gating consume it) and the current selection.
 	let codeCheckpoints = $state<CodeCheckpoint[]>([]);
 	let codeCheckpointsLoaded = $state(false);
 	let codeCheckpointsLoading = $state(false);
 	let codeCheckpointError = $state<string | null>(null);
 	let selectedCodeCheckpointId = $state<string | null>(null);
-	let selectedCodePath = $state<string | null>(null);
-	let codeDiff = $state('');
-	// Patch body only (git diff --stat preamble stripped) for the diff2html renderer.
-	const codeDiffPatch = $derived(stripDiffStatPreamble(codeDiff));
-	let codeDiffLoading = $state(false);
-	let codeDiffError = $state<string | null>(null);
-	let restoreCheckpointPending = $state(false);
-	let restoreCheckpointMessage = $state<string | null>(null);
-	let restoreCheckpointError = $state<string | null>(null);
 
 	// Loading
 	let isLoadingWorkflow = $state(true);
@@ -774,16 +742,6 @@
 
 	const executionPlanText = $derived(extractPlanTextFromExecution());
 	const displayPlanText = $derived(planText ?? executionPlanText);
-	const selectedCodeCheckpoint = $derived.by(
-		() => codeCheckpoints.find((checkpoint) => checkpoint.id === selectedCodeCheckpointId) ?? null
-	);
-	const checkpointChangeCount = $derived(
-		codeCheckpoints.filter((checkpoint) => checkpoint.status === 'created').length
-	);
-	const durableCheckpointCount = $derived(
-		codeCheckpoints.filter(checkpointIsDurable).length
-	);
-
 	async function loadPlanText(): Promise<void> {
 		if (planTextLoaded) return;
 		try {
@@ -842,46 +800,12 @@
 		codeCheckpointsLoading = true;
 		codeCheckpointError = null;
 		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/code-checkpoints`);
-			if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
-			const data = await res.json();
-			codeCheckpoints = data.checkpoints ?? [];
+			codeCheckpoints = await fetchCodeCheckpoints(executionId);
 			codeCheckpointsLoaded = true;
-			const firstChanged =
-				codeCheckpoints.find((checkpoint) => checkpoint.status === 'created') ??
-				codeCheckpoints[0] ??
-				null;
-			if (firstChanged && !selectedCodeCheckpointId) {
-				await selectCodeCheckpoint(firstChanged.id);
-			}
 		} catch (err) {
 			codeCheckpointError = err instanceof Error ? err.message : 'Failed to load code checkpoints';
 		} finally {
 			codeCheckpointsLoading = false;
-		}
-	}
-
-	async function selectCodeCheckpoint(checkpointId: string, filePath: string | null = null): Promise<void> {
-		selectedCodeCheckpointId = checkpointId;
-		selectedCodePath = filePath;
-		codeDiff = '';
-		codeDiffError = null;
-		restoreCheckpointMessage = null;
-		restoreCheckpointError = null;
-		codeDiffLoading = true;
-		const pathQuery = filePath ? `?path=${encodeURIComponent(filePath)}` : '';
-		try {
-			const res = await fetch(
-				`/api/workflows/executions/${executionId}/code-checkpoints/${checkpointId}/diff${pathQuery}`
-			);
-			if (!res.ok) throw new Error(await readApiError(res, 'Failed to load checkpoint diff'));
-			const data = await res.json();
-			codeDiff = typeof data.diff === 'string' ? data.diff : '';
-			if (data.error) codeDiffError = String(data.error);
-		} catch (err) {
-			codeDiffError = err instanceof Error ? err.message : 'Failed to load checkpoint diff';
-		} finally {
-			codeDiffLoading = false;
 		}
 	}
 
@@ -1050,38 +974,6 @@
 			(activeTab === 'files' && !hasFilesTab);
 		if (hidden) activeTab = 'overview';
 	});
-
-	async function restoreSelectedCodeCheckpoint(): Promise<void> {
-		if (!selectedCodeCheckpoint) return;
-		const sandboxName = selectedCodeCheckpoint.sandboxName || activeWorkspaceSandboxName;
-		if (!sandboxName) {
-			restoreCheckpointError = 'No active sandbox is available for restore.';
-			return;
-		}
-		restoreCheckpointPending = true;
-		restoreCheckpointMessage = null;
-		restoreCheckpointError = null;
-		try {
-			const res = await fetch(
-				`/api/workflows/executions/${executionId}/code-checkpoints/${selectedCodeCheckpoint.id}/restore`,
-				{
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						sandboxName,
-						repoPath: selectedCodeCheckpoint.repoPath
-					})
-				}
-			);
-			if (!res.ok) throw new Error(await readApiError(res, 'Failed to restore checkpoint'));
-			const data = await res.json();
-			restoreCheckpointMessage = `Restored ${shortSha(data.afterSha)} into ${data.sandboxName}.`;
-		} catch (err) {
-			restoreCheckpointError = err instanceof Error ? err.message : 'Failed to restore checkpoint';
-		} finally {
-			restoreCheckpointPending = false;
-		}
-	}
 
 	let selectedAgentRunId = $state<string | null>(null);
 	const selectedAgentRun = $derived.by(
@@ -1270,6 +1162,14 @@
 		} finally {
 			resumeBusy = false;
 		}
+	}
+
+	// Fork from a specific checkpoint's owning step. Resolves the checkpoint's node
+	// id (or tool-call fallback) to the bare step name the resume API keys on and
+	// opens the fork dialog preset to it; degrades to the default fork point when
+	// the checkpoint carries no step linkage.
+	function forkFromCheckpoint(checkpoint: CodeCheckpoint) {
+		openResume(resolveCheckpointStepId(checkpoint) ?? undefined);
 	}
 
 	let allTimelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
@@ -1724,100 +1624,6 @@
 			default:
 				return Terminal;
 		}
-	}
-
-	function shortSha(value: string | null | undefined): string {
-		return value ? value.slice(0, 8) : 'none';
-	}
-
-	function checkpointFilePath(file: CodeCheckpointFile): string {
-		return String(file.path ?? '');
-	}
-
-	function checkpointFileSummary(file: CodeCheckpointFile): string {
-		const parts = [];
-		if (typeof file.additions === 'number') parts.push(`+${file.additions}`);
-		if (typeof file.deletions === 'number') parts.push(`-${file.deletions}`);
-		if (file.binary) parts.push('binary');
-		return parts.join(' ');
-	}
-
-	function checkpointFileStatusLabel(file: CodeCheckpointFile): string {
-		const status = String(file.status ?? '').trim().toUpperCase();
-		if (!status) return file.binary ? 'BIN' : 'M';
-		if (status.startsWith('R')) return status;
-		if (status.startsWith('C')) return status;
-		return status.slice(0, 1);
-	}
-
-	function checkpointHasFileChanges(checkpoint: CodeCheckpoint): boolean {
-		return checkpoint.status === 'created' && checkpoint.fileCount > 0;
-	}
-
-	function checkpointGitChangeLabel(checkpoint: CodeCheckpoint): string | null {
-		if (!checkpointHasFileChanges(checkpoint)) return null;
-		const counts = new Map<string, number>();
-		for (const file of checkpoint.changedFiles) {
-			const status = checkpointFileStatusLabel(file);
-			counts.set(status, (counts.get(status) ?? 0) + 1);
-		}
-		if (counts.size === 0) return `M ${checkpoint.fileCount}`;
-		const order = ['A', 'M', 'D', 'R', 'C', 'T', 'U'];
-		return [...counts.entries()]
-			.sort(([left], [right]) => {
-				const leftIndex = order.findIndex((prefix) => left.startsWith(prefix));
-				const rightIndex = order.findIndex((prefix) => right.startsWith(prefix));
-				return (leftIndex === -1 ? order.length : leftIndex) - (rightIndex === -1 ? order.length : rightIndex);
-			})
-			.map(([status, count]) => `${status} ${count}`)
-			.join(' ');
-	}
-
-	function checkpointShaRange(checkpoint: CodeCheckpoint): string | null {
-		if (!checkpointHasFileChanges(checkpoint)) return null;
-		if (!checkpoint.beforeSha || !checkpoint.afterSha) return null;
-		return `${shortSha(checkpoint.beforeSha)}..${shortSha(checkpoint.afterSha)}`;
-	}
-
-	function checkpointGitRemoteLabel(checkpoint: CodeCheckpoint): string | null {
-		if (!checkpointHasFileChanges(checkpoint)) return null;
-		if (checkpointIsDurable(checkpoint)) return 'pushed';
-		if (checkpoint.remoteStatus === 'error') return 'push failed';
-		if (checkpoint.remoteRef) return 'local ref';
-		return null;
-	}
-
-	function checkpointShouldShowRemoteError(checkpoint: CodeCheckpoint): boolean {
-		if (!checkpoint.remoteError) return false;
-		if (
-			!checkpointHasFileChanges(checkpoint) &&
-			['no changes', 'no staged changes'].includes(checkpoint.remoteError.trim().toLowerCase())
-		) {
-			return false;
-		}
-		return true;
-	}
-
-	function checkpointIsDurable(checkpoint: CodeCheckpoint): boolean {
-		return checkpoint.remoteStatus === 'pushed' && !!checkpoint.remoteRef;
-	}
-
-	function checkpointRemoteLabel(checkpoint: CodeCheckpoint): string {
-		if (checkpointIsDurable(checkpoint)) return 'durable';
-		if (checkpoint.remoteStatus === 'error') return 'remote error';
-		if (checkpoint.remoteRef) return 'not pushed';
-		return 'local only';
-	}
-
-	async function readApiError(response: Response, fallback: string): Promise<string> {
-		const contentType = response.headers.get('content-type') ?? '';
-		if (contentType.includes('application/json')) {
-			const body = await response.json().catch(() => null);
-			if (body && typeof body.message === 'string') return body.message;
-			if (body && typeof body.error === 'string') return body.error;
-		}
-		const text = await response.text().catch(() => '');
-		return text.trim() || fallback;
 	}
 
 	function eventLabel(event: ExecutionTimelineEvent): string {
@@ -2970,180 +2776,20 @@
 
 		<!-- Tab 4: Code -->
 		<TabsContent value="code" class="flex-1 overflow-hidden p-4">
-			<div class="mx-auto flex h-full max-w-7xl flex-col gap-4">
-				<div class="flex flex-wrap items-center justify-between gap-3">
-					<div>
-						<p class="text-sm font-medium">Workspace Checkpoints</p>
-						<p class="text-xs text-muted-foreground">
-							Git-backed checkpoints created after mutating agent tools. Dapr stores the references; diffs load on demand.
-						</p>
-					</div>
-					<div class="flex flex-wrap items-center gap-2">
-						<Badge variant="outline">{codeCheckpoints.length} checkpoints</Badge>
-						<Badge variant="outline">{checkpointChangeCount} with changes</Badge>
-						<Badge variant="outline">{durableCheckpointCount} durable</Badge>
-						<button
-							class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-progress disabled:opacity-60"
-							type="button"
-							disabled={codeCheckpointsLoading}
-							onclick={() => loadCodeCheckpoints(true)}
-						>
-							<RefreshCw size={12} class={codeCheckpointsLoading ? 'animate-spin' : ''} />
-							Refresh
-						</button>
-					</div>
-				</div>
-
-				{#if codeCheckpointError}
-					<Alert variant="destructive">
-						<CircleAlert class="size-4" />
-						<AlertDescription>{codeCheckpointError}</AlertDescription>
-					</Alert>
-				{/if}
-
-				{#if codeCheckpointsLoading && codeCheckpoints.length === 0}
-					<div class="grid gap-3 lg:grid-cols-[22rem_1fr]">
-						<Skeleton class="h-80 w-full rounded-md" />
-						<Skeleton class="h-80 w-full rounded-md" />
-					</div>
-				{:else if codeCheckpoints.length === 0}
-					<div class="flex flex-1 flex-col items-center justify-center text-muted-foreground">
-						<FileDiff size={24} />
-						<p class="mt-2 text-sm font-medium">No code checkpoints recorded</p>
-						<p class="mt-1 max-w-md text-center text-xs">
-							New dapr-agent-py runs will checkpoint write, edit, patch, and shell tools when the workspace is backed by Git.
-						</p>
-					</div>
-				{:else}
-					<div class="grid min-h-0 flex-1 gap-4 lg:grid-cols-[24rem_minmax(0,1fr)]">
-						<div class="min-h-0 overflow-y-auto rounded-md border border-border">
-								{#each codeCheckpoints as checkpoint (checkpoint.id)}
-									{@const gitChangeLabel = checkpointGitChangeLabel(checkpoint)}
-									{@const gitShaRange = checkpointShaRange(checkpoint)}
-									{@const gitRemoteLabel = checkpointGitRemoteLabel(checkpoint)}
-									<button
-										type="button"
-										class="block w-full border-b border-border px-3 py-3 text-left last:border-b-0 hover:bg-muted/70 {checkpoint.id === selectedCodeCheckpointId ? 'bg-muted' : ''}"
-										onclick={() => selectCodeCheckpoint(checkpoint.id)}
-									>
-										<div class="flex items-center justify-between gap-2">
-											<span class="truncate text-sm font-medium">{checkpoint.toolName}</span>
-											{#if checkpoint.status === 'error'}
-												<Badge variant="destructive" class="shrink-0 font-mono text-[10px]">!</Badge>
-											{:else if gitChangeLabel}
-												<Badge variant="outline" class="shrink-0 font-mono text-[10px]">{gitChangeLabel}</Badge>
-											{/if}
-										</div>
-										{#if gitShaRange || gitRemoteLabel || (checkpoint.seq && (gitChangeLabel || checkpoint.status === 'error'))}
-											<div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
-												{#if gitShaRange}
-													<span>{gitShaRange}</span>
-												{/if}
-												{#if gitRemoteLabel}
-													<span>{gitRemoteLabel}</span>
-												{/if}
-												{#if checkpoint.seq && (gitChangeLabel || checkpoint.status === 'error')}
-													<span>#{checkpoint.seq}</span>
-												{/if}
-											</div>
-										{/if}
-										{#if checkpointShouldShowRemoteError(checkpoint)}
-											<p class="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-400">{checkpoint.remoteError}</p>
-										{/if}
-									{#if checkpoint.error}
-										<p class="mt-1 line-clamp-2 text-xs text-red-600 dark:text-red-400">{checkpoint.error}</p>
-									{/if}
-								</button>
-							{/each}
-						</div>
-
-						<div class="flex min-h-0 flex-col overflow-hidden rounded-md border border-border">
-							<div class="border-b border-border px-3 py-2">
-								{#if selectedCodeCheckpoint}
-									<div class="flex flex-wrap items-center justify-between gap-2">
-										<div class="min-w-0">
-											<p class="truncate text-sm font-medium">
-												{selectedCodePath ?? selectedCodeCheckpoint.toolName}
-											</p>
-											<p class="truncate text-xs text-muted-foreground">
-												{selectedCodeCheckpoint.repoPath}
-												{#if selectedCodeCheckpoint.sandboxName}
-													<span> · {selectedCodeCheckpoint.sandboxName}</span>
-												{/if}
-												{#if selectedCodeCheckpoint.remoteRef}
-													<span> · {checkpointRemoteLabel(selectedCodeCheckpoint)}</span>
-												{/if}
-											</p>
-										</div>
-										<div class="flex flex-wrap items-center gap-1">
-											{#if checkpointIsDurable(selectedCodeCheckpoint)}
-												<button
-													type="button"
-													class="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-progress disabled:opacity-60"
-													disabled={restoreCheckpointPending}
-													onclick={restoreSelectedCodeCheckpoint}
-												>
-													{restoreCheckpointPending ? 'Restoring...' : 'Restore to sandbox'}
-												</button>
-											{/if}
-												{#each selectedCodeCheckpoint.changedFiles as file (checkpointFilePath(file))}
-													{@const path = checkpointFilePath(file)}
-													{#if path}
-														<button
-															type="button"
-															class="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted {selectedCodePath === path ? 'bg-muted' : ''}"
-															onclick={() => selectCodeCheckpoint(selectedCodeCheckpoint.id, path)}
-														>
-															<span class="font-mono text-muted-foreground">{checkpointFileStatusLabel(file)}</span>
-															<span>{path}</span>
-															{#if checkpointFileSummary(file)}
-																<span class="ml-1 text-muted-foreground">{checkpointFileSummary(file)}</span>
-														{/if}
-													</button>
-												{/if}
-											{/each}
-										</div>
-									</div>
-								{:else}
-									<p class="text-sm text-muted-foreground">Select a checkpoint to inspect its diff.</p>
-								{/if}
-								{#if restoreCheckpointMessage}
-									<p class="mt-2 text-xs text-green-700 dark:text-green-400">{restoreCheckpointMessage}</p>
-								{/if}
-								{#if restoreCheckpointError}
-									<p class="mt-2 text-xs text-red-600 dark:text-red-400">{restoreCheckpointError}</p>
-								{/if}
-							</div>
-
-							<div class="min-h-0 flex-1 overflow-hidden">
-								{#if codeDiffLoading}
-									<div class="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-										<Loader2 size={16} class="animate-spin" />
-										Loading diff...
-									</div>
-								{:else if codeDiffError}
-									<Alert variant="destructive" class="m-4">
-										<CircleAlert class="size-4" />
-										<AlertDescription>
-											<pre class="whitespace-pre-wrap break-all font-mono text-xs">{codeDiffError}</pre>
-										</AlertDescription>
-									</Alert>
-								{:else if codeDiffPatch}
-									<div class="h-full overflow-auto p-2">
-										<RenderedPatch patch={codeDiffPatch} layout="line-by-line" />
-									</div>
-								{:else}
-									<div class="flex h-full flex-col items-center justify-center text-muted-foreground">
-										<FileDiff size={22} />
-										<p class="mt-2 text-sm">No diff for this checkpoint</p>
-									</div>
-								{/if}
-							</div>
-						</div>
-					</div>
-				{/if}
+			<div class="mx-auto h-full max-w-7xl">
+				<CodeCheckpointsPanel
+					{executionId}
+					checkpoints={codeCheckpoints}
+					loading={codeCheckpointsLoading}
+					error={codeCheckpointError}
+					onRefresh={() => loadCodeCheckpoints(true)}
+					bind:selectedCheckpointId={selectedCodeCheckpointId}
+					activeSandboxName={activeWorkspaceSandboxName}
+					onForkCheckpoint={forkFromCheckpoint}
+				/>
 			</div>
 		</TabsContent>
+
 
 		<!-- Tab 5: Plan -->
 		<TabsContent value="plan" class="flex-1 overflow-y-auto p-4">
