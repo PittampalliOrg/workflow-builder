@@ -1091,6 +1091,7 @@ function mapExecution(row: WorkflowExecution): WorkflowExecutionRecord {
 		duration: row.duration,
 		stopRequestedAt: row.stopRequestedAt,
 		stopReason: row.stopReason,
+		archivedAt: row.archivedAt ?? null,
 	};
 }
 

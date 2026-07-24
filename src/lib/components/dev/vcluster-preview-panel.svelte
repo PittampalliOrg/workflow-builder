@@ -25,7 +25,9 @@
 		Database,
 		ExternalLink,
 		GitBranch,
+		GitCommitHorizontal,
 		GitPullRequest,
+		History,
 		Link2,
 		Loader2,
 		MessagesSquare,
@@ -54,6 +56,7 @@
 		assessRevertRisk,
 		driftEntryFor,
 		latestReceipt,
+		previewCheckpointIndicator,
 		reattachHref,
 		type AgentSessionLinkSource
 	} from '$lib/components/dev/preview-drift-view';
@@ -781,6 +784,7 @@
 				{@const isTerminating = teardownAccepted(p) || /terminat|delet/i.test(p.phase)}
 				{@const driftEntry = driftEntryFor(drift, p.name)}
 				{@const receipt = latestReceipt(driftEntry)}
+				{@const checkpoint = previewCheckpointIndicator(driftEntry)}
 				{@const risk = driftEntry
 					? assessRevertRisk({
 							state: p.state,
@@ -1107,6 +1111,17 @@
 							{/if}
 						{/if}
 						<span>{p.targetCluster}</span>
+						{#if checkpoint.promotedCount > 0}
+							{@const capturedAge = relativeTime(checkpoint.latestCapturedAt)}
+							<span
+								class="inline-flex items-center gap-1"
+								title={`${checkpoint.promotedCount} code checkpoint${checkpoint.promotedCount === 1 ? '' : 's'} captured from this preview and pushed to a pull request${capturedAge ? ` · latest ${capturedAge}` : ''}`}
+							>
+								<GitCommitHorizontal class="size-3" aria-hidden="true" />
+								{checkpoint.promotedCount} checkpoint{checkpoint.promotedCount === 1 ? '' : 's'}
+								{#if capturedAge}<span class="inline-flex items-center gap-1"><History class="size-3" aria-hidden="true" /> {capturedAge}</span>{/if}
+							</span>
+						{/if}
 						{#if driftEntry && driftEntry.receipts.length > 0}
 							<span class="inline-flex flex-wrap items-center gap-1.5">
 								{#each driftEntry.receipts.slice(0, 3) as r (`${r.prNumber}:${r.commitSha}:${r.createdAt}`)}

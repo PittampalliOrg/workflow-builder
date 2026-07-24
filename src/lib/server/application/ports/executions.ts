@@ -161,6 +161,10 @@ export type WorkflowExecutionRecord = {
 	duration: string | null;
 	stopRequestedAt: Date | null;
 	stopReason: string | null;
+	/** When the run was archived to durable object storage (kitaru), else null.
+	 * Optional so existing record constructors keep compiling; the detail read
+	 * path maps it so the run UI can surface an "Archived" affordance. */
+	archivedAt?: Date | null;
 };
 
 export type WorkflowExecutionScopeInput = {

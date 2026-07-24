@@ -14,9 +14,36 @@
   whole-node renderer (which fetches lazily).
 -->
 <script lang="ts">
-	import { FileDiff, FilePlus, FileMinus, FilePen, ChevronRight } from "@lucide/svelte";
+	import { onMount } from "svelte";
+	import {
+		FileDiff,
+		FilePlus,
+		FileMinus,
+		FilePen,
+		ChevronRight,
+		GitPullRequest,
+		Download,
+		Archive,
+		ExternalLink,
+		Loader2,
+		CheckCircle2,
+	} from "@lucide/svelte";
 	import RenderedPatch from "$lib/components/benchmarks/rendered-patch.svelte";
+	import { Button } from "$lib/components/ui/button";
+	import { Badge } from "$lib/components/ui/badge";
 	import DiffArtifact from "./diff-artifact.svelte";
+	import {
+		aggregateRunDiff,
+		hasDownloadablePatch,
+		runPatchFilename,
+	} from "./run-diff-export";
+	import {
+		createPrButtonState,
+		runVersionPromotion,
+		selectRunPromotion,
+		type CodeVersionRecord,
+		type CreatePrButtonState,
+	} from "./run-pr-promotion";
 
 	type Stats = { files: number; additions: number; deletions: number };
 	type Artifact = {
@@ -153,13 +180,181 @@
 			move(-1);
 		}
 	}
+
+	/* ── Action bar: Create PR + Download patch + Archived awareness ──────── */
+
+	// The "Create PR" affordance drives the GENERIC promote lane (versions →
+	// promote {mode:'pr'}); it opens a real PR for a plain run that captured a
+	// source bundle. Strict preview captures are routed to the dev detail page.
+	let prButton = $state<CreatePrButtonState | null>(null);
+	let versionsError = $state<string | null>(null);
+	let creating = $state(false);
+	let createResult = $state<{ prUrl: string | null; branch: string | null } | null>(null);
+	let createError = $state<string | null>(null);
+	// workflow_executions.archived_at — a durable object-storage copy is retained.
+	let archivedAt = $state<string | null>(null);
+
+	const canDownload = $derived(hasDownloadablePatch(artifacts));
+
+	async function loadVersions() {
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/versions`);
+			if (!res.ok) throw new Error(`Code versions request failed (${res.status})`);
+			const body = (await res.json()) as { versions?: unknown };
+			const versions = Array.isArray(body.versions)
+				? (body.versions as CodeVersionRecord[])
+				: [];
+			prButton = createPrButtonState(selectRunPromotion(versions));
+			versionsError = null;
+		} catch (error) {
+			versionsError = error instanceof Error ? error.message : String(error);
+			prButton = null;
+		}
+	}
+
+	async function loadArchivedState() {
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}`);
+			if (!res.ok) return;
+			const body = (await res.json()) as { archivedAt?: unknown };
+			archivedAt = typeof body.archivedAt === "string" ? body.archivedAt : null;
+		} catch {
+			// Archived awareness is best-effort; a failed read simply hides the chip.
+		}
+	}
+
+	async function onCreatePr() {
+		if (!prButton || creating) return;
+		if (prButton.action === "view" && prButton.prUrl) {
+			window.open(prButton.prUrl, "_blank", "noopener,noreferrer");
+			return;
+		}
+		if (prButton.action !== "create" || !prButton.artifactId) return;
+		creating = true;
+		createError = null;
+		createResult = null;
+		try {
+			const outcome = await runVersionPromotion(executionId, prButton.artifactId);
+			if (outcome.ok) {
+				createResult = { prUrl: outcome.prUrl, branch: outcome.branch };
+				await loadVersions();
+			} else {
+				createError = outcome.error;
+			}
+		} finally {
+			creating = false;
+		}
+	}
+
+	function onDownloadPatch() {
+		const { patch } = aggregateRunDiff(artifacts);
+		if (!patch) return;
+		const blob = new Blob([patch], { type: "text/x-patch" });
+		const url = URL.createObjectURL(blob);
+		const anchor = document.createElement("a");
+		anchor.href = url;
+		anchor.download = runPatchFilename(executionId);
+		document.body.appendChild(anchor);
+		anchor.click();
+		anchor.remove();
+		URL.revokeObjectURL(url);
+	}
+
+	onMount(() => {
+		void loadVersions();
+		void loadArchivedState();
+	});
 </script>
 
-{#if groups.length === 0}
-	<div class="text-sm text-muted-foreground italic">No file changes captured for this run.</div>
-{:else}
-	<div class="flex h-[calc(100vh-15rem)] min-h-[24rem] gap-3">
-		<!-- File rail -->
+<div class="flex h-[calc(100vh-13rem)] min-h-[26rem] flex-col gap-2">
+	<!-- Action bar: promote captured code to a PR, export the diff, and surface
+	     durable-archive awareness. -->
+	<div class="flex flex-wrap items-center gap-2">
+		{#if prButton}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-8"
+				disabled={prButton.disabled || creating}
+				title={prButton.tooltip ?? undefined}
+				onclick={onCreatePr}
+			>
+				{#if creating}
+					<Loader2 class="size-3.5 animate-spin" />
+				{:else if prButton.action === "view"}
+					<ExternalLink class="size-3.5" />
+				{:else}
+					<GitPullRequest class="size-3.5" />
+				{/if}
+				{creating ? "Creating PR…" : prButton.label}
+			</Button>
+		{:else}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-8"
+				disabled
+				title={versionsError ?? undefined}
+			>
+				{#if versionsError}
+					<GitPullRequest class="size-3.5" />
+				{:else}
+					<Loader2 class="size-3.5 animate-spin" />
+				{/if}
+				Create PR
+			</Button>
+		{/if}
+
+		<Button
+			variant="outline"
+			size="sm"
+			class="h-8"
+			disabled={!canDownload}
+			onclick={onDownloadPatch}
+			title={canDownload
+				? "Download the aggregated unified diff for this run"
+				: "This run's diffs were offloaded and can't be exported inline"}
+		>
+			<Download class="size-3.5" /> Download patch
+		</Button>
+
+		{#if archivedAt}
+			<Badge
+				variant="outline"
+				class="gap-1 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+				title={`Full run record retained in object storage · archived ${new Date(archivedAt).toLocaleString()}`}
+			>
+				<Archive class="size-3" /> Archived
+			</Badge>
+		{/if}
+
+		{#if createResult}
+			<span class="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+				<CheckCircle2 class="size-3.5" />
+				{#if createResult.prUrl}
+					<a
+						href={createResult.prUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="inline-flex items-center gap-1 font-medium hover:underline"
+					>
+						Pull request opened <ExternalLink class="size-3" />
+					</a>
+				{:else}
+					Pushed{createResult.branch ? ` to ${createResult.branch}` : ""}
+				{/if}
+			</span>
+		{/if}
+		{#if createError}
+			<span class="text-xs text-destructive" role="alert">{createError}</span>
+		{/if}
+	</div>
+
+	{#if groups.length === 0}
+		<div class="text-sm text-muted-foreground italic">No file changes captured for this run.</div>
+	{:else}
+		<div class="flex min-h-0 flex-1 gap-3">
+			<!-- File rail -->
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<aside
 			class="flex w-72 shrink-0 flex-col overflow-y-auto rounded-lg border bg-card outline-none"
@@ -251,4 +446,5 @@
 			{/if}
 		</main>
 	</div>
-{/if}
+	{/if}
+</div>

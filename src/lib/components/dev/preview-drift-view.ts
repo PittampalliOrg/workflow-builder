@@ -379,3 +379,38 @@ export function driftEntryFor(
 ): PreviewDriftEntry | null {
   return overview?.previews.find((entry) => entry.name === previewName) ?? null;
 }
+
+/* ── Checkpoint indicator (dev-list per-preview) ─────────────────────── */
+
+/**
+ * Compact per-preview code-checkpoint summary for the dev environment list.
+ * Derived from the promotion receipts already joined into the drift entry —
+ * each receipt is one code version this preview pushed to its pull request, so
+ * `promotedCount` is the captured-checkpoint count and `latestCapturedAt` is the
+ * age of the most recent capture. Pure; no I/O.
+ */
+export type PreviewCheckpointIndicator = {
+  /** Code checkpoints captured from this preview and pushed to a PR. */
+  promotedCount: number;
+  /** Newest receipt's pull request number/url, when any checkpoint exists. */
+  latestPrNumber: number | null;
+  latestPrUrl: string | null;
+  /** ISO timestamp of the newest checkpoint push, when any. */
+  latestCapturedAt: string | null;
+  /** True when at least one checkpoint reached a pull request. */
+  promoted: boolean;
+};
+
+export function previewCheckpointIndicator(
+  entry: Pick<PreviewDriftEntry, "receipts"> | null | undefined,
+): PreviewCheckpointIndicator {
+  const receipts = entry?.receipts ?? [];
+  const latest = receipts[0] ?? null;
+  return {
+    promotedCount: receipts.length,
+    latestPrNumber: latest?.prNumber ?? null,
+    latestPrUrl: latest?.prUrl ?? null,
+    latestCapturedAt: latest?.createdAt ?? null,
+    promoted: receipts.length > 0,
+  };
+}
