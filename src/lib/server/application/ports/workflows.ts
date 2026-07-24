@@ -600,6 +600,9 @@ export type WorkflowScriptStartRequest = {
 	dispatchMode?: string;
 	/** Resume-after-edit: the orchestrator imports this execution's `done` rows. */
 	journalImportFromExecutionId?: string;
+	/** Resume-after-edit: node-boundary snapshot subPath to seed the fresh run's
+	 *  shared workspace from (`.snapshots/<key>/<callId>`) before the pump runs. */
+	seedWorkspaceFrom?: string;
 	dbExecutionId: string;
 	workflowId: string;
 	userId: string;

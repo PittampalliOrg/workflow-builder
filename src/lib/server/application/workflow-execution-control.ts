@@ -101,6 +101,7 @@ export class ApplicationWorkflowExecutionControlService {
 				listInternal(executionId: string): Promise<
 					Array<{
 						callId: string;
+						seq: number;
 						status: string;
 						label?: string | null;
 						result?: unknown;
@@ -662,6 +663,49 @@ export class ApplicationWorkflowExecutionControlService {
 					"Source run is still active; stop it before resuming a dynamic-script run",
 				);
 			}
+			// Workspace-consistent resume-after-edit (durability, dynamic engine). The
+			// fresh run's shared workspace (`ws_script_<newExec>`) starts EMPTY and the
+			// reused (journal-imported) calls don't re-run, so a re-dispatched call would
+			// otherwise see none of the prior calls' file outputs. Seed it from the
+			// node-boundary snapshot of the LAST REUSED call.
+			//
+			// Reuse is decided PER-callId at evaluate time (a call whose prompt/opts are
+			// unchanged keeps its frozen callId and resolves from the imported journal),
+			// which the BFF cannot predict without running the evaluator. So v1 seeds from
+			// the source run's LAST terminally-`done` call (highest seq): EXACT for a
+			// TAIL-EDIT — the dominant resume-after-edit case, where every done call is
+			// reused and the edited/next call re-dispatches — and an approximation for a
+			// MID-SCRIPT edit (it may over-seed downstream state, still strictly better
+			// than the empty-workspace status quo). Precise mid-edit boundary selection
+			// belongs at evaluate time (runtime knownCallIds diff) — a noted follow-up.
+			// Snapshots live under the source's shared key `ws_script_<sourceId>`; a
+			// miss/absence falls through to today's no-seed behavior.
+			let seedWorkspaceFrom: string | undefined;
+			let seededFromSnapshot = false;
+			const scriptWorkspaceKey = `ws_script_${source.id}`;
+			if (this.deps.scriptCalls && this.deps.workspaceSnapshots) {
+				try {
+					const lastDone = (await this.deps.scriptCalls.listInternal(source.id))
+						.filter((c) => c.status === "done")
+						.reduce<{ callId: string; seq: number } | null>(
+							(max, c) => (max === null || c.seq > max.seq ? c : max),
+							null,
+						);
+					if (lastDone) {
+						const snaps =
+							await this.deps.workspaceSnapshots.listSnapshots(scriptWorkspaceKey);
+						if (snaps.includes(lastDone.callId)) {
+							seedWorkspaceFrom = `.snapshots/${scriptWorkspaceKey}/${lastDone.callId}`;
+							seededFromSnapshot = true;
+						}
+					}
+				} catch (err) {
+					console.warn(
+						"[resume] script snapshot lookup failed; no workspace seed",
+						err,
+					);
+				}
+			}
 			const result = await this.deps.runStarter.startWorkflowRun({
 				workflowId: source.workflowId,
 				// Verbatim: any JSON value. A null stored input (run started without
@@ -669,6 +713,7 @@ export class ApplicationWorkflowExecutionControlService {
 				// the original run.
 				triggerData: source.input ?? undefined,
 				journalImportFromExecutionId: source.id,
+				...(seedWorkspaceFrom ? { seedWorkspaceFrom } : {}),
 				rerunOfExecutionId: source.id,
 				rerunSourceInstanceId: source.daprInstanceId,
 				triggerSource: "resume",
@@ -684,6 +729,8 @@ export class ApplicationWorkflowExecutionControlService {
 					sourceExecutionId: source.id,
 					newInstanceId: result.instanceId,
 					journalImportFromExecutionId: source.id,
+					...(seedWorkspaceFrom ? { seedWorkspaceFrom } : {}),
+					seededFromSnapshot,
 				},
 			};
 		}

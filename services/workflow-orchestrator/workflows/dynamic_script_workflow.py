@@ -54,7 +54,9 @@ from activities.log_node_execution import update_execution_node
 from workflows.script_agent_dispatch import (
     _TEAM_OP_RETRY_POLICY,
     _start_script_call,
+    resolve_call_workspace_ref,
     script_child_instance_id,
+    script_run_shared_workspace_key,
     start_action_call,
     start_event_wait_call,
     start_prepared_script_call,
@@ -328,6 +330,26 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
                 {"executionId": exec_id, "fromExecutionId": journal_import_from, "_otel": otel}
             ),
             retry_policy=_BFF_ACTIVITY_RETRY_POLICY,
+        )
+
+    # Resume-after-edit workspace seeding (durability, dynamic-engine analog of the SW
+    # resume seed). When the BFF resolved a node-boundary snapshot of the last UNCHANGED
+    # call, CoW-clone it into THIS fresh run's shared workspace BEFORE the pump dispatches
+    # any call, so re-dispatched (changed) calls read the workspace as of that call
+    # instead of an empty tree. Blocks until the clone finishes (the seed activity raises
+    # on failure → the run fails rather than run against a wrong workspace). Targets the
+    # default shared key (the isolation:'shared' workspace resume seeding is meant for).
+    seed_workspace_from = str(input_data.get("seedWorkspaceFrom") or "").strip()
+    if seed_workspace_from and not nested:
+        yield ctx.call_activity(
+            "seed_workspace",
+            input=_freeze(
+                {
+                    "workspaceExecutionId": script_run_shared_workspace_key(exec_id),
+                    "seedWorkspaceFrom": seed_workspace_from,
+                    "_otel": otel,
+                }
+            ),
         )
 
     # ---- pump state (all deterministic) ------------------------------------
@@ -1407,6 +1429,32 @@ def dynamic_script_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> di
             else:
                 resolved.add(cid)
                 drained_done += 1
+                # Node-boundary workspace snapshot (durability): after an
+                # agent()/workflow() call commits its work to the run's shared CLI
+                # workspace, CoW-snapshot that workspace keyed by the callId, so a
+                # later resume-after-edit can seed the fresh run from the workspace as
+                # of the last UNCHANGED call (dynamic-engine analog of the SW node
+                # snapshots). Fire-and-forget: the activity never raises, so a snapshot
+                # failure can't fail the call/run. Only calls that bind a shared
+                # workspace snapshot; skip on nested children (they journal into the
+                # ROOT run, which snapshots the same key from its own drain loop).
+                if not nested and rec_status == "done":
+                    _snap_key = resolve_call_workspace_ref(spec, exec_id)
+                    if _snap_key:
+                        yield ctx.call_activity(
+                            "snapshot_workspace_node",
+                            input=_freeze(
+                                {
+                                    # callIds are frozen to `<40-hex>_<occurrence>`
+                                    # (script-evaluator contract) — always a safe
+                                    # single path segment, used verbatim as the id.
+                                    "sharedWorkspaceKey": _snap_key,
+                                    "snapshotId": cid,
+                                    "executionId": exec_id,
+                                    "_otel": otel,
+                                }
+                            ),
+                        )
             if run_id and (spec.get("kind") or "agent") not in ({"team"} | ACTION_CLASS_KINDS):
                 yield ctx.call_activity(
                     track_agent_run_completed,

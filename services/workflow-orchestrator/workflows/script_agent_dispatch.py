@@ -107,6 +107,39 @@ def script_child_instance_id(parent_instance_id: str, call_id: str, retries: int
     return f"{parent_instance_id}__durable-script__{fragment}__run__{int(retries or 0)}"
 
 
+def script_run_shared_workspace_key(exec_id: str) -> str:
+    """The run's DEFAULT shared CLI-workspace subPath — the key every
+    ``agent(isolation:'shared')`` call and every nested ``workflow()`` child binds.
+    Matches the ref computed in `_start_script_call` / the action workspace binding.
+    The BFF derives the same key (`ws_script_<execId>`) to look up node-boundary
+    snapshots when seeding a resume-after-edit."""
+    return f"ws_script_{exec_id}"
+
+
+def resolve_call_workspace_ref(spec: dict[str, Any], exec_id: str) -> str | None:
+    """The shared-workspace subPath a call binds, or ``None`` for a pod-local call.
+
+    Mirrors `_start_script_call`'s binding: a ``workflow()`` child runs on the ROOT
+    run's shared workspace; an ``agent()`` call binds an explicit
+    ``opts.sandbox.workspaceRef`` (``${workspace}`` substituted) else the run's shared
+    workspace when ``isolation:'shared'`` else nothing. Other kinds (action/sleep/
+    event/team) return ``None`` — they don't own a forkable agent workspace."""
+    kind = spec.get("kind") or "agent"
+    default_ref = script_run_shared_workspace_key(exec_id)
+    if kind == "workflow":
+        return default_ref
+    if kind != "agent":
+        return None
+    opts = spec.get("opts") if isinstance(spec.get("opts"), dict) else {}
+    sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
+    sandbox_opt = _substitute_workspace(sandbox_opt, default_ref)
+    if sandbox_opt.get("workspaceRef"):
+        return str(sandbox_opt.get("workspaceRef"))
+    if opts.get("isolation") == "shared":
+        return default_ref
+    return None
+
+
 def _native_structured_enabled() -> bool:
     """Kill-switch for provider-native structured output (default ON)."""
     raw = os.environ.get("DYNAMIC_SCRIPT_NATIVE_STRUCTURED_OUTPUT", "true").strip().lower()
@@ -467,12 +500,8 @@ def _start_script_call(
     # action('workspace/profile', …) — the capability the code-eval / SWE-bench /
     # GAN producers need. isolation:'shared' remains the simple path.
     sandbox_opt = opts.get("sandbox") if isinstance(opts.get("sandbox"), dict) else {}
-    sandbox_opt = _substitute_workspace(sandbox_opt, f"ws_script_{exec_id}")
-    workspace_ref = (
-        str(sandbox_opt.get("workspaceRef"))
-        if sandbox_opt.get("workspaceRef")
-        else (f"ws_script_{exec_id}" if opts.get("isolation") == "shared" else None)
-    )
+    sandbox_opt = _substitute_workspace(sandbox_opt, script_run_shared_workspace_key(exec_id))
+    workspace_ref = resolve_call_workspace_ref(spec, exec_id)
     timeout_minutes = None
     try:
         timeout_minutes = int(defaults.get("timeoutMinutes")) if defaults.get("timeoutMinutes") else 30

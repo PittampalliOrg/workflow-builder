@@ -266,6 +266,8 @@ class FakeCtx:
         self.persist_workspace_inputs: list[dict] = []
         self.retention_arm_inputs: list[dict] = []
         self.result_persist_inputs: list[dict] = []
+        self.snapshot_inputs: list[dict] = []
+        self.seed_workspace_inputs: list[dict] = []
         # Sequenced results: pop from the front while >1 remain (last repeats) —
         # lets the action-runner tests model BEGIN->pause->RESUME->done rounds.
         self.execute_action_results: list[dict] = [{"success": True, "data": {"ok": 1}}]
@@ -353,6 +355,12 @@ class FakeCtx:
         if name == "arm_execution_workspace_retention":
             self.retention_arm_inputs.append(inp)
             return {"success": True, "armed": 1}
+        if name == "snapshot_workspace_node":
+            self.snapshot_inputs.append(inp)
+            return {"success": True}
+        if name == "seed_workspace":
+            self.seed_workspace_inputs.append(inp)
+            return {"success": True}
         if name == "persist_results_to_db":
             self.result_persist_inputs.append(inp)
             return {"success": True}
@@ -980,6 +988,115 @@ def test_nested_terminal_outcome_does_not_arm_root_workspace_retention():
 
     assert result["status"] == "completed"
     assert ctx.retention_arm_inputs == []
+
+
+def _shared_agent_task(call_id, **kw):
+    t = agent_task(call_id, **kw)
+    t["opts"]["isolation"] = "shared"
+    return t
+
+
+def test_shared_workspace_call_fires_node_snapshot():
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([_shared_agent_task(cid)], {"ok": True}))
+    drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": True, "content": "x"})],
+    )
+    assert len(ctx.snapshot_inputs) == 1
+    snap = ctx.snapshot_inputs[0]
+    # Keyed on the run's shared workspace, snapshot id = the frozen callId.
+    assert snap["sharedWorkspaceKey"] == "ws_script_e1"
+    assert snap["snapshotId"] == cid
+    assert snap["executionId"] == "e1"
+
+
+def test_pod_local_call_does_not_snapshot():
+    # Default isolation (pod-local, no shared workspace) → nothing forkable to snapshot.
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([agent_task(cid)], {"ok": True}))
+    drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": True, "content": "x"})],
+    )
+    assert ctx.snapshot_inputs == []
+
+
+def test_failed_call_does_not_snapshot():
+    # A child that journals null/error (not "done") must not snapshot a half-written ws.
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(
+        evaluator=make_evaluator([_shared_agent_task(cid)], {"ok": True}),
+        record_fn=lambda _inp: {"status": "null"},
+    )
+    drive(
+        dynamic_script_workflow(ctx, base_input()),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": False, "error": "boom"})],
+    )
+    assert ctx.snapshot_inputs == []
+
+
+def test_resume_after_edit_seeds_shared_workspace_from_snapshot():
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([_shared_agent_task(cid)], {"ok": True}))
+    src = ".snapshots/ws_script_old/" + "b" * 40 + "_0"
+    drive(
+        dynamic_script_workflow(
+            ctx,
+            base_input(
+                journalImportFromExecutionId="old",
+                seedWorkspaceFrom=src,
+            ),
+        ),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": True, "content": "x"})],
+    )
+    assert len(ctx.seed_workspace_inputs) == 1
+    seed = ctx.seed_workspace_inputs[0]
+    # Seeds THIS run's shared workspace from the source snapshot before the pump runs.
+    assert seed["workspaceExecutionId"] == "ws_script_e1"
+    assert seed["seedWorkspaceFrom"] == src
+
+
+def test_no_seed_when_seedWorkspaceFrom_absent():
+    cid = "a" * 40 + "_0"
+    ctx = FakeCtx(evaluator=make_evaluator([_shared_agent_task(cid)], {"ok": True}))
+    drive(
+        dynamic_script_workflow(ctx, base_input(journalImportFromExecutionId="old")),
+        ctx,
+        [lambda c: c.complete_child(cid, {"success": True, "content": "x"})],
+    )
+    assert ctx.seed_workspace_inputs == []
+
+
+def test_resolve_call_workspace_ref_variants():
+    from workflows.script_agent_dispatch import (
+        resolve_call_workspace_ref,
+        script_run_shared_workspace_key,
+    )
+
+    assert script_run_shared_workspace_key("e1") == "ws_script_e1"
+    # agent, isolation:'shared' → the run's shared key.
+    assert (
+        resolve_call_workspace_ref(_shared_agent_task("c" * 40 + "_0"), "e1")
+        == "ws_script_e1"
+    )
+    # agent, default isolation → pod-local (None).
+    assert resolve_call_workspace_ref(agent_task("c" * 40 + "_0"), "e1") is None
+    # agent, explicit sandbox.workspaceRef → that ref.
+    explicit = agent_task("c" * 40 + "_0")
+    explicit["opts"]["sandbox"] = {"workspaceRef": "custom_ws"}
+    assert resolve_call_workspace_ref(explicit, "e1") == "custom_ws"
+    # workflow() child runs on the ROOT shared workspace.
+    assert (
+        resolve_call_workspace_ref(workflow_task("c" * 40 + "_0", "wf/ref"), "e1")
+        == "ws_script_e1"
+    )
+    # action kind → not a forkable agent workspace.
+    assert resolve_call_workspace_ref(action_task("c" * 40 + "_0", "http/get"), "e1") is None
 
 
 def test_replay_determinism_identical_action_log():

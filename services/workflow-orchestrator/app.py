@@ -3202,6 +3202,9 @@ class ScriptWorkflowRequest(BaseModel):
     args: Any = None
     budgetTotal: int | None = None
     journalImportFromExecutionId: str | None = None
+    # Resume-after-edit: node-boundary snapshot subPath to seed this fresh run's
+    # shared workspace from (`.snapshots/<key>/<callId>`), before the pump dispatches.
+    seedWorkspaceFrom: str | None = None
     nested: bool = False
     dbExecutionId: str | None = None
     workflowId: str | None = None
@@ -3292,6 +3295,7 @@ def execute_script_workflow(request: ScriptWorkflowRequest, http_request: Reques
             "meta": meta,
             "budgetTotal": request.budgetTotal,
             "journalImportFromExecutionId": request.journalImportFromExecutionId,
+            "seedWorkspaceFrom": request.seedWorkspaceFrom,
             "nested": bool(request.nested),
             "limits": request.limits if isinstance(request.limits, dict) else {},
             "defaults": request.defaults if isinstance(request.defaults, dict) else {},
