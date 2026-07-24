@@ -9,7 +9,7 @@
 	 * that run (default) or calls `onSelect` (canvas run-picker). A trailing
 	 * "Fork from a step" action calls `onFork` to open the shared fork dialog.
 	 */
-	import { GitFork, ChevronRight, ChevronDown, GitBranch } from '@lucide/svelte';
+	import { GitFork, ChevronRight, ChevronDown, GitBranch, Camera } from '@lucide/svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	interface LineageNode {
@@ -21,6 +21,10 @@
 		completedAt: string | null;
 		durationMs: number | null;
 		isCurrent: boolean;
+		/** Seeded from a node-boundary snapshot (durability phase 3) — badged. */
+		seededFromSnapshot?: boolean;
+		/** The `.snapshots/<key>/<node>` path, shown as the badge tooltip. */
+		snapshotPath?: string | null;
 	}
 	interface TreeNode extends LineageNode {
 		children: TreeNode[];
@@ -176,6 +180,16 @@
 				</span>
 			{:else}
 				<span class="shrink-0 text-[10px] font-medium text-muted-foreground/80">root</span>
+			{/if}
+			{#if n.seededFromSnapshot}
+				<span
+					class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-violet-500/12 px-1.5 py-0.5 text-[9px] font-medium text-violet-600 dark:text-violet-300"
+					title={n.snapshotPath
+						? `Seeded from node snapshot ${n.snapshotPath}`
+						: 'Seeded from a node-boundary snapshot'}
+				>
+					<Camera class="size-2.5" />snapshot
+				</span>
 			{/if}
 			<span class="truncate font-mono text-[11px]">{n.id.slice(0, 10)}</span>
 			{#if active}

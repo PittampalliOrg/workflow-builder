@@ -353,6 +353,12 @@ export async function startWorkflowRun(
 			: {}),
 		// Persist the fork point so the lineage tree can label "fork @<node>".
     ...(opts.resumeFromNode ? { resumeFromNode: opts.resumeFromNode } : {}),
+		// Persist the seed source so the UI can badge a snapshot-seeded fork
+		// ("forked from snapshot @<node>"). A `.snapshots/...` value = node-boundary
+		// snapshot seed (durability phase 3); a bare key = end-state seed.
+    ...(opts.seedWorkspaceFrom
+      ? { seedWorkspaceFrom: opts.seedWorkspaceFrom }
+      : {}),
 	});
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();

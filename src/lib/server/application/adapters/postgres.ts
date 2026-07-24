@@ -25,6 +25,7 @@ import { pieceCatalogFunctionsFromRows } from "$lib/server/action-catalog/piece-
 import { connectionBelongsToProject } from "$lib/server/app-connection-scope";
 import { SWEBENCH_SUITES } from "$lib/server/benchmarks/swebench";
 import { generateId } from "$lib/server/utils/id";
+import { isSnapshotSeedPath } from "$lib/utils/snapshot-seed";
 import {
 	resolveFilesBlobRuntime,
 	type FilesBlobRuntime,
@@ -1082,6 +1083,7 @@ function mapExecution(row: WorkflowExecution): WorkflowExecutionRecord {
 		rerunOfExecutionId: row.rerunOfExecutionId,
 		rerunSourceInstanceId: row.rerunSourceInstanceId,
 		resumeFromNode: row.resumeFromNode,
+		seedWorkspaceFrom: row.seedWorkspaceFrom,
 		triggerSource: row.triggerSource,
 		rerunFromEventId: row.rerunFromEventId,
 		startedAt: row.startedAt,
@@ -5507,6 +5509,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 				id: string;
 				status: string | null;
 				resumeFromNode: string | null;
+				seedWorkspaceFrom: string | null;
 				rerunOfExecutionId: string | null;
 				startedAt: Date | null;
 				completedAt: Date | null;
@@ -5520,6 +5523,7 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 					id: workflowExecutions.id,
 					status: workflowExecutions.status,
 					resumeFromNode: workflowExecutions.resumeFromNode,
+					seedWorkspaceFrom: workflowExecutions.seedWorkspaceFrom,
 					rerunOfExecutionId: workflowExecutions.rerunOfExecutionId,
 					startedAt: workflowExecutions.startedAt,
 					completedAt: workflowExecutions.completedAt,
@@ -5565,6 +5569,10 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
             ? (durationMs as number)
             : null,
 					isCurrent: row.id === executionId,
+					seededFromSnapshot: isSnapshotSeedPath(row.seedWorkspaceFrom),
+					snapshotPath: isSnapshotSeedPath(row.seedWorkspaceFrom)
+						? row.seedWorkspaceFrom
+						: null,
 				};
 			}),
 		};
@@ -6192,6 +6200,9 @@ export class PostgresWorkflowExecutionRepository implements WorkflowExecutionRep
 					: {}),
         ...(input.resumeFromNode
           ? { resumeFromNode: input.resumeFromNode }
+          : {}),
+        ...(input.seedWorkspaceFrom
+          ? { seedWorkspaceFrom: input.seedWorkspaceFrom }
           : {}),
 			})
 			.returning({ id: workflowExecutions.id });

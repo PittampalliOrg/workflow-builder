@@ -1166,6 +1166,7 @@ function executionRecord(
 		rerunOfExecutionId: null,
 		rerunSourceInstanceId: null,
 		resumeFromNode: null,
+		seedWorkspaceFrom: null,
 		triggerSource: null,
 		rerunFromEventId: null,
 		startedAt: new Date("2026-01-01T00:00:00.000Z"),

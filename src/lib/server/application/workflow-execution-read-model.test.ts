@@ -41,6 +41,7 @@ function execution(overrides: Partial<WorkflowExecutionRecord> = {}): WorkflowEx
 		rerunOfExecutionId: null,
 		rerunSourceInstanceId: null,
 		resumeFromNode: null,
+		seedWorkspaceFrom: null,
 		triggerSource: null,
 		rerunFromEventId: null,
 		startedAt: new Date("2026-07-03T00:00:00.000Z"),

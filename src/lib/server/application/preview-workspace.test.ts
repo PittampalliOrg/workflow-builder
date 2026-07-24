@@ -71,6 +71,7 @@ function execution(
     rerunOfExecutionId: null,
     rerunSourceInstanceId: null,
     resumeFromNode: null,
+    seedWorkspaceFrom: null,
     triggerSource: null,
     rerunFromEventId: null,
     startedAt: new Date(),

@@ -540,6 +540,12 @@ export const workflowExecutions = pgTable(
     // NULL for normal (non-fork) runs. Drives the fork-lineage tree's "fork @<node>"
     // labels so each branch shows where it diverged.
     resumeFromNode: text("resume_from_node"),
+    // Resume/fork: the workspace this run was SEEDED from. NULL for normal runs.
+    // A `.snapshots/<key>/<node>` value means the fork was seeded from a
+    // node-boundary snapshot (durability phase 3) — the UI derives
+    // `seededFromSnapshot` from that prefix to badge "forked from snapshot
+    // @<node>". A bare workspace/instance key means an end-state seed.
+    seedWorkspaceFrom: text("seed_workspace_from"),
     // Set when this run was started by the event-driven trigger spine (to the
     // firing trigger's id/kind). NULL for manual/API runs. Drives the triggered-
     // run concurrency gate + the "pending/active triggered runs" capacity lens.

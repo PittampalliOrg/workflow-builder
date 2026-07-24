@@ -58,7 +58,8 @@ const EXECUTION_COLUMNS = `
 	completed_at,
 	duration,
 	stop_requested_at,
-	stop_reason
+	stop_reason,
+	seed_workspace_from
 `;
 
 const EXECUTION_LOG_COLUMNS = `
@@ -149,6 +150,7 @@ function rowToExecution(row: readonly unknown[]): WorkflowExecutionRecord {
 		duration: stringOrNull(row[28]),
 		stopRequestedAt: dateOrNull(row[29]),
 		stopReason: stringOrNull(row[30]),
+		seedWorkspaceFrom: stringOrNull(row[31]),
 	};
 }
 
