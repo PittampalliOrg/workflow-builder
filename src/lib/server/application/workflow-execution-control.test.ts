@@ -984,7 +984,7 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
 			executionRecord({
 				id: "exec-src",
-				status: "completed",
+				status: "success",
 				executionIrVersion: "dynamic-script-2",
 				daprInstanceId: "instance-src",
 				input: { topic: "x" },
