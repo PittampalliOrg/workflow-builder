@@ -297,14 +297,15 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 					trigger_source,
 					rerun_of_execution_id,
 					rerun_source_instance_id,
-					resume_from_node
+					resume_from_node,
+					seed_workspace_from
 				)
 				VALUES (
 					$1, $2, $3, $4, $5, $6, $7,
 					CAST($8 AS jsonb),
 					CAST($9 AS jsonb),
 					CAST($10 AS jsonb),
-					$11, $12, $13, $14, $15, $16
+					$11, $12, $13, $14, $15, $16, $17
 				)
 			`,
 			params: [
@@ -324,6 +325,7 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 				input.rerunOfExecutionId ?? null,
 				input.rerunSourceInstanceId ?? null,
 				input.resumeFromNode ?? null,
+				input.seedWorkspaceFrom ?? null,
 			],
 			spanParams: [
 				id,
@@ -342,6 +344,7 @@ export class DaprPostgresWorkflowExecutionRepository extends PostgresWorkflowExe
 				input.rerunOfExecutionId ?? null,
 				input.rerunSourceInstanceId ?? null,
 				input.resumeFromNode ?? null,
+				input.seedWorkspaceFrom ?? null,
 			],
 			paramNames: [
 				"id",

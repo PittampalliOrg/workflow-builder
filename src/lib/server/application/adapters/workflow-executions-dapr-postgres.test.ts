@@ -130,6 +130,23 @@ describe("DaprPostgresWorkflowExecutionRepository", () => {
 		expect(client.calls[0]?.spanParams?.[7]).toEqual({ topic: "x" });
 	});
 
+	it("persists seed_workspace_from on insert (snapshot-seeded resume forks)", async () => {
+		const client = new FakeBindingClient();
+
+		await repo(client).create({
+			id: "exec-2",
+			workflowId: "wf-1",
+			userId: "user-1",
+			projectId: "project-1",
+			status: "pending",
+			executionIrVersion: "dynamic-script-2",
+			seedWorkspaceFrom: ".snapshots/ws_script_src/abc123_0",
+		});
+
+		expect(client.calls[0]?.sql).toContain("seed_workspace_from");
+		expect(client.calls[0]?.params?.[16]).toBe(".snapshots/ws_script_src/abc123_0");
+	});
+
 	it("updates only supported read-model fields through the binding", async () => {
 		const client = new FakeBindingClient();
 
