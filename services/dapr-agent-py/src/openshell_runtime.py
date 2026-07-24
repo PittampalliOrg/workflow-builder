@@ -699,6 +699,18 @@ def new_runtime() -> OpenShellRuntime:
     return OpenShellRuntime()
 
 
+def effective_sandbox_name(runtime: OpenShellRuntime, sandbox_name: str | None) -> str:
+    """The sandbox name a runtime should actually bind. For :class:`LocalWorkspaceRuntime`
+    tools run IN-POD against the CSI-mounted /sandbox/work, so a sandbox name is cosmetic —
+    and a stray one (an incoming sandboxName, or one derived from a ws_script_ workspaceRef)
+    must NEVER route the agent to a remote OpenShell sandbox where its writes would be lost.
+    So local mode always binds no sandbox; OpenShell mode keeps the requested name."""
+    name = str(sandbox_name or "").strip()
+    if isinstance(runtime, LocalWorkspaceRuntime):
+        return ""
+    return name
+
+
 def require_local_runtime_for_shared_workspace(
     runtime: OpenShellRuntime, workspace_ref: str | None
 ) -> None:
