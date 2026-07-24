@@ -8,10 +8,13 @@ root = os.path.join(os.path.dirname(__file__), "..")
 if root not in sys.path:
     sys.path.insert(0, root)
 
+import pytest  # noqa: E402
+
 from src.openshell_runtime import (  # noqa: E402
     LocalWorkspaceRuntime,
     OpenShellRuntime,
     new_runtime,
+    require_local_runtime_for_shared_workspace,
 )
 
 
@@ -28,6 +31,28 @@ def test_mode_selection(monkeypatch) -> None:
     assert type(new_runtime()) is OpenShellRuntime
     monkeypatch.delenv("DAPR_AGENT_PY_WORKSPACE_MODE", raising=False)
     assert type(new_runtime()) is OpenShellRuntime  # default = openshell
+
+
+def test_shared_workspace_on_openshell_runtime_fails_loud() -> None:
+    # A ws_script_ session that fell back to OpenShellRuntime must be refused, not run
+    # against a throwaway sandbox whose writes never reach the shared subtree.
+    with pytest.raises(RuntimeError, match="requires LocalWorkspaceRuntime"):
+        require_local_runtime_for_shared_workspace(
+            OpenShellRuntime(), "ws_script_exec-1"
+        )
+
+
+def test_shared_workspace_on_local_runtime_is_allowed() -> None:
+    # LocalWorkspaceRuntime bound to the shared workspace is the correct pairing.
+    require_local_runtime_for_shared_workspace(
+        LocalWorkspaceRuntime(), "ws_script_exec-1"
+    )
+
+
+def test_non_shared_workspace_never_fails() -> None:
+    # Pod-local / non-ws_script sessions are unaffected on either runtime.
+    require_local_runtime_for_shared_workspace(OpenShellRuntime(), None)
+    require_local_runtime_for_shared_workspace(OpenShellRuntime(), "workspace/other")
 
 
 def test_default_cwd_is_local_root(monkeypatch) -> None:

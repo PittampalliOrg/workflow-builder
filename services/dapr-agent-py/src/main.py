@@ -116,6 +116,7 @@ from src.openshell_runtime import (
     bind_runtime,
     get_runtime,
     new_runtime,
+    require_local_runtime_for_shared_workspace,
     reset_runtime,
 )
 from src.code_checkpoint import (
@@ -4392,6 +4393,12 @@ class OpenShellDurableAgent(DurableAgent):
         # activities bind their own runtime from the persisted per-instance
         # context before touching tools.
         runtime = new_runtime()
+        # Fail loud if a session bound to the run's shared JuiceFS workspace resolved to
+        # OpenShellRuntime (its writes would never reach the mounted /sandbox/work subtree).
+        require_local_runtime_for_shared_workspace(
+            runtime,
+            message.get("workspaceRef") or metadata.get("workspace_ref"),
+        )
         runtime.set_sandbox_name(sandbox_name)
         # When a workflow node supplies cwd, honor it for both modes. Otherwise
         # let each runtime keep its own default (openshell → /sandbox; local →
