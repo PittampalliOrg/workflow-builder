@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+import sys
 from contextlib import nullcontext
+from pathlib import Path
+
+# Put the service root on sys.path so `activities` imports as a real package (running
+# its __init__, which builds the ACTIVITIES registry) rather than a namespace package —
+# CI runs `pytest tests/` from the service dir without the root on the path. Matches the
+# bootstrap in the other orchestrator tests.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from activities import snapshot_workspace_node as subject
 
