@@ -613,6 +613,9 @@ export class ApplicationWorkflowExecutionControlService {
 		input: WorkflowExecutionControlInput,
 	): Promise<WorkflowExecutionControlResult> {
 		let fromNodeId = resumeNodeId(input.body);
+		// "reproduce" (deterministic replay) vs "resume"/"fork" — recorded as the
+		// started run's trigger source so its provenance chip can distinguish them.
+		const triggerSource = resumeTriggerSource(input.body);
 		const source = await this.deps.workflowData.getExecutionById(
 			input.executionId,
 		);
@@ -716,7 +719,7 @@ export class ApplicationWorkflowExecutionControlService {
 				...(seedWorkspaceFrom ? { seedWorkspaceFrom } : {}),
 				rerunOfExecutionId: source.id,
 				rerunSourceInstanceId: source.daprInstanceId,
-				triggerSource: "resume",
+				triggerSource,
 			});
 			if (!result.ok) {
 				return workflowControlError(result.status, result.error);
@@ -791,7 +794,7 @@ export class ApplicationWorkflowExecutionControlService {
 			seedWorkspaceFrom: seedWorkspaceFrom ?? undefined,
 			rerunOfExecutionId: source.id,
 			rerunSourceInstanceId: source.daprInstanceId,
-			triggerSource: "resume",
+			triggerSource,
 		});
 		if (!result.ok) {
 			return workflowControlError(result.status, result.error);
@@ -926,6 +929,19 @@ function resumeNodeId(
 			: undefined;
 	if (!raw?.includes("/")) return raw;
 	return raw.split("/").filter(Boolean).pop() ?? raw;
+}
+
+/**
+ * Trigger source recorded on a resume/fork start. `mode: "reproduce"` (a
+ * deterministic replay of the selected suffix) records "reproduce" so the run's
+ * provenance chip can distinguish it; every other resume/fork records "resume".
+ * Both are non-null, so the trigger-concurrency gate (which keys on
+ * `trigger_source IS NOT NULL`) treats them identically to before.
+ */
+function resumeTriggerSource(
+	body: Record<string, unknown> | undefined,
+): "reproduce" | "resume" {
+	return body?.mode === "reproduce" ? "reproduce" : "resume";
 }
 
 function approvalEventType(body: Record<string, unknown> | undefined): string {

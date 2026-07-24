@@ -97,10 +97,11 @@ run's end-state workspace.
 
 - A checkpoint is only **durable** once its commit is pushed to the in-cluster
   Git remote; sandbox-only checkpoints are lost when the sandbox is reaped.
-- The **reproduce** chip depends on the backend persisting a `reproduce` trigger
-  source on the new run. The resume endpoint currently records `resume` for all
-  resume/fork starts; until a dedicated reproduce trigger source is persisted,
-  the reproduce chip will not light up even though the dialog mode is honored for
-  the run itself.
+- The **reproduce** chip is driven by the run's trigger source: a resume started
+  in Reproduce mode records `trigger_source = "reproduce"` (every other
+  resume/fork records `"resume"`), which is what `deriveRunProvenance` reads. Both
+  are non-null, so the trigger-concurrency gate is unaffected.
 - Session-scoped checkpoint filtering uses the checkpoint's session id or sandbox
-  name. Older checkpoints without that linkage are shown unfiltered.
+  name. Older checkpoints without that linkage are shown unfiltered — a future
+  enhancement is to stamp the session id directly on checkpoint rows so the filter
+  is exact rather than sandbox-name-based.

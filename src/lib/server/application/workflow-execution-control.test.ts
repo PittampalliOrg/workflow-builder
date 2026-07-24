@@ -1023,6 +1023,30 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
+	it("records triggerSource=reproduce when the resume body requests reproduce mode", async () => {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({ currentNodeId: "repair" }),
+		);
+		await service.resumeExecution(
+			commandInput({ body: { fromNodeId: "repair", mode: "reproduce" } }),
+		);
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({ resumeFromNode: "repair", triggerSource: "reproduce" }),
+		);
+	});
+
+	it("records triggerSource=resume for a normal (fork) resume", async () => {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({ currentNodeId: "repair" }),
+		);
+		await service.resumeExecution(
+			commandInput({ body: { fromNodeId: "repair", mode: "fork" } }),
+		);
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({ triggerSource: "resume" }),
+		);
+	});
+
 	it("auto-resumes from the source current node when no node is supplied", async () => {
 		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
 			executionRecord({
