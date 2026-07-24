@@ -6,7 +6,7 @@
 	 * executions with status + relative time + duration; running runs pulse.
 	 */
 	import { goto } from '$app/navigation';
-	import { ChevronsUpDown, Check, ArrowRight } from '@lucide/svelte';
+	import { ChevronsUpDown, Check, ArrowRight, Copy } from '@lucide/svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Command from '$lib/components/ui/command';
 	import { formatDistanceToNow } from 'date-fns';
@@ -94,6 +94,20 @@
 		return `${h}h ${m % 60}m`;
 	}
 
+	let copied = $state(false);
+	let copyTimer: ReturnType<typeof setTimeout> | null = null;
+
+	async function copyCurrentId() {
+		try {
+			await navigator.clipboard.writeText(currentExecutionId);
+			copied = true;
+			if (copyTimer) clearTimeout(copyTimer);
+			copyTimer = setTimeout(() => (copied = false), 1500);
+		} catch {
+			// best-effort
+		}
+	}
+
 	function pick(id: string) {
 		open = false;
 		if (id === currentExecutionId) return;
@@ -117,6 +131,24 @@
 
 	<Popover.Content class="w-[320px] p-0" align="start" sideOffset={8}>
 		<Command.Root>
+			<div class="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5">
+				<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+					{currentExecutionId}
+				</span>
+				<button
+					type="button"
+					aria-label="Copy current run ID"
+					title={copied ? 'Copied' : 'Copy run ID'}
+					onclick={copyCurrentId}
+					class="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					{#if copied}
+						<Check size={12} class="text-emerald-500" />
+					{:else}
+						<Copy size={12} />
+					{/if}
+				</button>
+			</div>
 			<Command.Input placeholder="Switch run…" class="h-9" />
 			<Command.List class="max-h-[360px]">
 				<Command.Empty>{loading ? 'Loading…' : 'No runs found.'}</Command.Empty>
