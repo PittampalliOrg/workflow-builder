@@ -116,6 +116,7 @@ export type PreviewRuntimeAuditRecord = Readonly<{
   status: "accepted" | "completed" | "failed" | "budget-denied";
   upstreamStatus?: number;
   budgetReason?: PreviewRuntimeBudgetDenialReason;
+  durationMs?: number;
 }>;
 
 type PreviewRuntimeBrokerDeps = Readonly<{
@@ -128,12 +129,19 @@ type PreviewRuntimeBrokerDeps = Readonly<{
   allowedModels: readonly string[];
   maxConcurrency: number;
   audit?: (record: PreviewRuntimeAuditRecord) => void;
+  now?: () => number;
 }>;
 
 type ValidatedPayload = Readonly<{
   model: string;
   reservedTokens: number;
   payload: Readonly<Record<string, unknown>>;
+}>;
+
+type PreviewRuntimeTerminalAudit = Readonly<{
+  status: "completed" | "failed" | "budget-denied";
+  upstreamStatus?: number;
+  budgetReason?: PreviewRuntimeBudgetDenialReason;
 }>;
 
 /**
@@ -143,6 +151,7 @@ type ValidatedPayload = Readonly<{
 export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBrokerPort {
   private readonly allowedModels: ReadonlySet<string>;
   private readonly maxConcurrency: number;
+  private readonly now: () => number;
   private active = 0;
 
   constructor(private readonly deps: PreviewRuntimeBrokerDeps) {
@@ -153,6 +162,7 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
       deps.maxConcurrency,
       "maxConcurrency",
     );
+    this.now = deps.now ?? Date.now;
     validateRequestLimits(deps.requestLimits);
     validateBudgetLimits(deps.budgetLimits);
   }
@@ -187,7 +197,18 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
       model: validated.model,
     } as const;
     this.active += 1;
-    let budgetDenied = false;
+    const startedAt = this.now();
+    let finalized = false;
+    const finalize = (terminal: PreviewRuntimeTerminalAudit) => {
+      if (finalized) return;
+      finalized = true;
+      this.active -= 1;
+      this.deps.audit?.({
+        ...auditBase,
+        ...terminal,
+        durationMs: Math.max(0, Math.round(this.now() - startedAt)),
+      });
+    };
     try {
       await this.deps.authority.authorizeRuntimeTuple(input.identity);
 
@@ -205,9 +226,7 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
         );
       }
       if (!reservation.ok) {
-        budgetDenied = true;
-        this.deps.audit?.({
-          ...auditBase,
+        finalize({
           status: "budget-denied",
           budgetReason: reservation.reason,
         });
@@ -226,17 +245,34 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
         identity: input.identity,
         payload: validated.payload,
       });
-      this.deps.audit?.({
-        ...auditBase,
+      if (
+        response.body &&
+        response.contentType.toLowerCase().startsWith("text/event-stream")
+      ) {
+        return Object.freeze({
+          ...response,
+          body: wrapPreviewRuntimeStream(response.body, {
+            complete: () =>
+              finalize({
+                status: "completed",
+                upstreamStatus: response.status,
+              }),
+            fail: () =>
+              finalize({
+                status: "failed",
+                upstreamStatus: response.status,
+              }),
+          }),
+        });
+      }
+      finalize({
         status: "completed",
         upstreamStatus: response.status,
       });
       return response;
     } catch (cause) {
-      if (!budgetDenied) this.deps.audit?.({ ...auditBase, status: "failed" });
+      finalize({ status: "failed" });
       throw cause;
-    } finally {
-      this.active -= 1;
     }
   }
 
@@ -355,6 +391,49 @@ export class ApplicationPreviewRuntimeBrokerService implements PreviewRuntimeBro
       payload: Object.freeze(normalized),
     });
   }
+}
+
+function wrapPreviewRuntimeStream(
+  body: ReadableStream<Uint8Array>,
+  lifecycle: Readonly<{
+    complete: () => void;
+    fail: () => void;
+  }>,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const result = await reader.read();
+          if (result.done) {
+            try {
+              controller.close();
+            } finally {
+              lifecycle.complete();
+            }
+            return;
+          }
+          controller.enqueue(result.value);
+        } catch (cause) {
+          try {
+            controller.error(cause);
+          } finally {
+            lifecycle.fail();
+          }
+        }
+      },
+      async cancel(reason) {
+        try {
+          // Consumers may cancel after SSE [DONE] without reading transport EOF.
+          lifecycle.complete();
+        } finally {
+          await reader.cancel(reason);
+        }
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 function validateRequestLimits(limits: PreviewRuntimeRequestLimits): void {
