@@ -256,15 +256,13 @@ network_policies:
       - host: gitea-hetzner.tail286401.ts.net
         port: 443
         access: full
-      # In-cluster checkpoint-git (live checkpoint remote after Gitea VIP
-      # retirement): plain-HTTP smart-HTTP + Gitea REST on :3000. L7-inspected,
-      # so use the rest/read-write form — access:full is CONNECT semantics and
-      # never matches plain HTTP.
-      - host: checkpoint-git.workflow-builder.svc.cluster.local
-        port: 3000
-        protocol: rest
-        enforcement: enforce
-        access: read-write
+      # checkpoint-git over the tailnet: the proxy SSRF guard blocks cluster-
+      # internal addresses even when allowlisted, so pushes CONNECT-tunnel to
+      # the HTTPS tailnet VIP (checkpoint-git-tls-terminator) like the retired
+      # gitea VIPs did.
+      - host: checkpoint-git-dev.tail286401.ts.net
+        port: 443
+        access: full
     binaries:
       - { path: /usr/bin/git }
       - { path: /usr/lib/git-core/git-remote-https }
