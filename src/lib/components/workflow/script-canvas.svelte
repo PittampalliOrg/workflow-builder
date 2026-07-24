@@ -16,9 +16,11 @@
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 	import {
 		scriptToGraph,
+		graphFromModel,
 		type CallLineState,
 		type ScriptGraphModel
 	} from '$lib/utils/script-graph-adapter';
+	import { swSpecToScriptModel } from '$lib/utils/sw-script-model';
 	import ScriptNode from './nodes/script-node.svelte';
 
 	interface Props {
@@ -61,8 +63,15 @@
 	// when the authoring session saves → editor refetch → store.scriptSource).
 	const graph = $derived.by(() => {
 		const src = scriptSource ?? store?.scriptSource;
-		if (!src) return null;
-		return scriptToGraph(src, scriptMeta ?? store?.scriptMeta);
+		if (src) return scriptToGraph(src, scriptMeta ?? store?.scriptMeta);
+		// Legacy SW 1.0 rows: translate the do[] spec into the SAME model so old
+		// workflows render in the one visual system (read-only; line 0 = no
+		// code⇄canvas join).
+		if (store?.spec && !store.isDynamicScript) {
+			const model = swSpecToScriptModel(store.spec);
+			if (model.calls.length > 0) return graphFromModel(model);
+		}
+		return null;
 	});
 	const model = $derived<ScriptGraphModel | null>(graph?.model ?? null);
 	const styledEdges = $derived(

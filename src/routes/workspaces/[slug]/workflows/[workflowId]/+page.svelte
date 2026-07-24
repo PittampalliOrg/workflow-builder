@@ -7,7 +7,6 @@
 	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
 	import { getTask } from '$lib/helpers/spec-mutations';
 	import { getNodeIdForTaskName, getTaskNameFromNodeId } from '$lib/helpers/workflow-action-spec';
-	import WorkflowCanvas from '$lib/components/workflow/workflow-canvas.svelte';
 	import ScriptWorkspace from '$lib/components/workflow/script-workspace.svelte';
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
 	import RightPanel from '$lib/components/workflow/right-panel.svelte';
@@ -213,11 +212,7 @@
 
 	<div class="relative flex flex-1 overflow-hidden">
 		<div class="flex-1">
-			{#if store.isDynamicScript}
-				<ScriptWorkspace />
-			{:else}
-				<WorkflowCanvas />
-			{/if}
+			<ScriptWorkspace />
 		</div>
 
 		{#if ui.rightPanelOpen}
