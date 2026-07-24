@@ -1046,7 +1046,9 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 
 	function dynamicScriptService(
 		scriptCalls: {
-			listInternal: (id: string) => Promise<Array<{ callId: string; status: string }>>;
+			listInternal: (
+				id: string,
+			) => Promise<Array<{ callId: string; seq: number; status: string }>>;
 		},
 		workspaceSnapshots: { listSnapshots: (key: string) => Promise<string[]> },
 	) {
@@ -1077,9 +1079,9 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	it("seeds a dynamic-script resume from the last done call's snapshot", async () => {
 		const scriptCalls = {
 			listInternal: vi.fn(async () => [
-				{ callId: "c0", status: "done" },
-				{ callId: "c1", status: "done" },
-				{ callId: "c2", status: "error" }, // failed call — not the reused boundary
+				{ callId: "c0", seq: 0, status: "done" },
+				{ callId: "c1", seq: 1, status: "done" }, // last done = highest seq
+				{ callId: "c2", seq: 2, status: "error" }, // failed call — not a boundary
 			]),
 		};
 		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["c0", "c1"]) };
@@ -1107,8 +1109,8 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 	it("falls back to no workspace seed when the last done call has no snapshot", async () => {
 		const scriptCalls = {
 			listInternal: vi.fn(async () => [
-				{ callId: "c0", status: "done" },
-				{ callId: "c1", status: "done" },
+				{ callId: "c0", seq: 0, status: "done" },
+				{ callId: "c1", seq: 1, status: "done" },
 			]),
 		};
 		// c1 (the last done call) never got a snapshot (fire-and-forget miss/race).

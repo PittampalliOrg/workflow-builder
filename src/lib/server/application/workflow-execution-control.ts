@@ -101,6 +101,7 @@ export class ApplicationWorkflowExecutionControlService {
 				listInternal(executionId: string): Promise<
 					Array<{
 						callId: string;
+						seq: number;
 						status: string;
 						label?: string | null;
 						result?: unknown;
@@ -666,27 +667,35 @@ export class ApplicationWorkflowExecutionControlService {
 			// fresh run's shared workspace (`ws_script_<newExec>`) starts EMPTY and the
 			// reused (journal-imported) calls don't re-run, so a re-dispatched call would
 			// otherwise see none of the prior calls' file outputs. Seed it from the
-			// node-boundary snapshot of the LAST REUSED call. The source run's last DONE
-			// call is that boundary for the dominant resume case (resume-after-failure /
-			// append-next-call: the whole done prefix is reused, the failed/next call
-			// re-dispatches). Snapshots live under the source's shared key
-			// `ws_script_<sourceId>`; a miss/absence falls through to today's no-seed
-			// behavior. (Precise mid-edit reuse-boundary detection needs the runtime
-			// evaluator's knownCallIds diff — a documented follow-up.)
+			// node-boundary snapshot of the LAST REUSED call.
+			//
+			// Reuse is decided PER-callId at evaluate time (a call whose prompt/opts are
+			// unchanged keeps its frozen callId and resolves from the imported journal),
+			// which the BFF cannot predict without running the evaluator. So v1 seeds from
+			// the source run's LAST terminally-`done` call (highest seq): EXACT for a
+			// TAIL-EDIT — the dominant resume-after-edit case, where every done call is
+			// reused and the edited/next call re-dispatches — and an approximation for a
+			// MID-SCRIPT edit (it may over-seed downstream state, still strictly better
+			// than the empty-workspace status quo). Precise mid-edit boundary selection
+			// belongs at evaluate time (runtime knownCallIds diff) — a noted follow-up.
+			// Snapshots live under the source's shared key `ws_script_<sourceId>`; a
+			// miss/absence falls through to today's no-seed behavior.
 			let seedWorkspaceFrom: string | undefined;
 			let seededFromSnapshot = false;
 			const scriptWorkspaceKey = `ws_script_${source.id}`;
 			if (this.deps.scriptCalls && this.deps.workspaceSnapshots) {
 				try {
-					const done = (
-						await this.deps.scriptCalls.listInternal(source.id)
-					).filter((c) => c.status === "done");
-					const lastReused = done.length ? done[done.length - 1] : null;
-					if (lastReused) {
+					const lastDone = (await this.deps.scriptCalls.listInternal(source.id))
+						.filter((c) => c.status === "done")
+						.reduce<{ callId: string; seq: number } | null>(
+							(max, c) => (max === null || c.seq > max.seq ? c : max),
+							null,
+						);
+					if (lastDone) {
 						const snaps =
 							await this.deps.workspaceSnapshots.listSnapshots(scriptWorkspaceKey);
-						if (snaps.includes(lastReused.callId)) {
-							seedWorkspaceFrom = `.snapshots/${scriptWorkspaceKey}/${lastReused.callId}`;
+						if (snaps.includes(lastDone.callId)) {
+							seedWorkspaceFrom = `.snapshots/${scriptWorkspaceKey}/${lastDone.callId}`;
 							seededFromSnapshot = true;
 						}
 					}
