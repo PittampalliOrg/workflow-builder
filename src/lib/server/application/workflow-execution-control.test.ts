@@ -1044,6 +1044,86 @@ describe("ApplicationWorkflowExecutionControlService", () => {
 		});
 	});
 
+	function dynamicScriptService(
+		scriptCalls: { listInternal: ReturnType<typeof vi.fn> },
+		workspaceSnapshots: { listSnapshots: ReturnType<typeof vi.fn> },
+	) {
+		vi.mocked(workflowData.getExecutionById).mockResolvedValue(
+			executionRecord({
+				id: "exec-1",
+				status: "cancelled",
+				stopRequestedAt: null,
+				completedAt: new Date("2026-07-21T12:01:00.000Z"),
+			}),
+		);
+		vi.mocked(workflowData.getWorkflowByRef).mockResolvedValue(
+			workflowDefinition({ engineType: "dynamic-script" }),
+		);
+		return new ApplicationWorkflowExecutionControlService({
+			workflowData,
+			approvalEvents,
+			coordinatorOwners,
+			executionLifecycle,
+			executionReadModels,
+			runStarter,
+			workflowSpecs,
+			scriptCalls: scriptCalls as never,
+			workspaceSnapshots,
+		});
+	}
+
+	it("seeds a dynamic-script resume from the last done call's snapshot", async () => {
+		const scriptCalls = {
+			listInternal: vi.fn(async () => [
+				{ callId: "c0", status: "done" },
+				{ callId: "c1", status: "done" },
+				{ callId: "c2", status: "error" }, // failed call — not the reused boundary
+			]),
+		};
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["c0", "c1"]) };
+		const svc = dynamicScriptService(scriptCalls, workspaceSnapshots);
+
+		const result = await svc.resumeExecution(commandInput({ body: {} }));
+
+		// Snapshots looked up under the run's shared script workspace key.
+		expect(workspaceSnapshots.listSnapshots).toHaveBeenCalledWith("ws_script_exec-1");
+		expect(runStarter.startWorkflowRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				journalImportFromExecutionId: "exec-1",
+				seedWorkspaceFrom: ".snapshots/ws_script_exec-1/c1",
+			}),
+		);
+		expect(result).toMatchObject({
+			status: "ok",
+			body: {
+				seededFromSnapshot: true,
+				seedWorkspaceFrom: ".snapshots/ws_script_exec-1/c1",
+			},
+		});
+	});
+
+	it("falls back to no workspace seed when the last done call has no snapshot", async () => {
+		const scriptCalls = {
+			listInternal: vi.fn(async () => [
+				{ callId: "c0", status: "done" },
+				{ callId: "c1", status: "done" },
+			]),
+		};
+		// c1 (the last done call) never got a snapshot (fire-and-forget miss/race).
+		const workspaceSnapshots = { listSnapshots: vi.fn(async () => ["c0"]) };
+		const svc = dynamicScriptService(scriptCalls, workspaceSnapshots);
+
+		const result = await svc.resumeExecution(commandInput({ body: {} }));
+
+		const call = vi.mocked(runStarter.startWorkflowRun).mock.calls[0][0];
+		expect(call.seedWorkspaceFrom).toBeUndefined();
+		expect(call.journalImportFromExecutionId).toBe("exec-1");
+		expect(result).toMatchObject({
+			status: "ok",
+			body: { seededFromSnapshot: false },
+		});
+	});
+
 	it("returns coordinator-owned resume responses without starting a new run", async () => {
 		vi.mocked(coordinatorOwners.getCoordinatorOwner).mockResolvedValue({
 			kind: "benchmarkRun",

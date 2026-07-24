@@ -79,6 +79,9 @@ export class DaprWorkflowScheduler implements WorkflowScheduler {
 				...(input.journalImportFromExecutionId
 					? { journalImportFromExecutionId: input.journalImportFromExecutionId }
 					: {}),
+				...(input.seedWorkspaceFrom
+					? { seedWorkspaceFrom: input.seedWorkspaceFrom }
+					: {}),
 				nested: false,
 				dispatchMode: input.dispatchMode ?? "batch-v2",
 				dbExecutionId: input.dbExecutionId,

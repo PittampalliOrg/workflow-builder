@@ -534,6 +534,12 @@ async function startDynamicScriptRun(
 		...(opts.rerunSourceInstanceId
 			? { rerunSourceInstanceId: opts.rerunSourceInstanceId }
       : {}),
+		// Persist the seed source so the UI badges a snapshot-seeded resume, same as
+		// the SW path. A `.snapshots/...` value = node-boundary snapshot seed of the
+		// last unchanged call (durability); a bare key = end-state seed.
+		...(opts.seedWorkspaceFrom
+			? { seedWorkspaceFrom: opts.seedWorkspaceFrom }
+			: {}),
 	});
 
 	const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
@@ -566,6 +572,9 @@ async function startDynamicScriptRun(
 			dispatchMode,
 			...(opts.journalImportFromExecutionId
 				? { journalImportFromExecutionId: opts.journalImportFromExecutionId }
+				: {}),
+			...(opts.seedWorkspaceFrom
+				? { seedWorkspaceFrom: opts.seedWorkspaceFrom }
 				: {}),
 			dbExecutionId: execution.id,
 			workflowId: workflow.id,

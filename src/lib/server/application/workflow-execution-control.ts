@@ -662,6 +662,41 @@ export class ApplicationWorkflowExecutionControlService {
 					"Source run is still active; stop it before resuming a dynamic-script run",
 				);
 			}
+			// Workspace-consistent resume-after-edit (durability, dynamic engine). The
+			// fresh run's shared workspace (`ws_script_<newExec>`) starts EMPTY and the
+			// reused (journal-imported) calls don't re-run, so a re-dispatched call would
+			// otherwise see none of the prior calls' file outputs. Seed it from the
+			// node-boundary snapshot of the LAST REUSED call. The source run's last DONE
+			// call is that boundary for the dominant resume case (resume-after-failure /
+			// append-next-call: the whole done prefix is reused, the failed/next call
+			// re-dispatches). Snapshots live under the source's shared key
+			// `ws_script_<sourceId>`; a miss/absence falls through to today's no-seed
+			// behavior. (Precise mid-edit reuse-boundary detection needs the runtime
+			// evaluator's knownCallIds diff — a documented follow-up.)
+			let seedWorkspaceFrom: string | undefined;
+			let seededFromSnapshot = false;
+			const scriptWorkspaceKey = `ws_script_${source.id}`;
+			if (this.deps.scriptCalls && this.deps.workspaceSnapshots) {
+				try {
+					const done = (
+						await this.deps.scriptCalls.listInternal(source.id)
+					).filter((c) => c.status === "done");
+					const lastReused = done.length ? done[done.length - 1] : null;
+					if (lastReused) {
+						const snaps =
+							await this.deps.workspaceSnapshots.listSnapshots(scriptWorkspaceKey);
+						if (snaps.includes(lastReused.callId)) {
+							seedWorkspaceFrom = `.snapshots/${scriptWorkspaceKey}/${lastReused.callId}`;
+							seededFromSnapshot = true;
+						}
+					}
+				} catch (err) {
+					console.warn(
+						"[resume] script snapshot lookup failed; no workspace seed",
+						err,
+					);
+				}
+			}
 			const result = await this.deps.runStarter.startWorkflowRun({
 				workflowId: source.workflowId,
 				// Verbatim: any JSON value. A null stored input (run started without
@@ -669,6 +704,7 @@ export class ApplicationWorkflowExecutionControlService {
 				// the original run.
 				triggerData: source.input ?? undefined,
 				journalImportFromExecutionId: source.id,
+				...(seedWorkspaceFrom ? { seedWorkspaceFrom } : {}),
 				rerunOfExecutionId: source.id,
 				rerunSourceInstanceId: source.daprInstanceId,
 				triggerSource: "resume",
@@ -684,6 +720,8 @@ export class ApplicationWorkflowExecutionControlService {
 					sourceExecutionId: source.id,
 					newInstanceId: result.instanceId,
 					journalImportFromExecutionId: source.id,
+					...(seedWorkspaceFrom ? { seedWorkspaceFrom } : {}),
+					seededFromSnapshot,
 				},
 			};
 		}
